@@ -1,24 +1,27 @@
-//! Characterization of the live-typing vs. db diagnostic divergence
-//! (issue #1347, `needs-design`) — **resolved by #1358.**
+//! The live-typing diagnostic surface, pinned (issue #1347 — resolved
+//! twice over).
 //!
-//! `IdeSession`'s editor-facing analysis runs off the db —
-//! `snapshot().analyze()` → `brink_analyzer::analyze_with_modules(…,
-//! is_native)` — while a compile and every direct db query run
-//! `per_file_diagnostics_query`, which knows each file's *path* and
-//! therefore its `Language`. Before #1358, the pure path always hardcoded
-//! `is_native = false`, so the two disagreed on native `.brink` files in
-//! both directions (missing `E084`/`E106`/`E137`/`E138`, and a false-positive
-//! `E051`). #1358 threads the db's real `is_native` answer through
-//! `IdeSnapshot`/`analyze_with_modules` (design doc §4 option B), which
-//! closes every divergence this suite measured — see
-//! `docs/live-typing-diagnostics-divergence.md` for the resolution note and
-//! the original measurement.
+//! HISTORY: `IdeSession`'s editor-facing analysis used to run off the db
+//! (`snapshot().analyze()` over the retired `analyze_with_modules`
+//! monolith) while compiles and direct db queries ran
+//! `per_file_diagnostics_query` — two roads, which diverged on native
+//! files in both directions until #1358 hand-threaded `is_native` through
+//! the pure path (option B of the design doc). **Option A total (ruled
+//! 2026-08-24) then dissolved the second road entirely**: the live surface
+//! IS the db's `analysis_query`, so the old "both surfaces agree"
+//! assertions became tautologies and were retired with the road.
 //!
-//! These tests now pin *agreement*: for every fixture below, live typing and
-//! the db must report the same diagnostic codes. Keeping the original
-//! fixtures (rather than deleting the file) keeps the regression coverage —
-//! if a future change reintroduces the divergence, one of these fails with a
-//! code-set mismatch naming #1347.
+//! What this suite pins now:
+//!
+//! 1. Every original fixture still yields its expected diagnostic codes on
+//!    the (single) live surface — the regression coverage the divergence
+//!    era bought is kept, re-aimed at the surviving road.
+//! 2. The #2885 closure: `update_and_analyze` alone syncs the session's
+//!    options into the db — the old helper needed a trailing
+//!    `set_type_policy` call AFTER the edit purely to force the sync; that
+//!    workaround is gone (options are set BEFORE the edit, the natural
+//!    order), and `options_reach_the_db_without_a_post_edit_setter` pins
+//!    the closure directly.
 
 use brink_analyzer::{Dialect, TypePolicy};
 use brink_ide::session::IdeSession;
@@ -65,32 +68,25 @@ flow main() {
 ";
 
 /// Load `source` into a session under `dialect` with an explicit
-/// `types = gradual`, and return `(live typing diagnostics, db diagnostics)`.
+/// `types = gradual`, and return the live-surface diagnostics.
 ///
-/// `None` when the session never produced a cached analysis — surfaced as a
+/// Options are configured BEFORE the edit — the natural order — and no
+/// setter follows it: `update_and_analyze` syncs the session's options into
+/// the db itself since option A (the #2885 closure). The pre-option-A
+/// version of this helper had to call `set_type_policy` AFTER the edit as a
+/// sync workaround; its absence here is load-bearing coverage.
+///
+/// `None` when the session never produced an analysis — surfaced as a
 /// return value rather than an `expect`, because `panic`/`expect_used` are
 /// denied outside `#[test]` fns even in an integration test (the same reason
 /// `dialect_conformance.rs`'s own helper returns `Result`). Callers unwrap it
 /// in the test body, where the lint exemption applies.
-///
-/// The trailing `set_type_policy` is not redundant: option setters funnel
-/// through `IdeSession::reanalyze`, which is what pushes the session's
-/// options into its own db (#1553). `update_and_analyze` does not, so
-/// without a setter call *after* the file lands, the db would read the file
-/// under whatever options were last synced.
-fn both_surfaces(
-    path: &str,
-    source: &str,
-    dialect: Dialect,
-) -> Option<(Vec<Diagnostic>, Vec<Diagnostic>)> {
+fn live_surface(path: &str, source: &str, dialect: Dialect) -> Option<Vec<Diagnostic>> {
     let mut session = IdeSession::new();
     session.set_language_dialect(dialect);
-    session.update_and_analyze(path, source.to_owned());
     session.set_type_policy(TypePolicy::Gradual);
-
-    let live = session.analysis()?.diagnostics.clone();
-    let db = session.db().analysis().diagnostics.clone();
-    Some((live, db))
+    session.update_and_analyze(path, source.to_owned());
+    Some(session.analysis()?.diagnostics.clone())
 }
 
 fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
@@ -98,17 +94,6 @@ fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
     v.sort_by_key(|c| format!("{c:?}"));
     v.dedup();
     v
-}
-
-fn assert_surfaces_agree(live: &[Diagnostic], db: &[Diagnostic], context: &str) {
-    assert_eq!(
-        codes(live),
-        codes(db),
-        "#1347 regression: live typing and the db must agree on {context} \
-         (resolved by #1358); live {:?}, db {:?}",
-        codes(live),
-        codes(db)
-    );
 }
 
 /// `E137` (B0.9 native strict-only, issue #1342) used to have no pure-path
@@ -120,14 +105,13 @@ fn assert_surfaces_agree(live: &[Diagnostic], db: &[Diagnostic], context: &str) 
 #[test]
 fn e137_reaches_both_the_db_and_live_typing() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
-        let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect)
+        let live = live_surface("main.brink", NATIVE_DUP_FIELD, dialect)
             .expect("session produced an analysis");
         assert!(
-            has(&db, DiagnosticCode::E137),
-            "fixture must provoke E137 under {dialect:?}; db saw {:?}",
-            codes(&db)
+            has(&live, DiagnosticCode::E137),
+            "fixture must provoke E137 under {dialect:?}; saw {:?}",
+            codes(&live)
         );
-        assert_surfaces_agree(&live, &db, &format!("E137 under {dialect:?}"));
     }
 }
 
@@ -141,14 +125,13 @@ fn e137_reaches_both_the_db_and_live_typing() {
 #[test]
 fn e084_reaches_both_surfaces_under_every_dialect() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
-        let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect)
+        let live = live_surface("main.brink", NATIVE_DUP_FIELD, dialect)
             .expect("session produced an analysis");
         assert!(
-            has(&db, DiagnosticCode::E084),
-            "fixture must provoke E084 under {dialect:?}; db saw {:?}",
-            codes(&db)
+            has(&live, DiagnosticCode::E084),
+            "fixture must provoke E084 under {dialect:?}; saw {:?}",
+            codes(&live)
         );
-        assert_surfaces_agree(&live, &db, &format!("E084 under {dialect:?}"));
     }
 }
 
@@ -164,7 +147,7 @@ fn e084_reaches_both_surfaces_under_every_dialect() {
 /// case. #1358 closes it: live typing no longer emits `E051` here.
 #[test]
 fn live_typing_no_longer_invents_e051_on_native_syntax() {
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
+    let live = live_surface("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
         .expect("session produced an analysis");
     assert!(
         !has(&live, DiagnosticCode::E051),
@@ -173,9 +156,9 @@ fn live_typing_no_longer_invents_e051_on_native_syntax() {
         codes(&live)
     );
     assert!(
-        !has(&db, DiagnosticCode::E051),
-        "#1348 regression: the db must never emit E051 on a native file; db saw {:?}",
-        codes(&db)
+        !has(&live, DiagnosticCode::E051),
+        "#1348 regression: the db must never emit E051 on a native file; saw {:?}",
+        codes(&live)
     );
 }
 
@@ -188,28 +171,31 @@ fn live_typing_no_longer_invents_e051_on_native_syntax() {
 /// `E084`.
 #[test]
 fn e106_and_e138_reach_both_surfaces_under_default_dialect() {
-    let (live, db) = both_surfaces("main.brink", NATIVE_MAP_KEY_ISSUES, Dialect::StrictInk)
+    let live = live_surface("main.brink", NATIVE_MAP_KEY_ISSUES, Dialect::StrictInk)
         .expect("session produced an analysis");
     for code in [DiagnosticCode::E106, DiagnosticCode::E138] {
         assert!(
-            has(&db, code),
-            "fixture must provoke {code:?} under strict-ink; db saw {:?}",
-            codes(&db)
+            has(&live, code),
+            "fixture must provoke {code:?} under strict-ink; saw {:?}",
+            codes(&live)
         );
     }
-    assert_surfaces_agree(&live, &db, "the map-literal key checks under strict-ink");
 }
 
-/// The control: on an ink file the two surfaces agree exactly, under both
-/// dialects — unaffected by #1358, since native-only classification cannot
-/// change an ink file's diagnostics. This is what scoped #1347 to native
-/// files, and it stays green throughout.
+/// The control: a plain ink file analyzes clean on the live surface under
+/// both dialects. (Its original job — proving the two surfaces agreed on
+/// ink, scoping #1347 to native files — dissolved with the second surface;
+/// the clean-fixture pin is what remains worth holding.)
 #[test]
-fn ink_files_agree_on_both_surfaces() {
+fn ink_control_analyzes_clean_under_both_dialects() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
-        let (live, db) =
-            both_surfaces("main.ink", INK_PLAIN, dialect).expect("session produced an analysis");
-        assert_surfaces_agree(&live, &db, &format!("an ink file under {dialect:?}"));
+        let live =
+            live_surface("main.ink", INK_PLAIN, dialect).expect("session produced an analysis");
+        assert!(
+            live.is_empty(),
+            "the plain-ink control must analyze clean under {dialect:?}: {:?}",
+            codes(&live)
+        );
     }
 }
 
@@ -228,7 +214,7 @@ fn has(diags: &[Diagnostic], code: DiagnosticCode) -> bool {
 /// *entry points* into it agree; CLAUDE.md's "exercise both roads" rule
 /// wants a direct proof through the off-db road too, the same way every
 /// other test in this file proves it through `IdeSession::analysis`
-/// (`IdeSnapshot::analyze`/`analyze_with_modules` under the hood) rather
+/// (the db's `analysis_query` since option A) rather
 /// than only through `session.db()`.
 #[test]
 fn e185_reaches_both_surfaces_under_strict() {
@@ -245,16 +231,13 @@ fn e185_reaches_both_surfaces_under_strict() {
         .expect("session produced an analysis")
         .diagnostics
         .clone();
-    let db = session.db().analysis().diagnostics.clone();
 
     assert!(
         has(&live, DiagnosticCode::E185),
-        "the off-db road (IdeSession::analysis, IdeSnapshot::analyze/analyze_with_modules \
-         under the hood) must report E185 directly, not merely by structural argument about a \
+        "the off-db road (IdeSession::analysis — the db's analysis_query since option A) must report E185 directly, not merely by structural argument about a \
          shared seam; live saw {:?}",
         codes(&live)
     );
-    assert_surfaces_agree(&live, &db, "E185 under strict types, brink dialect");
 }
 
 /// Issue #2906's own both-roads proof, extending
@@ -276,18 +259,12 @@ fn e185_on_unannotated_temp_initializer_reaches_both_surfaces_under_strict_issue
         .expect("session produced an analysis")
         .diagnostics
         .clone();
-    let db = session.db().analysis().diagnostics.clone();
 
     assert!(
         has(&live, DiagnosticCode::E185),
         "the off-db road must report E185 for an unannotated-temp-initializer \
          receiver just like it does for an annotated VAR; live saw {:?}",
         codes(&live)
-    );
-    assert_surfaces_agree(
-        &live,
-        &db,
-        "E185 on an unannotated temp initializer under strict types, brink dialect",
     );
 }
 
@@ -313,8 +290,8 @@ fn e185_on_unannotated_temp_initializer_reaches_both_surfaces_under_strict_issue
 fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
     let src = "fn double(n: int): int {\n  return n * 2;\n}\n\nconst twice = double\n\n\
                flow main() {\n  Result: {twice(21)} -> END\n}\n";
-    let (live, db) =
-        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
+    let live =
+        live_surface("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
 
     assert!(
         !has(&live, DiagnosticCode::E025),
@@ -323,11 +300,10 @@ fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
         codes(&live)
     );
     assert!(
-        !has(&db, DiagnosticCode::E025),
-        "the db-direct road must resolve it too; db saw {:?}",
-        codes(&db)
+        !has(&live, DiagnosticCode::E025),
+        "the db-direct road must resolve it too; saw {:?}",
+        codes(&live)
     );
-    assert_surfaces_agree(&live, &db, "issue #2083's fn-valued CONST global call site");
 }
 
 /// The lambda-literal sibling (#1774's decl-default form) — issue #2083
@@ -335,8 +311,8 @@ fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
 #[test]
 fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
     let src = "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n";
-    let (live, db) =
-        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
+    let live =
+        live_surface("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
 
     assert!(
         !has(&live, DiagnosticCode::E025),
@@ -344,17 +320,12 @@ fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
          call site; live saw {:?}",
         codes(&live)
     );
-    assert_surfaces_agree(
-        &live,
-        &db,
-        "issue #2083's lambda-literal-valued CONST global call site",
-    );
 }
 
 /// Issue #1865, off-db road: a `STRUCT` declared with the same name as a
 /// reserved builtin leaf (`content`, issue #1846's capture-contract leaf)
 /// must raise `E188` through `IdeSession::analysis`
-/// (`IdeSnapshot::analyze`/`analyze_with_modules` under the hood) — the
+/// (the db's `analysis_query` since option A) — the
 /// analysis road `@brink-lang/web`'s live squiggles actually run — not
 /// merely through `brink-db`'s own direct test
 /// (`crates/internal/brink-db/tests/issue_1865_struct_shadows_builtin_type.rs`).
@@ -367,8 +338,7 @@ fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
 #[test]
 fn issue_1865_struct_named_content_reaches_both_surfaces() {
     let src = "STRUCT content = #{x: int}\nVAR v: content = 0\n-> DONE\n";
-    let (live, db) =
-        both_surfaces("main.ink", src, Dialect::Brink).expect("session produced an analysis");
+    let live = live_surface("main.ink", src, Dialect::Brink).expect("session produced an analysis");
 
     assert!(
         has(&live, DiagnosticCode::E188),
@@ -376,7 +346,6 @@ fn issue_1865_struct_named_content_reaches_both_surfaces() {
          leaf; live saw {:?}",
         codes(&live)
     );
-    assert_surfaces_agree(&live, &db, "E188 on a STRUCT named `content`");
 }
 
 /// Negative-case sibling on the same off-db road: an ordinary struct name
@@ -384,15 +353,13 @@ fn issue_1865_struct_named_content_reaches_both_surfaces() {
 #[test]
 fn issue_1865_ordinary_struct_name_raises_no_e188_on_either_surface() {
     let src = "STRUCT Point = #{x: float, y: float}\n-> DONE\n";
-    let (live, db) =
-        both_surfaces("main.ink", src, Dialect::Brink).expect("session produced an analysis");
+    let live = live_surface("main.ink", src, Dialect::Brink).expect("session produced an analysis");
 
     assert!(
         !has(&live, DiagnosticCode::E188),
         "an ordinary struct name must not raise E188 on the off-db road; live saw {:?}",
         codes(&live)
     );
-    assert_surfaces_agree(&live, &db, "no E188 for an ordinary struct name");
 }
 
 // ── Issue #2272: E061 referrer-scoping reaches both roads ───────────────
@@ -433,7 +400,6 @@ fn session_with_std_mount_and(path: &str, src: &str) -> IdeSession {
 fn issue_2272_unimported_std_only_struct_param_type_raises_e061_on_both_surfaces() {
     let session = session_with_std_mount_and("main.brink", HEALER_WITH_UNIMPORTED_STD_CUE);
     let live = session.analysis().expect("analysis").diagnostics.clone();
-    let db = session.db().analysis().diagnostics.clone();
 
     assert!(
         has(&live, DiagnosticCode::E061),
@@ -441,14 +407,35 @@ fn issue_2272_unimported_std_only_struct_param_type_raises_e061_on_both_surfaces
          live-typing road; live saw {:?}",
         codes(&live)
     );
-    assert!(
-        has(&db, DiagnosticCode::E061),
-        "expected E061 on the db-direct road too; db saw {:?}",
-        codes(&db)
+}
+
+// ── Option A: the #2885 closure, pinned directly ────────────────────────
+
+/// `update_and_analyze` alone — no setter before or after — must leave the
+/// db's `AnalysisOptions` input equal to the session's own effective
+/// options. Pre-option-A this was the open #2885 gap (the db kept its
+/// construction-time default until a setter or compile happened to write),
+/// and this very suite's helper carried a post-edit `set_type_policy`
+/// workaround for it.
+#[test]
+fn options_reach_the_db_without_a_post_edit_setter() {
+    let mut session = IdeSession::new();
+    session.set_language_dialect(Dialect::Brink);
+    session.set_type_policy(TypePolicy::Gradual);
+    session.update_and_analyze("main.brink", NATIVE_DUP_FIELD.to_owned());
+
+    assert_eq!(
+        session.db().analysis_options(),
+        &session.analysis_options(),
+        "#2885: update_and_analyze must sync the session's options into its db"
     );
-    assert_surfaces_agree(
-        &live,
-        &db,
-        "E061 for an unimported std-only struct used as a param type",
+    // And the options-gated diagnostic surface reflects them: E137 needs
+    // the explicit `types = gradual` set above, with no post-edit setter.
+    let live = session.analysis().expect("analysis").diagnostics.clone();
+    assert!(
+        has(&live, DiagnosticCode::E137),
+        "the explicit-gradual strict-only gate must fire from the pre-edit \
+         options alone; saw {:?}",
+        codes(&live)
     );
 }

@@ -169,3 +169,67 @@ threading posture, and `IdeSession::compile`'s own doc
 records that #1347 is open and that adjacent PRs must not prejudge it. That is
 a maintainer call. This document and its test exist so the call can be made
 against measurements instead of assumptions.
+
+---
+
+## Addendum (2026-08-24): option A landed — **total**
+
+The maintainer call §5 deferred was made and then widened the same day
+(decision log, "Live editor diagnostics route through the db road" and
+"Option A goes total"): not only does `IdeSession`'s per-edit path route
+through `db.analysis()` (deleting the `IdeSnapshot` clone that the
+desktop-perf baseline measured at 91% of large-file keystroke cost,
+#3063), but the **pure path itself is deleted** —
+`brink_analyzer::analyze_with_modules` no longer exists. brink-lsp's
+per-root analysis rides a new member-set-keyed `subset_analysis_query`
+(the monolith's composition relocated INTO salsa, memoized per set); the
+overlay/dir-move gates judge their throwaway dbs by `db.analysis()`; the
+remaining callers were test harnesses, migrated to piece-function
+fixtures. `analyze`/`analyze_with_options` survive as an explicitly
+documented test-fixture surface with the `ModuleMap`/`is_native`
+parameters — the two degrees of freedom every §3-era divergence came
+from — removed from existence.
+
+Consequences for this document's artifacts:
+
+- `tests/live_typing_db_divergence.rs` is re-aimed: the "both surfaces
+  agree" assertions were tautologies with one surface, so the suite now
+  pins each fixture's expected codes on the single live surface, plus the
+  **#2885 closure** directly (`update_and_analyze` syncs options; the
+  helper's post-edit `set_type_policy` workaround this document's §4A
+  described is deleted).
+- `brink-db/tests/query_equivalence.rs` is **deleted, not re-aimed**
+  (maintainer: "if we don't have two paths, do we need equivalence
+  testing?"): equivalence testing was symptom management for two
+  implementations of one truth; with one producer the class is impossible
+  by construction, and correctness is held by the behavioral suites.
+- Landing the routing exposed and fixed one latent db-side member of the
+  class: the strict pass keyed `E064`'s nativeness off the **compile
+  entry** (`project_is_native` — unset in editor sessions, so the ink arm
+  ran over all-native projects); it now uses `project_is_all_native`,
+  the same classification §4B chose, and the entry-derived predicate is
+  deleted. The overlay gates had the mirror bug (project-wide `is_native`
+  flag vs the db's per-file classification put the ink arm's `E051` over
+  mounted `.brink` stdlib in overlay results only, reading as
+  "introduced" diagnostics) — dissolved by judging both sides with one
+  engine.
+
+### Compile-road-only diagnostics (ruling, same date)
+
+The option-A ruling required enumerating what the compile road reports
+that `AnalysisResult` never carries, and ruling each in or out of the
+live surface. The enumeration (recon + code):
+
+1. **Per-file parse/lowering diagnostics** (`lowered_query(..).diagnostics`)
+   — already reach the editor via `db.diagnostics(file)`, the Problems
+   panel's road. No gap; no action.
+2. **LIR-lowering codes** — E030 E031 E052 E054–E059 E073–E077 E082 E083
+   E099 E120 E143 E144 E148 E158 E181 E183 E184 E187 — run only when the
+   compilation closure is error-free, scoped to that closure.
+3. **Codegen codes** — E052 E057 E081, plus the synthesized E060 on emit
+   failure.
+
+**RULED: classes 2–3 stay compile/save-time by design.** They are
+artifact-construction errors, structurally gated behind an error-free
+closure (they cannot fire while any analysis error exists), and the
+compile-on-save trigger ruled the same day is their natural surface.

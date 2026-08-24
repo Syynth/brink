@@ -96,24 +96,24 @@ fn gate_session() -> EditorSession {
     s
 }
 
-/// Render every diagnostic from **both** analysis roads as
+/// Render every diagnostic from **both** analysis pulls as
 /// `road: path:offset [CODE] message` for failure output worth reading.
 ///
-/// Two roads, deliberately (#1880's doc corrections record the split):
-/// - `session.analysis()` — the off-db snapshot road
-///   (`IdeSnapshot::analyze` → `analyze_with_modules`).
-/// - `session.db().diagnostics(file)` — the db-direct road
-///   (`per_file_diagnostics_query`), which is what the studio's Problems
-///   panel actually renders.
+/// Two PULLS of one engine (option A total, ruled 2026-08-24 — the former
+/// off-db snapshot road, `IdeSnapshot::analyze` → `analyze_with_modules`,
+/// no longer exists):
+/// - `session.analysis()` — the db's whole-project `analysis_query`
+///   bundle, labeled `analysis:`.
+/// - `session.db().diagnostics(file)` — the per-file `diagnostics_query`
+///   road (which additionally carries parse/lowering diagnostics), what
+///   the studio's Problems panel actually renders, labeled `db:`.
 ///
-/// Since issue #2335 BOTH roads run the E169 conventions confinement/
-/// unconfigured checks (`analyze_with_modules` used to never read
-/// `opts.conventions` at all) — see `gate_misplaced_convention_handler_
-/// is_e169_on_both_roads` below for the divergence case that proves it.
-///
-/// The gate's own red-check proved reading only the first road is a trap:
-/// with config discovery disabled, the off-db road stayed clean while the
-/// db road carried the E169 misfires the studio showed live on 2026-08-05.
+/// They compose shared memos but are distinct products with distinct
+/// wiring, so rendering both still catches an assembly regression in
+/// either — see `gate_misplaced_convention_handler_is_e169_on_both_roads`,
+/// whose both-labels assertion now pins that wiring (its original job,
+/// catching cross-ENGINE divergence like the 2026-08-05 E169 misfire, is
+/// impossible by construction with one engine).
 fn all_diagnostics(s: &EditorSession) -> Vec<String> {
     let analysis = s.session.analysis().expect("analysis available");
     let mut out: Vec<String> = analysis

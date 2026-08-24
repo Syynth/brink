@@ -1,12 +1,13 @@
 //! `IdeSession`'s registered options must reach its **own** `ProjectDb`, and
 //! the db-only module diagnostics must reach the editor (issue #1553).
 //!
-//! The session runs its editor-facing analysis off-db (`snapshot().analyze()`)
-//! but reads plenty of db-side queries directly — `db.per_file_diagnostics`,
-//! `db.symbol_index`, `db.diagnostics`, `db.effects` — and every one of those
-//! is gated on the `AnalysisOptions` *input* written into the db. Before
-//! #1553 only `IdeSession::compile` ever wrote that input, so an editor that
-//! never compiled read every db query under `AnalysisOptions::default()`:
+//! Since option A total (2026-08-24) EVERY session read is a db query —
+//! `session.analysis()` included, alongside the direct reads this suite
+//! always covered (`db.per_file_diagnostics`, `db.symbol_index`,
+//! `db.diagnostics`, `db.effects`) — and every one is gated on the
+//! `AnalysisOptions` *input* written into the db. Before #1553 only
+//! `IdeSession::compile` ever wrote that input, so an editor that never
+//! compiled read every db query under `AnalysisOptions::default()`:
 //! the declared dialect, typed-mode policy, `[lints]` table and host manifest
 //! were silently absent on exactly the surface the editor renders from.
 

@@ -17,7 +17,7 @@ hypothesis verdicts. Fix work is filed as issues referencing these rows.
 | Browser observers | `perf/observers.ts` | Long tasks, long animation frames, event-timing input latency (`input.keydown` duration = keypress→paint), long rAF frames. |
 | Viewport probe | `perf/viewport-probe.ts` | `cm.viewportLag` (scroll event → CM viewport catch-up — the blank-scroll number) and per-viewport-update counts. |
 | Store timing | `packages/studio-store` | Every zustand `set()` sweep, tagged `store.set.<field>` — each is a full mounted-selector re-run. |
-| Wasm counters | `crates/brink-web/src/perf.rs` | Inside-the-boundary phases: `ide.updateSource` / `ide.snapshotClone` / `ide.analyze` / `ide.applyAnalysis`, `ide.compile`, `ide.projectOutline`, `ide.storyGraph`, `ide.byteToUtf16` call count. `perf_compile_probe` = the #2885 two-compile experiment. |
+| Wasm counters | `crates/brink-web/src/perf.rs` | Inside-the-boundary phases: `ide.updateSource` / `ide.analyze` (the incremental db pull; the pre-option-A `ide.snapshotClone`/`ide.applyAnalysis` rows exist only in baseline-era recorded runs), `ide.compile`, `ide.projectOutline`, `ide.storyGraph`, `ide.byteToUtf16` call count. `perf_compile_probe` = the #2885 two-compile experiment. |
 | Perf HUD | studio "Performance" tool window (dev only) | Live aggregates + Copy JSON. |
 | `ide_bench` | `crates/internal/brink-test-harness/src/bin/ide_bench.rs` | The same editor road natively: init curve, keystroke phases, compile-repeat, large-file variants. |
 | Scenario runner | `packages/brink-studio/perf/` (`pnpm --filter @brink-lang/studio test:perf`) | Deterministic scenarios against `?fixture=perf`, each writing a run artifact under `perf-runs/` (probe.json, wasm-counters.json, CDP trace.json, meta.json). |
