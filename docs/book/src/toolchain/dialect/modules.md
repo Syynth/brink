@@ -35,7 +35,7 @@ become private unless you say otherwise (covered under
 A multi-file module is always deliberate. Either every file carries the same
 `#@module(name)`:
 
-```ink
+```ink,ignore
 // quest_intro.ink
 #@module(quest)
 

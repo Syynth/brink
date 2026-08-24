@@ -87,3 +87,28 @@ fn decl_attached_was_on_line_one_is_not_an_orphan() {
         "a decl-attached #@was must not be diagnosed as an orphaned module directive: {diags:?}"
     );
 }
+
+/// The surfaced family is wider than the arbitration pair: every
+/// file-level module-recognizer diagnostic (`E086` repeated/malformed
+/// `#@module`, `E046` dynamic, `E094` empty, `E048` repeated `#@was`)
+/// lived in the same discarded sink. Pin the most consequential one:
+/// a second `#@module` line is `E086` on the db road.
+#[test]
+fn repeated_module_directive_reaches_the_db_road_as_e086() {
+    let mut db = ProjectDb::new();
+    let file = db.update_file(
+        "story.ink",
+        "#@module(alpha)
+#@module(beta)
+=== greet ===
+Hello.
+-> END
+"
+        .to_owned(),
+    );
+    let diags = db.diagnostics(file).expect("file is loaded");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E086),
+        "the repeated #@module E086 must reach the db road: {diags:?}"
+    );
+}
