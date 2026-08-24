@@ -138,14 +138,17 @@ describe("dialect convert-row generalization: executeDialectRow (#395)", () => {
     view.destroy();
   });
 
-  it("default preset is unaffected: at-cue ships transitions: [], so Tab on a Character line keeps its existing (non-dialect-row) behavior", () => {
+  it("default preset is unaffected: at-cue ships transitions: [], so Tab on a Character line INDENTS (built-in rows stripped, ruled 2026-08-24)", () => {
     const view = mount("@Alice:<>\n");
     view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
     const handled = runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor");
     expect(handled).toBe(true);
-    // Built-in structural row: Character + Tab → Parenthetical (unrelated to
-    // the dialect-row `convert` path this issue fixes).
-    expect(view.state.doc.toString()).toBe("(Alice)<>\n");
+    // No dialect row claims Tab and the built-in conversion cycle is
+    // stripped — NO CONVERSION happens (the pin this test exists for).
+    // Whether the indent lands is the screenplay sigil edit-guard's call
+    // on a Character line (the atomic `@` sits at line start), so accept
+    // an indented or unchanged line — never a converted one.
+    expect(view.state.doc.toString()).toMatch(/^\s*@Alice:<>\n$/);
     view.destroy();
   });
 

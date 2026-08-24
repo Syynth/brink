@@ -62,31 +62,17 @@ test.describe("character lines", () => {
 
   // ── 1. Template creation ────────────────────────────────────────
 
-  test("Tab on double-blank creates character template with sigils hidden immediately", async ({
-    page,
-  }) => {
-    await setEditorContent(page, "\n\n");
-    await setCursor(page, 1); // second blank line
-    await page.keyboard.press("Tab");
-
-    // Raw doc should have the full sigil structure
-    const doc = await getDocText(page);
-    expect(doc).toContain("@:<>");
-
-    // Sigils should be hidden even before any name is typed
-    const visible = await getVisibleLineText(page, "brink-character");
-    expect(visible).not.toContain("@");
-    expect(visible).not.toContain(":<>");
-  });
+  // The Tab-on-double-blank @:<> template was stripped with the rest of
+  // the Tab conversions (ruled 2026-08-24: Tab indents). Template entry
+  // remains available by typing the sigils; see the next test.
 
   // ── 2. Typing a name ───────────────────────────────────────────
 
   test("typing a name into character template renders styled with sigils hidden", async ({
     page,
   }) => {
-    await setEditorContent(page, "\n\n");
+    await setEditorContent(page, "@:<>\n");
     await setCursor(page, 1);
-    await page.keyboard.press("Tab");
     await page.keyboard.type("JOHN");
 
     // Raw doc
@@ -318,21 +304,8 @@ test.describe("character lines", () => {
     expect(doc.trim()).toBe("");
   });
 
-  // ── 12. Tab with content converts to parenthetical preserving name
-
-  test("Tab on character with content wraps name in parenthetical", async ({
-    page,
-  }) => {
-    await setEditorContent(page, "@JOHN:<>");
-
-    // Cursor within the name
-    await setCursor(page, 3);
-    await page.keyboard.press("Tab");
-
-    // Should become (JOHN)<>, not empty ()<>
-    const line = await getLineText(page, 1);
-    expect(line).toBe("(JOHN)<>");
-  });
+  // ── 12. (removed) Tab-to-parenthetical conversion was stripped with the
+  //        Tab conversion cycle (ruled 2026-08-24: Tab indents).
 
   // ── 14. Backspace on empty character clears with sigils hidden ──
 

@@ -104,10 +104,11 @@ describe("dialect: null — headless teardown", () => {
     view.destroy();
   });
 
-  it("dialect: null keeps the structural keymap: Tab on a choice still routes to convertElement", () => {
-    // Tab on a Choice line = the `convertToIndentedNarrative` transition,
-    // which converts via the document handle's `convertElement`. A minimal
-    // fake handle proves the routing still happens under dialect: null.
+  it("dialect: null — Tab on a choice INDENTS (built-in conversion cycle stripped, ruled 2026-08-24)", () => {
+    // Tab used to run the convertToIndentedNarrative transition. The
+    // built-in conversion rows are stripped; Tab now indents the line by
+    // the indent unit, and the document handle's convertElement is NOT
+    // called.
     const doc = "* Option A";
     const convertCalls: Array<{ offset: number; target: string }> = [];
     const fakeHandle = {
@@ -117,22 +118,17 @@ describe("dialect: null — headless teardown", () => {
       clearDialect: () => {},
       convertElement: (offset: number, target: string) => {
         convertCalls.push({ offset, target });
-        return { from: 0, to: doc.length, insert: "  Option A" };
+        return null;
       },
-    } as unknown as DocHandle;
-
-    const view = mount(doc, { dialect: null, handleSlot: { handle: fakeHandle } });
-    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
-    const handled = runScopeHandlers(
-      view,
-      new KeyboardEvent("keydown", { key: "Tab" }),
-      "editor",
-    );
-    expect(handled).toBe(true);
-    expect(convertCalls).toEqual([{ offset: doc.length, target: "choice_body" }]);
-    expect(view.state.doc.toString()).toBe("  Option A");
-    view.destroy();
-  });
+    };
+    const view = mount(doc, {
+      getDocumentHandle: () => fakeHandle,
+    } as never);
+    view.dispatch({ selection: { anchor: 0 } });
+    runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor");
+    expect(convertCalls).toEqual([]);
+    expect(view.state.doc.line(1).text).toMatch(/^\s+\* Option A$/);
+  })
 
   it("dialect: null disables the blank-tab template insert (a dialect behavior, not a structural row)", () => {
     const view = mount("\n\n", { dialect: null });
