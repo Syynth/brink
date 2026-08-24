@@ -434,7 +434,9 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
         const infos: RailInfo[] = stack.map((c) => {
           const span = byHandle.get(c.handle);
           const startLine = (span?.start_line ?? lineNo) + 1;
-          const endLine = (span?.end_line ?? lineNo) + 1;
+          // Tooltip range = the TIGHT end (actual content), not the
+          // structural end that runs to the next sibling (#3054).
+          const endLine = (span?.content_end_line ?? span?.end_line ?? lineNo) + 1;
           let raw =
             startLine >= 1 && startLine <= doc.lines ? doc.line(startLine).text.trim() : "";
           if (c.kind === "cond_branch" && !/:\s*$/.test(raw) && !raw.includes(":")) {

@@ -189,6 +189,12 @@ impl EditorSession {
                 } else {
                     (abs_end_line, end_char)
                 };
+                // Containers additionally carry the TIGHT end (two-range
+                // model, issue #3054 review) — the rails/tooltip range.
+                let abs_content_end = s.kind.is_container().then(|| {
+                    brink_ide::hir_projection::tight_container_end_line(&idx, source, s.range)
+                        .max(abs_start_line)
+                });
                 // Drop spans that end above the view; clamp ones straddling its
                 // start so partially-visible containers keep their rails.
                 // Non-containers straddling the start are dropped instead —
@@ -201,11 +207,14 @@ impl EditorSession {
                     None if s.kind.is_container() => (0, 0),
                     None => return None,
                 };
+                let content_end_line =
+                    abs_content_end.and_then(|l| Self::to_relative_line(view, l));
                 Some(HirSpanJs {
                     start_line,
                     start_char,
                     end_line,
                     end_char,
+                    content_end_line,
                     kind: span_kind_str(s.kind),
                     container: s.kind.is_container(),
                     depth: s.depth,
