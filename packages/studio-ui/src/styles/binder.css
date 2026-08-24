@@ -38,42 +38,34 @@
   width: var(--binder-indent);
   height: 100%;
   flex-shrink: 0;
-  /* Subtle indent guides (maintainer, 2026-08-23): a hairline at each
-     depth column, centered under the parent level's chevron column (the
-     columns are uniform now that the grab handle lives at the row's
-     right edge). Kept faint — structure, not chrome. */
-  background: linear-gradient(
+}
+/* Subtle indent guides (maintainer, 2026-08-23; Zed's placement): one
+   overlay per nested row, its hairlines sitting in the NEGATIVE SPACE
+   under each ancestor's ICON column — one indent unit right of the
+   ancestor's chevron. The overlay starts one unit in (skipping the
+   root chevron column) and repeats per unit, so line k lands centered
+   under ancestor k's icon. Faint — structure, not chrome. */
+.brink-studio .brink-binder-guide-lines {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
     to right,
-    rgb(var(--bs-border-rgb, 69 71 90) / 35%) 1px,
-    transparent 1px
+    transparent 0 8px,
+    rgb(var(--bs-border-rgb, 69 71 90) / 35%) 8px 9px,
+    transparent 9px var(--binder-indent)
   );
-  background-position: 8px 0;
-  background-repeat: no-repeat;
 }
-/* Chevron for expand/collapse */
-.brink-studio .brink-binder-chevron {
-  width: var(--binder-indent);
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--bs-fg-muted);
-  transition: transform 0.12s ease;
-  /* The v2 chevron SVG points DOWN natively (#3037) — expanded needs no
-     rotation; collapsed rotates to point right. (The old ▶ glyph had the
-     opposite native orientation.) */
-  transform: rotate(0deg);
+.brink-studio .brink-binder-row {
+  position: relative;
 }
-.brink-studio .brink-binder-chevron:hover {
-  color: var(--bs-fg);
-}
-.brink-studio .brink-binder-chevron.collapsed {
-  transform: rotate(-90deg);
-}
-.brink-studio .brink-binder-chevron.leaf {
-  visibility: hidden;
+/* Icon — the expansion indicator too (Zed-style, no chevrons): open vs
+   closed folder, filled vs outline droplet/diamond; clicking an
+   expandable row's icon toggles it. */
+.brink-studio .brink-binder-icon.toggle {
+  cursor: pointer;
 }
 /* Icon */
 .brink-studio .brink-binder-icon {

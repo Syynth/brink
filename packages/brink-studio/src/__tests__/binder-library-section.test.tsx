@@ -66,15 +66,15 @@ function libraryRow(): HTMLElement {
   return findRow(LIBRARY_ROW_KEY);
 }
 
-/** Click the Library row's chevron (`onChevronClick`, called synchronously
- *  with `stopPropagation` — unlike the row's own `onClick`, which the real
- *  Binder debounces 200ms behind a `setTimeout` to disambiguate a single
- *  click from a double-click). Toggles `libraryExpanded` immediately, so
- *  the test doesn't need fake timers. */
+/** Click the Library row's ICON — the expansion toggle since the
+ *  chevronless redesign (Zed-style, 2026-08-23). `onChevronClick` fires
+ *  synchronously with `stopPropagation` — unlike the row's own `onClick`,
+ *  which the real Binder debounces 200ms behind a `setTimeout` — so the
+ *  test doesn't need fake timers. */
 function toggleLibraryViaChevron(): void {
-  const chevron = libraryRow().querySelector(".brink-binder-chevron");
-  if (chevron === null) throw new Error("Library row has no chevron");
-  chevron.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  const icon = libraryRow().querySelector(".brink-binder-icon.toggle");
+  if (icon === null) throw new Error("Library row has no toggle icon");
+  icon.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
 describe("Binder: Library section", () => {

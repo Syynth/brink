@@ -67,6 +67,47 @@ export function FolderIcon({ size = 13 }: IconProps) {
   );
 }
 
+/** An OPEN folder — the expansion state icon (Zed-style: the icon IS the
+ *  chevron, ruled 2026-08-23). */
+export function FolderOpenIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M5 19l2.7-6.3A2 2 0 0 1 9.5 11H21l-2.8 6.8a2 2 0 0 1-1.8 1.2z" />
+      <path d="M5 19V7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+/** The filled droplet — an EXPANDED file in Structure mode (the outline
+ *  droplet is collapsed; the icon carries the expansion state). */
+export function BrinkFileOpenIcon({ size = 13 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth={8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      focusable={false}
+    >
+      <path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z" />
+    </svg>
+  );
+}
+
+/** The filled diamond — an EXPANDED knot (outline = collapsed). */
+export function KnotOpenIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable={false}>
+      <path d="M12 3l7 9-7 9-7-9z" />
+    </svg>
+  );
+}
+
 /** The Library section (mounted stdlib) — a closed book. */
 export function LibraryIcon({ size = 13 }: IconProps) {
   return (

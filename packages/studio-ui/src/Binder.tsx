@@ -17,13 +17,14 @@ import {
 } from "@brink/studio-store";
 import {
   BrinkFileIcon,
-  ChevronIcon,
+  BrinkFileOpenIcon,
   CollapseAllIcon,
   ExpandAllIcon,
   FilePlusIcon,
   FilesModeIcon,
   FolderPlusIcon,
   FolderIcon,
+  FolderOpenIcon,
   FunctionIcon,
   DotsIcon,
   GearIcon,
@@ -33,6 +34,7 @@ import {
   GrabHandleIcon,
   WarningMarkIcon,
   KnotIcon,
+  KnotOpenIcon,
   LibraryIcon,
   SearchIcon,
   StitchIcon,
@@ -54,15 +56,22 @@ function libraryFolderKey(folderKey: string): string {
 
 /** The v2 icon element for a row kind (#3037). Tinting stays with the
  *  `.brink-binder-icon-*` classes ({@link iconClass}) — these render in
- *  `currentColor`. */
-function iconElement(kind: string, isFunction = false): React.ReactElement | null {
+ *  `currentColor`. The icon IS the expansion indicator (Zed-style,
+ *  ruled 2026-08-23 — no chevrons): open vs closed folder, filled vs
+ *  outline droplet/diamond. */
+function iconElement(
+  kind: string,
+  isFunction = false,
+  expanded = false,
+): React.ReactElement | null {
   switch (kind) {
     case "folder":
-      return <FolderIcon />;
+      return expanded ? <FolderOpenIcon /> : <FolderIcon />;
     case "file":
-      return <BrinkFileIcon />;
+      return expanded ? <BrinkFileOpenIcon /> : <BrinkFileIcon />;
     case "knot":
-      return isFunction ? <FunctionIcon /> : <KnotIcon />;
+      if (isFunction) return <FunctionIcon />;
+      return expanded ? <KnotOpenIcon /> : <KnotIcon />;
     case "stitch":
       return <StitchIcon />;
     case "library":
@@ -363,9 +372,6 @@ export function BinderRow({
     (dimmed ? " brink-binder-dimmed" : "") +
     (badge?.tone === "entry" ? " brink-binder-entry" : "");
 
-  const chevronClass =
-    "brink-binder-chevron" +
-    (expandable ? (isExpanded ? "" : " collapsed") : " leaf");
 
   return (
     <>
@@ -387,11 +393,22 @@ export function BinderRow({
             <div key={i} className="brink-binder-guide" />
           ))}
         </div>
-        <div className={chevronClass} onClick={handleChevronClick}>
-          {expandable ? <ChevronIcon /> : null}
-        </div>
-        <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
-          {iconElement(kind, isFunction)}
+        {depth > 0 && (
+          <span
+            className="brink-binder-guide-lines"
+            aria-hidden
+            style={{ width: `calc(${depth} * var(--binder-indent))` }}
+          />
+        )}
+        <span
+          className={
+            "brink-binder-icon " +
+            iconClass(kind, isFunction) +
+            (expandable ? " toggle" : "")
+          }
+          onClick={expandable ? handleChevronClick : undefined}
+        >
+          {iconElement(kind, isFunction, expandable && isExpanded)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
