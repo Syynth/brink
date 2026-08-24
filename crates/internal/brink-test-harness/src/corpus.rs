@@ -492,21 +492,44 @@ pub fn compile_and_explore_from_brink_native_at(
     let analysis_opts = brink_analyzer::AnalysisOptions::default();
 
     // `is_native = true` — the flag real native compiles pass, and which
-    // (issue #1358) the pure path now threads through every arm: the ink-only
-    // T1b dialect gate is skipped, the construction-literal checks widen, the
-    // B0.9 strict-only gate (`E137`) runs, and the ink-only `E064` config
-    // error is skipped. An empty `ModuleMap` keeps identity module-blind,
+    // (issue #1358) threads through every arm: the ink-only T1b dialect
+    // gate is skipped, the construction-literal checks widen, the B0.9
+    // strict-only gate (`E137`) runs, and the ink-only `E064` config error
+    // is skipped. An empty `ModuleMap` keeps identity module-blind,
     // matching this single-file, path-less harness.
+    //
+    // Composed from the analyzer's piece functions (option A total,
+    // 2026-08-24 — the `analyze_with_modules` monolith is deleted): this
+    // harness is the documented deliberately-hand-composed, no-salsa
+    // first-light path (#1106), so spelling the index → resolve → finish
+    // composition out here IS its design, not a workaround.
+    let empty_map = brink_analyzer::ModuleMap::new();
+    let (index, mut diagnostics) = brink_analyzer::symbol_index_with_modules(
+        &[(file_id, &manifest)],
+        &empty_map,
+        analysis_opts.dialect,
+        true,
+    );
+    let scope =
+        brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+    let (file_map, file_diags) = brink_analyzer::resolve(file_id, &manifest, &index, &scope);
+    diagnostics.extend(file_diags);
+    let mut scopes = std::collections::BTreeMap::new();
+    scopes.insert(file_id, scope);
     let brink_analyzer::AnalysisResult {
         index,
         resolutions,
         diagnostics,
         ..
-    } = brink_analyzer::analyze_with_modules(
+    } = brink_analyzer::finish_analysis(
         &files_for_analysis,
-        &brink_analyzer::ModuleMap::new(),
+        index,
+        std::sync::Arc::unwrap_or_clone(file_map),
+        diagnostics,
         &analysis_opts,
         true,
+        None,
+        &scopes,
     );
 
     if !diagnostics.is_empty() {

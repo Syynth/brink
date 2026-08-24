@@ -17,7 +17,7 @@ hypothesis verdicts. Fix work is filed as issues referencing these rows.
 | Browser observers | `perf/observers.ts` | Long tasks, long animation frames, event-timing input latency (`input.keydown` duration = keypress→paint), long rAF frames. |
 | Viewport probe | `perf/viewport-probe.ts` | `cm.viewportLag` (scroll event → CM viewport catch-up — the blank-scroll number) and per-viewport-update counts. |
 | Store timing | `packages/studio-store` | Every zustand `set()` sweep, tagged `store.set.<field>` — each is a full mounted-selector re-run. |
-| Wasm counters | `crates/brink-web/src/perf.rs` | Inside-the-boundary phases: `ide.updateSource` / `ide.snapshotClone` / `ide.analyze` / `ide.applyAnalysis`, `ide.compile`, `ide.projectOutline`, `ide.storyGraph`, `ide.byteToUtf16` call count. `perf_compile_probe` = the #2885 two-compile experiment. |
+| Wasm counters | `crates/brink-web/src/perf.rs` | Inside-the-boundary phases: `ide.updateSource` / `ide.analyze` (the incremental db pull; the pre-option-A `ide.snapshotClone`/`ide.applyAnalysis` rows exist only in baseline-era recorded runs), `ide.compile`, `ide.projectOutline`, `ide.storyGraph`, `ide.byteToUtf16` call count. `perf_compile_probe` = the #2885 two-compile experiment. |
 | Perf HUD | studio "Performance" tool window (dev only) | Live aggregates + Copy JSON. |
 | `ide_bench` | `crates/internal/brink-test-harness/src/bin/ide_bench.rs` | The same editor road natively: init curve, keystroke phases, compile-repeat, large-file variants. |
 | Scenario runner | `packages/brink-studio/perf/` (`pnpm --filter @brink-lang/studio test:perf`) | Deterministic scenarios against `?fixture=perf`, each writing a run artifact under `perf-runs/` (probe.json, wasm-counters.json, CDP trace.json, meta.json). |
@@ -277,3 +277,49 @@ Runs are per-machine measurements and are gitignored; judge fixes by
 running the same scenario N times before and after on the same machine and
 comparing. The compare tool marks regressions `▲` / improvements `▼`
 beyond a 10% noise threshold — informational, never a CI gate (ruled).
+
+## Option A delta (2026-08-24, same day — the db-road migration landed)
+
+Recorded runs: `perf-runs/2026-08-24T19-*` vs the `16-5*` baselines
+(measured on an idle machine — an earlier contaminated bench that ran
+concurrently with a wasm build produced a phantom 3× "regression" whose
+triage is itself a method lesson: **never bench under load**; a salsa
+event-count probe then showed the db pull executes each query exactly
+once per edit, textbook incrementality).
+
+Native (`ide_bench`, 10-run medians):
+
+| Row | Before | After |
+|---|---:|---:|
+| small-file keystroke | 2.5 ms | **1.1 ms** |
+| large-file keystroke | 32.6 ms | **30.6 ms** |
+| — snapshot clone | 29.7 ms | **deleted** |
+| — db analysis pull | — | 30.0 ms |
+| init analyze-each @50 | 81 ms | **61 ms** |
+| repeat compile (no edit) | 3.8 ms | **0.0 ms** |
+
+Browser (typing-burst / compile-cycles):
+
+| Metric | Before | After |
+|---|---:|---:|
+| keystroke-to-paint p95 (large file) | 104 ms | **96 ms** |
+| `wasm.updateDocument` p95 | 37.2 ms | 34.6 ms |
+| compile cycle p95 | 44 ms | **35 ms** |
+| `wasm.compileProject` p95 | 9.6 ms | **2.9 ms** |
+| `perfCompileProbe` | [5.7, 3.8] ms | **[0.1, 0.0] ms** |
+
+**Honest verdict on #3063:** the clone is deleted, but large-file typing
+improved only ~6–8%, not the hoped ~28 ms — the old road's "cheap
+analysis" was cheap only because the clone had already paid the big
+file's re-lowering; the db pull now carries that same irreducible
+single-file pipeline (parse + lower + resolve + per-file diagnostics +
+index rebuild over a 5.9k-line file, ~30 ms native and wasm alike).
+What the migration DID buy: the divergence class closed structurally,
+#2885 closed, the LSP's background pass memoized (unchanged roots
+validate instead of re-analyzing), compile-side costs collapsed, and
+small-file/startup improved. The keystroke budget's remaining owners are
+now sharply named: the #3064 whole-doc query stack (~60 ms) and the
+single-big-file re-analysis (~30 ms) — the latter needing per-knot
+incremental lowering or the async-architecture phase. **The 8 ms budget's
+pressure mechanism is functioning exactly as ruled: the residual is the
+architecture phase's quantified case.**

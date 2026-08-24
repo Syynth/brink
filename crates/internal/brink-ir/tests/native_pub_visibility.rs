@@ -20,6 +20,8 @@
 //! `pub` token exists) or an `E087`, proving this is a real regression
 //! guard, not a vacuous one.
 
+mod analysis_fixture;
+
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_ir::{DiagnosticCode, FileId, HirFile, SymbolManifest, VisibilityMark};
 
@@ -91,7 +93,7 @@ fn diagnostics_for(market_src: &str, main_src: &str) -> Vec<brink_ir::Diagnostic
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&files, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&files, &module_map(), &opts, true);
     result.diagnostics
 }
 

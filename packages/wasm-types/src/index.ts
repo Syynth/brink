@@ -1792,7 +1792,8 @@ export interface PerfCounterRow {
 
 /**
  * The wasm-internal counters, keyed by phase name (`ide.analyze`,
- * `ide.snapshotClone`, `ide.compile`, `ide.byteToUtf16`, …). Mirrors the
+ * `ide.compile`, `ide.byteToUtf16`, …; `ide.snapshotClone`/`ide.applyAnalysis`
+ * retired with the off-db road, option A 2026-08-24). Mirrors the
  * JSON `crates/brink-web/src/perf.rs::report_json` emits.
  */
 export type PerfCounters = Record<string, PerfCounterRow>;

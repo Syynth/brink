@@ -652,174 +652,62 @@ pub fn resolve(
 
 /// Run cross-file semantic analysis with default options (no host manifest).
 ///
-/// Each entry is a `(FileId, HirFile, SymbolManifest)` tuple produced by
-/// per-file HIR lowering.
+/// **Test-fixture surface** (option A total, ruled 2026-08-24): production
+/// analysis is `brink-db`'s salsa composition (`analysis_query` /
+/// `subset_analysis_query`) — every IDE/LSP/editor/compile path routes
+/// there. This wrapper exists for unit tests that lower a fixture by hand
+/// and want the analyzer's own composition over it, module-blind and on
+/// the ink arm; it deliberately has NO `ModuleMap`/`is_native` parameters
+/// — the two degrees of freedom the retired `analyze_with_modules`
+/// monolith let callers hold wrong (the #1347/#1526/#1553/#1358
+/// divergence class) no longer exist to be misheld.
 pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult {
     analyze_with_options(files, &AnalysisOptions::default())
 }
 
-/// Run cross-file semantic analysis with explicit tooling options, including
-/// an optional host-capability manifest and its external-check severity.
+/// [`analyze`] with explicit tooling options — same test-fixture status and
+/// same deliberately absent module/nativeness parameters (see [`analyze`]).
 ///
 /// **Module-blind** (issue #1526): with no [`ModuleMap`] there is nothing to
 /// qualify identity by, so every symbol hashes by bare name (`module: None`)
-/// and the import scope is inert. That is byte-identical to `brink-db` for
-/// the undeclared-stem-module world — the entire ink corpus that carries no
-/// `#@module` — and *diverges* for any file whose real module is declared:
-/// an ink file with `#@module(name)`, and **every** native `.brink` file
-/// (whose module is its path, `story::…`, always declared — see
-/// `brink_db::modules::native_module_path`). A `DefinitionId` minted here
-/// for such a file does not match the one `brink-db`'s queries mint for the
-/// same declaration, so it cannot be used as a key into `db.effects` /
-/// `db.signature` / `db.infer_body`.
-///
-/// Callers that hold a `ProjectDb` — every IDE/LSP path — must use
-/// [`analyze_with_modules`] with `ProjectDb::module_map()` instead.
+/// and the import scope reads each file's own declared `#@module` only.
+/// `DefinitionId`s minted here for declared-module files do not match
+/// `brink-db`'s — never use them as keys into db per-def queries.
 pub fn analyze_with_options(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     opts: &AnalysisOptions,
 ) -> AnalysisResult {
-    // No `Language` classification exists at this layer (issue #1348 /
-    // #1562) — see `analyze_with_modules`'s own `is_native` doc.
-    analyze_with_modules(files, &ModuleMap::new(), opts, false)
-}
-
-/// Run cross-file semantic analysis against the project's resolved
-/// [`ModuleMap`] — the module-aware form of [`analyze_with_options`]
-/// (issue #1526).
-///
-/// `modules` is the map `brink-db`'s `module_map_query` computes (file stems,
-/// `#@module` declarations, the INCLUDE graph, and — for native `.brink`
-/// files — the path-derived `story::…` identity). Feeding it here makes this
-/// path mint the *same* `DefinitionId`s as `brink-db`'s
-/// `symbol_index_query`/`resolve_query`, which is what lets an IDE feature
-/// use a symbol from this result as a key into the db's per-def queries
-/// (`effects`/`signature`/`infer_body`).
-///
-/// Module identity is never recomputed here: the map is an input, minted by
-/// the one layer that knows file paths, so a native file's save-key-critical
-/// identity stays a pure function of its path and cannot drift between the
-/// two paths.
-///
-/// An empty map reproduces [`analyze_with_options`] exactly.
-///
-/// `is_native` declares that every file in `files` is native (`.brink`)
-/// source, and selects the native arm of **every** analyzer pass this
-/// function composes (issue #1358) — not just the symbol index it originally
-/// reached (issue #1562):
-///
-/// - [`symbol_index_with_modules`] — M-2d cross-declared-module coexistence
-///   stops depending on `opts.dialect` being `Dialect::Brink`.
-/// - [`per_file_diagnostics`], via [`finish_analysis`] — the ink-only T1b
-///   dialect gate (`E051`) is skipped, and the construction-literal checks
-///   (`E084`/`E106`/`E138`) widen past the brink-only block.
-/// - [`native_strict_only_error`] (`E137`), via [`finish_analysis`] — the
-///   B0.9 strict-only gate, which has no meaning for ink source at all.
-/// - [`strict_diagnostics`], via [`whole_project_diagnostics`] — the ink-only
-///   `types = strict` config error (`E064`) is skipped (issue #1348).
-///
-/// This is the whole point of the flag: before #1358 it reached only the
-/// first bullet, so a caller analyzing native source off-db still got the
-/// ink arm of the per-file and whole-project passes — spurious `E051`/`E064`
-/// on every editor surface, and `E137` unreachable there. `brink-db`'s
-/// salsa queries have always selected these arms from their own
-/// `Language` classification; this makes the pure path able to express the
-/// same combination.
-///
-/// Callers that know the project's `Language` from a `ProjectDb`
-/// (`brink-lsp`'s `analysis_loop` via `ProjectDb::is_native`, `IdeSession`
-/// via `ProjectDb::is_all_native`) pass the real value; every other caller
-/// passes `false`, unchanged from before this parameter existed —
-/// [`analyze_with_options`] always does.
-///
-/// It is a whole-project flag over this call's *source* files, so `true` is
-/// only correct when every `.ink`/`.brink` file lowered here is native; a
-/// mixed ink/native source set must still pass `false` (the analyzer has no
-/// file paths and so cannot classify per file itself). A **non-source**
-/// document riding along in the same input set — a project's own
-/// `brink.toml`, say, which `ProjectDb::analysis_inputs`'s "every tracked
-/// file" sweep hands in and which lowers through the ink frontend purely as
-/// a byproduct, never because it IS ink source (issue #2318) — does not by
-/// itself make `true` wrong: it carries no native-vs-ink question of its
-/// own, so its presence is inert to this flag exactly as it is to its
-/// db-layer counterpart, `ProjectDb::is_all_native` (`brink-db`'s
-/// `queries::project_is_all_native`), which this parameter mirrors.
-///
-/// `opts.conventions` (issue #2335): this is also where the conventions-
-/// module confinement/unconfigured `E169` check runs for every caller of
-/// this function — see [`conventions_confinement_diagnostics`]'s own doc.
-/// Before this issue, `opts.conventions` reached every other analyzer pass
-/// but this one: `IdeSession`'s off-db `analyze()`, `brink-lsp`'s
-/// `analysis_loop`, and `Driver::analyze_project` all silently ran with zero
-/// confinement enforcement regardless of what `[project] conventions`
-/// configured, even though the field traveled correctly all the way here.
-pub fn analyze_with_modules(
-    files: &[(FileId, &HirFile, &SymbolManifest)],
-    modules: &ModuleMap,
-    opts: &AnalysisOptions,
-    is_native: bool,
-) -> AnalysisResult {
+    let modules = ModuleMap::new();
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
-
+    // Ink arm throughout (no `Language` classification exists at this layer
+    // — issues #1348/#1562); native-arm behavior is exclusively brink-db's.
     let (index, mut diagnostics) =
-        symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, is_native);
+        symbol_index_with_modules(&manifest_inputs, &modules, opts.dialect, false);
     let mut resolutions = ResolutionMap::new();
-    // Issue #2272: every file's own resolved scope is captured here (not
-    // just consumed for `resolve` and discarded) so `finish_analysis`'s
-    // per-file diagnostic contributors (`annotations::check`'s
-    // referrer-scoped struct-name lookup, in particular) can reuse the
-    // identical `ImportScope` `resolve_type_ref` just resolved this file's
-    // references against — see `per_file_diagnostics`'s own `scope` doc for
-    // why re-deriving it a second time (from `hir.module` alone) is wrong.
     let mut scopes: BTreeMap<FileId, ImportScope> = BTreeMap::new();
     for &(file_id, hir, manifest) in files {
-        // Import-scoped resolution (M-2d, issue #790), matching
-        // `brink-db`'s `resolve_query`: the resolved **declared** module
-        // scopes the file's references. The map is authoritative when it
-        // covers this file — notably for a native file, whose `hir.module`
-        // carries a deliberately empty `name` (it exists only to hold the
-        // authored `@[was]`; see `brink_ir::hir::lower_native::module`) and
-        // would otherwise scope the file to the module named `""`.
-        //
-        // Falling back to the file's own HIR keeps the map-free
-        // (`analyze_with_options`) path byte-identical to what it was before
-        // this parameter existed.
-        let declared_module = match modules.get(&file_id) {
-            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
-            None => hir.module.as_ref().map(|m| m.name.clone()),
-        };
-        let scope = ImportScope::new(declared_module, &hir.imports);
+        let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
         let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
         scopes.insert(file_id, scope);
     }
-
-    // Conventions-module confinement/unconfigured `E169` (issue #2335): the
-    // one place this off-db path actually reads `opts.conventions` — see
-    // `conventions_confinement_diagnostics`'s own doc for why it needs
-    // `modules` (and so cannot live inside `finish_analysis`, which never
-    // receives it) and how it mirrors `brink-db`'s db-direct
-    // `conventions_confinement_diagnostics_query` for every caller of this
-    // function (`IdeSnapshot::analyze`, `brink-lsp`'s `analysis_loop`,
-    // `Driver::analyze_project`).
     let hir_files: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
     diagnostics.extend(conventions_confinement_diagnostics(
         &hir_files,
-        modules,
+        &modules,
         opts.conventions.as_deref(),
     ));
-
     finish_analysis(
         files,
         index,
         resolutions,
         diagnostics,
         opts,
-        is_native,
+        false,
         None,
         &scopes,
     )
@@ -1781,10 +1669,48 @@ mod tests {
 
     use super::{
         AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ModuleMap,
-        ProjectConfig, SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_modules,
-        analyze_with_options, per_file_diagnostics, resolve, symbol_index,
-        validate_conventions_preset,
+        ProjectConfig, SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_options,
+        per_file_diagnostics, resolve, symbol_index, validate_conventions_preset,
     };
+
+    /// The piece composition with an explicit `is_native` flag — the #1358
+    /// pins below used to exercise the `analyze_with_modules` monolith's
+    /// flag threading; the monolith retired with option A total
+    /// (2026-08-24), and the flag now lives only on the pieces, so the pins
+    /// hold the composed pieces to the same contract.
+    fn analyze_composed(
+        files: &[(FileId, &super::HirFile, &super::SymbolManifest)],
+        modules: &ModuleMap,
+        opts: &AnalysisOptions,
+        is_native: bool,
+    ) -> super::AnalysisResult {
+        let manifest_inputs: Vec<_> = files.iter().map(|&(id, _hir, m)| (id, m)).collect();
+        let (index, mut diagnostics) =
+            super::symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, is_native);
+        let mut resolutions = brink_ir::ResolutionMap::new();
+        let mut scopes = std::collections::BTreeMap::new();
+        for &(file_id, hir, manifest) in files {
+            let declared_module = match modules.get(&file_id) {
+                Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+                None => hir.module.as_ref().map(|m| m.name.clone()),
+            };
+            let scope = ImportScope::new(declared_module, &hir.imports);
+            let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
+            resolutions.extend(std::sync::Arc::unwrap_or_clone(file_map));
+            diagnostics.extend(file_diags);
+            scopes.insert(file_id, scope);
+        }
+        super::finish_analysis(
+            files,
+            index,
+            resolutions,
+            diagnostics,
+            opts,
+            is_native,
+            None,
+            &scopes,
+        )
+    }
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
     /// (`actor_id`) — exactly the `host.ink`-generated shape from the issue.
@@ -2137,9 +2063,9 @@ EXTERNAL add_state(who)
     /// symbol index, so this `E051` leaked into every editor surface that
     /// analyzes off-db.
     #[test]
-    fn analyze_with_modules_is_native_true_skips_the_dialect_gate() {
+    fn composed_is_native_true_skips_the_dialect_gate() {
         let (hir, manifest) = lower_one("~ x = a[0]\n");
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &AnalysisOptions::default(),
@@ -2156,9 +2082,9 @@ EXTERNAL add_state(who)
     }
 
     #[test]
-    fn analyze_with_modules_is_native_false_unaffected_still_flags_extension_syntax() {
+    fn composed_is_native_false_unaffected_still_flags_extension_syntax() {
         let (hir, manifest) = lower_one("~ x = a[0]\n");
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &AnalysisOptions::default(),
@@ -2179,13 +2105,13 @@ EXTERNAL add_state(who)
     /// has no dialect opinion), so before #1358 dialing `types = strict` on
     /// the pure path produced this spurious project-level error.
     #[test]
-    fn analyze_with_modules_is_native_true_skips_the_ink_only_config_error() {
+    fn composed_is_native_true_skips_the_ink_only_config_error() {
         let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
         let opts = AnalysisOptions {
             types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &opts,
@@ -2202,13 +2128,13 @@ EXTERNAL add_state(who)
     }
 
     #[test]
-    fn analyze_with_modules_is_native_false_unaffected_still_fires_config_error() {
+    fn composed_is_native_false_unaffected_still_fires_config_error() {
         let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
         let opts = AnalysisOptions {
             types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &opts,
@@ -2229,13 +2155,13 @@ EXTERNAL add_state(who)
     /// `per_file_diagnostics_query` has always run it; the pure path could
     /// not express it at all before #1358.
     #[test]
-    fn analyze_with_modules_is_native_true_reports_the_native_strict_only_error() {
+    fn composed_is_native_true_reports_the_native_strict_only_error() {
         let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
         let opts = AnalysisOptions {
             types: Some(TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &opts,
@@ -2252,13 +2178,13 @@ EXTERNAL add_state(who)
     }
 
     #[test]
-    fn analyze_with_modules_is_native_false_never_reports_the_native_strict_only_error() {
+    fn composed_is_native_false_never_reports_the_native_strict_only_error() {
         let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
         let opts = AnalysisOptions {
             types: Some(TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
-        let result = analyze_with_modules(
+        let result = analyze_composed(
             &[(FileId(0), &hir, &manifest)],
             &ModuleMap::new(),
             &opts,

@@ -1082,15 +1082,26 @@ pub(crate) fn whole_project_diagnostics_query(
         let inline_docs = inline_docs_query(db, project);
         // `is_native` (issue #1348): `dialect` is an ink-only axis — a
         // native project has no dialect to be wrong about, so the ink-only
-        // `E064` config error must never fire for one. Same
-        // `super::project_is_native` seam `compilation_closure_files` itself
-        // uses to decide the frontend for the whole compilation unit.
+        // `E064` config error must never fire for one.
+        //
+        // `project_is_all_native`, NOT the entry-derived
+        // `project_is_native` (option A landing, 2026-08-24): an editor
+        // session analyzes with no compile entry set, where the
+        // entry-derived predicate answers `false` and the ink-arm `E064`
+        // fires on an all-native session — the latent divergence
+        // `native_rule_selection.rs`'s non-vacuity guards exposed the
+        // moment the editor started reading this query. All-native is also
+        // the classification the retired off-db road used (#1358, with the
+        // #2318 non-source carve-out), and the correct one for a mixed
+        // project under `types = strict` regardless of entry: any ink
+        // member file genuinely needs `dialect = brink` for strict's
+        // annotation syntax.
         diagnostics.extend(brink_analyzer::strict_diagnostics(
             &hir_refs,
             &resolved.index,
             &resolved.resolutions,
             opts,
-            super::project_is_native(db, project),
+            super::project_is_all_native(db, project),
             strict_inference,
             inline_docs,
         ));
@@ -1541,4 +1552,136 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
     let (errors, _warnings) =
         super::partition_diagnostics(&inputs, &diagnostics, disable_all, types, &opts.lints);
     !errors.is_empty()
+}
+
+// ── Subset analysis (option A total, ruled 2026-08-24) ───────────────
+//
+// `brink-lsp` analyzes per PROJECT ROOT, and one db can hold several roots
+// (`ProjectDb::compute_projects` — each include-graph component of the ink
+// files, plus at most one native project). Subset-ness is load-bearing:
+// two unrelated stories in one workspace must not cross-contaminate as
+// duplicate-knot errors. This query is the retired
+// `brink_analyzer::analyze_with_modules` monolith's composition RELOCATED
+// into a member-set-keyed salsa query — same piece functions
+// (`symbol_index_with_modules` → per-file `ImportScope`/`resolve` →
+// `conventions_confinement_diagnostics` → `finish_analysis`), same
+// per-subset granularity the LSP always had, now memoized by set (a
+// no-change background pass costs a validation, not a re-analysis) and fed
+// by the per-file `lowered_query` memos instead of cloned-out inputs.
+//
+// The FULL-set case deliberately does NOT route here: the whole-project
+// chain (`analysis_query` and its FG-decomposed constituents) keeps its
+// epic-tuned incremental edges. This query exists for proper subsets only.
+//
+// `strict_inference` is passed `None`: the memoized `type_inference_query`
+// is whole-project, and reusing it for a subset would bleed cross-root
+// inference — `strict_diagnostics`' self-contained fallback runs inference
+// over the subset itself, matching the retired monolith's per-root
+// behavior exactly.
+
+/// A canonical (sorted, deduped) member set — the subset-analysis key.
+#[salsa::interned]
+pub(crate) struct MemberSet<'db> {
+    #[returns(ref)]
+    pub members: Vec<FileId>,
+}
+
+/// Whether every recognized source file in `members` is native — the
+/// member-set view of [`super::project_is_all_native`] (#1358 semantics,
+/// #2318 non-source carve-out).
+fn members_all_native(db: &dyn salsa::Database, project: ProjectInput, members: &[FileId]) -> bool {
+    let mut any = false;
+    for file in project.files(db) {
+        let id = file.file_id(db);
+        if members.binary_search(&id).is_err() {
+            continue;
+        }
+        let path = file.path(db);
+        if !is_source_file(path) {
+            continue;
+        }
+        match super::file_language(path) {
+            super::Language::Native => any = true,
+            super::Language::Ink => return false,
+        }
+    }
+    any
+}
+
+#[salsa::tracked(returns(ref))]
+pub(crate) fn subset_analysis_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    set: MemberSet<'db>,
+) -> AnalysisResult {
+    let members = set.members(db);
+    let opts = project.analysis_options(db);
+    let (module_map, module_diags) = module_map_query(db, project);
+    let is_native = members_all_native(db, project, members);
+
+    // Member inputs in db file order (deterministic — the same order the
+    // retired `analysis_inputs_for` road produced), source files only.
+    let lowered: Vec<(FileId, &Arc<super::LoweredFile>)> = project
+        .files(db)
+        .iter()
+        .filter(|f| is_source_file(f.path(db)))
+        .filter(|f| members.binary_search(&f.file_id(db)).is_ok())
+        .map(|f| (f.file_id(db), lowered_query(db, project, *f)))
+        .collect();
+    let files: Vec<(FileId, &brink_ir::HirFile, &brink_ir::SymbolManifest)> = lowered
+        .iter()
+        .map(|(id, l)| (*id, &l.hir, &l.manifest))
+        .collect();
+
+    let manifest_inputs: Vec<(FileId, &brink_ir::SymbolManifest)> =
+        files.iter().map(|&(id, _hir, m)| (id, m)).collect();
+    let (index, mut diagnostics) = brink_analyzer::symbol_index_with_modules(
+        &manifest_inputs,
+        module_map,
+        opts.dialect,
+        is_native,
+    );
+
+    // The map's db-only diagnostics half, member-filtered — what the LSP's
+    // retired `fold_module_diagnostics` and the editor's retired
+    // `IdeSnapshot::analyze` each folded by hand (#1553).
+    diagnostics.extend(
+        module_diags
+            .iter()
+            .filter(|d| members.binary_search(&d.file).is_ok())
+            .cloned(),
+    );
+
+    let mut resolutions = brink_ir::ResolutionMap::new();
+    let mut scopes: BTreeMap<FileId, brink_analyzer::ImportScope> = BTreeMap::new();
+    for &(file_id, hir, manifest) in &files {
+        let declared_module = match module_map.get(&file_id) {
+            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+            None => hir.module.as_ref().map(|m| m.name.clone()),
+        };
+        let scope = brink_analyzer::ImportScope::new(declared_module, &hir.imports);
+        let (file_map, file_diags) = brink_analyzer::resolve(file_id, manifest, &index, &scope);
+        resolutions.extend(Arc::unwrap_or_clone(file_map));
+        diagnostics.extend(file_diags);
+        scopes.insert(file_id, scope);
+    }
+
+    let hir_files: Vec<(FileId, &brink_ir::HirFile)> =
+        files.iter().map(|&(id, hir, _)| (id, hir)).collect();
+    diagnostics.extend(brink_analyzer::conventions_confinement_diagnostics(
+        &hir_files,
+        module_map,
+        opts.conventions.as_deref(),
+    ));
+
+    brink_analyzer::finish_analysis(
+        &files,
+        index,
+        resolutions,
+        diagnostics,
+        opts,
+        is_native,
+        None,
+        &scopes,
+    )
 }

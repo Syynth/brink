@@ -1,121 +1,24 @@
-//! Stateful IDE session wrapping `ProjectDb` + cached analysis.
+//! Stateful IDE session wrapping `ProjectDb`.
 //!
 //! `IdeSession` is the single entry point for IDE queries in the wasm
-//! bridge. It owns the project database and caches analysis results,
-//! avoiding redundant reparsing on every query call.
+//! bridge. It owns the project database; analysis is the db's
+//! `analysis_query` (option A, ruled 2026-08-24 — see
+//! `docs/live-typing-diagnostics-divergence.md`), so a keystroke pays one
+//! incremental salsa pull instead of the retired snapshot-clone +
+//! whole-project off-db re-analysis.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy, ModuleMap,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::{CompileProduct, ProjectDb};
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
 
-use crate::hir_projection::{Projection, project_hir, project_hir_structural};
-
-/// A snapshot of analysis inputs, cloned out of the db for background analysis.
-pub struct IdeSnapshot {
-    inputs: Vec<(FileId, HirFile, SymbolManifest)>,
-    /// The project's resolved modules, cloned out of the db alongside the
-    /// inputs (issue #1526). Module identity is a db-layer fact (it needs
-    /// file *paths*, which analysis inputs don't carry), and it qualifies
-    /// `DefinitionId`s — so without it this snapshot's ids would not match
-    /// the ones the db's per-def queries are keyed by, and every native
-    /// `.brink` symbol would miss.
-    modules: ModuleMap,
-    /// The stem-collision diagnostics (`E085`) the db computed alongside
-    /// `modules` (issue #1553). `analyze_with_modules` is handed the
-    /// finished map, so it cannot re-derive them; without folding them back
-    /// in here a collision a db-driven compile catches never reaches the
-    /// editor.
-    module_diagnostics: Vec<brink_ir::Diagnostic>,
-    /// Whether every *recognized source file* (`.ink` or `.brink`) in this
-    /// snapshot is native (`.brink`) source (issue #1358), read off the db
-    /// in [`IdeSession::snapshot`] via `ProjectDb::is_all_native`. The
-    /// analyzer has no file paths, so this classification has to travel with
-    /// the inputs — without it the editor's off-db analysis runs the *ink*
-    /// arm over native source: the ink-only T1b dialect gate (`E051`) and
-    /// `types = strict` config error (`E064`) fire spuriously, and the B0.9
-    /// strict-only gate (`E137`) never fires at all.
-    ///
-    /// A non-source document sharing this snapshot's inputs — a project's
-    /// own `brink.toml`, loaded into the same session as an ordinary
-    /// document so the Binder can list/edit it — does not disqualify `true`
-    /// (issue #2318): it is neither `.ink` nor `.brink` by extension, so
-    /// `ProjectDb::is_all_native` skips it entirely rather than counting it
-    /// as an ink file. One `brink.toml` alongside an otherwise fully-native
-    /// project set still yields `true` here, correctly.
-    is_native: bool,
-    host_manifest: Option<HostManifest>,
-    external_check: ExternalCheckSeverity,
-    semantic_type_check: SemanticTypeDiagnosticSeverity,
-    dialect: Dialect,
-    types: Option<TypePolicy>,
-    lints: LintPolicy,
-    conventions: Option<String>,
-}
-
-impl IdeSnapshot {
-    /// Run cross-file analysis on the snapshot, including any registered
-    /// host-capability manifest.
-    pub fn analyze(&self) -> AnalysisResult {
-        let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = self
-            .inputs
-            .iter()
-            .map(|(id, hir, manifest)| (*id, hir, manifest))
-            .collect();
-        let opts = AnalysisOptions {
-            host_manifest: self.host_manifest.clone(),
-            external_check: self.external_check,
-            semantic_type_check: self.semantic_type_check,
-            dialect: self.dialect,
-            types: self.types,
-            // `[lints]`-resolution input (issue #1160/#1366): the policy
-            // `IdeSession::set_lint_policy` resolved (via
-            // `AnalysisOptions::apply_project_config`, from the served
-            // `brink.toml`) and carried into this snapshot by
-            // `IdeSession::snapshot`. Spelled out explicitly (not
-            // `..Default::default()`) so the next `AnalysisOptions` field
-            // added has to be considered here rather than silently
-            // defaulting — exactly the "a mount silently doesn't resolve
-            // this policy" failure mode #1160's scope note flagged.
-            lints: self.lints.clone(),
-            // `brink.toml`'s `[project] conventions` pointer (issue #1844;
-            // renamed from `elements` by #2180), set via
-            // `IdeSession::set_conventions` (issue #1880) and carried into
-            // this snapshot by `IdeSession::snapshot`, mirroring
-            // `dialect`/`types`/`lints` for whole-struct consistency.
-            // `analyze_with_modules` (the only thing `IdeSnapshot::analyze`
-            // calls) now runs the same confinement/unconfigured `E169` check
-            // off this field that `brink-db`'s db-direct
-            // `conventions_confinement_diagnostics_query` runs against the
-            // live db (issue #2335) — the two roads agree on the canonical
-            // fixture (`crates/brink-web/src/editor/acceptance_gate.rs`).
-            // See `conventions` field doc for how the pointer is actually
-            // set.
-            conventions: self.conventions.clone(),
-        };
-        // The snapshot's own native classification (issue #1358) — see
-        // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
-        // same thing per project root; this is the editor's equivalent.
-        let mut result =
-            brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, self.is_native);
-        // The db-only half of the module map (issue #1553) — see
-        // `module_diagnostics`. Scoped to this snapshot's own files so a
-        // partial snapshot never reports a collision it doesn't contain.
-        result.diagnostics.extend(
-            self.module_diagnostics
-                .iter()
-                .filter(|d| self.inputs.iter().any(|(id, _, _)| *id == d.file))
-                .cloned(),
-        );
-        result
-    }
-}
+use crate::hir_projection::{Projection, project_hir};
 
 /// Why [`IdeSession::compile`] could not produce an artifact for the requested
 /// entry point. Diagnostics that merely *prevent* a successful compile (parse,
@@ -128,10 +31,11 @@ pub enum CompileEntryError {
     EntryNotFound(String),
 }
 
-/// Stateful IDE session — owns `ProjectDb` + cached `AnalysisResult`.
+/// Stateful IDE session — owns `ProjectDb`; analysis is the db's own
+/// memoized `analysis_query` (option A, ruled 2026-08-24 — no session-side
+/// cache, no off-db snapshot road).
 pub struct IdeSession {
     db: ProjectDb,
-    analysis: Option<AnalysisResult>,
     /// The registered host-capability manifest (tooling/author-time), if any.
     host_manifest: Option<HostManifest>,
     /// Host-pushed values for `host`-source semantic types (Tier 3, #174).
@@ -202,13 +106,16 @@ pub struct IdeSession {
     conventions: Option<String>,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
-    /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
-    /// entry carries the analyzer identity join — a structural-only entry is
-    /// upgraded on first identity-needing access once analysis exists.
-    /// Invalidated on source updates and on every `apply_analysis` (the
-    /// identity join depends on it); the dialect never enters the
-    /// projection, so registering one keeps the cache.
-    projection_cache: RefCell<HashMap<FileId, (bool, Arc<Projection>)>>,
+    /// (`line_contexts`, folding, `hir_spans`). Every entry carries the
+    /// analyzer identity join — analysis is always available from the db
+    /// since option A (2026-08-24). Invalidated wholesale on every db input
+    /// mutation — source updates, file removal, an options change that
+    /// actually writes — because the identity join reads project-wide
+    /// analysis state, so an edit anywhere can move another file's
+    /// identities (matching the retired `apply_analysis`-per-edit full
+    /// wipe). The dialogue dialect never enters the projection, so
+    /// registering one keeps the cache.
+    projection_cache: RefCell<HashMap<FileId, Arc<Projection>>>,
 }
 
 impl IdeSession {
@@ -216,7 +123,6 @@ impl IdeSession {
     pub fn new() -> Self {
         Self {
             db: ProjectDb::new(),
-            analysis: None,
             host_manifest: None,
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
@@ -448,18 +354,13 @@ impl IdeSession {
             self.conventions = conventions;
             changed = true;
         }
-        // A session with no analysis yet (fresh `IdeSession::new()`, no
-        // `update_and_analyze` call) must still reanalyze even when the
-        // four fields already match `options` byte-for-byte — otherwise a
-        // caller like `Project::ide_session()`, which loads every source
-        // via `update_source` (which does not itself analyze) and then
-        // calls this seam exactly once with options that happen to equal
-        // the session's own defaults, leaves `self.analysis` at `None`
-        // forever. Every `structural_result::gate*` helper treats `None`
-        // as "nothing to check", so that produced a silent, always-empty
-        // breakage report — the exact regression issue #1393 fixed, and
-        // this `changed`-only guard reopened it (#2334 review).
-        if changed || self.analysis.is_none() {
+        // Option A (2026-08-24): the `|| self.analysis.is_none()` arm that
+        // #2334's review added (re-closing #1393's fresh-session gap) is
+        // gone WITH its gap — `analysis()` now always pulls the db's
+        // memoized query, so a session that never "analyzed" cannot hold a
+        // stale `None`; freshness is the db's job, not a call-ordering
+        // obligation.
+        if changed {
             self.reanalyze();
         }
     }
@@ -480,140 +381,98 @@ impl IdeSession {
         self.reanalyze();
     }
 
-    /// Re-run analysis on the current inputs (e.g. after a manifest change).
-    ///
-    /// Pushes the session's options into the db first (see
-    /// [`sync_db_options`](Self::sync_db_options)) — every option setter
-    /// funnels through here, so that one call keeps the db's
-    /// `AnalysisOptions` input in step with the session's own state.
+    /// Re-establish analysis freshness after an option change: push the
+    /// session's options into the db (see
+    /// [`sync_db_options`](Self::sync_db_options) — every option setter
+    /// funnels through here) and eagerly pull the memoized analysis so the
+    /// cost lands here rather than on the next query. The projection cache
+    /// clear rides the options write inside `sync_db_options`.
     fn reanalyze(&mut self) {
         self.sync_db_options();
-        let result = self.snapshot().analyze();
-        self.apply_analysis(result);
+        self.db.analysis();
     }
 
     /// Write the session's current [`analysis_options`](Self::analysis_options)
-    /// into its own [`ProjectDb`] as a salsa input (issue #1553).
-    ///
-    /// The editor-facing analysis runs *off* the db
-    /// ([`snapshot`](Self::snapshot) → [`IdeSnapshot::analyze`]), but many IDE
-    /// features read db queries directly — `per_file_diagnostics`,
-    /// `symbol_index`, `diagnostics`, `effects`, `infer_body` — and those are
-    /// gated on this input. Before #1553 only [`compile`](Self::compile) ever
-    /// wrote it, so a session that never compiled read every one of those
-    /// queries under `AnalysisOptions::default()`: M-2d cross-module
-    /// duplicate coexistence (`brink`-only in `symbol_index_query`) and the
-    /// B0.9 native strict-only check (`E137`, which needs an explicit
-    /// `types = gradual`) were silently gated off, among others.
+    /// into its own [`ProjectDb`] as a salsa input (issue #1553). Since
+    /// option A (2026-08-24) EVERY analysis read is a db query gated on this
+    /// input — `analysis_query` included, not just the direct readers
+    /// (`per_file_diagnostics`, `symbol_index`, `diagnostics`, `effects`,
+    /// `infer_body`) #1553 originally closed the gap for.
     ///
     /// Guarded against unchanged values: salsa's `set_analysis_options`
     /// stamps the current revision unconditionally on every write, so an
-    /// unguarded call would invalidate every direct reader
-    /// (`per_file_diagnostics_query`, `symbol_index_query`, `resolve_query`,
-    /// `lir_query`/`story_data`) even when the value didn't actually change.
-    /// [`compile`](Self::compile) still writes its own (possibly overriding)
-    /// options unconditionally — the next option change re-establishes the
-    /// session's.
+    /// unguarded call would invalidate every reader even when the value
+    /// didn't actually change. An actual write also clears the projection
+    /// cache — the identity join is derived from analysis, which the write
+    /// just invalidated. [`compile`](Self::compile) applies the same guard
+    /// to its caller-supplied options (#2885's resolution — one db, one
+    /// options input, every writer guarded).
     fn sync_db_options(&mut self) {
         let options = self.analysis_options();
         if self.db.analysis_options() != &options {
             self.db.set_analysis_options(options);
+            self.projection_cache.borrow_mut().clear();
         }
     }
 
-    /// Add or update a source file in the database.
+    /// Add or update a source file in the database. Clears the whole
+    /// projection cache, not just the edited file's entry: the identity join
+    /// reads project-wide analysis state, so an edit anywhere can move
+    /// another file's identities (before option A the per-edit
+    /// `apply_analysis` performed this full wipe).
     pub fn update_source(&mut self, path: &str, source: String) -> FileId {
         let file_id = self.db.update_file(path, source);
-        self.projection_cache.borrow_mut().remove(&file_id);
+        self.projection_cache.borrow_mut().clear();
         file_id
     }
 
-    /// Remove a file from the project. Clears cached analysis.
+    /// Remove a file from the project.
     pub fn remove_file(&mut self, path: &str) {
         self.db.remove_file(path);
-        self.analysis = None;
-        self.projection_cache.borrow_mut().clear();
-    }
-
-    /// Create a snapshot of current analysis inputs.
-    pub fn snapshot(&self) -> IdeSnapshot {
-        IdeSnapshot {
-            inputs: self.db.analysis_inputs(),
-            modules: self.db.module_map().clone(),
-            module_diagnostics: self.db.module_map_diagnostics().to_vec(),
-            is_native: self.db.is_all_native(),
-            host_manifest: self.host_manifest.clone(),
-            external_check: self.external_check,
-            semantic_type_check: self.semantic_type_check,
-            dialect: self.language_dialect,
-            types: self.type_policy,
-            lints: self.lints.clone(),
-            conventions: self.conventions.clone(),
-        }
-    }
-
-    /// Store a computed analysis result. Clears the projection cache: the
-    /// range-keyed identity join is derived from analysis.
-    pub fn apply_analysis(&mut self, result: AnalysisResult) {
-        self.analysis = Some(result);
         self.projection_cache.borrow_mut().clear();
     }
 
     /// The file's HIR projection — computed once per source/analysis
-    /// generation and shared by every structural view (#480). Carries the
-    /// analyzer identity join when analysis is available (a superset the
-    /// structural views simply ignore); a structural-only cached entry is
-    /// recomputed with identity the first time analysis-bearing access needs
-    /// it.
+    /// generation and shared by every structural view (#480). Always carries
+    /// the analyzer identity join (a superset the structural views simply
+    /// ignore) — analysis is always available from the db since option A.
     pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
-        let want_identity = self.analysis.is_some();
-        if let Some((has_identity, p)) = self.projection_cache.borrow().get(&file)
-            && (*has_identity || !want_identity)
-        {
+        if let Some(p) = self.projection_cache.borrow().get(&file) {
             return Some(Arc::clone(p));
         }
         let hir = self.db.hir(file)?;
         let source = self.db.source(file)?;
-        let projection = Arc::new(match self.analysis.as_ref() {
-            Some(analysis) => project_hir(hir, source, analysis, file),
-            None => project_hir_structural(hir, source),
-        });
+        // Analysis is always available from the db (option A) — every
+        // projection carries the identity join; the structural-only flavor
+        // exists now only for callers outside a session
+        // (`project_hir_structural`).
+        let projection = Arc::new(project_hir(hir, source, self.db.analysis(), file));
         self.projection_cache
             .borrow_mut()
-            .insert(file, (want_identity, Arc::clone(&projection)));
+            .insert(file, Arc::clone(&projection));
         Some(projection)
     }
 
-    /// Convenience: update source, snapshot, analyze, and store the result.
-    ///
-    /// ⚠ Unlike every option setter (`set_language_dialect`/`set_type_policy`/
-    /// `set_lint_policy`/`set_conventions`/`apply_analysis_options`, all of
-    /// which funnel through [`Self::reanalyze`]), this does **not** call
-    /// [`Self::sync_db_options`]. A caller whose *only* interaction with a
-    /// session is `update_source`/`update_and_analyze` — never a setter —
-    /// leaves the db's `AnalysisOptions` input at whatever it was last
-    /// synced to (its own construction-time default if never synced at
-    /// all), even if the off-db road (`Self::analysis`, read right after
-    /// this call) is analyzing under different options. This is an open
-    /// question flagged, not resolved, by issue #2885 — see that issue's
-    /// tracking comment for the investigation — rather than a documented
-    /// design choice; do not assume it is intentional. An unconfigured
-    /// session's db-direct options simply equal `ProjectDb`'s own
-    /// construction-time default (nothing has ever written to the salsa
-    /// input), so a caller that never applies a config or calls `compile`
-    /// sees no divergence — not because a setter runs first. The real
-    /// divergence vector is [`Self::compile`], which — per
-    /// [`sync_db_options`](Self::sync_db_options)'s own doc comment — writes
-    /// its own possibly-overriding `AnalysisOptions` into the db
-    /// unconditionally, bypassing this method's gap entirely; see
-    /// `tests/live_typing_db_divergence.rs` for a test suite that already
-    /// had to work around the underlying gap by construction.
+    /// Update source and re-establish fresh analysis: write the file input,
+    /// sync the session's options into the db (the #2885 gap, CLOSED here by
+    /// option A — a caller whose only interaction is `update_and_analyze`
+    /// now analyzes under the session's real options, no setter required),
+    /// and eagerly pull the memoized analysis so the incremental cost lands
+    /// at the edit rather than on the first query after it.
     pub fn update_and_analyze(&mut self, path: &str, source: String) -> FileId {
         let file_id = self.update_source(path, source);
-        let snap = self.snapshot();
-        let result = snap.analyze();
-        self.apply_analysis(result);
+        self.refresh_analysis();
         file_id
+    }
+
+    /// The analysis half of [`update_and_analyze`](Self::update_and_analyze):
+    /// sync the session's options into the db (guarded) and eagerly pull the
+    /// memoized analysis. Public so phase-timing callers (`brink-web`'s perf
+    /// counters, `ide_bench`) can split "write the file input" from
+    /// "re-establish analysis" without duplicating this composition.
+    pub fn refresh_analysis(&mut self) {
+        self.sync_db_options();
+        self.db.analysis();
     }
 
     /// Get the underlying project database (for queries that need it).
@@ -621,9 +480,17 @@ impl IdeSession {
         &self.db
     }
 
-    /// Get the cached analysis result.
+    /// The project's analysis — the db's memoized `analysis_query` (option
+    /// A). Always `Some`: an empty project analyzes to an empty result.
+    /// The `Option` shape is kept for the ~40 existing consumers whose
+    /// `None` arms became vacuous (fresh sessions no longer silently skip
+    /// gates that treated `None` as "nothing to check").
+    ///
+    /// Borrow invariant: the returned reference is tied to the db's salsa
+    /// storage — hold it across `&self` queries freely (every current
+    /// consumer does exactly that), never across a `&mut self` call.
     pub fn analysis(&self) -> Option<&AnalysisResult> {
-        self.analysis.as_ref()
+        Some(self.db.analysis())
     }
 
     /// Re-analyze the project with `overlay` (project-relative path → source)
@@ -659,35 +526,18 @@ impl IdeSession {
         // reads back off the returned db is judged under the same policy as
         // the session's — not `AnalysisOptions::default()`.
         db.set_analysis_options(self.analysis_options());
-        let result = {
-            let inputs = db.analysis_inputs();
-            let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
-                .iter()
-                .map(|(id, hir, manifest)| (*id, hir, manifest))
-                .collect();
-            // The throwaway db's own module map (#1526) — the overlay keeps
-            // every file at its current path, but a native file's identity
-            // is path-derived, so analyzing module-blind here would make the
-            // gate's ids disagree with the returned db's.
-            let modules = db.module_map().clone();
-            // The gate db's own native classification (issue #1358): the
-            // overlay keeps every file at its current path, so this matches
-            // the session — but reading it off the gate db keeps the flag
-            // and the file set that it describes from ever disagreeing.
-            let mut result = brink_analyzer::analyze_with_modules(
-                &refs,
-                &modules,
-                &self.analysis_options(),
-                db.is_all_native(),
-            );
-            // The map's db-only diagnostics half (#1553) — the whole point of
-            // the gate is to report the diagnostics an edit *would* introduce,
-            // and a stem collision is one of them.
-            result
-                .diagnostics
-                .extend(db.module_map_diagnostics().iter().cloned());
-            result
-        };
+        // The throwaway db's OWN `analysis_query` (option A, 2026-08-24 —
+        // one engine): the gate's baseline is the session db's analysis, so
+        // the overlay must be judged by the exact same road, or the
+        // road-difference reads as "introduced" diagnostics. That was a real
+        // bug in the monolith-road version this replaced: the db road
+        // classifies nativeness per FILE while `analyze_with_modules` took
+        // one project-wide flag, so a mixed set (mounted `.brink` stdlib in
+        // an ink project) got the ink arm's `E051` over the stdlib in the
+        // overlay result only — every structural op read as unsafe. Module
+        // identity (#1526), module-map diagnostics (#1553), and per-file
+        // nativeness (#1358) are all inside `analysis_query` already.
+        let result = db.analysis().clone();
         (result, db)
     }
 
@@ -714,36 +564,13 @@ impl IdeSession {
         // Same as `analyze_overlay` (#1553): the gate db is judged under the
         // session's options, not the defaults.
         db.set_analysis_options(self.analysis_options());
-        let result = {
-            let inputs = db.analysis_inputs();
-            let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
-                .iter()
-                .map(|(id, hir, manifest)| (*id, hir, manifest))
-                .collect();
-            // The projected db's own module map (#1526). This path *moves*
-            // files to new keys, and a native file's module is its path, so
-            // the map has to come from the projected db — the whole point of
-            // the gate is to model identity after the move.
-            let modules = db.module_map().clone();
-            // The projected db's own native classification (issue #1358).
-            // This path *moves* files to new keys, and `Language` is
-            // extension-derived, so — exactly as for the module map above —
-            // the flag has to come from the projected db to model the file
-            // set after the move.
-            let mut result = brink_analyzer::analyze_with_modules(
-                &refs,
-                &modules,
-                &self.analysis_options(),
-                db.is_all_native(),
-            );
-            // A move is exactly the edit that can *introduce* a stem
-            // collision, so the gate has to see the map's diagnostics half
-            // (#1553).
-            result
-                .diagnostics
-                .extend(db.module_map_diagnostics().iter().cloned());
-            result
-        };
+        // The projected db's OWN `analysis_query` (option A, 2026-08-24 —
+        // one engine, same reasoning as `analyze_overlay`). Everything the
+        // monolith-road version threaded by hand is inside the query:
+        // path-derived module identity after the move (#1526), the map's
+        // stem-collision diagnostics a move can introduce (#1553), and
+        // per-file extension-derived nativeness at the NEW keys (#1358).
+        let result = db.analysis().clone();
         (result, db)
     }
 
@@ -793,11 +620,16 @@ impl IdeSession {
     /// memo invalidation), so repeated compiles under the same options reuse the
     /// warm db's incremental results.
     ///
-    /// **Does not perturb editor diagnostic state.** The editor's cached
-    /// analysis (`self.analysis`) and projection cache are computed off-db (via
-    /// [`snapshot`](Self::snapshot)/[`analyze`](IdeSnapshot::analyze)) and are
-    /// left untouched; the db-level `analysis`/`lir`/`story_data` salsa queries
-    /// this sets inputs for are read only here, on the compile path.
+    /// **Editor diagnostic state and compiles share one truth** (option A,
+    /// 2026-08-24 — this paragraph FORMERLY claimed compiles could not
+    /// perturb the editor's off-db cached analysis; that cache no longer
+    /// exists). A compile under the session's own options (the only
+    /// production case — `brink-web` passes `analysis_options()`) is a
+    /// guarded no-op on the options input, so it perturbs nothing. A compile
+    /// under OVERRIDE options legitimately changes `db.analysis()` for every
+    /// subsequent editor query: one db, one options input — an override
+    /// caller owns restoring the session's options afterwards
+    /// (`sync_db_options` runs on the next edit or setter regardless).
     ///
     /// The returned [`CompileProduct`]'s diagnostics are keyed by [`FileId`]
     /// into **this** db, so a caller resolves each to a path/source through the
@@ -861,15 +693,13 @@ impl IdeSession {
     ///   do. It is the natural next step if/when `IdeSession` is revisited to
     ///   compile against `Environment`-shaped input; bring it back as its own
     ///   proposal rather than treating this doc comment as having settled it.
-    /// - **The adjacent design question is still genuinely open.** #1347
-    ///   (`needs-design`, unresolved) asks whether `IdeSession`'s live-typing
-    ///   diagnostics should route through `ProjectDb`'s own salsa-level
-    ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
-    ///   `compile_project` onto a *different* producer now would prejudge that
-    ///   still-open call rather than wait for it. Still unresolved, but now
-    ///   measured: `docs/live-typing-diagnostics-divergence.md` inventories
-    ///   what the two surfaces actually disagree on (native files only, in
-    ///   both directions), pinned by `tests/live_typing_db_divergence.rs`.
+    /// - **The adjacent design question is RESOLVED** (option A, ruled
+    ///   2026-08-24): #1347's preserved call — whether live-typing analysis
+    ///   routes through `ProjectDb`'s own `analysis_query` — was answered
+    ///   yes, and landed; the off-db snapshot road no longer exists. This
+    ///   ruling's compile-path conclusion (stay on the session's own
+    ///   incremental db) is thereby REINFORCED, not disturbed: compile and
+    ///   live analysis now literally share every query, not merely a db.
     ///
     /// **Relationship to the #1306 decision-log entry**
     /// (`docs/decision-log.md`, "Compilation environment as a deterministic,
@@ -895,7 +725,13 @@ impl IdeSession {
         if self.db.set_entry(entry).is_none() {
             return Err(CompileEntryError::EntryNotFound(entry.to_owned()));
         }
-        self.db.set_analysis_options(options.clone());
+        // Change-guarded like `sync_db_options` (#2885's resolution): an
+        // equal-options compile must not stamp the revision — under option A
+        // that would cold-invalidate the very analysis the editor reads.
+        if self.db.analysis_options() != options {
+            self.db.set_analysis_options(options.clone());
+            self.projection_cache.borrow_mut().clear();
+        }
         // `story_data()` is `Some` whenever an entry is set (just done above);
         // clone the memoized product out so the borrow on the db ends here.
         Ok(self.db.story_data().cloned().unwrap_or_default())

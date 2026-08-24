@@ -38,6 +38,8 @@
 //! anyway, since it is also exercising the ink-side alias grammar
 //! (`IMPORT … AS`), which a fully-native fixture cannot cover.
 
+mod analysis_fixture;
+
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_ir::{DiagnosticCode, FileId, HirFile, SymbolManifest};
 
@@ -136,7 +138,7 @@ fn analyze(
         ..AnalysisOptions::default()
     };
     let result =
-        brink_analyzer::analyze_with_modules(&inputs, &module_map(importer_module), &opts, true);
+        analysis_fixture::analyze_with_map(&inputs, &module_map(importer_module), &opts, true);
 
     let mut targets: Vec<(rowan::TextRange, Option<String>)> = result
         .resolutions
@@ -234,7 +236,7 @@ fn a_file_that_never_imported_the_module_gets_neither_alias_nor_bare_access() {
         ..AnalysisOptions::default()
     };
     let result =
-        brink_analyzer::analyze_with_modules(&inputs, &module_map("story::town"), &opts, true);
+        analysis_fixture::analyze_with_map(&inputs, &module_map("story::town"), &opts, true);
 
     assert!(
         result

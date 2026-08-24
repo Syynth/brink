@@ -45,6 +45,8 @@
 
 use std::collections::BTreeMap;
 
+mod analysis_fixture;
+
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_ir::{DiagnosticCode, FileId, HirFile, SymbolManifest};
 
@@ -169,7 +171,7 @@ fn use_naming_a_module_licenses_qualified_access_to_its_exports() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     let offenders: Vec<_> = result
         .diagnostics
@@ -223,7 +225,7 @@ fn use_naming_a_module_does_not_license_bare_access_to_its_exports() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     let e024: Vec<_> = result
         .diagnostics
@@ -256,7 +258,7 @@ fn use_naming_neither_an_item_nor_a_module_now_diagnoses() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     let e088: Vec<_> = result
         .diagnostics
@@ -299,7 +301,7 @@ fn parent_importing_its_own_declared_child_submodule_licenses_with_no_e090() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(
+    let result = analysis_fixture::analyze_with_map(
         &inputs,
         &module_map_with_main(MAIN_MODULE),
         &opts,
@@ -358,7 +360,7 @@ fn aliased_trailing_segment_resolving_to_a_module_diagnoses_e129() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     let e129: Vec<_> = result
         .diagnostics

@@ -437,13 +437,13 @@ impl ProjectDb {
 
     /// Whether `id` is a native (`.brink`) module rather than an ink file.
     ///
-    /// `pub` (issue #1562 review finding) so a caller running the off-db
-    /// `brink_analyzer::analyze_with_modules` pass per project root —
-    /// `brink-lsp`'s `analysis_loop`, which needs the same "does this
-    /// project's dialect axis even apply" answer
-    /// [`crate::queries::project_is_native`] gives the salsa-backed
-    /// `symbol_index_query` — can ask it of a project's root `FileId`
-    /// without rederiving [`crate::queries::file_language`] itself.
+    /// `pub` (issue #1562 review finding) so per-root callers —
+    /// `brink-lsp`, which needs the "does this project's dialect axis even
+    /// apply" answer for a project root — can ask it of a `FileId` without
+    /// rederiving [`crate::queries::file_language`] themselves. (The
+    /// off-db `analyze_with_modules` pass this originally served retired
+    /// with option A, 2026-08-24; per-root analysis now runs
+    /// [`Self::analysis_for_members`].)
     pub fn is_native(&self, id: FileId) -> bool {
         self.file_path(id).is_some_and(|path| {
             crate::queries::file_language(path) == crate::queries::Language::Native
@@ -689,6 +689,21 @@ impl ProjectDb {
     /// `.brink` files this is *not* identical to `analyze_with_options`
     /// (module-blind), which mints different `DefinitionId`s — see
     /// [`module_map`](Self::module_map)'s doc (issue #1526).
+    /// Subset analysis for one project root's member files (option A total,
+    /// 2026-08-24) — the retired `analyze_with_modules` monolith's
+    /// composition, relocated into the member-set-keyed
+    /// `subset_analysis_query` (see its doc). Members are canonicalized
+    /// (sorted, deduped) before interning, so caller ordering never mints a
+    /// distinct memo. For the whole file set, prefer
+    /// [`analysis`](Self::analysis) — the FG-decomposed incremental chain.
+    pub fn analysis_for_members(&self, members: &[FileId]) -> &AnalysisResult {
+        let mut canonical = members.to_vec();
+        canonical.sort_unstable_by_key(|id| id.0);
+        canonical.dedup();
+        let set = crate::queries::MemberSet::new(&self.salsa, canonical);
+        crate::queries::subset_analysis_query(&self.salsa, self.project, set)
+    }
+
     pub fn analysis(&self) -> &AnalysisResult {
         analysis_query(&self.salsa, self.project)
     }

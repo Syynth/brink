@@ -725,7 +725,9 @@ export class EditorSessionHandle {
    * Enable/disable the wasm-internal perf counters. Off by default; the
    * studio's dev edge turns them on alongside its JS-side probe so the
    * boundary spans (`wasm.<method>`) can be decomposed into internal
-   * phases (`ide.analyze`, `ide.snapshotClone`, …).
+   * phases (`ide.updateSource`, `ide.analyze` — the incremental db pull; the
+   * pre-option-A `ide.snapshotClone`/`ide.applyAnalysis` names retired
+   * with the off-db road, 2026-08-24).
    */
   setPerfEnabled(on: boolean): void {
     this.session.set_perf_enabled(on);
