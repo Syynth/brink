@@ -158,6 +158,11 @@ describe("findUnboundedFetches — planted red, one per allowlisted command shap
     // `brew install hyperfine` was unbounded AND unallowlisted — check 3
     // reported it as unclassified before check 1 could see it at all.
     homebrew: "brew install hyperfine",
+    // #3057: the local desktop-release script's binaries — notary submits,
+    // ticket staples, Gatekeeper's online lookup, and GitHub API calls.
+    gh: 'gh release create "v1" artifacts/*',
+    xcrun: 'xcrun notarytool submit "app.dmg" --keychain-profile p --wait',
+    spctl: "spctl -a -t open some.dmg",
   };
 
   for (const command of NETWORK_COMMANDS) {

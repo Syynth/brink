@@ -524,6 +524,21 @@ export const POINTER_DOCS = [
  */
 export const NETWORK_COMMANDS = [
   { id: "curl", pattern: /(?:^|[\s"'`(])curl\s/, why: "a direct HTTPS fetch" },
+  {
+    id: "gh",
+    pattern: /(?:^|[\s"'`(])gh\s/,
+    why: "every gh subcommand is a GitHub API call",
+  },
+  {
+    id: "xcrun",
+    pattern: /(?:^|[\s"'`(])xcrun\s/,
+    why: "notarytool submits to Apple's notary service; stapler fetches the ticket",
+  },
+  {
+    id: "spctl",
+    pattern: /(?:^|[\s"'`(])spctl\s/,
+    why: "Gatekeeper assessment performs an online ticket lookup when unstapled",
+  },
   { id: "wget", pattern: /(?:^|[\s"'`(])wget\s/, why: "a direct HTTPS fetch" },
   {
     id: "rustup",
@@ -970,6 +985,7 @@ const SHELL_WORDS = new Set([
  * add a name after checking what it does on a cache miss.
  */
 export const LOCAL_COMMANDS = new Set([
+  "security", // keychain queries — local database only
   "awk", "basename", "cat", "chmod", "cp", "cut", "date", "dirname", "du", "env", "expr", "find",
   "grep", "head", "install", "ln", "ls", "mkdir", "mktemp", "mv", "node", "rm", "rmdir", "sed",
   "sh", "sleep", "sort", "tail", "tar", "tee", "touch", "tr", "uname", "uniq", "wc", "which",
