@@ -114,14 +114,11 @@ pub fn classify_token(
             | SyntaxKind::ERROR_TOKEN
             | SyntaxKind::L_PAREN
             | SyntaxKind::R_PAREN
-            | SyntaxKind::L_BRACE
-            | SyntaxKind::R_BRACE
             | SyntaxKind::L_BRACKET
             | SyntaxKind::R_BRACKET
             | SyntaxKind::COMMA
             | SyntaxKind::DOT
             | SyntaxKind::COLON
-            | SyntaxKind::PIPE
             | SyntaxKind::BACKSLASH
             | SyntaxKind::DOLLAR
     ) {
@@ -143,6 +140,24 @@ pub fn classify_token(
     // thread (#2280/#2286) already established for `.brink` files.
     if token.parent().is_some_and(|p| p.kind() == SyntaxKind::TEXT) {
         return None;
+    }
+
+    // Content-logic delimiters read as CODE, not prose (author feedback,
+    // 2026-08-25): the `{`/`}` around alternatives, conditionals, and
+    // interpolations — and the `|` separating alternative branches — used
+    // to carry no token at all, so they rendered in the dialogue/action
+    // text color and visually merged into the prose around them. Classify
+    // them as operators, the same family the delimited code already uses.
+    // Placed AFTER the `TEXT`-parent carve-out above, so an escaped or
+    // prose-absorbed brace/pipe stays uncolored prose.
+    if matches!(
+        kind,
+        SyntaxKind::L_BRACE | SyntaxKind::R_BRACE | SyntaxKind::PIPE
+    ) {
+        return Some(Classification {
+            token_type: TT_OPERATOR,
+            modifiers: 0,
+        });
     }
 
     // Direct mappings by SyntaxKind
@@ -491,8 +506,6 @@ pub fn classify_native_token(
             | NK::ERROR_TOKEN
             | NK::L_PAREN
             | NK::R_PAREN
-            | NK::L_BRACE
-            | NK::R_BRACE
             | NK::L_BRACKET
             | NK::R_BRACKET
             | NK::COMMA
@@ -500,10 +513,27 @@ pub fn classify_native_token(
             | NK::COLON
             | NK::COLON_COLON
             | NK::SEMICOLON
-            | NK::PIPE
             | NK::BACKSLASH
     ) {
         return None;
+    }
+
+    // Content-logic delimiters read as CODE, not prose (author feedback,
+    // 2026-08-25) — the native mirror of `classify_token`'s brace/pipe
+    // operator arm. The prose-run guard mirrors the keyword carve-out
+    // below: a brace/pipe the parser absorbed into a prose run (TEXT,
+    // cue names, tag text) is literal text, not a delimiter.
+    if matches!(kind, NK::L_BRACE | NK::R_BRACE | NK::PIPE) {
+        if token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+        {
+            return None;
+        }
+        return Some(Classification {
+            token_type: TT_OPERATOR,
+            modifiers: 0,
+        });
     }
 
     if matches!(
