@@ -155,6 +155,12 @@ export function getTokenModifierNames(): string[] {
 
 // ── EditorSession wrapper ───────────────────────────────────────
 
+/** The outbound-delta segment manifest (#3064 option A). */
+export interface SegmentManifest {
+  totalLines: number;
+  segments: { key: string; ownedFrom: number }[];
+}
+
 /** One bounded edit in UTF-16 coordinates of the previous content (#3064 C1). */
 export interface EditSpan {
   from: number;
@@ -185,6 +191,19 @@ export class EditorSessionHandle {
     this.mutationCount += 1;
   }
 
+  /**
+   * Session-wide CONFIG epoch (#3064 micro): bumped by registrations that
+   * change query OUTPUTS without changing any segment's identity key —
+   * dialect and host-manifest swaps. Slice caches keyed by segment
+   * identity must also stamp this epoch, or a dialect change would serve
+   * stale dialect-classified slices under unchanged keys.
+   */
+  private configEpochCounter = 0;
+
+  configEpoch(): number {
+    return this.configEpochCounter;
+  }
+
   updateSource(source: string): void {
     this.bump();
     this.session.update_source(source);
@@ -210,12 +229,14 @@ export class EditorSessionHandle {
    * validation and richer hover/completion. Throws on an invalid manifest.
    */
   setHostManifest(manifest: HostManifest): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.set_host_manifest(JSON.stringify(manifest));
   }
 
   /** Clear any registered host manifest, then re-analyze. */
   clearHostManifest(): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.clear_host_manifest();
   }
@@ -230,6 +251,7 @@ export class EditorSessionHandle {
    * kind, …).
    */
   setDialect(dialect: DialogueDialect): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.set_dialect(JSON.stringify(dialect));
   }
@@ -237,6 +259,7 @@ export class EditorSessionHandle {
   /** Clear the registered dialect. Line classification reverts to plain
    *  structural kinds. */
   clearDialect(): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.clear_dialect();
   }
@@ -571,6 +594,54 @@ export class EditorSessionHandle {
   getSemanticTokensDoc(doc: DocumentId): SemanticToken[] {
     const json = this.session.semantic_tokens_doc(doc);
     return JSON.parse(json) as SemanticToken[];
+  }
+
+  /**
+   * The outbound-delta segment manifest (#3064 option A): per-segment
+   * version keys (salsa identity `index:generation` — stable across shift
+   * edits, changed exactly when a segment's content changes) plus each
+   * segment's first owned line. `null` for fragment views, non-ink files,
+   * older wasm builds, and test mocks — the consumer falls back to the
+   * whole-document queries.
+   */
+  getSegmentManifestDoc(doc: DocumentId): SegmentManifest | null {
+    const raw = (this.session as { segment_manifest_doc?: (d: DocumentId) => string })
+      .segment_manifest_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc)) as SegmentManifest | null;
+  }
+
+  /** One manifest segment's owned line-context slice; `null` on a stale key. */
+  getSegmentLineContextsDoc(doc: DocumentId, key: string): LineContext[] | null {
+    const raw = (this.session as { segment_line_contexts_doc?: (d: DocumentId, k: string) => string })
+      .segment_line_contexts_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as LineContext[] | null;
+  }
+
+  /**
+   * Classifier-only sibling of {@link getSegmentSemanticTokensDoc}
+   * (#3064 micro): no resolution refinement, no analysis pull — the
+   * keystroke path's source; the deferred refresh swaps in the refined
+   * slice.
+   */
+  getSegmentSemanticTokensFastDoc(doc: DocumentId, key: string): SemanticToken[] | null {
+    const raw = (
+      this.session as { segment_semantic_tokens_fast_doc?: (d: DocumentId, k: string) => string }
+    ).segment_semantic_tokens_fast_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as SemanticToken[] | null;
+  }
+
+  /**
+   * One manifest segment's owned semantic-token slice, token lines RELATIVE
+   * to the segment's owned start; `null` on a stale key.
+   */
+  getSegmentSemanticTokensDoc(doc: DocumentId, key: string): SemanticToken[] | null {
+    const raw = (this.session as { segment_semantic_tokens_doc?: (d: DocumentId, k: string) => string })
+      .segment_semantic_tokens_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as SemanticToken[] | null;
   }
 
   /**

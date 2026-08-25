@@ -38,6 +38,9 @@ import { perfViewportProbe } from "./perf/viewport-probe.js";
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
   getSemanticTokens: (source: string) => SemanticToken[];
+  /** Classifier-only token source for the keystroke path in large
+   *  documents (#3064 micro) — see `HighlightOptions.getSemanticTokensFast`. */
+  getSemanticTokensFast?: (source: string) => SemanticToken[];
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
 
@@ -460,6 +463,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     screenplayCompartment.of(screenplayLayer),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,
+      getSemanticTokensFast: options.getSemanticTokensFast,
       getTokenTypeNames: options.getTokenTypeNames,
     }),
     // The HIR structural overlay (#454) — an independent layer on top of (not

@@ -40,6 +40,123 @@ impl EditorSession {
         };
         self.hir_spans_impl(&d.path, d.view.as_ref())
     }
+
+    /// The outbound-delta segment manifest for a FILE handle's document
+    /// (#3064 option A): `{"totalLines": N, "segments": [{"key", "ownedFrom"}]}`
+    /// as JSON, or `"null"` for fragment views, unknown handles, and
+    /// non-ink files — the consumer falls back to the whole-document
+    /// queries. Keys are salsa identity `index:generation` — stable
+    /// across shift edits, changed exactly when a segment's content
+    /// changes, ABA-safe.
+    pub fn segment_manifest_doc(&self, doc: u32) -> String {
+        #[derive(serde::Serialize)]
+        struct EntryJs<'a> {
+            key: &'a str,
+            #[serde(rename = "ownedFrom")]
+            owned_from: u32,
+        }
+        #[derive(serde::Serialize)]
+        struct ManifestJs<'a> {
+            #[serde(rename = "totalLines")]
+            total_lines: u32,
+            segments: Vec<EntryJs<'a>>,
+        }
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        if state.view.is_some() {
+            return "null".to_owned();
+        }
+        let Some(file_id) = self.session.file_id(&state.path) else {
+            return "null".to_owned();
+        };
+        let Some((entries, total_lines)) = self.session.segment_manifest(file_id) else {
+            return "null".to_owned();
+        };
+        serde_json::to_string(&ManifestJs {
+            total_lines,
+            segments: entries
+                .iter()
+                .map(|(key, owned_from)| EntryJs {
+                    key,
+                    owned_from: *owned_from,
+                })
+                .collect(),
+        })
+        .unwrap_or_else(|_| "null".to_owned())
+    }
+
+    /// One manifest segment's owned line-context slice (#3064 option A);
+    /// `"null"` for a stale key — re-fetch the manifest.
+    pub fn segment_line_contexts_doc(&self, doc: u32, key: &str) -> String {
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        let Some(file_id) = self.session.file_id(&state.path) else {
+            return "null".to_owned();
+        };
+        match self.session.segment_line_contexts_slice(file_id, key) {
+            Some(slice) => serde_json::to_string(&slice).unwrap_or_else(|_| "null".to_owned()),
+            None => "null".to_owned(),
+        }
+    }
+
+    /// The classifier-only sibling of
+    /// [`segment_semantic_tokens_doc`](Self::segment_semantic_tokens_doc)
+    /// (#3064 micro): identical shape, no index/resolve pull — the
+    /// keystroke path's source while the deferred refresh fetches the
+    /// refined slice.
+    pub fn segment_semantic_tokens_fast_doc(&self, doc: u32, key: &str) -> String {
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        let Some(file_id) = self.session.file_id(&state.path) else {
+            return "null".to_owned();
+        };
+        let Some(slice) = self
+            .session
+            .segment_semantic_tokens_slice_fast(file_id, key)
+        else {
+            return "null".to_owned();
+        };
+        let tokens: Vec<TokenJs> = slice
+            .iter()
+            .map(|t| TokenJs {
+                line: t.line,
+                start_char: t.start_char,
+                length: t.length,
+                token_type: t.token_type,
+                modifiers: t.modifiers,
+            })
+            .collect();
+        serde_json::to_string(&tokens).unwrap_or_else(|_| "null".to_owned())
+    }
+
+    /// One manifest segment's owned semantic-token slice, token lines
+    /// relative to the segment's owned start (#3064 option A); `"null"`
+    /// for a stale key.
+    pub fn segment_semantic_tokens_doc(&self, doc: u32, key: &str) -> String {
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        let Some(file_id) = self.session.file_id(&state.path) else {
+            return "null".to_owned();
+        };
+        let Some(slice) = self.session.segment_semantic_tokens_slice(file_id, key) else {
+            return "null".to_owned();
+        };
+        let tokens: Vec<TokenJs> = slice
+            .iter()
+            .map(|t| TokenJs {
+                line: t.line,
+                start_char: t.start_char,
+                length: t.length,
+                token_type: t.token_type,
+                modifiers: t.modifiers,
+            })
+            .collect();
+        serde_json::to_string(&tokens).unwrap_or_else(|_| "null".to_owned())
+    }
 }
 
 impl EditorSession {

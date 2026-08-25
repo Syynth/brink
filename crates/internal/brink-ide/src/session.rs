@@ -456,6 +456,40 @@ impl IdeSession {
         self.db.semantic_tokens(file)
     }
 
+    /// Outbound-delta manifest passthrough (#3064 option A).
+    pub fn segment_manifest(&self, file: FileId) -> Option<(Vec<(String, u32)>, u32)> {
+        self.db.segment_manifest(file)
+    }
+
+    /// Outbound-delta context slice passthrough (#3064 option A).
+    pub fn segment_line_contexts_slice(
+        &self,
+        file: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::hir::line_context::LineContext>> {
+        self.db.segment_line_contexts_slice(file, key)
+    }
+
+    /// Classifier-only token slice passthrough (#3064 micro) — never
+    /// pulls index/resolve; the deferred refresh swaps in the refined
+    /// slice.
+    pub fn segment_semantic_tokens_slice_fast(
+        &self,
+        file: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::semantic_tokens::RawToken>> {
+        self.db.segment_semantic_tokens_slice_fast(file, key)
+    }
+
+    /// Outbound-delta token slice passthrough (#3064 option A).
+    pub fn segment_semantic_tokens_slice(
+        &self,
+        file: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::semantic_tokens::RawToken>> {
+        self.db.segment_semantic_tokens_slice(file, key)
+    }
+
     pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
         // #3064 B2: the db's assembled per-segment projection replaces the
         // session-level wipe-on-every-edit cache — a keystroke inside one

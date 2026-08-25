@@ -117,7 +117,14 @@ use crate::include_graph::IncludeGraph;
 
 mod analysis;
 mod heap_size;
-mod segments;
+pub(crate) mod segments;
+
+/// Whether the file rides the ink segment road (#3064 option A) — the
+/// delta protocol serves ink files only; native files use the whole-doc
+/// queries.
+pub(crate) fn is_ink_file(db: &BrinkDatabase, file: SourceFile) -> bool {
+    file_language(file.path(db)) == Language::Ink
+}
 
 pub(crate) use segments::{
     FileSegment, file_segments_query, line_contexts_query, projection_query, semantic_tokens_query,
@@ -177,6 +184,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<segments::file_resolution_kinds_query>()
                 .ingredient::<segments::segment_resolution_kinds_query>()
                 .ingredient::<segments::segment_semantic_tokens_query>()
+                .ingredient::<segments::segment_semantic_tokens_classifier_query>()
                 .ingredient::<segments::semantic_tokens_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
