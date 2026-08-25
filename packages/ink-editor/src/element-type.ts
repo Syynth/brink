@@ -1,4 +1,5 @@
 import { docString } from "./doc-string";
+import { syncAnnotation } from "./document-handle.js";
 import { Facet, StateEffect, StateField, type EditorState, type Transaction } from "@codemirror/state";
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
 import { documentHandleFacet } from "./document-handle.js";
@@ -675,7 +676,12 @@ export const elementTypeField = StateField.define<LineInfo[]>({
     // document. `computeLineInfos` sees the push already applied (its own
     // `pushSource` becomes a no-op fallback for handles/mocks without the
     // delta path, multi-cursor batches, and fragment views).
-    if (tr.docChanged) {
+    // Mirrored transactions (cross-view sync) carry an edit the SOURCE
+    // view already applied to the wasm doc — re-applying the delta would
+    // double it (caught by the binder-rename e2e: duplicated knots). They
+    // take the full-push path below, whose lastPushed guard makes the
+    // redundant push free.
+    if (tr.docChanged && tr.annotation(syncAnnotation) !== true) {
       const handle = tr.state.facet(documentHandleFacet)?.handle ?? null;
       if (handle) {
         const edits: { from: number; to: number; insert: string }[] = [];
