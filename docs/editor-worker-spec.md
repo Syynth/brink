@@ -135,6 +135,11 @@ Two guards, both required:
    and the explicitly allowlisted legacy shims during migration. This is
    the acceptance-gate-equivalent for the boundary: the split cannot
    silently erode back into "just call the session, it's right there."
+   **Re-sequenced to W5 during W3**: mid-migration (W3–W4), nearly every
+   consumer file legitimately touches the sync session, so the check's
+   allowlist would be the whole tree — a guard that forbids nothing. It
+   lands with the flip, when the allowlist collapses to the RPC layer +
+   classifier plumbing and the check gets real teeth.
 
 ### 4.3 Cost accounting
 

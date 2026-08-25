@@ -21,3 +21,35 @@ export class EditorSessionHandle {
     );
   }
 }
+
+/** W3 sibling stub — `document-sessions.ts` imports it at module level.
+ *  Constructed (unlike the class above) but reports `available: false`,
+ *  so every test keeps the session-road behavior with no classifier. */
+export class ClassifierSessionHandle {
+  readonly available = false;
+  configEpoch(): number {
+    return 0;
+  }
+  open(): boolean {
+    return false;
+  }
+  updateSource(): boolean {
+    return false;
+  }
+  applyEdits(): boolean {
+    return false;
+  }
+  getSegmentManifest(): null {
+    return null;
+  }
+  getSegmentLineContexts(): null {
+    return null;
+  }
+  getSegmentSemanticTokensFast(): null {
+    return null;
+  }
+  setDialect(): void {}
+  clearDialect(): void {}
+  setLanguageDialect(): void {}
+  free(): void {}
+}

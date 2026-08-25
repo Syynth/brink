@@ -913,6 +913,20 @@ impl EditorSession {
 }
 
 impl EditorSession {
+    /// Plain input write with NO eager analysis pull — the classifier
+    /// substrate's write path (`docs/editor-worker-spec.md` §4, W3): a
+    /// `ClassifierSession` must never pay (or warm) project analysis, so
+    /// its full-push fallback routes here instead of `update_file` (whose
+    /// `timed_update_and_analyze` eagerly pulls the analysis bundle).
+    /// The per-segment classifier queries pull lex/parse/lower on read,
+    /// memoized — never the analysis composition.
+    pub(crate) fn write_source_no_analysis(&mut self, path: &str, source: &str) {
+        self.session.update_source(path, source.to_owned());
+        if let Some(id) = self.session.file_id(path) {
+            self.mounted_std_ids.remove(&id);
+        }
+    }
+
     /// Apply an already-parsed `[project]`/`[lints]` table to this session —
     /// the one merge point [`Self::apply_project_config`] (caller-supplied
     /// text) and [`Self::discover_project_config`] (#1414 — text located by

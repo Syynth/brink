@@ -10,6 +10,7 @@
  */
 
 import { Annotation, Facet } from "@codemirror/state";
+import { ClassifierMirror } from "./classifier-mirror.js";
 import type { EditorSessionHandle, SegmentManifest } from "@brink-lang/web";
 import type {
   AutoImportResult,
@@ -52,6 +53,16 @@ export class DocHandle {
    *  (and re-created on fragment reopen / file invalidation), so this never
    *  goes stale relative to the wasm doc it addresses. */
   private lastPushed: string | null = null;
+  /** The main-thread classifier mirror (W3, docs/editor-worker-spec.md §4)
+   *  — attached only for full-file handles when the wasm build exports
+   *  `ClassifierSession`. Serves the keystroke path's line contexts and
+   *  fast tokens from its own analysis-free instance; `null` keeps every
+   *  road on the project session (fragments, mocks, older wasm). */
+  private mirror: ClassifierMirror | null = null;
+
+  attachClassifier(mirror: ClassifierMirror): void {
+    this.mirror = mirror;
+  }
 
   constructor(
     private readonly session: EditorSessionHandle,
@@ -95,6 +106,7 @@ export class DocHandle {
     if (spec === null) return;
     this.lastPushed = source;
     this.manifestStale = true;
+    this.mirror?.push(source);
     this.pendingSpec = spec;
     if (this.range !== null) {
       // The wasm side rebased this handle's view range during the splice;
@@ -119,6 +131,7 @@ export class DocHandle {
     if (!applier(this.id, edits)) return false;
     this.lastPushed = null;
     this.manifestStale = true;
+    if (this.mirror && !this.mirror.applyEdits(edits)) this.mirror.markDesynced();
     const e = edits[0];
     this.pendingSpec = { path: this.path, start: e.from, end: e.to, text: e.insert };
     return true;
@@ -144,6 +157,8 @@ export class DocHandle {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.mirror?.free();
+    this.mirror = null;
     this.session.closeDocument(this.id);
   }
 
@@ -188,6 +203,14 @@ export class DocHandle {
    * {@link lineContexts} and derive whole-doc.
    */
   lineContextSlices(): { key: string; ownedFrom: number; contexts: LineContext[] }[] | null {
+    // W3: the classifier plane serves the keystroke path when attached —
+    // its keys are classifier-database identities (one consistent plane
+    // for this consumer's derived caches). Falls back wholesale on any
+    // miss (stale key, desync, no manifest).
+    if (this.mirror) {
+      const mirrored = this.mirror.lineContextSlices();
+      if (mirrored !== null) return mirrored;
+    }
     const manifest = this.segmentManifest();
     if (manifest === null) return null;
     const out: { key: string; ownedFrom: number; contexts: LineContext[] }[] = [];
@@ -209,6 +232,14 @@ export class DocHandle {
   }
 
   lineContexts(): LineContext[] {
+    if (this.mirror) {
+      const mirrored = this.mirror.lineContextSlices();
+      if (mirrored !== null) {
+        const out: LineContext[] = [];
+        for (const seg of mirrored) for (const c of seg.contexts) out.push(c);
+        return out;
+      }
+    }
     const manifest = this.segmentManifest();
     if (manifest === null) return this.session.getLineContextsDoc(this.id);
     const out: LineContext[] = [];
@@ -242,7 +273,18 @@ export class DocHandle {
     if (manifest === null) return this.session.getSemanticTokensDoc(this.id);
     const out: SemanticToken[] = [];
     const live = new Set<string>();
-    for (const seg of manifest.segments) {
+    // W3 blend: with a classifier attached, the FAST road serves an
+    // uncached (edited) segment from the classifier plane while cached
+    // refined slices keep their colors. Keys are per-database identities,
+    // so the two planes pair POSITIONALLY — both mirrors saw the same
+    // edits, so their segmentations agree; a transient length mismatch
+    // simply skips the classifier for this pull.
+    const mirrorManifest = fast && this.mirror ? this.mirror.manifest() : null;
+    const mirrorKeys =
+      mirrorManifest !== null && mirrorManifest.segments.length === manifest.segments.length
+        ? mirrorManifest.segments.map((s) => s.key)
+        : null;
+    for (const [index, seg] of manifest.segments.entries()) {
       live.add(seg.key);
       const entry = this.segSlices.get(seg.key);
       let tokens = entry?.tokens;
@@ -254,7 +296,10 @@ export class DocHandle {
           tokens = refined;
           this.segSlices.set(seg.key, { ...entry, tokens });
         } else if (fast) {
-          const quick = this.session.getSegmentSemanticTokensFastDoc?.(this.id, seg.key) ?? null;
+          const quick =
+            (mirrorKeys !== null ? this.mirror?.fastTokens(mirrorKeys[index]!) : null) ??
+            this.session.getSegmentSemanticTokensFastDoc?.(this.id, seg.key) ??
+            null;
           if (quick === null) return this.session.getSemanticTokensDoc(this.id);
           // Deliberately NOT cached as final: the next non-fast call
           // (the deferred refresh) fetches and caches the refined slice.
@@ -417,12 +462,14 @@ export class DocHandle {
    * call. Throws on an invalid dialect.
    */
   setDialect(dialect: DialogueDialect): void {
+    this.mirror?.setDialect(dialect);
     this.session.setDialect(dialect);
   }
 
   /** Clear the registered dialect — `lineContexts()` reverts to plain
    *  structural classification. */
   clearDialect(): void {
+    this.mirror?.clearDialect();
     this.session.clearDialect();
   }
 
