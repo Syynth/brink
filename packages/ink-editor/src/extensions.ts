@@ -102,12 +102,14 @@ export interface BrinkStudioOptions {
   dialect?: DialogueDialect | null;
 
   // IDE features (all optional — features are enabled when provided)
-  getCompletions?: (source: string, offset: number) => CompletionItem[];
+  /** Sync or async (W2c) — see `CompletionsOptions.getCompletions`. */
+  getCompletions?: (source: string, offset: number) => CompletionItem[] | Promise<CompletionItem[]>;
   /** Auto-import (#312 F): on accepting an out-of-scope completion, ensure the
    *  current file `INCLUDE`s the symbol's source file. Only consulted when
    *  `getCompletions` is also provided. */
   autoImport?: (target: string) => AutoImportResult;
-  getHover?: (source: string, offset: number) => HoverInfo | null;
+  /** Sync or async (W2c) — see `HoverOptions.getHover`. */
+  getHover?: (source: string, offset: number) => HoverInfo | null | Promise<HoverInfo | null>;
   gotoDefinition?: (source: string, offset: number) => Location | null;
   /** Called when goto-definition targets a different file. */
   onNavigateToFile?: (location: Location) => void;
@@ -126,7 +128,8 @@ export interface BrinkStudioOptions {
   /** Optional host override for the inline breakage surface (#324). Return
    *  `true` to suppress the default inline report and render your own. */
   onRenameBreakage?: (result: StructuralResult, ctx: BreakageContext) => boolean;
-  getCodeActions?: (source: string, offset: number) => CodeAction[];
+  /** Sync or async (W2c) — see `CodeActionsOptions.getCodeActions`. */
+  getCodeActions?: (source: string, offset: number) => CodeAction[] | Promise<CodeAction[]>;
   /**
    * Resolve + apply a (non-extract) code action chosen from the menu (#321
    * studio side): compute its `StructuralResult` via `resolveCodeAction` and
@@ -156,7 +159,11 @@ export interface BrinkStudioOptions {
   argumentFormGlyph?: FormGlyphMode;
   /** Accepting a function completion inserts `()` + opens the Form. Default false. */
   argumentAutoOpen?: boolean;
-  getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
+  /** Sync or async (W2c) — see `SignatureHelpOptions.getSignatureHelp`. */
+  getSignatureHelp?: (
+    source: string,
+    offset: number,
+  ) => SignatureInfo | null | Promise<SignatureInfo | null>;
   getFoldingRanges?: (source: string) => FoldRange[];
   /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
    *  When provided, the editor shows a hover ▶ run-icon on knot/stitch
