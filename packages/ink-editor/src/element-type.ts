@@ -594,6 +594,12 @@ function applyDialectFallback(
 
 // ── StateField ──────────────────────────────────────────────────────
 
+/** Per-handle, per-segment derived `LineInfo` cache (#3064 micro C),
+ *  keyed by the segment's self-invalidating identity version — an edit
+ *  re-derives the edited knot's lines only; shifted segments reuse
+ *  their arrays wholesale (LineInfo carries only line-relative data). */
+const lineInfoCache = new WeakMap<object, Map<string, LineInfo[]>>();
+
 function computeLineInfos(state: EditorState): LineInfo[] {
   return perfTime("cm.elementType.computeLineInfos", () => computeLineInfosInner(state, false));
 }
@@ -605,6 +611,51 @@ function computeLineInfosInner(state: EditorState, alreadyPushed: boolean): Line
   const handle = state.facet(documentHandleFacet)?.handle ?? null;
   if (handle) {
     if (!alreadyPushed) handle.pushSource(docString(state));
+
+    // #3064 micro C: derive per segment under the delta protocol's
+    // version keys — cached segments skip the per-line work entirely.
+    const slices = handle.lineContextSlices?.() ?? null;
+    if (slices !== null) {
+      let perSeg = lineInfoCache.get(handle);
+      if (!perSeg) {
+        perSeg = new Map();
+        lineInfoCache.set(handle, perSeg);
+      }
+      const infos: LineInfo[] = [];
+      const live = new Set<string>();
+      for (const seg of slices) {
+        live.add(seg.key);
+        let derived = perSeg.get(seg.key);
+        if (!derived) {
+          derived = [];
+          for (let i = 0; i < seg.contexts.length; i++) {
+            const docLine = seg.ownedFrom + i;
+            if (docLine >= state.doc.lines) break;
+            const line = state.doc.line(docLine + 1);
+            const ctx = seg.contexts[i];
+            const info = lineContextToLineInfo(ctx, line.text);
+            if (ctx.dialect) {
+              const geometry = toGeometry(ctx.dialect, line.text);
+              info.type = ctx.dialect.kind;
+              info.dialect = geometry;
+            }
+            derived.push(info);
+          }
+          perSeg.set(seg.key, derived);
+        }
+        for (const info of derived) infos.push(info);
+      }
+      for (const key of perSeg.keys()) {
+        if (!live.has(key)) perSeg.delete(key);
+      }
+      // The synthetic trailing line (source ending in a newline) and any
+      // uncovered tail fall back per line.
+      for (let i = infos.length; i < state.doc.lines; i++) {
+        infos.push(classifyLine(state.doc.line(i + 1).text));
+      }
+      return infos;
+    }
+
     const contexts = handle.lineContexts();
 
     const infos: LineInfo[] = [];

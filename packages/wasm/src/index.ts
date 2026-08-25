@@ -191,6 +191,19 @@ export class EditorSessionHandle {
     this.mutationCount += 1;
   }
 
+  /**
+   * Session-wide CONFIG epoch (#3064 micro): bumped by registrations that
+   * change query OUTPUTS without changing any segment's identity key —
+   * dialect and host-manifest swaps. Slice caches keyed by segment
+   * identity must also stamp this epoch, or a dialect change would serve
+   * stale dialect-classified slices under unchanged keys.
+   */
+  private configEpochCounter = 0;
+
+  configEpoch(): number {
+    return this.configEpochCounter;
+  }
+
   updateSource(source: string): void {
     this.bump();
     this.session.update_source(source);
@@ -216,12 +229,14 @@ export class EditorSessionHandle {
    * validation and richer hover/completion. Throws on an invalid manifest.
    */
   setHostManifest(manifest: HostManifest): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.set_host_manifest(JSON.stringify(manifest));
   }
 
   /** Clear any registered host manifest, then re-analyze. */
   clearHostManifest(): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.clear_host_manifest();
   }
@@ -236,6 +251,7 @@ export class EditorSessionHandle {
    * kind, …).
    */
   setDialect(dialect: DialogueDialect): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.set_dialect(JSON.stringify(dialect));
   }
@@ -243,6 +259,7 @@ export class EditorSessionHandle {
   /** Clear the registered dialect. Line classification reverts to plain
    *  structural kinds. */
   clearDialect(): void {
+    this.configEpochCounter += 1;
     this.bump();
     this.session.clear_dialect();
   }

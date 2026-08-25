@@ -94,6 +94,7 @@ export class DocHandle {
     // the file is shadowed (un-mounted) by a real project file.
     if (spec === null) return;
     this.lastPushed = source;
+    this.manifestStale = true;
     this.pendingSpec = spec;
     if (this.range !== null) {
       // The wasm side rebased this handle's view range during the splice;
@@ -117,6 +118,7 @@ export class DocHandle {
     if (!applier) return false;
     if (!applier(this.id, edits)) return false;
     this.lastPushed = null;
+    this.manifestStale = true;
     const e = edits[0];
     this.pendingSpec = { path: this.path, start: e.from, end: e.to, text: e.insert };
     return true;
@@ -152,10 +154,57 @@ export class DocHandle {
    *  exactly when its content does and survives shift edits — so the
    *  only maintenance is pruning keys that leave the manifest. */
   private segSlices = new Map<string, { contexts?: LineContext[]; tokens?: SemanticToken[] }>();
+  /** Config epoch the slice cache was filled under — a dialect or host-
+   *  manifest swap changes slice CONTENT without changing identity keys,
+   *  so the cache must clear when the epoch moves. */
+  private sliceEpoch = -1;
+  /** One manifest fetch per document version (#3064 micro B): the
+   *  manifest changes only when the document (or config) does, and both
+   *  invalidation points run through this handle. */
+  private manifestCache: SegmentManifest | null = null;
+  private manifestStale = true;
 
   private segmentManifest(): SegmentManifest | null {
     if (this.isFragment) return null;
-    return this.session.getSegmentManifestDoc?.(this.id) ?? null;
+    const epoch = this.session.configEpoch?.() ?? 0;
+    if (epoch !== this.sliceEpoch) {
+      this.sliceEpoch = epoch;
+      this.segSlices.clear();
+      this.manifestStale = true;
+    }
+    if (this.manifestStale) {
+      this.manifestCache = this.session.getSegmentManifestDoc?.(this.id) ?? null;
+      this.manifestStale = false;
+    }
+    return this.manifestCache;
+  }
+
+  /**
+   * The per-segment context slices with their version keys (#3064 micro
+   * C): lets a consumer cache DERIVED per-line values (the element-type
+   * `LineInfo`s) under the same self-invalidating keys instead of
+   * rebuilding them for every line of the document on each keystroke.
+   * `null` → no delta protocol (fragment view, native file, mock) — use
+   * {@link lineContexts} and derive whole-doc.
+   */
+  lineContextSlices(): { key: string; ownedFrom: number; contexts: LineContext[] }[] | null {
+    const manifest = this.segmentManifest();
+    if (manifest === null) return null;
+    const out: { key: string; ownedFrom: number; contexts: LineContext[] }[] = [];
+    const live = new Set<string>();
+    for (const seg of manifest.segments) {
+      live.add(seg.key);
+      let entry = this.segSlices.get(seg.key);
+      if (!entry?.contexts) {
+        const slice = this.session.getSegmentLineContextsDoc?.(this.id, seg.key) ?? null;
+        if (slice === null) return null;
+        entry = { ...entry, contexts: slice };
+        this.segSlices.set(seg.key, entry);
+      }
+      out.push({ key: seg.key, ownedFrom: seg.ownedFrom, contexts: entry.contexts });
+    }
+    this.pruneSlices(live);
+    return out;
   }
 
   lineContexts(): LineContext[] {
