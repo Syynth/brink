@@ -3361,3 +3361,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The perf surface (probe, browser observers, wasm counters, `__brinkPerf`, the Performance tool window) is no longer dev-only: `mountStudio` enables it by default in all builds, with `MountStudioOptions.perf: false` (playground `?perf=0`) as the embedder opt-out. Supersedes the dev-only edge of the 2026-08-24 measure-first ruling. Corollaries: the worker realm reports its own probe + wasm counters through host-level protocol queries (`hostPerfReport` family), and the probe's User Timing mirror self-clears its own entries so an always-on session stays bounded.
 - **WHY:** Real projects are opened in production desktop builds — a dev-only panel structurally cannot measure the case that matters (the maintainer's own project remains slow where the small test fixtures are fast). The panel's payload is structurally content-free (static span/counter names, numeric values), so shipping it leaks nothing from an author's project.
+
+## Content-logic delimiters render as code, not prose
+- **WHEN:** 2026-08-25
+- **PROJECT:** brink
+- **SYSTEM:** editor packages / semantic tokens
+- **SCOPE:** minor/local
+- **WHAT:** The `{` / `}` around inline alternatives, conditionals, and interpolations — and the `|` between alternative branches — classify as operator semantic tokens (both ink and native classifiers), so they take the code color instead of blending into dialogue/action prose. Prose-absorbed and escaped braces/pipes stay uncolored.
+- **WHY:** Author feedback relayed by the maintainer: uncolored delimiters visually merge with the surrounding dialogue, tricking the reader into parsing them as part of the prose. The delimiters are structural code; they should read like the conditions they delimit.
