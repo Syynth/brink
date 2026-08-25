@@ -126,6 +126,10 @@ async function createHarness(
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/** #3110: symbol ranges resolve hint-first with an async worker upgrade —
+ *  flush the landing before asserting fragment content. */
+const flushWorkerRoad = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe("DocumentSessions", () => {
   let harness: Harness;
 
@@ -149,8 +153,9 @@ describe("DocumentSessions", () => {
       expect(docText(view)).toBe(START_KNOT_TEXT);
     });
 
-    it("resolves symbol ranges from the session even without a hint", () => {
+    it("resolves symbol ranges without a hint (async worker upgrade, #3110)", async () => {
       const { view } = harness.mount("main.ink::story", "group-1");
+      await flushWorkerRoad(); // degrade-then-upgrade: the worker resolves the range
       expect(docText(view)).toBe(STORY_KNOT_TEXT);
     });
 
@@ -180,8 +185,9 @@ describe("DocumentSessions", () => {
   });
 
   describe("splice-back (fragment handles)", () => {
-    it("edits in a symbol view splice into the full file", () => {
+    it("edits in a symbol view splice into the full file", async () => {
       const { view } = harness.mount("main.ink::start", "group-1");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: "=== start ===\nModified content!\n" },
       });
@@ -197,8 +203,9 @@ describe("DocumentSessions", () => {
       );
     });
 
-    it("successive edits keep the fragment range in sync", () => {
+    it("successive edits keep the fragment range in sync", async () => {
       const { view } = harness.mount("main.ink::start", "group-1");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: "=== start ===\nEdit 1.\n" },
       });
@@ -287,13 +294,18 @@ describe("DocumentSessions", () => {
       expect(docText(file.view)).toContain("Why, Hello, world!");
     });
 
-    it("file edits outside the fragment shift its range without touching it", () => {
+    it("file edits outside the fragment shift its range without touching it", async () => {
       harness.documents.noteTarget(START_TARGET);
       const frag = harness.mount("main.ink::start", "group-1");
       const file = harness.mount("main.ink", "group-2");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
 
       // Edit before the fragment in the file view.
       typeAt(file.view, 0, "// prefix\n");
+      // #3110: the mirror's refresh-from-file fallback transiently degrades
+      // the fragment (hint cleared, allowHint false); the worker landing
+      // restores it at the SHIFTED offsets — flush to let it settle.
+      await flushWorkerRoad();
       // Fragment content unchanged...
       expect(docText(frag.view)).toBe(START_KNOT_TEXT);
       // ...and further fragment edits splice at the *new* location.
@@ -428,9 +440,10 @@ describe("DocumentSessions", () => {
   });
 
   describe("renameSymbolDoc (#305)", () => {
-    it("re-keys an open symbol view to the renamed knot", () => {
+    it("re-keys an open symbol view to the renamed knot", async () => {
       harness.documents.noteTarget(START_TARGET);
       const { view } = harness.mount("main.ink::start", "group-1");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
       expect(docText(view)).toBe(START_KNOT_TEXT);
 
       // Rename `start` → `begin` in the file, then re-key the open symbol view —
@@ -439,6 +452,7 @@ describe("DocumentSessions", () => {
       harness.project.getSession().updateFile("main.ink", renamed);
       harness.documents.invalidateFile("main.ink"); // `start` gone → degrades
       harness.documents.renameSymbolDoc("main.ink", "start", "begin");
+      await flushWorkerRoad(); // #3110: re-resolution lands
 
       // The same view now shows the renamed knot, re-resolved by the new name —
       // not the degraded full file.
@@ -683,9 +697,10 @@ describe("DocumentSessions", () => {
   });
 
   describe("slot pruning", () => {
-    it("drops cached states for closed tabs but keeps mounted ones", () => {
+    it("drops cached states for closed tabs but keeps mounted ones", async () => {
       const a = harness.mount("main.ink", "group-1");
       const b = harness.mount("main.ink::story", "group-1");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
       b.dispose(); // backgrounded: cached state only
 
       harness.documents.retainSlots(
@@ -695,6 +710,7 @@ describe("DocumentSessions", () => {
 
       // The pruned slot remounts from scratch (content from the session).
       const again = harness.mount("main.ink::story", "group-1");
+      await flushWorkerRoad(); // #3110: fragment upgrade lands
       expect(docText(again.view)).toBe(STORY_KNOT_TEXT);
       expect(docText(a.view)).toBe(MAIN_INK);
     });

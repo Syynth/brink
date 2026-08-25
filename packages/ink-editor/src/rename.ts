@@ -19,7 +19,7 @@
  * suppress the default inline report); the default is this inline report.
  */
 
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Facet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { closeHoverTooltips, Decoration, EditorView, keymap, WidgetType } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
 import { InlineNameInput } from "./inline-name-input.js";
@@ -49,13 +49,19 @@ export interface BreakageContext {
 
 export interface RenameOptions {
   /** Returns the renameable range at `offset` (view coords), or null. */
-  prepareRename: (source: string, offset: number) => Location | null;
+  /** Sync or async (#3110 — the studio wiring rides the worker road). */
+  prepareRename: (source: string, offset: number) => Location | null | Promise<Location | null>;
   /**
    * Live (debounced) rename query: returns the safe-rename result for renaming
    * the symbol at `offset` (view coords) to `newName`. Side-effect-free — it
    * computes the new sources + breakage report without applying anything.
    */
-  renameSymbolAt: (offset: number, newName: string) => StructuralResult;
+  /** Sync or async (#3110): the live-badge query lands through
+   *  InlineNameInput's existing pending machinery. */
+  renameSymbolAt: (
+    offset: number,
+    newName: string,
+  ) => StructuralResult | Promise<StructuralResult>;
   /**
    * Commit a rename: apply the (already-computed) `result` edits across files.
    * Called for a safe rename on Enter, or on an explicit "Rename anyway".
@@ -113,6 +119,10 @@ export class RenameQueryCache {
  *  context-menu "Rename…" path. */
 export const startInlineRenameEffect = StateEffect.define<{
   offset: number | null;
+  /** The rename target, PRE-RESOLVED by {@link startInlineRename} (#3110:
+   *  resolution rides the worker road, and a StateField cannot await —
+   *  so the effect carries the answer instead of the question). */
+  range: Location;
   /** The target token's color-bearing classes (tok-*, brink-hir-*), captured
    *  by startInlineRename BEFORE the rename-target mark is applied — once it
    *  is, CM rebuilds the spans and the original classes are gone from the
@@ -121,10 +131,44 @@ export const startInlineRenameEffect = StateEffect.define<{
   tokenClasses: readonly string[];
 }>();
 
-/** Dispatch the inline-rename start effect on `view` (used by the
- *  context-menu route, which has a view but enters via a command). */
-export function startInlineRename(view: EditorView, offset?: number): void {
+/** The prepare-rename resolver, provided by {@link renameExtension} so
+ *  {@link startInlineRename} (a module-level entry with no options access)
+ *  can resolve the target before dispatching (#3110). */
+const renameResolverFacet = Facet.define<
+  (source: string, offset: number) => Location | null | Promise<Location | null>,
+  ((source: string, offset: number) => Location | null | Promise<Location | null>) | null
+>({ combine: (values) => values[0] ?? null });
+
+/**
+ * Resolve the rename target (worker road, #3110) and dispatch the inline
+ * rename row on landing — under the usual guards (doc held still, view
+ * alive). Resolves `true` when the row opened; `false` lets callers fall
+ * back (e.g. the modal prompt).
+ */
+export async function startInlineRename(view: EditorView, offset?: number): Promise<boolean> {
   const pos = offset ?? view.state.selection.main.head;
+  const resolver = view.state.facet(renameResolverFacet);
+  if (resolver === null) return false;
+  const doc = view.state.doc;
+  let range: Location | null;
+  try {
+    range = await resolver(doc.toString(), pos);
+  } catch {
+    return false;
+  }
+  if (range === null) return false;
+  if (!view.dom.isConnected || view.state.doc !== doc) return false; // stale landing
+  dispatchInlineRename(view, pos, offset ?? null, range);
+  return true;
+}
+
+/** The (synchronous) dispatch half: capture token classes, raise the effect. */
+function dispatchInlineRename(
+  view: EditorView,
+  pos: number,
+  offset: number | null,
+  range: Location,
+): void {
   // Capture the token's highlight classes NOW — the DOM is still un-marked.
   const tokenClasses: string[] = [];
   const domAt = view.domAtPos(Math.min(pos + 1, view.state.doc.length));
@@ -142,7 +186,7 @@ export function startInlineRename(view: EditorView, offset?: number): void {
       // NEW cards while the rename row is open (hover.ts), but an
       // already-open card persists until closed and would sit on the badge.
       closeHoverTooltips,
-      startInlineRenameEffect.of({ offset: offset ?? null, tokenClasses }),
+      startInlineRenameEffect.of({ offset, range, tokenClasses }),
     ],
   });
 }
@@ -303,15 +347,9 @@ export function renameExtension(options: RenameOptions): Extension {
     update(value, tr) {
       for (const effect of tr.effects) {
         if (effect.is(startInlineRenameEffect)) {
-          const pos = effect.value.offset ?? tr.state.selection.main.head;
+          // The range arrives PRE-RESOLVED (#3110) — see the effect's doc.
+          const range = effect.value.range;
           const source = tr.state.doc.toString();
-          let range: Location | null;
-          try {
-            range = options.prepareRename(source, pos);
-          } catch {
-            return null;
-          }
-          if (range === null) return value;
           return {
             from: range.start,
             to: range.end,
@@ -355,22 +393,19 @@ export function renameExtension(options: RenameOptions): Extension {
     {
       key: "F2",
       run(view: EditorView): boolean {
-        // Only intercept F2 when the cursor is on a renameable symbol — else the
-        // key falls through (matching the old prepareRename gate).
-        const pos = view.state.selection.main.head;
-        const source = view.state.doc.toString();
-        let range: Location | null;
-        try {
-          range = options.prepareRename(source, pos);
-        } catch {
-          return false;
-        }
-        if (range === null) return false;
-        startInlineRename(view, pos);
+        // The renameable gate resolves on the worker road (#3110): claim
+        // the key now and open the row on landing — F2 on a non-symbol
+        // simply does nothing (it has no other binding to fall through
+        // to, so the optimistic claim costs nothing observable).
+        void startInlineRename(view, view.state.selection.main.head);
         return true;
       },
     },
   ]);
 
-  return [field, keys];
+  return [
+    field,
+    keys,
+    renameResolverFacet.of((source, offset) => options.prepareRename(source, offset)),
+  ];
 }

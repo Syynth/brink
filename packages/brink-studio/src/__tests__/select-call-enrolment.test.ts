@@ -151,6 +151,7 @@ const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".turbo"]);
  * caught rather than trusted.
  */
 const SCANNED_FILES = [
+  resolve(packagesRoot, "ink-editor/src/goto-definition.ts"),
   resolve(packagesRoot, "ink-editor/src/inline-name-input.ts"),
   resolve(packagesRoot, "studio-ui/src/Binder.tsx"),
   resolve(packagesRoot, "studio-ui/src/SearchView.tsx"),
@@ -159,14 +160,15 @@ const SCANNED_FILES = [
 
 /**
  * Call sites the scan must find, summing to {@link EXPECTED_CALL_SITES}:
- * `inline-name-input.ts`'s guarded `select()`, `Binder.tsx`'s two
+ * `goto-definition.ts`'s emulated multi-cursor (CM6 EditorSelection
+ * `addRange`, #3110), `inline-name-input.ts`'s guarded `select()`, `Binder.tsx`'s two
  * `setSelectionRange` calls (rename pre-select, new-file cursor-to-end),
  * `SearchView.tsx`'s `select()`, and `SymbolRenamePrompt.tsx`'s guarded
  * `select()`. Asserted exactly, not as "more than zero": a scan that
  * silently matched nothing — or matched only some — would otherwise leave
  * every per-site check below vacuous while still reporting green.
  */
-const EXPECTED_CALL_SITES = 5;
+const EXPECTED_CALL_SITES = 6;
 
 /** Recursively list `.ts`/`.tsx` files under `dir`, skipping {@link SKIP_DIRS}. */
 function listSourceFiles(dir: string): string[] {

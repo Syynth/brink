@@ -19,7 +19,7 @@
  * lives in the store (per-card overrides + the all-flag, spanning modes).
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useReducer, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
 import {
   SearchCardBuffer,
@@ -108,13 +108,25 @@ function useHighlightCache(): (path: string, source: string) => SearchCardHighli
   const cacheRef = useRef(
     new Map<string, { source: string; data: SearchCardHighlight | null }>(),
   );
+  // #3110: the token pull rides the worker road. A miss renders the card
+  // unhighlighted, kicks the async fetch (the placeholder entry stops
+  // refetch storms while it is in flight), and re-renders on landing.
+  const [, bump] = useReducer((n: number) => n + 1, 0);
   return useCallback(
     (path: string, source: string) => {
       const cached = cacheRef.current.get(path);
       if (cached && cached.source === source) return cached.data;
-      const data = storeApi.getState().getSearchHighlighting(path);
-      cacheRef.current.set(path, { source, data });
-      return data;
+      cacheRef.current.set(path, { source, data: null });
+      void storeApi
+        .getState()
+        .getSearchHighlighting(path)
+        .then((data) => {
+          const current = cacheRef.current.get(path);
+          if (!current || current.source !== source) return; // superseded
+          cacheRef.current.set(path, { source, data });
+          if (data !== null) bump();
+        });
+      return null;
     },
     [storeApi],
   );

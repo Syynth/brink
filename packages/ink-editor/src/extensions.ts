@@ -110,17 +110,24 @@ export interface BrinkStudioOptions {
   autoImport?: (target: string) => AutoImportResult;
   /** Sync or async (W2c) — see `HoverOptions.getHover`. */
   getHover?: (source: string, offset: number) => HoverInfo | null | Promise<HoverInfo | null>;
-  gotoDefinition?: (source: string, offset: number) => Location | null;
+  /** Sync or async (#3110). */
+  gotoDefinition?: (source: string, offset: number) => Location | null | Promise<Location | null>;
   /** Called when goto-definition targets a different file. */
   onNavigateToFile?: (location: Location) => void;
   /** Returns the current active file path (for cross-file navigation detection). */
   getActiveFile?: () => string;
-  findReferences?: (source: string, offset: number) => Location[];
-  prepareRename?: (source: string, offset: number) => Location | null;
+  /** Sync or async (#3110). */
+  findReferences?: (source: string, offset: number) => Location[] | Promise<Location[]>;
+  /** Sync or async (#3110). */
+  prepareRename?: (source: string, offset: number) => Location | null | Promise<Location | null>;
   /** Live (debounced) safe-rename query for the inline-rename badge (#323/#324):
    *  computes the new sources + breakage report without applying anything.
    *  `offset` is in view coords; the host folds in any fragment-view origin. */
-  renameSymbolAt?: (offset: number, newName: string) => StructuralResult;
+  /** Sync or async (#3110). */
+  renameSymbolAt?: (
+    offset: number,
+    newName: string,
+  ) => StructuralResult | Promise<StructuralResult>;
   /** Commit an inline rename — apply the (already-computed) edits across files.
    *  Called on a safe Enter or an explicit "Rename anyway". `currentName` is the
    *  symbol's original name (for re-keying open symbol tabs). */

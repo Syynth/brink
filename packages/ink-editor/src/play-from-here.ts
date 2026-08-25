@@ -32,8 +32,8 @@ export interface PlayFromHereOptions {
   onTextContextMenu?: (request: TextMenuRequest) => void;
   /** Identity resolution for the menu's Navigate/Rename group — the same
    *  callbacks the cmd-click / Shift-Alt-F / F2 surfaces use. */
-  gotoDefinition?: (source: string, offset: number) => Location | null;
-  findReferences?: (source: string, offset: number) => Location[];
+  gotoDefinition?: (source: string, offset: number) => Location | null | Promise<Location | null>;
+  findReferences?: (source: string, offset: number) => Location[] | Promise<Location[]>;
   /** Host references surface (the Search panel) — see references.ts. */
   onShowReferences?: (
     symbol: string,
@@ -47,7 +47,7 @@ export interface PlayFromHereOptions {
   /** Per-token rename gate — the same query F2 uses. A token goto-definition
    *  resolves but prepareRename refuses (externals: the host-binding
    *  contract) gets Navigate items but NO dead Rename item. */
-  prepareRename?: (source: string, offset: number) => Location | null;
+  prepareRename?: (source: string, offset: number) => Location | null | Promise<Location | null>;
 }
 
 // ── Path computation ────────────────────────────────────────────────
@@ -229,16 +229,16 @@ function selectionText(view: EditorView): string {
 /** The identity group for the token at `pos`, or undefined off-identity.
  *  "Goto-definition resolves here" is the identity test: exactly the tokens
  *  with definitions (references and declarations alike) get the group. */
-function identitySectionAt(
+async function identitySectionAt(
   view: EditorView,
   pos: number,
   options: PlayFromHereOptions,
-): IdentityMenuSection | undefined {
+): Promise<IdentityMenuSection | undefined> {
   if (!options.gotoDefinition) return undefined;
   const source = view.state.doc.toString();
   let location: Location | null;
   try {
-    location = options.gotoDefinition(source, pos);
+    location = await options.gotoDefinition(source, pos);
   } catch {
     return undefined;
   }
@@ -252,13 +252,13 @@ function identitySectionAt(
     gotoDefinition: () => navigateToLocation(view, loc, options),
     findReferences: findReferences
       ? () => {
-          findReferencesAt(view, pos, { findReferences, onShowReferences, gotoDefinition });
+          void findReferencesAt(view, pos, { findReferences, onShowReferences, gotoDefinition });
         }
       : undefined,
     rename:
-      options.renameEnabled && renameableAt(view, pos, options)
+      options.renameEnabled && (await renameableAt(view, pos, options))
         ? () => {
-            startInlineRename(view, pos);
+            void startInlineRename(view, pos);
           }
         : undefined,
   };
@@ -266,10 +266,14 @@ function identitySectionAt(
 
 /** Whether prepareRename accepts this offset — mirrors the F2 gate, so the
  *  menu never offers a Rename that would silently no-op (externals). */
-function renameableAt(view: EditorView, pos: number, options: PlayFromHereOptions): boolean {
+async function renameableAt(
+  view: EditorView,
+  pos: number,
+  options: PlayFromHereOptions,
+): Promise<boolean> {
   if (!options.prepareRename) return true;
   try {
-    return options.prepareRename(view.state.doc.toString(), pos) !== null;
+    return (await options.prepareRename(view.state.doc.toString(), pos)) !== null;
   } catch {
     return false;
   }
@@ -325,12 +329,12 @@ export function lineActionsAt(
   return actions;
 }
 
-function buildTextMenuRequest(
+async function buildTextMenuRequest(
   view: EditorView,
   x: number,
   y: number,
   options: PlayFromHereOptions,
-): TextMenuRequest {
+): Promise<TextMenuRequest> {
   const hasSelection = !view.state.selection.main.empty;
   const pos = view.posAtCoords({ x, y });
   const lineInfo =
@@ -338,7 +342,7 @@ function buildTextMenuRequest(
       ? undefined
       : view.state.field(elementTypeField, false)?.[view.state.doc.lineAt(pos).number - 1];
   return {
-    identity: pos == null ? undefined : identitySectionAt(view, pos, options),
+    identity: pos == null ? undefined : await identitySectionAt(view, pos, options),
     lineType: lineInfo?.type,
     lineActions: pos == null ? undefined : lineActionsAt(view, pos, options),
     x,
@@ -452,7 +456,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
         return true;
       }
       if (onTextContextMenu) {
-        onTextContextMenu(buildTextMenuRequest(view, event.clientX, event.clientY, options));
+        // Identity/rename gating resolves on the worker road (#3110): the
+        // menu opens one landing later — imperceptible next to the click.
+        void buildTextMenuRequest(view, event.clientX, event.clientY, options).then(
+          (request) => {
+            if (view.dom.isConnected) onTextContextMenu(request);
+          },
+        );
       }
       return true;
     },

@@ -496,14 +496,6 @@ export class DocHandle {
     return this.session.getHoverDoc(this.id, offset);
   }
 
-  gotoDefinition(offset: number): Location | null {
-    return this.session.gotoDefinitionDoc(this.id, offset);
-  }
-
-  findReferences(offset: number): Location[] {
-    return this.session.findReferencesDoc(this.id, offset);
-  }
-
   prepareRename(offset: number): Location | null {
     return this.session.prepareRenameDoc(this.id, offset);
   }

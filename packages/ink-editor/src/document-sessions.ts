@@ -665,7 +665,7 @@ export class DocumentSessions {
    * the whole-file offset into that view's coords). A no-op when no view of the
    * path is mounted; the modal `SymbolRenamePrompt` covers the Binder/graph.
    */
-  startInlineRenameAt(path: string, offset: number): boolean {
+  async startInlineRenameAt(path: string, offset: number): Promise<boolean> {
     const focused =
       this.focusedSlotId !== null ? this.slots.get(this.focusedSlotId) : undefined;
     const candidates: ViewSlot[] = [];
@@ -683,8 +683,10 @@ export class DocumentSessions {
       const base = slot.handle?.fragmentRange()?.start ?? 0;
       const viewOffset = offset - base;
       if (viewOffset < 0 || viewOffset > slot.view.state.doc.length) continue;
-      startInlineRename(slot.view, viewOffset);
-      return true;
+      // #3110: the target resolves on the worker road — await so a
+      // non-renameable offset can fall through to the next candidate
+      // view (and ultimately the caller's modal fallback).
+      if (await startInlineRename(slot.view, viewOffset)) return true;
     }
     return false;
   }
@@ -948,11 +950,40 @@ export class DocumentSessions {
     docKey: string,
     allowHint: boolean,
   ): { start: number; end: number } | null {
-    const found = findSymbolByName(this.project.getSession().getFileSymbols(path), symbol);
-    if (found !== null) {
-      return { start: found.full_start, end: found.full_end };
-    }
+    // #3110: the synchronous answer is the HINT (the opener's worker-fed
+    // outline, or a previous async resolution below) — never a main-thread
+    // symbol-index pull. The worker verifies asynchronously: a landing
+    // that finds the symbol at a different range (or finds it where we
+    // degraded to the full file) updates the hint and re-resolves the
+    // slot. Refresh paths (allowHint false) keep the old contract —
+    // degrade now, upgrade when the worker answers.
+    this.verifySymbolRange(path, symbol, docKey);
     return allowHint ? (this.symbolHints.get(docKey) ?? null) : null;
+  }
+
+  /** The async half of {@link resolveSymbolRange}: ask the worker for the
+   *  symbol's current range; on landing, update the hint and re-open the
+   *  slot's handle if the mounted range disagrees. */
+  private verifySymbolRange(path: string, symbol: string, docKey: string): void {
+    void this.project
+      .docClient()
+      .query<DocumentSymbol[]>("getFileSymbols", [path], { priority: "interactive" })
+      .promise.then((r) => {
+        const found = findSymbolByName(r.value, symbol);
+        if (found === null) return; // symbol gone — the degrade stands
+        const range = { start: found.full_start, end: found.full_end };
+        const previous = this.symbolHints.get(docKey);
+        this.symbolHints.set(docKey, range);
+        if (previous?.start === range.start && previous?.end === range.end) return;
+        const slot = [...this.slots.values()].find((sl) => sl.docKey === docKey);
+        if (slot === undefined || slot.view === null) return;
+        const current = slot.handle?.fragmentRange() ?? null;
+        if (current?.start === range.start && current?.end === range.end) return;
+        // Re-open against the fresh hint (allowHint stays true here — the
+        // hint was just written by this landing, so there is no loop).
+        this.refreshSlotFromFile(slot, { allowHint: true });
+      })
+      .catch(() => {});
   }
 
   private fileContent(path: string): string {
@@ -1088,20 +1119,28 @@ export class DocumentSessions {
       },
       getHover: (_source, offset) =>
         this.interactiveQuery<HoverInfo | null>(slot, "getHoverDoc", [offset]) ?? null,
-      gotoDefinition: (_source, offset) => slot.handle?.gotoDefinition(offset) ?? null,
-      findReferences: (_source, offset) => slot.handle?.findReferences(offset) ?? [],
-      prepareRename: (_source, offset) => slot.handle?.prepareRename(offset) ?? null,
+      // #3110: the one-shot family rides the worker road too.
+      gotoDefinition: (_source, offset) =>
+        this.interactiveQuery<Location | null>(slot, "gotoDefinitionDoc", [offset]) ?? null,
+      findReferences: (_source, offset) =>
+        this.interactiveQuery<Location[]>(slot, "findReferencesDoc", [offset]) ?? [],
+      prepareRename: (_source, offset) =>
+        this.interactiveQuery<Location | null>(slot, "prepareRenameDoc", [offset]) ?? null,
       // Inline rename (#323/#324): the badge's live breakage query. Fold any
       // fragment-view origin into a whole-file UTF-16 offset, then compute the
       // safe-rename result (side-effect-free). Only wired alongside a commit
       // handler, so the F2 inline widget never appears as a dead control.
       renameSymbolAt: this.callbacks.onRenameCommit
         ? (offset, newName) => {
-            const base = slot.handle?.fragmentRange()?.start ?? 0;
-            return (
-              slot.handle?.renameSymbolAt(base + offset, newName) ??
-              emptyRenameResult(slot.path)
-            );
+            if (slot.handle === null) return emptyRenameResult(slot.path);
+            const base = slot.handle.fragmentRange()?.start ?? 0;
+            // #3110: the safe-rename compute (side-effect-free) rides the
+            // worker road at interactive priority.
+            return this.project.structuralQuery<StructuralResult>("renameSymbolAt", [
+              slot.path,
+              base + offset,
+              newName,
+            ]);
           }
         : undefined,
       // Commit a safe (or forced) inline rename through the host: apply the
@@ -1392,10 +1431,10 @@ export class DocumentSessions {
    * ranges by name (full file when the symbol vanished), reopen the handle,
    * and replace the view's doc when the text differs.
    */
-  private refreshSlotFromFile(slot: ViewSlot): void {
+  private refreshSlotFromFile(slot: ViewSlot, opts?: { allowHint?: boolean }): void {
     if (slot.view === null) return;
     slot.handle?.close();
-    slot.handle = this.openHandle(slot, { allowHint: false });
+    slot.handle = this.openHandle(slot, { allowHint: opts?.allowHint ?? false });
     if (slot.handle !== null && !slot.handle.isFragment) {
       // The symbol vanished: the stale hint must not resurrect the old range
       // on a later remount either.
