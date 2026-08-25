@@ -521,9 +521,28 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
     deferredRefresh(refreshHirOverlayEffect),
     EditorView.decorations.from(field, (v) => v.marks),
     EditorView.decorations.from(field, (v) => v.lineDecos),
-    EditorView.decorations.compute([field, "selection"], (state) =>
-      perfTime("cm.hirOverlay.occurrences", () => buildOccurrences(state, field)),
-    ),
+    // #3064 micro: occurrence highlights as a field with adaptive
+    // deferral — in a LARGE document a doc change maps the existing
+    // highlights through the edit and the deferred overlay refresh
+    // rebuilds them ~120 ms after the burst (the cadence mainstream
+    // editors debounce occurrence highlights to anyway). Pure selection
+    // moves (clicks, arrow keys) rebuild immediately, so navigation
+    // feels instant; small documents rebuild on every transaction as
+    // before.
+    StateField.define<DecorationSet>({
+      create(state) {
+        return perfTime("cm.hirOverlay.occurrences", () => buildOccurrences(state, field));
+      },
+      update(value, tr) {
+        const refresh = tr.effects.some((e) => e.is(refreshHirOverlayEffect));
+        if (tr.docChanged && !refresh && tr.newDoc.lines >= DEFER_LINE_THRESHOLD) {
+          return value.map(tr.changes);
+        }
+        if (!tr.docChanged && !refresh && tr.selection === undefined) return value;
+        return perfTime("cm.hirOverlay.occurrences", () => buildOccurrences(tr.state, field));
+      },
+      provide: (f) => EditorView.decorations.from(f),
+    }),
     gutter({
       class: "brink-hir-rail-gutter",
       lineMarker(view, line) {
