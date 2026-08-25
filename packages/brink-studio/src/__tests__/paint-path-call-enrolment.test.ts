@@ -155,12 +155,27 @@ const workspaceYamlPath = resolve(repoRoot, "pnpm-workspace.yaml");
  * (`project.renameFile(...)`/`project.renameDir(...)` in `binder.ts`) nor
  * the unrelated host-I/O `this.provider.renameFile(...)` in the same file.
  */
+// W2e (docs/editor-worker-spec.md): the five enrolled ops now ride the
+// async session facade — `structuralQuery("<op>", ...)` — so each pattern
+// matches EITHER the facade call (the current, enrolled shape) OR the raw
+// gated wasm call (the regression shape this guard exists to catch). One
+// id, one expected call site: a raw `.moveStitch(` reappearing anywhere
+// makes it two sites for the id and fails the exactly-one assertion.
 const CALL_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
-  { method: "moveStitch", pattern: /\.moveStitch\(/ },
-  { method: "promoteStitch", pattern: /\.promoteStitch\(/ },
-  { method: "demoteKnot", pattern: /\.demoteKnot\(/ },
-  { method: "session.renameFile", pattern: /\.session\.renameFile\(/ },
-  { method: "session.renameDir", pattern: /\.session\.renameDir\(/ },
+  { method: "moveStitch", pattern: /\.moveStitch\(|structuralQuery[^(]*\("moveStitch"/ },
+  {
+    method: "promoteStitch",
+    pattern: /\.promoteStitch\(|structuralQuery[^(]*\("promoteStitch"/,
+  },
+  { method: "demoteKnot", pattern: /\.demoteKnot\(|structuralQuery[^(]*\("demoteKnot"/ },
+  {
+    method: "session.renameFile",
+    pattern: /\.session\.renameFile\(|structuralQuery[^(]*\("renameFile"/,
+  },
+  {
+    method: "session.renameDir",
+    pattern: /\.session\.renameDir\(|structuralQuery[^(]*\("renameDir"/,
+  },
 ];
 
 const MARKER = /^\/\/\s*PAINT-PATH-(DEFERRED|EXEMPT)\s+(\S+):\s*(.+)$/;

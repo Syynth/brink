@@ -579,11 +579,13 @@ export class ProjectSession {
   async renameFile(oldPath: string, newPath: string): Promise<RenameFileResult> {
     if (oldPath === newPath) return { referrers: [], safe: true, introducedDiagnostics: [] };
     await this.deferGatedCall();
+    type RenameFileOp = ReturnType<EditorSessionHandle["renameFile"]>;
     // PAINT-PATH-DEFERRED rename-file: gated (structural_result::gate_with_source
     // via crates/internal/brink-ide/src/file_rename.rs) — deferred by the
     // deferGatedCall yield immediately above (#2776; destroy()-safe since
-    // #2794 — see that method's doc comment).
-    const result = this.session.renameFile(oldPath, newPath);
+    // #2794 — see that method's doc comment) and run through the async
+    // session facade at interactive priority (W2e).
+    const result = await this.structuralQuery<RenameFileOp>("renameFile", [oldPath, newPath]);
     if (!result.ok) {
       throw new Error(result.error ?? `cannot rename ${oldPath}`);
     }
@@ -680,12 +682,13 @@ export class ProjectSession {
       return { moved: [], referrers: [], safe: true, introducedDiagnostics: [] };
     }
     await this.deferGatedCall();
+    type RenameDirOp = ReturnType<EditorSessionHandle["renameDir"]>;
     // PAINT-PATH-DEFERRED rename-dir: gated (structural_result::gate_with_source
     // via crates/internal/brink-ide/src/dir_rename.rs) — deferred by the
     // deferGatedCall yield immediately above (#2587, mirroring #2776's
     // rename-file remedy; destroy()-safe since #2794 — see that method's
     // doc comment).
-    const result = this.session.renameDir(oldPrefix, newPrefix);
+    const result = await this.structuralQuery<RenameDirOp>("renameDir", [oldPrefix, newPrefix]);
     if (!result.ok) {
       throw new Error(result.error ?? `cannot rename directory ${oldPrefix}`);
     }
@@ -842,6 +845,23 @@ export class ProjectSession {
    *  surface later migration waves move onto. One client per project. */
   sessionClient(): SessionClient {
     return this.client;
+  }
+
+  /**
+   * One structural compute through the async facade (W2e): interactive
+   * priority — ordered after queued mutations, never coalesced or
+   * dropped. The wasm structural ops are COMPUTE-ONLY
+   * (`structural_result::gate_with_source`): they return new sources + a
+   * breakage report and mutate nothing — application happens through the
+   * ordinary `updateFile`/`applyEdit` mutations that follow — so query
+   * semantics are exactly right for them. Rejects with
+   * `QueryDroppedError("cancelled")` if the session is destroyed while
+   * the compute is queued.
+   */
+  structuralQuery<T>(method: string, args: readonly unknown[]): Promise<T> {
+    return this.client
+      .query<T>(method, [...args], { priority: "interactive" })
+      .promise.then((r) => r.value);
   }
 
   /**

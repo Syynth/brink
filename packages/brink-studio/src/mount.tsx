@@ -20,7 +20,13 @@
 import { createRoot } from "react-dom/client";
 import { Profiler, useEffect } from "react";
 import { initWasm } from "@brink-lang/web";
-import type { CompileResult, FileOutline, HostManifest, DialogueDialect } from "@brink/wasm-types";
+import type {
+  CompileResult,
+  FileOutline,
+  HostManifest,
+  DialogueDialect,
+  StoryGraph,
+} from "@brink/wasm-types";
 import {
   DocumentSessions,
   ProjectSession,
@@ -623,7 +629,51 @@ export async function mountStudio(
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
   // collapses reference-equal (cached) deliveries.
+  let fanOutSeq = 0;
   const handleCompileResult = (result: CompileResult): void => {
+    // W2d (docs/editor-worker-spec.md): the three panel pulls ride the
+    // async session facade at background priority with per-panel coalesce
+    // keys, and the store fan-out lands when they resolve — in the same
+    // relative order as the old synchronous body. The seq guard applies
+    // §5.3's whole-project staleness class: a newer compile's fan-out
+    // supersedes this one wholesale (and a query dropped by coalescing
+    // rejects, which the catch below folds into the same skip).
+    const seq = ++fanOutSeq;
+    const client = project.sessionClient();
+    void (async () => {
+      const [outlineResult, closureResult, graphResult] = await Promise.all([
+        client.query<FileOutline[]>("getProjectOutline", [], {
+          priority: "background",
+          coalesceKey: "panel:outline",
+        }).promise,
+        client.query<string[]>("getCompilationClosure", [], {
+          priority: "background",
+          coalesceKey: "panel:closure",
+        }).promise,
+        // Failed compile: keep the last good graph (same policy as before)
+        // without spending the query.
+        result.ok
+          ? client.query<StoryGraph | null>("getStoryGraph", [], {
+              priority: "background",
+              coalesceKey: "panel:graph",
+            }).promise
+          : Promise.resolve(null),
+      ]);
+      if (seq !== fanOutSeq) return; // a newer compile's fan-out supersedes
+      landCompileResult(result, outlineResult.value, closureResult.value, graphResult?.value ?? null);
+    })().catch(() => {
+      // Dropped/failed panel pull: keep the last good panels — a newer
+      // compile is superseding (coalesce keys) or the session is tearing
+      // down (cancelled on destroy).
+    });
+  };
+
+  const landCompileResult = (
+    result: CompileResult,
+    outline: FileOutline[],
+    closure: string[],
+    storyGraph: StoryGraph | null,
+  ): void => {
     // Fan-out spans (measure-first ruling, 2026-08-24): this handler runs
     // after EVERY debounced compile and is a prime whole-project-work
     // suspect — each phase is timed so a report splits compile-reaction
@@ -632,7 +682,6 @@ export async function mountStudio(
     // `store.set.*` spans cover the selector sweeps each `state.*` triggers.
     const endFanOut = perfSpan("studio.compileFanOut");
     const state = store.getState();
-    const outline: FileOutline[] = project.getSession().getProjectOutline();
 
     let errors = 0;
     let warnings = 0;
@@ -654,7 +703,7 @@ export async function mountStudio(
     // The compile closure (#3017): read-only, keyed by the entry this very
     // compile just set — a file in `outline` but not here is on disk, not
     // in the story (the out-of-scope banner + Binder marks read this).
-    state.setClosureFiles(project.getSession().getCompilationClosure());
+    state.setClosureFiles(closure);
     // The effective entry (config precedence applied) — the Binder's entry
     // badge and its ink-project Library gate (#3014) read this.
     state.setEntryFile(project.getEntryFile());
@@ -663,10 +712,7 @@ export async function mountStudio(
     // Story Graph data (#97, spec §4.1): recompute from the analyzer on each
     // successful compile, like the outline. A failed compile (or a pre-analysis
     // null) keeps the last good graph — same policy as programInkt.
-    if (result.ok) {
-      const storyGraph = project.getSession().getStoryGraph();
-      if (storyGraph !== null) state.setStoryGraph(storyGraph);
-    }
+    if (result.ok && storyGraph !== null) state.setStoryGraph(storyGraph);
 
     // Recompile-while-running (spec §7.6): a successful compile auto-starts
     // the session on the new program through the same code path as the

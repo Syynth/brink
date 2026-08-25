@@ -4,14 +4,18 @@ import type { HoverInfo, CallWidgetSite } from "@brink/wasm-types";
 import { openCallForm, FORM_GLYPH_ICON } from "./argument-widgets.js";
 
 export interface HoverOptions {
-  getHover: (source: string, offset: number) => HoverInfo | null;
+  /** Sync or async (W2c of `docs/editor-worker-spec.md`). CM6's
+   *  `hoverTooltip` natively awaits a promise-returning source and drops
+   *  the result if the pointer moved on, so no extra staleness handling
+   *  is needed here. */
+  getHover: (source: string, offset: number) => HoverInfo | null | Promise<HoverInfo | null>;
   /** When provided, the hover card over a call name gains an always-on "edit
    *  arguments" action (zero in-text chrome — independent of the inline glyph). */
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
 }
 
 export function hoverExtension(options: HoverOptions): Extension {
-  return hoverTooltip((view, pos): Tooltip | null => {
+  return hoverTooltip((view, pos): Tooltip | null | Promise<Tooltip | null> => {
     // No hover cards while an inline rename/name-input row is open: the row
     // owns the space under the line, and a card that flips below (viewport
     // top) lands exactly on the "⚠ breaks N" badge and intercepts its
@@ -22,41 +26,48 @@ export function hoverExtension(options: HoverOptions): Extension {
     if (view.dom.querySelector(".brink-inline-rename-input")) return null;
     const source = view.state.doc.toString();
 
-    let info: HoverInfo | null;
+    const finish = (info: HoverInfo | null): Tooltip | null => {
+      if (!info) return null;
+
+      // Surface the form action when `pos` is over a call name (always available).
+      const site = options.getArgumentWidgets
+        ? siteAt(options.getArgumentWidgets, source, pos)
+        : null;
+
+      return {
+        pos: info.start ?? pos,
+        end: info.end ?? pos,
+        above: true,
+        create() {
+          const dom = document.createElement("div");
+          dom.className = "brink-hover-tooltip";
+
+          // Render content line by line with inline markdown spans.
+          const lines = info.content.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("```") || line.trim() === "") continue;
+            const p = document.createElement("div");
+            renderInline(line, p);
+            dom.appendChild(p);
+          }
+
+          if (site) dom.appendChild(buildEditAction(site, view));
+          return { dom };
+        },
+      };
+    };
+
+    let produced: HoverInfo | null | Promise<HoverInfo | null>;
     try {
-      info = options.getHover(source, pos);
+      produced = options.getHover(source, pos);
     } catch {
       return null;
     }
-
-    if (!info) return null;
-
-    // Surface the form action when `pos` is over a call name (always available).
-    const site = options.getArgumentWidgets
-      ? siteAt(options.getArgumentWidgets, source, pos)
-      : null;
-
-    return {
-      pos: info.start ?? pos,
-      end: info.end ?? pos,
-      above: true,
-      create() {
-        const dom = document.createElement("div");
-        dom.className = "brink-hover-tooltip";
-
-        // Render content line by line with inline markdown spans.
-        const lines = info!.content.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("```") || line.trim() === "") continue;
-          const p = document.createElement("div");
-          renderInline(line, p);
-          dom.appendChild(p);
-        }
-
-        if (site) dom.appendChild(buildEditAction(site, view));
-        return { dom };
-      },
-    };
+    if (produced instanceof Promise) {
+      // A rejected pull (superseded/teardown) reads as "no hover".
+      return produced.then(finish, () => null);
+    }
+    return finish(produced);
   });
 }
 
