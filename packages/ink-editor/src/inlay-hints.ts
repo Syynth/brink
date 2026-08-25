@@ -37,6 +37,10 @@ class InlayHintWidget extends WidgetType {
 
 export interface InlayHintsOptions {
   getInlayHints: (source: string, start: number, end: number) => InlayHint[];
+  /** Async warm-up for the hints pull over `[start, end)` (W2b): runs
+   *  before the deferred refresh dispatches so the field's synchronous
+   *  rebuild hits the warmed memo. See `DeferredPrepare`. */
+  prepareHints?: (start: number, end: number) => Promise<unknown> | undefined;
 }
 
 const refreshInlayHintsEffect = StateEffect.define<void>();
@@ -60,7 +64,16 @@ export function inlayHintsExtension(options: InlayHintsOptions): Extension {
     },
     provide: (f) => EditorView.decorations.from(f),
   });
-  return [field, deferredRefresh(refreshInlayHintsEffect)];
+  return [
+    field,
+    deferredRefresh(
+      refreshInlayHintsEffect,
+      120,
+      options.prepareHints
+        ? (view) => options.prepareHints?.(0, view.state.doc.length)
+        : undefined,
+    ),
+  ];
 }
 
 function buildInlayDecorations(state: EditorState, options: InlayHintsOptions): DecorationSet {

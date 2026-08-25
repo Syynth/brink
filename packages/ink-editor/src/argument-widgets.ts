@@ -875,6 +875,10 @@ class FormGlyphWidget extends WidgetType {
 
 export interface ArgumentWidgetsOptions {
   getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[];
+  /** Async warm-up for the widget-site pull over `[start, end)` (W2b):
+   *  runs before the deferred rebuild in large documents so the
+   *  synchronous rebuild hits the warmed memo. */
+  prepareWidgets?: (start: number, end: number) => Promise<unknown> | undefined;
   /** How the inline call-level form glyph is shown. Default `off`. */
   formGlyph?: FormGlyphMode;
   /** Accepting a function completion inserts `()` + opens the Form. Default false. */
@@ -1022,6 +1026,7 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
     class {
       decorations: DecorationSet;
       private timer: ReturnType<typeof setTimeout> | null = null;
+      private destroyed = false;
       constructor(private readonly view: EditorView) {
         this.decorations = build(view);
       }
@@ -1037,10 +1042,7 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
           if (this.timer !== null) clearTimeout(this.timer);
           this.timer = setTimeout(() => {
             this.timer = null;
-            this.decorations = perfTime("cm.argumentWidgets.build", () => build(this.view));
-            // A decorations-bearing plugin must signal its update; an empty
-            // dispatch reruns the measure/draw cycle.
-            this.view.dispatch({});
+            this.rebuildDeferred();
           }, 120);
           return;
         }
@@ -1048,7 +1050,31 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
           this.decorations = perfTime("cm.argumentWidgets.build", () => build(update.view));
         }
       }
+      /** The deferred rebuild after a large-doc typing burst — with a
+       *  `prepareWidgets` (W2b), the pull warms asynchronously first and
+       *  the synchronous rebuild lands only if the doc held still (a
+       *  further change re-armed the timer, so a fresh rebuild follows). */
+      private rebuildDeferred(): void {
+        const pending = options.prepareWidgets?.(0, this.view.state.doc.length);
+        const land = (): void => {
+          this.decorations = perfTime("cm.argumentWidgets.build", () => build(this.view));
+          // A decorations-bearing plugin must signal its update; an empty
+          // dispatch reruns the measure/draw cycle.
+          this.view.dispatch({});
+        };
+        if (pending === undefined) {
+          land();
+          return;
+        }
+        const doc = this.view.state.doc;
+        void pending.catch(() => undefined).then(() => {
+          if (this.destroyed || this.view.state.doc !== doc) return;
+          land();
+        });
+      }
+
       destroy(): void {
+        this.destroyed = true;
         if (this.timer !== null) clearTimeout(this.timer);
       }
     },
