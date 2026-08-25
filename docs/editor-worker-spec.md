@@ -150,12 +150,17 @@ classifier-session line so the 2× accounting stays honest.
 ### 5.1 Transport and framing
 
 Plain `postMessage` with structured clone. Payloads are already bounded by
-the delta protocol; no `SharedArrayBuffer`, no transferables initially
-(revisit only if measurement says clone cost matters — it did not for the
-delta-slimmed slices).
+the delta protocol; no `SharedArrayBuffer`, no transferables (a §5.4
+sufficiency requirement, not just an initial simplification), and no
+structured-clone-only types (`Map`, `Set`, typed-array views as semantic
+payload): **every protocol payload is JSON-serializable**, so postMessage
+and a byte stream carry identical shapes.
 
-Message shapes (TS types in a new `packages/ink-editor/src/worker/protocol.ts`,
-mirrored to `wasm-types` if wire shapes end up crossing the wasm boundary):
+Message shapes — **Rust is the source of truth** (serde structs, in
+`brink-web` or a dedicated protocol module), with hand-maintained TS
+mirrors in `wasm-types` per the existing house pattern. The TS below is
+the mirror, not the definition (§5.4 explains why this direction is
+load-bearing):
 
 ```ts
 // main → worker
@@ -214,6 +219,48 @@ Queries are unordered beyond their priority class.
   request/response commands. The UI awaits them (with the existing gated
   progress affordances) and applies returned edits through the normal
   transaction path.
+
+### 5.4 Transport sufficiency: a hypothetical native session server
+
+Explored 2026-08-25 (maintainer): could the Tauri app run the analysis
+backend as an independent **native process** and share APIs with this
+architecture? Not planned — but the boundary is required to be
+*sufficient* for it, and three requirements above exist for that reason.
+
+The finding: **the shareable thing is the session protocol and the Rust
+core, not LSP-the-protocol.** `EditorSessionHandle` is already a thin
+wasm binding over `brink-ide`/`ProjectDb`; a native server would wrap the
+same Rust query surface and speak the same session protocol over a
+sidecar's stdio (the natural home being a hypothetical `brink ide serve`
+subcommand — the CLI already ships in the desktop bundle and already has
+the scriptable `ide` family). brink-lsp stays what it is: a *different
+wire language* (LSP, for foreign editors) over the same `ProjectDb`
+internals. LSP's document sync maps cleanly onto our mutation stream
+(both are versioned incremental UTF-16 edits), but most studio surfaces —
+segment manifests with salsa identity versions, config epochs, line
+contexts, argument widgets, story graph, compile-to-`StoryData`,
+gated structural ops — have no LSP vocabulary; tunneling them as
+`brink/*` custom methods would make LSP a framing tax around this
+protocol with zero foreign-editor interop in return. Three consumers,
+one core: wasm binding (web/worker), session-protocol server
+(hypothetical native), LSP (foreign editors).
+
+What this section binds the rest of the spec to:
+
+1. **Rust source of truth for protocol shapes** (§5.1) — a TS-only
+   protocol would force a native server to reimplement shapes by hand.
+2. **JSON-serializable payloads only** (§5.1) — postMessage and a byte
+   stream must carry identical shapes.
+3. **The scheduler is server-side *policy*, not shared code** (§6) — the
+   worker implements it as admission control because single-threaded wasm
+   must; a native host may satisfy the same observable contract with real
+   threads, where salsa's cancellation-on-write actually works and a
+   running pull *can* be interrupted. The client must not depend on
+   admission-control timing, only on the ordering and staleness contracts
+   of §5.3.
+
+A native transport, if ever built, is a third `SessionClient` transport
+next to `LocalTransport` and `WorkerTransport` — consumers unchanged.
 
 ## 6. Worker-side scheduler
 
