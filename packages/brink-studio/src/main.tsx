@@ -186,6 +186,9 @@ async function main(): Promise<void> {
   // W5 flip: the worker road is the default; `?worker=0` forces the
   // in-process road (the e2e control + A/B comparisons use it).
   const workerSession = params.get("worker") !== "0";
+  // Prod-perf ruling 2026-08-25: perf is on by default everywhere;
+  // `?perf=0` exercises the opt-out (mirrors the `worker` param shape).
+  const perf = params.get("perf") !== "0";
 
   // `?egress=test` attaches an onFilesChanged hook recording delivered
   // batches on `window.__brinkFileChanges` (e2e for #154). The normal
@@ -212,6 +215,7 @@ async function main(): Promise<void> {
 
   const handle: StudioHandle = await mountStudio(appRoot, {
     workerSession,
+    perf,
     files,
     provider,
     // The native fixture has no `main.ink` — hardcoding one opened a phantom

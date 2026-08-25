@@ -3353,3 +3353,11 @@
 - **SCOPE:** architectural
 - **WHAT:** The spec's W5 "delete the synchronous main-thread session" lands as a demotion instead: the session survives as the content store feeding the worker replica and as the complete in-process fallback road, while the structural goal — recurring paths that cannot pull analysis on the main thread — is enforced by worker-fed stashes (deferred rebuilds read them; a dirty bit keeps a stash from being served across an edit it predates) plus a lexical boundary guard pinning every surviving analysis call to a documented allowlist. One-shot command paths (goto/rename/symbols/search-cards) stay main-side at incremental-analysis cost, tracked by #3110.
 - **WHY:** The fallback road the architecture deliberately keeps (no-Worker environments, non-vite embedders, worker crashes) requires a fully functional main-side session — deleting it would delete the fallback. The guard delivers the same regression-impossibility the delete was for, at a fraction of the diff and without forking behavior the mock/test surface depends on. (Implemented under the maintainer's wrap-up directive; flagged for veto.)
+
+## Performance instrumentation ships in production builds
+- **WHEN:** 2026-08-25
+- **PROJECT:** brink
+- **SYSTEM:** editor packages / studio / desktop
+- **SCOPE:** moderate
+- **WHAT:** The perf surface (probe, browser observers, wasm counters, `__brinkPerf`, the Performance tool window) is no longer dev-only: `mountStudio` enables it by default in all builds, with `MountStudioOptions.perf: false` (playground `?perf=0`) as the embedder opt-out. Supersedes the dev-only edge of the 2026-08-24 measure-first ruling. Corollaries: the worker realm reports its own probe + wasm counters through host-level protocol queries (`hostPerfReport` family), and the probe's User Timing mirror self-clears its own entries so an always-on session stays bounded.
+- **WHY:** Real projects are opened in production desktop builds — a dev-only panel structurally cannot measure the case that matters (the maintainer's own project remains slow where the small test fixtures are fast). The panel's payload is structurally content-free (static span/counter names, numeric values), so shipping it leaks nothing from an author's project.

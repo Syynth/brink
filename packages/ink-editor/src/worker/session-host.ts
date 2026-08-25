@@ -16,6 +16,28 @@ import type {
   SessionResponse,
 } from "@brink/wasm-types";
 import { AdmissionScheduler } from "./scheduler.js";
+import {
+  isPerfEnabled,
+  perfReport,
+  perfReset,
+  setPerfEnabled,
+  type PerfReport,
+} from "../perf/probe.js";
+
+/**
+ * The perf state of the realm HOSTING the session — answered by the
+ * host-level `hostPerfReport` query (prod-perf ruling 2026-08-25). In
+ * worker mode this is the worker realm, where all analysis actually runs
+ * since W5; on the in-process road it is the main realm (the same probe
+ * the HUD reads directly, so hosts skip the query there).
+ */
+export interface HostPerfBundle {
+  enabled: boolean;
+  /** The hosting realm's JS probe report (`wasm.<method>` spans etc.). */
+  probe: PerfReport;
+  /** The session's wasm-internal counters, when the facade exposes them. */
+  wasmCounters: Record<string, { count: number; totalMs: number; maxMs: number }> | null;
+}
 
 /**
  * The server-side surface the host dispatches to. Structurally a subset
@@ -110,7 +132,10 @@ export class SessionHostCore {
       }
       case "query": {
         try {
-          const value = callByName(this.server, request.method, request.args);
+          const host = this.hostCall(request.method, request.args);
+          const value = host.handled
+            ? host.value
+            : callByName(this.server, request.method, request.args);
           this.respond({
             kind: "result",
             id: request.id,
@@ -129,6 +154,42 @@ export class SessionHostCore {
       case "cancel":
         // Fully handled inside the scheduler at enqueue time.
         return;
+    }
+  }
+
+  /**
+   * Host-level queries (prod-perf ruling 2026-08-25): methods answered by
+   * the HOST REALM itself rather than dispatched onto the session facade —
+   * the only road to a worker realm's own probe. Checked before the
+   * dynamic dispatch so a facade can never shadow them.
+   */
+  private hostCall(method: string, args: unknown[]): { handled: boolean; value?: unknown } {
+    const facade = this.server as unknown as {
+      setPerfEnabled?: (on: boolean) => void;
+      getPerfCounters?: () => HostPerfBundle["wasmCounters"];
+      resetPerfCounters?: () => void;
+    };
+    switch (method) {
+      case "hostPerfReport": {
+        const bundle: HostPerfBundle = {
+          enabled: isPerfEnabled(),
+          probe: perfReport(),
+          wasmCounters: facade.getPerfCounters?.() ?? null,
+        };
+        return { handled: true, value: bundle };
+      }
+      case "hostPerfReset":
+        perfReset();
+        facade.resetPerfCounters?.();
+        return { handled: true, value: true };
+      case "hostPerfSetEnabled": {
+        const on = args[0] === true;
+        setPerfEnabled(on);
+        facade.setPerfEnabled?.(on);
+        return { handled: true, value: on };
+      }
+      default:
+        return { handled: false };
     }
   }
 }

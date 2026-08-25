@@ -19,6 +19,8 @@
 
 import { EditorSessionHandle, initWasm } from "@brink-lang/web";
 import type { SessionRequest } from "@brink/wasm-types";
+import { setPerfEnabled } from "../perf/probe.js";
+import { withPerfTiming } from "../perf/wasm-proxy.js";
 import { SessionHostCore, type SessionServerLike } from "./session-host.js";
 
 const scope = globalThis as unknown as {
@@ -27,9 +29,17 @@ const scope = globalThis as unknown as {
 };
 
 const boot: Promise<SessionHostCore> = (async () => {
+  // Perf on by default in THIS realm (prod-perf ruling 2026-08-25): since
+  // W5 the analysis cost lives here, invisible to the main thread's probe.
+  // Both planes — the worker realm's JS probe (fed `wasm.<method>` spans by
+  // the withPerfTiming wrap) and the session's wasm-internal counters —
+  // report out through the host-level `hostPerfReport` query, and a host
+  // that opted out sends `hostPerfSetEnabled(false)` right after mount.
+  setPerfEnabled(true);
   await initWasm();
   const session = new EditorSessionHandle();
-  return new SessionHostCore(session as unknown as SessionServerLike, (response) =>
+  (session as unknown as { setPerfEnabled?: (on: boolean) => void }).setPerfEnabled?.(true);
+  return new SessionHostCore(withPerfTiming(session) as unknown as SessionServerLike, (response) =>
     scope.postMessage(response),
   );
 })();

@@ -1040,6 +1040,15 @@ export class ProjectSession {
     return this.ensureWorkerClient() ?? this.client;
   }
 
+  /** Whether queries currently ride a live worker replica — false in
+   *  worker-less environments and after a crash-fallback. Consumers that
+   *  address the HOST REALM itself (the perf HUD's `hostPerfReport`) use
+   *  this to avoid asking the in-process road, where the answer would
+   *  just mirror the main realm's own state. */
+  workerActive(): boolean {
+    return this.ensureWorkerClient() !== null;
+  }
+
   /** Post one mutation to the worker replica, creating it on first use.
    *  A closed/crashed worker drops the forward silently — the replica is
    *  already marked failed and every query road falls back in-process. */

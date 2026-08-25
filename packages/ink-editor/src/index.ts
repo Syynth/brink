@@ -316,10 +316,13 @@ export type { FindPanelOptions } from "./find-panel.js";
 export { ConflictView } from "./conflict-view.js";
 export type { ConflictViewOptions } from "./conflict-view.js";
 
-// Performance probe (measure-first ruling, docs/decision-log.md 2026-08-24):
-// the shared collector + observers behind the desktop perf work. Hosts enable
-// collection at their dev edge (`setPerfEnabled(import.meta.env.DEV)`);
-// everything is inert branches while disabled.
+// Performance probe (measure-first ruling 2026-08-24; prod-perf ruling
+// 2026-08-25): the shared collector + observers behind the desktop perf
+// work. Hosts enable collection at mount in ALL builds by default
+// (`MountStudioOptions.perf: false` opts out); everything is inert
+// branches while disabled, and bounded while enabled. The worker realm's
+// own state reports through the host-level `hostPerfReport` query
+// (`HostPerfBundle`, session-host.ts).
 export {
   setPerfEnabled,
   isPerfEnabled,
@@ -347,6 +350,7 @@ export type { QueryHandle, QueryOptions, QueryResult } from "./worker/session-cl
 export { LocalTransport, jsonRoundTrip } from "./worker/local-transport.js";
 export type { SessionServerLike } from "./worker/local-transport.js";
 export { SessionHostCore } from "./worker/session-host.js";
+export type { HostPerfBundle } from "./worker/session-host.js";
 export { WorkerTransport, createSessionWorker } from "./worker/worker-transport.js";
 export type { WorkerLike } from "./worker/worker-transport.js";
 export type { SessionTransport } from "./worker/transport.js";
