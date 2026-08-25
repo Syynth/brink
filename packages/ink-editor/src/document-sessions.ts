@@ -60,7 +60,7 @@ import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
-import { perfTime } from "./perf/probe.js";
+import { perfSpan, perfTime } from "./perf/probe.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -404,7 +404,24 @@ export class DocumentSessions {
     }
     slot.state = state;
 
-    const view = new EditorView({ state, parent });
+    // `cm.dispatch` times the WHOLE synchronous transaction cycle (state
+    // update + every extension + CM's DOM sync) for the main editor view.
+    // Added when a real-project capture showed ~113 ms of per-keystroke
+    // handler time that no existing cm.* span accounted for — this span
+    // splits "inside the editor update" from "outside it" (React dispatch,
+    // other listeners, engine work). The meta carries the transaction count.
+    const view = new EditorView({
+      state,
+      parent,
+      dispatchTransactions: (trs, v) => {
+        const end = perfSpan("cm.dispatch");
+        try {
+          v.update(trs);
+        } finally {
+          end(trs.length);
+        }
+      },
+    });
     slot.view = view;
 
     if (this.focusedSlotId === id) {
