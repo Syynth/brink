@@ -43,7 +43,7 @@ import type {
   StructuralResult,
 } from "@brink/wasm-types";
 import type { ExtractKind } from "./extract-actions.js";
-import { getTokenTypeNames } from "@brink-lang/web";
+import { ClassifierSessionHandle, getTokenTypeNames } from "@brink-lang/web";
 import { brinkStudio, type BrinkStudioOptions } from "./extensions.js";
 import { brinkBasicSetup } from "./setup.js";
 import { startInlineRename, type BreakageContext } from "./rename.js";
@@ -53,6 +53,7 @@ import {
   DEFAULT_FORM_GLYPH_MODE,
   type FormGlyphMode,
 } from "./argument-widgets.js";
+import { ClassifierMirror } from "./classifier-mirror.js";
 import { DocHandle, syncAnnotation } from "./document-handle.js";
 import { refreshHirOverlay } from "./hir-overlay.js";
 import { elementTypeField, type LineInfo } from "./element-type.js";
@@ -885,7 +886,10 @@ export class DocumentSessions {
     const session = this.project.getSession();
     if (slot.symbol === null) {
       const id = session.openDocument(slot.path);
-      return id === null ? null : new DocHandle(session, id, slot.path, false);
+      if (id === null) return null;
+      const handle = new DocHandle(session, id, slot.path, false);
+      this.attachClassifier(handle, slot.path);
+      return handle;
     }
     const range = this.resolveSymbolRange(
       slot.path,
@@ -904,6 +908,25 @@ export class DocumentSessions {
     const handle = new DocHandle(session, id, slot.path, true);
     handle.setFragmentRange(range.start, range.end);
     return handle;
+  }
+
+  /**
+   * Attach the main-thread classifier mirror (W3 of
+   * docs/editor-worker-spec.md §4) to a full-file handle. No-op when the
+   * wasm build lacks `ClassifierSession` (older builds, test mocks) or
+   * the file has no session content — the handle then keeps every road
+   * on the project session. Fragment handles never get one (their views
+   * are small; the session road serves them).
+   */
+  private attachClassifier(handle: DocHandle, path: string): void {
+    const classifier = new ClassifierSessionHandle();
+    if (!classifier.available) return;
+    const content = this.project.getSession().getFileSource(path);
+    if (content === null || !classifier.open(path, content)) {
+      classifier.free();
+      return;
+    }
+    handle.attachClassifier(new ClassifierMirror(classifier));
   }
 
   /**

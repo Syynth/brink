@@ -20,6 +20,11 @@ import init, {
   WebSession,
   diffSnapshots as wasmDiffSnapshots,
 } from "brink-web";
+// Namespace import for feature-detected exports: `ClassifierSession` (W3 of
+// docs/editor-worker-spec.md) is absent from older wasm builds and the test
+// mock — a named import would fail ESM linking there, the namespace probe
+// degrades to "not available" instead.
+import * as brinkWebModule from "brink-web";
 
 import type {
   CompileResult,
@@ -1235,6 +1240,108 @@ export class EditorSessionHandle {
 
 /** A value that can cross the ink↔JS external-binding boundary. Re-exported
  * from the wasm-free `evaluate-dispatch` module (single source of truth). */
+// ── ClassifierSession (docs/editor-worker-spec.md §4, W3) ──────────
+
+/** The raw wasm classifier surface — probed at runtime (see the namespace
+ *  import note above). */
+interface RawClassifierSession {
+  open(path: string, source: string): boolean;
+  update_source(source: string): boolean;
+  apply_edits(editsJson: string): boolean;
+  segment_manifest(): string;
+  segment_line_contexts(key: string): string;
+  segment_semantic_tokens_fast(key: string): string;
+  set_dialect(json: string): void;
+  clear_dialect(): void;
+  set_language_dialect(value: string): void;
+  free(): void;
+}
+
+/**
+ * The capability-stripped main-thread session (editor worker architecture
+ * W3): one open document's segment substrate — per-segment lex/parse/lower,
+ * classifier tokens, line contexts — plus the classification-affecting
+ * config surface. It NEVER runs project analysis (the Rust type's write
+ * paths are analysis-free by construction), and the exported surface is
+ * the capability boundary: no project method exists to call.
+ *
+ * `available` is false on an older wasm build or a test mock — consumers
+ * skip the classifier road entirely and keep the full-session road.
+ */
+export class ClassifierSessionHandle {
+  private session: RawClassifierSession | null;
+  private configEpochCounter = 0;
+
+  constructor() {
+    const ctor = (brinkWebModule as { ClassifierSession?: new () => RawClassifierSession })
+      .ClassifierSession;
+    this.session = typeof ctor === "function" ? new ctor() : null;
+  }
+
+  get available(): boolean {
+    return this.session !== null;
+  }
+
+  /** Bumped on every config mutation — slice caches key on it (same
+   *  contract as `EditorSessionHandle.configEpoch`). */
+  configEpoch(): number {
+    return this.configEpochCounter;
+  }
+
+  /** Open (or replace) THE document this classifier serves. */
+  open(path: string, source: string): boolean {
+    return this.session?.open(path, source) ?? false;
+  }
+
+  /** Full-text push (the delta path's fallback). Never analyzes. */
+  updateSource(source: string): boolean {
+    return this.session?.update_source(source) ?? false;
+  }
+
+  /** Bounded edit list — same shape as `applyEditsDocument`. */
+  applyEdits(edits: readonly EditSpan[]): boolean {
+    if (this.session === null) return false;
+    return this.session.apply_edits(JSON.stringify(edits));
+  }
+
+  getSegmentManifest(): SegmentManifest | null {
+    if (this.session === null) return null;
+    return JSON.parse(this.session.segment_manifest()) as SegmentManifest | null;
+  }
+
+  getSegmentLineContexts(key: string): LineContext[] | null {
+    if (this.session === null) return null;
+    return JSON.parse(this.session.segment_line_contexts(key)) as LineContext[] | null;
+  }
+
+  getSegmentSemanticTokensFast(key: string): SemanticToken[] | null {
+    if (this.session === null) return null;
+    return JSON.parse(
+      this.session.segment_semantic_tokens_fast(key),
+    ) as SemanticToken[] | null;
+  }
+
+  setDialect(dialect: DialogueDialect): void {
+    this.session?.set_dialect(JSON.stringify(dialect));
+    this.configEpochCounter += 1;
+  }
+
+  clearDialect(): void {
+    this.session?.clear_dialect();
+    this.configEpochCounter += 1;
+  }
+
+  setLanguageDialect(value: "brink" | "strict-ink"): void {
+    this.session?.set_language_dialect(value);
+    this.configEpochCounter += 1;
+  }
+
+  free(): void {
+    this.session?.free();
+    this.session = null;
+  }
+}
+
 export type { ExternalValue } from "./evaluate-dispatch";
 
 /** An external-function binding: receives the call arguments as native JS

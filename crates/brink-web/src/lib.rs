@@ -20,6 +20,9 @@
 //! `#[wasm_bindgen]` item's name and signature — identical to pre-split
 //! `lib.rs`; module extraction is purely an internal file layout change.
 
+/// The capability-stripped main-thread session (`docs/editor-worker-spec.md`
+/// §4, W3) — its exported surface is the classifier/project boundary.
+mod classifier;
 mod compile;
 mod editor;
 mod editor_dto;
@@ -35,6 +38,7 @@ mod speculation;
 mod story_runner;
 mod value_marshal;
 
+pub use classifier::ClassifierSession;
 pub use compile::{compile, compile_fragment, program_checksum};
 pub use editor::EditorSession;
 pub use editor_dto::{token_modifier_names, token_type_names};
