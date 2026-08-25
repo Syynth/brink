@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.15...brink-syntax-v0.0.16) - 2026-08-25
+
+### Added
+
+- *(db)* per-knot segment road live for ink — 30ms keystroke down to 4.3ms ([#3084](https://github.com/Syynth/brink/pull/3084))
+- *(syntax)* lexer-driven ink file segmenter (#3084 step 1)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.11...brink-syntax-v0.0.15) - 2026-08-23
 
 ### Added

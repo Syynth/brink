@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "bevy-brink"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "bevy",
  "bevy-brink-derive",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "bevy-brink-derive"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2067,11 +2067,11 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "brink"
-version = "0.0.15"
+version = "0.0.16"
 
 [[package]]
 name = "brink-analyzer"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "brink-cli"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
@@ -2112,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "brink-codegen-inkb"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "brink-compiler"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "brink-db"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "brink-driver"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-db",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "brink-environment"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-compiler",
  "brink-driver",
@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "brink-fmt"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-ir",
  "brink-syntax",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "brink-format"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "bitflags 2.13.0",
  "brink-compiler",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "brink-ide"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "brink-intl"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-compiler",
  "brink-format",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "brink-ir"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "bitflags 2.13.0",
  "brink-analyzer",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "brink-lsp"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-db",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "brink-project-config"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-source-tree",
  "serde",
@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "brink-respell"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-driver",
  "brink-ir",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "brink-runtime"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
@@ -2332,11 +2332,11 @@ dependencies = [
 
 [[package]]
 name = "brink-source-tree"
-version = "0.0.15"
+version = "0.0.16"
 
 [[package]]
 name = "brink-syntax"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "insta",
  "proptest",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "brink-syntax-native"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "insta",
  "proptest",
@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "brink-test-harness"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "brink-web"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
@@ -8382,7 +8382,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xliff2"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "insta",
  "quick-xml 0.41.0",
