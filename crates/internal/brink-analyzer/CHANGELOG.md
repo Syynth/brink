@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.15...brink-analyzer-v0.0.16) - 2026-08-25
+
+### Added
+
+- *(analysis)* option A total — the off-db monolith is deleted; LSP rides the subset query
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.11...brink-analyzer-v0.0.15) - 2026-08-23
 
 ### Added
