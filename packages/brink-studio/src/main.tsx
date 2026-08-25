@@ -183,9 +183,9 @@ async function main(): Promise<void> {
   // `?ext=none` loads without it (the e2e removed-extension scenario; also
   // exercises that persisted layouts referencing its panel load cleanly).
   const withExtension = params.get("ext") !== "none";
-  // W4 (docs/editor-worker-spec.md): `?worker=1` runs the project-level
-  // query road (compile/outline/graph/closure) in a Web Worker.
-  const workerSession = params.get("worker") === "1";
+  // W5 flip: the worker road is the default; `?worker=0` forces the
+  // in-process road (the e2e control + A/B comparisons use it).
+  const workerSession = params.get("worker") !== "0";
 
   // `?egress=test` attaches an onFilesChanged hook recording delivered
   // batches on `window.__brinkFileChanges` (e2e for #154). The normal

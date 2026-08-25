@@ -135,7 +135,8 @@ export interface MountStudioOptions {
    * W4 (docs/editor-worker-spec.md): run the project-level query road —
    * compile, outline, story graph, closure — in a Web Worker with its own
    * wasm session. Feature-detected; environments without workers keep the
-   * in-process road. Default false until the W5 flip.
+   * in-process road. Default TRUE since the W5 flip (decision log
+   * 2026-08-25); pass false to force the in-process road.
    */
   workerSession?: boolean;
   /** Project files (path → ink source). */
@@ -469,7 +470,10 @@ export async function mountStudio(
   const project = new ProjectSession({
     provider,
     entryFile,
-    workerSession: options.workerSession,
+    // W5 flip (decision log 2026-08-25): ON by default — the worker road
+    // is fully feature-detected, so environments without workers (jsdom,
+    // old bundlers) silently keep the in-process road.
+    workerSession: options.workerSession ?? true,
     // File-anchored open (ruled 2026-08-23): an explicit open's entry is
     // never superseded by a discovered `[project] entry`.
     entryIsExplicit: options.entryIsExplicit,

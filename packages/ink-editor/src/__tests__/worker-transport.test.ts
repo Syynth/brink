@@ -3,9 +3,10 @@
  * over a loopback fake worker running the REAL SessionHostCore — the same
  * core LocalTransport runs, so these tests pin that the message boundary
  * preserves the protocol semantics — plus the ProjectSession worker-mode
- * plumbing: full-then-incremental file flush, config-log replay, ordering
- * (mutations before the query), crash/boot-failure fallback to the
- * in-process road.
+ * plumbing (W5b continuous replica): eager spawn + prime, continuous
+ * mutation forwarding, doc-lifecycle mirroring with the id-determinism
+ * tripwire, ordering (mutations before the query), and crash/boot-failure
+ * fallback to the in-process road.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -72,6 +73,23 @@ function makeServer() {
       calls.push(`compile:${entry}`);
       return { ok: true, files: [...files.keys()].sort(), entry };
     },
+    nextDocId: 1,
+    openDocument(path: string) {
+      calls.push(`openDocument:${path}`);
+      if (!files.has(path)) return null;
+      const self = server as unknown as { nextDocId: number };
+      const id = self.nextDocId;
+      self.nextDocId += 1;
+      return id;
+    },
+    closeDocument(doc: number) {
+      calls.push(`closeDocument:${doc}`);
+      return true;
+    },
+    getCompletionsDoc(doc: number, offset: number) {
+      calls.push(`completions:${doc}:${offset}`);
+      return [{ name: "from-worker" }];
+    },
   };
   return { server: server as SessionServerLike & Record<string, unknown>, calls };
 }
@@ -115,6 +133,15 @@ describe("ProjectSession worker road", () => {
       compileProject: () => {
         throw new Error("main-thread compile must not run in worker mode");
       },
+      nextDocId: 1,
+      openDocument(path: string) {
+        if (!files.has(path)) return null;
+        const id = stub.nextDocId;
+        stub.nextDocId += 1;
+        return id;
+      },
+      closeDocument: () => true,
+      getCompletionsDoc: () => [{ name: "from-main" }],
       free: vi.fn(),
     };
     return { stub, files };
@@ -131,47 +158,67 @@ describe("ProjectSession worker road", () => {
       workerSession: true,
       workerFactory: overrides?.factory ?? (() => worker),
     });
-    return { project, stub, files, workerCalls: calls, crash };
+    return { project, stub, files, server, workerCalls: calls, crash };
   }
 
-  it("streams the whole project on first query, then only changed files", async () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("forwards mutations continuously — the replica sees edits before the query", async () => {
     const { project, workerCalls } = makeProject();
-    const first = await project.projectQuery<{ files: string[] }>("compileProject", [
+    // The first forwarded mutation creates the client (priming main.ink);
+    // the edit itself then rides the ordered stream.
+    project.getSession().updateFile("other.ink", "-> DONE\n");
+    const result = await project.projectQuery<{ files: string[] }>("compileProject", [
       "main.ink",
     ]);
-    expect(first.files).toEqual(["main.ink"]);
-    expect(workerCalls).toEqual(["updateFile:main.ink", "compile:main.ink"]);
+    expect(result.files).toEqual(["main.ink", "other.ink"]);
+    expect(workerCalls[workerCalls.length - 1]).toBe("compile:main.ink");
+    expect(workerCalls.filter((c) => c.startsWith("updateFile:other"))).toHaveLength(1);
+  });
 
-    workerCalls.length = 0;
-    // An edit through the mirrored session choke point marks the path dirty.
-    project.getSession().updateFile("main.ink", "changed\n-> DONE\n");
-    project.getSession().updateFile("other.ink", "-> DONE\n");
+  it("forwards config mutations once, in order", async () => {
+    const { project, workerCalls } = makeProject();
+    project.getSession().setExternalCheck("off");
     await project.projectQuery("compileProject", ["main.ink"]);
-    expect(workerCalls.sort()).toEqual([
-      "compile:main.ink",
-      "updateFile:main.ink",
-      "updateFile:other.ink",
-    ]);
-
+    expect(workerCalls.filter((c) => c === "setExternalCheck:off")).toHaveLength(1);
     workerCalls.length = 0;
-    // Nothing dirty: no file traffic at all.
     await project.projectQuery("compileProject", ["main.ink"]);
     expect(workerCalls).toEqual(["compile:main.ink"]);
   });
 
-  it("replays config mutations to the worker in order", async () => {
+  it("mirrors doc lifecycle and serves doc-scoped queries from the replica (W5b)", async () => {
     const { project, workerCalls } = makeProject();
-    project.getSession().setExternalCheck("off");
-    await project.projectQuery("compileProject", ["main.ink"]);
-    expect(workerCalls).toEqual([
-      "updateFile:main.ink",
-      "setExternalCheck:off",
-      "compile:main.ink",
-    ]);
-    workerCalls.length = 0;
-    // Already replayed — not re-sent.
-    await project.projectQuery("compileProject", ["main.ink"]);
-    expect(workerCalls).toEqual(["compile:main.ink"]);
+    const id = project.getSession().openDocument("main.ink");
+    expect(id).toBe(1); // main session minted 1…
+    const result = await project
+      .docClient()
+      .query<{ name: string }[]>("getCompletionsDoc", [id, 3], {
+        priority: "interactive",
+        doc: id as number,
+      }).promise;
+    // …and the replica minted the SAME id from the same replayed sequence,
+    // so the doc-addressed query answers from the WORKER.
+    expect(result.value).toEqual([{ name: "from-worker" }]);
+    expect(workerCalls).toContain("openDocument:main.ink");
+    expect(workerCalls).toContain("completions:1:3");
+  });
+
+  it("a mismatched replica doc id trips the desync guard and falls back", async () => {
+    const { project, server } = makeProject();
+    // Skew the replica's id counter: the forwarded open will mint 7 where
+    // the main session minted 1 — divergence the tripwire must catch.
+    (server as unknown as { nextDocId: number }).nextDocId = 7;
+    const id = project.getSession().openDocument("main.ink");
+    expect(id).toBe(1);
+    await flush(); // let the mutationResult event deliver
+    const result = await project
+      .docClient()
+      .query<{ name: string }[]>("getCompletionsDoc", [id, 3], {
+        priority: "interactive",
+        doc: id as number,
+      }).promise;
+    // The worker was dropped — the query answered from the MAIN session.
+    expect(result.value).toEqual([{ name: "from-main" }]);
   });
 
   it("falls back to the in-process road when no worker can be created", async () => {

@@ -195,6 +195,26 @@ const WORKER_CONFIG_METHODS = new Set([
 /** File-content methods mirrored to the worker session (W4). */
 const WORKER_FILE_METHODS = new Set(["updateFile", "removeFile"]);
 
+/** Session mutations forwarded verbatim to the worker replica (W5b):
+ *  doc lifecycle (whose returned ids must match the main session's —
+ *  checked via the host's mutationResult events; see
+ *  `expectWorkerDocId`), view-context choreography, and the legacy
+ *  active-file push. Ordered with everything else through the client's
+ *  mutation stream. */
+const WORKER_REPLAY_METHODS = new Set([
+  "openDocument",
+  "openFragment",
+  "closeDocument",
+  "setActiveFile",
+  "setViewContext",
+  "clearViewContext",
+  "updateSource",
+]);
+
+/** Per-document edits forwarded as PROTOCOL edit/push messages (W5b) —
+ *  versioned and acked, unlike the verbatim replays above. */
+const WORKER_DOC_EDIT_METHODS = new Set(["updateDocument", "applyEditsDocument"]);
+
 /**
  * Observe the session at its single choke point (the same reasoning as
  * `withPerfTiming`): every config or file mutation — from this class,
@@ -206,17 +226,31 @@ const WORKER_FILE_METHODS = new Set(["updateFile", "removeFile"]);
  */
 function withWorkerMirror(
   session: EditorSessionHandle,
-  hooks: { config(method: string, args: unknown[]): void; file(path: string): void },
+  hooks: {
+    config(method: string, args: unknown[]): void;
+    file(method: string, args: unknown[]): void;
+    replay(method: string, args: unknown[], returned: unknown): void;
+    docEdit(method: string, args: unknown[]): void;
+  },
 ): EditorSessionHandle {
   return new Proxy(session, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== "function" || typeof prop !== "string") return value;
-      if (!WORKER_CONFIG_METHODS.has(prop) && !WORKER_FILE_METHODS.has(prop)) return value;
+      if (
+        !WORKER_CONFIG_METHODS.has(prop) &&
+        !WORKER_FILE_METHODS.has(prop) &&
+        !WORKER_REPLAY_METHODS.has(prop) &&
+        !WORKER_DOC_EDIT_METHODS.has(prop)
+      ) {
+        return value;
+      }
       return (...args: unknown[]) => {
         const out = (value as (...a: unknown[]) => unknown).apply(target, args);
         if (WORKER_CONFIG_METHODS.has(prop)) hooks.config(prop, args);
-        else hooks.file(String(args[0]));
+        else if (WORKER_FILE_METHODS.has(prop)) hooks.file(prop, args);
+        else if (WORKER_DOC_EDIT_METHODS.has(prop)) hooks.docEdit(prop, args);
+        else hooks.replay(prop, args, out);
         return out;
       };
     },
@@ -276,18 +310,18 @@ export class ProjectSession {
    */
   private pendingCompile: { generation: number; promise: Promise<CompileResult> } | null =
     null;
-  // ── W4 worker road (docs/editor-worker-spec.md §8) ──
+  // ── Worker road (docs/editor-worker-spec.md §8; W4 flush model
+  //    replaced by the W5b continuous replica) ──
   private readonly workerEnabled: boolean;
   private workerClient: SessionClient | null = null;
   private workerFailed = false;
-  /** Paths whose content changed since the last worker flush. */
-  private readonly workerDirty = new Set<string>();
-  /** True until the first flush streams the whole project. */
-  private workerAllDirty = true;
-  /** Ordered log of config mutations applied to the main session — the
-   *  un-replayed suffix is forwarded before every worker query. */
-  private readonly workerConfigLog: { method: string; args: unknown[] }[] = [];
-  private workerConfigSynced = 0;
+  /** Doc ids the MAIN session returned for forwarded open calls, in
+   *  order; the worker's mutationResult events must match them exactly
+   *  or the replica is desynced and gets dropped (fallback in-process).
+   *  Deterministic by construction — both sessions assign ids
+   *  monotonically from the same replayed call sequence — so this queue
+   *  is a tripwire, not a mapping. */
+  private readonly workerExpectedDocIds: (number | null)[] = [];
   private readonly workerFactory?: () => import("./worker/worker-transport.js").WorkerLike | null;
   /**
    * Idle handles this class has scheduled via {@link deferGatedCall} —
@@ -317,15 +351,35 @@ export class ProjectSession {
     this.session = withWorkerMirror(
       withPerfTiming(options.session ?? new EditorSessionHandle()),
       {
-        config: (method, args) => {
-          if (this.workerEnabled) this.workerConfigLog.push({ method, args });
-        },
-        file: (path) => {
-          if (this.workerEnabled) this.workerDirty.add(path);
-        },
+        // W5b: continuous forwarding — every mutation posts to the worker
+        // replica the moment it happens (ordered by the client's mutation
+        // stream), instead of the W4 query-time flush.
+        config: (method, args) => this.forwardToWorker((c) => c.config(method, ...args)),
+        file: (method, args) => this.forwardToWorker((c) => c.files(method, ...args)),
+        docEdit: (method, args) =>
+          this.forwardToWorker((c) => {
+            const doc = args[0] as number;
+            if (method === "applyEditsDocument") {
+              c.applyEdits(doc, args[1] as { from: number; to: number; insert: string }[]);
+            } else {
+              c.pushSource(doc, String(args[1]));
+            }
+          }),
+        replay: (method, args, returned) =>
+          this.forwardToWorker((c) => {
+            if (method === "openDocument" || method === "openFragment") {
+              this.expectWorkerDocId(returned);
+            }
+            c.files(method, ...args);
+          }),
       },
     );
     this.client = new SessionClient(new LocalTransport(this.session));
+    // W5b: spawn the replica EAGERLY so it exists before any mutation —
+    // the prime streams only pre-existing state (an injected session's
+    // files; ordinarily just the untouched baseline) and every later
+    // mutation forwards exactly once through the mirror hooks.
+    if (this.workerEnabled) this.ensureWorkerClient();
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
     this.onProjectConfigWarnings = options.onProjectConfigWarnings;
@@ -951,34 +1005,58 @@ export class ProjectSession {
    * the compute is queued.
    */
   structuralQuery<T>(method: string, args: readonly unknown[]): Promise<T> {
-    return this.client
+    return this.docClient()
       .query<T>(method, [...args], { priority: "interactive" })
       .promise.then((r) => r.value);
   }
 
   /**
    * One project-level (doc-independent) pull — compile, outline, story
-   * graph, closure. Runs on the Web Worker road when enabled and healthy
-   * (W4): the worker's session is brought current first by flushing the
-   * ordered file/config mutation stream, and the scheduler guarantees
-   * those mutations apply before the query. Everywhere else (no
-   * `workerSession`, no `Worker`, boot/crash failure) this is the
-   * in-process client — identical semantics, main-thread execution.
+   * graph, closure. Runs on the Web Worker road when enabled and healthy:
+   * the worker session is a continuously-forwarded replica (W5b), and
+   * the scheduler guarantees queued mutations apply before the query.
+   * Everywhere else (no `workerSession`, no `Worker`, boot/crash
+   * failure) this is the in-process client — identical semantics,
+   * main-thread execution.
    */
   projectQuery<T>(
     method: string,
     args: readonly unknown[],
     options: { coalesceKey?: string } = {},
   ): Promise<T> {
-    const worker = this.ensureWorkerClient();
-    if (worker !== null) this.flushWorker(worker);
-    const client = worker ?? this.client;
+    const client = this.ensureWorkerClient() ?? this.client;
     return client
       .query<T>(method, [...args], {
         priority: "background",
         ...(options.coalesceKey !== undefined ? { coalesceKey: options.coalesceKey } : {}),
       })
       .promise.then((r) => r.value);
+  }
+
+  /** The client doc-scoped queries ride (W5b): the worker replica when
+   *  live, else the in-process client. Both see the same state — the
+   *  main session stays fully written until the W5c delete. */
+  docClient(): SessionClient {
+    return this.ensureWorkerClient() ?? this.client;
+  }
+
+  /** Post one mutation to the worker replica, creating it on first use.
+   *  A closed/crashed worker drops the forward silently — the replica is
+   *  already marked failed and every query road falls back in-process. */
+  private forwardToWorker(post: (client: SessionClient) => void): void {
+    const client = this.ensureWorkerClient();
+    if (client === null) return;
+    try {
+      post(client);
+    } catch {
+      this.dropWorker();
+    }
+  }
+
+  /** Record the main session's returned doc id for a forwarded open; the
+   *  worker's mutationResult event must echo the same id in order. */
+  private expectWorkerDocId(returned: unknown): void {
+    this.workerExpectedDocIds.push(typeof returned === "number" ? returned : null);
   }
 
   private ensureWorkerClient(): SessionClient | null {
@@ -992,9 +1070,33 @@ export class ProjectSession {
     const transport = new WorkerTransport(worker, { onCrash: () => this.dropWorker() });
     const client = new SessionClient(transport);
     client.onEvent((event) => {
-      if ((event as { type?: string } | null)?.type === "bootError") this.dropWorker();
+      const e = event as { type?: string; method?: string; value?: unknown } | null;
+      if (e?.type === "bootError") {
+        this.dropWorker();
+        return;
+      }
+      // Doc-id determinism tripwire (W5b): a forwarded open must mint the
+      // SAME id on the replica. A mismatch means the sessions diverged —
+      // drop the worker rather than serve queries against the wrong doc.
+      if (
+        e?.type === "mutationResult" &&
+        (e.method === "openDocument" || e.method === "openFragment")
+      ) {
+        const expected = this.workerExpectedDocIds.shift();
+        if (expected !== (typeof e.value === "number" ? e.value : null)) this.dropWorker();
+      }
     });
     this.workerClient = client;
+    // Prime the replica with any state that predates it (an injected
+    // session with prior files; ordinarily just nothing — the client is
+    // created by the FIRST forwarded mutation, so everything later
+    // arrives through the continuous stream). Mounted stdlib is skipped:
+    // the replica's own session mounts its own copy.
+    for (const file of this.session.listFiles()) {
+      if (file.mounted) continue;
+      const content = this.session.getFileSource(file.path);
+      if (content !== null) client.files("updateFile", file.path, content);
+    }
     return client;
   }
 
@@ -1008,33 +1110,6 @@ export class ProjectSession {
     client?.close();
   }
 
-  /** Bring the worker session current: stream changed file contents and
-   *  the un-replayed config suffix as ordered mutations. Mounted stdlib
-   *  paths are skipped — the worker's own session mounts its own copy,
-   *  and pushing ours would silently unmount them there. */
-  private flushWorker(client: SessionClient): void {
-    if (this.workerAllDirty) {
-      this.workerAllDirty = false;
-      this.workerDirty.clear();
-      for (const file of this.session.listFiles()) {
-        if (file.mounted) continue;
-        const content = this.session.getFileSource(file.path);
-        if (content !== null) client.files("updateFile", file.path, content);
-      }
-    } else if (this.workerDirty.size > 0) {
-      for (const path of this.workerDirty) {
-        const content = this.session.getFileSource(path);
-        if (content === null) client.files("removeFile", path);
-        else client.files("updateFile", path, content);
-      }
-      this.workerDirty.clear();
-    }
-    while (this.workerConfigSynced < this.workerConfigLog.length) {
-      const op = this.workerConfigLog[this.workerConfigSynced];
-      this.workerConfigSynced += 1;
-      if (op !== undefined) client.config(op.method, ...op.args);
-    }
-  }
 
   /**
    * Report that `path`'s session content changed: provider write-back plus
@@ -1062,7 +1137,6 @@ export class ProjectSession {
   }
 
   notifyFileChanged(path: string): void {
-    if (this.workerEnabled) this.workerDirty.add(path);
     // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
     // "Mounted stdlib presents as a read-only library node"): a still-
     // mounted path has no host baseline to diff against, so egressing it

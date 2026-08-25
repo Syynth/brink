@@ -1211,7 +1211,7 @@ export class DocumentSessions {
     const id = slot.handle?.id;
     if (id === undefined) return undefined;
     return this.project
-      .sessionClient()
+      .docClient()
       .query<T>(method, [id, ...args], { priority: "interactive", doc: id })
       .promise.then((r) => r.value);
   }
@@ -1228,7 +1228,7 @@ export class DocumentSessions {
   ): Promise<unknown> | undefined {
     const id = slot.handle?.id;
     if (id === undefined) return undefined;
-    return this.project.sessionClient().query(method, [id, ...args], {
+    return this.project.docClient().query(method, [id, ...args], {
       priority: "background",
       doc: id,
       coalesceKey: `${surface}:${id}`,
