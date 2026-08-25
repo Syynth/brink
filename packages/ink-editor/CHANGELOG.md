@@ -1,5 +1,160 @@
 # @brink-lang/editor
 
+## 0.16.0
+
+### Minor Changes
+
+- 46f8257: Cmd-clicking a symbol's _definition_ now runs Find References instead of
+  a no-op self-navigation — you're already at the definition. Use sites
+  keep navigating to the definition; when references are unavailable or
+  empty the click falls back to selecting the declaration.
+- bc3b08a: File-anchored project open model (epic #3021, ruled 2026-08-23): new
+  `entryIsExplicit` option on `ProjectSessionOptions` and
+  `MountStudioOptions`. When set, a discovered `brink.toml`'s
+  `[project] entry` never supersedes the host-given `entryFile` — the
+  #2331 precedence ("`[project] entry` beats `mountStudio`'s `entryFile`")
+  stands for host-supplied defaults, but a human's explicit file open is
+  not a default. Config discovery itself still runs (lints, conventions,
+  warnings all apply). Default `false`, the pre-existing behavior.
+- f1b7c76: Literal-whitespace editor presentation (ruled 2026-08-23): the editor no
+  longer imposes layout of its own. Removed: standalone-divert
+  right-align, the weave-depth artificial indent and its superscript
+  depth-sigil collapse (nested `* *` sigil runs now render as typed), the
+  screenplay character/parenthetical/dialogue indents and dialogue column
+  width, CHARACTER uppercase, and the 8.5in page cap/margins. Colors and
+  highlighting are unchanged, and the classification taxonomy (element
+  classes, `data-depth`, `brink-divert-standalone`) remains the host
+  contract — an embedder that wants a styled layout adds its own CSS over
+  those hooks. New: whitespace/tab indent guides
+  (@replit/codemirror-indentation-markers), themed from the `--bs-*`
+  tokens, spaced at the editor's 4-column indent unit; default on,
+  `indentGuides: false` to opt out. New: hanging indent for soft-wrapped
+  lines — continuation rows align even with the first row's text start
+  (not flush-left, not Inky's extra padding), carried by a `--line-indent`
+  custom property per line.
+- c5193ad: Performance probe + dev-only HUD (measure-first ruling, 2026-08-24).
+  `@brink-lang/editor` gains a perf module — `setPerfEnabled`/`perfSpan`/
+  `perfTime`/`perfReport` over a preallocated ring buffer, every span also
+  emitted as a `performance.measure` so DevTools recordings show named bars —
+  plus browser observers (long tasks, event-timing input latency, long
+  frames), a CM6 viewport/scroll probe (`cm.viewportLag`), a wasm-boundary
+  Proxy timing every session call (`wasm.<method>`), and spans at the hot
+  extension sites (element-type, highlight, HIR overlay + rails gutter,
+  inlay hints, folding, screenplay passes, argument widgets, hanging indent,
+  inline markup, the debounced compile cycle, project initialize). The studio
+  wires the dev edge (`import.meta.env.DEV`): store-write sweep timing
+  (`store.set.<field>`), compile fan-out spans, startup marks, a React
+  commit profiler, and a "Performance" tool window (aggregates, worst
+  events, marks, Copy JSON). Everything is inert single branches when
+  disabled — production builds neither collect nor register the HUD.
+- ba67f95: Search result cards (card-stack PR C). The Search panel's results render
+  as one card per match, in both text-search and references mode: a header
+  row (file:line, containing knot/stitch, `edited` badge, reveal ↗) over
+  the match's own small editable buffer — the match line plus a tunable
+  context window (default 1 above / 2 below), fully syntax-highlighted via
+  a per-file semantic-token cache. Cards collapse to a header preview
+  (per-card chevron, plus the binder-style expand/collapse-all buttons in
+  the summary row alongside the context knob and the snapshot ↻). The
+  list is virtualized: off-screen cards render as static HTML instead of
+  live editors. Card edits write through to the source and never remove
+  rows — the frozen snapshot flags them instead.
+
+  Also fixes cmd/ctrl-click goto/references from a real pointer: the
+  handler now binds mousedown (CodeMirror's own cmd-mousedown multi-cursor
+  preventDefault suppressed the browser click event a click-bound handler
+  was waiting for). And cmd/ctrl-clicking the file path in an INCLUDE
+  statement now opens that file.
+
+- e4de0cc: Frozen search snapshot model (search-result cards, PR B). The Search
+  panel's result set is now a snapshot: edits never remove or re-filter
+  rows. Match spans are edit-mapped through document changes (driven by
+  the compile seam), flagging rows `edited`/`stale` instead of dropping
+  them; only a new search or the explicit refresh replaces the set. The
+  store gains the context-lines setting (default 1 above / 2 below), the
+  per-card collapse map, and `refreshSearchSnapshot()` — query snapshots
+  re-run their frozen query, references snapshots re-resolve from the
+  edit-mapped declaration anchor. The editor's Find References surfaces
+  (`onShowReferences`) now pass the symbol's declaration location as an
+  anchor when goto-definition resolves one.
+
+### Patch Changes
+
+- 4302f46: Adaptive deferral for advisory paint (#3064 C2): in documents of 1,000+ lines, the HIR overlay and inlay hints map their decorations through each edit (positions stay exact) and rebuild content once the document has been quiet for ~120 ms — a typing burst pays one rebuild at its end instead of one per keystroke. Documents under the threshold rebuild synchronously exactly as before, so small-file behavior is byte-identical.
+- eba0faa: Bounded-edit ingress (#3064 C1): `applyEditsDocument(doc, edits)` applies a CM6 change list Rust-side — the full document no longer crosses the wasm boundary on every keystroke, and the write is source-only: the fused eager whole-project analysis that `updateDocument` forced per keystroke (and that nothing on the keystroke path consumed — diagnostics are debounced-compile-driven) is no longer computed until something actually pulls it. The editor's element-type field uses the delta path automatically for single-range edits on file handles, falling back to the full push for multi-cursor batches, fragment views, and older wasm builds/mocks. `updateDocument` is unchanged for compatibility.
+- 9bf177e: Context-menu matrix, identity rows: right-clicking any identity-bearing token — divert targets, VAR/CONST/temp/param references, list items, labels, EXTERNAL calls, including refs inside `{interpolations}` — adds a Navigate/Rename group above the text group: Go to Definition (the ⌘-click path), Find References (the ⇧⌥F highlight), and Rename '<name>'… opening the inline-rename UI with its breakage report. The identity test is "goto-definition resolves here", so exactly the tokens with definitions get the group; the actions reuse the same callbacks as their keyboard/mouse counterparts (`navigateToLocation` and `showReferencesAt` extracted as shared entry points). The inline-rename input now hugs its content — the `size` attribute tracks the value, replacing the browser's ~20-char default that rendered as a line-breaking slab — and grows live as you type. The rename UI itself is redesigned as a floating badge below the token (the Zed/JetBrains shape): the symbol stays in the document with a highlight mark while the input floats in a `showTooltip` — which also fixes Escape appearing to delete the token (the old design REPLACED the token with the widget, so its text was hostage to widget lifecycle; now the rename is an inserted editor row and the document is untouched by construction). The row is a block widget beneath the target's line — no gutter number, lines pushed down — with the input rendered as bare inline text: the token's own `tok-*` highlight classes copied onto it, exact column alignment via a hidden spacer carrying the line's real prefix text, no chrome and no focus ring. Escape cancels, and moving the editor cursor off the target's line also dismisses without committing. Structural rows land too: INCLUDE lines offer Open <file>, foldable lines offer Fold/Unfold (through the registered fold service), TODO lines offer Show in TODOs Panel, and Rename is gated per-token by the same prepareRename query F2 uses — externals (whose names are the host-binding contract) get Navigate items with no dead Rename item.
+- 8bdb676: The editor context menu is now always ours (docs/editor-context-menu-spec.md, phase 1): right-click anywhere in the editor suppresses the native menu — knot/stitch headers open the shared symbol menu (including **function** headers, whose clicks previously vanished: `headerName` treated the `function` keyword as part of the path), and everything else opens a text menu (Cut / Copy / Paste / Select All with shortcuts, Cut/Copy disabled without a selection) whose actions are bound to the raising view. New `onTextContextMenu` option threads through `brinkStudio`/`DocumentSessions`; the studio renders it via a new `EditorTextMenuHost` sharing the symbol menu's chrome and dismiss contract (`useContextMenuDismiss`, extracted).
+- fe696cf: Editor gutter polish: the fold gutter renders one fixed-slot SVG chevron for both states (collapsed = the same glyph rotated by CSS, so the marker never shifts; open-fold chevrons appear only while the pointer is over the gutter, collapsed markers stay visible and accented) via `brinkBasicSetup`, a drop-in copy of `basicSetup` with the brink fold gutter. The play-from-here ▶ is a centered SVG triangle with a hover pill instead of a font glyph. Structure rails show a real floating tooltip on hover — the container's name (bare knot/stitch name, choice/gather text) plus kind and line range (e.g. "Knot · lines 25–31"). Fold and play markers top-align with the first visual row of wrapped lines, matching the line numbers. The shell's corner menu button is an SVG aligned to the strip's icon axis.
+- 1609068: Keystroke micro-work toward the 8 ms frame budget (#3064): a config epoch invalidates delta-slice caches on dialect/host-manifest swaps (fixing a stale-classification bug under unchanged segment keys); one manifest fetch per document version; element-type derives per-line infos per segment under the delta protocol's version keys; the keystroke path serves the edited knot's semantic tokens from a classifier-only slice (no analysis pull — the symbol index and resolution passes leave the synchronous path entirely) with resolution-refined colors landing on the deferred refresh; occurrence highlights defer during large-document typing bursts (selection moves stay instant). Per-keystroke instrumented work on a 6k-line document drops to ~6–7 ms, with most keystrokes completing below the Event Timing API's 16 ms reporting floor.
+- ee6f0e4: The one-shot analysis family rides the worker road (#3110, closing the last main-thread analysis paths outside documented fallbacks): goto-definition and find-references become async sources (the cmd-click gesture is claimed immediately and lands on resolution — with CM's multi-cursor emulated when nothing resolves), the inline-rename family resolves through the client (`startInlineRename` pre-resolves the target via a resolver facet and dispatches on landing; the live breakage badge lands through `InlineNameInput`'s existing pending machinery; the context menu's identity/rename gating resolves before the menu opens), symbol-tab ranges resolve hint-first with an async worker verify that restores a degraded fragment at its fresh offsets, and search-card highlighting fetches asynchronously (cards render unhighlighted and colorize on landing). The main-thread analysis boundary guard's allowlist shrinks to the choke-point fallbacks only.
+- 80dd24f: Outbound delta protocol (#3064 option A): per-keystroke wasm→JS payloads for line contexts and semantic tokens drop from whole-document JSON (~1.4 MB combined on a 6k-line file) to a small segment manifest plus the edited knot's slice. New wasm surface: `getSegmentManifestDoc` (per-segment version keys — salsa identity `index:generation`, stable across shift edits, changed exactly when a segment's content changes, ABA-safe by generation) plus `getSegmentLineContextsDoc`/`getSegmentSemanticTokensDoc` slice fetches. `DocHandle.lineContexts()`/`semanticTokens()` assemble transparently from a version-keyed slice cache — same return types, no consumer changes — and fall back to the whole-document queries for fragment views, native files, older wasm builds, and mocks. Delta-reconstructed results are parity-gated against the assembled queries across the full corpus.
+- bd2e490: Two-range model for container spans (#3054): `HirSpan` gains `content_end_line` — the TIGHT end (last line of actual content, trailing whitespace and the next declaration's doc block excluded) alongside the structural `end_line` that runs to the next sibling. Rails and their tooltips use the tight range, so a two-line function no longer paints (or reports) itself through the next function's docs; choice rails get eight golden-step color buckets so siblings are distinct; conditional-branch tooltips show the condition.
+- 1b653ff: Performance (#3067, no behavior change): the HIR rails gutter's
+  span-by-handle map is built once per projection on the overlay state
+  instead of once per visible line inside `lineMarker` — scrolling a large
+  file paid O(spans × visible lines) for it (19.7 ms per gutter rebuild
+  batch, ~1.5 s per full scroll pass on the perf fixture).
+- 79277a6: Find References works — and presents through the Search panel (the spec's open question, now ruled): the menu item and ⇧⌥F route results into the search results surface, grouped by file with line previews, cross-file included, click-to-reveal and inline-editable like text-search results. A references-mode chip names the symbol and count; typing a query returns the panel to text search. (The old in-view 3s highlight painted raw cross-file offsets into the current document — broken by design; it remains only as a fallback for hosts that wire no references surface.)
+- f917e08: Hover cards are suppressed while an inline rename row is open, and any
+  open card is dismissed when the rename starts. The reworked rename UI
+  places the "⚠ breaks N" badge beneath the token — exactly where a hover
+  tooltip lands when it flips below (viewport top) — so the card sat on
+  top of the badge and intercepted its clicks (caught by the symbol-rename
+  e2e; a real-pointer hazard too, since moving toward the badge keeps the
+  card alive by hovering it).
+- 3a44fe6: Search replace previews (card-stack PR D). With the replace row open,
+  every still-matching card renders a display-only old→new preview — the
+  previews ARE the confirmation; the arm/confirm step is gone. Per-card
+  Accept applies one replacement (the card keeps its row with a
+  "✓ replaced" receipt — frozen snapshot); per-card skip excludes it from
+  Accept all (undo available); the summary strip counts pending/stale/
+  skipped/replaced and carries Accept all (N). Excluded matches are
+  per-match (skipped, edited-stale, or failing the live-text guard),
+  badged with why — never a global abort. The old results-buffer view is
+  removed from the studio; `@brink-lang/editor`'s `SearchResultsBuffer`
+  class is deprecated but stays exported for external embedders. Card
+  chevrons now reuse the fold gutter's glyph in a proper hit target, and
+  the reveal arrow matches its slot.
+- 2100f62: Session protocol substrate (editor worker architecture W1, `docs/editor-worker-spec.md`): new `SessionClient` async facade, `SessionTransport` interface, `AdmissionScheduler` (mutations before queries, interactive before background, coalesce-key supersession, staleness drops), and `LocalTransport` — an in-process transport that enforces the protocol's JSON-safety contract on every envelope. No existing behavior changes; consumers migrate onto the client in later waves. Wire shapes are mirrored from the Rust source of truth (`brink-web`'s `protocol` module) with cross-language golden pins.
+- 37f54ea: Tab indents and Shift-Tab dedents (by the 4-space indent unit), like every other editor. The built-in Tab/Shift-Tab line-conversion cycle (choice→body→gather→choice, character→parenthetical→dialogue, the double-blank `@:<>` template) is stripped for now (ruled 2026-08-24) — previously the keys were swallowed even where no conversion applied. Dialect-DECLARED transition rows keep first claim on Tab (#395 consumer contract; the default at-cue preset declares none). Enter/Shift-Enter transitions are untouched.
+- edd0db5: TODO author notes are now visibly highlighted in the editor (#3050). Lines opening with the `TODO` keyword (colon optional, matching the parser's `AUTHOR_WARNING` rule) classify as the new `todo` element kind and carry the `brink-todo` line class; the opening keyword gets a `brink-todo-keyword` mark. The studio styles the class as a full-width amber band with a left bar, forcing syntax-token colors to the amber inside the note so the line reads as one called-out unit (`--bs-todo`/`--bs-todo-rgb` override per theme, falling back to the warning family). The `E189` squiggle is suppressed in the editor — the band is that diagnostic's in-editor presentation — and Info/Hint diagnostics now map to CodeMirror's `info` severity instead of rendering as warning squiggles.
+- 07c482b: Diagnostics compile rides the async session facade (editor worker architecture W2a, `docs/editor-worker-spec.md`): `ProjectSession` owns a `SessionClient` (over the in-process `LocalTransport` for now) and gains `compileProjectAsync()` — same generation cache as the sync road, plus in-flight dedup so concurrent views share one compile. The diagnostics extension accepts a sync-or-async `compile` and lands async results under staleness guards (doc moved, view detached, plugin destroyed → the landing is discarded; a newer compile follows). `ProjectSession.destroy()` rejects in-flight client queries before freeing the wasm handle. Embedding hosts passing a synchronous `compile` are unaffected.
+- 21500ae: Deferred-refresh consumers ride the async session facade (editor worker architecture W2b, `docs/editor-worker-spec.md`): the quiet-fire for refined highlight tokens, the HIR overlay/occurrences, inlay hints, argument widgets, and fold ranges now runs an async warm-up (`prepare*` options) through the `SessionClient` — background priority, per-surface coalesce keys — and dispatches the refresh effect only when it settles, under landing guards (doc moved or view destroyed → skipped; rejected warm-up → the field's synchronous fallback still refreshes, never stranding a view). Fields themselves are unchanged; small documents keep their synchronous rebuilds. Hosts not passing the new `prepare*` options get the previous behavior exactly.
+- b0e3a91: Interactive queries ride the async session facade (editor worker architecture W2c, `docs/editor-worker-spec.md`): completion, hover, signature help, and code actions accept sync-or-async sources, and the studio wiring routes them through the `SessionClient` at interactive priority (after queued mutations, before background pulls; never coalesced or dropped). Completion and hover lean on CM6's native promise handling; signature help lands under sequence + doc-held-still guards (an out-of-order or stale landing is discarded); the code-actions menu opens on landing only if the document and cursor held still. Hosts passing synchronous sources are unaffected.
+- b0e3a91: Structural computes ride the async session facade (editor worker architecture W2e, `docs/editor-worker-spec.md`): `ProjectSession` gains `structuralQuery` — an interactive-priority client query for the compute-only structural ops (`renameFile`, `renameDir`, `moveStitch`, `promoteStitch`, `demoteKnot`, `renameSymbol`, `renameSymbolAt`; they return new sources + a breakage report and mutate nothing, so query semantics fit exactly) — and the studio's gated-op runner awaits it, mapping a destroy-during-queue cancellation to the same swallowed result as a destroy-during-defer. The `ProjectSession` file-lifecycle mutations deliberately stay synchronous until the transport flips (sync reads couple to them; recorded in the spec). The paint-path enrolment guard now matches both the facade call shape and the raw wasm call shape, so a raw gated call reappearing anywhere still fails it.
+- c0d9a61: `ClassifierSession` — the capability-stripped main-thread session (editor worker architecture W3, `docs/editor-worker-spec.md` §4). The wasm module exports a new single-document session whose surface is exactly the keystroke path's needs — delta/full-text ingress, segment manifest, per-segment line contexts and classifier tokens, dialect config — with no project method exported and write paths that never trigger an analysis pull (parity with the full session's slices is pinned Rust-side). `@brink-lang/web` wraps it as `ClassifierSessionHandle` (feature-detected: `available` is false on older builds and mocks). In the editor, full-file document handles attach a `ClassifierMirror`: the keystroke path's line contexts and fast tokens serve from the classifier's own analysis-free instance (with its own version-keyed slice cache), and the fast-token road blends positionally — cached refined slices keep their colors while uncached (edited) segments serve from the classifier. Mocks and older wasm keep the previous session-road behavior exactly.
+- 46a74b3: The session worker (editor worker architecture W4, `docs/editor-worker-spec.md` §8): `WorkerTransport` + a session worker entry running `SessionHostCore` — the exact host semantics `LocalTransport` runs, extracted and shared so the two transports cannot drift — with a boot handshake and crash fallback. `ProjectSession` gains `projectQuery`: the project-level pulls (compile, outline, story graph, closure) run in the worker's own wasm session, kept current by an ordered file/config mutation stream flushed before every worker query; `triggerCompile` (the last synchronous compile caller) rides the async facade. Opt-in via `MountStudioOptions.workerSession` (the playground's `?worker=1`); fully feature-detected — environments without workers, boot failures, and crashes all keep the in-process road. In worker mode the main thread records zero compile time: the whole-project compile (up to ~1.8 s cold on studio-scale projects) leaves the UI thread entirely.
+- a844808: The doc-scoped road rides the worker (editor worker architecture W5b, decision log 2026-08-25): the W4 query-time flush becomes a **continuous replica** — every session mutation (file writes, config ops, doc lifecycle, per-doc edits as protocol edit/push messages) forwards to the worker session the moment it happens through the mirror choke point, spawned eagerly at construction so the replica tracks from t0. Doc ids stay aligned by determinism (both sessions mint ids monotonically from the same replayed open/close sequence), guarded by a runtime tripwire: a forwarded open whose replica id mismatches drops the worker and every road falls back in-process. Interactive queries (completion, hover, signature help, code actions), deferred-refresh warm-ups, and structural computes now route to the replica via `ProjectSession.docClient()`. The main session stays fully written — its sync reads remain valid until the W5c delete.
+- 69586b3: Worker architecture W5c close-out (`docs/editor-worker-spec.md` §14): the deferred-refresh rebuilds read **worker-fed stashes** instead of pulling analysis on the main thread — `DocHandle` gains per-surface stashes (projection, hints, widgets, folds; dirty-bit guarded so a stash is never served across an edit it predates) and a refined-token worker plane (`refreshRefined`: replica manifest + changed slices only, assembled synchronously at rebuild time); the compile-delivery overlay refresh fetches its projection first and dispatches on landing. Desktop export awaits the async compile landing (fixing the W4-era regression where it read story bytes synchronously after `compile.run`). A new lexical boundary guard pins every surviving main-thread analysis call to a documented allowlist — the one-shot family (goto/rename/symbols/search-cards) stays main-side at incremental cost, tracked by #3110. The synchronous session survives as content store + the in-process fallback road (decision log 2026-08-25).
+- 1202806: Web dependency sweep (rides the desktop-perf measure-first work): vite
+  6.4 → 8.2 and @vitejs/plugin-react 4.7 → 6.1 across the workspace's dev
+  servers/builds, Playwright 1.58 → 1.62, vitest/@types/node current, and
+  current minors for the runtime dependencies the published bundles carry —
+  the CodeMirror 6 packages (state 6.7, view 6.43, language/lint/search/
+  commands/autocomplete), zustand 5.0.15, @floating-ui/react-dom,
+  @xyflow/react, @dagrejs/dagre, @fontsource/jetbrains-mono,
+  react-resizable-panels, and the react 19.2.x patch line. No API changes;
+  the perf scenario suite was re-recorded on the new toolchain and compared
+  against the pre-sweep baseline (docs/desktop-perf-baseline.md).
+  Deliberately NOT taken: TypeScript 7 and @changesets/cli 3 (majors held
+  for their own decisions).
+- Updated dependencies [eba0faa]
+- Updated dependencies [8bd2fcb]
+- Updated dependencies [c0f357b]
+- Updated dependencies [d8cfbcd]
+- Updated dependencies [1609068]
+- Updated dependencies [29541b3]
+- Updated dependencies [78e4dd0]
+- Updated dependencies [80dd24f]
+- Updated dependencies [85a1700]
+- Updated dependencies [bd2e490]
+- Updated dependencies [9985bcf]
+- Updated dependencies [3c8d180]
+- Updated dependencies [d043c59]
+- Updated dependencies [62fdee9]
+- Updated dependencies [c0d9a61]
+- Updated dependencies [bfdde5e]
+  - @brink-lang/web@0.16.0
+
 ## 0.15.0
 
 ### Minor Changes
