@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/Syynth/brink/compare/brink-ide-v0.0.15...brink-ide-v0.0.16) - 2026-08-25
+
+### Added
+
+- *(web)* outbound delta protocol — segment-keyed slices with identity versions (#3064 option A)
+- *(db)* per-segment semantic tokens with a range-free resolution seam (#3064 B4)
+- *(db)* per-segment line contexts — assembled, dialect-classified, memoized (#3064 B3)
+- *(db)* per-segment HIR projection — assembled, identity-joined, memoized (#3064 B2)
+- *(db)* dialect config as a tracked input + memoized compile (#3064 B1)
+- *(analysis)* option A total — the off-db monolith is deleted; LSP rides the subset query
+- *(ide)* option A core — editor analysis routes through the db road (#3063, #2885)
+- *(studio)* references kind badges + decl-pinned card (card-stack PR E)
+- *(ide)* externals renameable behind the E190 Force gate (ruled 2026-08-24)
+- *(ide)* list hover shows defaulted ordinals too (#3054 review)
+- *(ide)* list-member hover + section-provider hover dispatch (#3054 review)
+- *(editor)* two-range container spans — rails cover actual content ([#3054](https://github.com/Syynth/brink/pull/3054))
+- *(editor)* distinct sibling-choice rail colors; condition labels; column-0 span end rule ([#3054](https://github.com/Syynth/brink/pull/3054))
+- *(editor)* classify TODO lines on the wasm road; line-keyed panel exit ([#3050](https://github.com/Syynth/brink/pull/3050))
+- *(#3017)* out-of-scope editor banner over the exposed compile closure
+
+### Fixed
+
+- *(editor)* no dead Rename item on externals; call-site renameability pinned
+- *(ide)* balance doc backticks in head_line's comment (clippy doc_markdown)
+
+### Other
+
+- *(editor)* classifier-fast token slices — analysis leaves the keystroke path (#3064 micro)
+- *(ide)* folding was accidentally quadratic; fold-runs ride the assembled contexts (#3064 B5)
+- *(option-a)* re-aim the divergence suite + gates + doctrine; wire mirrors + changeset (slice 8)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-ide-v0.0.11...brink-ide-v0.0.15) - 2026-08-23
 
 ### Added
