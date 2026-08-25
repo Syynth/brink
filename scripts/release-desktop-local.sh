@@ -99,13 +99,32 @@ say "Building the wasm package + verified install"
 run_with_timeout 1800 wasm-pack build crates/brink-web --target web --out-dir www/pkg
 run_with_timeout 1800 pnpm install:checked -- --frozen-lockfile
 
-say "Building signed bundles (app,dmg) — this is the long part"
+say "Building signed bundles (app) — this is the long part"
 # Local CPU-bound release build; pnpm may still fetch through corepack.
-run_with_timeout 5400 pnpm --filter @brink/desktop exec tauri build --bundles app,dmg
+# `app` only — NOT `app,dmg` (0.3.2 lesson, five attempts): tauri's
+# create-dmg writes its rw.* temp image INTO bundle/macos, the same folder
+# it reads as the DMG srcfolder, so hdiutil packs the growing image into
+# itself until "no space left on device" inside the temp volume. Small
+# apps win that race; ours no longer does. The DMG is built below from a
+# clean staging dir instead. (A zombie rw-DMG mount can also linger in
+# /Volumes across failed runs — `hdiutil info` shows it.)
+run_with_timeout 5400 pnpm --filter @brink/desktop exec tauri build --bundles app
 
 bundle_dir="$ws/packages/brink-desktop/src-tauri/target/release/bundle"
-dmg=$(ls "$bundle_dir"/dmg/*.dmg 2>/dev/null | head -1)
-[ -n "$dmg" ] || die "no DMG produced under $bundle_dir/dmg"
+[ -d "$bundle_dir/macos/Brink Studio.app" ] || die "no signed .app under $bundle_dir/macos"
+
+say "Building the DMG from a clean staging dir (create-dmg self-inclusion workaround)"
+dmg_stage=$(mktemp -d)
+cp -R "$bundle_dir/macos/Brink Studio.app" "$dmg_stage/"
+ln -s /Applications "$dmg_stage/Applications"
+mkdir -p "$bundle_dir/dmg"
+dmg="$bundle_dir/dmg/Brink Studio_${version}_aarch64.dmg"
+rm -f "$dmg"
+hdiutil create -srcfolder "$dmg_stage" -volname "Brink Studio" -fs HFS+ \
+  -format UDZO -ov "$dmg"
+rm -rf "$dmg_stage"
+run_with_timeout 300 codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+[ -f "$dmg" ] || die "no DMG produced under $bundle_dir/dmg"
 
 say "Notarizing $(basename "$dmg") (waits on Apple; bounded at 2h)"
 run_with_timeout 7200 xcrun notarytool submit "$dmg" --keychain-profile brink-notary --wait

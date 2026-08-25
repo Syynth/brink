@@ -162,6 +162,7 @@ describe("findUnboundedFetches — planted red, one per allowlisted command shap
     // ticket staples, Gatekeeper's online lookup, and GitHub API calls.
     gh: 'gh release create "v1" artifacts/*',
     xcrun: 'xcrun notarytool submit "app.dmg" --keychain-profile p --wait',
+    codesign: 'codesign --force --sign "Developer ID Application: X" "app.dmg"',
     spctl: "spctl -a -t open some.dmg",
   };
 
