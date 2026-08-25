@@ -6502,4 +6502,49 @@ mod dialect_wasm_tests {
         s.update_file("main.ink", "-> END\n");
         assert!(s.discover_project_config("main.ink").is_err());
     }
+
+    /// #3064 C1: `apply_edits_document` — the bounded-edit ingress — must
+    /// leave the document byte-identical to the equivalent full-text push,
+    /// UTF-16 coordinates and multi-edit batches included, and must refuse
+    /// the shapes it can't serve (fragment handles, malformed edits).
+    #[test]
+    fn apply_edits_document_matches_full_push() {
+        let mut s = EditorSession::new();
+        // '€' (1 UTF-16 unit, 3 bytes) and '𝄞' (2 units, 4 bytes) up front
+        // so unit/byte spaces genuinely diverge.
+        let original = "=== a€𝄞lpha ===\nHello world.\n-> END\n";
+        s.update_file("main.ink", original);
+        let doc = s.open_document("main.ink");
+
+        // Two ascending edits against the ORIGINAL coordinates: insert
+        // after "Hello" (utf16 pos of 'o'+1) and delete " world".
+        // "=== a€𝄞lpha ===\n" is 16 utf16 units ("𝄞" counts 2).
+        let hello_end = 16 + 5;
+        let world_end = hello_end + 6;
+        let edits = format!(
+            r#"[{{"from":{hello_end},"to":{hello_end},"insert":"!!"}},{{"from":{hello_end},"to":{world_end},"insert":""}}]"#
+        );
+        assert!(s.apply_edits_document(doc, &edits), "edits must apply");
+
+        let mut oracle = EditorSession::new();
+        oracle.update_file("main.ink", original);
+        let odoc = oracle.open_document("main.ink");
+        let expected = "=== a€𝄞lpha ===\nHello!!.\n-> END\n";
+        assert!(!oracle.update_document(odoc, expected).is_empty());
+
+        let id = s.session.file_id("main.ink").expect("id");
+        let oid = oracle.session.file_id("main.ink").expect("id");
+        assert_eq!(
+            s.session.source(id),
+            oracle.session.source(oid),
+            "delta ingress diverged from the full push"
+        );
+        // The segment road serves identical queries off either ingress.
+        assert_eq!(s.line_contexts_doc(doc), oracle.line_contexts_doc(odoc));
+
+        // Refusals: descending edits apply nothing.
+        let before = s.session.source(id).map(str::to_owned);
+        assert!(!s.apply_edits_document(doc, r#"[{"from":9,"to":8,"insert":"x"}]"#));
+        assert_eq!(s.session.source(id).map(str::to_owned), before);
+    }
 }

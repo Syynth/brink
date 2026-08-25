@@ -102,6 +102,26 @@ export class DocHandle {
     }
   }
 
+  /**
+   * Apply a bounded edit list instead of pushing the whole document
+   * (#3064 C1). Single-edit batches only — a multi-cursor transaction
+   * falls back to {@link pushSource} (returns false) so the cross-view
+   * mirror's change spec stays a single range. On success the spec is
+   * synthesized locally (the wasm side no longer computes one) and the
+   * full-text no-op guard is invalidated.
+   */
+  applyChanges(edits: readonly { from: number; to: number; insert: string }[]): boolean {
+    if (this.closed || this.isFragment) return false;
+    if (edits.length !== 1) return false;
+    const applier = this.session.applyEditsDocument?.bind(this.session);
+    if (!applier) return false;
+    if (!applier(this.id, edits)) return false;
+    this.lastPushed = null;
+    const e = edits[0];
+    this.pendingSpec = { path: this.path, start: e.from, end: e.to, text: e.insert };
+    return true;
+  }
+
   /** Record the fragment range this handle was opened with. */
   setFragmentRange(start: number, end: number): void {
     this.range = { start, end };

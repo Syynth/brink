@@ -155,6 +155,13 @@ export function getTokenModifierNames(): string[] {
 
 // ── EditorSession wrapper ───────────────────────────────────────
 
+/** One bounded edit in UTF-16 coordinates of the previous content (#3064 C1). */
+export interface EditSpan {
+  from: number;
+  to: number;
+  insert: string;
+}
+
 export class EditorSessionHandle {
   private session: WasmEditorSession;
   private mutationCount = 0;
@@ -527,6 +534,26 @@ export class EditorSessionHandle {
     const json = this.session.update_document(doc, source);
     const result = JSON.parse(json);
     return result ?? null;
+  }
+
+  /**
+   * Apply a bounded edit list to a FILE handle's document (#3064 C1) —
+   * the delta sibling of {@link updateDocument}: the full document never
+   * crosses the wasm boundary, and the write is source-only (no fused
+   * eager analysis; consumers pull what they need). Edits are ascending,
+   * non-overlapping `{from, to, insert}` in UTF-16 coordinates of the
+   * PREVIOUS content (CM6 `ChangeSet.iterChanges` A-side). Returns false
+   * — applying nothing — for fragment handles, read-only files, or
+   * malformed edits; the caller falls back to a full-text push.
+   */
+  applyEditsDocument(doc: DocumentId, edits: readonly EditSpan[]): boolean {
+    // Tolerate an older wasm build or a test mock without the export —
+    // callers fall back to the full-text push.
+    const raw = (this.session as { apply_edits_document?: (d: DocumentId, e: string) => boolean })
+      .apply_edits_document;
+    if (typeof raw !== "function") return false;
+    this.bump();
+    return raw.call(this.session, doc, JSON.stringify(edits));
   }
 
   /** Get the source text for a handle's view (fragment or full file). */

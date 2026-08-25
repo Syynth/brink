@@ -109,15 +109,13 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return EMPTY.to_owned();
         };
-        let (Some(hir), Some(analysis), Some(source)) = (
-            self.session.hir(file_id),
-            self.session.analysis(),
-            self.session.source(file_id),
-        ) else {
+        // #3064 C1: no eager `session.analysis()` gate — it forced the
+        // whole diagnostics bundle per keystroke and then DISCARDED it;
+        // the assembled projection reads the cheap resolutions half
+        // itself, and `analysis()` has been always-`Some` since option A.
+        let Some(source) = self.session.source(file_id) else {
             return EMPTY.to_owned();
         };
-
-        let _ = (hir, analysis);
         let Some(projection) = self.session.projection(file_id) else {
             return EMPTY.to_owned();
         };

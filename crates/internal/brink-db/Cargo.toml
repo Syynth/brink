@@ -28,6 +28,7 @@ thiserror.workspace = true
 [dev-dependencies]
 # The dialect-parity gate builds a DialogueDialect from its pure-JSON
 # config form (#3064 B3) — test-only.
+serde.workspace = true
 serde_json.workspace = true
 
 [features]
