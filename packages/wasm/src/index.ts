@@ -155,6 +155,12 @@ export function getTokenModifierNames(): string[] {
 
 // ── EditorSession wrapper ───────────────────────────────────────
 
+/** The outbound-delta segment manifest (#3064 option A). */
+export interface SegmentManifest {
+  totalLines: number;
+  segments: { key: string; ownedFrom: number }[];
+}
+
 /** One bounded edit in UTF-16 coordinates of the previous content (#3064 C1). */
 export interface EditSpan {
   from: number;
@@ -571,6 +577,40 @@ export class EditorSessionHandle {
   getSemanticTokensDoc(doc: DocumentId): SemanticToken[] {
     const json = this.session.semantic_tokens_doc(doc);
     return JSON.parse(json) as SemanticToken[];
+  }
+
+  /**
+   * The outbound-delta segment manifest (#3064 option A): per-segment
+   * version keys (salsa identity `index:generation` — stable across shift
+   * edits, changed exactly when a segment's content changes) plus each
+   * segment's first owned line. `null` for fragment views, non-ink files,
+   * older wasm builds, and test mocks — the consumer falls back to the
+   * whole-document queries.
+   */
+  getSegmentManifestDoc(doc: DocumentId): SegmentManifest | null {
+    const raw = (this.session as { segment_manifest_doc?: (d: DocumentId) => string })
+      .segment_manifest_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc)) as SegmentManifest | null;
+  }
+
+  /** One manifest segment's owned line-context slice; `null` on a stale key. */
+  getSegmentLineContextsDoc(doc: DocumentId, key: string): LineContext[] | null {
+    const raw = (this.session as { segment_line_contexts_doc?: (d: DocumentId, k: string) => string })
+      .segment_line_contexts_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as LineContext[] | null;
+  }
+
+  /**
+   * One manifest segment's owned semantic-token slice, token lines RELATIVE
+   * to the segment's owned start; `null` on a stale key.
+   */
+  getSegmentSemanticTokensDoc(doc: DocumentId, key: string): SemanticToken[] | null {
+    const raw = (this.session as { segment_semantic_tokens_doc?: (d: DocumentId, k: string) => string })
+      .segment_semantic_tokens_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as SemanticToken[] | null;
   }
 
   /**

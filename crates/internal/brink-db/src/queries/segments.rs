@@ -608,47 +608,10 @@ pub(crate) fn line_contexts_query(
         return super::NoEqArc(Arc::new(contexts));
     }
 
-    // Line-start offsets (0-based line -> byte offset of line start).
-    let mut line_starts: Vec<u32> = vec![0];
-    for (i, b) in source.bytes().enumerate() {
-        if b == b'\n' {
-            line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
-        }
-    }
-    let total_lines = lc::line_count_for(source);
-    let line_of = |offset: u32| -> usize {
-        match line_starts.binary_search(&offset) {
-            Ok(l) => l,
-            Err(next) => next - 1,
-        }
-    };
-
-    let segs = file_segments_query(db, file);
-    let mut owned_from: Vec<usize> = Vec::with_capacity(segs.len() + 1);
-    for seg in segs {
-        let start = seg.offset(db);
-        let l = line_of(start);
-        // A segment starting mid-line owns that line iff everything
-        // before its start is whitespace (an INDENTED header — the
-        // fragment's own line 0 is the real header line). A cut after
-        // real content (the trailing-comment doc quirk) leaves the line
-        // with the preceding segment, whose fragment ends at the cut.
-        let prefix = &source[line_starts[l] as usize..start as usize];
-        // "Whitespace" here must match the LEXER's trivia notion — a
-        // leading UTF-8 BOM (U+FEFF) is trivia to the parser but not
-        // whitespace to `str::trim` (it's a format character).
-        let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
-        owned_from.push(if only_trivia { l } else { l + 1 });
-    }
-    owned_from.push(total_lines);
-
-    let mut out: Vec<lc::LineContext> = Vec::with_capacity(total_lines);
-    for (i, seg) in segs.iter().enumerate() {
-        let ctxs = &segment_line_contexts_query(db, project, file, *seg).0;
-        let seg_start_line = line_of(seg.offset(db));
-        for line in owned_from[i]..owned_from[i + 1] {
-            out.push(ctxs.get(line - seg_start_line).cloned().unwrap_or_default());
-        }
+    let owned = segment_owned_lines(db, file);
+    let mut out: Vec<lc::LineContext> = Vec::with_capacity(owned.total_lines);
+    for i in 0..owned.segments.len() {
+        out.extend(segment_line_contexts_slice(db, project, file, &owned, i));
     }
     super::NoEqArc(Arc::new(out))
 }
@@ -761,61 +724,159 @@ pub(crate) fn semantic_tokens_query(
         ));
     }
 
+    let owned = segment_owned_lines(db, file);
+    let mut out: Vec<brink_ir::semantic_tokens::RawToken> = Vec::new();
+    for i in 0..owned.segments.len() {
+        let owned_from = owned.segments[i].owned_from;
+        for mut t in segment_semantic_tokens_slice(db, project, file, &owned, i) {
+            t.line += u32::try_from(owned_from).unwrap_or(u32::MAX);
+            out.push(t);
+        }
+    }
+    super::NoEqArc(Arc::new(out))
+}
+
+// ─── Segment line ownership (shared by assembly + the delta protocol) ─
+
+/// Per-segment line bookkeeping for assembly and the outbound delta
+/// protocol (#3064 option A): the segment, the first line it OWNS, the
+/// line its fragment starts on, and the UTF-16 width of the mid-line-cut
+/// prefix (0 for a line-start cut). One definition of the ownership rule
+/// — trivia-only prefixes (indentation, the BOM) give the line to the
+/// cut's segment; content prefixes leave it with the preceding one — so
+/// the two assembled queries and the per-segment slices cannot drift.
+pub(crate) struct SegmentLines<'db> {
+    pub seg: FileSegment<'db>,
+    pub owned_from: usize,
+    pub seg_start_line: usize,
+    pub cut_col_utf16: u32,
+}
+
+pub(crate) struct OwnedLines<'db> {
+    pub segments: Vec<SegmentLines<'db>>,
+    pub total_lines: usize,
+}
+
+impl OwnedLines<'_> {
+    pub fn owned_to(&self, i: usize) -> usize {
+        self.segments
+            .get(i + 1)
+            .map_or(self.total_lines, |n| n.owned_from)
+    }
+}
+
+pub(crate) fn segment_owned_lines(db: &dyn salsa::Database, file: SourceFile) -> OwnedLines<'_> {
+    let source = file.text(db);
     let mut line_starts: Vec<u32> = vec![0];
     for (i, b) in source.bytes().enumerate() {
         if b == b'\n' {
             line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
         }
     }
+    let total_lines = brink_ir::hir::line_context::line_count_for(source);
     let line_of = |offset: u32| -> usize {
         match line_starts.binary_search(&offset) {
             Ok(l) => l,
             Err(next) => next - 1,
         }
     };
-
     let segs = file_segments_query(db, file);
-    // (owned_from_line, seg_start_line, cut_col) per segment.
-    let mut seg_lines: Vec<(usize, usize, u32)> = Vec::with_capacity(segs.len());
+    let mut segments = Vec::with_capacity(segs.len());
     for seg in segs {
         let start = seg.offset(db);
         let l = line_of(start);
         let prefix = &source[line_starts[l] as usize..start as usize];
-        // Token columns are UTF-16 code units (the LSP wire unit
-        // `emit_token`'s LineIndex produces), NOT bytes — a BOM is three
-        // bytes but one unit.
-        let cut_col = u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX);
         let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
-        seg_lines.push((if only_trivia { l } else { l + 1 }, l, cut_col));
+        segments.push(SegmentLines {
+            seg: *seg,
+            owned_from: if only_trivia { l } else { l + 1 },
+            seg_start_line: l,
+            cut_col_utf16: u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX),
+        });
     }
+    OwnedLines {
+        segments,
+        total_lines,
+    }
+}
 
+/// One segment's OWNED line-context slice (#3064 option A): exactly the
+/// rows the assembled [`line_contexts_query`] emits for this segment, in
+/// owned-line order — so a consumer-side concatenation of every
+/// segment's slice equals the whole-file result by construction
+/// (pinned in the parity gate).
+pub(crate) fn segment_line_contexts_slice(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    owned: &OwnedLines<'_>,
+    i: usize,
+) -> Vec<brink_ir::hir::line_context::LineContext> {
+    let sl = &owned.segments[i];
+    let ctxs = &segment_line_contexts_query(db, project, file, sl.seg).0;
+    (sl.owned_from..owned.owned_to(i))
+        .map(|line| {
+            ctxs.get(line - sl.seg_start_line)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// One segment's OWNED semantic-token slice, token lines RELATIVE to the
+/// segment's `owned_from` (#3064 option A) — relative so a consumer's
+/// cached slice survives shift edits unchanged; the consumer adds the
+/// manifest's `owned_from` back at assembly. Includes the boundary-line
+/// contributions exactly as the assembled query emits them: this
+/// segment's cut-column-rebased line-0 tokens when a trivia-prefix cut
+/// gave it the line, and the NEXT segment's rebased line-0 tokens when a
+/// content-prefix cut left the boundary line here.
+pub(crate) fn segment_semantic_tokens_slice(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    owned: &OwnedLines<'_>,
+    i: usize,
+) -> Vec<brink_ir::semantic_tokens::RawToken> {
+    let sl = &owned.segments[i];
+    let owned_from = sl.owned_from;
+    let owned_to = owned.owned_to(i);
     let mut out: Vec<brink_ir::semantic_tokens::RawToken> = Vec::new();
-    for (i, seg) in segs.iter().enumerate() {
-        let tokens = &segment_semantic_tokens_query(db, project, file, *seg).0;
-        let (owned_from, seg_start_line, cut_col) = seg_lines[i];
-        let owned_to = seg_lines
-            .get(i + 1)
-            .map_or(usize::MAX, |(next_from, _, _)| *next_from);
-        // The boundary line a mid-line cut leaves with the PRECEDING
-        // segment still gets this segment's rebased line-0 tokens merged
-        // in (the prefix's own tokens came from the preceding fragment).
-        let merge_boundary = owned_from > seg_start_line;
+
+    let push_from = |sl: &SegmentLines<'_>, merge_boundary_only: bool, out: &mut Vec<_>| {
+        let tokens = &segment_semantic_tokens_query(db, project, file, sl.seg).0;
         for t in tokens.iter() {
-            let file_line = seg_start_line + t.line as usize;
-            let owned = file_line >= owned_from && file_line < owned_to;
-            let boundary = merge_boundary && t.line == 0;
-            if !(owned || boundary) {
-                continue;
+            let file_line = sl.seg_start_line + t.line as usize;
+            let in_window = file_line >= owned_from && file_line < owned_to;
+            let boundary = merge_boundary_only && t.line == 0;
+            if merge_boundary_only {
+                if !boundary || !in_window {
+                    continue;
+                }
+            } else {
+                let self_owned = file_line >= sl.owned_from;
+                if !in_window || !self_owned {
+                    continue;
+                }
             }
             let mut t = t.clone();
-            t.line = u32::try_from(file_line).unwrap_or(u32::MAX);
-            if t.line as usize == seg_start_line {
-                t.start_char += cut_col;
+            t.line = u32::try_from(file_line - owned_from).unwrap_or(u32::MAX);
+            if file_line == sl.seg_start_line {
+                t.start_char += sl.cut_col_utf16;
             }
             out.push(t);
         }
+    };
+
+    push_from(sl, false, &mut out);
+    // A content-prefix cut on the NEXT boundary leaves that line owned
+    // here; the next fragment's line-0 tokens land on it.
+    if let Some(next) = owned.segments.get(i + 1)
+        && next.owned_from > next.seg_start_line
+    {
+        push_from(next, true, &mut out);
     }
-    super::NoEqArc(Arc::new(out))
+    out
 }
 
 #[cfg(test)]
@@ -936,6 +997,12 @@ Gamma body.
     /// source text: HIR, manifest, and admission must be byte-identical;
     /// diagnostics must be multiset-identical (the assembled vector's
     /// order is deliberately segment-major — see `assemble_lowered_file`).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the roads-agree gate: one comparison block per parity surface \
+                  (lowering, projection, contexts, tokens, delta reconstruction) — \
+                  splitting them would obscure that they all run per fixture"
+    )]
     fn assert_roads_agree(source: &str, label: &str) {
         let mut db = ProjectDb::new();
         let id = db.update_file("gate.ink", source.to_owned());
@@ -1015,6 +1082,31 @@ Gamma body.
             assert_eq!(
                 *assembled_tokens, oracle_tokens,
                 "semantic tokens diverged: {label}"
+            );
+        }
+
+        // Outbound-delta parity (#3064 option A): reconstructing the
+        // whole-document results from the manifest + per-segment slices
+        // must equal the assembled queries exactly.
+        if let Some((manifest, _total)) = db.segment_manifest(id) {
+            let mut contexts = Vec::new();
+            let mut tokens = Vec::new();
+            for (key, owned_from) in &manifest {
+                contexts.extend(db.segment_line_contexts_slice(id, key).expect("live key"));
+                for mut t in db.segment_semantic_tokens_slice(id, key).expect("live key") {
+                    t.line += owned_from;
+                    tokens.push(t);
+                }
+            }
+            assert_eq!(
+                contexts,
+                *db.line_contexts(id).expect("contexts"),
+                "delta-reconstructed contexts diverged: {label}"
+            );
+            assert_eq!(
+                tokens,
+                *db.semantic_tokens(id).expect("tokens"),
+                "delta-reconstructed tokens diverged: {label}"
             );
         }
 
@@ -1118,6 +1210,35 @@ Hi.
         assert!(
             oracle.iter().any(|c| c.dialect.is_some()),
             "fixture must actually exercise dialect classification"
+        );
+    }
+
+    /// The delta protocol's core promise (#3064 option A): a knot-interior
+    /// edit changes ONLY the edited segment's manifest key — every other
+    /// segment, shifted ones included, keeps its `index:generation`
+    /// version, so a consumer's cached slices stay valid.
+    #[test]
+    fn manifest_keys_survive_shift_edits() {
+        let mut db = ProjectDb::new();
+        db.update_file("a.ink", BASE.to_owned());
+        let id = db.file_id("a.ink").expect("loaded");
+        let (before, _) = db.segment_manifest(id).expect("manifest");
+        assert_eq!(before.len(), 4, "header + three knots");
+
+        let edited = BASE.replace("Beta body.\n", "Beta body.\nA second beta line.\n");
+        db.update_file("a.ink", edited);
+        let (after, _) = db.segment_manifest(id).expect("manifest");
+
+        assert_eq!(before[0].0, after[0].0, "header key survives");
+        assert_eq!(before[1].0, after[1].0, "alpha key survives");
+        assert_ne!(before[2].0, after[2].0, "edited beta gets a new key");
+        assert_eq!(
+            before[3].0, after[3].0,
+            "gamma shifted but unchanged — its key (and any cached slice) survives"
+        );
+        assert_ne!(
+            before[3].1, after[3].1,
+            "gamma's owned-from line DID move — the manifest carries the shift"
         );
     }
 

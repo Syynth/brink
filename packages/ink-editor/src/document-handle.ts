@@ -10,7 +10,7 @@
  */
 
 import { Annotation, Facet } from "@codemirror/state";
-import type { EditorSessionHandle } from "@brink-lang/web";
+import type { EditorSessionHandle, SegmentManifest } from "@brink-lang/web";
 import type {
   AutoImportResult,
   CodeAction,
@@ -147,12 +147,64 @@ export class DocHandle {
 
   // ── Queries (offsets are UTF-16, view-relative — like the view's doc) ──
 
+  /** Per-segment slice cache, keyed by manifest version key (#3064
+   *  option A). Keys are self-invalidating — a segment's key changes
+   *  exactly when its content does and survives shift edits — so the
+   *  only maintenance is pruning keys that leave the manifest. */
+  private segSlices = new Map<string, { contexts?: LineContext[]; tokens?: SemanticToken[] }>();
+
+  private segmentManifest(): SegmentManifest | null {
+    if (this.isFragment) return null;
+    return this.session.getSegmentManifestDoc?.(this.id) ?? null;
+  }
+
   lineContexts(): LineContext[] {
-    return this.session.getLineContextsDoc(this.id);
+    const manifest = this.segmentManifest();
+    if (manifest === null) return this.session.getLineContextsDoc(this.id);
+    const out: LineContext[] = [];
+    const live = new Set<string>();
+    for (const seg of manifest.segments) {
+      live.add(seg.key);
+      let entry = this.segSlices.get(seg.key);
+      if (!entry?.contexts) {
+        const slice = this.session.getSegmentLineContextsDoc?.(this.id, seg.key) ?? null;
+        // A stale key (manifest raced an edit) — fall back wholesale.
+        if (slice === null) return this.session.getLineContextsDoc(this.id);
+        entry = { ...entry, contexts: slice };
+        this.segSlices.set(seg.key, entry);
+      }
+      for (const c of entry.contexts) out.push(c);
+    }
+    this.pruneSlices(live);
+    return out;
   }
 
   semanticTokens(): SemanticToken[] {
-    return this.session.getSemanticTokensDoc(this.id);
+    const manifest = this.segmentManifest();
+    if (manifest === null) return this.session.getSemanticTokensDoc(this.id);
+    const out: SemanticToken[] = [];
+    const live = new Set<string>();
+    for (const seg of manifest.segments) {
+      live.add(seg.key);
+      let entry = this.segSlices.get(seg.key);
+      if (!entry?.tokens) {
+        const slice = this.session.getSegmentSemanticTokensDoc?.(this.id, seg.key) ?? null;
+        if (slice === null) return this.session.getSemanticTokensDoc(this.id);
+        entry = { ...entry, tokens: slice };
+        this.segSlices.set(seg.key, entry);
+      }
+      // Cached token lines are segment-relative; rebase by the CURRENT
+      // manifest position (this is what makes shift edits free).
+      for (const t of entry.tokens) out.push({ ...t, line: t.line + seg.ownedFrom });
+    }
+    this.pruneSlices(live);
+    return out;
+  }
+
+  private pruneSlices(live: Set<string>): void {
+    for (const key of this.segSlices.keys()) {
+      if (!live.has(key)) this.segSlices.delete(key);
+    }
   }
 
   /** The HIR structural projection (#454): spans + per-line container stack. */

@@ -322,6 +322,101 @@ impl ProjectDb {
         ))
     }
 
+    /// The outbound-delta segment manifest (#3064 option A, ruled
+    /// 2026-08-24): one entry per segment — its VERSION KEY and the first
+    /// line it owns — plus the file's total line count. The version key
+    /// is the salsa tracked-struct id as `index:generation`: stable
+    /// across shift edits (only the tracked `offset` field moves),
+    /// changed exactly when the segment's content changes (a new
+    /// identity), and ABA-safe (slot reuse and identity-hash collisions
+    /// both bump the generation). A consumer caches per-segment slices
+    /// under this key, re-fetches only keys it hasn't seen, and drops
+    /// keys that leave the manifest. `None` for an unknown file or a
+    /// non-ink file (no segment road there).
+    pub fn segment_manifest(&self, id: FileId) -> Option<(Vec<(String, u32)>, u32)> {
+        use salsa::plumbing::AsId as _;
+        let file = *self.files.get(&id)?;
+        if !crate::queries::is_ink_file(&self.salsa, file) {
+            return None;
+        }
+        let owned = crate::queries::segments::segment_owned_lines(&self.salsa, file);
+        let entries = owned
+            .segments
+            .iter()
+            .map(|sl| {
+                let sid = sl.seg.as_id();
+                (
+                    format!("{}:{}", sid.index(), sid.generation()),
+                    u32::try_from(sl.owned_from).unwrap_or(u32::MAX),
+                )
+            })
+            .collect();
+        Some((
+            entries,
+            u32::try_from(owned.total_lines).unwrap_or(u32::MAX),
+        ))
+    }
+
+    /// One segment's owned line-context slice by manifest version key
+    /// (#3064 option A) — concatenating every manifest entry's slice in
+    /// order reproduces [`line_contexts`](Self::line_contexts) exactly
+    /// (parity-gated). `None` when the key no longer names a live
+    /// segment (the consumer's manifest is stale — re-fetch it).
+    pub fn segment_line_contexts_slice(
+        &self,
+        id: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::hir::line_context::LineContext>> {
+        let (file, owned, i) = self.segment_by_key(id, key)?;
+        Some(crate::queries::segments::segment_line_contexts_slice(
+            &self.salsa,
+            self.project,
+            file,
+            &owned,
+            i,
+        ))
+    }
+
+    /// One segment's owned semantic-token slice by manifest version key,
+    /// token lines RELATIVE to the segment's owned start (#3064 option
+    /// A) — cached slices survive shift edits; the consumer adds the
+    /// manifest's owned-from line back at assembly.
+    pub fn segment_semantic_tokens_slice(
+        &self,
+        id: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::semantic_tokens::RawToken>> {
+        let (file, owned, i) = self.segment_by_key(id, key)?;
+        Some(crate::queries::segments::segment_semantic_tokens_slice(
+            &self.salsa,
+            self.project,
+            file,
+            &owned,
+            i,
+        ))
+    }
+
+    fn segment_by_key(
+        &self,
+        id: FileId,
+        key: &str,
+    ) -> Option<(
+        crate::queries::SourceFile,
+        crate::queries::segments::OwnedLines<'_>,
+        usize,
+    )> {
+        use salsa::plumbing::AsId as _;
+        let file = *self.files.get(&id)?;
+        let (index_s, gen_s) = key.split_once(':')?;
+        let (index, generation): (u32, u32) = (index_s.parse().ok()?, gen_s.parse().ok()?);
+        let owned = crate::queries::segments::segment_owned_lines(&self.salsa, file);
+        let i = owned.segments.iter().position(|sl| {
+            let sid = sl.seg.as_id();
+            sid.index() == index && sid.generation() == generation
+        })?;
+        Some((file, owned, i))
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()
