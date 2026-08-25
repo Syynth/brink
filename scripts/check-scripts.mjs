@@ -539,6 +539,11 @@ export const NETWORK_COMMANDS = [
     pattern: /(?:^|[\s"'`(])spctl\s/,
     why: "Gatekeeper assessment performs an online ticket lookup when unstapled",
   },
+  {
+    id: "codesign",
+    pattern: /(?:^|[\s"'`(])codesign\s/,
+    why: "signing contacts Apple's timestamp server (the 2026-08-24 CI hang was exactly this call stalling)",
+  },
   { id: "wget", pattern: /(?:^|[\s"'`(])wget\s/, why: "a direct HTTPS fetch" },
   {
     id: "rustup",
@@ -986,6 +991,7 @@ const SHELL_WORDS = new Set([
  */
 export const LOCAL_COMMANDS = new Set([
   "security", // keychain queries — local database only
+  "hdiutil", // disk-image create/attach/detach — local disk only
   "awk", "basename", "cat", "chmod", "cp", "cut", "date", "dirname", "du", "env", "expr", "find",
   "grep", "head", "install", "ln", "ls", "mkdir", "mktemp", "mv", "node", "rm", "rmdir", "sed",
   "sh", "sleep", "sort", "tail", "tar", "tee", "touch", "tr", "uname", "uniq", "wc", "which",
