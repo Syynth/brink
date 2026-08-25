@@ -368,3 +368,25 @@ estimator is the honest follow-up before calling the posture settled.
 maintainer's memory-traffic concern, measured rather than argued); the
 pre-build proxy probe had estimated 1.6 ms on a differently-shaped
 fixture — proxies bound, wired runs decide.
+
+## Worker-architecture program end state (2026-08-25, W1–W5 landed)
+
+Same 60-file / 5,866-line perf fixture (`?fixture=perf`), dev build,
+worker road at its now-default ON. Main-thread wasm counters
+(`__brinkPerf.wasmCounters()` — the worker's module instance has its own
+registry, so these numbers are the UI thread's whole wasm bill):
+
+| | pre-program (stale Aug-24 build, measured 2026-08-25) | program end |
+|---|---|---|
+| whole-project compile on the main thread | 1,093–1,827 ms per debounced cycle | **0 ms — zero calls** (worker) |
+| per-keystroke ingress | full push + eager analyze, ~30–40 ms | delta splice ~1 ms ×2 (session + classifier mirror) |
+| boot main-thread wasm (project loaded, Problems populated) | compile + analyze + outline stack | `ide.analyze` ×1 (initial doc open), `ide.updateSource` ×1 |
+| deferred refresh (tokens/overlay/hints/widgets/folds) | sync analysis pulls on the dispatch stack | worker-fed stashes; sync rebuilds are cache reads |
+| worst long task while typing + compiling | 1,160 ms | ~78 ms (interactive landings coinciding; W2c-class) |
+
+Structural guarantees at end state: the main-thread analysis boundary
+guard (`main-thread-analysis-guard.test.ts`) pins every surviving
+analysis call site; the full playwright suite (390) runs in worker mode
+by default; `?worker=0` keeps the in-process control measurable. Residual
+main-thread analysis: the one-shot family (#3110) at incremental cost,
+and small-document (<1000-line) sync rebuilds.

@@ -434,7 +434,7 @@ export class DocumentSessions {
     // above, so the projection read is live at mount time. The trigger set
     // is {compile-deliver} ∪ {view-mount-after-a-deliver}.
     if (this.lastCompileDelivered !== null) {
-      refreshHirOverlay(view);
+      this.refreshOverlayPrepared(slot);
     }
 
     return () => {
@@ -1188,7 +1188,13 @@ export class DocumentSessions {
       prepareRefined: () => {
         const handle = slot.handle;
         if (!handle) return undefined;
-        return Promise.resolve().then(() => void handle.semanticTokens());
+        // W5c: fetch the replica's refined slices (manifest + changed
+        // segments only) into the worker plane; the sync rebuild then
+        // assembles from it — no main-thread analysis on this road.
+        return handle.refreshRefined(
+          this.project.docClient(),
+          this.project.getSession().configEpoch?.() ?? 0,
+        );
       },
       prepareProjection: () => this.prepareQuery(slot, "getHirSpansDoc", "overlay", []),
       prepareHints: (start, end) =>
@@ -1223,16 +1229,40 @@ export class DocumentSessions {
   private prepareQuery(
     slot: ViewSlot,
     method: string,
-    surface: string,
+    surface: "overlay" | "hints" | "widgets" | "folds",
     args: readonly unknown[],
   ): Promise<unknown> | undefined {
     const id = slot.handle?.id;
     if (id === undefined) return undefined;
-    return this.project.docClient().query(method, [id, ...args], {
-      priority: "background",
-      doc: id,
-      coalesceKey: `${surface}:${id}`,
-    }).promise;
+    return this.project
+      .docClient()
+      .query(method, [id, ...args], {
+        priority: "background",
+        doc: id,
+        coalesceKey: `${surface}:${id}`,
+      })
+      .promise.then((r) => {
+        // W5c: the warm-up's RESULT is the point — stash it so the
+        // field's synchronous rebuild reads worker-fed data instead of
+        // pulling analysis on the main thread.
+        const handle = slot.handle;
+        if (handle === null || handle.id !== id) return r;
+        switch (surface) {
+          case "overlay":
+            handle.stashProjection(r.value as import("@brink/wasm-types").HirProjection);
+            break;
+          case "hints":
+            handle.stashHints(r.value as import("@brink/wasm-types").InlayHint[]);
+            break;
+          case "widgets":
+            handle.stashWidgets(r.value as import("@brink/wasm-types").CallWidgetSite[]);
+            break;
+          case "folds":
+            handle.stashFolds(r.value as import("@brink/wasm-types").FoldRange[]);
+            break;
+        }
+        return r;
+      });
   }
 
   /**
@@ -1431,9 +1461,43 @@ export class DocumentSessions {
     // `lastCompileDelivered` set above is what tells a later mount that it
     // missed this loop.
     for (const slot of this.slots.values()) {
-      if (slot.view !== null) refreshHirOverlay(slot.view);
+      if (slot.view !== null) this.refreshOverlayPrepared(slot);
     }
     this.callbacks.onCompileResult?.(result);
+  }
+
+  /**
+   * Overlay refresh with the projection fetched FIRST (W5c): the stash is
+   * filled from the doc client (worker replica, or the in-process client
+   * in fallback environments) and the refresh effect dispatches on
+   * landing, so the field's synchronous rebuild never pulls analysis on
+   * the main thread. A failed/dropped fetch still refreshes — the
+   * getter's session fallback covers it (mocks, small docs).
+   */
+  private refreshOverlayPrepared(slot: ViewSlot): void {
+    const view = slot.view;
+    if (view === null) return;
+    const id = slot.handle?.id;
+    if (id === undefined) {
+      refreshHirOverlay(view);
+      return;
+    }
+    void this.project
+      .docClient()
+      .query<import("@brink/wasm-types").HirProjection>("getHirSpansDoc", [id], {
+        priority: "background",
+        doc: id,
+        coalesceKey: `overlay:${id}`,
+      })
+      .promise.then(
+        (r) => {
+          if (slot.handle?.id === id) slot.handle.stashProjection(r.value);
+          if (slot.view === view && view.dom.isConnected) refreshHirOverlay(view);
+        },
+        () => {
+          if (slot.view === view && view.dom.isConnected) refreshHirOverlay(view);
+        },
+      );
   }
 
   private reportCursor(view: EditorView): void {

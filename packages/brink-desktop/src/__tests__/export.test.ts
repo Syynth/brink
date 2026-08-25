@@ -1,21 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultExportName, exportStoryToInkb, type ExportApi } from "../export.js";
 
-/** An `ExportApi` stub: `dispatch` triggers nothing on its own — the test
- * sets `storyBytes`/`diagnostics` directly to model what a real
- * `compile.run` dispatch would have already produced synchronously in the
- * store by the time it returns. */
+/** An `ExportApi` stub modelling the ASYNC compile landing (worker road,
+ * W4): `dispatch("compile.run")` swaps the diagnostics object identity a
+ * microtask later — exactly how `landCompileResult` replaces it in the
+ * real store — which is the signal `exportStoryToInkb` awaits before
+ * reading the bytes. */
 function stubApi(storyBytes: Uint8Array | null, diagnostics = { errors: 0, warnings: 0 }): {
   api: ExportApi;
   notify: ReturnType<typeof vi.fn>;
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const notify = vi.fn();
-  const dispatch = vi.fn(() => true);
+  let current = { ...diagnostics };
+  const dispatch = vi.fn(() => {
+    queueMicrotask(() => {
+      current = { ...current };
+    });
+    return true;
+  });
   const api: ExportApi = {
     dispatch,
     getStoryBytes: () => storyBytes,
-    select: (sel) => sel({ diagnostics } as never),
+    select: (sel) => sel({ diagnostics: current } as never),
     notify,
   };
   return { api, notify, dispatch };
