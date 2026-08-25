@@ -13,15 +13,24 @@ pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;
 pub mod hir_projection;
+/// Re-export shim (#3064 B3): the line-context core moved to
+/// `brink_ir::hir::line_context` so `brink-db`'s per-segment queries can
+/// call it; every existing `brink_ide::line_context::…` path keeps
+/// working through this module.
+pub mod line_context {
+    pub use brink_ir::hir::line_context::*;
+}
+/// Re-export shim (#3064 B3) — see [`line_context`].
+pub mod trivia {
+    pub use brink_ir::trivia::*;
+}
 pub mod hover;
 pub mod import_block;
 pub mod import_fix;
 pub mod include_block;
 mod inferred_types;
 pub mod inlay_hints;
-pub mod line_context;
 pub mod line_convert;
-mod line_index;
 pub mod navigation;
 pub mod rename;
 pub mod rename_detection;
@@ -35,7 +44,6 @@ pub mod structural_move;
 pub mod structural_result;
 pub mod style_hover;
 mod text;
-pub mod trivia;
 pub mod ufcs_hover;
 pub mod value_call_fix;
 
@@ -50,8 +58,8 @@ pub use completion::{
 /// value-label inlay hints; never part of analysis (so a push needs no
 /// re-analyze). Empty when no host is attached.
 pub type HostValues = std::collections::HashMap<String, Vec<brink_ir::ValueItem>>;
+pub use brink_ir::LineIndex;
 pub use formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
-pub use line_index::LineIndex;
 pub use text::{
     builtin_hover_text, diff_to_edits, doc_extended_start, find_call_context, stdlib_hover_text,
     word_at_offset, word_range_at_offset,

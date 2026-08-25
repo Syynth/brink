@@ -1,3 +1,5 @@
+import { docString } from "./doc-string";
+import { syncAnnotation } from "./document-handle.js";
 import { Facet, StateEffect, StateField, type EditorState, type Transaction } from "@codemirror/state";
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
 import { documentHandleFacet } from "./document-handle.js";
@@ -593,16 +595,16 @@ function applyDialectFallback(
 // ── StateField ──────────────────────────────────────────────────────
 
 function computeLineInfos(state: EditorState): LineInfo[] {
-  return perfTime("cm.elementType.computeLineInfos", () => computeLineInfosInner(state));
+  return perfTime("cm.elementType.computeLineInfos", () => computeLineInfosInner(state, false));
 }
 
-function computeLineInfosInner(state: EditorState): LineInfo[] {
+function computeLineInfosInner(state: EditorState, alreadyPushed: boolean): LineInfo[] {
   // The view's own document handle (per-view DocId, see document-handle.ts).
   // Pushing here keeps the wasm session in sync with this view on every doc
   // change, before any extension queries run against the new state.
   const handle = state.facet(documentHandleFacet)?.handle ?? null;
   if (handle) {
-    handle.pushSource(state.doc.toString());
+    if (!alreadyPushed) handle.pushSource(docString(state));
     const contexts = handle.lineContexts();
 
     const infos: LineInfo[] = [];
@@ -670,6 +672,29 @@ export const elementTypeField = StateField.define<LineInfo[]>({
   },
   update(value, tr: Transaction) {
     if (!tr.docChanged && !tr.effects.some((e) => e.is(reclassifyEffect))) return value;
+    // #3064 C1: push the transaction's bounded edits instead of the whole
+    // document. `computeLineInfos` sees the push already applied (its own
+    // `pushSource` becomes a no-op fallback for handles/mocks without the
+    // delta path, multi-cursor batches, and fragment views).
+    // Mirrored transactions (cross-view sync) carry an edit the SOURCE
+    // view already applied to the wasm doc — re-applying the delta would
+    // double it (caught by the binder-rename e2e: duplicated knots). They
+    // take the full-push path below, whose lastPushed guard makes the
+    // redundant push free.
+    if (tr.docChanged && tr.annotation(syncAnnotation) !== true) {
+      const handle = tr.state.facet(documentHandleFacet)?.handle ?? null;
+      if (handle) {
+        const edits: { from: number; to: number; insert: string }[] = [];
+        tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+          edits.push({ from: fromA, to: toA, insert: inserted.toString() });
+        });
+        if (handle.applyChanges?.(edits)) {
+          return perfTime("cm.elementType.computeLineInfos", () =>
+            computeLineInfosInner(tr.state, /* alreadyPushed */ true),
+          );
+        }
+      }
+    }
     return computeLineInfos(tr.state);
   },
 });

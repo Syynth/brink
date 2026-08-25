@@ -55,6 +55,96 @@ impl EditorSession {
     /// refused with the same "did not apply" sentinel a caller already
     /// handles for an unknown handle. The content is left untouched, unlike
     /// an unknown handle there is no ambiguity to log — see `is_read_only`.
+    /// Apply a bounded edit list to a FILE handle's document (#3064 C1) —
+    /// the delta sibling of [`update_document`](Self::update_document).
+    /// `edits_json` is an ascending, non-overlapping array of
+    /// `{from, to, insert}` in UTF-16 coordinates of the PREVIOUS content
+    /// (CM6's `ChangeSet::iterChanges` A-side). Splices Rust-side — the
+    /// full document never crosses the boundary — and writes the source
+    /// input WITHOUT the fused eager analysis: consumers pull what they
+    /// need (the per-segment queries pull lowering-side memos only; the
+    /// diagnostics bundle is computed when the debounced compile path
+    /// asks, not per keystroke).
+    ///
+    /// Returns `false` — and applies nothing — for a fragment handle, an
+    /// unknown handle, a read-only file, or malformed/out-of-bounds
+    /// edits; the caller falls back to the full-text push.
+    pub fn apply_edits_document(&mut self, doc: u32, edits_json: &str) -> bool {
+        #[derive(serde::Deserialize)]
+        struct EditJs {
+            from: u32,
+            to: u32,
+            insert: String,
+        }
+        let Some(state) = self.docs.get(&doc) else {
+            return false;
+        };
+        if state.view.is_some() {
+            return false;
+        }
+        let path = state.path.clone();
+        if self.is_read_only(&path) {
+            return false;
+        }
+        let Ok(edits) = serde_json::from_str::<Vec<EditJs>>(edits_json) else {
+            return false;
+        };
+        let Some(mut text) = self
+            .session
+            .file_id(&path)
+            .and_then(|id| self.session.source(id).map(str::to_owned))
+        else {
+            return false;
+        };
+
+        // One forward pass converts every UTF-16 boundary to a byte
+        // offset (edits are ascending and non-overlapping, so their
+        // boundary list is ascending too).
+        let mut positions: Vec<u32> = Vec::with_capacity(edits.len() * 2);
+        for e in &edits {
+            if e.to < e.from || positions.last().is_some_and(|last| e.from < *last) {
+                return false;
+            }
+            positions.push(e.from);
+            positions.push(e.to);
+        }
+        let mut bytes: Vec<usize> = Vec::with_capacity(positions.len());
+        {
+            let mut units: u32 = 0;
+            let mut iter = positions.iter().copied().peekable();
+            for (byte_idx, c) in text.char_indices() {
+                while iter.peek().is_some_and(|p| *p <= units) {
+                    iter.next();
+                    bytes.push(byte_idx);
+                }
+                if iter.peek().is_none() {
+                    break;
+                }
+                units += u32::try_from(c.len_utf16()).unwrap_or(1);
+            }
+            let end = text.len();
+            while iter.next().is_some() {
+                bytes.push(end);
+            }
+        }
+        if bytes.len() != positions.len() {
+            return false;
+        }
+
+        for (i, e) in edits.iter().enumerate().rev() {
+            let (from_b, to_b) = (bytes[2 * i], bytes[2 * i + 1]);
+            if from_b > to_b || to_b > text.len() {
+                return false;
+            }
+            text.replace_range(from_b..to_b, &e.insert);
+        }
+
+        crate::perf::time("ide.updateSource", || {
+            self.session.update_source(&path, text);
+        });
+        true
+    }
+
     pub fn update_document(&mut self, doc: u32, source: &str) -> String {
         let Some(state) = self.docs.get(&doc) else {
             return "null".to_owned();

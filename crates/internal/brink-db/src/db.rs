@@ -83,6 +83,7 @@ impl ProjectDb {
             AnalysisOptions::default(),
             None,
             None,
+            None,
         );
         Self {
             salsa,
@@ -192,6 +193,27 @@ impl ProjectDb {
 
     /// Set the analysis options (host manifest + external-check severity)
     /// used by the [`analysis`](Self::analysis) and downstream queries.
+    /// Register (or clear) the screenplay dialect config (#3064 B1).
+    /// UNGUARDED like `set_analysis_options` — the salsa write stamps the
+    /// revision unconditionally, so callers guard against no-op writes
+    /// (`IdeSession::set_dialect` does).
+    pub fn set_dialect(&mut self, dialect: Option<brink_ir::DialogueDialect>) {
+        self.project.set_dialect(&mut self.salsa).to(dialect);
+    }
+
+    /// The registered dialect config, if any.
+    pub fn dialect_config(&self) -> Option<&brink_ir::DialogueDialect> {
+        self.project.dialect(&self.salsa).as_ref()
+    }
+
+    /// The compiled dialect (memoized — regexes compile once per config
+    /// change), if one is registered and valid.
+    pub fn resolved_dialect(&self) -> Option<&Arc<brink_ir::ResolvedDialect>> {
+        crate::queries::resolved_dialect_query(&self.salsa, self.project)
+            .0
+            .as_ref()
+    }
+
     pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
         self.project
             .set_analysis_options(&mut self.salsa)
@@ -260,6 +282,44 @@ impl ProjectDb {
     pub fn segment_count(&self, id: FileId) -> Option<usize> {
         let file = *self.files.get(&id)?;
         Some(crate::queries::file_segments_query(&self.salsa, file).len())
+    }
+
+    /// The file's assembled, identity-joined projection (#3064 B2) — the
+    /// per-segment memoized replacement for `IdeSession`'s retired
+    /// wipe-on-every-edit projection cache. `None` for an unknown id.
+    pub fn projection(&self, id: FileId) -> Option<Arc<brink_ir::hir::projection::Projection>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::projection_query(&self.salsa, self.project, file).0,
+        ))
+    }
+
+    /// The file's assembled per-line contexts (#3064 B3) — per-segment
+    /// memoized for ink (an edit reclassifies the edited knot's fragment
+    /// only), whole-file for native. Dialect-classified when a dialect
+    /// config is registered ([`set_dialect`](Self::set_dialect)).
+    pub fn line_contexts(
+        &self,
+        id: FileId,
+    ) -> Option<Arc<Vec<brink_ir::hir::line_context::LineContext>>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::line_contexts_query(&self.salsa, self.project, file).0,
+        ))
+    }
+
+    /// The file's assembled semantic tokens (#3064 B4) — per-segment
+    /// memoized for ink with a range-free resolution-kind seam, so both
+    /// shift edits and unrelated-content edits leave untouched segments'
+    /// token memos validated. Whole-file for native.
+    pub fn semantic_tokens(
+        &self,
+        id: FileId,
+    ) -> Option<Arc<Vec<brink_ir::semantic_tokens::RawToken>>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::semantic_tokens_query(&self.salsa, self.project, file).0,
+        ))
     }
 
     /// Look up a file's ID by path.

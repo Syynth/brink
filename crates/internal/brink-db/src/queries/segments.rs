@@ -353,6 +353,471 @@ pub(crate) fn assemble_lowered_file(
     }
 }
 
+// ─── Per-segment projection (#3064 B2) ───────────────────────────────
+
+/// One segment's STRUCTURAL projection walk (`project_walk_parts`):
+/// spans + join keys + option paths, segment-relative, handles local
+/// from 0. Reads the segment's lowered fragment and its text — never
+/// `offset`, so shift edits leave it memoized (the same contract as
+/// [`segment_lowered_query`]).
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_projection_query<'db>(
+    db: &'db dyn salsa::Database,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<brink_ir::hir::projection::ProjectionParts> {
+    let product = segment_lowered_query(db, file, segment);
+    let hir = fragment_hir(product);
+    super::NoEqArc(Arc::new(brink_ir::hir::projection::project_walk_parts(
+        &hir,
+        segment.text(db),
+    )))
+}
+
+/// The assembled, identity-joined whole-file projection (#3064 B2) —
+/// the per-keystroke replacement for the retired wipe-on-every-edit
+/// session projection cache. Composition mirrors the whole-file
+/// `project_hir` exactly:
+///
+/// 1. the file-level declaration prologue over the ASSEMBLED HIR
+///    (`project_file_decl_parts` — shared emitter, cannot drift);
+/// 2. every segment's memoized walk parts, rebased by the segment's
+///    current offset, handles renumbered by a running count, in the
+///    whole-file `visit` order — header root content, then knot
+///    segments, then stitch segments (matching `hir.knots`' assembly
+///    order: knots first, stitch-promotions appended);
+/// 3. the analyzer identity join, replayed at assembly from the
+///    recorded [`brink_ir::hir::projection::JoinKey`]s against
+///    `resolutions_index` (the cheap FG-3 half — never the diagnostics
+///    bundle);
+/// 4. `build_line_stacks` once over the assembled spans.
+///
+/// A native (`.brink`) file has no segment road — its walk runs
+/// whole-file here (delta 0), the same composition with one fragment.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn projection_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<brink_ir::hir::projection::Projection> {
+    use brink_ir::hir::projection as proj;
+
+    let source = file.text(db);
+    let lowered = super::lowered_query(db, project, file);
+
+    // Pass 1: the declaration prologue over the assembled HIR.
+    let decl_parts = proj::project_file_decl_parts(&lowered.hir, source);
+    let mut spans = decl_parts.spans;
+    let mut join_keys: Vec<(Option<proj::JoinKey>, TextSize)> = decl_parts
+        .join_keys
+        .into_iter()
+        .map(|k| (k, TextSize::from(0)))
+        .collect();
+    let mut option_paths: std::collections::BTreeMap<u32, Vec<u32>> = decl_parts.option_paths;
+    let mut handle_offset = decl_parts.handle_count;
+
+    // Pass 2: segment walks in whole-file visit order.
+    let append = |parts: &proj::ProjectionParts,
+                  delta: TextSize,
+                  spans: &mut Vec<proj::ProjectedSpan>,
+                  join_keys: &mut Vec<(Option<proj::JoinKey>, TextSize)>,
+                  option_paths: &mut std::collections::BTreeMap<u32, Vec<u32>>,
+                  handle_offset: &mut u32| {
+        for (span, key) in parts.spans.iter().zip(&parts.join_keys) {
+            let mut s = *span;
+            s.range += delta;
+            if let Some(h) = s.handle.as_mut() {
+                *h += *handle_offset;
+            }
+            spans.push(s);
+            join_keys.push((*key, delta));
+        }
+        for (handle, path) in &parts.option_paths {
+            option_paths.insert(handle + *handle_offset, path.clone());
+        }
+        *handle_offset += parts.handle_count;
+    };
+
+    if super::file_language(file.path(db)) == super::Language::Ink {
+        let segs = file_segments_query(db, file);
+        for pass_stitches in [false, true] {
+            for seg in segs {
+                let is_stitch = seg.kind(db) == SegmentKind::TopLevelStitch;
+                if is_stitch != pass_stitches {
+                    continue;
+                }
+                let parts = &segment_projection_query(db, file, *seg).0;
+                append(
+                    parts,
+                    TextSize::from(seg.offset(db)),
+                    &mut spans,
+                    &mut join_keys,
+                    &mut option_paths,
+                    &mut handle_offset,
+                );
+            }
+        }
+    } else {
+        let parts = proj::project_walk_parts(&lowered.hir, source);
+        append(
+            &parts,
+            TextSize::from(0),
+            &mut spans,
+            &mut join_keys,
+            &mut option_paths,
+            &mut handle_offset,
+        );
+    }
+
+    // Pass 3: identity join via rebased keys.
+    let resolved = super::resolutions_index_query(db, project);
+    let file_id = file.file_id(db);
+    let mut decl_ids: std::collections::BTreeMap<(u32, u32), brink_format::DefinitionId> =
+        std::collections::BTreeMap::new();
+    for info in resolved.index.symbols.values() {
+        if info.file == file_id {
+            decl_ids.insert(proj::range_key(info.range), info.id);
+        }
+    }
+    let mut ref_targets: std::collections::BTreeMap<(u32, u32), brink_format::DefinitionId> =
+        std::collections::BTreeMap::new();
+    for r in &resolved.resolutions {
+        if r.file == file_id {
+            ref_targets.insert(proj::range_key(r.range), r.target);
+        }
+    }
+    for (span, (key, delta)) in spans.iter_mut().zip(&join_keys) {
+        match key {
+            Some(proj::JoinKey::Decl(r)) => {
+                span.def_id = decl_ids.get(&proj::range_key(*r + *delta)).copied();
+            }
+            Some(proj::JoinKey::Ref(r)) => {
+                span.target_id = ref_targets.get(&proj::range_key(*r + *delta)).copied();
+            }
+            None => {}
+        }
+    }
+
+    // Pass 4: line stacks over the assembled whole.
+    let lines = proj::build_line_stacks(&spans, source);
+    super::NoEqArc(Arc::new(proj::Projection {
+        spans,
+        lines,
+        option_paths,
+    }))
+}
+
+// ─── Per-segment line contexts (#3064 B3) ────────────────────────────
+
+/// Build the fragment `HirFile` a segment's structural views project
+/// from — the lowered product's decl skeleton plus its knots and root
+/// content, exactly the shape [`segment_projection_query`] walks.
+fn fragment_hir(product: &LoweredSegment) -> HirFile {
+    let mut hir = product.decl_hir.clone();
+    hir.knots = product
+        .knot_entries
+        .iter()
+        .filter_map(|(knot, _)| knot.clone())
+        .collect();
+    hir.knots.extend(product.top_level_knots.iter().cloned());
+    hir.root_content = product.root_content.clone();
+    hir
+}
+
+/// One segment's per-line contexts (#3064 B3): fragment parse (trivia
+/// facet), fragment-local structural projection (decl prologue + the
+/// memoized walk), and the registered dialect's classify+chain
+/// post-pass — all fragment-relative. `LineContext` carries no absolute
+/// positions (dialect spans are line-relative), so assembly is pure
+/// per-line concatenation under the line-ownership rule in
+/// [`line_contexts_query`]. Chains cannot cross fragments: a fragment
+/// boundary is a knot/stitch header (structural — breaks every chain),
+/// and the only lines before it in the fragment are its doc block's
+/// comment lines.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_line_contexts_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<Vec<brink_ir::hir::line_context::LineContext>> {
+    use brink_ir::hir::{line_context as lc, projection as proj};
+
+    let product = segment_lowered_query(db, file, segment);
+    let text = segment.text(db);
+    let parse = brink_syntax::parse(text);
+    let root = parse.syntax();
+
+    let hir = fragment_hir(product);
+    let decl_parts = proj::project_file_decl_parts(&hir, text);
+    let walk = &segment_projection_query(db, file, segment).0;
+    let mut spans = decl_parts.spans;
+    spans.extend(walk.spans.iter().copied());
+    let mut option_paths = decl_parts.option_paths;
+    for (handle, path) in &walk.option_paths {
+        option_paths.insert(*handle, path.clone());
+    }
+    let lines = proj::build_line_stacks(&spans, text);
+    let projection = proj::Projection {
+        spans,
+        lines,
+        option_paths,
+    };
+
+    let contexts = match &super::resolved_dialect_query(db, project).0 {
+        Some(dialect) => lc::line_contexts_with_dialect(text, &root, &projection, dialect),
+        None => lc::line_contexts(text, &root, &projection),
+    };
+    super::NoEqArc(Arc::new(contexts))
+}
+
+/// The assembled whole-file line contexts (#3064 B3) — per-segment
+/// memoized for ink, whole-file for native (no segment road there yet).
+///
+/// Assembly is per-line concatenation under a line-OWNERSHIP rule: a
+/// file line belongs to the segment whose TILING range contains the
+/// line's start offset (segments' `lowered_range`s overlap on doc
+/// blocks; tiling ranges don't). For the owned line `L`, the context
+/// comes from the owner's fragment at index `L - line_of(owner start)`.
+/// A mid-line cut (the trailing-comment doc quirk) leaves the cut line
+/// owned by the PRECEDING segment, whose fragment ends exactly at the
+/// cut — its classification of the truncated line matches the
+/// whole-file one for every corpus case (equality-gated below).
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn line_contexts_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<Vec<brink_ir::hir::line_context::LineContext>> {
+    use brink_ir::hir::line_context as lc;
+
+    let source = file.text(db);
+
+    if super::file_language(file.path(db)) != super::Language::Ink {
+        // Native: whole-file composition (the pre-B3 shape), using the
+        // assembled projection.
+        let projection = &projection_query(db, project, file).0;
+        let parse = super::parse_native_query(db, file);
+        let root = parse.syntax();
+        let contexts = match &super::resolved_dialect_query(db, project).0 {
+            Some(dialect) => {
+                lc::line_contexts_with_dialect_native(source, &root, projection, dialect)
+            }
+            None => lc::line_contexts_native(source, &root, projection),
+        };
+        return super::NoEqArc(Arc::new(contexts));
+    }
+
+    // Line-start offsets (0-based line -> byte offset of line start).
+    let mut line_starts: Vec<u32> = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+    }
+    let total_lines = lc::line_count_for(source);
+    let line_of = |offset: u32| -> usize {
+        match line_starts.binary_search(&offset) {
+            Ok(l) => l,
+            Err(next) => next - 1,
+        }
+    };
+
+    let segs = file_segments_query(db, file);
+    let mut owned_from: Vec<usize> = Vec::with_capacity(segs.len() + 1);
+    for seg in segs {
+        let start = seg.offset(db);
+        let l = line_of(start);
+        // A segment starting mid-line owns that line iff everything
+        // before its start is whitespace (an INDENTED header — the
+        // fragment's own line 0 is the real header line). A cut after
+        // real content (the trailing-comment doc quirk) leaves the line
+        // with the preceding segment, whose fragment ends at the cut.
+        let prefix = &source[line_starts[l] as usize..start as usize];
+        // "Whitespace" here must match the LEXER's trivia notion — a
+        // leading UTF-8 BOM (U+FEFF) is trivia to the parser but not
+        // whitespace to `str::trim` (it's a format character).
+        let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
+        owned_from.push(if only_trivia { l } else { l + 1 });
+    }
+    owned_from.push(total_lines);
+
+    let mut out: Vec<lc::LineContext> = Vec::with_capacity(total_lines);
+    for (i, seg) in segs.iter().enumerate() {
+        let ctxs = &segment_line_contexts_query(db, project, file, *seg).0;
+        let seg_start_line = line_of(seg.offset(db));
+        for line in owned_from[i]..owned_from[i + 1] {
+            out.push(ctxs.get(line - seg_start_line).cloned().unwrap_or_default());
+        }
+    }
+    super::NoEqArc(Arc::new(out))
+}
+
+// ─── Per-segment semantic tokens (#3064 B4) ──────────────────────────
+
+/// The file's absolute range-keyed resolution-kind map — one pass over
+/// `resolutions_index` filtered to this file. Cheap, re-executed per
+/// edit; the per-segment CUTOFF lives one query down.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn file_resolution_kinds_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<std::collections::BTreeMap<(u32, u32), u32>> {
+    use brink_ir::hir::projection::range_key;
+    let resolved = super::resolutions_index_query(db, project);
+    let file_id = file.file_id(db);
+    let mut map = std::collections::BTreeMap::new();
+    for rref in &resolved.resolutions {
+        if rref.file == file_id
+            && let Some(info) = resolved.index.symbols.get(&rref.target)
+        {
+            map.insert(range_key(rref.range), info.kind.to_u32());
+        }
+    }
+    super::NoEqArc(Arc::new(map))
+}
+
+/// One segment's FRAGMENT-RELATIVE resolution-kind map — the range-free
+/// backdating seam (the FG-3 `call_site_metas` pattern): this query
+/// re-executes every edit (it reads the file map and the segment's
+/// tracked offset), but for a segment whose content and resolutions
+/// didn't change the OUTPUT is bit-identical, so
+/// [`segment_semantic_tokens_query`] backdates and never re-walks the
+/// fragment. `Vec<(start, end, kind)>` rather than a map: the payload
+/// needs `salsa::Update`, which std tuples/Vecs carry.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn segment_resolution_kinds_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> Vec<(u32, u32, u32)> {
+    let map = &file_resolution_kinds_query(db, project, file).0;
+    let start = segment.offset(db);
+    let end = start + u32::try_from(segment.text(db).len()).unwrap_or(u32::MAX);
+    map.range((start, 0)..(end, u32::MAX))
+        .filter(|((_, e), _)| *e <= end)
+        .map(|((s, e), kind)| (s - start, e - start, *kind))
+        .collect()
+}
+
+/// One segment's semantic tokens, fragment-relative positions (#3064
+/// B4): fragment parse + the stateless token classifier against the
+/// fragment-relative kind map. Backdates across shift edits AND
+/// unrelated-content edits via the seam above.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_semantic_tokens_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<Vec<brink_ir::semantic_tokens::RawToken>> {
+    let text = segment.text(db);
+    let parse = brink_syntax::parse(text);
+    let root = parse.syntax();
+    let kinds: std::collections::BTreeMap<(u32, u32), brink_ir::SymbolKind> =
+        segment_resolution_kinds_query(db, project, file, segment)
+            .iter()
+            .filter_map(|(s, e, k)| brink_ir::SymbolKind::from_u32(*k).map(|k| ((*s, *e), k)))
+            .collect();
+    super::NoEqArc(Arc::new(brink_ir::semantic_tokens::tokens_with_kinds(
+        text, &root, &kinds,
+    )))
+}
+
+/// The assembled whole-file semantic tokens (#3064 B4). Assembly is
+/// per-line: each file line's tokens come from the segment that OWNS the
+/// line (the same trivia-prefix ownership rule as line contexts), with
+/// the line number rebased by the owner's start line. Two boundary
+/// refinements for a segment whose cut sits mid-line:
+///
+/// - the owner's fragment sees the line WITHOUT the prefix before the
+///   cut, so its tokens on fragment line 0 get their columns shifted by
+///   the cut's column;
+/// - the PRECEDING segment's fragment holds the prefix's tokens for that
+///   same line (its truncated last line), so a boundary line merges
+///   both sources — prefix tokens first (columns already correct), then
+///   the owner's rebased line-0 tokens, preserving column order.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn semantic_tokens_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<Vec<brink_ir::semantic_tokens::RawToken>> {
+    let source = file.text(db);
+
+    if super::file_language(file.path(db)) != super::Language::Ink {
+        // Native: whole-file walk against the absolute kind map.
+        let parse = super::parse_native_query(db, file);
+        let kinds: std::collections::BTreeMap<(u32, u32), brink_ir::SymbolKind> =
+            file_resolution_kinds_query(db, project, file)
+                .0
+                .iter()
+                .filter_map(|((s, e), k)| brink_ir::SymbolKind::from_u32(*k).map(|k| ((*s, *e), k)))
+                .collect();
+        return super::NoEqArc(Arc::new(
+            brink_ir::semantic_tokens::tokens_with_kinds_native(source, &parse.syntax(), &kinds),
+        ));
+    }
+
+    let mut line_starts: Vec<u32> = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+    }
+    let line_of = |offset: u32| -> usize {
+        match line_starts.binary_search(&offset) {
+            Ok(l) => l,
+            Err(next) => next - 1,
+        }
+    };
+
+    let segs = file_segments_query(db, file);
+    // (owned_from_line, seg_start_line, cut_col) per segment.
+    let mut seg_lines: Vec<(usize, usize, u32)> = Vec::with_capacity(segs.len());
+    for seg in segs {
+        let start = seg.offset(db);
+        let l = line_of(start);
+        let prefix = &source[line_starts[l] as usize..start as usize];
+        // Token columns are UTF-16 code units (the LSP wire unit
+        // `emit_token`'s LineIndex produces), NOT bytes — a BOM is three
+        // bytes but one unit.
+        let cut_col = u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX);
+        let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
+        seg_lines.push((if only_trivia { l } else { l + 1 }, l, cut_col));
+    }
+
+    let mut out: Vec<brink_ir::semantic_tokens::RawToken> = Vec::new();
+    for (i, seg) in segs.iter().enumerate() {
+        let tokens = &segment_semantic_tokens_query(db, project, file, *seg).0;
+        let (owned_from, seg_start_line, cut_col) = seg_lines[i];
+        let owned_to = seg_lines
+            .get(i + 1)
+            .map_or(usize::MAX, |(next_from, _, _)| *next_from);
+        // The boundary line a mid-line cut leaves with the PRECEDING
+        // segment still gets this segment's rebased line-0 tokens merged
+        // in (the prefix's own tokens came from the preceding fragment).
+        let merge_boundary = owned_from > seg_start_line;
+        for t in tokens.iter() {
+            let file_line = seg_start_line + t.line as usize;
+            let owned = file_line >= owned_from && file_line < owned_to;
+            let boundary = merge_boundary && t.line == 0;
+            if !(owned || boundary) {
+                continue;
+            }
+            let mut t = t.clone();
+            t.line = u32::try_from(file_line).unwrap_or(u32::MAX);
+            if t.line as usize == seg_start_line {
+                t.start_char += cut_col;
+            }
+            out.push(t);
+        }
+    }
+    super::NoEqArc(Arc::new(out))
+}
+
 #[cfg(test)]
 mod tests {
     use salsa::plumbing::AsId;
@@ -490,6 +955,69 @@ Gamma body.
             assembled.admission, oracle.admission,
             "admission diverged: {label}"
         );
+        // Projection parity (#3064 B2): the assembled per-segment
+        // projection must equal the whole-file walk with the identity
+        // join, spans/handles/line-stacks/option-paths included.
+        {
+            use brink_ir::hir::projection as proj;
+            let analysis = db.analysis();
+            let mut decl_ids = std::collections::BTreeMap::new();
+            for info in analysis.index.symbols.values() {
+                if info.file == id {
+                    decl_ids.insert(proj::range_key(info.range), info.id);
+                }
+            }
+            let mut ref_targets = std::collections::BTreeMap::new();
+            for r in &analysis.resolutions {
+                if r.file == id {
+                    ref_targets.insert(proj::range_key(r.range), r.target);
+                }
+            }
+            let oracle_projection =
+                proj::project_with_maps(&oracle.hir, source, &decl_ids, &ref_targets);
+            let assembled_projection = db.projection(id).expect("projection");
+            assert_eq!(
+                *assembled_projection, oracle_projection,
+                "projection diverged: {label}"
+            );
+        }
+
+        // Line-context parity (#3064 B3): assembled per-segment contexts
+        // must equal the whole-file classification.
+        {
+            use brink_ir::hir::line_context as lc;
+            let root = brink_syntax::parse(source).syntax();
+            let projection = db.projection(id).expect("projection");
+            let oracle_contexts = lc::line_contexts(source, &root, &projection);
+            let assembled_contexts = db.line_contexts(id).expect("contexts");
+            assert_eq!(
+                *assembled_contexts, oracle_contexts,
+                "line contexts diverged: {label}"
+            );
+        }
+
+        // Semantic-token parity (#3064 B4): the assembled per-segment
+        // tokens must equal the whole-file walk with the identity join.
+        {
+            use brink_ir::hir::projection::range_key;
+            let analysis = db.analysis();
+            let mut kinds = std::collections::BTreeMap::new();
+            for rref in &analysis.resolutions {
+                if rref.file == id
+                    && let Some(info) = analysis.index.symbols.get(&rref.target)
+                {
+                    kinds.insert(range_key(rref.range), info.kind);
+                }
+            }
+            let root = brink_syntax::parse(source).syntax();
+            let oracle_tokens = brink_ir::semantic_tokens::tokens_with_kinds(source, &root, &kinds);
+            let assembled_tokens = db.semantic_tokens(id).expect("tokens");
+            assert_eq!(
+                *assembled_tokens, oracle_tokens,
+                "semantic tokens diverged: {label}"
+            );
+        }
+
         let mut a = assembled.diagnostics.clone();
         let mut b = oracle.diagnostics.clone();
         let key = |d: &brink_ir::Diagnostic| {
@@ -552,6 +1080,45 @@ Gamma body.
         for (label, source) in fixtures {
             assert_roads_agree(source, label);
         }
+    }
+
+    /// Dialect classification parity (#3064 B3): with a dialect config
+    /// registered, the assembled per-segment contexts must equal the
+    /// whole-file dialect pass — chains, hidden geometry, carry attrs.
+    #[test]
+    fn dialect_line_contexts_agree_with_whole_file() {
+        use brink_ir::hir::line_context as lc;
+
+        // The `@Name:<>` at-cue preset — the same default the studio
+        // registers (reproduces the hardcoded screenplay behavior).
+        let config = brink_ir::DialogueDialect::default();
+
+        let source = "Intro prose.
+== alpha ==
+@Alice:<>
+Hello there.
+Second dialogue line.
+
+Plain narrative after blank.
+== beta ==
+@Bob:<>
+Hi.
+-> END
+";
+        let mut db = ProjectDb::new();
+        db.set_dialect(Some(config));
+        let id = db.update_file("gate.ink", source.to_owned());
+
+        let root = brink_syntax::parse(source).syntax();
+        let projection = db.projection(id).expect("projection");
+        let dialect = std::sync::Arc::clone(db.resolved_dialect().expect("dialect compiles"));
+        let oracle = lc::line_contexts_with_dialect(source, &root, &projection, &dialect);
+        let assembled = db.line_contexts(id).expect("contexts");
+        assert_eq!(*assembled, oracle, "dialect contexts diverged");
+        assert!(
+            oracle.iter().any(|c| c.dialect.is_some()),
+            "fixture must actually exercise dialect classification"
+        );
     }
 
     /// The tier corpora, swept file by file. `tests_github`/`tests_patched`

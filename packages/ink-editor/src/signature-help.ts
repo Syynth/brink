@@ -28,6 +28,23 @@ export function signatureHelpExtension(options: SignatureHelpOptions): Extension
       if (!update.docChanged) return;
 
       const { state } = update.view;
+      const open = state.field(signatureTooltipField) !== null;
+      // #3064: LSP-standard triggering — query only when a trigger
+      // character was typed ("(" or ",") or the tooltip is already open
+      // (to advance the active parameter or dismiss on leaving the
+      // call). Plain typing with no tooltip never queries: the previous
+      // unconditional probe ran a whole-document wasm query on EVERY
+      // keystroke (228 calls per typing burst in the perf trace) for a
+      // popup that standard editors don't show without a trigger.
+      if (!open) {
+        let triggered = false;
+        update.changes.iterChanges((_fromA, _toA, _fromB, _toB, inserted) => {
+          const text = inserted.toString();
+          if (text.includes("(") || text.includes(",")) triggered = true;
+        });
+        if (!triggered) return;
+      }
+
       const pos = state.selection.main.head;
       const source = state.doc.toString();
 

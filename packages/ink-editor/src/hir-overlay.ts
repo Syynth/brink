@@ -46,6 +46,7 @@ import {
   gutter,
 } from "@codemirror/view";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
+import { DEFER_LINE_THRESHOLD, deferredRefresh } from "./deferred-refresh.js";
 import { isPerfEnabled, perfRecord, perfTime } from "./perf/probe.js";
 
 export interface HirOverlayOptions {
@@ -194,6 +195,19 @@ function createOverlayField(options: HirOverlayOptions) {
     update(value, tr: Transaction) {
       const refresh = tr.effects.some((e) => e.is(refreshHirOverlayEffect));
       if (!tr.docChanged && !refresh) return value;
+      // #3064 C2 adaptive deferral: in a LARGE document, a doc change maps
+      // the existing decorations through the edit (positions stay correct;
+      // content refreshes on the debounced `refreshHirOverlayEffect` the
+      // `deferredRefresh` plugin dispatches after the burst ends). Small
+      // documents rebuild synchronously as before — no staleness window.
+      if (tr.docChanged && !refresh && tr.newDoc.lines >= DEFER_LINE_THRESHOLD) {
+        return {
+          projection: value.projection,
+          marks: value.marks.map(tr.changes),
+          lineDecos: value.lineDecos.map(tr.changes),
+          spansByHandle: value.spansByHandle,
+        };
+      }
       const fresh = fetchState(tr.newDoc);
       if (fresh) return fresh;
       // R5: transient failure — keep last-good, remapped through the change
@@ -502,6 +516,9 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
 
   return [
     field,
+    // #3064 C2: after a typing burst in a large document, rebuild the
+    // deferred overlay content once the doc goes quiet.
+    deferredRefresh(refreshHirOverlayEffect),
     EditorView.decorations.from(field, (v) => v.marks),
     EditorView.decorations.from(field, (v) => v.lineDecos),
     EditorView.decorations.compute([field, "selection"], (state) =>

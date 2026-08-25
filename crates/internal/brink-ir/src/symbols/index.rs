@@ -140,6 +140,36 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
+    /// Stable numeric form for range-free memo seams (#3064 B4) — the
+    /// per-segment resolution-kind maps carry `u32`s so their salsa memo
+    /// payload is `Eq + Update` without this enum needing a salsa dep.
+    #[must_use]
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    /// Inverse of [`to_u32`](Self::to_u32); `None` for an unknown value.
+    #[must_use]
+    pub fn from_u32(value: u32) -> Option<Self> {
+        [
+            Self::Knot,
+            Self::Stitch,
+            Self::Variable,
+            Self::Constant,
+            Self::List,
+            Self::ListItem,
+            Self::External,
+            Self::Label,
+            Self::Param,
+            Self::Temp,
+            Self::Struct,
+        ]
+        .into_iter()
+        .find(|k| *k as u32 == value)
+    }
+}
+
+impl SymbolKind {
     /// Map a `SymbolKind` to the corresponding `DefinitionTag` for id generation.
     pub fn definition_tag(self) -> DefinitionTag {
         match self {

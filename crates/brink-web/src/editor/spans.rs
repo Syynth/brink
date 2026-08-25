@@ -44,49 +44,15 @@ impl EditorSession {
 
 impl EditorSession {
     fn line_contexts_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        // #3064 B3: the assembled per-segment db query — an edit
+        // reclassifies the edited knot's fragment only; native files run
+        // whole-file inside the same query. Dialect and frontend dispatch
+        // both live db-side now.
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let Some(source) = self.session.source(file_id) else {
+        let Some(contexts) = self.session.line_contexts(file_id) else {
             return "[]".to_owned();
-        };
-
-        let Some(projection) = self.session.projection(file_id) else {
-            return "[]".to_owned();
-        };
-
-        // A native (`.brink`) file's real CST is `syntax_root_native`, not
-        // `syntax_root` (which always runs the ink parser over the source
-        // text regardless of extension — `IdeSession::syntax_root`'s doc
-        // comment, #2280's failure mode). Mirrors `folding_ranges_impl`'s
-        // `is_native` dispatch (#2291) — `line_contexts_impl` is the same
-        // trivia-only classification the folding fold-run pass reuses.
-        let contexts = if self.session.is_native(file_id) {
-            let Some(root) = self.session.syntax_root_native(file_id) else {
-                return "[]".to_owned();
-            };
-            match self.session.dialect() {
-                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect_native(
-                    source,
-                    &root,
-                    &projection,
-                    dialect,
-                ),
-                None => brink_ide::line_context::line_contexts_native(source, &root, &projection),
-            }
-        } else {
-            let Some(root) = self.session.syntax_root(file_id) else {
-                return "[]".to_owned();
-            };
-            match self.session.dialect() {
-                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
-                    source,
-                    &root,
-                    &projection,
-                    dialect,
-                ),
-                None => brink_ide::line_context::line_contexts(source, &root, &projection),
-            }
         };
         if let Some(v) = view {
             let start = v.start_line as usize;
@@ -96,7 +62,7 @@ impl EditorSession {
             let slice = &contexts[start..end_line.min(contexts.len())];
             serde_json::to_string(slice).unwrap_or_default()
         } else {
-            serde_json::to_string(&contexts).unwrap_or_default()
+            serde_json::to_string(&*contexts).unwrap_or_default()
         }
     }
 
@@ -104,28 +70,12 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let (Some(analysis), Some(source)) =
-            (self.session.analysis(), self.session.source(file_id))
-        else {
+        // #3064 B4: the assembled per-segment db query — the native/ink
+        // frontend dispatch (#2280) and the identity join both live
+        // db-side now, and an edit re-tokenizes the edited knot's
+        // fragment only.
+        let Some(raw) = self.session.semantic_tokens(file_id) else {
             return "[]".to_owned();
-        };
-
-        // A native (`.brink`) file's real CST is a distinct tree from the
-        // ink one `syntax_root` always returns (issue #2280) — routing a
-        // native file through the ink classifier reproduces the exact bug
-        // this dispatch exists to fix: `struct`/`Cue`/`speaker`/... all
-        // reading as a plain `variable`, and string literals shredded on
-        // every character ink's tokenizer treats as significant.
-        let raw = if self.session.is_native(file_id) {
-            let Some(root) = self.session.syntax_root_native(file_id) else {
-                return "[]".to_owned();
-            };
-            brink_ide::semantic_tokens::semantic_tokens_native(source, &root, analysis, file_id)
-        } else {
-            let Some(root) = self.session.syntax_root(file_id) else {
-                return "[]".to_owned();
-            };
-            brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id)
         };
 
         let tokens: Vec<TokenJs> = raw
@@ -159,15 +109,13 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return EMPTY.to_owned();
         };
-        let (Some(hir), Some(analysis), Some(source)) = (
-            self.session.hir(file_id),
-            self.session.analysis(),
-            self.session.source(file_id),
-        ) else {
+        // #3064 C1: no eager `session.analysis()` gate — it forced the
+        // whole diagnostics bundle per keystroke and then DISCARDED it;
+        // the assembled projection reads the cheap resolutions half
+        // itself, and `analysis()` has been always-`Some` since option A.
+        let Some(source) = self.session.source(file_id) else {
             return EMPTY.to_owned();
         };
-
-        let _ = (hir, analysis);
         let Some(projection) = self.session.projection(file_id) else {
             return EMPTY.to_owned();
         };

@@ -300,8 +300,14 @@ fn collect_if_folds(
 /// mis-anchored extent (ptr-less gather-line prose, see the caller's
 /// comment) from emitting a fold on some other construct's line.
 fn anchors_on_gather_line(range: TextRange, source: &str, idx: &LineIndex) -> bool {
+    let _ = source;
     let (line, _) = idx.line_col(range.start());
-    let Some(text) = source.split('\n').nth(line as usize) else {
+    // O(1) via the line table (#3064 B5): the previous
+    // `source.split('\n').nth(line)` was an O(file) scan per gather
+    // span — accidentally quadratic across a file's gathers, and the
+    // dominant cost of `folding_ranges` at large-file scale (~33 ms of
+    // a 37 ms pass on the 900-knot bench fixture).
+    let Some(text) = idx.line_text(line) else {
         return false;
     };
     let trimmed = text.trim_start();

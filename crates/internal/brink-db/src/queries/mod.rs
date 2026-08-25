@@ -119,7 +119,9 @@ mod analysis;
 mod heap_size;
 mod segments;
 
-pub(crate) use segments::{FileSegment, file_segments_query};
+pub(crate) use segments::{
+    FileSegment, file_segments_query, line_contexts_query, projection_query, semantic_tokens_query,
+};
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
@@ -167,6 +169,15 @@ impl Default for BrinkDatabase {
                 .ingredient::<FileSegment<'_>>()
                 .ingredient::<file_segments_query>()
                 .ingredient::<segments::segment_lowered_query>()
+                .ingredient::<resolved_dialect_query>()
+                .ingredient::<segments::segment_projection_query>()
+                .ingredient::<segments::projection_query>()
+                .ingredient::<segments::segment_line_contexts_query>()
+                .ingredient::<segments::line_contexts_query>()
+                .ingredient::<segments::file_resolution_kinds_query>()
+                .ingredient::<segments::segment_resolution_kinds_query>()
+                .ingredient::<segments::segment_semantic_tokens_query>()
+                .ingredient::<segments::semantic_tokens_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-
@@ -379,6 +390,14 @@ pub(crate) struct ProjectInput {
     pub entry: Option<FileId>,
     #[returns(ref)]
     pub analysis_options: AnalysisOptions,
+    /// The registered screenplay dialect's pure-JSON config (#3064 B1),
+    /// `None` when no dialect is active. The COMPILED form
+    /// ([`brink_ir::ResolvedDialect`], regex objects, not `Eq`) is derived
+    /// by [`resolved_dialect_query`] so per-segment editor queries can
+    /// read it as a tracked dependency; a dialect swap invalidates them
+    /// all, which is correct and rare (session setup / dialect toggle).
+    #[returns(ref)]
+    pub dialect: Option<brink_ir::DialogueDialect>,
     /// The directory native `.brink` keys are root-relative *to*, for a
     /// consumer that registers files under some other prefix (issue #1572:
     /// the LSP keys by absolute OS path). `None` — every compile path, where
@@ -411,6 +430,99 @@ pub(crate) struct ProjectInput {
 /// `lru = 4096`: a per-file runaway-guard ceiling (issue #647, decision log
 /// "FG-5 memory bounding"), not a working-set trim — see this module's doc
 /// comment's "Memory bounding" section.
+/// Compile the registered dialect config into its resolved (regex-
+/// compiled) form (#3064 B1). Memoized so regex compilation happens once
+/// per config change, never per keystroke; a config that fails to
+/// compile resolves to `None` (the session-level `set_dialect` surface
+/// already validated it, so this arm is unreachable in practice).
+/// `no_eq`: `ResolvedDialect` holds compiled regexes with no `Eq` — the
+/// memo re-executes only when the config input changes, and downstream
+/// consumers should be invalidated then anyway, so skipping backdating
+/// is both required and correct.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn resolved_dialect_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> ResolvedDialectHandle {
+    ResolvedDialectHandle(
+        project
+            .dialect(db)
+            .as_ref()
+            .and_then(|config| brink_ir::ResolvedDialect::compile(config).ok())
+            .map(Arc::new),
+    )
+}
+
+/// Memo payload wrapper for `no_eq` queries whose output type lives
+/// upstream without a `salsa::Update` impl (#3064 B2). Semantics: the
+/// memo never backdates — correct wherever every re-execution implies a
+/// genuinely changed output (per-segment projections re-execute only
+/// when their segment's content changed; the assembly re-executes every
+/// edit because offsets moved).
+#[derive(Clone)]
+pub(crate) struct NoEqArc<T>(pub Arc<T>);
+
+impl<T> std::fmt::Debug for NoEqArc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("NoEqArc")
+            .field(&std::any::type_name::<T>())
+            .finish()
+    }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "salsa::Update is an unsafe trait by design; this is the \
+              always-replace impl a derive would emit for a local type. \
+              The body is a plain pointer write per the trait's documented \
+              contract."
+)]
+// SAFETY: always replaces the old value and reports it changed — the
+// most conservative legal `Update` behavior (never falsely "unchanged").
+unsafe impl<T: 'static> salsa::Update for NoEqArc<T> {
+    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
+        // SAFETY: caller guarantees `old_pointer` is valid per the trait
+        // contract; plain replacement drops the old value normally.
+        unsafe { *old_pointer = new_value };
+        true
+    }
+}
+
+/// Memo payload for [`resolved_dialect_query`]: `ResolvedDialect` holds
+/// compiled regexes (no `Eq`, no derivable `salsa::Update`), so this
+/// newtype carries the manual always-replace `Update` impl the `no_eq`
+/// memo needs — the query re-executes only on a config change, when
+/// "changed" is the correct verdict by construction.
+#[derive(Clone)]
+pub(crate) struct ResolvedDialectHandle(pub Option<Arc<brink_ir::ResolvedDialect>>);
+
+impl std::fmt::Debug for ResolvedDialectHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedDialectHandle")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "salsa::Update is an unsafe trait by design; this is the \
+              always-replace impl `#[derive(salsa::Update)]` would emit if \
+              `ResolvedDialect` were local (it lives in brink-ir, which \
+              deliberately has no salsa dependency). The body is a plain \
+              pointer write per the trait's documented contract."
+)]
+// SAFETY: always replaces the old value and reports it changed — the
+// most conservative legal `Update` behavior (never falsely "unchanged").
+unsafe impl salsa::Update for ResolvedDialectHandle {
+    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
+        // SAFETY: caller guarantees `old_pointer` is valid per the trait
+        // contract; plain replacement drops the old value normally.
+        unsafe { *old_pointer = new_value };
+        true
+    }
+}
+
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn parse_query(db: &dyn salsa::Database, file: SourceFile) -> Parse {
     brink_syntax::parse(file.text(db))

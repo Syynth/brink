@@ -1,3 +1,4 @@
+import { docString } from "./doc-string";
 import { type Extension, RangeSetBuilder } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView } from "@codemirror/view";
 import type { SemanticToken } from "@brink/wasm-types";
@@ -71,7 +72,7 @@ export function highlightExtension(options: HighlightOptions): Extension {
   return EditorView.decorations.compute(["doc"], (state) => {
     return perfTime("cm.highlight.decorations", () =>
       buildHighlightDecorations(
-        state.doc.toString(),
+        docString(state),
         state.doc,
         typeNames,
         options.getSemanticTokens,

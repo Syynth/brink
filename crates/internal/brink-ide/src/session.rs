@@ -7,8 +7,6 @@
 //! incremental salsa pull instead of the retired snapshot-clone +
 //! whole-project off-db re-analysis.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
@@ -18,7 +16,7 @@ use brink_analyzer::{
 use brink_db::{CompileProduct, ProjectDb};
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
 
-use crate::hir_projection::{Projection, project_hir};
+use crate::hir_projection::Projection;
 
 /// Why [`IdeSession::compile`] could not produce an artifact for the requested
 /// entry point. Diagnostics that merely *prevent* a successful compile (parse,
@@ -104,18 +102,6 @@ pub struct IdeSession {
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` the
     /// same way.
     conventions: Option<String>,
-    /// Per-file HIR projection cache (#480): the canonical structural model
-    /// is computed once per edit and shared by every per-line/per-span view
-    /// (`line_contexts`, folding, `hir_spans`). Every entry carries the
-    /// analyzer identity join — analysis is always available from the db
-    /// since option A (2026-08-24). Invalidated wholesale on every db input
-    /// mutation — source updates, file removal, an options change that
-    /// actually writes — because the identity join reads project-wide
-    /// analysis state, so an edit anywhere can move another file's
-    /// identities (matching the retired `apply_analysis`-per-edit full
-    /// wipe). The dialogue dialect never enters the projection, so
-    /// registering one keeps the cache.
-    projection_cache: RefCell<HashMap<FileId, Arc<Projection>>>,
 }
 
 impl IdeSession {
@@ -132,7 +118,6 @@ impl IdeSession {
             type_policy: None,
             lints: LintPolicy::default(),
             conventions: None,
-            projection_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -170,14 +155,35 @@ impl IdeSession {
     /// dialect's patterns once, up front, so `line_contexts` never
     /// re-compiles on a hot path. Tooling-only — consumed at query time by
     /// `line_contexts`, never by analysis, so no re-analyze.
+    ///
+    /// Prefer [`set_dialect_config`](Self::set_dialect_config): it also
+    /// writes the db's dialect input (#3064 B1), which the per-segment
+    /// editor queries read as a tracked dependency. This compiled-form
+    /// setter remains for callers that never touch those queries.
     pub fn set_dialect(&mut self, dialect: ResolvedDialect) {
         self.dialect = Some(dialect);
+    }
+
+    /// Register (or replace) the dialect from its pure-JSON config —
+    /// compiles once here AND writes the db input (guarded against
+    /// no-op rewrites: salsa's setter stamps the revision
+    /// unconditionally, the same hazard `sync_db_options` guards).
+    pub fn set_dialect_config(&mut self, config: brink_ir::DialogueDialect) {
+        if let Ok(resolved) = ResolvedDialect::compile(&config) {
+            self.dialect = Some(resolved);
+        }
+        if self.db.dialect_config() != Some(&config) {
+            self.db.set_dialect(Some(config));
+        }
     }
 
     /// Clear the registered dialect. `line_contexts` reverts to plain
     /// structural classification (no `dialect` facet on any line).
     pub fn clear_dialect(&mut self) {
         self.dialect = None;
+        if self.db.dialect_config().is_some() {
+            self.db.set_dialect(None);
+        }
     }
 
     /// The registered dialect, if any.
@@ -411,46 +417,53 @@ impl IdeSession {
         let options = self.analysis_options();
         if self.db.analysis_options() != &options {
             self.db.set_analysis_options(options);
-            self.projection_cache.borrow_mut().clear();
         }
     }
 
-    /// Add or update a source file in the database. Clears the whole
-    /// projection cache, not just the edited file's entry: the identity join
-    /// reads project-wide analysis state, so an edit anywhere can move
-    /// another file's identities (before option A the per-edit
-    /// `apply_analysis` performed this full wipe).
+    /// Add or update a source file in the database. Projection
+    /// invalidation is salsa's job since #3064 B2 — the
+    /// per-segment projection memos backdate on their own, no session
+    /// cache to wipe.
     pub fn update_source(&mut self, path: &str, source: String) -> FileId {
-        let file_id = self.db.update_file(path, source);
-        self.projection_cache.borrow_mut().clear();
-        file_id
+        self.db.update_file(path, source)
     }
 
     /// Remove a file from the project.
     pub fn remove_file(&mut self, path: &str) {
         self.db.remove_file(path);
-        self.projection_cache.borrow_mut().clear();
     }
 
     /// The file's HIR projection — computed once per source/analysis
     /// generation and shared by every structural view (#480). Always carries
     /// the analyzer identity join (a superset the structural views simply
     /// ignore) — analysis is always available from the db since option A.
+    /// The file's assembled per-line contexts (#3064 B3) — per-segment
+    /// memoized on the db road; dialect-classified when a dialect config
+    /// is registered via [`set_dialect_config`](Self::set_dialect_config).
+    pub fn line_contexts(
+        &self,
+        file: FileId,
+    ) -> Option<Arc<Vec<brink_ir::hir::line_context::LineContext>>> {
+        self.db.line_contexts(file)
+    }
+
+    /// The file's assembled semantic tokens (#3064 B4) — per-segment
+    /// memoized on the db road with a range-free resolution-kind seam.
+    pub fn semantic_tokens(
+        &self,
+        file: FileId,
+    ) -> Option<Arc<Vec<brink_ir::semantic_tokens::RawToken>>> {
+        self.db.semantic_tokens(file)
+    }
+
     pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
-        if let Some(p) = self.projection_cache.borrow().get(&file) {
-            return Some(Arc::clone(p));
-        }
-        let hir = self.db.hir(file)?;
-        let source = self.db.source(file)?;
-        // Analysis is always available from the db (option A) — every
-        // projection carries the identity join; the structural-only flavor
-        // exists now only for callers outside a session
-        // (`project_hir_structural`).
-        let projection = Arc::new(project_hir(hir, source, self.db.analysis(), file));
-        self.projection_cache
-            .borrow_mut()
-            .insert(file, Arc::clone(&projection));
-        Some(projection)
+        // #3064 B2: the db's assembled per-segment projection replaces the
+        // session-level wipe-on-every-edit cache — a keystroke inside one
+        // knot re-walks that knot's fragment only, and salsa owns the
+        // invalidation (the identity join reads `resolutions_index`, the
+        // cheap FG-3 half). Byte-identity with the whole-file walk is
+        // corpus-gated in `brink-db`'s `segments` tests.
+        self.db.projection(file)
     }
 
     /// Update source and re-establish fresh analysis: write the file input,
@@ -730,7 +743,6 @@ impl IdeSession {
         // that would cold-invalidate the very analysis the editor reads.
         if self.db.analysis_options() != options {
             self.db.set_analysis_options(options.clone());
-            self.projection_cache.borrow_mut().clear();
         }
         // `story_data()` is `Some` whenever an entry is set (just done above);
         // clone the memoized product out so the borrow on the db ends here.

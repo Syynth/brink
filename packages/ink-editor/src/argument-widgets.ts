@@ -38,6 +38,7 @@ import { openPopover } from "./widget-popover.js";
 import { openModal } from "./widget-modal.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
+import { DEFER_LINE_THRESHOLD } from "./deferred-refresh.js";
 import { perfTime } from "./perf/probe.js";
 
 /**
@@ -1020,15 +1021,35 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
-      constructor(view: EditorView) {
+      private timer: ReturnType<typeof setTimeout> | null = null;
+      constructor(private readonly view: EditorView) {
         this.decorations = build(view);
       }
       update(update: ViewUpdate): void {
         const modeChanged =
           update.startState.field(formGlyphField) !== update.state.field(formGlyphField);
+        // #3064 C2 adaptive deferral: in a LARGE document a doc change maps
+        // the existing widgets through the edit and rebuilds once the doc
+        // goes quiet; small documents (and viewport/mode changes, which are
+        // not per-keystroke) rebuild synchronously as before.
+        if (update.docChanged && update.state.doc.lines >= DEFER_LINE_THRESHOLD) {
+          this.decorations = this.decorations.map(update.changes);
+          if (this.timer !== null) clearTimeout(this.timer);
+          this.timer = setTimeout(() => {
+            this.timer = null;
+            this.decorations = perfTime("cm.argumentWidgets.build", () => build(this.view));
+            // A decorations-bearing plugin must signal its update; an empty
+            // dispatch reruns the measure/draw cycle.
+            this.view.dispatch({});
+          }, 120);
+          return;
+        }
         if (update.docChanged || update.viewportChanged || modeChanged) {
           this.decorations = perfTime("cm.argumentWidgets.build", () => build(update.view));
         }
+      }
+      destroy(): void {
+        if (this.timer !== null) clearTimeout(this.timer);
       }
     },
     { decorations: (v) => v.decorations },

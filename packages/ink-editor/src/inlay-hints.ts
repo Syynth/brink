@@ -1,5 +1,13 @@
-import { type EditorState, type Extension, RangeSetBuilder } from "@codemirror/state";
+import {
+  type EditorState,
+  type Extension,
+  RangeSetBuilder,
+  StateEffect,
+  StateField,
+  type Transaction,
+} from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+import { DEFER_LINE_THRESHOLD, deferredRefresh } from "./deferred-refresh.js";
 import type { InlayHint } from "@brink/wasm-types";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import { perfTime } from "./perf/probe.js";
@@ -31,10 +39,28 @@ export interface InlayHintsOptions {
   getInlayHints: (source: string, start: number, end: number) => InlayHint[];
 }
 
+const refreshInlayHintsEffect = StateEffect.define<void>();
+
 export function inlayHintsExtension(options: InlayHintsOptions): Extension {
-  return EditorView.decorations.compute(["doc"], (state) =>
-    perfTime("cm.inlayHints.decorations", () => buildInlayDecorations(state, options)),
-  );
+  const build = (state: EditorState): DecorationSet =>
+    perfTime("cm.inlayHints.decorations", () => buildInlayDecorations(state, options));
+  // #3064 C2 adaptive deferral: hints are advisory paint — in a LARGE
+  // document a doc change maps the existing widgets through the edit and
+  // the content refreshes once the burst ends; small documents rebuild
+  // synchronously as before.
+  const field = StateField.define<DecorationSet>({
+    create(state) {
+      return build(state);
+    },
+    update(value, tr: Transaction) {
+      if (tr.effects.some((e) => e.is(refreshInlayHintsEffect))) return build(tr.state);
+      if (!tr.docChanged) return value;
+      if (tr.newDoc.lines >= DEFER_LINE_THRESHOLD) return value.map(tr.changes);
+      return build(tr.state);
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
+  return [field, deferredRefresh(refreshInlayHintsEffect)];
 }
 
 function buildInlayDecorations(state: EditorState, options: InlayHintsOptions): DecorationSet {

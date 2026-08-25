@@ -10,7 +10,7 @@
 //! 1. the **trivia facet** ([`crate::trivia`]: comments, block comments,
 //!    tag lines — CST/source facts);
 //! 2. the **structural view** over the HIR projection
-//!    ([`crate::hir_projection::project_hir_structural`]), replayed span by
+//!    ([`crate::hir::projection::project_hir_structural`]), replayed span by
 //!    span in [`apply_structural_view`];
 //! 3. source-text patch passes for what the HIR under-covers
 //!    (`detect_gathers`, `apply_conditional_scaffold`,
@@ -18,7 +18,7 @@
 //! 4. the **dialect facet** (`apply_dialect`), layered last.
 //!
 //! `line_contexts_with_dialect()` (#368) layers a registered
-//! [`brink_ir::ResolvedDialect`] on top: it runs the same base pass, then a
+//! [`crate::ResolvedDialect`] on top: it runs the same base pass, then a
 //! dialect classify+chain post-pass exactly mirroring today's TS screenplay
 //! post-pass (`element-type.ts`) — classification runs on narrative AND
 //! choice-body base lines (preserving depth), but chaining (narrative →
@@ -29,13 +29,13 @@
 //! wins over any chain/blank-fill promotion (#413) — see
 //! `detect_sigil_logic_lines`.
 
-use brink_ir::ResolvedDialect;
+use crate::ResolvedDialect;
 use brink_syntax::SyntaxNode;
 use rowan::TextRange;
 use serde::Serialize;
 
-use crate::LineIndex;
-use crate::hir_projection::{ProjectedSpan, Projection, SpanKind};
+use crate::hir::projection::{ProjectedSpan, Projection, SpanKind};
+use crate::line_index::LineIndex;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -91,7 +91,7 @@ pub enum WeaveElement {
 }
 
 /// Full per-line context.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LineContext {
     /// The structural element type for this line.
     pub element: LineElement,
@@ -138,11 +138,11 @@ pub struct DialectLineInfo {
     /// chain-only kinds, where the pattern-less-kind contract applies:
     /// content is the whole trimmed line.
     pub content_span: Option<(u32, u32)>,
-    /// The dialect's declared [`brink_ir::ElementNature`] for this kind,
+    /// The dialect's declared [`crate::ElementNature`] for this kind,
     /// looked up once here (never re-derived downstream) — consumed by
     /// `brink-ide::folding`'s machinery/narrative fold-run computation
     /// (#365).
-    pub nature: brink_ir::ElementNature,
+    pub nature: crate::ElementNature,
 }
 
 impl Default for LineContext {
@@ -165,7 +165,7 @@ impl Default for LineContext {
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Compute per-line context from the HIR, source text, and the file's
-/// projection (compute once via [`crate::hir_projection::project_hir_structural`]
+/// projection (compute once via [`crate::hir::projection::project_hir_structural`]
 /// or take it from [`crate::session::IdeSession::projection`] — identity-joined
 /// projections work identically; the ids are ignored here).
 ///
@@ -203,7 +203,10 @@ pub fn line_contexts_native(
 
 /// Line count including the trailing synthetic empty line when `source`
 /// ends with `\n` — shared by [`line_contexts`] and [`line_contexts_native`].
-fn line_count_for(source: &str) -> usize {
+/// Public since #3064 B3: the per-segment assembly mirrors the same
+/// line-count rule.
+#[must_use]
+pub fn line_count_for(source: &str) -> usize {
     let line_count = source.lines().count().max(1);
     if source.ends_with('\n') {
         line_count + 1
@@ -416,7 +419,7 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
         if let Some(m) = dialect.classify(trimmed, leading_ws) {
             let nature = dialect
                 .nature_of(&m.kind)
-                .unwrap_or(brink_ir::ElementNature::Narrative);
+                .unwrap_or(crate::ElementNature::Narrative);
             ctx[i].dialect = Some(DialectLineInfo {
                 kind: m.kind,
                 attrs: m.attrs,
@@ -466,7 +469,7 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
                 .collect();
             let nature = dialect
                 .nature_of(&rule.becomes)
-                .unwrap_or(brink_ir::ElementNature::Narrative);
+                .unwrap_or(crate::ElementNature::Narrative);
             ctx[i].dialect = Some(DialectLineInfo {
                 kind: rule.becomes.clone(),
                 attrs: carried,
@@ -1078,14 +1081,14 @@ fn detect_sigil_logic_lines(source: &str, ctx: &mut [LineContext]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brink_ir::{FileId, hir};
+    use crate::{FileId, hir};
 
     fn make_contexts(source: &str) -> Vec<LineContext> {
         let parse = brink_syntax::parse(source);
         let file_id = FileId(0);
         let ast = parse.tree();
         let (hir, _, _) = hir::lower(file_id, &ast);
-        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        let projection = crate::hir::projection::project_hir_structural(&hir, source);
         line_contexts(source, &parse.syntax(), &projection)
     }
 
@@ -1096,8 +1099,8 @@ mod tests {
         let parse = brink_syntax_native::parse(source);
         let file_id = FileId(0);
         let ast = parse.tree();
-        let (hir, _, _) = brink_ir::hir::lower_native::lower(file_id, &ast);
-        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        let (hir, _, _) = crate::hir::lower_native::lower(file_id, &ast);
+        let projection = crate::hir::projection::project_hir_structural(&hir, source);
         line_contexts_native(source, &parse.syntax(), &projection)
     }
 
@@ -1325,16 +1328,16 @@ TODO knot note
 #[cfg(test)]
 mod dialect_tests {
     use super::*;
-    use brink_ir::{FileId, ResolvedDialect, hir};
+    use crate::{FileId, ResolvedDialect, hir};
 
     fn make_dialect_contexts(source: &str) -> Vec<LineContext> {
         let parse = brink_syntax::parse(source);
         let file_id = FileId(0);
         let ast = parse.tree();
         let (hir, _, _) = hir::lower(file_id, &ast);
-        let dialect = ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
+        let dialect = ResolvedDialect::compile(&crate::DialogueDialect::default())
             .expect("at-cue preset compiles");
-        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        let projection = crate::hir::projection::project_hir_structural(&hir, source);
         line_contexts_with_dialect(source, &parse.syntax(), &projection, &dialect)
     }
 
@@ -1441,7 +1444,7 @@ mod dialect_tests {
         let file_id = FileId(0);
         let ast = parse.tree();
         let (hir, _, _) = hir::lower(file_id, &ast);
-        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        let projection = crate::hir::projection::project_hir_structural(&hir, source);
         let ctx = line_contexts(source, &parse.syntax(), &projection);
         assert!(ctx[1].dialect.is_none());
     }

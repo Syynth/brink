@@ -1,7 +1,9 @@
+import { docString } from "./doc-string";
 import {
   Compartment,
   Facet,
   Prec,
+  StateEffect,
   StateField,
   type Extension,
   type EditorState,
@@ -18,6 +20,7 @@ import {
   type DialectGeometry,
 } from "./element-type.js";
 import { detectCast, type SourceLine } from "./dialect.js";
+import { DEFER_LINE_THRESHOLD, deferredRefresh } from "./deferred-refresh.js";
 import { perfTime } from "./perf/probe.js";
 
 export type { FoldKind } from "@brink/wasm-types";
@@ -42,18 +45,28 @@ const foldRangesFacet = Facet.define<FoldingOptions["getFoldingRanges"], Folding
 function computeFoldRanges(state: EditorState): FoldRange[] {
   const getFoldingRanges = state.facet(foldRangesFacet);
   try {
-    return perfTime("cm.folding.computeRanges", () => getFoldingRanges(state.doc.toString()));
+    return perfTime("cm.folding.computeRanges", () => getFoldingRanges(docString(state)));
   } catch {
     return [];
   }
 }
+
+const refreshFoldRangesEffect = StateEffect.define<void>();
 
 const foldRangesField = StateField.define<FoldRange[]>({
   create(state) {
     return computeFoldRanges(state);
   },
   update(value, tr: Transaction) {
+    if (tr.effects.some((e) => e.is(refreshFoldRangesEffect))) {
+      return computeFoldRanges(tr.state);
+    }
     if (!tr.docChanged) return value;
+    // #3064 C2 adaptive deferral: fold ranges are gutter affordances — in a
+    // LARGE document they may lag a typing burst by ~120 ms (line numbers
+    // can drift within the window); the deferred refresh restores exactness
+    // once the doc goes quiet. Small documents recompute synchronously.
+    if (tr.newDoc.lines >= DEFER_LINE_THRESHOLD) return value;
     return computeFoldRanges(tr.state);
   },
 });
@@ -122,6 +135,8 @@ export function foldingExtension(options: FoldingOptions): Extension {
   });
 
   return [
+    deferredRefresh(refreshFoldRangesEffect),
+
     foldRangesFacet.of(options.getFoldingRanges),
     foldRangesField,
     activeFoldKindsCompartment.of(activeFoldKindsFacet.of(DEFAULT_ACTIVE_KINDS)),

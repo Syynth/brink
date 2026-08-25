@@ -25,6 +25,12 @@ salsa.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# The dialect-parity gate builds a DialogueDialect from its pure-JSON
+# config form (#3064 B3) — test-only.
+serde.workspace = true
+serde_json.workspace = true
+
 [features]
 # Salsa memo-table/heap introspection (issue #529): an explicit opt-in so
 # ordinary consumers (brink-lsp, brink-ide, brink-web/wasm) never pull in
