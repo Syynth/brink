@@ -43,6 +43,14 @@ export interface BrinkStudioOptions {
   /** Classifier-only token source for the keystroke path in large
    *  documents (#3064 micro) — see `HighlightOptions.getSemanticTokensFast`. */
   getSemanticTokensFast?: (source: string) => SemanticToken[];
+  /** W2b deferred-refresh warm-ups (docs/editor-worker-spec.md) — each
+   *  runs its pull through the async session facade before the deferred
+   *  refresh dispatches. See the per-extension option docs. */
+  prepareRefined?: () => Promise<unknown> | undefined;
+  prepareProjection?: () => Promise<unknown> | undefined;
+  prepareHints?: (start: number, end: number) => Promise<unknown> | undefined;
+  prepareWidgets?: (start: number, end: number) => Promise<unknown> | undefined;
+  prepareFoldRanges?: () => Promise<unknown> | undefined;
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
 
@@ -283,15 +291,26 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     }));
   }
   if (options.getFoldingRanges) {
-    ideExtensions.push(foldingExtension({ getFoldingRanges: options.getFoldingRanges }));
+    ideExtensions.push(
+      foldingExtension({
+        getFoldingRanges: options.getFoldingRanges,
+        prepareFoldRanges: options.prepareFoldRanges,
+      }),
+    );
   }
   if (options.getInlayHints) {
-    ideExtensions.push(inlayHintsExtension({ getInlayHints: options.getInlayHints }));
+    ideExtensions.push(
+      inlayHintsExtension({
+        getInlayHints: options.getInlayHints,
+        prepareHints: options.prepareHints,
+      }),
+    );
   }
   if (options.getArgumentWidgets) {
     ideExtensions.push(
       argumentWidgetsExtension({
         getArgumentWidgets: options.getArgumentWidgets,
+        prepareWidgets: options.prepareWidgets,
         formGlyph: options.argumentFormGlyph,
         autoOpen: options.argumentAutoOpen,
       }),
@@ -466,12 +485,16 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,
       getSemanticTokensFast: options.getSemanticTokensFast,
+      prepareRefined: options.prepareRefined,
       getTokenTypeNames: options.getTokenTypeNames,
     }),
     // The HIR structural overlay (#454) — an independent layer on top of (not
     // replacing) the tok-* token highlight above.
     options.getHirProjection
-      ? hirOverlayExtension({ getHirProjection: options.getHirProjection })
+      ? hirOverlayExtension({
+          getHirProjection: options.getHirProjection,
+          prepareProjection: options.prepareProjection,
+        })
       : [],
     diagnosticsExtension({
       compile: options.compile,

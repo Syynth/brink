@@ -52,6 +52,11 @@ import { isPerfEnabled, perfRecord, perfTime } from "./perf/probe.js";
 export interface HirOverlayOptions {
   /** Fetch the current projection from the document's wasm session. */
   getHirProjection: () => HirProjection;
+  /** Async warm-up for the projection pull (W2b): runs before the
+   *  deferred refresh dispatches so the field's synchronous rebuild (and
+   *  the occurrence field riding the same effect) hits the warmed memo.
+   *  See `DeferredPrepare`. */
+  prepareProjection?: () => Promise<unknown> | undefined;
 }
 
 // ── The canonical StateField ────────────────────────────────────────
@@ -518,7 +523,11 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
     field,
     // #3064 C2: after a typing burst in a large document, rebuild the
     // deferred overlay content once the doc goes quiet.
-    deferredRefresh(refreshHirOverlayEffect),
+    deferredRefresh(
+      refreshHirOverlayEffect,
+      120,
+      options.prepareProjection ? () => options.prepareProjection?.() : undefined,
+    ),
     EditorView.decorations.from(field, (v) => v.marks),
     EditorView.decorations.from(field, (v) => v.lineDecos),
     // #3064 micro: occurrence highlights as a field with adaptive

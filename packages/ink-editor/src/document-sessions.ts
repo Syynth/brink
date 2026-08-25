@@ -1137,7 +1137,45 @@ export class DocumentSessions {
       argumentAutoOpen: this.autoOpen,
       getSignatureHelp: (_source, offset) => slot.handle?.signatureHelp(offset) ?? null,
       getFoldingRanges: () => slot.handle?.foldingRanges() ?? [],
+      // ── W2b (docs/editor-worker-spec.md): deferred-refresh warm-ups ──
+      // Each prepare rides the async session facade with a per-surface
+      // coalesce key, so a burst of quiet-fires across sibling views
+      // collapses to one execution; the refresh effect then rebuilds
+      // synchronously against the warmed memo. Refined tokens instead warm
+      // the DocHandle slice cache (the main-side materialized view) — that
+      // road's fetches go through the client when DocHandle itself
+      // migrates (W4 prep).
+      prepareRefined: () => {
+        const handle = slot.handle;
+        if (!handle) return undefined;
+        return Promise.resolve().then(() => void handle.semanticTokens());
+      },
+      prepareProjection: () => this.prepareQuery(slot, "getHirSpansDoc", "overlay", []),
+      prepareHints: (start, end) =>
+        this.prepareQuery(slot, "getInlayHintsDoc", "hints", [start, end]),
+      prepareWidgets: (start, end) =>
+        this.prepareQuery(slot, "getArgumentWidgetsDoc", "widgets", [start, end]),
+      prepareFoldRanges: () => this.prepareQuery(slot, "getFoldingRangesDoc", "folds", []),
     };
+  }
+
+  /** One deferred-refresh warm-up query (W2b): background priority, a
+   *  per-surface-per-doc coalesce key, the doc id as the leading arg.
+   *  `undefined` (no live handle) tells the caller to skip the warm-up
+   *  and dispatch directly. */
+  private prepareQuery(
+    slot: ViewSlot,
+    method: string,
+    surface: string,
+    args: readonly unknown[],
+  ): Promise<unknown> | undefined {
+    const id = slot.handle?.id;
+    if (id === undefined) return undefined;
+    return this.project.sessionClient().query(method, [id, ...args], {
+      priority: "background",
+      doc: id,
+      coalesceKey: `${surface}:${id}`,
+    }).promise;
   }
 
   /**

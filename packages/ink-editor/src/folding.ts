@@ -27,6 +27,10 @@ export type { FoldKind } from "@brink/wasm-types";
 
 export interface FoldingOptions {
   getFoldingRanges: (source: string) => FoldRange[];
+  /** Async warm-up for the fold-range pull (W2b): runs before the
+   *  deferred refresh dispatches so the field's synchronous recompute
+   *  hits the warmed memo. See `DeferredPrepare`. */
+  prepareFoldRanges?: () => Promise<unknown> | undefined;
 }
 
 // ── Fold ranges as a StateField (#365) ──────────────────────────────
@@ -135,7 +139,11 @@ export function foldingExtension(options: FoldingOptions): Extension {
   });
 
   return [
-    deferredRefresh(refreshFoldRangesEffect),
+    deferredRefresh(
+      refreshFoldRangesEffect,
+      120,
+      options.prepareFoldRanges ? () => options.prepareFoldRanges?.() : undefined,
+    ),
 
     foldRangesFacet.of(options.getFoldingRanges),
     foldRangesField,
