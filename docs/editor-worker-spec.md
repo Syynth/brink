@@ -170,16 +170,25 @@ type Request =
   | { kind: "config"; configEpoch: number; op: ConfigOp }                   // dialect, lints, manifest, …
   | { kind: "files"; op: FileOp }                                           // add/remove/rename/external-change
   | { kind: "query"; id: RequestId; priority: "interactive" | "background";
-      doc?: DocumentId; docVersion?: number; method: string; args: unknown[] }
+      doc?: DocumentId; docVersion?: number; coalesceKey?: string;
+      method: string; args: unknown[] }
   | { kind: "cancel"; id: RequestId };
 
 // worker → main
 type Response =
-  | { kind: "ack"; doc: DocumentId; docVersion: number }
+  | { kind: "ack"; doc: DocumentId; docVersion: number; applied: boolean }
   | { kind: "result"; id: RequestId; docVersion?: number; configEpoch: number; value: unknown }
-  | { kind: "error"; id: RequestId; message: string }
+  | { kind: "error"; id: RequestId; message: string }   // policy drops use a "dropped:" prefix
   | { kind: "event"; event: WorkerEvent };  // e.g. onFilesChanged egress, config warnings
 ```
+
+Two W1 refinements (implemented in `crates/brink-web/src/protocol.rs`, the
+source of truth): `ack.applied` is `false` for a refused mutation (a
+malformed edit list, a read-only target) so the client can fall back to a
+full push; and background supersession is keyed by an explicit,
+client-chosen `coalesceKey` rather than `(method, doc)` — same-method
+queries with different args (per-segment slice pulls) are distinct work
+that a method-derived key would wrongly collapse.
 
 - `docVersion` is a **main-thread monotonic counter per document**,
   incremented on every CM transaction that changes the doc. It is the
@@ -277,9 +286,11 @@ interrupted, so scheduling is admission control:
    hints, folds, diagnostics/compile, panels), and only when the mutation
    and interactive queues are empty.
 4. **Coalescing**: before executing a background query, drop it if a newer
-   request of the same (method, doc) is queued behind it, and drop it if
-   its `docVersion` is already stale. Salsa memoization makes any
-   redundant execution cheap, but not executing is cheaper.
+   request with the same `coalesceKey` (§5.1) is queued behind it, and
+   drop it if its `docVersion` is already stale. Dropped queries are
+   *answered* (`dropped:superseded` / `dropped:stale`), never silently
+   swallowed. Salsa memoization makes any redundant execution cheap, but
+   not executing is cheaper. Interactive queries and mutations never drop.
 5. **Compile coalesces to one in flight**: a `compileProject` request that
    arrives while one is queued replaces it (the existing 500 ms debounce
    moves main-side or stays — either way at most one compile runs behind
