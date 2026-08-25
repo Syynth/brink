@@ -133,7 +133,7 @@ function symbolDeclarationOffset(
 async function runGatedStructuralOp(
   state: StudioState,
   description: string,
-  compute: () => StructuralResult,
+  compute: () => StructuralResult | Promise<StructuralResult>,
 ): Promise<StructuralResult> {
   state.setStructuralOpPending(description);
   try {
@@ -146,7 +146,19 @@ async function runGatedStructuralOp(
       // comment above for why this must not reach `compute()` or propagate.
       return DESTROYED_DURING_DEFER_RESULT;
     }
-    return compute();
+    try {
+      return await compute();
+    } catch (error) {
+      // W2e: an async compute rides the session facade; destroy() while it
+      // is queued rejects it as cancelled — the same freed-session race the
+      // catch above handles for the defer yield. Checked by name rather
+      // than instanceof to avoid a runtime dependency on the editor
+      // package from this UI package.
+      if (error instanceof Error && error.name === "QueryDroppedError") {
+        return DESTROYED_DURING_DEFER_RESULT;
+      }
+      throw error;
+    }
   } finally {
     state.clearStructuralOpPending(description);
   }
@@ -187,8 +199,9 @@ export async function dispatchSymbolAction(
     return;
   }
 
-  const session = state._project?.getSession();
-  if (!session) return;
+  const project = state._project;
+  const session = project?.getSession();
+  if (!project || !session) return;
 
   let result: StructuralResult;
   let description: string;
@@ -213,8 +226,14 @@ export async function dispatchSymbolAction(
       description = `Move ${action.stitch} to ${action.destKnot}`;
       result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED move-stitch: gated (structural_result::gate_with_source)
-        // — run off the paint path by runGatedStructuralOp above (#2767).
-        session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot),
+        // — run off the paint path by runGatedStructuralOp above (#2767);
+        // rides the async session facade at interactive priority (W2e).
+        project.structuralQuery<StructuralResult>("moveStitch", [
+          action.path,
+          action.srcKnot,
+          action.stitch,
+          action.destKnot,
+        ]),
       );
       break;
     }
@@ -222,8 +241,13 @@ export async function dispatchSymbolAction(
       description = `Promote ${action.stitch} to knot`;
       result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED promote-stitch: gated (structural_result::gate_with_source)
-        // — run off the paint path by runGatedStructuralOp above (#2767).
-        session.promoteStitch(action.path, action.knot, action.stitch),
+        // — run off the paint path by runGatedStructuralOp above (#2767);
+        // rides the async session facade at interactive priority (W2e).
+        project.structuralQuery<StructuralResult>("promoteStitch", [
+          action.path,
+          action.knot,
+          action.stitch,
+        ]),
       );
       break;
     }
@@ -231,8 +255,13 @@ export async function dispatchSymbolAction(
       description = `Demote ${action.knot} into ${action.destKnot}`;
       result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED demote-knot: gated (structural_result::gate_with_source)
-        // — run off the paint path by runGatedStructuralOp above (#2767).
-        session.demoteKnot(action.path, action.knot, action.destKnot),
+        // — run off the paint path by runGatedStructuralOp above (#2767);
+        // rides the async session facade at interactive priority (W2e).
+        project.structuralQuery<StructuralResult>("demoteKnot", [
+          action.path,
+          action.knot,
+          action.destKnot,
+        ]),
       );
       break;
     }
@@ -344,8 +373,9 @@ export async function performSymbolRename(
   newName: string,
   force: boolean,
 ): Promise<SymbolRenameOutcome> {
-  const session = state._project?.getSession();
-  if (!session) {
+  const project = state._project;
+  const session = project?.getSession();
+  if (!project || !session) {
     // No bound session — carries neither `applied` nor `error` before this
     // fix (#2544). `run()` in `SymbolRenamePrompt` only treats
     // `outcome.applied || outcome.error` as a terminal outcome; an outcome
@@ -363,10 +393,21 @@ export async function performSymbolRename(
 
   // Offset-based (F2) covers any symbol under the cursor; name-based (menu)
   // targets a knot/stitch. Both return the same safe-rename payload.
+  // W2e: the safe-rename compute rides the async session facade at
+  // interactive priority (compute-only — application follows separately).
   const result =
     req.offset != null
-      ? session.renameSymbolAt(req.path, req.offset, newName)
-      : session.renameSymbol(req.path, req.knot ?? "", req.stitch ?? "", newName);
+      ? await project.structuralQuery<StructuralResult>("renameSymbolAt", [
+          req.path,
+          req.offset,
+          newName,
+        ])
+      : await project.structuralQuery<StructuralResult>("renameSymbol", [
+          req.path,
+          req.knot ?? "",
+          req.stitch ?? "",
+          newName,
+        ]);
   if (!result.ok) {
     // Report the failure before returning it (#2528). `SymbolRenamePrompt`
     // closes on `outcome.error` exactly as it closes on success, so without a
