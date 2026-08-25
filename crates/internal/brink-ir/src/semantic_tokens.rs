@@ -99,6 +99,7 @@ pub struct Classification {
 
 // ── Token classification ───────────────────────────────────────────
 
+#[expect(clippy::too_many_lines, reason = "flat classifier dispatch — one arm per token family")]
 pub fn classify_token(
     token: &brink_syntax::SyntaxToken,
     resolution_index: &BTreeMap<(u32, u32), SymbolKind>,
