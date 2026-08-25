@@ -393,10 +393,24 @@ class RailMarker extends GutterMarker {
   }
 
   override toDOM(): Node {
+    // Two-element structure (WebKit layout pathology, 2026-08-25): a
+    // percent-height (`height: 100%`) inline-flex wrapper inside every
+    // gutter element made EVERY forced layout cost ~1 ms per marker in
+    // WebKit — ~110 ms per keystroke/refresh on a real project, the
+    // dominant slice of the desktop app's typing latency (Chromium never
+    // showed it). The fix: an in-flow spacer whose fixed pixel WIDTH
+    // sizes the gutter, plus an absolutely-positioned bar layer anchored
+    // to the gutter element's full height (`.brink-hir-rails-bars`,
+    // `inset: 0 auto 0 0`) — same visuals, no percent-height resolution
+    // on the layout hot path (measured 120 ms → 36 ms full-layout).
     const wrap = document.createElement("span");
     wrap.className = "brink-hir-rails";
+    // bars are 3px + 2px gap, padding 0 2px: width = 5n + 2 (n ≥ 1).
+    wrap.style.width = `${this.stack.length * 5 + 2}px`;
+    const bars = wrap.appendChild(document.createElement("span"));
+    bars.className = "brink-hir-rails-bars";
     for (const c of this.stack) {
-      const bar = wrap.appendChild(document.createElement("span"));
+      const bar = bars.appendChild(document.createElement("span"));
       bar.className =
         `brink-hir-rail brink-hir-rail-${c.kind}` +
         (c.hue !== undefined ? ` brink-rail-c${c.hue}` : "");

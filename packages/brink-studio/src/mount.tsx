@@ -572,7 +572,7 @@ export async function mountStudio(
     // hand-driven console sessions: the probe report + wasm counters +
     // the worker bundle + the #2885 compile probe, in one place.
     (globalThis as Record<string, unknown>).__brinkPerf = {
-      report: () => perfReport(),
+      report: (worstCount?: number) => perfReport(worstCount ?? 25),
       reset: () => {
         perfReset();
         perfBridge.resetWorker?.();

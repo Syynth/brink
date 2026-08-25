@@ -415,9 +415,16 @@ export class DocumentSessions {
       parent,
       dispatchTransactions: (trs, v) => {
         const end = perfSpan("cm.dispatch");
+        const endState = perfSpan("cm.dispatch.state");
+        // Materialize the new state first (runs every StateField update);
+        // what remains in view.update is plugins + DOM sync.
+        void trs[trs.length - 1]?.state;
+        endState();
+        const endView = perfSpan("cm.dispatch.view");
         try {
           v.update(trs);
         } finally {
+          endView();
           end(trs.length);
         }
       },

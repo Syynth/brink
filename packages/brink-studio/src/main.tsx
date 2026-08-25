@@ -158,10 +158,22 @@ function superseded(): boolean {
 async function main(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
 
+  // `?fixtureUrl=<url>` fetches a project as JSON (`{ files: {path: source} }`)
+  // from a local server — the road for measuring a REAL project's shape in
+  // the playground without baking any content into the repo (prod-perf
+  // evaluation flow, 2026-08-25). The project's own `brink.toml`
+  // (`[project] entry`) supersedes the first-file fallback as usual.
+  const fixtureUrl = params.get("fixtureUrl");
+  const urlFiles: Record<string, string> | null =
+    fixtureUrl !== null
+      ? ((await (await fetch(fixtureUrl)).json()) as { files: Record<string, string> }).files
+      : null;
+
   // `?fixture=screenplay` loads a deterministic single-file project for e2e.
   const fixture = params.get("fixture");
   const files: Record<string, string> =
-    fixture === "screenplay"
+    urlFiles ??
+    (fixture === "screenplay"
       ? { "main.ink": SCREENPLAY_FIXTURE }
       : fixture === "nested"
         ? NESTED_FIXTURE
@@ -172,9 +184,9 @@ async function main(): Promise<void> {
             // (measure-first ruling, 2026-08-24) — see perf-fixture.ts.
             ? generatePerfFixture()
             : {
-              "main.ink": MAIN_INK,
-              "toppled-temple.ink": toppledTemple,
-            };
+                "main.ink": MAIN_INK,
+                "toppled-temple.ink": toppledTemple,
+              });
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");
@@ -221,7 +233,14 @@ async function main(): Promise<void> {
     // The native fixture has no `main.ink` — hardcoding one opened a phantom
     // tab for a file outside the project, which then reported an error the
     // Problems panel could not show (mistaken for #2281 until traced here).
-    entryFile: fixture === "native" ? "story.brink" : "main.ink",
+    // For a fetched project the seed is its first .ink file — the project's
+    // own `brink.toml` entry supersedes it via discovery, and a hardcoded
+    // main.ink would open a phantom tab (see the native note above).
+    entryFile: urlFiles
+      ? (Object.keys(urlFiles).find((p) => p.endsWith(".ink")) ?? "main.ink")
+      : fixture === "native"
+        ? "story.brink"
+        : "main.ink",
     extensions: withExtension ? createExampleExtension : undefined,
     // The pretend host's capability manifest (the panel renders the same
     // object). Registered regardless of `?ext=none` — the host's vocabulary
