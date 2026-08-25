@@ -3369,3 +3369,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The `{` / `}` around inline alternatives, conditionals, and interpolations — and the `|` between alternative branches — classify as operator semantic tokens (both ink and native classifiers), so they take the code color instead of blending into dialogue/action prose. Prose-absorbed and escaped braces/pipes stay uncolored.
 - **WHY:** Author feedback relayed by the maintainer: uncolored delimiters visually merge with the surrounding dialogue, tricking the reader into parsing them as part of the prose. The delimiters are structural code; they should read like the conditions they delimit.
+
+## Manuscript colorway + Inky themes ship as selectable themes
+- **WHEN:** 2026-08-25
+- **PROJECT:** brink
+- **SYSTEM:** editor packages / studio themes / semantic tokens
+- **SCOPE:** moderate
+- **WHAT:** The writing-first colorway designed live against author feedback ships as a new selectable theme, "Manuscript" (option B of docs/editor-color-design.md — existing themes untouched): prose brighter than everything (#f2f4fc), narrative structure markers (`* + [ ] -`) and the halt words (`END`/`DONE`) hot red (#ff5d62), all other machinery in one tight cool band ordered by conceptual distance (definitions #b9a9e6 → diverts #a4abdf → keywords #8ba6cb → ops #90afcc → bindings #93b8c8 → strings #98bab4), tags yellow, cues rendered as plain prose. Faithful ports of Inky's two looks ship alongside as "Inky" (flow blue / logic green on white) and "Inky Dark" (red bullets, sage flow, leaf-green logic, cream prose on #282828), colors read from the app's own stylesheets. Supporting classifier split: choice bullets/gather dashes/weave brackets get a `marker` token type, diverts/tunnels/threads/glue get `divert`, `END`/`DONE` get `halt`, and header equals-runs classify with their definition; expression-position lexemes keep their operator classification. Existing themes preserve their exact look via CSS fallbacks.
+- **WHY:** The author's feedback ruled the shape (machinery colored by what it does; hue distance = conceptual distance; markers rare-and-bright per the Inky convention; prose as the page's one true foreground) through four mockup iterations; a new theme rather than a re-map keeps the Catppuccin themes for anyone who prefers the IDE feel, and the Inky ports give ink authors a familiar landing.

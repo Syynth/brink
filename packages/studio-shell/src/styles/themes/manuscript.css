@@ -1,0 +1,48 @@
+/* Manuscript (theme ruling 2026-08-25, docs/editor-color-design.md) — the
+   writing-first colorway designed live against author feedback: prose is
+   the page's one true foreground; the narrative structure markers
+   (* + [ ] -, and the halt words) are hot red — rare, lightweight glyphs
+   that mark where the story pauses; ALL other machinery sits in one tight
+   cool band (purple → periwinkle → slate → grey-teal) ordered by
+   conceptual distance, a full contrast step below the prose.
+
+   An OVERRIDE sheet: mocha (the bare-class default underneath every
+   data-theme) supplies the chrome, severity, and derived tokens; this
+   scope replaces only what the colorway rules. */
+
+.brink-studio[data-theme="manuscript"] {
+  /* Prose brighter than mocha text — the contrast budget's top. */
+  --bs-fg: #f2f4fc;
+  --bs-fg-rgb: 242 244 252;
+
+  /* ── The cool machinery band, near → far from structure ─────────── */
+  --bs-syn-namespace: #b9a9e6; /* definitions (knots) */
+  --bs-syn-function: #b9a9e6; /* definitions (stitches, externals) */
+  --bs-syn-label: #a4abdf; /* labels ride with the flow band */
+  --bs-syn-divert: #a4abdf; /* one step bluer than the definitions */
+  --bs-syn-keyword: #8ba6cb;
+  --bs-syn-operator: #90afcc;
+  --bs-syn-variable: #93b8c8;
+  --bs-syn-property: #93b8c8;
+  --bs-syn-number: #93b8c8;
+  --bs-syn-enum: #93b8c8;
+  --bs-syn-parameter: #93b8c8;
+  --bs-syn-string: #98bab4;
+  --bs-syn-comment: #6c7086;
+
+  /* ── Hot: the pause points ──────────────────────────────────────── */
+  --bs-syn-marker: #ff5d62;
+  --bs-syn-halt: #ff5d62;
+
+  /* ── Annotations ────────────────────────────────────────────────── */
+  --bs-syn-decorator: #f9e2af; /* tags read as margin notes, rhyming with TODO */
+
+  /* Cues are prose (ruled): same color, same weight as the manuscript. */
+  --bs-cue: var(--bs-fg);
+  --bs-cue-weight: 400;
+
+  /* Binder/graph symbols follow the band so chrome agrees with the page. */
+  --bs-symbol-knot: #b9a9e6;
+  --bs-symbol-stitch: #a4abdf;
+  --bs-symbol-function: #93b8c8;
+}

@@ -275,7 +275,7 @@ describe("SettingsDocument — theme section", () => {
     const radios = [
       ...container!.querySelectorAll<HTMLInputElement>(".settings-radio input"),
     ];
-    expect(radios.map((r) => r.value)).toEqual(["mocha", "latte"]);
+    expect(radios.map((r) => r.value)).toEqual(["mocha", "latte", "manuscript", "inky", "inky-dark"]);
     expect(radios[0].checked).toBe(true);
 
     act(() => radios[1].click());

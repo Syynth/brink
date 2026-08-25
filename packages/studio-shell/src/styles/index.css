@@ -5,6 +5,9 @@
 
 @import "./themes/mocha.css";
 @import "./themes/latte.css";
+@import "./themes/manuscript.css";
+@import "./themes/inky.css";
+@import "./themes/inky-dark.css";
 
 @import "./frame.css";
 @import "./toolwindow.css";

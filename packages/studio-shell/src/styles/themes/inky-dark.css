@@ -1,0 +1,74 @@
+/* Inky Dark (theme ruling 2026-08-25) — a faithful port of Inky's dark
+   window, read from the app's own stylesheets: warm cream prose
+   (#faf1c6) on #282828; choice bullets/brackets and gather dashes in
+   Inky's signature red (#ec3c2f); flow declarations, diverts, and glue
+   in sage (#6d9e8e); logic in leaf green (#8eb865); TODO as the
+   #a97410 goldenrod band.
+
+   An OVERRIDE sheet over the mocha base (chrome geometry and anything
+   not listed inherits). */
+
+.brink-studio[data-theme="inky-dark"] {
+  /* ── Surfaces & chrome ──────────────────────────────────────────── */
+  --bs-editor-bg: #282828;
+  --bs-surface-bg: #1f1f1f;
+  --bs-panel-bg: #181818;
+  --bs-fg: #faf1c6;
+  --bs-fg-muted: #8f8878;
+  --bs-border: #3d3d3d;
+  --bs-accent: #6d9e8e;
+  --bs-on-accent: #181818;
+  --bs-hover-bg: #3a3a3a;
+  --bs-list-active-bg: #2f2f2f;
+
+  /* ── Severity & story status ────────────────────────────────────── */
+  --bs-todo: #d19a2f;
+  --bs-todo-band: #a97410; /* Inky's own dark TODO band */
+  --bs-todo-ink: #000000;
+  --bs-info: #6d9e8e;
+
+  /* ── Story symbols ──────────────────────────────────────────────── */
+  --bs-symbol-file: #6d9e8e;
+  --bs-symbol-knot: #6d9e8e;
+  --bs-symbol-stitch: #6d9e8e;
+  --bs-symbol-function: #8eb865;
+
+  /* ── Syntax: red markers, sage flow, green logic ────────────────── */
+  --bs-syn-namespace: #6d9e8e;
+  --bs-syn-function: #6d9e8e;
+  --bs-syn-label: #6d9e8e;
+  --bs-syn-divert: #6d9e8e;
+  --bs-syn-halt: #6d9e8e;
+  --bs-syn-marker: #ec3c2f;
+  --bs-syn-keyword: #8eb865;
+  --bs-syn-operator: #8eb865;
+  --bs-syn-variable: #8eb865;
+  --bs-syn-property: #8eb865;
+  --bs-syn-number: #8eb865;
+  --bs-syn-enum: #8eb865;
+  --bs-syn-parameter: #8eb865;
+  --bs-syn-string: #8eb865;
+  --bs-syn-comment: #9a9186;
+  --bs-syn-decorator: #6f6f6f; /* tags recede, as Inky's do */
+
+  /* Inky has no cue concept; cues read as prose. */
+  --bs-cue: var(--bs-fg);
+  --bs-cue-weight: 700;
+
+  /* ── Chromium-88-safe derived colors (#276) ─────────────────────── */
+  --bs-accent-rgb: 109 158 142;
+  --bs-surface-bg-rgb: 31 31 31;
+  --bs-panel-bg-rgb: 24 24 24;
+  --bs-fg-rgb: 250 241 198;
+  --bs-fg-muted-rgb: 143 136 120;
+  --bs-border-rgb: 61 61 61;
+
+  --bs-active-line-bg: rgb(255 255 255 / 5%); /* Inky's own active line */
+
+  --bs-graph-knot-border: #587e6f; /* symbol-knot 55% + border */
+  --bs-graph-stitch-border: #537463; /* symbol-stitch 45% + border */
+  --bs-graph-end-border: #a05a63; /* error 55% + border */
+  --bs-graph-expanded-bg: #212121; /* panel-bg 55% + editor-bg */
+  --bs-graph-current-bg: #2b3a35; /* accent 18% + panel-bg */
+  --bs-conflict-banner-bg: #35301f; /* warning 12% + panel-bg */
+}

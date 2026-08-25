@@ -27,11 +27,8 @@ describe("ThemeService", () => {
   it("defaults to the first theme and lists the built-ins", () => {
     const themes = new ThemeService(BUILTIN_THEMES, memoryStorage());
     expect(themes.current).toBe("mocha");
-    expect(themes.list().map((t) => t.id)).toEqual(["mocha", "latte"]);
-    expect(themes.list().map((t) => t.label)).toEqual([
-      "Catppuccin Mocha",
-      "Catppuccin Latte",
-    ]);
+    expect(themes.list().map((t) => t.id)).toEqual(["mocha", "latte", "manuscript", "inky", "inky-dark"]);
+    expect(themes.list().map((t) => t.label)).toEqual(["Catppuccin Mocha", "Catppuccin Latte", "Manuscript", "Inky", "Inky Dark"]);
   });
 
   it("select() switches, notifies, and persists under the versioned key", () => {

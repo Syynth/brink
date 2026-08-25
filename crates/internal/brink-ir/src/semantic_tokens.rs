@@ -32,6 +32,9 @@ pub fn token_type_names() -> &'static [&'static str] {
         "label",      // 12 labels, gather names
         "struct",     // 13 STRUCT declarations (TM-4b)
         "property",   // 14 struct-field segments of a dotted field access
+        "marker", // 15 narrative structure sigils: choice bullets, gather dashes, weave brackets
+        "divert", // 16 flow movement: ->, ->->, <-, glue
+        "halt",   // 17 END / DONE
     ]
 }
 
@@ -62,6 +65,9 @@ pub const TT_DECORATOR: u32 = 11;
 pub const TT_LABEL: u32 = 12;
 pub const TT_STRUCT: u32 = 13;
 pub const TT_PROPERTY: u32 = 14;
+pub const TT_MARKER: u32 = 15;
+pub const TT_DIVERT: u32 = 16;
+pub const TT_HALT: u32 = 17;
 
 // ── Modifier bitmasks ──────────────────────────────────────────────
 
@@ -118,8 +124,6 @@ pub fn classify_token(
             | SyntaxKind::ERROR_TOKEN
             | SyntaxKind::L_PAREN
             | SyntaxKind::R_PAREN
-            | SyntaxKind::L_BRACKET
-            | SyntaxKind::R_BRACKET
             | SyntaxKind::COMMA
             | SyntaxKind::DOT
             | SyntaxKind::COLON
@@ -164,6 +168,86 @@ pub fn classify_token(
         });
     }
 
+    // Narrative structure markers (theme ruling 2026-08-25): the choice
+    // bullets, gather dashes, and weave brackets get their own token type —
+    // they are wayfinding sigils, not operators, and the Manuscript/Inky
+    // themes color them apart from logic. Position decides: the SAME
+    // lexemes in expression position stay operators below.
+    let parent_kind = token.parent().map(|p| p.kind());
+    if matches!(kind, SyntaxKind::STAR | SyntaxKind::PLUS)
+        && parent_kind == Some(SyntaxKind::CHOICE_BULLETS)
+    {
+        return Some(Classification {
+            token_type: TT_MARKER,
+            modifiers: 0,
+        });
+    }
+    if kind == SyntaxKind::MINUS && parent_kind == Some(SyntaxKind::GATHER_DASHES) {
+        return Some(Classification {
+            token_type: TT_MARKER,
+            modifiers: 0,
+        });
+    }
+    if matches!(kind, SyntaxKind::L_BRACKET | SyntaxKind::R_BRACKET) {
+        // Weave brackets in a choice line are markers; any other bracket
+        // keeps the old skipped-entirely behavior.
+        return if matches!(
+            parent_kind,
+            Some(
+                SyntaxKind::CHOICE
+                    | SyntaxKind::CHOICE_START_CONTENT
+                    | SyntaxKind::CHOICE_BRACKET_CONTENT
+                    | SyntaxKind::CHOICE_INNER_CONTENT
+            )
+        ) {
+            Some(Classification {
+                token_type: TT_MARKER,
+                modifiers: 0,
+            })
+        } else {
+            None
+        };
+    }
+
+    // Header equals-runs take the definition's own color (they read as
+    // one mark with the name — previously they fell to the operator arm
+    // and split the header into two colors).
+    if matches!(kind, SyntaxKind::EQ | SyntaxKind::EQ_EQ) {
+        if parent_kind == Some(SyntaxKind::KNOT_HEADER) {
+            return Some(Classification {
+                token_type: TT_NAMESPACE,
+                modifiers: 0,
+            });
+        }
+        if parent_kind == Some(SyntaxKind::STITCH_HEADER) {
+            return Some(Classification {
+                token_type: TT_FUNCTION,
+                modifiers: 0,
+            });
+        }
+    }
+
+    // Flow movement gets its own type (vs. general operators): diverts,
+    // tunnels, threads, and glue are the "keeps going" marks.
+    if matches!(
+        kind,
+        SyntaxKind::DIVERT | SyntaxKind::THREAD | SyntaxKind::TUNNEL_ONWARDS | SyntaxKind::GLUE
+    ) {
+        return Some(Classification {
+            token_type: TT_DIVERT,
+            modifiers: 0,
+        });
+    }
+
+    // The halt words: -> END / -> DONE stop output where every other
+    // divert continues it. Checked before the generic keyword arm.
+    if matches!(kind, SyntaxKind::KW_END | SyntaxKind::KW_DONE) {
+        return Some(Classification {
+            token_type: TT_HALT,
+            modifiers: 0,
+        });
+    }
+
     // Direct mappings by SyntaxKind
     if kind == SyntaxKind::LINE_COMMENT || kind == SyntaxKind::BLOCK_COMMENT {
         return Some(Classification {
@@ -198,11 +282,7 @@ pub fn classify_token(
 
     if matches!(
         kind,
-        SyntaxKind::DIVERT
-            | SyntaxKind::THREAD
-            | SyntaxKind::TUNNEL_ONWARDS
-            | SyntaxKind::GLUE
-            | SyntaxKind::TILDE
+        SyntaxKind::TILDE
             | SyntaxKind::EQ
             | SyntaxKind::EQ_EQ
             | SyntaxKind::BANG_EQ
@@ -468,6 +548,10 @@ fn is_prose_run_container(kind: brink_syntax_native::SyntaxKind) -> bool {
     matches!(kind, NK::TEXT | NK::CUE_NAME | NK::TAG | NK::SCENE_TITLE)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat classifier dispatch — one arm per token family"
+)]
 pub fn classify_native_token(
     token: &brink_syntax_native::SyntaxToken,
     resolution_index: &BTreeMap<(u32, u32), SymbolKind>,
@@ -536,6 +620,52 @@ pub fn classify_native_token(
         }
         return Some(Classification {
             token_type: TT_OPERATOR,
+            modifiers: 0,
+        });
+    }
+
+    // Narrative structure markers / flow movement / halt words — the
+    // native mirrors of `classify_token`'s arms (theme ruling 2026-08-25).
+    let parent_kind = token.parent().map(|p| p.kind());
+    if matches!(kind, NK::STAR | NK::PLUS) && parent_kind == Some(NK::CHOICE_BULLET) {
+        return Some(Classification {
+            token_type: TT_MARKER,
+            modifiers: 0,
+        });
+    }
+    if matches!(kind, NK::L_BRACKET | NK::R_BRACKET)
+        && matches!(
+            parent_kind,
+            Some(
+                NK::CHOICE
+                    | NK::CHOICE_START_CONTENT
+                    | NK::CHOICE_BRACKET_CONTENT
+                    | NK::CHOICE_INNER_CONTENT
+            )
+        )
+    {
+        return Some(Classification {
+            token_type: TT_MARKER,
+            modifiers: 0,
+        });
+    }
+    if matches!(kind, NK::DIVERT | NK::THREAD | NK::GLUE) {
+        return Some(Classification {
+            token_type: TT_DIVERT,
+            modifiers: 0,
+        });
+    }
+    if matches!(kind, NK::KW_END | NK::KW_DONE) {
+        // Same prose-run guard the keyword arm uses: `@THE END:` lexes END
+        // as a keyword inside a cue name — that is prose, not a halt.
+        if token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+        {
+            return None;
+        }
+        return Some(Classification {
+            token_type: TT_HALT,
             modifiers: 0,
         });
     }
@@ -648,10 +778,7 @@ fn classify_native_fixed_kind(kind: brink_syntax_native::SyntaxKind) -> Option<C
 
     if matches!(
         kind,
-        NK::DIVERT
-            | NK::THREAD
-            | NK::GLUE
-            | NK::TILDE
+        NK::TILDE
             | NK::EQ
             | NK::EQ_EQ
             | NK::BANG_EQ

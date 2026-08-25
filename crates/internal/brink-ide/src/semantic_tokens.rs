@@ -360,9 +360,47 @@ mod tests {
 
     #[test]
     fn operators_are_classified() {
-        let tokens = parse_and_tokens("-> knot_name\n");
+        // The divert arrow moved to its own flow type (theme ruling
+        // 2026-08-25); `~ x = 1`'s `=` is the plain-operator witness now.
+        let tokens = parse_and_tokens("VAR x = 1\n-> knot_name\n");
         let op = tokens.iter().find(|t| t.token_type == TT_OPERATOR);
-        assert!(op.is_some(), "expected an operator token for ->");
+        assert!(op.is_some(), "expected an operator token for =");
+        let divert = tokens.iter().find(|t| t.token_type == TT_DIVERT);
+        assert!(divert.is_some(), "expected a divert token for ->");
+    }
+
+    #[test]
+    fn structure_markers_and_halts_are_classified() {
+        // Theme ruling 2026-08-25: choice bullets / gather dashes / weave
+        // brackets are markers; END/DONE are halts; expression-position
+        // `*` stays an operator.
+        let src = "* {2 * 3 > 1} [Go] on\n- done here\n-> DONE\n";
+        let tokens = parse_and_tokens(src);
+        let texts: Vec<(&str, u32)> = tokens
+            .iter()
+            .map(|t| (token_text(src, t), t.token_type))
+            .collect();
+        assert!(
+            texts.iter().any(|(x, tt)| *x == "*" && *tt == TT_MARKER),
+            "choice bullet must be a marker: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(x, tt)| *x == "*" && *tt == TT_OPERATOR),
+            "multiplication star must stay an operator: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(x, tt)| *x == "[" && *tt == TT_MARKER)
+                && texts.iter().any(|(x, tt)| *x == "]" && *tt == TT_MARKER),
+            "weave brackets must be markers: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(x, tt)| *x == "-" && *tt == TT_MARKER),
+            "gather dash must be a marker: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(x, tt)| *x == "DONE" && *tt == TT_HALT),
+            "DONE must be a halt: {texts:?}"
+        );
     }
 
     #[test]
