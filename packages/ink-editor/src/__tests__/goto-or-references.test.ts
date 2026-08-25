@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 function makeView(): EditorView {
-  view = new EditorView({ state: EditorState.create({ doc: DOC }) });
+  view = new EditorView({ state: EditorState.create({ doc: DOC }), parent: document.body });
   return view;
 }
 
@@ -35,10 +35,10 @@ function makeView(): EditorView {
 const gotoDefinition = (): Location | null => DECL;
 
 describe("gotoOrReferencesAt", () => {
-  it("shows references when the clicked position is inside the definition span", () => {
+  it("shows references when the clicked position is inside the definition span", async () => {
     const v = makeView();
     const shown: Array<{ symbol: string; count: number; declaration: Location | null }> = [];
-    const ok = gotoOrReferencesAt(v, 5, {
+    const ok = await gotoOrReferencesAt(v, 5, {
       gotoDefinition,
       getActiveFile: () => "a.ink",
       findReferences: () => [DECL, { file: "a.ink", start: USE_POS, end: USE_POS + 6 }],
@@ -51,10 +51,10 @@ describe("gotoOrReferencesAt", () => {
     expect(v.state.selection.main.head).toBe(0);
   });
 
-  it("navigates from a use site (position outside the definition span)", () => {
+  it("navigates from a use site (position outside the definition span)", async () => {
     const v = makeView();
     const shown: string[] = [];
-    const ok = gotoOrReferencesAt(v, USE_POS, {
+    const ok = await gotoOrReferencesAt(v, USE_POS, {
       gotoDefinition,
       getActiveFile: () => "a.ink",
       findReferences: () => [DECL],
@@ -67,10 +67,10 @@ describe("gotoOrReferencesAt", () => {
     expect(v.state.selection.main.head).toBe(DECL.start);
   });
 
-  it("navigates from the definition when it lives in a different file", () => {
+  it("navigates from the definition when it lives in a different file", async () => {
     const v = makeView();
     const navigated: Location[] = [];
-    const ok = gotoOrReferencesAt(v, 5, {
+    const ok = await gotoOrReferencesAt(v, 5, {
       gotoDefinition: () => ({ file: "other.ink", start: 3, end: 9 }),
       getActiveFile: () => "a.ink",
       onNavigateToFile: (location) => {
@@ -85,9 +85,9 @@ describe("gotoOrReferencesAt", () => {
     expect(navigated).toEqual([{ file: "other.ink", start: 3, end: 9 }]);
   });
 
-  it("falls back to navigation when references come back empty", () => {
+  it("falls back to navigation when references come back empty", async () => {
     const v = makeView();
-    const ok = gotoOrReferencesAt(v, 5, {
+    const ok = await gotoOrReferencesAt(v, 5, {
       gotoDefinition,
       getActiveFile: () => "a.ink",
       findReferences: () => [],
@@ -99,9 +99,9 @@ describe("gotoOrReferencesAt", () => {
     expect(v.state.selection.main.head).toBe(DECL.start);
   });
 
-  it("keeps plain navigation when no references callback is wired", () => {
+  it("keeps plain navigation when no references callback is wired", async () => {
     const v = makeView();
-    const ok = gotoOrReferencesAt(v, 5, {
+    const ok = await gotoOrReferencesAt(v, 5, {
       gotoDefinition,
       getActiveFile: () => "a.ink",
     });
@@ -109,9 +109,9 @@ describe("gotoOrReferencesAt", () => {
     expect(v.state.selection.main.head).toBe(DECL.start);
   });
 
-  it("stays inert when nothing resolves", () => {
+  it("stays inert when nothing resolves", async () => {
     const v = makeView();
-    expect(gotoOrReferencesAt(v, 20, { gotoDefinition: () => null })).toBe(false);
+    expect(await gotoOrReferencesAt(v, 20, { gotoDefinition: () => null })).toBe(false);
   });
 });
 
@@ -137,10 +137,10 @@ describe("gotoOrReferencesAt on INCLUDE lines", () => {
 
   const DOC2 = "INCLUDE scenes/intro.ink\nHello\n";
 
-  it("cmd-click on the path text opens the file (ruled 2026-08-24)", () => {
+  it("cmd-click on the path text opens the file (ruled 2026-08-24)", async () => {
     const v = makeClassifiedView(DOC2);
     const nav = vi.fn();
-    const ok = gotoOrReferencesAt(v, DOC2.indexOf("intro"), {
+    const ok = await gotoOrReferencesAt(v, DOC2.indexOf("intro"), {
       gotoDefinition: () => null,
       onNavigateToFile: nav,
     });
@@ -148,19 +148,19 @@ describe("gotoOrReferencesAt on INCLUDE lines", () => {
     expect(nav).toHaveBeenCalledWith({ file: "scenes/intro.ink", start: 0, end: 0 });
   });
 
-  it("the INCLUDE keyword is not part of the clickable span", () => {
+  it("the INCLUDE keyword is not part of the clickable span", async () => {
     const v = makeClassifiedView(DOC2);
     const nav = vi.fn();
     expect(
-      gotoOrReferencesAt(v, 2, { gotoDefinition: () => null, onNavigateToFile: nav }),
+      await gotoOrReferencesAt(v, 2, { gotoDefinition: () => null, onNavigateToFile: nav }),
     ).toBe(false);
     expect(nav).not.toHaveBeenCalled();
   });
 
-  it("stays inert without an onNavigateToFile host", () => {
+  it("stays inert without an onNavigateToFile host", async () => {
     const v = makeClassifiedView(DOC2);
     expect(
-      gotoOrReferencesAt(v, DOC2.indexOf("intro"), { gotoDefinition: () => null }),
+      await gotoOrReferencesAt(v, DOC2.indexOf("intro"), { gotoDefinition: () => null }),
     ).toBe(false);
   });
 });

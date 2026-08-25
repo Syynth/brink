@@ -62,7 +62,7 @@ const unsafe = (n: number): StructuralResult => ({
 /** A view wired with the inline rename extension, opened on `hello`. The
  *  rename verdict is always safe — these tests are about the input's focus
  *  and selection, not about breakage. */
-function openRename(): EditorView {
+async function openRename(): Promise<EditorView> {
   const prepareRename = (source: string, offset: number): Location | null => {
     const start = source.indexOf(SYMBOL);
     if (offset < start || offset > start + SYMBOL.length) return null;
@@ -81,7 +81,7 @@ function openRename(): EditorView {
     }),
     parent: document.body,
   });
-  startInlineRename(view, DOC.indexOf(SYMBOL));
+  await startInlineRename(view, DOC.indexOf(SYMBOL));
   return view;
 }
 
@@ -100,8 +100,8 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
     document.body.replaceChildren();
   });
 
-  it("leaves the selection alone on a field the user has already typed into", () => {
-    const view = openRename();
+  it("leaves the selection alone on a field the user has already typed into", async () => {
+    const view = await openRename();
     const input = inputEl(view);
 
     // Type into the freshly mounted input before the deferred callback runs —
@@ -121,8 +121,8 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
     view.destroy();
   });
 
-  it("still selects the seeded name on an untouched field", () => {
-    const view = openRename();
+  it("still selects the seeded name on an untouched field", async () => {
+    const view = await openRename();
     const input = inputEl(view);
 
     vi.advanceTimersByTime(0);
@@ -136,8 +136,8 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
     view.destroy();
   });
 
-  it("needs the deferral: the input is not focusable until CM has mounted it", () => {
-    const view = openRename();
+  it("needs the deferral: the input is not focusable until CM has mounted it", async () => {
+    const view = await openRename();
     const input = inputEl(view);
 
     // Preservation guard for the `setTimeout(…, 0)` itself. `render()` runs
@@ -167,7 +167,7 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
   // itself, independent of whether any *current* call site happens to avoid
   // re-invoking `render()`/the report a second time.
 
-  it("clears an orphaned focusTimer when render() runs again on the same instance", () => {
+  it("clears an orphaned focusTimer when render() runs again on the same instance", async () => {
     const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
     const controller = new InlineNameInput(
       {
@@ -200,7 +200,7 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
     document.body.replaceChildren();
   });
 
-  it("clears an orphaned forceFocusTimer when renderReport() runs again while the report is open", () => {
+  it("clears an orphaned forceFocusTimer when renderReport() runs again while the report is open", async () => {
     const focusSpy = vi.spyOn(HTMLButtonElement.prototype, "focus");
     const results: Record<string, StructuralResult> = { bad: unsafe(1), worse: unsafe(2) };
     const controller = new InlineNameInput(

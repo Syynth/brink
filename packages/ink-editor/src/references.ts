@@ -10,12 +10,13 @@ import {
 import type { Location } from "@brink/wasm-types";
 
 export interface ReferencesOptions {
-  findReferences: (source: string, offset: number) => Location[];
+  /** Sync or async (#3110 — the studio wiring rides the worker road). */
+  findReferences: (source: string, offset: number) => Location[] | Promise<Location[]>;
   /** Resolve the symbol's declaration (the same callback the cmd-click
    *  navigate surface uses). When provided, `onShowReferences` receives it
    *  as the third argument so the host can anchor a references refresh at
    *  the declaration's position (docs/search-results-cards-spec.md). */
-  gotoDefinition?: (source: string, offset: number) => Location | null;
+  gotoDefinition?: (source: string, offset: number) => Location | null | Promise<Location | null>;
   /** Route results to the host's references surface (the Search panel —
    *  context-menu spec ruling). When absent, fall back to the in-view
    *  3s highlight (same-file only). */
@@ -90,19 +91,21 @@ const referenceClearTimer = ViewPlugin.fromClass(
 /** Highlight every reference of the symbol at `pos` (3s auto-clear via the
  *  timer plugin). Shared by the Shift-Alt-F binding and the context menu's
  *  Find References item. */
-export function showReferencesAt(
+export async function showReferencesAt(
   view: EditorView,
   pos: number,
   findReferences: ReferencesOptions["findReferences"],
-): boolean {
-  const source = view.state.doc.toString();
+): Promise<boolean> {
+  const doc = view.state.doc;
+  const source = doc.toString();
 
   let refs: Location[];
   try {
-    refs = findReferences(source, pos);
+    refs = await findReferences(source, pos);
   } catch {
     return false;
   }
+  if (!view.dom.isConnected || view.state.doc !== doc) return false; // stale landing
 
   if (refs.length === 0) return false;
 
@@ -120,27 +123,29 @@ export function showReferencesAt(
 
 /** Find references at `pos` and present them: through the host's surface
  *  when wired (the Search panel), else the in-view highlight fallback. */
-export function findReferencesAt(
+export async function findReferencesAt(
   view: EditorView,
   pos: number,
   options: ReferencesOptions,
-): boolean {
+): Promise<boolean> {
   if (!options.onShowReferences) {
     return showReferencesAt(view, pos, options.findReferences);
   }
-  const source = view.state.doc.toString();
+  const doc = view.state.doc;
+  const source = doc.toString();
   let refs: Location[];
   try {
-    refs = options.findReferences(source, pos);
+    refs = await options.findReferences(source, pos);
   } catch {
     return false;
   }
   if (refs.length === 0) return false;
+  if (!view.dom.isConnected || view.state.doc !== doc) return false; // stale landing
   const word = view.state.wordAt(pos);
   const symbol = word ? view.state.sliceDoc(word.from, word.to) : "";
   let declaration: Location | null = null;
   try {
-    declaration = options.gotoDefinition?.(source, pos) ?? null;
+    declaration = (await options.gotoDefinition?.(source, pos)) ?? null;
   } catch {
     declaration = null;
   }
@@ -155,8 +160,12 @@ export function referencesExtension(options: ReferencesOptions): Extension {
     keymap.of([
       {
         key: "Shift-Alt-f",
-        run: (view: EditorView) =>
-          findReferencesAt(view, view.state.selection.main.head, options),
+        run: (view: EditorView) => {
+          // Async resolution (#3110): claim the key; an empty result just
+          // shows nothing (Shift-Alt-F has no other binding to fall to).
+          void findReferencesAt(view, view.state.selection.main.head, options);
+          return true;
+        },
       },
     ]),
   ];

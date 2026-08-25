@@ -66,7 +66,7 @@ export interface InlineNameInputOptions {
    * `null` return (or a throw) is treated as "no result" (badge hidden, Enter
    * cancels). The commit applies `result` through {@link InlineNameInputOptions.onCommit}.
    */
-  query: (name: string) => StructuralResult | null;
+  query: (name: string) => StructuralResult | null | Promise<StructuralResult | null>;
   /**
    * Commit an already-computed result — apply its edits. Called for a safe
    * Enter or an explicit force.
@@ -278,11 +278,25 @@ export class InlineNameInput {
     this.updateBadge(this.lastResult);
     this.idleHandle = scheduleIdleWork(() => {
       this.idleHandle = null;
-      let queried: StructuralResult | null;
+      let queried: StructuralResult | null | Promise<StructuralResult | null>;
       try {
         queried = this.options.query(name);
       } catch {
         queried = null;
+      }
+      if (queried instanceof Promise) {
+        // #3110: the query rides the worker road. Land only if this name
+        // is still the pending one — abandonPending/newer input swaps the
+        // pending marker and the stale landing drops here.
+        void queried.then(
+          (result) => {
+            if (this.pending && this.pendingName === name) this.resolveQuery(name, result);
+          },
+          () => {
+            if (this.pending && this.pendingName === name) this.resolveQuery(name, null);
+          },
+        );
+        return;
       }
       this.resolveQuery(name, queried);
     });

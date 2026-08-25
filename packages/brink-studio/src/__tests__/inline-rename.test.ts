@@ -49,23 +49,23 @@ const unsafe = (n: number): StructuralResult => ({
 });
 
 describe("inline-rename pure logic", () => {
-  it("isSafeRename: true only when safe and no introduced diagnostics", () => {
+  it("isSafeRename: true only when safe and no introduced diagnostics", async () => {
     expect(isSafeRename(safe())).toBe(true);
     expect(isSafeRename(unsafe(2))).toBe(false);
   });
 
-  it("breakageCount counts introduced diagnostics (0 when safe)", () => {
+  it("breakageCount counts introduced diagnostics (0 when safe)", async () => {
     expect(breakageCount(safe())).toBe(0);
     expect(breakageCount(unsafe(3))).toBe(3);
   });
 
-  it("breakageEntries lists file:line + message per diagnostic", () => {
+  it("breakageEntries lists file:line + message per diagnostic", async () => {
     const entries = breakageEntries(unsafe(2));
     expect(entries).toHaveLength(2);
     expect(entries[0]).toMatchObject({ file: "other.ink", line: 1, message: "unresolved divert 0" });
   });
 
-  it("breakageEntries falls back to sorted cross-file paths when no diagnostics", () => {
+  it("breakageEntries falls back to sorted cross-file paths when no diagnostics", async () => {
     const result: StructuralResult = {
       ...safe(),
       safe: false,
@@ -79,7 +79,7 @@ describe("inline-rename pure logic", () => {
     expect(entries[0].line).toBeUndefined();
   });
 
-  it("RenameQueryCache keys by (path, offset, name)", () => {
+  it("RenameQueryCache keys by (path, offset, name)", async () => {
     const cache = new RenameQueryCache();
     const r = unsafe(1);
     cache.set("main.ink", 5, "greeting", r);
@@ -147,16 +147,16 @@ describe("inline-rename widget", () => {
     document.body.replaceChildren();
   });
 
-  it("F2 mounts the inline input anchored at the symbol", () => {
+  it("F2 mounts the inline input anchored at the symbol", async () => {
     const { view } = mountRename(() => safe());
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     expect(inputEl(view).value).toBe("hello");
     view.destroy();
   });
 
-  it("shows '⚠ breaks N' on a colliding name and hides it when safe", () => {
+  it("shows '⚠ breaks N' on a colliding name and hides it when safe", async () => {
     const { view } = mountRename((name) => (name === "bad" ? unsafe(2) : safe()));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
 
     typeName(view, input, "bad");
@@ -172,9 +172,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("debounces the breakage query (one call per settle, cached)", () => {
+  it("debounces the breakage query (one call per settle, cached)", async () => {
     const { view, queries } = mountRename(() => unsafe(1));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
 
     typeName(view, input, "a");
@@ -193,9 +193,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("reaches an interactive pending state as soon as the debounce settles, without waiting for the analysis (#722)", () => {
+  it("reaches an interactive pending state as soon as the debounce settles, without waiting for the analysis (#722)", async () => {
     const { view, queries } = mountRename(() => unsafe(1));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
 
     typeName(view, input, "bad");
@@ -224,9 +224,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("expands the badge into the inline report (no modal) with the affected list", () => {
+  it("expands the badge into the inline report (no modal) with the affected list", async () => {
     const { view } = mountRename(() => unsafe(2));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "bad");
     vi.advanceTimersByTime(300);
@@ -241,9 +241,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("commits a safe rename on Enter (no popover), after the deferred analysis resolves", () => {
+  it("commits a safe rename on Enter (no popover), after the deferred analysis resolves", async () => {
     const { view, queries, commits } = mountRename(() => safe());
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "greeting");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -261,18 +261,18 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("does not commit a safe rename to the unchanged name", () => {
+  it("does not commit a safe rename to the unchanged name", async () => {
     const { view, commits } = mountRename(() => safe());
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(commits).toHaveLength(0);
     view.destroy();
   });
 
-  it("Enter on an unsafe name surfaces the report instead of committing", () => {
+  it("Enter on an unsafe name surfaces the report instead of committing", async () => {
     const { view, commits } = mountRename(() => unsafe(1));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "bad");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -292,9 +292,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("Esc cancels and tears the widget down without committing", () => {
+  it("Esc cancels and tears the widget down without committing", async () => {
     const { view, commits } = mountRename(() => safe());
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "greeting");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -304,7 +304,7 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("settleCommit hands an `ok: false` refusal to commitRename unmodified (#2543)", () => {
+  it("settleCommit hands an `ok: false` refusal to commitRename unmodified (#2543)", async () => {
     // `isSafeRename` gates on `safe` + `introduced_diagnostics.length === 0`
     // only — a refusal satisfies both (`error_json`'s `safe: true` with no
     // diagnostics), so with a widget genuinely mounted via `prepareRename`
@@ -338,7 +338,7 @@ describe("inline-rename widget", () => {
       }),
       parent: document.body,
     });
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "greeting");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -348,9 +348,9 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("destroying the editor tears the widget down (no leaked DOM)", () => {
+  it("destroying the editor tears the widget down (no leaked DOM)", async () => {
     const { view } = mountRename(() => unsafe(1));
-    startInlineRename(view, DOC.indexOf(SYMBOL));
+    await startInlineRename(view, DOC.indexOf(SYMBOL));
     typeName(view, inputEl(view), "bad");
     vi.advanceTimersByTime(300);
     view.destroy();

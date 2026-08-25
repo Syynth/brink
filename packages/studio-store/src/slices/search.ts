@@ -170,7 +170,10 @@ export interface SearchSlice {
    * per-card calls). Uncached here — the view memoizes per (path, source).
    * Null when no project is loaded or the file cannot be opened.
    */
-  getSearchHighlighting(path: string): { tokens: SemanticToken[]; typeNames: string[] } | null;
+  /** Async since #3110: the token pull rides the worker road. */
+  getSearchHighlighting(
+    path: string,
+  ): Promise<{ tokens: SemanticToken[]; typeNames: string[] } | null>;
   /**
    * Apply an edit the user made in the editable results buffer, routed to the
    * source through the shared apply-edits seam (updateFile + invalidate +
@@ -550,14 +553,24 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     return project.getSession().getFileSource(path);
   },
 
-  getSearchHighlighting(path) {
+  async getSearchHighlighting(path) {
     const project = get()._project;
     if (!project) return null;
     const session = project.getSession();
     const doc = session.openDocument(path);
     if (doc === null) return null;
     try {
-      return { tokens: session.getSemanticTokensDoc(doc), typeNames: getTokenTypeNames() };
+      // #3110: the refined-token pull rides the worker road. The open
+      // above was mirrored to the replica (ordered ahead of this query
+      // by the scheduler), so the doc id addresses the same text there.
+      const tokens = await project
+        .docClient()
+        .query<SemanticToken[]>("getSemanticTokensDoc", [doc], {
+          priority: "background",
+          coalesceKey: `search-highlight:${path}`,
+        })
+        .promise.then((r) => r.value);
+      return { tokens, typeNames: getTokenTypeNames() };
     } catch {
       return null;
     } finally {

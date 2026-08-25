@@ -72,8 +72,8 @@ const ALLOWLIST: Record<string, { methods: string[]; reason: string }> = {
     reason:
       "THE choke point: worker-fed stashes are read first (W5c); these are " +
       "the in-process fallback fetches (mocks, small documents, no-worker " +
-      "environments) and the one-shot thin wrappers (goto/rename family) " +
-      "whose worker migration is tracked as a follow-up issue.",
+      "environments). The one-shot family migrated to the client road " +
+      "(#3110) — what remains here is fallback only.",
   },
   "packages/ink-editor/src/project-session.ts": {
     methods: ["compileProject"],
@@ -81,23 +81,6 @@ const ALLOWLIST: Record<string, { methods: string[]; reason: string }> = {
       "The synchronous compile road's definition — generation-cached, no " +
       "production caller since W4 (triggerCompile/diagnostics/panels all " +
       "ride the async facade); kept as embedder API and fallback.",
-  },
-  "packages/studio-store/src/slices/search.ts": {
-    methods: ["getSemanticTokensDoc"],
-    reason:
-      "Search-card highlighting: user-triggered, bounded by the rendered " +
-      "cards, and served against a delta-fed session (incremental " +
-      "re-analysis only). Worker migration tracked with the one-shot " +
-      "family.",
-  },
-  "packages/ink-editor/src/document-sessions.ts": {
-    methods: ["getFileSymbols"],
-    reason:
-      "resolveSymbolRange at symbol-tab mount: a one-shot with a built-in " +
-      "degrade path (hint, then full-file). Post-W5b this costs " +
-      "INCREMENTAL analysis only (the replica does not warm the main " +
-      "session, but delta-fed inputs keep re-analysis bounded). Worker " +
-      "migration tracked with the one-shot family.",
   },
 };
 

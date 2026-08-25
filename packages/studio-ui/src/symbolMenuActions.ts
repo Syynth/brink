@@ -186,7 +186,10 @@ export async function dispatchSymbolAction(
         action.knot,
         action.stitch,
       );
-      if (offset !== null && state._documents?.startInlineRenameAt(action.path, offset)) {
+      if (
+        offset !== null &&
+        (await state._documents?.startInlineRenameAt(action.path, offset)) === true
+      ) {
         return;
       }
     }
