@@ -194,14 +194,15 @@ export class DocHandle {
     const live = new Set<string>();
     for (const seg of manifest.segments) {
       live.add(seg.key);
-      let entry = this.segSlices.get(seg.key);
-      if (!entry?.contexts) {
+      const entry = this.segSlices.get(seg.key);
+      let contexts = entry?.contexts;
+      if (!contexts) {
         const slice = this.session.getSegmentLineContextsDoc?.(this.id, seg.key) ?? null;
         if (slice === null) return null;
-        entry = { ...entry, contexts: slice };
-        this.segSlices.set(seg.key, entry);
+        contexts = slice;
+        this.segSlices.set(seg.key, { ...entry, contexts });
       }
-      out.push({ key: seg.key, ownedFrom: seg.ownedFrom, contexts: entry.contexts });
+      out.push({ key: seg.key, ownedFrom: seg.ownedFrom, contexts });
     }
     this.pruneSlices(live);
     return out;
@@ -214,15 +215,16 @@ export class DocHandle {
     const live = new Set<string>();
     for (const seg of manifest.segments) {
       live.add(seg.key);
-      let entry = this.segSlices.get(seg.key);
-      if (!entry?.contexts) {
+      const entry = this.segSlices.get(seg.key);
+      let contexts = entry?.contexts;
+      if (!contexts) {
         const slice = this.session.getSegmentLineContextsDoc?.(this.id, seg.key) ?? null;
         // A stale key (manifest raced an edit) — fall back wholesale.
         if (slice === null) return this.session.getLineContextsDoc(this.id);
-        entry = { ...entry, contexts: slice };
-        this.segSlices.set(seg.key, entry);
+        contexts = slice;
+        this.segSlices.set(seg.key, { ...entry, contexts });
       }
-      for (const c of entry.contexts) out.push(c);
+      for (const c of contexts) out.push(c);
     }
     this.pruneSlices(live);
     return out;
@@ -242,14 +244,15 @@ export class DocHandle {
     const live = new Set<string>();
     for (const seg of manifest.segments) {
       live.add(seg.key);
-      let entry = this.segSlices.get(seg.key);
-      if (!entry?.tokens) {
+      const entry = this.segSlices.get(seg.key);
+      let tokens = entry?.tokens;
+      if (!tokens) {
         const refined = fast
           ? null
           : (this.session.getSegmentSemanticTokensDoc?.(this.id, seg.key) ?? null);
         if (refined !== null) {
-          entry = { ...entry, tokens: refined };
-          this.segSlices.set(seg.key, entry);
+          tokens = refined;
+          this.segSlices.set(seg.key, { ...entry, tokens });
         } else if (fast) {
           const quick = this.session.getSegmentSemanticTokensFastDoc?.(this.id, seg.key) ?? null;
           if (quick === null) return this.session.getSemanticTokensDoc(this.id);
@@ -263,7 +266,7 @@ export class DocHandle {
       }
       // Cached token lines are segment-relative; rebase by the CURRENT
       // manifest position (this is what makes shift edits free).
-      for (const t of entry.tokens) out.push({ ...t, line: t.line + seg.ownedFrom });
+      for (const t of tokens) out.push({ ...t, line: t.line + seg.ownedFrom });
     }
     this.pruneSlices(live);
     return out;
