@@ -25,6 +25,7 @@ import { withPerfTiming } from "./perf/wasm-proxy.js";
 import { perfSpan } from "./perf/probe.js";
 import { LocalTransport } from "./worker/local-transport.js";
 import { SessionClient } from "./worker/session-client.js";
+import { WorkerTransport, createSessionWorker } from "./worker/worker-transport.js";
 
 // The config filename `discoverProjectConfig`'s walk-up looks for (mirrors
 // `brink_project_config::CONFIG_FILE_NAME` — see crates/internal/brink-project-config/src/lib.rs).
@@ -101,6 +102,21 @@ export interface ProjectSessionOptions {
   entryIsExplicit?: boolean;
   /** Re-use an existing session, or a new one is created. */
   session?: EditorSessionHandle;
+  /**
+   * Run the project-level query road (compile, outline, story graph,
+   * closure — everything doc-independent) in a Web Worker (W4 of
+   * `docs/editor-worker-spec.md`). The worker owns its own wasm session,
+   * kept current by an ordered file/config mutation stream flushed before
+   * every worker query; doc-scoped queries stay on the in-process road
+   * until the W5 flip. Fully feature-detected: environments without
+   * `Worker` (or where the worker fails to boot) silently keep the
+   * in-process road. Default false.
+   */
+  workerSession?: boolean;
+  /** Override the session-worker factory (tests; hosts whose bundler
+   *  cannot process the `new URL` worker pattern supply their own).
+   *  Returning null disables the worker road. */
+  workerFactory?: () => import("./worker/worker-transport.js").WorkerLike | null;
   /** Called when an external file change is detected. */
   onExternalFileChange?: (path: string, content: string | null) => void;
   /**
@@ -152,6 +168,59 @@ export interface ProjectSessionOptions {
    * config (if any) stays in effect until a valid edit re-discovers it.
    */
   onProjectConfigError?: (message: string) => void;
+}
+
+/** Config-surface methods mirrored to the worker session (W4): every
+ *  mutation that changes analysis/compile-relevant state without going
+ *  through file content. Ordered and replayed via the config log. */
+const WORKER_CONFIG_METHODS = new Set([
+  "setDialect",
+  "clearDialect",
+  "setHostManifest",
+  "clearHostManifest",
+  "setHostValues",
+  "clearHostValues",
+  "setExternalCheck",
+  "setSemanticTypeCheck",
+  "setLanguageDialect",
+  "setTypePolicy",
+  "setLintOverrides",
+  "setDenyWarningsOverride",
+  "clearDenyWarningsOverride",
+  "setFoldRunsEnabled",
+  "applyProjectConfig",
+  "discoverProjectConfig",
+]);
+
+/** File-content methods mirrored to the worker session (W4). */
+const WORKER_FILE_METHODS = new Set(["updateFile", "removeFile"]);
+
+/**
+ * Observe the session at its single choke point (the same reasoning as
+ * `withPerfTiming`): every config or file mutation — from this class,
+ * `DocumentSessions`, or the studio reaching through `getSession()` — is
+ * recorded so the worker session (W4) can be brought current before a
+ * worker query. Per-document pushes are covered separately by
+ * `notifyFileChanged` (their content reaches the worker as whole-file
+ * updates at flush time).
+ */
+function withWorkerMirror(
+  session: EditorSessionHandle,
+  hooks: { config(method: string, args: unknown[]): void; file(path: string): void },
+): EditorSessionHandle {
+  return new Proxy(session, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function" || typeof prop !== "string") return value;
+      if (!WORKER_CONFIG_METHODS.has(prop) && !WORKER_FILE_METHODS.has(prop)) return value;
+      return (...args: unknown[]) => {
+        const out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        if (WORKER_CONFIG_METHODS.has(prop)) hooks.config(prop, args);
+        else hooks.file(String(args[0]));
+        return out;
+      };
+    },
+  }) as EditorSessionHandle;
 }
 
 export class ProjectSession {
@@ -207,6 +276,19 @@ export class ProjectSession {
    */
   private pendingCompile: { generation: number; promise: Promise<CompileResult> } | null =
     null;
+  // ── W4 worker road (docs/editor-worker-spec.md §8) ──
+  private readonly workerEnabled: boolean;
+  private workerClient: SessionClient | null = null;
+  private workerFailed = false;
+  /** Paths whose content changed since the last worker flush. */
+  private readonly workerDirty = new Set<string>();
+  /** True until the first flush streams the whole project. */
+  private workerAllDirty = true;
+  /** Ordered log of config mutations applied to the main session — the
+   *  un-replayed suffix is forwarded before every worker query. */
+  private readonly workerConfigLog: { method: string; args: unknown[] }[] = [];
+  private workerConfigSynced = 0;
+  private readonly workerFactory?: () => import("./worker/worker-transport.js").WorkerLike | null;
   /**
    * Idle handles this class has scheduled via {@link deferGatedCall} —
    * `renameFile`'s yield below, and (issue #2794 review) `studio-ui`'s
@@ -230,7 +312,19 @@ export class ProjectSession {
     // The perf proxy times every wasm call from this one choke point (all
     // DocHandles and panel pulls share this instance); it is a pass-through
     // branch per call while the probe is disabled (the production state).
-    this.session = withPerfTiming(options.session ?? new EditorSessionHandle());
+    this.workerEnabled = options.workerSession ?? false;
+    this.workerFactory = options.workerFactory;
+    this.session = withWorkerMirror(
+      withPerfTiming(options.session ?? new EditorSessionHandle()),
+      {
+        config: (method, args) => {
+          if (this.workerEnabled) this.workerConfigLog.push({ method, args });
+        },
+        file: (path) => {
+          if (this.workerEnabled) this.workerDirty.add(path);
+        },
+      },
+    );
     this.client = new SessionClient(new LocalTransport(this.session));
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
@@ -820,23 +914,21 @@ export class ProjectSession {
       return this.pendingCompile.promise;
     }
     const end = perfSpan("project.compileProject");
-    const promise = this.client
-      .query<CompileResult>("compileProject", [this.getEntryFile()], {
-        priority: "background",
-      })
-      .promise.then(
-        (result) => {
-          end();
-          if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
-          this.lastCompile = { generation, result: result.value };
-          return result.value;
-        },
-        (error: unknown) => {
-          end();
-          if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
-          throw error;
-        },
-      );
+    const promise = this.projectQuery<CompileResult>("compileProject", [
+      this.getEntryFile(),
+    ]).then(
+      (value) => {
+        end();
+        if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
+        this.lastCompile = { generation, result: value };
+        return value;
+      },
+      (error: unknown) => {
+        end();
+        if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
+        throw error;
+      },
+    );
     this.pendingCompile = { generation, promise };
     return promise;
   }
@@ -865,6 +957,86 @@ export class ProjectSession {
   }
 
   /**
+   * One project-level (doc-independent) pull — compile, outline, story
+   * graph, closure. Runs on the Web Worker road when enabled and healthy
+   * (W4): the worker's session is brought current first by flushing the
+   * ordered file/config mutation stream, and the scheduler guarantees
+   * those mutations apply before the query. Everywhere else (no
+   * `workerSession`, no `Worker`, boot/crash failure) this is the
+   * in-process client — identical semantics, main-thread execution.
+   */
+  projectQuery<T>(
+    method: string,
+    args: readonly unknown[],
+    options: { coalesceKey?: string } = {},
+  ): Promise<T> {
+    const worker = this.ensureWorkerClient();
+    if (worker !== null) this.flushWorker(worker);
+    const client = worker ?? this.client;
+    return client
+      .query<T>(method, [...args], {
+        priority: "background",
+        ...(options.coalesceKey !== undefined ? { coalesceKey: options.coalesceKey } : {}),
+      })
+      .promise.then((r) => r.value);
+  }
+
+  private ensureWorkerClient(): SessionClient | null {
+    if (!this.workerEnabled || this.workerFailed || this.destroyed) return null;
+    if (this.workerClient !== null) return this.workerClient;
+    const worker = (this.workerFactory ?? createSessionWorker)();
+    if (worker === null) {
+      this.workerFailed = true;
+      return null;
+    }
+    const transport = new WorkerTransport(worker, { onCrash: () => this.dropWorker() });
+    const client = new SessionClient(transport);
+    client.onEvent((event) => {
+      if ((event as { type?: string } | null)?.type === "bootError") this.dropWorker();
+    });
+    this.workerClient = client;
+    return client;
+  }
+
+  /** Worker crashed or failed to boot: reject everything in flight (the
+   *  rejected consumers retry on their own cadence and land on the
+   *  in-process road) and never try the worker again this session. */
+  private dropWorker(): void {
+    this.workerFailed = true;
+    const client = this.workerClient;
+    this.workerClient = null;
+    client?.close();
+  }
+
+  /** Bring the worker session current: stream changed file contents and
+   *  the un-replayed config suffix as ordered mutations. Mounted stdlib
+   *  paths are skipped — the worker's own session mounts its own copy,
+   *  and pushing ours would silently unmount them there. */
+  private flushWorker(client: SessionClient): void {
+    if (this.workerAllDirty) {
+      this.workerAllDirty = false;
+      this.workerDirty.clear();
+      for (const file of this.session.listFiles()) {
+        if (file.mounted) continue;
+        const content = this.session.getFileSource(file.path);
+        if (content !== null) client.files("updateFile", file.path, content);
+      }
+    } else if (this.workerDirty.size > 0) {
+      for (const path of this.workerDirty) {
+        const content = this.session.getFileSource(path);
+        if (content === null) client.files("removeFile", path);
+        else client.files("updateFile", path, content);
+      }
+      this.workerDirty.clear();
+    }
+    while (this.workerConfigSynced < this.workerConfigLog.length) {
+      const op = this.workerConfigLog[this.workerConfigSynced];
+      this.workerConfigSynced += 1;
+      if (op !== undefined) client.config(op.method, ...op.args);
+    }
+  }
+
+  /**
    * Report that `path`'s session content changed: provider write-back plus
    * a "modified" record on the change hub (host egress). Every mutation
    * path lands here — the CM6 edit flush calls it directly; bulk edits go
@@ -890,6 +1062,7 @@ export class ProjectSession {
   }
 
   notifyFileChanged(path: string): void {
+    if (this.workerEnabled) this.workerDirty.add(path);
     // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
     // "Mounted stdlib presents as a read-only library node"): a still-
     // mounted path has no host baseline to diff against, so egressing it
@@ -1199,6 +1372,8 @@ export class ProjectSession {
     // handle is freed — same freed-wasm discipline as the idle-work sweep
     // above: an async landing must never dispatch into a freed session.
     this.client.close();
+    this.workerClient?.close();
+    this.workerClient = null;
     this.session.free();
   }
 

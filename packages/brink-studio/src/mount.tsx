@@ -131,6 +131,13 @@ import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 // ── Public types ───────────────────────────────────────────────────
 
 export interface MountStudioOptions {
+  /**
+   * W4 (docs/editor-worker-spec.md): run the project-level query road —
+   * compile, outline, story graph, closure — in a Web Worker with its own
+   * wasm session. Feature-detected; environments without workers keep the
+   * in-process road. Default false until the W5 flip.
+   */
+  workerSession?: boolean;
   /** Project files (path → ink source). */
   files: Record<string, string>;
   /**
@@ -462,6 +469,7 @@ export async function mountStudio(
   const project = new ProjectSession({
     provider,
     entryFile,
+    workerSession: options.workerSession,
     // File-anchored open (ruled 2026-08-23): an explicit open's entry is
     // never superseded by a discovered `[project] entry`.
     entryIsExplicit: options.entryIsExplicit,
@@ -639,28 +647,26 @@ export async function mountStudio(
     // supersedes this one wholesale (and a query dropped by coalescing
     // rejects, which the catch below folds into the same skip).
     const seq = ++fanOutSeq;
-    const client = project.sessionClient();
     void (async () => {
-      const [outlineResult, closureResult, graphResult] = await Promise.all([
-        client.query<FileOutline[]>("getProjectOutline", [], {
-          priority: "background",
+      // W4: projectQuery routes these through the worker road when enabled
+      // (same coalesce keys, same ordering guarantees).
+      const [outline, closure, graph] = await Promise.all([
+        project.projectQuery<FileOutline[]>("getProjectOutline", [], {
           coalesceKey: "panel:outline",
-        }).promise,
-        client.query<string[]>("getCompilationClosure", [], {
-          priority: "background",
+        }),
+        project.projectQuery<string[]>("getCompilationClosure", [], {
           coalesceKey: "panel:closure",
-        }).promise,
+        }),
         // Failed compile: keep the last good graph (same policy as before)
         // without spending the query.
         result.ok
-          ? client.query<StoryGraph | null>("getStoryGraph", [], {
-              priority: "background",
+          ? project.projectQuery<StoryGraph | null>("getStoryGraph", [], {
               coalesceKey: "panel:graph",
-            }).promise
+            })
           : Promise.resolve(null),
       ]);
       if (seq !== fanOutSeq) return; // a newer compile's fan-out supersedes
-      landCompileResult(result, outlineResult.value, closureResult.value, graphResult?.value ?? null);
+      landCompileResult(result, outline, closure, graph);
     })().catch(() => {
       // Dropped/failed panel pull: keep the last good panels — a newer
       // compile is superseding (coalesce keys) or the session is tearing

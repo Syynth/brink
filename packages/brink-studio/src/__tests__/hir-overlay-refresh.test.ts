@@ -176,6 +176,7 @@ describe("DocumentSessions HIR overlay refresh on compile delivery", () => {
     // no user edit.
     setMockHirProjection(JSON.stringify(PROJECTION));
     documents.triggerCompile();
+    await new Promise((r) => setTimeout(r, 0)); // W4: async compile landing
 
     const marks = markEls(view);
     expect(marks).toHaveLength(1);
@@ -236,6 +237,7 @@ describe("DocumentSessions HIR overlay refresh on view mount", () => {
     // refresh loop finds nothing to refresh.
     setMockHirProjection(JSON.stringify(PROJECTION));
     docs.triggerCompile();
+    await new Promise((r) => setTimeout(r, 0)); // W4: async compile landing
 
     // A passive load never compiles again, and no edit happens — the mount
     // itself must self-serve the missed refresh.
@@ -262,6 +264,7 @@ describe("DocumentSessions HIR overlay refresh on view mount", () => {
     // skips it (the refresh is dropped, not queued).
     setMockHirProjection(JSON.stringify(PROJECTION));
     docs.triggerCompile();
+    await new Promise((r) => setTimeout(r, 0)); // W4: async compile landing
 
     // Remount reuses the cached EditorState (content unchanged), so the
     // overlay field's create() never re-runs — without the mount refresh the
