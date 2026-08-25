@@ -274,6 +274,7 @@
 .brink-studio .tok-namespace { color: var(--bs-syn-namespace); }
 .brink-studio .tok-function { color: var(--bs-syn-function); }
 .brink-studio .tok-variable { color: var(--bs-syn-variable); }
+.brink-studio .tok-property { color: var(--bs-syn-property); }
 .brink-studio .tok-string { color: var(--bs-syn-string); }
 .brink-studio .tok-number { color: var(--bs-syn-number); }
 .brink-studio .tok-keyword { color: var(--bs-syn-keyword); font-weight: 600; }

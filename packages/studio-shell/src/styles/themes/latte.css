@@ -27,6 +27,7 @@
   --ctp-peach: #fe640b;
   --ctp-pink: #ea76cb;
   --ctp-flamingo: #dd7878;
+  --ctp-maroon: #e64553;
 
   /* ── Surfaces & chrome ──────────────────────────────────────────── */
   --bs-editor-bg: var(--ctp-base);
@@ -67,7 +68,10 @@
   --bs-syn-keyword: var(--ctp-mauve);
   --bs-syn-namespace: var(--ctp-mauve);
   --bs-syn-function: var(--ctp-blue);
-  --bs-syn-variable: var(--ctp-text);
+  /* Bindings read differently from prose (author feedback 2026-08-25) —
+     see the mocha twin's note. */
+  --bs-syn-variable: var(--ctp-maroon);
+  --bs-syn-property: var(--ctp-maroon);
   --bs-syn-string: var(--ctp-green);
   --bs-syn-number: var(--ctp-peach);
   --bs-syn-operator: var(--ctp-teal);
