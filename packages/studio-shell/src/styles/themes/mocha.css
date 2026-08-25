@@ -29,6 +29,7 @@
   --ctp-peach: #fab387;
   --ctp-pink: #f5c2e7;
   --ctp-flamingo: #f2cdcd;
+  --ctp-maroon: #eba0ac;
 
   /* ── Surfaces & chrome ──────────────────────────────────────────── */
   --bs-editor-bg: var(--ctp-base); /* editor, deepest background */
@@ -69,7 +70,13 @@
   --bs-syn-keyword: var(--ctp-mauve);
   --bs-syn-namespace: var(--ctp-mauve);
   --bs-syn-function: var(--ctp-blue);
-  --bs-syn-variable: var(--ctp-text);
+  /* Bindings must read differently from prose (author feedback 2026-08-25):
+     Catppuccin's own guide maps variables to `text`, but in a prose-first
+     language prose IS `text` — an interpolated `{binding}` was visually
+     indistinguishable from the dialogue around it. Maroon: warm, unused by
+     any other token, clearly non-prose without shouting. */
+  --bs-syn-variable: var(--ctp-maroon);
+  --bs-syn-property: var(--ctp-maroon);
   --bs-syn-string: var(--ctp-green);
   --bs-syn-number: var(--ctp-peach);
   --bs-syn-operator: var(--ctp-sky);
