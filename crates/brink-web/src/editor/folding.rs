@@ -66,38 +66,14 @@ impl EditorSession {
         // fold runs from a garbled tree; route to the native-CST-aware
         // `line_context` siblings instead.
         if self.fold_runs_enabled {
-            let ctx = if self.session.is_native(file_id) {
-                self.session
-                    .syntax_root_native(file_id)
-                    .map(|root| match self.session.dialect() {
-                        Some(dialect) => {
-                            brink_ide::line_context::line_contexts_with_dialect_native(
-                                source,
-                                &root,
-                                &projection,
-                                dialect,
-                            )
-                        }
-                        None => brink_ide::line_context::line_contexts_native(
-                            source,
-                            &root,
-                            &projection,
-                        ),
-                    })
-            } else {
-                self.session
-                    .syntax_root(file_id)
-                    .map(|root| match self.session.dialect() {
-                        Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
-                            source,
-                            &root,
-                            &projection,
-                            dialect,
-                        ),
-                        None => brink_ide::line_context::line_contexts(source, &root, &projection),
-                    })
-            };
-            if let Some(ctx) = ctx {
+            // #3064 B5: the per-line classification comes from the
+            // ASSEMBLED per-segment db query (#3064 B3) — dialect and
+            // native/ink dispatch live db-side, an edit reclassifies the
+            // edited knot's fragment only, and this pass stops pulling
+            // the whole-file parse. (Before B5 this block recomputed
+            // whole-file `line_contexts` from scratch on every call —
+            // the duplicate of exactly the work B3 memoized.)
+            if let Some(ctx) = self.session.line_contexts(file_id) {
                 ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
                     &projection,
                     source,

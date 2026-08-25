@@ -24,6 +24,20 @@ impl LineIndex {
         }
     }
 
+    /// The text of 0-based `line` (no trailing newline), `None` past the
+    /// end. O(1) via the line table — added (#3064 B5) to replace an
+    /// accidental O(file) `split('\n').nth(line)` in folding's per-span
+    /// gather-anchor check (O(n^2) across a file's gather spans).
+    #[must_use]
+    pub fn line_text(&self, line: u32) -> Option<&str> {
+        let start = *self.line_starts.get(line as usize)? as usize;
+        let end = self
+            .line_starts
+            .get(line as usize + 1)
+            .map_or(self.source.len(), |next| (*next as usize).saturating_sub(1));
+        self.source.get(start..end)
+    }
+
     /// Convert a byte offset to a 0-based `(line, utf16_col)` pair.
     pub fn line_col(&self, offset: TextSize) -> (u32, u32) {
         let offset = u32::from(offset);
