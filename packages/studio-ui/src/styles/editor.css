@@ -250,8 +250,11 @@
    uppercase went with the 2026-08-23 "literal whitespace" ruling; the
    classes remain the styling hooks. */
 .brink-studio .cm-line.brink-character {
-  font-weight: 700;
-  color: var(--bs-accent);
+  /* Theme-tunable (ruling 2026-08-25): Manuscript renders cues as plain
+     prose (--bs-cue: fg, weight 400); the fallbacks keep the classic
+     bold-accent look everywhere else. */
+  font-weight: var(--bs-cue-weight, 700);
+  color: var(--bs-cue, var(--bs-accent));
 }
 .brink-studio .cm-line.brink-parenthetical {
   font-style: italic;
@@ -275,6 +278,14 @@
 .brink-studio .tok-function { color: var(--bs-syn-function); }
 .brink-studio .tok-variable { color: var(--bs-syn-variable); }
 .brink-studio .tok-property { color: var(--bs-syn-property); }
+/* Role tokens (theme ruling 2026-08-25): narrative structure markers,
+   flow movement, and the halt words each have their own token so the
+   Manuscript/Inky themes can color by what a mark DOES. Fallbacks keep
+   the pre-split look in any theme that doesn't define them (markers and
+   diverts were operators; END/DONE were keywords). */
+.brink-studio .tok-marker { color: var(--bs-syn-marker, var(--bs-syn-operator)); }
+.brink-studio .tok-divert { color: var(--bs-syn-divert, var(--bs-syn-operator)); }
+.brink-studio .tok-halt { color: var(--bs-syn-halt, var(--bs-syn-keyword)); }
 .brink-studio .tok-string { color: var(--bs-syn-string); }
 .brink-studio .tok-number { color: var(--bs-syn-number); }
 .brink-studio .tok-keyword { color: var(--bs-syn-keyword); font-weight: 600; }

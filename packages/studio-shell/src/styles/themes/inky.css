@@ -1,0 +1,87 @@
+/* Inky (theme ruling 2026-08-25) — a faithful port of Inky's default
+   light editor colors, read from the app's own stylesheets: all flow
+   (declarations, diverts, choice bullets/labels/brackets, gathers, glue,
+   INCLUDE/EXTERNAL) in pure blue; all logic (VAR/LIST declarations, ~
+   lines, {} inline logic) in green; comments #84756c; tags #AAA; black
+   prose on white. Chrome stays a neutral light shell — Inky's own chrome
+   is plain grey/white, so the latte-adjacent values below read the same
+   without hardcoding component colors.
+
+   A FULL sheet (like latte): mocha sits underneath every data-theme, so
+   a light theme must replace everything. */
+
+.brink-studio[data-theme="inky"] {
+  /* ── Surfaces & chrome ──────────────────────────────────────────── */
+  --bs-editor-bg: #ffffff;
+  --bs-surface-bg: #f2f2f2;
+  --bs-panel-bg: #ebebeb; /* Inky's gutter grey */
+  --bs-fg: #111111;
+  --bs-fg-muted: #737373;
+  --bs-border: #d0d0d0;
+  --bs-accent: #1a53d8; /* chrome-legible cousin of the token blue */
+  --bs-on-accent: #ffffff;
+  --bs-hover-bg: #e2e2e2;
+  --bs-list-active-bg: #e8e8e8;
+  --bs-scrim: rgb(0 0 0 / 0.3);
+  --bs-shadow: rgb(0 0 0 / 0.16);
+  --bs-shadow-strong: rgb(0 0 0 / 0.22);
+
+  /* ── Severity & story status ────────────────────────────────────── */
+  --bs-error: #c22132;
+  --bs-warning: #c07a12;
+  --bs-todo: #b98a1a; /* Inky highlights TODO as a goldenrod band */
+  --bs-todo-band: #d9b968;
+  --bs-todo-ink: #2a2130;
+  --bs-success: #1d8348;
+  --bs-info: #1a53d8;
+
+  /* ── Story symbols ──────────────────────────────────────────────── */
+  --bs-symbol-file: #1a53d8;
+  --bs-symbol-knot: #0000ff;
+  --bs-symbol-stitch: #0000ff;
+  --bs-symbol-function: #008000;
+
+  /* ── Syntax: flow blue, logic green — Inky's two-family system ──── */
+  --bs-syn-namespace: #0000ff;
+  --bs-syn-function: #0000ff;
+  --bs-syn-label: #0000ff;
+  --bs-syn-divert: #0000ff;
+  --bs-syn-marker: #0000ff;
+  --bs-syn-halt: #0000ff;
+  --bs-syn-keyword: #008000;
+  --bs-syn-operator: #008000;
+  --bs-syn-variable: #008000;
+  --bs-syn-property: #008000;
+  --bs-syn-number: #008000;
+  --bs-syn-enum: #008000;
+  --bs-syn-parameter: #008000;
+  --bs-syn-string: #008000;
+  --bs-syn-comment: #84756c;
+  --bs-syn-decorator: #aaaaaa; /* tags */
+
+  /* Inky has no cue concept; cues read as prose. */
+  --bs-cue: var(--bs-fg);
+  --bs-cue-weight: 700;
+
+  /* ── Chromium-88-safe derived colors (#276) ─────────────────────── */
+  --bs-accent-rgb: 26 83 216;
+  --bs-surface-bg-rgb: 242 242 242;
+  --bs-panel-bg-rgb: 235 235 235;
+  --bs-fg-rgb: 17 17 17;
+  --bs-fg-muted-rgb: 115 115 115;
+  --bs-border-rgb: 208 208 208;
+  --bs-error-rgb: 194 33 50;
+  --bs-warning-rgb: 192 122 18;
+  --bs-success-rgb: 29 131 72;
+
+  --bs-active-line-bg: rgb(var(--bs-surface-bg-rgb) / 60%);
+
+  --bs-graph-knot-border: #5b5bec; /* symbol-knot 55% + border */
+  --bs-graph-stitch-border: #6d6df3; /* symbol-stitch 45% + border */
+  --bs-graph-end-border: #c86a75; /* error 55% + border */
+  --bs-graph-expanded-bg: #f4f4f4; /* panel-bg 55% + editor-bg */
+  --bs-graph-current-bg: #c8d4f3; /* accent 18% + panel-bg */
+  --bs-conflict-banner-bg: #e5ddce; /* warning 12% + panel-bg */
+
+  color-scheme: light;
+}

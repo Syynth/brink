@@ -25,6 +25,11 @@ export interface ThemeDescriptor {
 export const BUILTIN_THEMES: readonly ThemeDescriptor[] = [
   { id: "mocha", label: "Catppuccin Mocha" },
   { id: "latte", label: "Catppuccin Latte" },
+  // Theme ruling 2026-08-25 (docs/editor-color-design.md): the
+  // writing-first colorway, plus faithful ports of Inky's two looks.
+  { id: "manuscript", label: "Manuscript" },
+  { id: "inky", label: "Inky" },
+  { id: "inky-dark", label: "Inky Dark" },
 ];
 
 export const THEME_STORAGE_KEY = "brink-studio.theme.v1";

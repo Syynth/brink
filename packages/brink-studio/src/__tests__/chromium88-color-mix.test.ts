@@ -41,7 +41,7 @@ describe("style-source glob sanity", () => {
     const paths = Object.keys(STYLE_SOURCES);
     expect(paths.length).toBeGreaterThan(50);
     expect(paths.some((p) => p.endsWith("studio-ui/src/styles/editor.css"))).toBe(true);
-    expect(Object.keys(THEME_FILES).sort()).toEqual(["latte", "mocha"]);
+    expect(Object.keys(THEME_FILES).sort()).toEqual(["inky", "inky-dark", "latte", "manuscript", "mocha"]);
   });
 });
 
