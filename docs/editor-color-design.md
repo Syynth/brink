@@ -1,9 +1,16 @@
 # Writing-first editor color design
 
-**Status: DRAFT — for maintainer ruling.** Nothing here is implemented;
-the only shipped precursors are the two interim tweaks (content-logic
-delimiters as operators, bindings off the prose color — decision log
-2026-08-25).
+**Status: RULED & IMPLEMENTED** (2026-08-25, decision log "Manuscript
+colorway + Inky themes ship as selectable themes"). The design pass ran
+live over four mockup rounds; the outcome supersedes the options below:
+**option B** — the colorway ships as the selectable "Manuscript" theme
+(existing themes untouched), alongside faithful "Inky" / "Inky Dark"
+ports. The final system is three temperatures: prose as the page's one
+true foreground; hot-red narrative structure markers (`* + [ ] -`) and
+halt words; all other machinery in one tight cool band ordered by
+conceptual distance. Classifier support landed as the `marker` /
+`divert` / `halt` token types. §"Proposed principles" and the options
+below are kept as the record of the deliberation.
 
 ## Motivation
 
