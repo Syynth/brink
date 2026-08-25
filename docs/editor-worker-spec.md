@@ -410,6 +410,25 @@ egresses).
   consumers rewired to it, heap-estimator line, boundary check script.
 - **W4 — the actual worker.** `WorkerTransport`, worker host module,
   boot sequence, crash surface. Real-wasm e2e worker variant.
+  **As landed:** the worker runs the PROJECT-LEVEL road first — compile,
+  outline, story graph, closure, the pulls that carry all the residual
+  main-thread cost — against its own wasm session, kept current by an
+  ordered file/config mutation stream (`ProjectSession.projectQuery`:
+  changed-file contents + the un-replayed config-log suffix flush before
+  every worker query; the scheduler's mutations-before-queries ordering
+  makes the flush safe by construction). Doc-scoped queries stay
+  in-process until the W5 flip, which owns doc-id replication /
+  DocHandle-async. The host semantics are `SessionHostCore`, extracted
+  from and shared with `LocalTransport` — the two transports cannot
+  drift. Feature-detected end to end: no `Worker` global, a bundler
+  that cannot process the `new URL` worker pattern, boot failure, or a
+  crash all fall back to the in-process road (crash = reject in-flight,
+  never retry the worker this session). Enabled by
+  `MountStudioOptions.workerSession` / the playground's `?worker=1`;
+  default stays off until W5. The e2e discriminator: the main thread's
+  wasm perf registry records ZERO `ide.compile` in worker mode while
+  the story still runs from landed compile bytes — with a control test
+  pinning the same counter nonzero without the flag.
 - **W5 — flip + delete.** Worker transport becomes the default in studio
   and desktop; the synchronous session on the main thread is no longer
   constructed outside the classifier + player; the migration allowlist in

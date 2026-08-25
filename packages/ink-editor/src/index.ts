@@ -344,8 +344,11 @@ export {
   QueryFailedError,
 } from "./worker/session-client.js";
 export type { QueryHandle, QueryOptions, QueryResult } from "./worker/session-client.js";
-export { LocalTransport } from "./worker/local-transport.js";
+export { LocalTransport, jsonRoundTrip } from "./worker/local-transport.js";
 export type { SessionServerLike } from "./worker/local-transport.js";
+export { SessionHostCore } from "./worker/session-host.js";
+export { WorkerTransport, createSessionWorker } from "./worker/worker-transport.js";
+export type { WorkerLike } from "./worker/worker-transport.js";
 export type { SessionTransport } from "./worker/transport.js";
 export { AdmissionScheduler } from "./worker/scheduler.js";
 export type { SchedulerAction } from "./worker/scheduler.js";

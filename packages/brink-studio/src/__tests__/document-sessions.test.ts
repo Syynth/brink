@@ -708,12 +708,15 @@ describe("DocumentSessions", () => {
         { onCompileResult: (r) => results.push(r) },
       );
       try {
+        // W4: triggerCompile rides the async facade — flush the landing.
         h.documents.triggerCompile();
         h.documents.triggerCompile(); // cached + reference-equal → collapsed
+        await new Promise((r) => setTimeout(r, 0));
         expect(results).toHaveLength(1);
 
         h.project.getSession().updateFile("main.ink", "-> END\n");
         h.documents.triggerCompile();
+        await new Promise((r) => setTimeout(r, 0));
         expect(results).toHaveLength(2);
       } finally {
         h.cleanup();
@@ -737,6 +740,7 @@ describe("DocumentSessions", () => {
       );
       try {
         h.documents.triggerCompile();
+        await new Promise((r) => setTimeout(r, 0));
         expect(results).toEqual([
           { ok: false, warnings: [], error: "entry file not found in session: ghost.ink" },
         ]);

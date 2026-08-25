@@ -504,10 +504,16 @@ export class DocumentSessions {
   /**
    * Compile the project now and deliver the result through onCompileResult.
    * Views push their content on every change, so the session is current.
+   * Rides the async session facade (W4 — the last sync compile caller):
+   * on the worker road this is what keeps even the mount-time compile off
+   * the main thread. A rejected compile (superseded/teardown) delivers
+   * nothing — a newer compile follows.
    */
   triggerCompile(): void {
-    const result = this.project.compileProject();
-    this.deliverCompile(result);
+    void this.project.compileProjectAsync().then(
+      (result) => this.deliverCompile(result),
+      () => {},
+    );
   }
 
   /** Convert the focused view's current line to the given element sigil. */

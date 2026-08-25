@@ -4,9 +4,11 @@
  * Runs the full protocol — scheduler, ordering, coalescing, drops,
  * acks — against a session living on the same thread, dispatching in a
  * microtask so consumers experience the exact asynchrony the worker
- * transport (W4) will have, with none of the worker. This is the
- * strangler substrate: consumers migrate to the async client against
- * this transport with zero behavior change, and W4 swaps the transport.
+ * transport (W4) has, with none of the worker. This is the strangler
+ * substrate: consumers migrate to the async client against this
+ * transport with zero behavior change, and W4 swaps the transport. The
+ * host semantics live in {@link SessionHostCore}, SHARED with the
+ * worker host — the two transports cannot drift.
  *
  * Every envelope is JSON round-tripped (`JSON.parse(JSON.stringify(…))`
  * plus a losslessness check) on the way in AND on the way out. That is
@@ -16,43 +18,32 @@
  * here, in every unit test, long before a real wire exists.
  */
 
-import type {
-  DocumentId,
-  SessionEditSpan,
-  SessionRequest,
-  SessionResponse,
-} from "@brink/wasm-types";
-import { AdmissionScheduler } from "./scheduler.js";
+import type { SessionRequest, SessionResponse } from "@brink/wasm-types";
+import { SessionHostCore, type SessionServerLike } from "./session-host.js";
 import type { SessionTransport } from "./transport.js";
 
-/**
- * The server-side surface the transport dispatches to. Structurally a
- * subset of `EditorSessionHandle` (`@brink-lang/web`): the two mutation
- * entry points are named; every `query`/`config`/`files` method is
- * dispatched dynamically by name against the same object.
- */
-export interface SessionServerLike {
-  updateDocument(doc: DocumentId, source: string): unknown;
-  applyEditsDocument?(doc: DocumentId, edits: readonly SessionEditSpan[]): boolean;
-  configEpoch?(): number;
-}
+export type { SessionServerLike } from "./session-host.js";
 
 export class LocalTransport implements SessionTransport {
-  private readonly scheduler = new AdmissionScheduler();
+  private readonly core: SessionHostCore;
   private onResponse: ((response: SessionResponse) => void) | null = null;
   private drainScheduled = false;
   private closed = false;
 
-  constructor(private readonly server: SessionServerLike) {}
+  constructor(server: SessionServerLike) {
+    this.core = new SessionHostCore(server, (response) => {
+      this.onResponse?.(jsonRoundTrip(response, "response"));
+    });
+  }
 
   post(request: SessionRequest): void {
     if (this.closed) throw new Error("LocalTransport is closed");
-    this.scheduler.enqueue(jsonRoundTrip(request, "request"));
+    this.core.accept(jsonRoundTrip(request, "request"));
     if (!this.drainScheduled) {
       this.drainScheduled = true;
       queueMicrotask(() => {
         this.drainScheduled = false;
-        this.drain();
+        this.core.drain();
       });
     }
   }
@@ -64,115 +55,19 @@ export class LocalTransport implements SessionTransport {
   close(): void {
     this.closed = true;
     this.onResponse = null;
+    this.core.stop();
   }
-
-  private drain(): void {
-    for (;;) {
-      if (this.closed) return;
-      const action = this.scheduler.nextAction();
-      if (action === null) return;
-      if (action.kind === "drop") {
-        this.respond({
-          kind: "error",
-          id: action.request.id,
-          message: `dropped:${action.reason}`,
-        });
-        continue;
-      }
-      this.dispatch(action.request);
-    }
-  }
-
-  private dispatch(request: SessionRequest): void {
-    switch (request.kind) {
-      case "edit": {
-        const applied = this.server.applyEditsDocument?.(request.doc, request.edits) ?? false;
-        this.respond({
-          kind: "ack",
-          doc: request.doc,
-          docVersion: request.docVersion,
-          applied,
-        });
-        return;
-      }
-      case "push": {
-        // `updateDocument` returns a change spec on an applied push and
-        // null on a refused one (read-only target, unknown handle).
-        const spec = this.server.updateDocument(request.doc, request.source);
-        this.respond({
-          kind: "ack",
-          doc: request.doc,
-          docVersion: request.docVersion,
-          applied: spec !== null,
-        });
-        return;
-      }
-      case "config":
-      case "files": {
-        // Fire-and-forget mutations. A returned value (e.g. config
-        // warnings from `applyProjectConfig`) or a thrown error flows
-        // back as an event — mutations have no request id to answer.
-        const { method, args } = request.op;
-        try {
-          const value = callByName(this.server, method, args);
-          if (value !== undefined) {
-            this.respond({ kind: "event", event: { type: "mutationResult", method, value } });
-          }
-        } catch (error) {
-          this.respond({
-            kind: "event",
-            event: { type: "mutationError", method, message: describe(error) },
-          });
-        }
-        return;
-      }
-      case "query": {
-        try {
-          const value = callByName(this.server, request.method, request.args);
-          this.respond({
-            kind: "result",
-            id: request.id,
-            ...(request.doc !== undefined &&
-            this.scheduler.latestDocVersion(request.doc) !== undefined
-              ? { docVersion: this.scheduler.latestDocVersion(request.doc) }
-              : {}),
-            configEpoch: this.server.configEpoch?.() ?? 0,
-            value: value ?? null,
-          });
-        } catch (error) {
-          this.respond({ kind: "error", id: request.id, message: describe(error) });
-        }
-        return;
-      }
-      case "cancel":
-        // Fully handled inside the scheduler at enqueue time.
-        return;
-    }
-  }
-
-  private respond(response: SessionResponse): void {
-    this.onResponse?.(jsonRoundTrip(response, "response"));
-  }
-}
-
-function callByName(server: SessionServerLike, method: string, args: unknown[]): unknown {
-  const fn = (server as unknown as Record<string, unknown>)[method];
-  if (typeof fn !== "function") {
-    throw new Error(`unknown session method: ${method}`);
-  }
-  return (fn as (...a: unknown[]) => unknown).apply(server, args);
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
  * Serialize + parse, then verify losslessness. Throws `TypeError` on any
  * payload JSON cannot carry faithfully — the transport-level enforcement
- * of the spec's JSON-safety contract.
+ * of the spec's JSON-safety contract. Shared with `WorkerTransport`
+ * (postMessage's structured clone is more permissive than JSON, and the
+ * §5.4 native-transport contract is JSON — so the stricter check applies
+ * on every transport).
  */
-function jsonRoundTrip<T>(value: T, label: string): T {
+export function jsonRoundTrip<T>(value: T, label: string): T {
   const parsed: unknown = JSON.parse(JSON.stringify(value));
   if (!jsonEqual(value, parsed)) {
     throw new TypeError(
