@@ -23,6 +23,8 @@ import { FileChangeHub, type FileChange, type FileConflict } from "./file-change
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
 import { withPerfTiming } from "./perf/wasm-proxy.js";
 import { perfSpan } from "./perf/probe.js";
+import { LocalTransport } from "./worker/local-transport.js";
+import { SessionClient } from "./worker/session-client.js";
 
 // The config filename `discoverProjectConfig`'s walk-up looks for (mirrors
 // `brink_project_config::CONFIG_FILE_NAME` — see crates/internal/brink-project-config/src/lib.rs).
@@ -190,6 +192,22 @@ export class ProjectSession {
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
   /**
+   * The async session facade (docs/editor-worker-spec.md, W2a) — today a
+   * `LocalTransport` over the same in-process session, so async consumers
+   * get the worker transport's exact semantics with zero behavior change;
+   * W4 swaps the transport. Owned here so every consumer of this project
+   * shares one client (one doc-version space, one scheduler).
+   */
+  private readonly client: SessionClient;
+  /**
+   * The one in-flight project compile (spec §6: compile coalesces to one
+   * in flight). Client-side dedup — two views debouncing into
+   * {@link compileProjectAsync} at the same generation share this promise
+   * instead of queueing a second identical query.
+   */
+  private pendingCompile: { generation: number; promise: Promise<CompileResult> } | null =
+    null;
+  /**
    * Idle handles this class has scheduled via {@link deferGatedCall} —
    * `renameFile`'s yield below, and (issue #2794 review) `studio-ui`'s
    * `runGatedStructuralOp` for the symbol-menu `moveStitch`/`promoteStitch`/
@@ -213,6 +231,7 @@ export class ProjectSession {
     // DocHandles and panel pulls share this instance); it is a pass-through
     // branch per call while the probe is disabled (the production state).
     this.session = withPerfTiming(options.session ?? new EditorSessionHandle());
+    this.client = new SessionClient(new LocalTransport(this.session));
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
     this.onProjectConfigWarnings = options.onProjectConfigWarnings;
@@ -777,6 +796,55 @@ export class ProjectSession {
   }
 
   /**
+   * {@link compileProject} through the async session facade (W2a) — the
+   * road the diagnostics extension rides so the compile stops occupying
+   * the caller's turn. Same generation cache; additionally dedups
+   * concurrent callers onto one in-flight query.
+   *
+   * The cache entry is keyed by the generation captured at *issue* time.
+   * If a mutation lands between issue and execution, the entry is keyed
+   * one generation early — a caller at the newer generation then misses
+   * the cache and compiles again, so the mis-key costs one extra compile,
+   * never a stale hit (a hit requires an exact generation match).
+   */
+  compileProjectAsync(): Promise<CompileResult> {
+    const generation = this.session.generation;
+    if (this.lastCompile !== null && this.lastCompile.generation === generation) {
+      perfSpan("project.compileProject.cacheHit")();
+      return Promise.resolve(this.lastCompile.result);
+    }
+    if (this.pendingCompile !== null && this.pendingCompile.generation === generation) {
+      return this.pendingCompile.promise;
+    }
+    const end = perfSpan("project.compileProject");
+    const promise = this.client
+      .query<CompileResult>("compileProject", [this.getEntryFile()], {
+        priority: "background",
+      })
+      .promise.then(
+        (result) => {
+          end();
+          if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
+          this.lastCompile = { generation, result: result.value };
+          return result.value;
+        },
+        (error: unknown) => {
+          end();
+          if (this.pendingCompile?.promise === promise) this.pendingCompile = null;
+          throw error;
+        },
+      );
+    this.pendingCompile = { generation, promise };
+    return promise;
+  }
+
+  /** The async session facade (docs/editor-worker-spec.md §5.2) — the
+   *  surface later migration waves move onto. One client per project. */
+  sessionClient(): SessionClient {
+    return this.client;
+  }
+
+  /**
    * Report that `path`'s session content changed: provider write-back plus
    * a "modified" record on the change hub (host egress). Every mutation
    * path lands here — the CM6 edit flush calls it directly; bulk edits go
@@ -1107,6 +1175,10 @@ export class ProjectSession {
       reject(new Error("ProjectSession destroyed while a gated call was deferred"));
     }
     this.pendingIdleWork.clear();
+    // Rejects every in-flight client query (as cancelled) BEFORE the wasm
+    // handle is freed — same freed-wasm discipline as the idle-work sweep
+    // above: an async landing must never dispatch into a freed session.
+    this.client.close();
     this.session.free();
   }
 

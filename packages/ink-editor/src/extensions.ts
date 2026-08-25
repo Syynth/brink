@@ -36,7 +36,9 @@ import { hirOverlayExtension } from "./hir-overlay.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 
 export interface BrinkStudioOptions {
-  compile: (source: string) => CompileResult;
+  /** Sync or async (W2a — the studio rides the async session facade);
+   *  see `DiagnosticsOptions.compile` for the async landing contract. */
+  compile: (source: string) => CompileResult | Promise<CompileResult>;
   getSemanticTokens: (source: string) => SemanticToken[];
   /** Classifier-only token source for the keystroke path in large
    *  documents (#3064 micro) — see `HighlightOptions.getSemanticTokensFast`. */
