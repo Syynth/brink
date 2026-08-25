@@ -29,7 +29,7 @@ async function mainThreadCounters(page: Page): Promise<Counters> {
 }
 
 test("worker mode compiles off the main thread and still lands results", async ({ page }) => {
-  await page.goto("/?fixture=screenplay&worker=1");
+  await page.goto("/?fixture=screenplay"); // worker road is the DEFAULT since the W5 flip
   await page.waitForSelector(".cm-content");
 
   // Type into the editor so at least one full debounce->compile->fan-out
@@ -56,8 +56,8 @@ test("worker mode compiles off the main thread and still lands results", async (
   expect(counters["ide.projectOutline"]).toBeUndefined();
 });
 
-test("without the flag the compile still runs in-process (control)", async ({ page }) => {
-  await page.goto("/?fixture=screenplay");
+test("worker=0 forces the in-process road (control)", async ({ page }) => {
+  await page.goto("/?fixture=screenplay&worker=0");
   await page.waitForSelector(".cm-content");
   await expect
     .poll(async () => (await mainThreadCounters(page))["ide.compile"]?.count ?? 0, {
