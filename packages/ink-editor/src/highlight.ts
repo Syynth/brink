@@ -28,6 +28,11 @@ export interface HighlightOptions {
    *  documents (#3064 micro) — no analysis pull; refined colors land on
    *  the deferred refresh. Optional: absent means always refined. */
   getSemanticTokensFast?: (source: string) => SemanticToken[];
+  /** Async warm-up for the refined token pull (W2b): runs before the
+   *  deferred refresh dispatches, so the field's synchronous rebuild
+   *  assembles from warm slices instead of paying the pull on the
+   *  dispatch stack. See `DeferredPrepare`. */
+  prepareRefined?: () => Promise<unknown> | undefined;
   getTokenTypeNames: () => string[];
 }
 
@@ -111,5 +116,12 @@ export function highlightExtension(options: HighlightOptions): Extension {
     },
     provide: (f) => EditorView.decorations.from(f),
   });
-  return [field, deferredRefresh(refreshHighlightEffect)];
+  return [
+    field,
+    deferredRefresh(
+      refreshHighlightEffect,
+      120,
+      options.prepareRefined ? () => options.prepareRefined?.() : undefined,
+    ),
+  ];
 }
