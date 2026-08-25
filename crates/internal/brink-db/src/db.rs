@@ -396,6 +396,28 @@ impl ProjectDb {
         ))
     }
 
+    /// [`segment_semantic_tokens_slice`](Self::segment_semantic_tokens_slice)'s
+    /// classifier-only sibling (#3064 micro): never pulls the symbol
+    /// index or resolutions — the keystroke path's source, refined by
+    /// the deferred refresh.
+    pub fn segment_semantic_tokens_slice_fast(
+        &self,
+        id: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::semantic_tokens::RawToken>> {
+        let (file, owned, i) = self.segment_by_key(id, key)?;
+        Some(
+            crate::queries::segments::segment_semantic_tokens_slice_with(
+                &self.salsa,
+                self.project,
+                file,
+                &owned,
+                i,
+                true,
+            ),
+        )
+    }
+
     fn segment_by_key(
         &self,
         id: FileId,

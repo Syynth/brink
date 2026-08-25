@@ -184,6 +184,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<segments::file_resolution_kinds_query>()
                 .ingredient::<segments::segment_resolution_kinds_query>()
                 .ingredient::<segments::segment_semantic_tokens_query>()
+                .ingredient::<segments::segment_semantic_tokens_classifier_query>()
                 .ingredient::<segments::semantic_tokens_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()

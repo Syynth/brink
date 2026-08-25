@@ -228,7 +228,14 @@ export class DocHandle {
     return out;
   }
 
-  semanticTokens(): SemanticToken[] {
+  /**
+   * Whole-document semantic tokens. `fast: true` (the keystroke path)
+   * serves any UNCACHED segment from the classifier-only slice — no
+   * analysis pull, tokens marked unrefined so a later refined fetch
+   * replaces them; `fast: false` (initial build, deferred refresh)
+   * fetches refined slices and caches them as final.
+   */
+  semanticTokens(fast = false): SemanticToken[] {
     const manifest = this.segmentManifest();
     if (manifest === null) return this.session.getSemanticTokensDoc(this.id);
     const out: SemanticToken[] = [];
@@ -237,10 +244,22 @@ export class DocHandle {
       live.add(seg.key);
       let entry = this.segSlices.get(seg.key);
       if (!entry?.tokens) {
-        const slice = this.session.getSegmentSemanticTokensDoc?.(this.id, seg.key) ?? null;
-        if (slice === null) return this.session.getSemanticTokensDoc(this.id);
-        entry = { ...entry, tokens: slice };
-        this.segSlices.set(seg.key, entry);
+        const refined = fast
+          ? null
+          : (this.session.getSegmentSemanticTokensDoc?.(this.id, seg.key) ?? null);
+        if (refined !== null) {
+          entry = { ...entry, tokens: refined };
+          this.segSlices.set(seg.key, entry);
+        } else if (fast) {
+          const quick = this.session.getSegmentSemanticTokensFastDoc?.(this.id, seg.key) ?? null;
+          if (quick === null) return this.session.getSemanticTokensDoc(this.id);
+          // Deliberately NOT cached as final: the next non-fast call
+          // (the deferred refresh) fetches and caches the refined slice.
+          for (const t of quick) out.push({ ...t, line: t.line + seg.ownedFrom });
+          continue;
+        } else {
+          return this.session.getSemanticTokensDoc(this.id);
+        }
       }
       // Cached token lines are segment-relative; rebase by the CURRENT
       // manifest position (this is what makes shift edits free).

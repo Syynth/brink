@@ -101,6 +101,37 @@ impl EditorSession {
         }
     }
 
+    /// The classifier-only sibling of
+    /// [`segment_semantic_tokens_doc`](Self::segment_semantic_tokens_doc)
+    /// (#3064 micro): identical shape, no index/resolve pull — the
+    /// keystroke path's source while the deferred refresh fetches the
+    /// refined slice.
+    pub fn segment_semantic_tokens_fast_doc(&self, doc: u32, key: &str) -> String {
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        let Some(file_id) = self.session.file_id(&state.path) else {
+            return "null".to_owned();
+        };
+        let Some(slice) = self
+            .session
+            .segment_semantic_tokens_slice_fast(file_id, key)
+        else {
+            return "null".to_owned();
+        };
+        let tokens: Vec<TokenJs> = slice
+            .iter()
+            .map(|t| TokenJs {
+                line: t.line,
+                start_char: t.start_char,
+                length: t.length,
+                token_type: t.token_type,
+                modifiers: t.modifiers,
+            })
+            .collect();
+        serde_json::to_string(&tokens).unwrap_or_else(|_| "null".to_owned())
+    }
+
     /// One manifest segment's owned semantic-token slice, token lines
     /// relative to the segment's owned start (#3064 option A); `"null"`
     /// for a stale key.

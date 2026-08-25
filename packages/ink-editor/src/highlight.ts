@@ -1,7 +1,14 @@
 import { docString } from "./doc-string";
-import { type Extension, RangeSetBuilder } from "@codemirror/state";
+import {
+  type EditorState,
+  type Extension,
+  RangeSetBuilder,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView } from "@codemirror/view";
 import type { SemanticToken } from "@brink/wasm-types";
+import { DEFER_LINE_THRESHOLD, deferredRefresh } from "./deferred-refresh.js";
 import { perfTime } from "./perf/probe.js";
 
 const decoCache = new Map<string, Decoration>();
@@ -17,6 +24,10 @@ function getDecoForType(typeName: string): Decoration {
 
 export interface HighlightOptions {
   getSemanticTokens: (source: string) => SemanticToken[];
+  /** Classifier-only token source for the keystroke path in large
+   *  documents (#3064 micro) — no analysis pull; refined colors land on
+   *  the deferred refresh. Optional: absent means always refined. */
+  getSemanticTokensFast?: (source: string) => SemanticToken[];
   getTokenTypeNames: () => string[];
 }
 
@@ -66,17 +77,39 @@ function buildHighlightDecorations(
   return builder.finish();
 }
 
+const refreshHighlightEffect = StateEffect.define<void>();
+
 export function highlightExtension(options: HighlightOptions): Extension {
   const typeNames = options.getTokenTypeNames();
 
-  return EditorView.decorations.compute(["doc"], (state) => {
-    return perfTime("cm.highlight.decorations", () =>
+  const build = (state: EditorState, fast: boolean): DecorationSet =>
+    perfTime("cm.highlight.decorations", () =>
       buildHighlightDecorations(
         docString(state),
         state.doc,
         typeNames,
-        options.getSemanticTokens,
+        fast && options.getSemanticTokensFast
+          ? options.getSemanticTokensFast
+          : options.getSemanticTokens,
       ),
     );
+
+  // #3064 micro: in a LARGE document the keystroke rebuild uses the
+  // CLASSIFIER token source (fragment-fresh positions and base kinds, no
+  // analysis pull — the last synchronous analysis consumer leaves the
+  // keystroke path); the deferred refresh swaps in resolution-refined
+  // colors once the doc goes quiet. Small documents build refined
+  // synchronously as before.
+  const field = StateField.define<DecorationSet>({
+    create(state) {
+      return build(state, false);
+    },
+    update(value, tr) {
+      if (tr.effects.some((e) => e.is(refreshHighlightEffect))) return build(tr.state, false);
+      if (!tr.docChanged) return value;
+      return build(tr.state, tr.newDoc.lines >= DEFER_LINE_THRESHOLD);
+    },
+    provide: (f) => EditorView.decorations.from(f),
   });
+  return [field, deferredRefresh(refreshHighlightEffect)];
 }

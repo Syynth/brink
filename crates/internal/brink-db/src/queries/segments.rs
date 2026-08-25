@@ -689,6 +689,30 @@ pub(crate) fn segment_semantic_tokens_query<'db>(
     )))
 }
 
+/// One segment's CLASSIFIER-ONLY semantic tokens (#3064 micro): the
+/// same fragment walk as [`segment_semantic_tokens_query`] with an
+/// empty resolution-kind map — project-INDEPENDENT, so pulling it never
+/// forces the symbol index or resolution pass. The keystroke path
+/// serves the edited knot from this query and lets the deferred refresh
+/// swap in the resolution-refined slice (~120 ms later); identifiers
+/// whose color depends on resolution briefly render with the
+/// classifier's default in the edited knot only.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_semantic_tokens_classifier_query<'db>(
+    db: &'db dyn salsa::Database,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<Vec<brink_ir::semantic_tokens::RawToken>> {
+    let _ = file;
+    let text = segment.text(db);
+    let parse = brink_syntax::parse(text);
+    let root = parse.syntax();
+    let kinds = std::collections::BTreeMap::new();
+    super::NoEqArc(Arc::new(brink_ir::semantic_tokens::tokens_with_kinds(
+        text, &root, &kinds,
+    )))
+}
+
 /// The assembled whole-file semantic tokens (#3064 B4). Assembly is
 /// per-line: each file line's tokens come from the segment that OWNS the
 /// line (the same trivia-prefix ownership rule as line contexts), with
@@ -838,13 +862,31 @@ pub(crate) fn segment_semantic_tokens_slice(
     owned: &OwnedLines<'_>,
     i: usize,
 ) -> Vec<brink_ir::semantic_tokens::RawToken> {
+    segment_semantic_tokens_slice_with(db, project, file, owned, i, false)
+}
+
+/// [`segment_semantic_tokens_slice`] with a source selector:
+/// `classifier_only` swaps in the project-independent classifier query —
+/// no index/resolve pull — for the keystroke-synchronous path.
+pub(crate) fn segment_semantic_tokens_slice_with(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    owned: &OwnedLines<'_>,
+    i: usize,
+    classifier_only: bool,
+) -> Vec<brink_ir::semantic_tokens::RawToken> {
     let sl = &owned.segments[i];
     let owned_from = sl.owned_from;
     let owned_to = owned.owned_to(i);
     let mut out: Vec<brink_ir::semantic_tokens::RawToken> = Vec::new();
 
     let push_from = |sl: &SegmentLines<'_>, merge_boundary_only: bool, out: &mut Vec<_>| {
-        let tokens = &segment_semantic_tokens_query(db, project, file, sl.seg).0;
+        let tokens = if classifier_only {
+            &segment_semantic_tokens_classifier_query(db, file, sl.seg).0
+        } else {
+            &segment_semantic_tokens_query(db, project, file, sl.seg).0
+        };
         for t in tokens.iter() {
             let file_line = sl.seg_start_line + t.line as usize;
             let in_window = file_line >= owned_from && file_line < owned_to;

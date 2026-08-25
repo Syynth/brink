@@ -470,6 +470,17 @@ impl IdeSession {
         self.db.segment_line_contexts_slice(file, key)
     }
 
+    /// Classifier-only token slice passthrough (#3064 micro) — never
+    /// pulls index/resolve; the deferred refresh swaps in the refined
+    /// slice.
+    pub fn segment_semantic_tokens_slice_fast(
+        &self,
+        file: FileId,
+        key: &str,
+    ) -> Option<Vec<brink_ir::semantic_tokens::RawToken>> {
+        self.db.segment_semantic_tokens_slice_fast(file, key)
+    }
+
     /// Outbound-delta token slice passthrough (#3064 option A).
     pub fn segment_semantic_tokens_slice(
         &self,

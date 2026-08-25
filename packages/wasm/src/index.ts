@@ -620,6 +620,20 @@ export class EditorSessionHandle {
   }
 
   /**
+   * Classifier-only sibling of {@link getSegmentSemanticTokensDoc}
+   * (#3064 micro): no resolution refinement, no analysis pull — the
+   * keystroke path's source; the deferred refresh swaps in the refined
+   * slice.
+   */
+  getSegmentSemanticTokensFastDoc(doc: DocumentId, key: string): SemanticToken[] | null {
+    const raw = (
+      this.session as { segment_semantic_tokens_fast_doc?: (d: DocumentId, k: string) => string }
+    ).segment_semantic_tokens_fast_doc;
+    if (typeof raw !== "function") return null;
+    return JSON.parse(raw.call(this.session, doc, key)) as SemanticToken[] | null;
+  }
+
+  /**
    * One manifest segment's owned semantic-token slice, token lines RELATIVE
    * to the segment's owned start; `null` on a stale key.
    */
