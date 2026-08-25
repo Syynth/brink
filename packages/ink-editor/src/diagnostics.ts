@@ -5,7 +5,16 @@ import type { CompileResult } from "@brink/wasm-types";
 import { perfSpan, perfTime } from "./perf/probe.js";
 
 export interface DiagnosticsOptions {
-  compile: (source: string) => CompileResult;
+  /**
+   * Produce a project compile for the current source. May be synchronous
+   * or async (W2a of `docs/editor-worker-spec.md` — the studio wiring
+   * rides the async session facade); an async result lands only if the
+   * document hasn't changed since it was requested (a change reschedules
+   * a fresh compile anyway) and the view is still alive. A rejected
+   * promise is dropped silently: it means the compile was superseded or
+   * the session is tearing down — a newer compile or unmount follows.
+   */
+  compile: (source: string) => CompileResult | Promise<CompileResult>;
   onCompile?: (result: CompileResult) => void;
   /**
    * Path of the file shown in this editor. A project compile returns
@@ -28,6 +37,11 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
   return ViewPlugin.fromClass(
     class {
       private timeout: ReturnType<typeof setTimeout> | null = null;
+      /** Bumped on every doc change — an async compile landing only
+       *  applies if the doc it compiled is still the doc on screen (a
+       *  change rescheduled a fresh compile that will land after it). */
+      private docGen = 0;
+      private destroyed = false;
 
       constructor(private readonly view: EditorView) {
         // Compile the freshly shown document (initial load / tab switch).
@@ -35,10 +49,14 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
       }
 
       update(update: ViewUpdate): void {
-        if (update.docChanged) this.schedule();
+        if (update.docChanged) {
+          this.docGen += 1;
+          this.schedule();
+        }
       }
 
       destroy(): void {
+        this.destroyed = true;
         this.cancel();
       }
 
@@ -63,8 +81,37 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
 
         const endCycle = perfSpan("cm.diagnostics.compileCycle");
         const source = this.view.state.doc.toString();
-        const result = perfTime("cm.diagnostics.compile", () => options.compile(source));
+        const endCompile = perfSpan("cm.diagnostics.compile");
+        const produced = options.compile(source);
+        if (produced instanceof Promise) {
+          const gen = this.docGen;
+          void produced.then(
+            (result) => {
+              endCompile();
+              // Landing guards (spec §5.3, whole-project class): dead view,
+              // torn-down plugin, or a doc that moved on — a newer compile
+              // is already scheduled/landing in each of those cases.
+              if (this.destroyed || gen !== this.docGen || !this.view.dom.isConnected) {
+                endCycle();
+                return;
+              }
+              this.land(source, result, endCycle);
+            },
+            () => {
+              // Rejection means superseded/cancelled (a newer compile or an
+              // unmount follows) or a compile fault the host already
+              // surfaced through its own channel — nothing to land here.
+              endCompile();
+              endCycle();
+            },
+          );
+          return;
+        }
+        endCompile();
+        this.land(source, produced, endCycle);
+      }
 
+      private land(source: string, result: CompileResult, endCycle: () => void): void {
         // A project compile reports diagnostics for every file; keep only the
         // ones belonging to the file shown here so an INCLUDEd file's errors
         // don't land on this tab at the wrong offsets.

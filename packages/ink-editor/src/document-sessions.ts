@@ -982,7 +982,10 @@ export class DocumentSessions {
         // rejection with, so swallow it rather than surface an unhandled
         // promise rejection at unmount.
         void project.refreshIncludes().catch(() => {});
-        return project.compileProject();
+        // W2a (docs/editor-worker-spec.md): the compile rides the async
+        // session facade — the diagnostics extension awaits and lands it
+        // under its own staleness guards.
+        return project.compileProjectAsync();
       },
       onCompile: (result) => this.deliverCompile(result),
       // No re-push (#14): the source for this transaction was already pushed by
