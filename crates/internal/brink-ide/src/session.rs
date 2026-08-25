@@ -447,6 +447,15 @@ impl IdeSession {
         self.db.line_contexts(file)
     }
 
+    /// The file's assembled semantic tokens (#3064 B4) — per-segment
+    /// memoized on the db road with a range-free resolution-kind seam.
+    pub fn semantic_tokens(
+        &self,
+        file: FileId,
+    ) -> Option<Arc<Vec<brink_ir::semantic_tokens::RawToken>>> {
+        self.db.semantic_tokens(file)
+    }
+
     pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
         // #3064 B2: the db's assembled per-segment projection replaces the
         // session-level wipe-on-every-edit cache — a keystroke inside one

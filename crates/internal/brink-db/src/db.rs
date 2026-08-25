@@ -308,6 +308,20 @@ impl ProjectDb {
         ))
     }
 
+    /// The file's assembled semantic tokens (#3064 B4) — per-segment
+    /// memoized for ink with a range-free resolution-kind seam, so both
+    /// shift edits and unrelated-content edits leave untouched segments'
+    /// token memos validated. Whole-file for native.
+    pub fn semantic_tokens(
+        &self,
+        id: FileId,
+    ) -> Option<Arc<Vec<brink_ir::semantic_tokens::RawToken>>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::semantic_tokens_query(&self.salsa, self.project, file).0,
+        ))
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()

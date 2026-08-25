@@ -120,7 +120,7 @@ mod heap_size;
 mod segments;
 
 pub(crate) use segments::{
-    FileSegment, file_segments_query, line_contexts_query, projection_query,
+    FileSegment, file_segments_query, line_contexts_query, projection_query, semantic_tokens_query,
 };
 
 pub use analysis::ResolvedProject;
@@ -174,6 +174,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<segments::projection_query>()
                 .ingredient::<segments::segment_line_contexts_query>()
                 .ingredient::<segments::line_contexts_query>()
+                .ingredient::<segments::file_resolution_kinds_query>()
+                .ingredient::<segments::segment_resolution_kinds_query>()
+                .ingredient::<segments::segment_semantic_tokens_query>()
+                .ingredient::<segments::semantic_tokens_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-

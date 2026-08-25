@@ -70,28 +70,12 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let (Some(analysis), Some(source)) =
-            (self.session.analysis(), self.session.source(file_id))
-        else {
+        // #3064 B4: the assembled per-segment db query — the native/ink
+        // frontend dispatch (#2280) and the identity join both live
+        // db-side now, and an edit re-tokenizes the edited knot's
+        // fragment only.
+        let Some(raw) = self.session.semantic_tokens(file_id) else {
             return "[]".to_owned();
-        };
-
-        // A native (`.brink`) file's real CST is a distinct tree from the
-        // ink one `syntax_root` always returns (issue #2280) — routing a
-        // native file through the ink classifier reproduces the exact bug
-        // this dispatch exists to fix: `struct`/`Cue`/`speaker`/... all
-        // reading as a plain `variable`, and string literals shredded on
-        // every character ink's tokenizer treats as significant.
-        let raw = if self.session.is_native(file_id) {
-            let Some(root) = self.session.syntax_root_native(file_id) else {
-                return "[]".to_owned();
-            };
-            brink_ide::semantic_tokens::semantic_tokens_native(source, &root, analysis, file_id)
-        } else {
-            let Some(root) = self.session.syntax_root(file_id) else {
-                return "[]".to_owned();
-            };
-            brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id)
         };
 
         let tokens: Vec<TokenJs> = raw

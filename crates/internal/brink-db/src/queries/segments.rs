@@ -653,6 +653,171 @@ pub(crate) fn line_contexts_query(
     super::NoEqArc(Arc::new(out))
 }
 
+// ─── Per-segment semantic tokens (#3064 B4) ──────────────────────────
+
+/// The file's absolute range-keyed resolution-kind map — one pass over
+/// `resolutions_index` filtered to this file. Cheap, re-executed per
+/// edit; the per-segment CUTOFF lives one query down.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn file_resolution_kinds_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<std::collections::BTreeMap<(u32, u32), u32>> {
+    use brink_ir::hir::projection::range_key;
+    let resolved = super::resolutions_index_query(db, project);
+    let file_id = file.file_id(db);
+    let mut map = std::collections::BTreeMap::new();
+    for rref in &resolved.resolutions {
+        if rref.file == file_id
+            && let Some(info) = resolved.index.symbols.get(&rref.target)
+        {
+            map.insert(range_key(rref.range), info.kind.to_u32());
+        }
+    }
+    super::NoEqArc(Arc::new(map))
+}
+
+/// One segment's FRAGMENT-RELATIVE resolution-kind map — the range-free
+/// backdating seam (the FG-3 `call_site_metas` pattern): this query
+/// re-executes every edit (it reads the file map and the segment's
+/// tracked offset), but for a segment whose content and resolutions
+/// didn't change the OUTPUT is bit-identical, so
+/// [`segment_semantic_tokens_query`] backdates and never re-walks the
+/// fragment. `Vec<(start, end, kind)>` rather than a map: the payload
+/// needs `salsa::Update`, which std tuples/Vecs carry.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn segment_resolution_kinds_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> Vec<(u32, u32, u32)> {
+    let map = &file_resolution_kinds_query(db, project, file).0;
+    let start = segment.offset(db);
+    let end = start + u32::try_from(segment.text(db).len()).unwrap_or(u32::MAX);
+    map.range((start, 0)..(end, u32::MAX))
+        .filter(|((_, e), _)| *e <= end)
+        .map(|((s, e), kind)| (s - start, e - start, *kind))
+        .collect()
+}
+
+/// One segment's semantic tokens, fragment-relative positions (#3064
+/// B4): fragment parse + the stateless token classifier against the
+/// fragment-relative kind map. Backdates across shift edits AND
+/// unrelated-content edits via the seam above.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_semantic_tokens_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<Vec<brink_ir::semantic_tokens::RawToken>> {
+    let text = segment.text(db);
+    let parse = brink_syntax::parse(text);
+    let root = parse.syntax();
+    let kinds: std::collections::BTreeMap<(u32, u32), brink_ir::SymbolKind> =
+        segment_resolution_kinds_query(db, project, file, segment)
+            .iter()
+            .filter_map(|(s, e, k)| brink_ir::SymbolKind::from_u32(*k).map(|k| ((*s, *e), k)))
+            .collect();
+    super::NoEqArc(Arc::new(brink_ir::semantic_tokens::tokens_with_kinds(
+        text, &root, &kinds,
+    )))
+}
+
+/// The assembled whole-file semantic tokens (#3064 B4). Assembly is
+/// per-line: each file line's tokens come from the segment that OWNS the
+/// line (the same trivia-prefix ownership rule as line contexts), with
+/// the line number rebased by the owner's start line. Two boundary
+/// refinements for a segment whose cut sits mid-line:
+///
+/// - the owner's fragment sees the line WITHOUT the prefix before the
+///   cut, so its tokens on fragment line 0 get their columns shifted by
+///   the cut's column;
+/// - the PRECEDING segment's fragment holds the prefix's tokens for that
+///   same line (its truncated last line), so a boundary line merges
+///   both sources — prefix tokens first (columns already correct), then
+///   the owner's rebased line-0 tokens, preserving column order.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn semantic_tokens_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<Vec<brink_ir::semantic_tokens::RawToken>> {
+    let source = file.text(db);
+
+    if super::file_language(file.path(db)) != super::Language::Ink {
+        // Native: whole-file walk against the absolute kind map.
+        let parse = super::parse_native_query(db, file);
+        let kinds: std::collections::BTreeMap<(u32, u32), brink_ir::SymbolKind> =
+            file_resolution_kinds_query(db, project, file)
+                .0
+                .iter()
+                .filter_map(|((s, e), k)| brink_ir::SymbolKind::from_u32(*k).map(|k| ((*s, *e), k)))
+                .collect();
+        return super::NoEqArc(Arc::new(
+            brink_ir::semantic_tokens::tokens_with_kinds_native(source, &parse.syntax(), &kinds),
+        ));
+    }
+
+    let mut line_starts: Vec<u32> = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+    }
+    let line_of = |offset: u32| -> usize {
+        match line_starts.binary_search(&offset) {
+            Ok(l) => l,
+            Err(next) => next - 1,
+        }
+    };
+
+    let segs = file_segments_query(db, file);
+    // (owned_from_line, seg_start_line, cut_col) per segment.
+    let mut seg_lines: Vec<(usize, usize, u32)> = Vec::with_capacity(segs.len());
+    for seg in segs {
+        let start = seg.offset(db);
+        let l = line_of(start);
+        let prefix = &source[line_starts[l] as usize..start as usize];
+        // Token columns are UTF-16 code units (the LSP wire unit
+        // `emit_token`'s LineIndex produces), NOT bytes — a BOM is three
+        // bytes but one unit.
+        let cut_col = u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX);
+        let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
+        seg_lines.push((if only_trivia { l } else { l + 1 }, l, cut_col));
+    }
+
+    let mut out: Vec<brink_ir::semantic_tokens::RawToken> = Vec::new();
+    for (i, seg) in segs.iter().enumerate() {
+        let tokens = &segment_semantic_tokens_query(db, project, file, *seg).0;
+        let (owned_from, seg_start_line, cut_col) = seg_lines[i];
+        let owned_to = seg_lines
+            .get(i + 1)
+            .map_or(usize::MAX, |(next_from, _, _)| *next_from);
+        // The boundary line a mid-line cut leaves with the PRECEDING
+        // segment still gets this segment's rebased line-0 tokens merged
+        // in (the prefix's own tokens came from the preceding fragment).
+        let merge_boundary = owned_from > seg_start_line;
+        for t in tokens.iter() {
+            let file_line = seg_start_line + t.line as usize;
+            let owned = file_line >= owned_from && file_line < owned_to;
+            let boundary = merge_boundary && t.line == 0;
+            if !(owned || boundary) {
+                continue;
+            }
+            let mut t = t.clone();
+            t.line = u32::try_from(file_line).unwrap_or(u32::MAX);
+            if t.line as usize == seg_start_line {
+                t.start_char += cut_col;
+            }
+            out.push(t);
+        }
+    }
+    super::NoEqArc(Arc::new(out))
+}
+
 #[cfg(test)]
 mod tests {
     use salsa::plumbing::AsId;
@@ -828,6 +993,28 @@ Gamma body.
             assert_eq!(
                 *assembled_contexts, oracle_contexts,
                 "line contexts diverged: {label}"
+            );
+        }
+
+        // Semantic-token parity (#3064 B4): the assembled per-segment
+        // tokens must equal the whole-file walk with the identity join.
+        {
+            use brink_ir::hir::projection::range_key;
+            let analysis = db.analysis();
+            let mut kinds = std::collections::BTreeMap::new();
+            for rref in &analysis.resolutions {
+                if rref.file == id
+                    && let Some(info) = analysis.index.symbols.get(&rref.target)
+                {
+                    kinds.insert(range_key(rref.range), info.kind);
+                }
+            }
+            let root = brink_syntax::parse(source).syntax();
+            let oracle_tokens = brink_ir::semantic_tokens::tokens_with_kinds(source, &root, &kinds);
+            let assembled_tokens = db.semantic_tokens(id).expect("tokens");
+            assert_eq!(
+                *assembled_tokens, oracle_tokens,
+                "semantic tokens diverged: {label}"
             );
         }
 
