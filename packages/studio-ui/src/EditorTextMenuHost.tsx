@@ -13,6 +13,7 @@ import { useRef, type ReactElement } from "react";
 import { ensureToolWindowOpen, useShell } from "@brink/studio-shell";
 import type { EditorTextMenuRequest } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+import { saveEditorSettings } from "./SettingsDocument.js";
 import { useContextMenuDismiss } from "./BinderContextMenu.js";
 
 interface TextMenuItem {
@@ -44,6 +45,10 @@ function EditorTextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const { layout } = useShell();
   useContextMenuDismiss(menuRef, closeTextMenu);
+  const formGlyph = useStudioStore((s) => s.formGlyph);
+  const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
+  const showGutters = useStudioStore((s) => s.showGutters);
+  const setShowGutters = useStudioStore((s) => s.setShowGutters);
 
   // Group order per the context-menu spec: Navigate · Rename · Text.
   const identity = textMenu.identity;
@@ -85,6 +90,20 @@ function EditorTextMenu({
     { label: "Copy", shortcut: "⌘C", disabled: !textMenu.hasSelection, run: textMenu.copy },
     { label: "Paste", shortcut: "⌘V", run: textMenu.paste },
     { label: "Select All", shortcut: "⌘A", run: textMenu.selectAll },
+    // View toggle (below the edit group's separator): mirrors the Settings
+    // checkbox, persisting through the same editor-settings payload.
+    {
+      label: showGutters ? "Hide Gutters" : "Show Gutters",
+      shortcut: "",
+      run: () => {
+        setShowGutters(!showGutters);
+        saveEditorSettings(window.localStorage, {
+          formGlyph,
+          autoOpenForm,
+          showGutters: !showGutters,
+        });
+      },
+    },
   ];
 
   return (
@@ -130,7 +149,7 @@ function EditorTextMenu({
       {contextItems.length > 0 && <div className="brink-context-menu-separator" />}
       {textItems.map((item, i) => (
         <div key={item.label} role="presentation">
-          {i === 3 && <div className="brink-context-menu-separator" />}
+          {(i === 3 || i === 4) && <div className="brink-context-menu-separator" />}
           <div
             role="menuitem"
             aria-disabled={item.disabled || undefined}

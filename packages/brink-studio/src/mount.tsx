@@ -1209,6 +1209,7 @@ export async function mountStudio(
   {
     const editor = loadEditorSettings(window.localStorage);
     store.getState().setFormGlyph(editor.formGlyph);
+    store.getState().setShowGutters(editor.showGutters);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,

@@ -17,11 +17,19 @@ export interface EditorSlice {
   formGlyph: FormGlyphMode;
   /** Auto-open the Form on accepting a function completion (Settings). */
   autoOpenForm: boolean;
+  /** Editor gutters (line numbers, structure rails, fold/play markers) —
+   *  Settings + editor context menu. Rendering-only: `App` mirrors it as a
+   *  root class the stylesheet acts on; no CM reconfiguration. Besides the
+   *  visual preference, hiding gutters removes a WebKit layout cost that
+   *  scales with visible gutter elements (#3119), so it doubles as the
+   *  interim latency escape hatch on large projects in the desktop app. */
+  showGutters: boolean;
 
   setCursor(line: number, col: number): void;
   setLineInfo(info: LineInfo | null, hints: KeyHint[]): void;
   setFormGlyph(mode: FormGlyphMode): void;
   setAutoOpenForm(on: boolean): void;
+  setShowGutters(on: boolean): void;
 }
 
 export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> = (set, get) => ({
@@ -30,6 +38,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   currentLineHints: [],
   formGlyph: "off",
   autoOpenForm: false,
+  showGutters: true,
 
   setCursor(line, col) {
     set({ cursor: { line, col } });
@@ -47,5 +56,9 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   setAutoOpenForm(on) {
     set({ autoOpenForm: on });
     get()._documents?.setAutoOpen(on);
+  },
+
+  setShowGutters(on) {
+    set({ showGutters: on });
   },
 });

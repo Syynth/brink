@@ -116,9 +116,16 @@ export type FormGlyphMode = "off" | "hover" | "inline";
 export interface EditorSettings {
   formGlyph: FormGlyphMode;
   autoOpenForm: boolean;
+  /** Editor gutters (line numbers, rails, fold/play). Default ON; also the
+   *  interim WebKit latency escape hatch on large projects (#3119). */
+  showGutters: boolean;
 }
 
-const DEFAULT_EDITOR: EditorSettings = { formGlyph: "off", autoOpenForm: false };
+const DEFAULT_EDITOR: EditorSettings = {
+  formGlyph: "off",
+  autoOpenForm: false,
+  showGutters: true,
+};
 
 /** Load persisted editor settings. Never throws; defaults on garbage. */
 export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSettings {
@@ -135,9 +142,18 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
   } catch {
     return DEFAULT_EDITOR;
   }
-  const obj = parsed as { formGlyph?: unknown; autoOpenForm?: unknown } | null;
+  const obj = parsed as {
+    formGlyph?: unknown;
+    autoOpenForm?: unknown;
+    showGutters?: unknown;
+  } | null;
   const glyph = obj?.formGlyph === "hover" || obj?.formGlyph === "inline" ? obj.formGlyph : "off";
-  return { formGlyph: glyph, autoOpenForm: obj?.autoOpenForm === true };
+  return {
+    formGlyph: glyph,
+    autoOpenForm: obj?.autoOpenForm === true,
+    // Default ON: only an explicit false (a persisted opt-out) hides them.
+    showGutters: obj?.showGutters !== false,
+  };
 }
 
 /** Persist editor settings. Storage failures degrade to in-session. */
@@ -269,16 +285,23 @@ function EditorSection() {
   const setFormGlyph = useStudioStore((s) => s.setFormGlyph);
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
   const setAutoOpenForm = useStudioStore((s) => s.setAutoOpenForm);
+  const showGutters = useStudioStore((s) => s.showGutters);
+  const setShowGutters = useStudioStore((s) => s.setShowGutters);
   const selectId = useId();
   const autoId = useId();
+  const guttersId = useId();
 
   const onGlyphChange = (mode: FormGlyphMode): void => {
     setFormGlyph(mode);
-    saveEditorSettings(window.localStorage, { formGlyph: mode, autoOpenForm });
+    saveEditorSettings(window.localStorage, { formGlyph: mode, autoOpenForm, showGutters });
   };
   const onAutoChange = (on: boolean): void => {
     setAutoOpenForm(on);
-    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm: on });
+    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm: on, showGutters });
+  };
+  const onGuttersChange = (on: boolean): void => {
+    setShowGutters(on);
+    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm, showGutters: on });
   };
 
   return (
@@ -312,6 +335,18 @@ function EditorSection() {
             style={{ marginRight: 8 }}
           />
           Open the form when accepting a function completion
+        </label>
+      </div>
+      <div className="settings-field">
+        <label htmlFor={guttersId}>
+          <input
+            id={guttersId}
+            type="checkbox"
+            checked={showGutters}
+            onChange={(event) => onGuttersChange(event.target.checked)}
+            style={{ marginRight: 8 }}
+          />
+          Show editor gutters (line numbers, structure rails, fold/play markers)
         </label>
       </div>
     </section>

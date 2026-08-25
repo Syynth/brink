@@ -302,6 +302,15 @@
 .brink-studio .brink-hir-occurrence-def {
   background: rgb(var(--bs-accent-rgb) / 28%);
 }
+/* Gutter visibility toggle (Settings / editor context menu). display:none
+   removes the gutters from layout entirely — besides the visual
+   preference, this eliminates the WebKit per-gutter-element layout cost
+   (#3119: ~36ms -> ~8ms forced layout on a real project), making it the
+   interim latency escape hatch in the desktop app. */
+.brink-studio.brink-gutters-hidden .cm-gutters {
+  display: none;
+}
+
 /* WebKit layout pathology (2026-08-25): a percent-height inline-flex
    wrapper in every gutter element cost ~1 ms PER MARKER on every forced
    layout in WebKit (~110 ms/keystroke on a real project; Chromium was
