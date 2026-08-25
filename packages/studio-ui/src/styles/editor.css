@@ -302,10 +302,33 @@
 .brink-studio .brink-hir-occurrence-def {
   background: rgb(var(--bs-accent-rgb) / 28%);
 }
+/* Gutter visibility toggle (Settings / editor context menu). display:none
+   removes the gutters from layout entirely — besides the visual
+   preference, this eliminates the WebKit per-gutter-element layout cost
+   (#3119: ~36ms -> ~8ms forced layout on a real project), making it the
+   interim latency escape hatch in the desktop app. */
+.brink-studio.brink-gutters-hidden .cm-gutters {
+  display: none;
+}
+
+/* WebKit layout pathology (2026-08-25): a percent-height inline-flex
+   wrapper in every gutter element cost ~1 ms PER MARKER on every forced
+   layout in WebKit (~110 ms/keystroke on a real project; Chromium was
+   unaffected). The wrapper is now an in-flow spacer whose inline pixel
+   width (set by RailMarker.toDOM) sizes the gutter, and the bars live in
+   an absolutely-positioned layer spanning the gutter element's height —
+   same visuals, no percent-height resolution per layout. */
+.brink-studio .brink-hir-rail-gutter .cm-gutterElement {
+  position: relative;
+}
 .brink-studio .brink-hir-rails {
-  display: inline-flex;
+  display: inline-block;
+}
+.brink-studio .brink-hir-rails-bars {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
   gap: 2px;
-  height: 100%;
   align-items: stretch;
   padding: 0 2px;
 }

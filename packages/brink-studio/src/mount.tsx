@@ -572,7 +572,7 @@ export async function mountStudio(
     // hand-driven console sessions: the probe report + wasm counters +
     // the worker bundle + the #2885 compile probe, in one place.
     (globalThis as Record<string, unknown>).__brinkPerf = {
-      report: () => perfReport(),
+      report: (worstCount?: number) => perfReport(worstCount ?? 25),
       reset: () => {
         perfReset();
         perfBridge.resetWorker?.();
@@ -1209,6 +1209,7 @@ export async function mountStudio(
   {
     const editor = loadEditorSettings(window.localStorage);
     store.getState().setFormGlyph(editor.formGlyph);
+    store.getState().setShowGutters(editor.showGutters);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,

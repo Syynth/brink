@@ -79,6 +79,7 @@ export {
   SETTINGS_TYPE_ID,
   SettingsDocument,
   loadDiagnosticsSettings,
+  EDITOR_STORAGE_KEY,
   loadEditorSettings,
   registerSettingsCommand,
   saveDiagnosticsSettings,

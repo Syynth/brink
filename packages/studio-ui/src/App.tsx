@@ -23,6 +23,7 @@ import { QuickOpen } from "./QuickOpen.js";
 import { NewFilePrompt } from "./NewFilePrompt.js";
 import { SearchCommands } from "./SearchView.js";
 import { ConflictMergeView } from "./ConflictMergeView.js";
+import { useStudioStore } from "./StoreContext.js";
 import type { ReactNode } from "react";
 
 /** `children` render inside the `.brink-studio` root — popup hosts and other
@@ -38,8 +39,18 @@ function App({ children }: { children?: ReactNode }) {
   const rootRef = useRef<HTMLDivElement>(null);
   useTier(rootRef);
 
+  // Gutter visibility (Settings / editor context menu): mirrored as a root
+  // class the stylesheet acts on — no CM reconfiguration, and hiding them
+  // also removes the WebKit per-gutter-element layout cost (#3119).
+  const showGutters = useStudioStore((s) => s.showGutters);
+
   return (
-    <div className="brink-studio" data-tier={tier} data-theme={themeId} ref={rootRef}>
+    <div
+      className={"brink-studio" + (showGutters ? "" : " brink-gutters-hidden")}
+      data-tier={tier}
+      data-theme={themeId}
+      ref={rootRef}
+    >
       <ShellFrame />
       <CommandPalette />
       <QuickOpen />

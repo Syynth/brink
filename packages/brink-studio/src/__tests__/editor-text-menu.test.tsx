@@ -100,6 +100,7 @@ describe("EditorTextMenuHost", () => {
       "Copy⌘C!",
       "Paste⌘V",
       "Select All⌘A",
+      "Hide Gutters",
     ]);
 
     const paste = [...container!.querySelectorAll(".brink-context-menu-item")].find((el) =>
@@ -151,6 +152,7 @@ describe("EditorTextMenuHost", () => {
       "Copy⌘C",
       "Paste⌘V",
       "Select All⌘A",
+      "Hide Gutters",
     ]);
     const g = [...container!.querySelectorAll(".brink-context-menu-item")].find((el) =>
       el.textContent?.startsWith("Go to Definition"),

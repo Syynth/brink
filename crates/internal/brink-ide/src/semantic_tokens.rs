@@ -153,6 +153,52 @@ mod tests {
     }
 
     #[test]
+    fn content_logic_delimiters_classify_as_operator() {
+        // Author feedback (2026-08-25): the `{`/`}` around alternatives,
+        // conditionals, and interpolations — and the `|` between
+        // alternative branches — carried no token, so they rendered in the
+        // prose color and visually merged into dialogue/action text.
+        let src = "VAR mood = 1\nThe lamp {flickers|dims} and glows {mood} bright.\n";
+        let tokens = parse_and_tokens(src);
+        let delimiters: Vec<&RawToken> = tokens
+            .iter()
+            .filter(|t| matches!(token_text(src, t), "{" | "}" | "|"))
+            .collect();
+        assert_eq!(
+            delimiters.len(),
+            5,
+            "expected {{ | }} {{ }} as tokens: {tokens:?}"
+        );
+        assert!(
+            delimiters.iter().all(|t| t.token_type == TT_OPERATOR),
+            "content-logic delimiters must classify as operator: {delimiters:?}"
+        );
+    }
+
+    #[test]
+    fn native_content_logic_delimiters_classify_as_operator() {
+        // The native mirror of the ink case above: interpolation braces in
+        // a flow's prose line get the operator classification too.
+        let src =
+            "var mood: int = 1\nflow main() {\n    The lamp glows {mood} bright.\n    -> DONE\n}\n";
+        let tokens = analyzed_native_tokens(src);
+        let prose_line = 2u32;
+        let braces: Vec<&RawToken> = tokens
+            .iter()
+            .filter(|t| t.line == prose_line && matches!(token_text(src, t), "{" | "}"))
+            .collect();
+        assert_eq!(
+            braces.len(),
+            2,
+            "expected the interpolation braces: {tokens:?}"
+        );
+        assert!(
+            braces.iter().all(|t| t.token_type == TT_OPERATOR),
+            "native interpolation braces must classify as operator: {braces:?}"
+        );
+    }
+
+    #[test]
     fn field_access_segments_are_not_coloured_as_the_head_variable() {
         // Issue #1571: the `ResolvedRef` for `p.x` is recorded against the
         // *whole* path (a load-bearing contract pinned by #1561), so the
