@@ -61,7 +61,7 @@ async function mountHarness(applied: Applied[]) {
   return { documents, view, dispose };
 }
 
-function openMenu(view: EditorView): HTMLElement {
+async function openMenu(view: EditorView): Promise<HTMLElement> {
   // Run the Ctrl-. / Cmd-. keymap the way CM6 dispatches it (jsdom does not
   // route a raw keydown through the keymap facet). `runScopeHandlers` is CM6's
   // public entry for exactly this — same technique as extract-actions.test.ts.
@@ -70,6 +70,9 @@ function openMenu(view: EditorView): HTMLElement {
     new KeyboardEvent("keydown", { key: ".", ctrlKey: true }),
     "editor",
   );
+  // W2c: the wasm action pull rides the async session facade — the menu
+  // opens when the pull lands, a task later.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   const menu = document.querySelector<HTMLElement>(".brink-code-actions-menu");
   if (menu === null) throw new Error(`code-actions menu not opened (handled=${handled})`);
   return menu;
@@ -97,7 +100,7 @@ describe("onApplyStructural refusal reachability (#2578)", () => {
     const applied: Applied[] = [];
     const { view, dispose } = await mountHarness(applied);
 
-    const menu = openMenu(view);
+    const menu = await openMenu(view);
     menuItem(menu, "Mock quickfix").click();
 
     expect(applied).toHaveLength(1);
@@ -125,7 +128,7 @@ describe("onApplyStructural refusal reachability (#2578)", () => {
     const to = DOC.indexOf("-> END");
     view.dispatch({ selection: EditorSelection.single(from, to) });
 
-    const menu = openMenu(view);
+    const menu = await openMenu(view);
     menuItem(menu, "Extract to knot").click();
     const input = promptInput();
     // Naming the extraction after the file's existing "opening" knot triggers

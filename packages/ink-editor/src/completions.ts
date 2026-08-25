@@ -144,7 +144,11 @@ export function toCompletionOption(
 }
 
 export interface CompletionsOptions {
-  getCompletions: (source: string, offset: number) => CompletionItem[];
+  /** Sync or async (W2c of `docs/editor-worker-spec.md` — the studio
+   *  wiring rides the async session facade). CM6's autocompletion
+   *  natively awaits a promise-returning source and discards abandoned
+   *  requests, so no extra staleness handling is needed here. */
+  getCompletions: (source: string, offset: number) => CompletionItem[] | Promise<CompletionItem[]>;
   /** Auto-import (#312 F): ensure the current file `INCLUDE`s the symbol's
    *  source file on accepting an out-of-scope completion. Optional — without
    *  it, out-of-scope rows still insert the symbol but add no INCLUDE. */
@@ -154,26 +158,32 @@ export interface CompletionsOptions {
 export function completionsExtension(options: CompletionsOptions): Extension {
   return autocompletion({
     override: [
-      (ctx: CompletionContext): CompletionResult | null => {
+      (ctx: CompletionContext): CompletionResult | null | Promise<CompletionResult | null> => {
         const word = ctx.matchBefore(/[\w.]+/);
         if (!word && !ctx.explicit) return null;
 
         const from = word ? word.from : ctx.pos;
         const source = ctx.state.doc.toString();
 
-        let items: CompletionItem[];
+        const build = (items: CompletionItem[]): CompletionResult | null => {
+          if (items.length === 0) return null;
+          return {
+            from,
+            options: items.map((item) => toCompletionOption(item, options.autoImport)),
+          };
+        };
+
+        let produced: CompletionItem[] | Promise<CompletionItem[]>;
         try {
-          items = options.getCompletions(source, ctx.pos);
+          produced = options.getCompletions(source, ctx.pos);
         } catch {
           return null;
         }
-
-        if (items.length === 0) return null;
-
-        return {
-          from,
-          options: items.map((item) => toCompletionOption(item, options.autoImport)),
-        };
+        if (produced instanceof Promise) {
+          // A rejected pull (superseded/teardown) reads as "no completions".
+          return produced.then(build, () => null);
+        }
+        return build(produced);
       },
     ],
   });

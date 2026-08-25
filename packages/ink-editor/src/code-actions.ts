@@ -6,7 +6,11 @@ import { registerDismissible } from "./dismiss-registry.js";
 
 export interface CodeActionsOptions {
   /** Actions available at `offset` (cursor). Resolved + applied via `onSelect`. */
-  getCodeActions: (source: string, offset: number) => CodeAction[];
+  /** Sync or async (W2c of `docs/editor-worker-spec.md`). An async
+   *  result opens the menu only if the document and cursor held still
+   *  while it was in flight; a rejected pull contributes no actions
+   *  (selection-derived extract actions still show). */
+  getCodeActions: (source: string, offset: number) => CodeAction[] | Promise<CodeAction[]>;
   /**
    * Extra, selection-derived actions merged ahead of `getCodeActions` — the
    * synthetic "Extract to knot/function" entries (#315 H) when there is a
@@ -193,16 +197,43 @@ export function codeActionsExtension(options: CodeActionsOptions): Extension {
               // ignore — fall through to cursor actions
             }
           }
-          try {
-            actions.push(...options.getCodeActions(source, pos));
-          } catch {
+
+          const open = (wasmActions: CodeAction[]): boolean => {
+            actions.push(...wasmActions);
             if (actions.length === 0) return false;
+            view.plugin(codeActionsMenu)?.open(actions, pos);
+            return true;
+          };
+
+          let produced: CodeAction[] | Promise<CodeAction[]>;
+          try {
+            produced = options.getCodeActions(source, pos);
+          } catch {
+            produced = [];
           }
-
-          if (actions.length === 0) return false;
-
-          view.plugin(codeActionsMenu)?.open(actions, pos);
-          return true;
+          if (produced instanceof Promise) {
+            const doc = view.state.doc;
+            void produced.then(
+              (wasmActions) => {
+                // The menu anchors at `pos` — open it only if the doc and
+                // cursor held still while the pull was in flight.
+                if (!view.dom.isConnected) return;
+                if (view.state.doc !== doc) return;
+                if (view.state.selection.main.head !== pos) return;
+                open(wasmActions);
+              },
+              () => {
+                if (!view.dom.isConnected || view.state.doc !== doc) return;
+                if (view.state.selection.main.head !== pos) return;
+                open([]); // extract actions alone, matching the sync catch path
+              },
+            );
+            // Claim the keybinding: the menu opens (or silently doesn't)
+            // when the pull lands — async hosts trade the fall-through-on
+            // -empty behavior for an off-thread pull.
+            return true;
+          }
+          return open(produced);
         },
       },
     ]),

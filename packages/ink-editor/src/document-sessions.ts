@@ -33,10 +33,13 @@ import { defaultKeymap } from "@codemirror/commands";
 import type {
   CodeAction,
   CompileResult,
+  CompletionItem,
   DialogueDialect,
   DocumentChangeSpec,
   DocumentSymbol,
+  HoverInfo,
   Location,
+  SignatureInfo,
   StructuralResult,
 } from "@brink/wasm-types";
 import type { ExtractKind } from "./extract-actions.js";
@@ -1016,7 +1019,11 @@ export class DocumentSessions {
         ? (symbol, locations, declaration) =>
             this.callbacks.onShowReferences?.(symbol, locations, declaration)
         : undefined,
-      getCompletions: (_source, offset) => slot.handle?.completions(offset) ?? [],
+      // W2c: interactive queries ride the async facade (interactive
+      // priority — never coalesced or dropped); the sync fallback array
+      // covers a slot whose handle is not live yet.
+      getCompletions: (_source, offset) =>
+        this.interactiveQuery<CompletionItem[]>(slot, "getCompletionsDoc", [offset]) ?? [],
       // Auto-import on completion-accept (#312 F): ensure the current file
       // INCLUDEs an out-of-scope symbol's source file. The wasm op reports
       // reachability and, when the target is not yet reachable, the whole-file
@@ -1050,7 +1057,8 @@ export class DocumentSessions {
         }
         return handle.autoImport(target);
       },
-      getHover: (_source, offset) => slot.handle?.hover(offset) ?? null,
+      getHover: (_source, offset) =>
+        this.interactiveQuery<HoverInfo | null>(slot, "getHoverDoc", [offset]) ?? null,
       gotoDefinition: (_source, offset) => slot.handle?.gotoDefinition(offset) ?? null,
       findReferences: (_source, offset) => slot.handle?.findReferences(offset) ?? [],
       prepareRename: (_source, offset) => slot.handle?.prepareRename(offset) ?? null,
@@ -1079,7 +1087,8 @@ export class DocumentSessions {
             })
         : undefined,
       onRenameBreakage: this.callbacks.onRenameBreakage,
-      getCodeActions: (_source, offset) => slot.handle?.codeActions(offset) ?? [],
+      getCodeActions: (_source, offset) =>
+        this.interactiveQuery<CodeAction[]>(slot, "getCodeActionsDoc", [offset]) ?? [],
       // Code-actions apply seam (#321 studio side): resolve the chosen action's
       // StructuralResult through the slot's handle (doc-relative offset — the
       // doc variant folds any fragment origin), then apply through the host.
@@ -1135,7 +1144,9 @@ export class DocumentSessions {
       getArgumentWidgets: (_source, start, end) => slot.handle?.argumentWidgets(start, end) ?? [],
       argumentFormGlyph: this.formGlyph,
       argumentAutoOpen: this.autoOpen,
-      getSignatureHelp: (_source, offset) => slot.handle?.signatureHelp(offset) ?? null,
+      getSignatureHelp: (_source, offset) =>
+        this.interactiveQuery<SignatureInfo | null>(slot, "getSignatureHelpDoc", [offset]) ??
+        null,
       getFoldingRanges: () => slot.handle?.foldingRanges() ?? [],
       // ── W2b (docs/editor-worker-spec.md): deferred-refresh warm-ups ──
       // Each prepare rides the async session facade with a per-surface
@@ -1157,6 +1168,23 @@ export class DocumentSessions {
         this.prepareQuery(slot, "getArgumentWidgetsDoc", "widgets", [start, end]),
       prepareFoldRanges: () => this.prepareQuery(slot, "getFoldingRangesDoc", "folds", []),
     };
+  }
+
+  /** One interactive query through the async facade (W2c): interactive
+   *  priority — runs after queued mutations but before background pulls,
+   *  never coalesced or dropped. `undefined` (no live handle) tells the
+   *  caller to use its empty sync fallback. */
+  private interactiveQuery<T>(
+    slot: ViewSlot,
+    method: string,
+    args: readonly unknown[],
+  ): Promise<T> | undefined {
+    const id = slot.handle?.id;
+    if (id === undefined) return undefined;
+    return this.project
+      .sessionClient()
+      .query<T>(method, [id, ...args], { priority: "interactive", doc: id })
+      .promise.then((r) => r.value);
   }
 
   /** One deferred-refresh warm-up query (W2b): background priority, a
