@@ -242,6 +242,8 @@ describe("DocumentSessions HIR overlay refresh on view mount", () => {
     // A passive load never compiles again, and no edit happens — the mount
     // itself must self-serve the missed refresh.
     const view = mount(docs, "main.ink", "g1");
+    // W5c: the mount refresh fetches the projection first (async landing).
+    await new Promise((r) => setTimeout(r, 0));
 
     const marks = markEls(view);
     expect(marks).toHaveLength(1);
@@ -270,6 +272,8 @@ describe("DocumentSessions HIR overlay refresh on view mount", () => {
     // overlay field's create() never re-runs — without the mount refresh the
     // blank value cached at unmount would persist until the first edit.
     const view = mount(docs, "main.ink", "g1");
+    // W5c: the mount refresh fetches the projection first (async landing).
+    await new Promise((r) => setTimeout(r, 0));
 
     const marks = markEls(view);
     expect(marks).toHaveLength(1);

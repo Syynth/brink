@@ -1,9 +1,11 @@
 # Editor worker architecture — the split model (option B)
 
-**Status: DRAFT for maintainer review.** Ruled 2026-08-24 (decision log,
-"Editor background architecture: split worker (option B), one architecture
-for web + desktop, spec first"). Nothing in this document is implemented;
-the work items in §12 begin only after this spec is approved.
+**Status: IMPLEMENTED** (W1–W5 landed 2026-08-25; PRs #3102–#3109 plus
+the W5c close-out). Ruled 2026-08-24 (decision log, "Editor background
+architecture: split worker (option B), one architecture for web +
+desktop, spec first"); the doc-road completeness ruling is decision log
+2026-08-25. Sections carry **as-landed** notes where implementation
+refined the plan; §14 records the endgame deltas.
 
 ## 1. Problem
 
@@ -455,3 +457,36 @@ W2. W4+ depend on all of it.
 3. **Desktop `brink-cli` sidecar**: none of this touches it, but D3 export
    flows that currently reuse the in-webview session should be audited in
    W2e for accidental sync-session dependencies.
+
+## 14. As landed (W5c close-out, 2026-08-25)
+
+Two deliberate deltas from the §12 plan, both recorded in the decision
+log:
+
+**The "delete" became a demotion.** §12 W5 planned to stop constructing
+the synchronous session on the main thread. As landed, it SURVIVES with
+two demoted jobs: the CONTENT store + mutation source that feeds the
+worker replica (every mutation dual-writes through the mirror choke
+point), and the complete in-process fallback road — which the fully
+feature-detected worker architecture REQUIRES (no-Worker environments,
+non-vite bundlers, boot failures, crashes all land on it). What the plan
+actually wanted — a main thread that cannot pull analysis on recurring
+paths — is delivered structurally instead: worker-fed stashes serve every
+deferred rebuild (`DocHandle` stashes + the refined-token worker plane,
+dirty-bit guarded so a stash is never served across an edit it predates),
+and the **main-thread analysis boundary guard**
+(`packages/brink-studio/src/__tests__/main-thread-analysis-guard.test.ts`)
+pins every surviving analysis-flavored call site to a documented
+allowlist. Memory-wise the main session's derived state stays
+lowering-grade (nothing pulls its analysis), so the residency is inputs +
+substrate — the class the classifier ruling already accepted.
+
+**One-shots stay main-side, tracked.** Goto-definition, the rename
+family, symbol-tab mount ranges, and search-card highlighting still hit
+the main session — each user-triggered, each INCREMENTAL analysis against
+delta-fed inputs (never compile-class cost), each enrolled in the guard
+with a reason. Migration: issue #3110.
+
+Small documents (< the 1000-line deferral threshold) keep the legacy
+synchronous rebuild road — bounded incremental cost, zero behavior
+change for the mock/test surface; large documents are fully worker-fed.

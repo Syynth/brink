@@ -7,14 +7,14 @@
  * it's imported), so the exported-logic-only unit lives here instead.
  *
  * Reuses the *existing* compile surface — `dispatch("compile.run")` is the
- * same command the Player's Run button dispatches
- * (`registerOpenPlayerCommand` / `PlayerPane`) — rather than adding a second
- * compile road. `ProjectSession.compileProject()` is generation-cached, so
- * this costs nothing extra when nothing has changed since the last compile.
- * `compile.run` runs synchronously all the way down to the store
- * (`triggerCompile` → `deliverCompile` → `setCompileResult`), so
- * `api.getStoryBytes()` reflects THIS compile's outcome the instant
- * `dispatch` returns — no race with a debounced/async compile.
+ * same command the palette runs, so export can never diverge from the
+ * compile road. `ProjectSession.compileProjectAsync()` is generation-cached,
+ * so this costs nothing extra when nothing has changed since the last
+ * compile. Since the worker architecture (W4+), `compile.run` lands its
+ * result ASYNCHRONOUSLY — `exportStoryToInkb` awaits the landing (a
+ * diagnostics/bytes store update after the dispatch) before reading
+ * `api.getStoryBytes()`, bounded by a timeout that surfaces as an export
+ * error rather than a hang.
  */
 
 import type { StudioApi } from "@brink-lang/studio";
@@ -39,7 +39,26 @@ export async function exportStoryToInkb(
   root: string,
   saveDialog: (defaultName: string, bytes: Uint8Array) => Promise<string | null>,
 ): Promise<void> {
+  const before = api.select((s) => s.diagnostics);
+  const bytesBefore = api.getStoryBytes();
   api.dispatch("compile.run");
+  // The compile lands asynchronously (worker road, W4): wait for the store
+  // to reflect THIS compile — either the diagnostics object identity moves
+  // (landCompileResult always replaces it) or the bytes do.
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    if (api.select((s) => s.diagnostics) !== before) break;
+    if (api.getStoryBytes() !== bytesBefore) break;
+    if (Date.now() > deadline) {
+      api.notify({
+        severity: "error",
+        source: "export",
+        message: "Export failed: the compile did not finish in time.",
+      });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
   const bytes = api.getStoryBytes();
   if (bytes === null) {
     const { errors } = api.select((s) => s.diagnostics);

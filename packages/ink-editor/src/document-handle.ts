@@ -12,6 +12,7 @@
 import { Annotation, Facet } from "@codemirror/state";
 import { ClassifierMirror } from "./classifier-mirror.js";
 import type { EditorSessionHandle, SegmentManifest } from "@brink-lang/web";
+import type { SessionClient } from "./worker/session-client.js";
 import type {
   AutoImportResult,
   CodeAction,
@@ -64,6 +65,41 @@ export class DocHandle {
     this.mirror = mirror;
   }
 
+  // ── W5c worker-fed stashes (docs/editor-worker-spec.md §12 W5) ──
+  //
+  // The deferred-refresh warm-ups fetch from the WORKER replica and stash
+  // the results here; the fields' synchronous rebuilds then read the
+  // stash instead of pulling analysis on the main thread. A stash is
+  // served only while clean: any edit marks them dirty, and only a
+  // worker-fed refresh (which fetched against the post-edit state) clears
+  // the bit — so a synchronous small-document rebuild after an edit falls
+  // back to the session road rather than serving stale positions.
+  private stashesDirty = false;
+  private projectionStash: HirProjection | null = null;
+  private hintsStash: InlayHint[] | null = null;
+  private widgetsStash: CallWidgetSite[] | null = null;
+  private foldsStash: FoldRange[] | null = null;
+
+  stashProjection(value: HirProjection): void {
+    this.projectionStash = value;
+    this.stashesDirty = false;
+  }
+
+  stashHints(value: InlayHint[]): void {
+    this.hintsStash = value;
+    this.stashesDirty = false;
+  }
+
+  stashWidgets(value: CallWidgetSite[]): void {
+    this.widgetsStash = value;
+    this.stashesDirty = false;
+  }
+
+  stashFolds(value: FoldRange[]): void {
+    this.foldsStash = value;
+    this.stashesDirty = false;
+  }
+
   constructor(
     private readonly session: EditorSessionHandle,
     /** The wasm document id. */
@@ -106,6 +142,8 @@ export class DocHandle {
     if (spec === null) return;
     this.lastPushed = source;
     this.manifestStale = true;
+    this.stashesDirty = true;
+    this.refinedDirty = true;
     this.mirror?.push(source);
     this.pendingSpec = spec;
     if (this.range !== null) {
@@ -131,6 +169,8 @@ export class DocHandle {
     if (!applier(this.id, edits)) return false;
     this.lastPushed = null;
     this.manifestStale = true;
+    this.stashesDirty = true;
+    this.refinedDirty = true;
     if (this.mirror && !this.mirror.applyEdits(edits)) this.mirror.markDesynced();
     const e = edits[0];
     this.pendingSpec = { path: this.path, start: e.from, end: e.to, text: e.insert };
@@ -269,6 +309,12 @@ export class DocHandle {
    * fetches refined slices and caches them as final.
    */
   semanticTokens(fast = false): SemanticToken[] {
+    if (!fast) {
+      // W5c: the deferred refined rebuild serves from the worker plane
+      // when the warm-up completed against the current text.
+      const refined = this.refinedAssembled();
+      if (refined !== null) return refined;
+    }
     const manifest = this.segmentManifest();
     if (manifest === null) return this.session.getSemanticTokensDoc(this.id);
     const out: SemanticToken[] = [];
@@ -323,8 +369,80 @@ export class DocHandle {
     }
   }
 
-  /** The HIR structural projection (#454): spans + per-line container stack. */
+  // ── W5c refined-token worker plane ──
+  //
+  // A THIRD key plane (worker-replica segment keys — never mixed with the
+  // session plane above or the classifier plane): `refreshRefined`, run
+  // by the deferred-refresh warm-up, fetches the replica's manifest plus
+  // only the changed segments' refined slices, and the synchronous
+  // rebuild assembles from it. Dirty on every edit; only a refresh
+  // (which fetched post-edit state, ordered behind the mirrored edit by
+  // the scheduler) clears it.
+  private refinedManifest: SegmentManifest | null = null;
+  private readonly refinedSlices = new Map<string, SemanticToken[]>();
+  private refinedDirty = true;
+  private refinedEpoch = -1;
+
+  /** Fetch the replica's refined-token state (deferred cadence, bounded:
+   *  manifest + changed slices only). Serves both roads — under the
+   *  no-worker fallback the client is the in-process one and this warms
+   *  and stashes the SAME session's slices. */
+  async refreshRefined(client: SessionClient, configEpoch: number): Promise<void> {
+    if (this.closed || this.isFragment) return;
+    if (configEpoch !== this.refinedEpoch) {
+      this.refinedEpoch = configEpoch;
+      this.refinedSlices.clear();
+      this.refinedManifest = null;
+    }
+    const manifest = await client
+      .query<SegmentManifest | null>("getSegmentManifestDoc", [this.id], {
+        priority: "background",
+        doc: this.id,
+        coalesceKey: `refined-manifest:${this.id}`,
+      })
+      .promise.then((r) => r.value);
+    if (this.closed || manifest === null) return;
+    const live = new Set<string>();
+    for (const seg of manifest.segments) {
+      live.add(seg.key);
+      if (this.refinedSlices.has(seg.key)) continue;
+      const slice = await client
+        .query<SemanticToken[] | null>("getSegmentSemanticTokensDoc", [this.id, seg.key], {
+          priority: "background",
+          doc: this.id,
+        })
+        .promise.then((r) => r.value);
+      if (this.closed) return;
+      if (slice === null) return; // raced an edit — the next refresh retries
+      this.refinedSlices.set(seg.key, slice);
+    }
+    for (const key of this.refinedSlices.keys()) {
+      if (!live.has(key)) this.refinedSlices.delete(key);
+    }
+    this.refinedManifest = manifest;
+    this.refinedDirty = false;
+  }
+
+  /** The refined tokens assembled from the worker plane, or null when the
+   *  plane is dirty/incomplete (caller falls through to its other roads). */
+  private refinedAssembled(): SemanticToken[] | null {
+    if (this.refinedDirty || this.refinedManifest === null) return null;
+    const out: SemanticToken[] = [];
+    for (const seg of this.refinedManifest.segments) {
+      const slice = this.refinedSlices.get(seg.key);
+      if (slice === undefined) return null;
+      for (const t of slice) out.push({ ...t, line: t.line + seg.ownedFrom });
+    }
+    return out;
+  }
+
+  /** The HIR structural projection (#454): spans + per-line container
+   *  stack. Served from the worker-fed stash when clean (W5c); the
+   *  session road remains as the fallback for mocks, small documents,
+   *  and the no-worker environments.
+   *  MAIN-THREAD-ANALYSIS-OK fallback: see the guard's allowlist. */
   hirProjection(): HirProjection {
+    if (this.projectionStash !== null && !this.stashesDirty) return this.projectionStash;
     return this.session.getHirSpansDoc(this.id);
   }
 
@@ -434,11 +552,17 @@ export class DocHandle {
     return this.session.extractToFunction(this.path, start, end, name);
   }
 
+  /** MAIN-THREAD-ANALYSIS-OK fallback: worker-fed stash first (W5c). */
   inlayHints(start: number, end: number): InlayHint[] {
+    if (this.hintsStash !== null && !this.stashesDirty && start === 0) return this.hintsStash;
     return this.session.getInlayHintsDoc(this.id, start, end);
   }
 
+  /** MAIN-THREAD-ANALYSIS-OK fallback: worker-fed stash first (W5c). */
   argumentWidgets(start: number, end: number): CallWidgetSite[] {
+    if (this.widgetsStash !== null && !this.stashesDirty && start === 0) {
+      return this.widgetsStash;
+    }
     return this.session.getArgumentWidgetsDoc(this.id, start, end);
   }
 
@@ -446,7 +570,9 @@ export class DocHandle {
     return this.session.getSignatureHelpDoc(this.id, offset);
   }
 
+  /** MAIN-THREAD-ANALYSIS-OK fallback: worker-fed stash first (W5c). */
   foldingRanges(): FoldRange[] {
+    if (this.foldsStash !== null && !this.stashesDirty) return this.foldsStash;
     return this.session.getFoldingRangesDoc(this.id);
   }
 

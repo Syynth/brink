@@ -3345,3 +3345,11 @@
 - **SCOPE:** architectural
 - **WHAT:** W5 migrates the doc-scoped query road to the session worker as `docs/editor-worker-spec.md` §12 specifies, rather than stopping at the W4 project-road split. The alternative — leaving doc-scoped queries in-process permanently, since they measure single-digit milliseconds behind the classifier — was surfaced explicitly and declined.
 - **WHY:** The program's stated goal is a main thread *structurally unable* to block on project analysis, not one that usually doesn't; leaving a sync analysis road on the main thread leaves the class of regression open forever. Moving it also retires the transitional dual-session residency (the full wasm session leaves the main thread; only the classifier and player remain).
+
+## W5c: the main-thread session demotes to content-store + fallback; a guard replaces the delete
+- **WHEN:** 2026-08-25
+- **PROJECT:** brink
+- **SYSTEM:** editor packages / worker architecture (W5c)
+- **SCOPE:** architectural
+- **WHAT:** The spec's W5 "delete the synchronous main-thread session" lands as a demotion instead: the session survives as the content store feeding the worker replica and as the complete in-process fallback road, while the structural goal — recurring paths that cannot pull analysis on the main thread — is enforced by worker-fed stashes (deferred rebuilds read them; a dirty bit keeps a stash from being served across an edit it predates) plus a lexical boundary guard pinning every surviving analysis call to a documented allowlist. One-shot command paths (goto/rename/symbols/search-cards) stay main-side at incremental-analysis cost, tracked by #3110.
+- **WHY:** The fallback road the architecture deliberately keeps (no-Worker environments, non-vite embedders, worker crashes) requires a fully functional main-side session — deleting it would delete the fallback. The guard delivers the same regression-impossibility the delete was for, at a fraction of the diff and without forking behavior the mock/test surface depends on. (Implemented under the maintainer's wrap-up directive; flagged for veto.)
