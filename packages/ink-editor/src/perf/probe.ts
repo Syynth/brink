@@ -4,11 +4,13 @@
  *
  * Design constraints, in order:
  *
- * 1. **Near-zero cost when disabled.** Every public entry point bails on one
- *    boolean before touching anything else. Production builds keep the probe
- *    disabled (the studio/desktop dev edge enables it from
- *    `import.meta.env.DEV`), so shipped bundles pay a branch per site and
- *    nothing more.
+ * 1. **Near-zero cost when disabled, bounded cost when enabled.** Every
+ *    public entry point bails on one boolean before touching anything else.
+ *    Since the prod-perf ruling (docs/decision-log.md 2026-08-25) hosts
+ *    enable collection in ALL builds by default — real projects run in
+ *    production builds, and dev-only data can't see them — so the enabled
+ *    path must stay allocation-free and every retained structure bounded
+ *    (the rings below, and the User Timing mirror's periodic self-clear).
  * 2. **No allocation on the record path.** Events land in preallocated
  *    parallel ring buffers; aggregation (grouping, percentiles) happens only
  *    when a report is requested.
@@ -46,10 +48,39 @@ const markTimes = new Float64Array(MARK_CAPACITY);
 let markHead = 0;
 let marksRecorded = 0;
 
-/** Enable/disable collection. The desktop/studio dev edge calls this with
- *  `import.meta.env.DEV`; tests and the HUD may toggle it directly. */
+/** Enable/disable collection. Hosts enable at mount by default (prod-perf
+ *  ruling 2026-08-25; `MountStudioOptions.perf: false` opts out); tests and
+ *  the HUD may toggle it directly. */
 export function setPerfEnabled(on: boolean): void {
   enabled = on;
+}
+
+/** Names this realm has emitted into the User Timing buffer — kept so the
+ *  periodic clear removes ONLY our own entries (an embedding page owns the
+ *  rest of its performance timeline). Bounded by the distinct span/mark
+ *  names in the codebase, all static literals. */
+const emittedTimingNames = new Set<string>();
+let timingEntriesSinceClear = 0;
+/** Always-on sessions would otherwise grow the User Timing buffer without
+ *  bound (one entry per span, forever). Clearing is safe for DevTools: a
+ *  recording captures entries at emission; clearing the buffer afterwards
+ *  never retracts them from a trace. */
+const TIMING_CLEAR_EVERY = 4096;
+
+function noteTimingEntry(name: string): void {
+  emittedTimingNames.add(name);
+  timingEntriesSinceClear++;
+  if (timingEntriesSinceClear < TIMING_CLEAR_EVERY) return;
+  timingEntriesSinceClear = 0;
+  try {
+    for (const n of emittedTimingNames) {
+      performance.clearMeasures(n);
+      performance.clearMarks(n);
+    }
+  } catch {
+    // A host without clear*: ring collection is unaffected; the mirror
+    // grows with the page, which is the pre-clearing status quo.
+  }
 }
 
 export function isPerfEnabled(): boolean {
@@ -61,6 +92,7 @@ function emitMeasure(name: string, start: number, end: number): void {
   try {
     performance.measure(name, { start, end });
     measureWithOptions = true;
+    noteTimingEntry(name);
   } catch {
     // User Timing L3 unavailable (jsdom). Ring-buffer collection still works;
     // only the DevTools Timings-track mirror is lost.
@@ -122,6 +154,7 @@ export function perfMark(name: string): void {
   marksRecorded++;
   try {
     performance.mark(name);
+    noteTimingEntry(name);
   } catch {
     // mark() predates L3 and exists everywhere we run; guard anyway so a
     // headless host without User Timing can't break collection.

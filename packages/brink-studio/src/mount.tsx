@@ -44,6 +44,7 @@ import {
   type FileChange,
   type FileConflict,
   type FileProvider,
+  type HostPerfBundle,
 } from "@brink-lang/editor";
 import {
   BINDER_SIDECAR_PATH,
@@ -89,6 +90,8 @@ import {
   KeyHintsSegment,
   OutputView,
   PerfView,
+  type PerfViewBridge,
+  type WasmCounterMap,
   PLAYER_TYPE_ID,
   PlayerPane,
   ProblemsBadge,
@@ -139,6 +142,16 @@ export interface MountStudioOptions {
    * 2026-08-25); pass false to force the in-process road.
    */
   workerSession?: boolean;
+  /**
+   * Runtime performance instrumentation (prod-perf ruling 2026-08-25):
+   * the probe, browser observers, wasm counters, the `__brinkPerf`
+   * harvesting global, and the Performance tool window. Default TRUE in
+   * ALL builds — collection is allocation-free per event and every
+   * retained structure is bounded, and real projects run in production
+   * builds where dev-only data can't see them. Pass false to strip the
+   * whole surface (the tool window is not registered and nothing records).
+   */
+  perf?: boolean;
   /** Project files (path → ink source). */
   files: Record<string, string>;
   /**
@@ -437,14 +450,14 @@ export async function mountStudio(
   // code can run.
   installAdoptedStyleSheetsShim();
 
-  // Perf probe dev edge (measure-first ruling, docs/decision-log.md
-  // 2026-08-24): collection, observers, and the HUD tool window exist only
-  // in dev builds. `import.meta.env.DEV` is statically false in production
-  // bundles (vite replaces it at build time; the tsup lib build leaves
-  // `import.meta.env` undefined, which the optional chain reads as
-  // disabled), so shipped bundles never enable the probe.
-  const perfDev = Boolean(import.meta.env?.DEV);
-  if (perfDev) {
+  // Perf probe (measure-first ruling 2026-08-24; prod-perf ruling
+  // 2026-08-25): collection, observers, and the HUD tool window ship in
+  // ALL builds, on by default — real projects are opened in production
+  // builds, and dev-only instrumentation can't see them. The probe's
+  // enabled path is allocation-free and every retained structure bounded
+  // (probe.ts contract). `perf: false` strips the whole surface.
+  const perfOn = options.perf ?? true;
+  if (perfOn) {
     setPerfEnabled(true);
     attachPerfObservers();
     perfMark("studio.mountStart");
@@ -523,28 +536,56 @@ export async function mountStudio(
   });
   await project.initialize();
   perfMark("studio.projectInitialized");
-  if (perfDev) {
-    // Wasm-internal counters ride along with the JS probe in dev. Feature-
-    // detected: injected sessions/mocks predate the perf API.
-    const session = project.getSession() as {
-      setPerfEnabled?: (on: boolean) => void;
-      getPerfCounters?: () => unknown;
-      resetPerfCounters?: () => void;
-      perfCompileProbe?: (entry: string) => [number, number];
-    };
-    session.setPerfEnabled?.(true);
-    // Dev-only harvesting hook for the scenario runner (perf-runs/) and
+  // The perf bridge: the session planes the probe module itself can't
+  // reach. Feature-detected throughout — injected sessions/mocks predate
+  // the perf API — and the worker fetches guard on `workerActive()` so
+  // the in-process road never answers a host-realm query with a mirror
+  // of the main realm's own state.
+  const perfSession = project.getSession() as {
+    setPerfEnabled?: (on: boolean) => void;
+    getPerfCounters?: () => WasmCounterMap | null;
+    resetPerfCounters?: () => void;
+    perfCompileProbe?: (entry: string) => [number, number];
+  };
+  const fetchWorkerPerf = (): Promise<HostPerfBundle | null> =>
+    project.workerActive()
+      ? project
+          .projectQuery<HostPerfBundle>("hostPerfReport", [], { coalesceKey: "perf:hud" })
+          .catch(() => null)
+      : Promise.resolve(null);
+  const perfBridge: PerfViewBridge = {
+    wasmCounters: () => perfSession.getPerfCounters?.() ?? null,
+    fetchWorker: fetchWorkerPerf,
+    setWorkerEnabled: (on) => {
+      perfSession.setPerfEnabled?.(on);
+      if (project.workerActive())
+        void project.projectQuery("hostPerfSetEnabled", [on]).catch(() => {});
+    },
+    resetWorker: () => {
+      perfSession.resetPerfCounters?.();
+      if (project.workerActive()) void project.projectQuery("hostPerfReset", []).catch(() => {});
+    },
+  };
+  if (perfOn) {
+    perfSession.setPerfEnabled?.(true);
+    // Harvesting hook for the scenario runner (perf-runs/), e2e specs, and
     // hand-driven console sessions: the probe report + wasm counters +
-    // the #2885 compile probe, in one place.
+    // the worker bundle + the #2885 compile probe, in one place.
     (globalThis as Record<string, unknown>).__brinkPerf = {
       report: () => perfReport(),
       reset: () => {
         perfReset();
-        session.resetPerfCounters?.();
+        perfBridge.resetWorker?.();
       },
-      wasmCounters: () => session.getPerfCounters?.() ?? null,
-      compileProbe: () => session.perfCompileProbe?.(project.getEntryFile()) ?? null,
+      wasmCounters: () => perfSession.getPerfCounters?.() ?? null,
+      workerReport: fetchWorkerPerf,
+      compileProbe: () => perfSession.perfCompileProbe?.(project.getEntryFile()) ?? null,
     };
+  } else {
+    // The worker realm boots with its own probe on (it can't see this
+    // option); an opted-out host turns it off right after mount.
+    if (project.workerActive())
+      void project.projectQuery("hostPerfSetEnabled", [false]).catch(() => {});
   }
 
   // The .binder.json order sidecar (#3038): loaded straight from the
@@ -1032,16 +1073,17 @@ export async function mountStudio(
     badge: TodosBadge,
     component: TodosView,
   });
-  // Performance HUD (measure-first ruling, 2026-08-24): dev builds only —
-  // production bundles never register it (perfDev is statically false there).
-  if (perfDev) {
+  // Performance HUD (prod-perf ruling 2026-08-25): all builds, closed by
+  // default — it costs nothing until opened. `perf: false` strips it.
+  if (perfOn) {
+    const StudioPerfView = () => <PerfView bridge={perfBridge} />;
     toolWindows.register({
       id: "perf",
       title: "Performance",
       icon: PERF_ICON,
       defaultPlacement: { dock: "bottom", section: "end" },
       defaultOpen: false,
-      component: PerfView,
+      component: StudioPerfView,
     });
   }
 
@@ -1183,7 +1225,7 @@ export async function mountStudio(
   openPlayerSplit(editorGroups);
 
   perfMark("studio.renderStart");
-  if (perfDev) {
+  if (perfOn) {
     // First frame after the initial render commit — the end of the startup
     // timeline (project-open → wasm → initialize → first paint).
     requestAnimationFrame(() => perfMark("studio.firstFrame"));
@@ -1204,9 +1246,11 @@ export async function mountStudio(
     />
   );
   root.render(
-    perfDev ? (
-      // React commit durations feed the probe in dev; the Profiler wrapper
-      // never exists in production trees.
+    perfOn ? (
+      // React commit durations feed the probe. Note the prod caveat:
+      // react-dom's production bundle no-ops <Profiler> onRender unless
+      // the host aliases the profiling build — the wrapper itself is
+      // harmless there, and `react.commit.*` spans simply don't appear.
       <Profiler
         id="studio"
         onRender={(_id, phase, actualDuration, _base, startTime) =>

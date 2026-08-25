@@ -1,8 +1,9 @@
 /**
- * Browser-level observers (measure-first ruling, 2026-08-24): the metrics
+ * Browser-level observers (measure-first ruling 2026-08-24): the metrics
  * that need no cooperation from instrumented code — long tasks, long
- * animation frames, input-event latency, dropped frames. Attached only by
- * dev-mode hosts (studio/desktop); nothing here runs in production builds.
+ * animation frames, input-event latency, dropped frames. Attached by hosts
+ * in ALL builds by default since the prod-perf ruling (2026-08-25); each
+ * observer is passive and every handler bails while the probe is disabled.
  */
 
 import { isPerfEnabled, perfRecord } from "./probe.js";
