@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/Syynth/brink/compare/brink-db-v0.0.15...brink-db-v0.0.16) - 2026-08-25
+
+### Added
+
+- *(web)* outbound delta protocol — segment-keyed slices with identity versions (#3064 option A)
+- *(web)* bounded-edit ingress + no eager per-keystroke analysis (#3064 C1)
+- *(db)* per-segment semantic tokens with a range-free resolution seam (#3064 B4)
+- *(db)* per-segment line contexts — assembled, dialect-classified, memoized (#3064 B3)
+- *(db)* per-segment HIR projection — assembled, identity-joined, memoized (#3064 B2)
+- *(db)* dialect config as a tracked input + memoized compile (#3064 B1)
+- *(db)* per-knot segment road live for ink — 30ms keystroke down to 4.3ms ([#3084](https://github.com/Syynth/brink/pull/3084))
+- *(db)* file_segments_query — segments as tracked structs (#3084 step 1b)
+- *(analysis)* option A total — the off-db monolith is deleted; LSP rides the subset query
+- *(ide)* option A core — editor analysis routes through the db road (#3063, #2885)
+- *(#3017)* out-of-scope editor banner over the exposed compile closure
+
+### Fixed
+
+- *(book)* the two-file #@module illustration is ink,ignore; pin E086 on the db road
+- *(compiler)* a decl-attached #@was is not an orphaned module directive
+- *(compiler)* lower each knot and declaration once per edit; surface dropped E095/E049 ([#3088](https://github.com/Syynth/brink/pull/3088))
+
+### Other
+
+- *(editor)* classifier-fast token slices — analysis leaves the keystroke path (#3064 micro)
+- drop the second stray scratch probe (brink-db)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-db-v0.0.11...brink-db-v0.0.15) - 2026-08-23
 
 ### Added

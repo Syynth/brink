@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/Syynth/brink/compare/brink-ir-v0.0.15...brink-ir-v0.0.16) - 2026-08-25
+
+### Added
+
+- *(db)* per-segment semantic tokens with a range-free resolution seam (#3064 B4)
+- *(db)* per-segment line contexts — assembled, dialect-classified, memoized (#3064 B3)
+- *(db)* per-segment HIR projection — assembled, identity-joined, memoized (#3064 B2)
+- *(db)* per-knot segment road live for ink — 30ms keystroke down to 4.3ms ([#3084](https://github.com/Syynth/brink/pull/3084))
+- *(analysis)* option A total — the off-db monolith is deleted; LSP rides the subset query
+- *(ide)* externals renameable behind the E190 Force gate (ruled 2026-08-24)
+- *(diagnostics)* surface ink TODO: notes as E189 Info diagnostics ([#3050](https://github.com/Syynth/brink/pull/3050))
+
+### Fixed
+
+- *(compiler)* a decl-attached #@was is not an orphaned module directive
+- *(compiler)* lower each knot and declaration once per edit; surface dropped E095/E049 ([#3088](https://github.com/Syynth/brink/pull/3088))
+
+### Other
+
+- *(ide)* folding was accidentally quadratic; fold-runs ride the assembled contexts (#3064 B5)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-ir-v0.0.11...brink-ir-v0.0.15) - 2026-08-23
 
 ### Added
