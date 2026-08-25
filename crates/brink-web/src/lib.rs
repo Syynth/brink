@@ -27,6 +27,9 @@ mod editor_refactor;
 mod external_binding;
 mod perf;
 mod program_model;
+/// Editor session protocol wire shapes (`docs/editor-worker-spec.md` §5) —
+/// public: this crate is the shapes' source of truth (spec §5.4).
+pub mod protocol;
 mod session;
 mod speculation;
 mod story_runner;

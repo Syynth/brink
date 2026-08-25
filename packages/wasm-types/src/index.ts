@@ -1797,3 +1797,80 @@ export interface PerfCounterRow {
  * JSON `crates/brink-web/src/perf.rs::report_json` emits.
  */
 export type PerfCounters = Record<string, PerfCounterRow>;
+
+// ── Editor session protocol wire envelopes (docs/editor-worker-spec.md §5) ──
+//
+// Hand-maintained mirrors; RUST IS THE SOURCE OF TRUTH (spec §5.4):
+// crates/brink-web/src/protocol.rs. The golden wire strings pinning these
+// shapes live in that module's tests and, verbatim, in
+// packages/ink-editor/src/__tests__/worker-protocol.test.ts — change one
+// side and the other's pin fails. Every payload is JSON-serializable by
+// construction: no Map/Set, no binary views, no undefined-bearing shapes.
+
+/** Client-assigned id correlating a query with its result/error. */
+export type SessionRequestId = number;
+
+/** Scheduling class (spec §6): interactive before background; only
+ *  background queries coalesce or drop. */
+export type SessionQueryPriority = "interactive" | "background";
+
+/** A single text edit in UTF-16 document coordinates — the shape the
+ *  delta-ingress endpoint (`applyEditsDocument`) accepts. */
+export interface SessionEditSpan {
+  from: number;
+  to: number;
+  insert: string;
+}
+
+/** A named mutation on the session's config or file surface. */
+export interface SessionOp {
+  method: string;
+  args: unknown[];
+}
+
+/** Main-thread → session-host messages. The mutation stream
+ *  (edit/push/config/files) is strictly ordered, applied FIFO before any
+ *  query; queries are unordered beyond their priority class. */
+export type SessionRequest =
+  | { kind: "edit"; doc: DocumentId; docVersion: number; edits: SessionEditSpan[] }
+  | { kind: "push"; doc: DocumentId; docVersion: number; source: string }
+  | { kind: "config"; op: SessionOp }
+  | { kind: "files"; op: SessionOp }
+  | {
+      kind: "query";
+      id: SessionRequestId;
+      priority: SessionQueryPriority;
+      doc?: DocumentId;
+      docVersion?: number;
+      /** Background-only supersession handle (spec §6): a queued
+       *  background query is dropped when a newer query with the SAME
+       *  key sits behind it. Absent = never coalesces. Client-chosen —
+       *  never derived from `method` alone, because same-method queries
+       *  with different args (per-segment slices) are distinct work. */
+      coalesceKey?: string;
+      method: string;
+      args: unknown[];
+    }
+  | { kind: "cancel"; id: SessionRequestId };
+
+/** Session-host → main-thread messages. */
+export type SessionResponse =
+  | { kind: "ack"; doc: DocumentId; docVersion: number; applied: boolean }
+  | {
+      kind: "result";
+      id: SessionRequestId;
+      /** The doc's version at execution time (absent for doc-less
+       *  queries). Staleness policy is the consumer's call (spec §5.3). */
+      docVersion?: number;
+      configEpoch: number;
+      value: unknown;
+    }
+  | {
+      kind: "error";
+      id: SessionRequestId;
+      /** Policy drops use the `dropped:` prefix (`dropped:superseded`,
+       *  `dropped:stale`, `dropped:cancelled`) — distinguishable from
+       *  faults. */
+      message: string;
+    }
+  | { kind: "event"; event: unknown };

@@ -334,3 +334,18 @@ export type { PerfReport, PerfSpanAggregate, PerfRawSpan } from "./perf/probe.js
 export { attachPerfObservers } from "./perf/observers.js";
 export { perfViewportProbe } from "./perf/viewport-probe.js";
 export { withPerfTiming } from "./perf/wasm-proxy.js";
+
+// Session protocol substrate (docs/editor-worker-spec.md §5, W1): the
+// async facade + transports consumers migrate onto in W2. Wire shapes
+// come from @brink/wasm-types (Rust source of truth: brink-web protocol.rs).
+export {
+  SessionClient,
+  QueryDroppedError,
+  QueryFailedError,
+} from "./worker/session-client.js";
+export type { QueryHandle, QueryOptions, QueryResult } from "./worker/session-client.js";
+export { LocalTransport } from "./worker/local-transport.js";
+export type { SessionServerLike } from "./worker/local-transport.js";
+export type { SessionTransport } from "./worker/transport.js";
+export { AdmissionScheduler } from "./worker/scheduler.js";
+export type { SchedulerAction } from "./worker/scheduler.js";
