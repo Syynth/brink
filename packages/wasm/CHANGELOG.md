@@ -1,5 +1,73 @@
 # @brink-lang/web
 
+## 0.16.0
+
+### Minor Changes
+
+- 8bd2fcb: Out-of-scope editor banner (#3017): the compile closure is now surfaced
+  through the wasm boundary — `EditorSession.compilation_closure()` /
+  `EditorSessionHandle.getCompilationClosure()` return the project-relative
+  paths of the exact file set the latest compile built from (empty before
+  any compile; read-only). The studio renders a banner above the editor of
+  any source file outside that closure ("Not included in the project —
+  nothing INCLUDEs this file, so it is not analyzed"), with a one-click
+  "Add INCLUDE to <entry>" action for the ink flow, plus a "— file not
+  analyzed" status-bar note. Absent diagnostics look identical to clean
+  diagnostics; this makes the difference visible.
+- 9985bcf: References dressing (card-stack PR E). New wasm entry point
+  `find_references_with_kinds_at` (wrapper:
+  `EditorSessionHandle.findReferencesWithKindsAt`): every reference site
+  classified by how it uses the symbol — `decl`, `call` (UFCS-desugared
+  calls included), `divert`, `read`, or `write` (assignment targets and
+  `++`/`--`). In the Search panel's references mode, the declaration card
+  pins first with an accent border and `decl` badge, and every site
+  carries its kind badge; the store re-resolves through the kinds variant
+  at the declaration anchor (plain locations remain the graceful
+  fallback).
+
+### Patch Changes
+
+- eba0faa: Bounded-edit ingress (#3064 C1): `applyEditsDocument(doc, edits)` applies a CM6 change list Rust-side — the full document no longer crosses the wasm boundary on every keystroke, and the write is source-only: the fused eager whole-project analysis that `updateDocument` forced per keystroke (and that nothing on the keystroke path consumed — diagnostics are debounced-compile-driven) is no longer computed until something actually pulls it. The editor's element-type field uses the delta path automatically for single-range edits on file handles, falling back to the full push for multi-cursor batches, fragment views, and older wasm builds/mocks. `updateDocument` is unchanged for compatibility.
+- c0f357b: `EXTERNAL` functions are renameable behind the Force gate (ruled 2026-08-24): `prepare_rename`/`rename` accept them (declaration + every call site), but the safe-rename verdict is ALWAYS unsafe, carrying a new `E190` entry naming the host binding ("the engine must re-register the external under the new name") — so the rename only applies through the breakage report's Force path. Builtins remain non-renameable.
+- d8cfbcd: Ink lowering no longer lowers every knot and declaration twice per edit (#3088): the db road's assembler harvests the declaration surface from a decl-only composition instead of a discarded whole-file lowering. Large-file keystroke re-analysis drops ~35% (the HIR-lower stage 24 → 14 ms on the 5.9k-line bench fixture). Behavior fix riding along: the file-level `#@module`/`#@was` arbitration diagnostics (E095 self-alias, E049 `#@was` without `#@module`) were silently dropped with that discarded sink and now reach editor diagnostics; E049 is error-severity, so an orphaned `#@was` now fails compilation loudly instead of being ignored.
+- 1609068: Keystroke micro-work toward the 8 ms frame budget (#3064): a config epoch invalidates delta-slice caches on dialect/host-manifest swaps (fixing a stale-classification bug under unchanged segment keys); one manifest fetch per document version; element-type derives per-line infos per segment under the delta protocol's version keys; the keystroke path serves the edited knot's semantic tokens from a classifier-only slice (no analysis pull — the symbol index and resolution passes leave the synchronous path entirely) with resolution-refined colors landing on the deferred refresh; occurrence highlights defer during large-document typing bursts (selection moves stay instant). Per-keystroke instrumented work on a 6k-line document drops to ~6–7 ms, with most keystrokes completing below the Event Timing API's 16 ms reporting floor.
+- 29541b3: Hovering a `LIST` or a list item now shows the full member set — declared order, every member's numeric value including the defaulted ordinals (mirroring the LIR lowering's rule: count from 1, an explicit value resets the counter), default-active parens preserved, the hovered member bolded. Internally the hover is now assembled from an ordered section-provider table (head line + Markdown blocks), so future per-kind hover content is a one-provider addition; the _Defined in_ note moved to the end as a footer.
+- 78e4dd0: Option A total (ruled 2026-08-24): the editor's per-edit analysis routes
+  through the db's incremental `analysis_query` — the `IdeSnapshot` deep
+  clone that cost ~28–33 ms per keystroke at large-file scale (#3063) is
+  deleted, and `updateDocument`'s wasm share drops accordingly. Wire-visible
+  changes: the internal perf counters `ide.snapshotClone`/`ide.applyAnalysis`
+  retired (`ide.analyze` now measures the incremental pull; compare
+  recorded runs across the boundary with that in mind), and `getStoryGraph`
+  returns an empty graph instead of `null` on a fresh session (analysis is
+  always available now; the `StoryGraph | null` type is kept). Also closes
+  the #2885 options-sync gap: an equal-options `compileProject` can never
+  cold-invalidate the live analysis.
+- 80dd24f: Outbound delta protocol (#3064 option A): per-keystroke wasm→JS payloads for line contexts and semantic tokens drop from whole-document JSON (~1.4 MB combined on a 6k-line file) to a small segment manifest plus the edited knot's slice. New wasm surface: `getSegmentManifestDoc` (per-segment version keys — salsa identity `index:generation`, stable across shift edits, changed exactly when a segment's content changes, ABA-safe by generation) plus `getSegmentLineContextsDoc`/`getSegmentSemanticTokensDoc` slice fetches. `DocHandle.lineContexts()`/`semanticTokens()` assemble transparently from a version-keyed slice cache — same return types, no consumer changes — and fall back to the whole-document queries for fragment views, native files, older wasm builds, and mocks. Delta-reconstructed results are parity-gated against the assembled queries across the full corpus.
+- 85a1700: Ink files now lower through the per-knot segment road (#3084): a keystroke inside one knot re-lowers that knot's segment only — every other knot's lowering memo backdates, shifted-but-unchanged knots included — and the analysis path no longer pays a whole-file parse per edit. Large-file keystroke re-analysis drops accordingly (see `docs/per-knot-incremental-lowering-spec.md` for the measured before/after). Output is byte-identical (HIR, symbols, admission) with one declared exception: the per-file diagnostics ARRAY now arrives in a deterministic segment-major order instead of the old kind-grouped interleaving — the diagnostic set, ranges, codes, and messages are unchanged, only vector order moves, and only for files where multiple diagnostic sources interleave.
+- bd2e490: Two-range model for container spans (#3054): `HirSpan` gains `content_end_line` — the TIGHT end (last line of actual content, trailing whitespace and the next declaration's doc block excluded) alongside the structural `end_line` that runs to the next sibling. Rails and their tooltips use the tight range, so a two-line function no longer paints (or reports) itself through the next function's docs; choice rails get eight golden-step color buckets so siblings are distinct; conditional-branch tooltips show the condition.
+- 3c8d180: ink `TODO:` author notes now surface as `E189` Info-severity diagnostics (issue #3050). Lowering previously dropped `AUTHOR_WARNING` nodes silently; each now emits one diagnostic whose message carries the note's text (`TODO: <text>`), visible through every diagnostics channel (`compile`, Problems). Info severity never gates a compile, and the code is `[lints]`-tierable like any other (`E189 = "allow"` hides TODOs).
+- d043c59: `line_contexts` reports a new `todo` line element for ink `TODO:` author-note lines (#3050) — a trivia-facet classification like comments (the HIR never sees `AUTHOR_WARNING`), so the editor's line-class road marks TODO lines on the wasm path, not just the regex fallback.
+- 62fdee9: Performance (#3065, no behavior change — wire output byte-identical,
+  pinned by an every-offset equivalence test): the per-compile pulls'
+  byte→UTF-16 offset conversions (`getProjectOutline`, `getStoryGraph`,
+  `compileProject` diagnostics) now go through a per-file prefix-sum index
+  built once per pull instead of a linear scan from offset 0 per offset —
+  previously 17,744 scans per compile cycle on a studio-scale project,
+  making outline/story-graph O(symbols × file size).
+- c0d9a61: `ClassifierSession` — the capability-stripped main-thread session (editor worker architecture W3, `docs/editor-worker-spec.md` §4). The wasm module exports a new single-document session whose surface is exactly the keystroke path's needs — delta/full-text ingress, segment manifest, per-segment line contexts and classifier tokens, dialect config — with no project method exported and write paths that never trigger an analysis pull (parity with the full session's slices is pinned Rust-side). `@brink-lang/web` wraps it as `ClassifierSessionHandle` (feature-detected: `available` is false on older builds and mocks). In the editor, full-file document handles attach a `ClassifierMirror`: the keystroke path's line contexts and fast tokens serve from the classifier's own analysis-free instance (with its own version-keyed slice cache), and the fast-token road blends positionally — cached refined slices keep their colors while uncached (edited) segments serve from the classifier. Mocks and older wasm keep the previous session-road behavior exactly.
+- bfdde5e: Wasm-internal perf counters (measure-first ruling, 2026-08-24).
+  `EditorSessionHandle` gains `setPerfEnabled`/`getPerfCounters`/
+  `resetPerfCounters` over a new counter store inside the wasm: the
+  per-keystroke reanalysis decomposed by phase (`ide.updateSource`,
+  `ide.snapshotClone`, `ide.analyze`, `ide.applyAnalysis`), the editor
+  compile (`ide.compile`), the per-compile outline/story-graph builds, and
+  an `ide.byteToUtf16` call counter. `perfCompileProbe(entry)` runs the
+  #2885 revision-stamp experiment directly — two back-to-back compiles with
+  no edits, returning `[firstMs, secondMs]`. Counters are off by default and
+  cost one branch per site while disabled; behavior of every existing call
+  is unchanged.
+
 ## 0.15.0
 
 ### Minor Changes
