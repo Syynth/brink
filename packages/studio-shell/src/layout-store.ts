@@ -26,6 +26,13 @@ import {
 /** Responsive presentation tier (spec §5.3), driven by the width observer. */
 export type LayoutTier = "wide" | "medium" | "narrow";
 
+/**
+ * The editor root area's possible occupants. "code" is today's tabbed
+ * surface with groups and splits; "single" shows one file with the host's
+ * companion document beside it. "continuous" joins them later.
+ */
+export type EditorViewId = "code" | "single";
+
 export interface ShellLayoutState {
   /** Current responsive tier. */
   tier: LayoutTier;
@@ -37,6 +44,18 @@ export interface ShellLayoutState {
   dockSizes: Record<Dock, number>;
   /** Maximized tool window: covers the editor area until restored (§5.4). */
   maximized: string | null;
+
+  /**
+   * Which view occupies the editor root area (decision log 2026-08-26,
+   * "The editor root area has one occupant"). The area holds exactly one
+   * thing: a view over the project's files, and later the Story Graph,
+   * which takes the area over rather than opening inside a view.
+   *
+   * A preference about how you write rather than a fact about the project,
+   * so it persists with the rest of the layout (globally) rather than
+   * per-project alongside each view's own remembered state.
+   */
+  editorView: EditorViewId;
 
   // ── Transient compact-tier presentation (reset on tier change) ──
   /** medium/narrow: slide-over drawer visibility per side dock. */
@@ -57,6 +76,8 @@ export interface ShellLayoutState {
    * hidden window reveals it (drawer / narrow overlay) instead of closing.
    */
   toggleToolWindow(id: string): void;
+  /** Choose the editor root area's occupant. */
+  setEditorView(view: EditorViewId): void;
   /** Re-dock a tool window; if it was open, it opens in the new section. */
   moveToolWindow(id: string, dock: Dock, section: Section): void;
   /** Maximize a tool window over the editor area, or restore it (§5.4). */
@@ -133,6 +154,7 @@ export function createShellLayoutStore(): ShellLayoutStore {
     open: emptyOpen(),
     dockSizes: { left: 220, right: 300, bottom: 180 },
     maximized: null,
+    editorView: "code",
     drawers: { left: false, right: false },
     narrowView: null,
 
@@ -178,6 +200,10 @@ export function createShellLayoutStore(): ShellLayoutStore {
           s.maximized !== null && known.has(s.maximized) ? s.maximized : null;
         return { placements, open, narrowView, maximized };
       });
+    },
+
+    setEditorView(view) {
+      set({ editorView: view });
     },
 
     toggleToolWindow(id) {

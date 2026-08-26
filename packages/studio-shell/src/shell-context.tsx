@@ -26,7 +26,11 @@ import { Keymap, KeymapOverridesService, type KeymapOverrides } from "./keymap.j
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
-import { DocumentTypeRegistry, type DocumentTypeDescriptor } from "./document.js";
+import {
+  DocumentTypeRegistry,
+  type DocumentRef,
+  type DocumentTypeDescriptor,
+} from "./document.js";
 import {
   createEditorGroupsStore,
   type EditorGroupsState,
@@ -55,6 +59,12 @@ export interface ShellContextValue {
   notifications: NotificationCenter;
   themes: ThemeService;
   keymapOverrides: KeymapOverridesService;
+  /**
+   * The document Single File view shows beside the file (§7.2 keeps the
+   * shell from knowing what a player is — the host names one). Undefined
+   * means the view is just the file, full width.
+   */
+  companionDocument?: DocumentRef;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -97,6 +107,8 @@ export interface ShellProviderProps {
   layoutStorage?: Pick<Storage, "getItem" | "setItem">;
   /** Override platform detection (tests). */
   isMac?: boolean;
+  /** The companion document for Single File view; see ShellContextValue. */
+  companionDocument?: DocumentRef;
   children: ReactNode;
 }
 
@@ -112,6 +124,7 @@ export function ShellProvider({
   storage,
   layoutStorage,
   isMac,
+  companionDocument,
   children,
 }: ShellProviderProps) {
   const mac = isMac ?? detectMac();
@@ -190,6 +203,28 @@ export function ShellProvider({
     return registry.onDidChange(sync);
   }, [registry, layout]);
 
+  // The editor root area's occupant (decision log 2026-08-26). Registered
+  // here rather than by the host because the layout store that holds the
+  // choice is the provider's, and because every host gets the same views —
+  // there is nothing project-specific to configure.
+  useEffect(() => {
+    const dispose = [
+      commands.register({
+        id: "view.editor.code",
+        title: "View: Code (tabs and splits)",
+        run: () => layout.getState().setEditorView("code"),
+      }),
+      commands.register({
+        id: "view.editor.single",
+        title: "View: Single File (one file beside the player)",
+        run: () => layout.getState().setEditorView("single"),
+      }),
+    ];
+    return () => {
+      for (const d of dispose) d();
+    };
+  }, [commands, layout]);
+
   // Generate view.toggle.<id> commands (Mod-1…9 by registration order),
   // regenerating wholesale on registry changes.
   useEffect(() => {
@@ -242,6 +277,7 @@ export function ShellProvider({
       notifications: notificationCenter,
       themes: themeService,
       keymapOverrides: overridesService,
+      companionDocument,
     }),
     [
       commands,
@@ -255,7 +291,7 @@ export function ShellProvider({
       notificationCenter,
       themeService,
       overridesService,
-    ],
+      companionDocument,],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

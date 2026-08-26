@@ -230,3 +230,67 @@
 .brink-studio .brink-tab-input.error {
   border-color: var(--bs-error);
 }
+
+/* ── Single File view (decision log 2026-08-26) ──────────────────────
+   One file with the host's companion document beside it. Deliberately
+   NO tab strip: the header names the file and nothing else, because a
+   strip with one permanent entry is a tab strip that lies about what it
+   does. */
+.brink-studio .shell-single-file {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-single-file-body {
+  flex: 1;
+  min-height: 0;
+}
+.brink-studio .shell-single-file-primary,
+.brink-studio .shell-single-file-companion {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-single-file-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bs-space-3, 12px);
+  padding: 0 var(--bs-space-3, 12px);
+  height: var(--bs-tabbar-height, 30px);
+  flex: none;
+  border-bottom: 1px solid var(--bs-border);
+  background: var(--bs-bg-elevated, var(--bs-bg));
+}
+.brink-studio .shell-single-file-name {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .shell-single-file-companion-toggle {
+  flex: none;
+  font: inherit;
+  font-size: var(--bs-font-tiny);
+  color: var(--bs-fg-muted);
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .shell-single-file-companion-toggle:hover {
+  color: var(--bs-fg);
+  background: var(--bs-bg-hover, rgba(127, 127, 127, 0.14));
+}
+.brink-studio .shell-single-file-doc {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

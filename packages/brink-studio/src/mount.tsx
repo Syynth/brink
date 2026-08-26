@@ -128,6 +128,7 @@ import {
   loadEditorSettings,
   saveEditorSettings,
   openPlayerSplit,
+  playerRef,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
@@ -443,6 +444,11 @@ function Root({
       documents={documentTypes}
       editorGroups={editorGroups}
       notifications={notifications}
+      // Single File view's native split (decision log 2026-08-26). The shell
+      // is told WHICH document sits beside the file, not what it means — so
+      // "run the scene you are writing" is one prop rather than the shell
+      // learning what a player is.
+      companionDocument={playerRef()}
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>

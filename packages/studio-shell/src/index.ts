@@ -81,6 +81,7 @@ export {
   registerMaximizeCommands,
 } from "./maximize-commands.js";
 export { EditorArea } from "./editor-area.js";
+export { SingleFileView, type SingleFileViewProps } from "./single-file-view.js";
 export {
   MAX_VISIBLE_NOTIFICATIONS,
   NOTIFICATION_HISTORY_LIMIT,
@@ -131,6 +132,7 @@ export {
   ensureToolWindowOpen,
   isToolWindowOpen,
   type LayoutTier,
+  type EditorViewId,
   type ShellLayoutState,
   type ShellLayoutStore,
 } from "./layout-store.js";

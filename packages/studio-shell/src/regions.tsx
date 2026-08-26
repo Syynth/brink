@@ -31,6 +31,7 @@ import {
   useToolWindows,
 } from "./shell-context.js";
 import { EditorArea } from "./editor-area.js";
+import { SingleFileView } from "./single-file-view.js";
 import { formatChord } from "./keymap.js";
 import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
@@ -207,6 +208,18 @@ export function ShellStatusBar() {
 }
 
 // ── Shell frame ─────────────────────────────────────────────────────
+
+/**
+ * The editor root area's single occupant (decision log 2026-08-26). Which
+ * view is showing is layout state, so this is the one place that reads it —
+ * every other region is unaware there is more than one.
+ */
+function EditorRoot() {
+  const view = useShellLayout((s) => s.editorView);
+  const { companionDocument } = useShell();
+  if (view === "single") return <SingleFileView companion={companionDocument} />;
+  return <EditorArea />;
+}
 
 export function ShellFrame() {
   const { layout, editorGroups } = useShell();
@@ -430,7 +443,7 @@ export function ShellFrame() {
                 {showLeftDock && <Separator className="brink-resize-handle" />}
 
                 <Panel id="editor" key="editor" minSize="200px">
-                  <EditorArea />
+                  <EditorRoot />
                 </Panel>
 
                 {showRightDock && <Separator className="brink-resize-handle" />}
