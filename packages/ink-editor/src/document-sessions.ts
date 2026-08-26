@@ -61,6 +61,7 @@ import { getHintsForElement, lineHasContent, buildContext } from "./transitions.
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
 import { perfSpan, perfTime } from "./perf/probe.js";
+import { detachedGutters } from "./gutter-layout.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -1021,6 +1022,10 @@ export class DocumentSessions {
         brinkBasicSetup,
         keymap.of(defaultKeymap),
         EditorView.lineWrapping,
+        // #3119: gutters leave the scroller's flex/sticky flow, which
+        // costs WebKit ~5x on every editor layout. Self-gating on the
+        // wrapping above.
+        detachedGutters(),
         this.slotListener(slot),
         EditorView.domEventHandlers({
           focus: () => {
