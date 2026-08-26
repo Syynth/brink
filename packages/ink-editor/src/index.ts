@@ -338,6 +338,12 @@ export { attachPerfObservers } from "./perf/observers.js";
 export { perfViewportProbe } from "./perf/viewport-probe.js";
 export { withPerfTiming } from "./perf/wasm-proxy.js";
 
+// Detached gutters (#3119): the WebKit editor-layout fix — gutters leave
+// the scroller's flex/sticky flow, with the horizontal space paid back as
+// content padding. Self-gating on line wrapping; included in the studio's
+// slot extensions, exported for hosts building their own views.
+export { detachedGutters } from "./gutter-layout.js";
+
 // Session protocol substrate (docs/editor-worker-spec.md §5, W1): the
 // async facade + transports consumers migrate onto in W2. Wire shapes
 // come from @brink/wasm-types (Rust source of truth: brink-web protocol.rs).
