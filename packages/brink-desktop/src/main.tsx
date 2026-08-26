@@ -819,6 +819,27 @@ void listen<string>("menu:open-recent", (event) => void openRecent(event.payload
 // so it funnels through the same guarded path as the window close below
 // rather than the OS quit item's own (unguarded) native teardown.
 void listen("menu:quit", () => void handleQuitRequested());
+// View → editor font size. The native items carry no accelerators (see
+// `build_menu` in src-tauri/src/lib.rs); they dispatch the same commands the
+// studio's own ⌘+/⌘−/⌘0 bindings do, so the menu is a second door onto one
+// implementation rather than a second implementation.
+void listen("menu:view-font-increase", () => {
+  current?.api.dispatch("editor.fontSize.increase");
+});
+void listen("menu:view-font-decrease", () => {
+  current?.api.dispatch("editor.fontSize.decrease");
+});
+void listen("menu:view-font-reset", () => {
+  current?.api.dispatch("editor.fontSize.reset");
+});
+// View → panels. The payload is a tool-window id; the shell generates one
+// `view.toggle.<id>` command per registered tool window. A menu entry for a
+// tool window this build does not register dispatches nothing (the registry
+// returns false) rather than throwing — that is what keeps the native list
+// in `VIEW_PANELS` safe to drift.
+void listen<string>("menu:view-toggle", (event) => {
+  current?.api.dispatch(`view.toggle.${event.payload}`);
+});
 // Routed through the command so the menu item and the toast's Try Again
 // share one path (and one throttle clock).
 void listen("menu:check-updates", () => {
