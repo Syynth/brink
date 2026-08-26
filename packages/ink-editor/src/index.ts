@@ -12,6 +12,7 @@ export {
   hirOverlayExtension,
   hirSpansAt,
   hirIdentityAt,
+  RAIL_LANE_WIDTH_PX,
   refreshHirOverlay,
   refreshHirOverlayEffect,
 } from "./hir-overlay.js";

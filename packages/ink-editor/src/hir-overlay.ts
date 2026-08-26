@@ -369,6 +369,15 @@ function railLabel(kind: string, raw: string): string {
   return text.slice(0, 60);
 }
 
+
+/**
+ * The rails column's fixed width: one lane (a 3px bar inside the layer's
+ * `0 2px` padding). Constant BY DESIGN — see `RailMarker.toDOM`. Anything
+ * that makes this depend on the open file's nesting depth reintroduces the
+ * sideways prose shift on file open.
+ */
+export const RAIL_LANE_WIDTH_PX = 7;
+
 class RailMarker extends GutterMarker {
   constructor(private readonly stack: readonly RailInfo[]) {
     super();
@@ -405,8 +414,21 @@ class RailMarker extends GutterMarker {
     // on the layout hot path (measured 120 ms → 36 ms full-layout).
     const wrap = document.createElement("span");
     wrap.className = "brink-hir-rails";
-    // bars are 3px + 2px gap, padding 0 2px: width = 5n + 2 (n ≥ 1).
-    wrap.style.width = `${this.stack.length * 5 + 2}px`;
+    // CONSTANT, not `5n + 2` for an n-deep stack (#3131 follow-up). The
+    // spacer is the only thing that sizes the rails column, so a
+    // depth-derived width made the column's width a function of whichever
+    // file was open and of when the HIR projection arrived — the column is
+    // 0 wide until the projection lands a few hundred ms after a file
+    // opens, and `detachedGutters` pays gutter width back as content
+    // padding, so every arrival and every file switch slid the prose
+    // sideways under the cursor.
+    //
+    // One lane's worth is reserved and deeper stacks paint over the
+    // neighbouring play gutter, which is empty except on the hovered line.
+    // The bars themselves are unaffected: they live in an
+    // absolutely-positioned layer (`.brink-hir-rails-bars`), so they are
+    // not laid out by this width and still render every lane at full size.
+    wrap.style.width = `${RAIL_LANE_WIDTH_PX}px`;
     const bars = wrap.appendChild(document.createElement("span"));
     bars.className = "brink-hir-rails-bars";
     for (const c of this.stack) {
