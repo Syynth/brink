@@ -11,7 +11,13 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { checkForUpdates, type PendingUpdate, type UpdateApi } from "../updater.js";
+import {
+  AUTO_CHECK_INTERVAL_MS,
+  checkForUpdates,
+  shouldAutoCheck,
+  type PendingUpdate,
+  type UpdateApi,
+} from "../updater.js";
 
 /** The half of main.tsx's wiring under test, restated: an offer parks a
  *  resolver, and command dispatch settles it exactly once. */
@@ -172,5 +178,56 @@ describe("update offer toast", () => {
     expect(await run).toBe("failed");
     expect(notes[0]?.[0]).toBe("error");
     expect(notes[0]?.[1]).toContain("disk full");
+  });
+});
+
+// ── Automatic checks: launch + window focus (ruled 2026-08-25) ───────
+
+describe("shouldAutoCheck", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it("runs the very first time (nothing has ever been checked)", () => {
+    expect(shouldAutoCheck({ lastCheckAt: 0, offerPending: false, now: 1_000 })).toBe(true);
+  });
+
+  it("declines while an offer is already on screen", () => {
+    // Re-raising the same toast under the author's cursor is churn, and
+    // replacing it would settle the live promise as declined.
+    expect(shouldAutoCheck({ lastCheckAt: 0, offerPending: true, now: 1_000 })).toBe(false);
+  });
+
+  it("throttles bursts of focus events", () => {
+    const last = 10 * HOUR;
+    // Alt-tabbing back a minute later must not hit the update server.
+    expect(
+      shouldAutoCheck({ lastCheckAt: last, offerPending: false, now: last + 60_000 }),
+    ).toBe(false);
+    expect(
+      shouldAutoCheck({ lastCheckAt: last, offerPending: false, now: last + 3 * HOUR }),
+    ).toBe(false);
+  });
+
+  it("runs again once the interval has elapsed", () => {
+    const last = 10 * HOUR;
+    expect(
+      shouldAutoCheck({
+        lastCheckAt: last,
+        offerPending: false,
+        now: last + AUTO_CHECK_INTERVAL_MS,
+      }),
+    ).toBe(true);
+  });
+
+  it("takes an explicit interval, so the policy is tunable without editing it", () => {
+    expect(
+      shouldAutoCheck({ lastCheckAt: 1_000, offerPending: false, now: 2_000, intervalMs: 500 }),
+    ).toBe(true);
+  });
+
+  it("is far below release cadence and far above window-switch cadence", () => {
+    // Guards the constant against a careless edit: minutes would hammer the
+    // server, days would make focus checks pointless.
+    expect(AUTO_CHECK_INTERVAL_MS).toBeGreaterThanOrEqual(HOUR);
+    expect(AUTO_CHECK_INTERVAL_MS).toBeLessThanOrEqual(24 * HOUR);
   });
 });

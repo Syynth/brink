@@ -77,7 +77,7 @@ import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
-import { checkForUpdates, type UpdateApi } from "./updater.js";
+import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -819,7 +819,12 @@ void listen<string>("menu:open-recent", (event) => void openRecent(event.payload
 // so it funnels through the same guarded path as the window close below
 // rather than the OS quit item's own (unguarded) native teardown.
 void listen("menu:quit", () => void handleQuitRequested());
-void listen("menu:check-updates", () => void checkForUpdates(updateApi()));
+// Routed through the command so the menu item and the toast's Try Again
+// share one path (and one throttle clock).
+void listen("menu:check-updates", () => {
+  lastUpdateCheckAt = Date.now();
+  void checkForUpdates(updateApi());
+});
 
 /** One id for every update toast, so each stage REPLACES the last rather
  *  than stacking (the notification service treats a repeated id as a
@@ -865,7 +870,13 @@ export const UPDATE_COMMANDS: Command[] = [
   {
     id: UPDATE_CHECK_COMMAND,
     title: "Update: Check for Updates",
-    run: () => void checkForUpdates(updateApi()),
+    run: () => {
+      // Manual checks bypass the throttle (the author asked) but still
+      // restart its clock, so alt-tabbing right afterwards doesn't
+      // immediately fire a second round trip.
+      lastUpdateCheckAt = Date.now();
+      void checkForUpdates(updateApi());
+    },
   },
 ];
 
@@ -973,11 +984,37 @@ function updateApi(): UpdateApi {
   };
 }
 
+/** When the last check of any kind ran (epoch ms); 0 = never. */
+let lastUpdateCheckAt = 0;
+
+/**
+ * An automatic check — silent, and gated by `shouldAutoCheck` (the policy
+ * itself lives in updater.ts, dependency-free and unit-tested; this is only
+ * the wiring, like the rest of updateApi).
+ */
+async function autoCheckForUpdates(now: number = Date.now()): Promise<void> {
+  if (
+    !shouldAutoCheck({ lastCheckAt: lastUpdateCheckAt, offerPending: pendingUpdateOffer !== null, now })
+  ) {
+    return;
+  }
+  lastUpdateCheckAt = now;
+  await checkForUpdates(updateApi(), { silent: true });
+}
+
 // Launch check (ruled 2026-08-22): silent, and deliberately delayed — the
 // first seconds after startup belong to mounting the editor, not to a
 // network round trip. Silent means a no-update result and an offline failure
 // both say nothing; only an actual update prompts.
-setTimeout(() => void checkForUpdates(updateApi(), { silent: true }), 5_000);
+setTimeout(() => void autoCheckForUpdates(), 5_000);
+
+// Focus check (ruled 2026-08-25): coming back to the window is the natural
+// moment to notice a release that shipped while the author was elsewhere —
+// the launch check only ever fires for people who restart. Same silent,
+// throttled path; `onFocusChanged` fires for blur too, so the flag matters.
+void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  if (focused) void autoCheckForUpdates();
+});
 
 void getCurrentWindow().onCloseRequested(async (event) => {
   // Always prevent the native close first. (`@tauri-apps/api`'s own default
