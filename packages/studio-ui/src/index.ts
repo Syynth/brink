@@ -112,7 +112,15 @@ export {
 export { StateView } from "./StateView.js";
 export { ProgramView } from "./ProgramView.js";
 export {
+  ProblemsActions,
   ProblemsView,
+  countBySeverity,
+  filterProblemRows,
+  groupProblemRows,
+  matchesProblemFilter,
+  severityBucket,
+  summarizeCounts,
+  type ProblemFileGroup,
   ProblemsBadge,
   buildProblemRows,
   diagnosticLocation,
