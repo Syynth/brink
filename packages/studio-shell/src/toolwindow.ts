@@ -60,6 +60,22 @@ export interface ToolWindowDescriptor {
    * changes) without the shell depending on any app store (spec §7.2).
    */
   badge?: ComponentType;
+  /**
+   * Optional header controls, rendered in the chrome header between the
+   * title and the close button — panel-scoped affordances that belong to
+   * the panel's own chrome rather than its body (Problems' severity
+   * toggles and filter, a panel's expand/collapse-all, …).
+   *
+   * A component rather than nodes, for the same reason as {@link badge}:
+   * the registering app provides it, so it subscribes to that app's own
+   * store and stays reactive without the shell re-rendering — and without
+   * the shell depending on any app store (spec §7.2 layering).
+   *
+   * The header's uppercase/letter-spaced title styling is reset inside
+   * this slot, so an action component renders with ordinary control
+   * typography.
+   */
+  actions?: ComponentType;
   /** The window's content. Rendered below the shell's chrome header. */
   component: ComponentType;
 }

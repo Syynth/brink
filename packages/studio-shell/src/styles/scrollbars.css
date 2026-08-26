@@ -1,0 +1,63 @@
+/* Scrollbars (beta feedback 2026-08-25: "make the scroll bar slidey grabby
+   thingies darker/more blended in — they stand out a lot and are a little
+   visually distracting from the text").
+   
+   Applies to EVERY scrollable surface under the studio root — the editor's
+   `.cm-scroller`, tool windows, the binder, the search card list — because
+   these are UA pseudo-elements on descendants, not per-component styles.
+
+   WHY `::-webkit-scrollbar` AND NOT `scrollbar-width` / `scrollbar-color`:
+   all three engines we ship on are WebKit/Blink (WKWebView on macOS,
+   WebKitGTK on Linux, WebView2 on Windows), and every one of them supports
+   these pseudo-elements. The standard properties are supported only by
+   Blink of that set — and where both are present, Blink gives the standard
+   properties precedence, which would make Windows render a different
+   scrollbar than macOS. One mechanism keeps the three identical.
+
+   TRADEOFF (accepted, ruled): styling these opts out of macOS's overlay
+   scrollbars, so the bar is always present and reserves its lane instead of
+   floating over content. The alternative — a drawn overlay scrollbar — means
+   owning drag, resize sync, touch, and keyboard a11y for a control the OS
+   otherwise provides.
+
+   Colors are tokens with fallbacks derived from `--bs-fg-muted-rgb`, which
+   every theme supplies (manuscript/inky-dark inherit it from the mocha base
+   sheet), so all five themes get a correctly-tinted thumb — light themes
+   included — without touching a single theme file. */
+
+.brink-studio ::-webkit-scrollbar,
+.brink-studio::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* No track: the thumb floats on whatever surface it scrolls. */
+.brink-studio ::-webkit-scrollbar-track,
+.brink-studio::-webkit-scrollbar-track,
+.brink-studio ::-webkit-scrollbar-corner,
+.brink-studio::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The transparent border + padding-box clip insets the thumb inside its
+   10px lane, so it reads as a 6px pill with breathing room rather than a
+   bar wedged against the content edge. */
+.brink-studio ::-webkit-scrollbar-thumb,
+.brink-studio::-webkit-scrollbar-thumb {
+  background: var(--bs-scrollbar-thumb, rgb(var(--bs-fg-muted-rgb) / 26%));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+}
+
+.brink-studio ::-webkit-scrollbar-thumb:hover,
+.brink-studio::-webkit-scrollbar-thumb:hover {
+  background: var(--bs-scrollbar-thumb-hover, rgb(var(--bs-fg-muted-rgb) / 42%));
+  background-clip: padding-box;
+}
+
+.brink-studio ::-webkit-scrollbar-thumb:active,
+.brink-studio::-webkit-scrollbar-thumb:active {
+  background: var(--bs-scrollbar-thumb-active, rgb(var(--bs-fg-muted-rgb) / 55%));
+  background-clip: padding-box;
+}

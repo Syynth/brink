@@ -12,6 +12,22 @@
   min-width: 0;
   min-height: 0;
 }
+/* Header controls slot (ToolWindowDescriptor.actions): sits with the close
+   button on the right. The header itself is uppercase, letter-spaced and
+   semibold for the TITLE — reset that here so action components render with
+   ordinary control typography instead of inheriting a panel-title look. */
+.brink-studio .shell-toolwindow .header .shell-toolwindow-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--bs-fg);
+}
+
 .brink-studio .shell-toolwindow .header {
   padding: 8px 12px;
   font-size: 13px;

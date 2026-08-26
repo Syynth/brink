@@ -51,19 +51,26 @@ import {
 function ToolWindowChrome({ descriptor }: { descriptor: ToolWindowDescriptor }) {
   const { commands } = useShell();
   const Body = descriptor.component;
+  // Header controls are a component (see ToolWindowDescriptor.actions), so
+  // they subscribe to the app's own store and stay live without the shell
+  // knowing anything about it — same contract as `badge`.
+  const Actions = descriptor.actions;
   return (
     <section className="shell-toolwindow" data-toolwindow={descriptor.id}>
       <div className="header">
         <span>{descriptor.title}</span>
-        <button
-          type="button"
-          className="brink-panel-toggle"
-          onClick={() => commands.dispatch(viewToggleCommandId(descriptor.id))}
-          title={`Close ${descriptor.title}`}
-          aria-label={`Close ${descriptor.title}`}
-        >
-          {"×"}
-        </button>
+        <span className="shell-toolwindow-header-actions">
+          {Actions ? <Actions /> : null}
+          <button
+            type="button"
+            className="brink-panel-toggle"
+            onClick={() => commands.dispatch(viewToggleCommandId(descriptor.id))}
+            title={`Close ${descriptor.title}`}
+            aria-label={`Close ${descriptor.title}`}
+          >
+            {"×"}
+          </button>
+        </span>
       </div>
       <div className="shell-toolwindow-body">
         <Body />

@@ -56,3 +56,120 @@
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 11px;
 }
+
+/* ── Header controls + filter/group surfaces (beta feedback 2026-08-25) ──
+   The severity toggles and the funnel/group buttons render in the tool
+   window's chrome header via ToolWindowDescriptor.actions; the filter row
+   they reveal lives in the panel body, since an input does not fit a slim
+   header line (binder precedent: a button reveals a search row). */
+
+.brink-studio .problems-sev-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .problems-sev-toggle .problems-sev-glyph {
+  font-size: 9px;
+  line-height: 1;
+}
+/* On: the row glyph's own colour, on a wash of it. Off: muted and struck,
+   so a hidden severity is legible as hidden rather than just dimmer. */
+.brink-studio .problems-sev-toggle.on.is-error {
+  color: var(--bs-error);
+  background: rgb(var(--bs-error-rgb) / 13%);
+}
+.brink-studio .problems-sev-toggle.on.is-warning {
+  color: var(--bs-warning);
+  background: rgb(var(--bs-warning-rgb) / 13%);
+}
+.brink-studio .problems-sev-toggle.on.is-info {
+  color: var(--bs-accent);
+  background: rgb(var(--bs-accent-rgb) / 13%);
+}
+.brink-studio .problems-sev-toggle.off {
+  color: var(--bs-fg-dim, var(--bs-fg-muted));
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+.brink-studio .problems-sev-toggle:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .problems-actions-sep {
+  width: 1px;
+  height: 13px;
+  margin: 0 3px;
+  background: var(--bs-border);
+}
+
+.brink-studio .problems-filter {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgb(var(--bs-border-rgb) / 60%);
+  flex-shrink: 0;
+}
+.brink-studio .problems-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  color: var(--bs-fg);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+.brink-studio .problems-filter-input:focus {
+  outline: 1px solid var(--bs-accent);
+  outline-offset: -1px;
+}
+
+.brink-studio .problems-group-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.brink-studio .problems-group-header:hover {
+  background: var(--bs-hover-bg);
+}
+/* ChevronIcon points DOWN at rest, which is the EXPANDED state. Collapsed
+   turns it a quarter counter-clockwise so it points RIGHT — down = open,
+   right = closed, the disclosure convention everywhere else. (Rotating the
+   open state instead pointed it left, which is what shipped in the first
+   draft.) */
+.brink-studio .problems-group-chevron {
+  display: flex;
+  color: var(--bs-fg-muted);
+  transition: transform 120ms ease;
+}
+.brink-studio .problems-group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+.brink-studio .problems-group-file {
+  color: var(--bs-accent);
+  font-family: var(--bs-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.brink-studio .problems-group-counts {
+  margin-left: auto;
+  flex-shrink: 0;
+}
