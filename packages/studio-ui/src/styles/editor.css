@@ -333,6 +333,24 @@
    width (set by RailMarker.toDOM) sizes the gutter, and the bars live in
    an absolutely-positioned layer spanning the gutter element's height —
    same visuals, no percent-height resolution per layout. */
+/* Reserve the rails column (#3131). Its width is emergent — RailMarker
+   sizes a spacer to `5n + 2` px for an n-deep stack — and the stack only
+   exists once the HIR projection arrives, a few hundred ms after a file
+   opens. Until then the column is 0 wide, so when the rails land the
+   column grows and `detachedGutters` rewrites the content's padding-left
+   by the same delta. That padding IS the text's offset, so the author
+   sees the prose jump sideways on every file open.
+
+   Reserving THREE lanes (n=3 -> 17px) covers the deep-but-ordinary case —
+   a knot containing a stitch containing a choice — so the projection
+   populates space that was already there and the text never moves. Two
+   lanes was measurably not enough: switching to a file with a 3-deep
+   stack still shifted 7px. The cost is a few px of gutter on a shallow
+   file, which is invisible; the benefit is that prose never moves under
+   the cursor. A file deeper than three still adjusts once. */
+.brink-studio .brink-hir-rail-gutter {
+  min-width: 17px;
+}
 .brink-studio .brink-hir-rail-gutter .cm-gutterElement {
   position: relative;
 }
