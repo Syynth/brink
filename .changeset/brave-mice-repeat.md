@@ -1,13 +1,16 @@
 ---
 "@brink-lang/editor": patch
+"@brink-lang/studio": patch
 ---
 
-Make the HIR rails gutter a fixed one-lane column instead of sizing it to
-the open file's nesting depth. The spacer that sizes the column was `5n + 2`
-px for an n-deep container stack, so the column's width depended on which
-file was open and on when the HIR projection arrived — and since the
-detached-gutter layout pays gutter width back as the content's padding, both
-slid the prose sideways. Deeper stacks now paint their extra lanes over the
-neighbouring play gutter, which is empty except on the hovered line; the bars
-live in an absolutely-positioned layer, so they are unaffected by the width.
-Reclaims 10px of permanently blank gutter on every file.
+The editor's prose no longer slides sideways when a file opens. The
+structure-rails gutter was sized by its content, and that content only
+exists once the HIR projection arrives a few hundred milliseconds later, so
+the column grew from nothing and the compensating content padding — which is
+the text's offset — was rewritten by the same delta. The column is now a
+fixed one-lane width that does not depend on the open file's nesting depth
+or on when the projection lands, so there is no growth to compensate for.
+Deeper stacks paint their extra lanes over the neighbouring play gutter,
+which is empty except on the hovered line; the bars live in an
+absolutely-positioned layer and still render every lane at full size. Also
+reclaims 10px of permanently blank gutter on every file.
