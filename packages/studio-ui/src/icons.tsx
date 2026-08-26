@@ -305,3 +305,22 @@ export function StitchPlusIcon({ size = 13 }: IconProps) {
     </svg>
   );
 }
+
+/** Funnel — FILTERS a list (as opposed to SearchIcon, which searches the
+ *  project). Used by the Problems panel's header. */
+export function FilterIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M21 4H3l7 8.4V19l4 2v-8.6L21 4z" />
+    </svg>
+  );
+}
+
+/** Group-by-file toggle (Problems panel header). */
+export function GroupByFileIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}

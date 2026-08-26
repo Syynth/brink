@@ -94,6 +94,7 @@ import {
   type WasmCounterMap,
   PLAYER_TYPE_ID,
   PlayerPane,
+  ProblemsActions,
   ProblemsBadge,
   ProblemsView,
   TodosBadge,
@@ -1039,6 +1040,7 @@ export async function mountStudio(
     defaultPlacement: { dock: "bottom", section: "start" },
     defaultOpen: false,
     badge: ProblemsBadge,
+    actions: ProblemsActions,
     component: ProblemsView,
   });
   toolWindows.register({
