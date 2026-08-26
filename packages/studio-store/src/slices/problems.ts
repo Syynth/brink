@@ -8,14 +8,18 @@
  * share state through a store — the same reason the strip badge reads the
  * store rather than taking a prop.
  *
- * Transient by design, like the search slice: nothing here persists across
- * restarts (that's the separate layout-persistence question).
+ * The durable half — which severities are shown, and whether rows are
+ * grouped by file — round-trips through localStorage (ruled 2026-08-25:
+ * "on by default, and persisted across refreshes, same with the toggles").
+ * These are how an author reads their problem list; re-picking them every
+ * launch is exactly the kind of small tax that makes a panel annoying.
  *
- * DEFAULTS PRESERVE TODAY'S BEHAVIOR — every severity visible, ungrouped,
- * filter closed — so adding the controls changes nothing until the user
- * touches one. In particular Info stays ON: E189 TODO notes are Info, and
- * defaulting them off would silently hide diagnostics that are visible
- * today.
+ * The filter TEXT deliberately does NOT persist. A query restored into a
+ * closed filter row is a panel silently hiding rows with no visible cause —
+ * the same failure the clear-on-close rule below exists to prevent.
+ *
+ * Info stays ON by default: E189 TODO notes are Info, and defaulting them
+ * off would silently hide diagnostics that are visible today.
  */
 
 import type { StateCreator } from "zustand";
@@ -44,6 +48,66 @@ export interface ProblemsSlice {
   toggleProblemsFilter(): void;
   toggleProblemsGrouped(): void;
   toggleProblemsFileCollapsed(file: string): void;
+  /** Apply persisted preferences at boot (mount.tsx). */
+  applyProblemsPrefs(prefs: ProblemsPrefs): void;
+  /** Injected persistence sink; null until the app binds it. Keeps the
+   *  slice free of a direct `window` dependency, like `_notify`. */
+  _persistProblemsPrefs: ((prefs: ProblemsPrefs) => void) | null;
+  setProblemsPrefsSink(sink: (prefs: ProblemsPrefs) => void): void;
+}
+
+/** The persisted subset — the view preferences, never the filter text. */
+export interface ProblemsPrefs {
+  severities: Record<ProblemSeverityBucket, boolean>;
+  grouped: boolean;
+}
+
+export const PROBLEMS_STORAGE_KEY = "brink-studio.problems.v1";
+
+const DEFAULT_PREFS: ProblemsPrefs = {
+  severities: { error: true, warning: true, info: true },
+  grouped: true,
+};
+
+/** Load persisted preferences. Never throws; defaults on anything odd. */
+export function loadProblemsPrefs(storage: Pick<Storage, "getItem">): ProblemsPrefs {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(PROBLEMS_STORAGE_KEY);
+  } catch {
+    return DEFAULT_PREFS;
+  }
+  if (raw === null || raw === "") return DEFAULT_PREFS;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_PREFS;
+  }
+  const obj = parsed as { severities?: unknown; grouped?: unknown } | null;
+  const sev = (obj?.severities ?? {}) as Record<string, unknown>;
+  return {
+    // Only an explicit `false` hides a severity: a partial or older record
+    // must never silently hide diagnostics.
+    severities: {
+      error: sev.error !== false,
+      warning: sev.warning !== false,
+      info: sev.info !== false,
+    },
+    grouped: obj?.grouped !== false,
+  };
+}
+
+/** Persist preferences. Storage failures degrade to in-session. */
+export function saveProblemsPrefs(
+  storage: Pick<Storage, "setItem">,
+  prefs: ProblemsPrefs,
+): void {
+  try {
+    storage.setItem(PROBLEMS_STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // Quota/denied — the choice still applies for this session.
+  }
 }
 
 export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlice> = (
@@ -53,12 +117,26 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
   problemsSeverities: { error: true, warning: true, info: true },
   problemsFilter: "",
   problemsFilterOpen: false,
-  problemsGrouped: false,
+  // Grouped by default (ruled): a flat list of every diagnostic in a
+  // project reads as noise; per-file sections are how you actually scan it.
+  problemsGrouped: true,
   problemsCollapsedFiles: {},
+
+  _persistProblemsPrefs: null,
+
+  setProblemsPrefsSink(sink) {
+    set({ _persistProblemsPrefs: sink });
+  },
+
+  applyProblemsPrefs(prefs) {
+    set({ problemsSeverities: prefs.severities, problemsGrouped: prefs.grouped });
+  },
 
   toggleProblemSeverity(bucket) {
     const current = get().problemsSeverities;
-    set({ problemsSeverities: { ...current, [bucket]: !current[bucket] } });
+    const severities = { ...current, [bucket]: !current[bucket] };
+    set({ problemsSeverities: severities });
+    get()._persistProblemsPrefs?.({ severities, grouped: get().problemsGrouped });
   },
 
   setProblemsFilter(query) {
@@ -74,7 +152,9 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
   },
 
   toggleProblemsGrouped() {
-    set({ problemsGrouped: !get().problemsGrouped });
+    const grouped = !get().problemsGrouped;
+    set({ problemsGrouped: grouped });
+    get()._persistProblemsPrefs?.({ severities: get().problemsSeverities, grouped });
   },
 
   toggleProblemsFileCollapsed(file) {

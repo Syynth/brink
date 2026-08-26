@@ -12,6 +12,7 @@ export {
   hirOverlayExtension,
   hirSpansAt,
   hirIdentityAt,
+  RAIL_LANE_WIDTH_PX,
   refreshHirOverlay,
   refreshHirOverlayEffect,
 } from "./hir-overlay.js";
@@ -362,3 +363,17 @@ export type { WorkerLike } from "./worker/worker-transport.js";
 export type { SessionTransport } from "./worker/transport.js";
 export { AdmissionScheduler } from "./worker/scheduler.js";
 export type { SchedulerAction } from "./worker/scheduler.js";
+
+// Editor text size (beta feedback 2026-08-25): the CM6 theme reads
+// `--bs-editor-font-size`; these are the default, bounds, and the shared
+// clamp so the store and the settings parser cannot disagree.
+export {
+  DEFAULT_APP_FONT_SIZE,
+  MIN_APP_FONT_SIZE,
+  MAX_APP_FONT_SIZE,
+  clampAppFontSize,
+  DEFAULT_EDITOR_FONT_SIZE,
+  MIN_EDITOR_FONT_SIZE,
+  MAX_EDITOR_FONT_SIZE,
+  clampEditorFontSize,
+} from "./theme.js";

@@ -50,9 +50,17 @@ describe("gutter visibility toggle", () => {
       formGlyph: "hover",
       autoOpenForm: true,
       showGutters: false,
+      fontSize: 14,
+      appFontSize: 12,
     });
     const loaded = loadEditorSettings(storage);
-    expect(loaded).toEqual({ formGlyph: "hover", autoOpenForm: true, showGutters: false });
+    expect(loaded).toEqual({
+      formGlyph: "hover",
+      autoOpenForm: true,
+      showGutters: false,
+      fontSize: 14,
+      appFontSize: 12,
+    });
   });
 
   it("setShowGutters drives the store flag", () => {

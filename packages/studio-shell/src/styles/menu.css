@@ -15,7 +15,7 @@
   padding-top: 4px;
 }
 .brink-studio .shell-menu-group-label {
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--bs-fg-muted);
@@ -34,7 +34,7 @@
   color: var(--bs-fg);
   padding: 5px 10px;
   border-radius: 5px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   cursor: pointer;
 }
 .brink-studio .shell-menu-item:hover {
@@ -43,5 +43,5 @@
 }
 .brink-studio .shell-menu-item .binding {
   color: var(--bs-fg-muted);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }

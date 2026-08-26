@@ -24,7 +24,7 @@
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg-muted, #a6adc8);
   line-height: 1.5;
 }
@@ -42,7 +42,7 @@
 
 .scope-banner-msg code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg, #cdd6f4);
 }
 
@@ -54,7 +54,7 @@
   background: transparent;
   display: flex;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg, #cdd6f4);
   cursor: pointer;
   flex-shrink: 0;
@@ -91,7 +91,7 @@
 }
 
 .config-form-title {
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -99,7 +99,7 @@
 }
 
 .config-form-hint {
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg-dim, #6c7086);
   line-height: 1.5;
 }
@@ -118,7 +118,7 @@
 }
 
 .config-form-label {
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg-muted, #a6adc8);
 }
 
@@ -128,7 +128,7 @@
   border-radius: 4px;
   background: var(--bs-bg, #1e1e2e);
   color: var(--bs-fg, #cdd6f4);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 0 6px;
 }
@@ -139,6 +139,6 @@
 }
 
 .config-form-note {
-  font-size: 10.5px;
+  font-size: var(--bs-font-tiny);
   color: var(--bs-fg-dim, #6c7086);
 }

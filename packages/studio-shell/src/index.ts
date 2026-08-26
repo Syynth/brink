@@ -68,6 +68,7 @@ export {
   focusedGroup,
   focusedTab,
   type EditorGroup,
+  type EditorGroupsSeed,
   type EditorGroupsState,
   type EditorGroupsStore,
   type EditorTab,
@@ -141,6 +142,16 @@ export {
   snapshotLayout,
   type LayoutSnapshot,
 } from "./layout-persistence.js";
+export {
+  EDITOR_STORAGE_KEY,
+  MAX_SCOPES,
+  attachEditorPersistence,
+  loadEditorSnapshot,
+  reconcileEditorSnapshot,
+  snapshotEditorGroups,
+  type EditorSnapshot,
+  type PersistedViewState,
+} from "./editor-persistence.js";
 export {
   DRAG_THRESHOLD_PX,
   StripDragGesture,

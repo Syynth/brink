@@ -11,7 +11,7 @@
   background: none;
   border: 1px solid var(--bs-border);
   color: var(--bs-fg);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 1px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -48,14 +48,14 @@
   border: none;
   color: var(--bs-fg);
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   text-align: left;
   cursor: pointer;
   border-radius: 3px;
 }
 .brink-studio .brink-element-dropdown-key {
   color: var(--bs-fg-muted);
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   font-family: "JetBrains Mono", "Fira Code", monospace;
   margin-left: 16px;
   opacity: 0.6;

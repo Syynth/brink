@@ -27,8 +27,11 @@
   background: var(--bs-editor-bg);
 }
 .brink-studio .editor .cm-editor .cm-scroller {
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 14px;
+  font-family: var(--bs-font-mono);
+  /* The editor's OWN size knob, not a step on the app type scale — this
+     rule outranks the CM6 theme's, so pointing it at the scale silently
+     put the editor under the app knob and broke the two-knob split. */
+  font-size: var(--bs-editor-font-size);
   line-height: 1.6;
 }
 .brink-studio .editor .cm-editor .cm-gutters {
@@ -330,6 +333,31 @@
    width (set by RailMarker.toDOM) sizes the gutter, and the bars live in
    an absolutely-positioned layer spanning the gutter element's height —
    same visuals, no percent-height resolution per layout. */
+/* Reserve the rails column (#3131). The column is 0 wide until the HIR
+   projection arrives, a few hundred ms after a file opens, and
+   `detachedGutters` pays gutter width back as the content's padding-left —
+   which IS the text's offset — so an unreserved column slides the prose
+   sideways the moment the rails land.
+
+   ONE lane (7px), matching `RAIL_LANE_WIDTH_PX`. The spacer RailMarker
+   renders is now a constant of that width rather than `5n + 2` for an
+   n-deep stack, so the column no longer varies with the open file's nesting
+   depth and this reservation is exact rather than a bet on the deepest
+   ordinary case. Deeper stacks paint their extra lanes over the
+   neighbouring play gutter — the bars live in an absolutely-positioned
+   layer, so they are not laid out by this width — and that gutter is empty
+   except on the hovered line. Three lanes were reserved here at first,
+   which cost 17px of permanently blank column on every file; the maintainer
+   called it too big, and it was. */
+.brink-studio .brink-hir-rail-gutter {
+  min-width: 7px;
+}
+/* The bar layer intentionally overflows the one-lane column for a deep
+   stack; nothing between here and the scroller may clip it. */
+.brink-studio .brink-hir-rail-gutter,
+.brink-studio .brink-hir-rail-gutter .cm-gutterElement {
+  overflow: visible;
+}
 .brink-studio .brink-hir-rail-gutter .cm-gutterElement {
   position: relative;
 }
@@ -382,7 +410,7 @@
   border-radius: 6px;
   background: var(--bs-surface-bg);
   box-shadow: var(--bs-shadow);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
   pointer-events: none;
 }
@@ -404,7 +432,7 @@
 .brink-studio .brink-rail-tooltip-meta {
   margin-top: 2px;
   color: var(--bs-fg-muted);
-  font-size: 11px;
+  font-size: var(--bs-font-small);
 }
 
 /* CM6 lint panel overrides */
@@ -423,7 +451,7 @@
   margin: 0;
   padding: 8px 12px 8px 10px;
   border-left: 3px solid var(--bs-error);
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   line-height: 1.5;
   color: var(--bs-fg);
 }
@@ -534,14 +562,14 @@
   background: transparent;
   border: none;
   padding: 9px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   max-width: 460px;
   line-height: 1.55;
 }
 /* The signature line (first) reads as a header, set off from the doc. */
 .brink-studio .brink-hover-tooltip > div:first-child {
   font-family: "JetBrains Mono", "Fira Code", monospace;
-  font-size: 12.5px;
+  font-size: var(--bs-font-body);
   line-height: 1.5;
   padding-bottom: 6px;
   margin-bottom: 1px;
@@ -560,7 +588,7 @@
 }
 .brink-studio .brink-hover-tooltip em {
   color: var(--bs-fg-muted);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 /* The "Edit arguments" action folded into the hover card (hovercard mode). */
 .brink-studio .brink-hover-action {
@@ -570,7 +598,7 @@
   align-self: flex-start;
   margin-top: 3px;
   padding: 4px 9px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
   background: var(--bs-surface-bg);
   border: 1px solid var(--bs-border);
@@ -622,7 +650,7 @@
 }
 .brink-value-filter {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 4px 6px;
   background: var(--bs-surface-bg, #2a2a3a);
   color: var(--bs-fg, #eee);
@@ -642,7 +670,7 @@
   gap: 8px;
   text-align: left;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   padding: 4px 8px;
   color: var(--bs-fg, #eee);
   background: transparent;
@@ -731,7 +759,7 @@
   text-align: left;
   padding: 6px 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg);
   background: var(--bs-surface-bg);
   border: 1px solid var(--bs-border);
@@ -753,7 +781,7 @@
   gap: 10px;
 }
 .host-example-map-title {
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg-muted);
 }
 .host-example-map-grid {
@@ -920,7 +948,7 @@
 .brink-cp-hex {
   flex: 1;
   font-family: var(--bs-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 4px 6px;
   background: var(--bs-surface-bg, #2a2a3a);
   color: var(--bs-fg, #eee);
@@ -955,7 +983,7 @@
 }
 .brink-arg-form-title {
   font-family: var(--bs-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg-muted, #aaa);
   border-bottom: 1px solid var(--bs-border, #444);
   padding-bottom: 6px;
@@ -969,7 +997,7 @@
 .brink-arg-form-label {
   flex: 0 0 auto;
   min-width: 84px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg, #ddd);
   font-style: italic;
 }
@@ -984,7 +1012,7 @@
   flex: 1;
   min-width: 90px;
   font-family: var(--bs-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 4px 6px;
   background: var(--bs-surface-bg, #2a2a3a);
   color: var(--bs-fg, #eee);
@@ -1000,7 +1028,7 @@
   flex: 1;
   min-width: 120px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 4px 6px;
   background: var(--bs-surface-bg, #2a2a3a);
   color: var(--bs-fg, #eee);
@@ -1020,7 +1048,7 @@
   flex: 1;
   min-width: 90px;
   font-family: var(--bs-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 3px 7px;
   background: var(--bs-surface-bg, #2a2a3a);
   border: 1px solid var(--bs-border, #444);
@@ -1030,7 +1058,7 @@
 .brink-arg-form-edit {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   padding: 3px 8px;
   border-radius: 4px;
   border: 1px solid var(--bs-border, #444);
@@ -1056,7 +1084,7 @@
 }
 .brink-arg-form-btn {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   padding: 4px 10px;
   border-radius: 4px;
   border: 1px solid var(--bs-border, #444);
@@ -1079,7 +1107,7 @@
   border-radius: 4px;
   padding: 8px 12px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
 }
 .brink-studio .brink-sig-active-param {
   color: var(--bs-accent);
@@ -1090,7 +1118,7 @@
   margin-top: 4px;
   color: var(--bs-fg-muted);
   font-family: system-ui, sans-serif;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 /* Reference highlights */
 .brink-studio .brink-reference-highlight {
@@ -1114,7 +1142,7 @@
   border: none;
   color: var(--bs-fg);
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   text-align: left;
   cursor: pointer;
   border-radius: 4px;

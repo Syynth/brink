@@ -7,7 +7,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 .brink-studio .todos-filter {
   padding: 6px 10px;
@@ -70,7 +70,7 @@
   margin-left: auto;
   flex-shrink: 0;
   color: var(--bs-fg-muted);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   font-variant-numeric: tabular-nums;
 }
 .brink-studio .todos-container-header {
@@ -107,7 +107,7 @@
   flex-shrink: 0;
   color: var(--bs-fg-muted);
   font-family: "JetBrains Mono", "Fira Code", monospace;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
 }
 
 /* Removed notes linger struck-through, fading, then drop (existence in

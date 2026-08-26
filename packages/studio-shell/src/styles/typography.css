@@ -1,0 +1,45 @@
+/* Type scale (beta feedback 2026-08-25: "do a sweep and identify font size
+   variables, and not have 179 hard-coded font sizes").
+   
+   Before this, 179 declarations across 24 files hardcoded twelve different
+   px values, so there was no way to change the app's text size and no way
+   for a new component to know which size it should reach for.
+   
+   Every step is a ratio of ONE base, so `--bs-font-base` is the app-wide
+   text-size knob: change it and the whole scale moves proportionally,
+   keeping the relationships between steps intact. The ratios are chosen so
+   that at the shipped base of 12px every step lands exactly on the value
+   that surface already used — this sweep is pixel-identical by
+   construction, except where noted in its commit.
+
+   Two steps exist because their surfaces are deliberate, not incidental:
+   `glyph` (decorative chevrons and menu marks, which must stay smaller
+   than any text) and `prose` (the Player's story text, tuned alongside its
+   own line-height and letter-spacing — it is the reading experience, not
+   chrome).
+
+   The EDITOR's text is not on this scale: it has its own knob
+   (`--bs-editor-font-size`), because "make the text bigger" about the
+   thing you write in is a different request from "make the UI bigger". */
+
+.brink-studio {
+  /* The app-wide text-size knob. */
+  --bs-font-base: 12px;
+
+  --bs-font-glyph: calc(var(--bs-font-base) * 0.6667); /* 8px  */
+  --bs-font-micro: calc(var(--bs-font-base) * 0.75); /* 9px  */
+  --bs-font-tiny: calc(var(--bs-font-base) * 0.8333); /* 10px */
+  --bs-font-small: calc(var(--bs-font-base) * 0.9167); /* 11px */
+  --bs-font-body: var(--bs-font-base); /* 12px */
+  --bs-font-medium: calc(var(--bs-font-base) * 1.0833); /* 13px */
+  --bs-font-large: calc(var(--bs-font-base) * 1.1667); /* 14px */
+  --bs-font-xlarge: calc(var(--bs-font-base) * 1.3333); /* 16px */
+  --bs-font-prose: calc(var(--bs-font-base) * 1.4167); /* 17px */
+
+  /* The monospace family. Every use site referenced this as a var with a
+     bare `monospace` fallback but NOTHING defined it, so all of them
+     silently fell back — and two different names were in play
+     (--bs-font-mono, --bs-mono). One definition, matching the editor's own
+     stack, so code-ish UI text and the editor agree. */
+  --bs-font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}

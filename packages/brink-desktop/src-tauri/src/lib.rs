@@ -767,6 +767,36 @@ const RECENTS_MAX: usize = 10;
 /// for the round-trip this prefix is expected to survive.
 const OPEN_RECENT_ID_PREFIX: &str = "open-recent:";
 
+/// The menu-id prefix for a View → panel toggle. Producer/consumer pair with
+/// the same drift argument as `OPEN_RECENT_ID_PREFIX`.
+const VIEW_PANEL_ID_PREFIX: &str = "view-panel:";
+
+/// The tool windows the View menu can toggle, as `(command suffix, label)`.
+///
+/// This is a COPY of what `brink-studio` registers in `mount.tsx`: the
+/// studio's public API (`StudioApi`) exposes no tool-window registry, so the
+/// native menu cannot enumerate them, and a Tauri menu is built in Rust
+/// before the webview exists. Drift is inert rather than broken — the
+/// frontend turns each id into `view.toggle.<id>` and `dispatch` returns
+/// false for a command that is not registered, so a stale entry is a no-op
+/// and a new tool window is simply absent until it is added here.
+const VIEW_PANELS: &[(&str, &str)] = &[
+    ("binder", "Binder"),
+    ("search", "Search"),
+    ("program", "Program Explorer"),
+    ("state", "State View"),
+    ("problems", "Problems"),
+    ("output", "Output"),
+    ("todos", "TODOs"),
+];
+
+/// Where Help → Brink Documentation goes: the mdBook the `book.yml` workflow
+/// deploys to GitHub Pages.
+const HELP_DOCS_URL: &str = "https://syynth.github.io/brink/";
+
+/// Where Help → Report an Issue… goes.
+const HELP_ISSUES_URL: &str = "https://github.com/Syynth/brink/issues";
+
 /// The app-data path for `recents.json`.
 fn recents_path(app: &tauri::AppHandle) -> Result<PathBuf, ShellError> {
     use tauri::Manager;
@@ -1228,6 +1258,134 @@ async fn previous_exit_clean(state: tauri::State<'_, PreviousExitClean>) -> Resu
     Ok(state.0)
 }
 
+/// The View submenu: editor font size, the tool-window toggles, and the
+/// platform full-screen item. Split out of `build_menu` because it is the
+/// one submenu that is BUILT rather than declared — the panel entries come
+/// from a table, so it carries a loop and two vectors that would otherwise
+/// break up that function's flat, readable menu-tree declaration.
+fn build_view_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Submenu<tauri::Wry>> {
+    use tauri::menu::{IsMenuItem, MenuItem, PredefinedMenuItem, Submenu};
+
+    // View. The font-size items carry NO accelerators on purpose. The studio
+    // owns ⌘+/⌘−/⌘0 in its own keymap and has to — the same build runs in a
+    // browser, where there is no native menu — so an accelerator here would
+    // be a second owner of those chords. Whether the platform swallows the
+    // key before the webview sees it is platform-specific; rather than risk a
+    // double-apply (one bump from the menu, one from the keymap) the menu is
+    // the discoverable second door and the keyboard stays with the studio.
+    let font_increase = MenuItem::with_id(
+        handle,
+        "view-font-increase",
+        "Increase Editor Font Size",
+        true,
+        None::<&str>,
+    )?;
+    let font_decrease = MenuItem::with_id(
+        handle,
+        "view-font-decrease",
+        "Decrease Editor Font Size",
+        true,
+        None::<&str>,
+    )?;
+    let font_reset = MenuItem::with_id(
+        handle,
+        "view-font-reset",
+        "Reset Editor Font Size",
+        true,
+        None::<&str>,
+    )?;
+    let panel_items: Vec<MenuItem<tauri::Wry>> = VIEW_PANELS
+        .iter()
+        .map(|(id, title)| {
+            MenuItem::with_id(
+                handle,
+                format!("{VIEW_PANEL_ID_PREFIX}{id}"),
+                title,
+                true,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let view_sep_panels = PredefinedMenuItem::separator(handle)?;
+    let view_sep_fullscreen = PredefinedMenuItem::separator(handle)?;
+    let fullscreen = PredefinedMenuItem::fullscreen(handle, None)?;
+    let mut view_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
+        &font_increase,
+        &font_decrease,
+        &font_reset,
+        &view_sep_panels,
+    ];
+    view_items.extend(
+        panel_items
+            .iter()
+            .map(|item| -> &dyn IsMenuItem<tauri::Wry> { item }),
+    );
+    view_items.push(&view_sep_fullscreen);
+    view_items.push(&fullscreen);
+    Submenu::with_items(handle, "View", true, &view_items)
+}
+
+/// What activating a menu item means. Splitting the id→action mapping out of
+/// `run`'s event closure is what makes it testable at all: this crate's menu
+/// cannot be driven from a unit test (no app handle, no window), so without
+/// this the whole table — every id literal, every prefix strip — would only
+/// ever be exercised by a human clicking the real menu.
+#[derive(Debug, PartialEq, Eq)]
+enum MenuRoute {
+    /// Forward to the webview as `name`; the frontend owns what it means.
+    /// `payload` carries the variable part of a prefixed id (a recent path, a
+    /// tool-window id) and is `None` for the plain items.
+    Emit {
+        name: &'static str,
+        payload: Option<String>,
+    },
+    /// Open a link in the platform browser. Shell business, not the
+    /// frontend's — routing it through the webview would add a hop and a
+    /// plugin permission the frontend does not otherwise need.
+    OpenUrl(&'static str),
+    /// Not ours: a `PredefinedMenuItem` the platform already handled.
+    Ignore,
+}
+
+fn route_menu_event(id: &str) -> MenuRoute {
+    if let Some(path) = id.strip_prefix(OPEN_RECENT_ID_PREFIX) {
+        return MenuRoute::Emit {
+            name: "menu:open-recent",
+            payload: Some(path.to_owned()),
+        };
+    }
+    if let Some(panel) = id.strip_prefix(VIEW_PANEL_ID_PREFIX) {
+        return MenuRoute::Emit {
+            name: "menu:view-toggle",
+            payload: Some(panel.to_owned()),
+        };
+    }
+    match id {
+        "help-docs" => MenuRoute::OpenUrl(HELP_DOCS_URL),
+        "help-issues" => MenuRoute::OpenUrl(HELP_ISSUES_URL),
+        "new-project" => MenuRoute::emit("menu:new-project"),
+        "open-project" => MenuRoute::emit("menu:open-project"),
+        "close-project" => MenuRoute::emit("menu:close-project"),
+        "export-inkb" => MenuRoute::emit("menu:export-inkb"),
+        "export-xliff" => MenuRoute::emit("menu:export-xliff"),
+        "check-updates" => MenuRoute::emit("menu:check-updates"),
+        "view-font-increase" => MenuRoute::emit("menu:view-font-increase"),
+        "view-font-decrease" => MenuRoute::emit("menu:view-font-decrease"),
+        "view-font-reset" => MenuRoute::emit("menu:view-font-reset"),
+        "quit" => MenuRoute::emit("menu:quit"),
+        _ => MenuRoute::Ignore,
+    }
+}
+
+impl MenuRoute {
+    fn emit(name: &'static str) -> Self {
+        Self::Emit {
+            name,
+            payload: None,
+        }
+    }
+}
+
 /// Build the native menu bar. Project lifecycle (Open/Close) is
 /// SHELL-owned — it sits above `mountStudio`, so hand-wiring it here does
 /// not conflict with the D2 ruling that *studio* commands reach menus via
@@ -1256,7 +1414,10 @@ async fn previous_exit_clean(state: tauri::State<'_, PreviousExitClean>) -> Resu
 /// menu tree written out in order, and splitting it into per-submenu
 /// helpers would trade a readable top-to-bottom description of the menu
 /// for indirection without removing a single line. Adding the D4
-/// `check-updates` item is what pushed it from 99 to 107.
+/// `check-updates` item is what pushed it from 99 to 107; View/Window/Help
+/// (PR #3132) roughly doubled it again. The one piece that DID move out is
+/// `build_view_menu` — View is built from a table rather than declared, and
+/// its loop was the only thing here that was not a flat item list.
 #[expect(
     clippy::too_many_lines,
     reason = "flat menu-tree declaration; splitting adds indirection, not clarity"
@@ -1292,6 +1453,14 @@ fn build_menu(
             &PredefinedMenuItem::about(handle, None, None)?,
             &PredefinedMenuItem::separator(handle)?,
             &check_updates,
+            &PredefinedMenuItem::separator(handle)?,
+            // The macOS application-menu tail. muda no-ops these on the
+            // platforms that have no such concept, so they need no cfg gate.
+            &PredefinedMenuItem::services(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, None)?,
+            &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::show_all(handle, None)?,
             &PredefinedMenuItem::separator(handle)?,
             &quit,
         ],
@@ -1398,7 +1567,45 @@ fn build_menu(
             &PredefinedMenuItem::select_all(handle, None)?,
         ],
     )?;
-    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
+    let view_menu = build_view_menu(handle)?;
+    // Window. Close Window stays in File (the macOS convention, and where it
+    // already lived) — this menu is the window-state pair plus whatever the
+    // platform appends to a menu named "Window".
+    let window_menu = Submenu::with_items(
+        handle,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(handle, None)?,
+            &PredefinedMenuItem::maximize(handle, Some("Zoom"))?,
+        ],
+    )?;
+    let help_docs = MenuItem::with_id(
+        handle,
+        "help-docs",
+        "Brink Documentation",
+        true,
+        None::<&str>,
+    )?;
+    let help_issues = MenuItem::with_id(
+        handle,
+        "help-issues",
+        "Report an Issue…",
+        true,
+        None::<&str>,
+    )?;
+    let help_menu = Submenu::with_items(handle, "Help", true, &[&help_docs, &help_issues])?;
+    Menu::with_items(
+        handle,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ],
+    )
 }
 
 /// Build and run the shell. Returns the builder's error rather than
@@ -1432,6 +1639,9 @@ pub fn run() -> tauri::Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        // Help's two outbound links. Rust-side `open_url` only — the frontend
+        // never calls the plugin, so its JS permissions stay unclaimed.
+        .plugin(tauri_plugin_opener::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(RecentsLock(std::sync::Mutex::new(())))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
@@ -1462,25 +1672,20 @@ pub fn run() -> tauri::Result<()> {
             // Menu events forward to the webview as plain events; the
             // frontend owns what "open" and "close" mean (it holds the
             // StudioHandle). The shell stays policy-free.
-            app.on_menu_event(|app, event| {
-                let id = event.id().as_ref();
-                if let Some(path) = id.strip_prefix(OPEN_RECENT_ID_PREFIX) {
-                    let _ = app.emit("menu:open-recent", path.to_owned());
-                    return;
+            app.on_menu_event(|app, event| match route_menu_event(event.id().as_ref()) {
+                MenuRoute::Emit { name, payload } => match payload {
+                    Some(payload) => {
+                        let _ = app.emit(name, payload);
+                    }
+                    None => {
+                        let _ = app.emit(name, ());
+                    }
+                },
+                MenuRoute::OpenUrl(url) => {
+                    use tauri_plugin_opener::OpenerExt;
+                    let _ = app.opener().open_url(url, None::<&str>);
                 }
-                let forwarded = match id {
-                    "new-project" => Some("menu:new-project"),
-                    "open-project" => Some("menu:open-project"),
-                    "close-project" => Some("menu:close-project"),
-                    "export-inkb" => Some("menu:export-inkb"),
-                    "export-xliff" => Some("menu:export-xliff"),
-                    "check-updates" => Some("menu:check-updates"),
-                    "quit" => Some("menu:quit"),
-                    _ => None,
-                };
-                if let Some(name) = forwarded {
-                    let _ = app.emit(name, ());
-                }
+                MenuRoute::Ignore => {}
             });
             Ok(())
         })
@@ -4085,6 +4290,69 @@ on:
             let id = format!("{OPEN_RECENT_ID_PREFIX}{path}");
             assert_eq!(id.strip_prefix(OPEN_RECENT_ID_PREFIX), Some(path));
         }
+    }
+
+    /// Every id `build_menu` mints must route somewhere. The menu itself
+    /// cannot be built in a unit test (no app handle), so the id literals are
+    /// the seam: this walks the ones the shell owns and asserts each lands on
+    /// the action it is supposed to, catching the failure mode where a typo
+    /// at one of the two sites ships an item that silently does nothing.
+    #[test]
+    fn every_shell_owned_menu_id_routes() {
+        let cases: &[(&str, &str)] = &[
+            ("new-project", "menu:new-project"),
+            ("open-project", "menu:open-project"),
+            ("close-project", "menu:close-project"),
+            ("export-inkb", "menu:export-inkb"),
+            ("export-xliff", "menu:export-xliff"),
+            ("check-updates", "menu:check-updates"),
+            ("view-font-increase", "menu:view-font-increase"),
+            ("view-font-decrease", "menu:view-font-decrease"),
+            ("view-font-reset", "menu:view-font-reset"),
+            ("quit", "menu:quit"),
+        ];
+        for (id, event) in cases {
+            assert_eq!(
+                route_menu_event(id),
+                MenuRoute::Emit {
+                    name: event,
+                    payload: None
+                },
+                "menu id {id} should forward as {event}"
+            );
+        }
+    }
+
+    /// The View → panel items are minted from `VIEW_PANELS`, so the table and
+    /// the router have to agree on the prefix; the payload is the bare
+    /// tool-window id the frontend turns into `view.toggle.<id>`.
+    #[test]
+    fn view_panel_ids_route_with_the_bare_tool_window_id() {
+        for (id, _label) in VIEW_PANELS {
+            let menu_id = format!("{VIEW_PANEL_ID_PREFIX}{id}");
+            assert_eq!(
+                route_menu_event(&menu_id),
+                MenuRoute::Emit {
+                    name: "menu:view-toggle",
+                    payload: Some((*id).to_owned())
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn help_ids_route_to_urls_and_unknown_ids_are_ignored() {
+        assert_eq!(
+            route_menu_event("help-docs"),
+            MenuRoute::OpenUrl(HELP_DOCS_URL)
+        );
+        assert_eq!(
+            route_menu_event("help-issues"),
+            MenuRoute::OpenUrl(HELP_ISSUES_URL)
+        );
+        // A predefined item (Zoom, Minimize, Copy…) reaches the same closure;
+        // it must fall through rather than match a prefix by accident.
+        assert_eq!(route_menu_event("nothing-we-mint"), MenuRoute::Ignore);
     }
 
     #[test]

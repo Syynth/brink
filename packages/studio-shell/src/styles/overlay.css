@@ -36,7 +36,7 @@
   outline: none;
   color: var(--bs-fg);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--bs-font-large);
   padding: 10px 14px;
 }
 .brink-studio .shell-palette-input::placeholder {
@@ -56,7 +56,7 @@
   gap: 16px;
   padding: 6px 10px;
   border-radius: 5px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg);
   cursor: pointer;
 }
@@ -66,11 +66,11 @@
 }
 .brink-studio .shell-palette-item .binding {
   color: var(--bs-fg-muted);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   letter-spacing: 0.04em;
 }
 .brink-studio .shell-palette-empty {
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg-muted);
 }

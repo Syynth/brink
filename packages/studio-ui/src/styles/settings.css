@@ -25,20 +25,20 @@
 
 .brink-studio .settings-section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   font-weight: 600;
   color: var(--bs-fg);
 }
 
 .brink-studio .settings-section-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   line-height: 1.5;
   color: var(--bs-fg-muted);
 }
 .brink-studio .settings-section-hint code {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
 }
 
 /* Theme radios */
@@ -52,7 +52,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg);
   cursor: pointer;
   width: fit-content;
@@ -65,7 +65,7 @@
 /* Keymap JSON editor */
 .brink-studio .settings-json {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   line-height: 1.6;
   color: var(--bs-fg);
   background: var(--bs-panel-bg);
@@ -82,7 +82,7 @@
 
 .brink-studio .settings-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   line-height: 1.5;
   color: var(--bs-error);
 }
@@ -94,7 +94,7 @@
   border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 4px 14px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   cursor: pointer;
 }
 .brink-studio .settings-apply:hover {
@@ -106,7 +106,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg);
 }
 .brink-studio .settings-select {
@@ -115,5 +115,5 @@
   border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }

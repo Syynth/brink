@@ -11,7 +11,7 @@
 }
 .brink-studio .player-pane .header {
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   font-weight: 600;
   color: var(--bs-fg-muted);
   background: var(--bs-surface-bg);
@@ -32,7 +32,7 @@
   border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 2px 10px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   cursor: pointer;
 }
 .brink-studio .player-pane .header button:hover {
@@ -50,7 +50,7 @@
 .brink-studio .player .story-text p {
   margin-bottom: 12px;
   line-height: 1.8;
-  font-size: 17px;
+  font-size: var(--bs-font-prose);
   letter-spacing: 0.01em;
 }
 .brink-studio .player .choices {
@@ -65,7 +65,7 @@
   border: 1px solid var(--bs-border);
   border-radius: 6px;
   padding: 10px 16px;
-  font-size: 16px;
+  font-size: var(--bs-font-xlarge);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -80,12 +80,12 @@
   text-align: center;
   color: var(--bs-fg-muted);
   font-style: italic;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
 }
 .brink-studio .player .error {
   color: var(--bs-error);
   font-family: monospace;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   padding: 8px;
   background: rgb(var(--bs-error-rgb) / 10%);
   border-radius: 4px;

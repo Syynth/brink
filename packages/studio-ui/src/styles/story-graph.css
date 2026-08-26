@@ -45,7 +45,7 @@
   border-radius: 6px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   cursor: pointer;
 }
 
@@ -104,7 +104,7 @@
 .brink-studio .brink-graph-node-end .brink-graph-node-label,
 .brink-studio .brink-graph-node-done .brink-graph-node-label {
   flex: 0 1 auto;
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--bs-fg-muted);
@@ -175,7 +175,7 @@
   border-radius: 9px;
   background: var(--bs-accent);
   color: var(--bs-on-accent);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   font-weight: 700;
   text-align: center;
 }
@@ -215,7 +215,7 @@
 /* Aggregated-edge count labels (×N on collapsed knots) */
 .brink-studio .brink-story-graph .react-flow__edge-text {
   fill: var(--bs-fg-muted);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
 }
 .brink-studio .brink-story-graph .react-flow__edge-textbg {
   fill: var(--bs-editor-bg);
@@ -268,7 +268,7 @@
   border-radius: 6px;
   background: rgb(var(--bs-panel-bg-rgb) / 88%);
   color: var(--bs-fg-muted);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   line-height: 1.4;
 }
 .brink-studio .brink-graph-legend-row {

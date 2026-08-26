@@ -6,7 +6,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 
 /* ── Query / replace form ─────────────────────────────────────────── */
@@ -45,7 +45,7 @@
 
 .brink-studio .search-chevron {
   display: inline-block;
-  font-size: 8px;
+  font-size: var(--bs-font-glyph);
   line-height: 1;
   transform: rotate(90deg);
   transition: transform 80ms ease;
@@ -90,7 +90,7 @@
   min-width: 40px;
   font: inherit;
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
   background: none;
   border: none;
@@ -102,7 +102,7 @@
   min-width: 0;
   font: inherit;
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
   background: var(--bs-panel-bg);
   border: 1px solid var(--bs-border);
@@ -126,10 +126,10 @@
   border: 1px solid rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
   border-radius: 4px;
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 .brink-studio .search-refs-chip-cap {
-  font-size: 9px;
+  font-size: var(--bs-font-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--bs-accent-secondary, #cba6f7);
@@ -148,7 +148,7 @@
   padding: 0 0 0 2px;
   color: var(--bs-fg-muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   line-height: 1;
 }
 .brink-studio .search-refs-chip-clear:hover {
@@ -167,7 +167,7 @@
 
 .brink-studio .search-option {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   line-height: 1;
   padding: 4px 4px;
   background: transparent;
@@ -187,7 +187,7 @@
 
 .brink-studio .search-replace-all {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   padding: 3px 8px;
   background: var(--bs-panel-bg);
   color: var(--bs-accent);
@@ -205,7 +205,7 @@
 
 .brink-studio .search-error {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   line-height: 1.4;
   color: var(--bs-error);
 }
@@ -223,13 +223,13 @@
 .brink-studio .search-confirm-text {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg);
 }
 .brink-studio .search-confirm-yes,
 .brink-studio .search-confirm-no {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--bs-border);
@@ -318,7 +318,7 @@
   border-radius: 8px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg-muted);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   font-weight: 400;
   line-height: 16px;
   text-align: center;
@@ -344,7 +344,7 @@
   border: none;
   font: inherit;
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg-muted);
   text-align: left;
   cursor: pointer;
@@ -366,7 +366,7 @@
   background: transparent;
   border: none;
   color: var(--bs-fg-muted);
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   cursor: pointer;
 }
 .brink-studio .search-result-row:hover .search-row-replace,
@@ -388,7 +388,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg-muted);
   border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
   min-width: 0;
@@ -411,7 +411,7 @@
   padding: 0;
   color: var(--bs-fg-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   line-height: 1;
 }
 .brink-studio .search-summary-tools button:hover {
@@ -433,7 +433,7 @@
 }
 .brink-studio .search-context-value {
   color: var(--bs-fg);
-  font-family: var(--bs-mono, ui-monospace, monospace);
+  font-family: var(--bs-font-mono);
 }
 .brink-studio .search-context-pop {
   position: absolute;
@@ -452,12 +452,12 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   color: var(--bs-fg-muted);
 }
 .brink-studio .search-context-stepper input {
   width: 40px;
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   color: var(--bs-fg);
   background: var(--bs-surface-bg);
   border: 1px solid var(--bs-border);
@@ -483,7 +483,7 @@
   gap: 8px;
   padding: 3px 8px;
   background: var(--bs-surface-bg);
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   min-width: 0;
 }
 .brink-studio .search-card-head button {
@@ -520,7 +520,7 @@
 }
 .brink-studio .search-card-loc {
   color: var(--bs-accent);
-  font-family: var(--bs-mono, ui-monospace, monospace);
+  font-family: var(--bs-font-mono);
   flex-shrink: 0;
 }
 .brink-studio .search-card-sep {
@@ -538,7 +538,7 @@
   white-space: nowrap;
 }
 .brink-studio .search-card-badge {
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   border: 1px solid var(--bs-border);
   border-radius: 3px;
   padding: 0 4px;
@@ -553,7 +553,7 @@
 }
 .brink-studio .search-card-preview {
   color: var(--bs-fg-muted);
-  font-family: var(--bs-mono, ui-monospace, monospace);
+  font-family: var(--bs-font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -570,15 +570,15 @@
 /* Card bodies: the live CM6 buffer and its static twin share metrics. */
 .brink-studio .search-card-editor .cm-editor {
   background: var(--bs-editor-bg, var(--bs-panel-bg));
-  font-size: 12px;
+  font-size: var(--bs-font-body);
 }
 .brink-studio .search-card-editor .cm-editor.cm-focused {
   outline: none;
 }
 .brink-studio .search-card-static {
   background: var(--bs-editor-bg, var(--bs-panel-bg));
-  font-family: var(--bs-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-body);
   line-height: 1.55;
   padding: 2px 0;
   overflow-x: auto;
@@ -609,7 +609,7 @@
 }
 .brink-studio .search-accept-all,
 .brink-studio .search-card-accept {
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   border: 1px solid var(--bs-success, #a6e3a1);
   color: var(--bs-success, #a6e3a1);
   background: rgb(var(--bs-success-rgb, 166 227 161) / 10%);
@@ -630,7 +630,7 @@
   flex-shrink: 0;
 }
 .brink-studio .search-card-skip {
-  font-size: 11px;
+  font-size: var(--bs-font-small);
   background: none;
   border: none;
   padding: 0;
@@ -650,7 +650,7 @@
   border-color: rgb(var(--bs-success-rgb, 166 227 161) / 40%);
 }
 .brink-studio .search-card-replaced-badge {
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   color: var(--bs-success, #a6e3a1);
   flex-shrink: 0;
 }
@@ -675,7 +675,7 @@
   border-color: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 60%);
 }
 .brink-studio .search-card-kind {
-  font-size: 9px;
+  font-size: var(--bs-font-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   border: 1px solid var(--bs-border);

@@ -27,6 +27,35 @@ export const KEYMAP_STORAGE_KEY = "brink-studio.keymap.v1";
 
 const MODIFIER_KEYS = new Set(["meta", "control", "shift", "alt"]);
 
+/**
+ * Punctuation that cannot be written in a `-`-delimited binding, or that
+ * arrives under a different `event.key` once Shift is held.
+ *
+ * "Mod--" is unwritable: it splits into an empty segment and parses as
+ * malformed, so the zoom-out chord every editor uses had no way to be
+ * expressed at all. Spell it `Mod-Minus`.
+ */
+const KEY_ALIASES: Record<string, string> = {
+  minus: "-",
+  plus: "+",
+  equal: "=",
+  equals: "=",
+  space: " ",
+};
+
+/**
+ * Collapse a shifted punctuation key onto the unshifted key printed on the
+ * same physical cap, so a binding does not have to know which one the
+ * layout produces. `Shift` is still matched separately, so `Mod-=` and
+ * `Mod-Shift-=` stay distinguishable — they just both resolve against the
+ * one physical key. Without this, ⌘+ (which reports `+`, not `=`) misses a
+ * `Mod-Shift-=` binding entirely.
+ */
+const SHIFTED_KEYS: Record<string, string> = {
+  "+": "=",
+  _: "-",
+};
+
 /** Parse "Mod-Shift-P" → chord. Returns null for malformed bindings. */
 export function parseKeybinding(binding: string): Chord | null {
   const chord: Chord = { key: "", mod: false, shift: false, alt: false };
@@ -35,7 +64,8 @@ export function parseKeybinding(binding: string): Chord | null {
     if (lower === "mod") chord.mod = true;
     else if (lower === "shift") chord.shift = true;
     else if (lower === "alt") chord.alt = true;
-    else if (lower !== "" && chord.key === "") chord.key = lower;
+    else if (lower !== "" && chord.key === "")
+      chord.key = SHIFTED_KEYS[KEY_ALIASES[lower] ?? lower] ?? KEY_ALIASES[lower] ?? lower;
     else return null; // empty segment or a second non-modifier key
   }
   return chord.key === "" ? null : chord;
@@ -54,8 +84,9 @@ export function chordId(chord: Chord): string {
 /** Chord for a keydown event; null for bare modifier presses. */
 export function chordFromEvent(event: KeyboardEvent, isMac: boolean): Chord | null {
   if (MODIFIER_KEYS.has(event.key.toLowerCase())) return null;
+  const raw = event.key.toLowerCase();
   return {
-    key: event.key.toLowerCase(),
+    key: SHIFTED_KEYS[raw] ?? raw,
     mod: isMac ? event.metaKey : event.ctrlKey,
     shift: event.shiftKey,
     alt: event.altKey,

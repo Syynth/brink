@@ -122,7 +122,12 @@ export function detachedGutters(): Extension {
       /** The gutter width this plugin last added to the content's
        *  padding — the term subtracted to recover the host's own base. */
       private applied = 0;
-      private detached = false;
+      /**
+       * Public because the `editorAttributes` source below reads it back
+       * off the view — that facet, not the imperative `classList` write,
+       * is what makes the class survive (see `detachedAttributes`).
+       */
+      detached = false;
 
       constructor(private readonly view: EditorView) {
         this.sync();
@@ -188,5 +193,35 @@ export function detachedGutters(): Extension {
     },
   );
 
-  return [plugin, detachedTheme];
+  /**
+   * Republish the marker class every time CodeMirror rebuilds the editor
+   * element's attributes. This is load-bearing, not redundancy with the
+   * `classList.add` above.
+   *
+   * CodeMirror owns `view.dom`'s `class` attribute: `updateAttrs` writes it
+   * with a whole-value `setAttribute("class", …)` built from `"cm-editor"`,
+   * the focus flag and the `editorAttributes` facet. Any class added
+   * imperatively is therefore erased the next time that runs — and one of
+   * the times it runs is the focus change. That is the bug this fixes
+   * (#3131 follow-up): loading the studio and clicking anywhere in the
+   * editor dropped `brink-detached-gutters`, the gutters fell back from
+   * `absolute` to their inline `sticky`, and the text jumped right by the
+   * full gutter width (~70px) because the compensating padding stayed. It
+   * read as "the editor slides sideways when you click it".
+   *
+   * A FUNCTION source rather than a static value: `attrsFromFacet`
+   * evaluates function sources on every `updateAttrs`, so this re-reads the
+   * plugin's live flag instead of freezing whatever it was at
+   * configuration time. `view.plugin(plugin)` scopes the read to the view
+   * being rendered, so one shared extension still serves many views.
+   *
+   * The imperative write stays for immediacy — the measure write phase
+   * flips the class in the same frame it measures, with no update cycle to
+   * wait for — and this makes it durable.
+   */
+  const detachedAttributes = EditorView.editorAttributes.of((view) =>
+    view.plugin(plugin)?.detached === true ? { class: DETACHED_CLASS } : null,
+  );
+
+  return [plugin, detachedAttributes, detachedTheme];
 }

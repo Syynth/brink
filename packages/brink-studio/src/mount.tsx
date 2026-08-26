@@ -28,6 +28,7 @@ import type {
   StoryGraph,
 } from "@brink/wasm-types";
 import {
+  DEFAULT_EDITOR_FONT_SIZE,
   DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
@@ -47,6 +48,8 @@ import {
   type HostPerfBundle,
 } from "@brink-lang/editor";
 import {
+  loadProblemsPrefs,
+  saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
   parseBinderOrder,
@@ -65,6 +68,9 @@ import {
   VIEW_REVEAL_COMMAND_ID,
   ViewRevealHandlers,
   createEditorGroupsStore,
+  attachEditorPersistence,
+  loadEditorSnapshot,
+  reconcileEditorSnapshot,
   documentKey,
   focusedTab,
   installStudioExtensions,
@@ -120,6 +126,7 @@ import {
   inkFileRef,
   loadDiagnosticsSettings,
   loadEditorSettings,
+  saveEditorSettings,
   openPlayerSplit,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
@@ -192,6 +199,19 @@ export interface MountStudioOptions {
    * completions are live from the start. The host owns this data; the wasm
    * session itself stays unexposed (spec §8.2).
    */
+  /**
+   * Identity of the project this mount is editing, used to scope the
+   * per-project editor state that survives a reload — open tabs, tab order,
+   * pin state, splits, and each document's cursor + scroll (decision log
+   * 2026-08-26). A host that opens real projects passes something stable and
+   * unique to one project, such as its absolute root path.
+   *
+   * Omit it and editor state is not persisted at all: a host with no notion
+   * of "which project" (the playground, a fixture, an embedded demo) has no
+   * honest scope to key by, and a shared one would restore one fixture's
+   * tabs over another's.
+   */
+  sessionScope?: string;
   hostManifest?: HostManifest;
   /**
    * The dialogue dialect (#368, docs/dialect-spec.md): the project's
@@ -650,7 +670,47 @@ export async function mountStudio(
   // The shell owns tab/group structure; the app registers the "ink-file"
   // document type, whose component mounts one CM6 view per (document, group)
   // through DocumentSessions below.
-  const editorGroups: EditorGroupsStore = createEditorGroupsStore();
+  // Editor state that survives a reload (decision log 2026-08-26), scoped to
+  // the project the host named. Restoring happens HERE, at construction,
+  // rather than by setting state afterwards: the store's group-id counter
+  // lives in its closure, so a store handed "group-3" after the fact would
+  // mint a second "group-3" on the next split.
+  //
+  // Tabs are filtered against the files this mount actually has. A tab whose
+  // file was deleted (or which belongs to a payload edited by hand) is
+  // dropped, and `reconcileEditorSnapshot` repairs what the drop invalidates.
+  const editorScope = options.sessionScope;
+  const storedEditor =
+    editorScope === undefined ? null : loadEditorSnapshot(window.localStorage, editorScope);
+  const restoredEditor =
+    storedEditor === null
+      ? null
+      : reconcileEditorSnapshot(storedEditor, (ref) => {
+          // Tool documents are NOT part of "what I had open". Settings and
+          // Compiled Output are things you consult and dismiss, so bringing
+          // them back on every launch is noise — and worse, restoring one as
+          // the active tab means a reload can land on a document that is not
+          // the manuscript at all. The Player is deliberately not in this
+          // list: it is half of the default two-up, so restoring it is what
+          // keeps a restored session looking like the one you left.
+          if (ref.typeId === SETTINGS_TYPE_ID) return false;
+          if (ref.typeId === COMPILED_OUTPUT_TYPE_ID) return false;
+          // Other non-ink documents (the player, the story graph) have no
+          // file behind them and are always available.
+          if (ref.typeId !== INK_FILE_TYPE_ID) return true;
+          // A symbol tab's docId is "path::symbol"; the file is the path.
+          const path = ref.docId.split("::")[0];
+          return Object.hasOwn(options.files, path);
+        });
+  const editorGroups: EditorGroupsStore = createEditorGroupsStore(
+    restoredEditor === null
+      ? undefined
+      : {
+          groups: restoredEditor.groups,
+          focusedGroupId: restoredEditor.focusedGroupId,
+          groupSizes: restoredEditor.groupSizes,
+        },
+  );
   const documentTypes = new DocumentTypeRegistry();
   documentTypes.register({ id: INK_FILE_TYPE_ID, component: InkFileDocument });
   // Compiled Output (#91): a read-only, compile-bound singleton document over
@@ -672,6 +732,43 @@ export async function mountStudio(
   // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
   documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
   registerSettingsCommand(commands, editorGroups);
+
+  // Editor text size (beta feedback 2026-08-25). Mod-= / Mod-- / Mod-0 are
+  // the universal zoom chords; here they size the EDITOR specifically, which
+  // is what an author means by "make the text bigger". Each command persists
+  // through the same settings record the Settings document writes, so the
+  // choice survives a restart either way it was made.
+  const persistFontSize = (px: number): void => {
+    const current = loadEditorSettings(window.localStorage);
+    saveEditorSettings(window.localStorage, { ...current, fontSize: px });
+  };
+  const stepFontSize = (delta: number): void => {
+    store.getState().adjustEditorFontSize(delta);
+    persistFontSize(store.getState().editorFontSize);
+  };
+  commands.register({
+    id: "editor.fontSize.increase",
+    title: "Editor: Increase Font Size",
+    // ⌘= and ⌘+ (which is ⌘⇧= on most layouts and reports "+").
+    keybinding: ["Mod-=", "Mod-Shift-="],
+    run: () => stepFontSize(1),
+  });
+  commands.register({
+    id: "editor.fontSize.decrease",
+    title: "Editor: Decrease Font Size",
+    // "Mod--" is unwritable (it parses as malformed), hence the alias.
+    keybinding: ["Mod-Minus", "Mod-Shift-Minus"],
+    run: () => stepFontSize(-1),
+  });
+  commands.register({
+    id: "editor.fontSize.reset",
+    title: "Editor: Reset Font Size",
+    keybinding: "Mod-0",
+    run: () => {
+      store.getState().setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
+      persistFontSize(DEFAULT_EDITOR_FONT_SIZE);
+    },
+  });
   // Story Graph (#97, spec §4.1): custom-rendered, compile-bound singleton
   // over the wasm story-graph query (the component subscribes to storyGraph,
   // refreshed below on each successful compile), with the live session
@@ -1227,6 +1324,16 @@ export async function mountStudio(
     store.getState().setFormGlyph(editor.formGlyph);
     store.getState().setShowGutters(editor.showGutters);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
+    store.getState().setEditorFontSize(editor.fontSize);
+    store.getState().setAppFontSize(editor.appFontSize);
+  }
+  // Problems panel view preferences (ruled 2026-08-25: grouped by default,
+  // and the toggles persist). The filter text deliberately does not.
+  {
+    store.getState().applyProblemsPrefs(loadProblemsPrefs(window.localStorage));
+    store
+      .getState()
+      .setProblemsPrefsSink((prefs) => saveProblemsPrefs(window.localStorage, prefs));
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
   // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):
@@ -1234,12 +1341,65 @@ export async function mountStudio(
   // this point `ProjectSession` may have superseded the constructor
   // argument with a config-named entry — reading it back here is how the
   // ruling actually reaches the initial tab.
-  store.getState().openTarget({ kind: "file", path: project.getEntryFile() }, true);
+  if (restoredEditor === null) {
+    store.getState().openTarget({ kind: "file", path: project.getEntryFile() }, true);
 
-  // Default layout (spec §4): the Inky two-up — entry file left, player in a
-  // right split, focus back on the editor. Group layout is not persisted, so
-  // every fresh load reproduces this.
-  openPlayerSplit(editorGroups);
+    // Default layout (spec §4): the Inky two-up — entry file left, player in
+    // a right split, focus back on the editor. This is what a project with
+    // nothing remembered opens as.
+    openPlayerSplit(editorGroups);
+  } else {
+    // A restored session brings its own tabs and splits, so neither the
+    // entry-file open nor the two-up runs — both would fight what the author
+    // last had on screen.
+    //
+    // Cursor and scroll ride `restoreViewState`, which queues against the
+    // view and applies when it mounts, so replaying every open tab here is
+    // correct even though none of them has mounted yet. It restores the
+    // selection and scroll WITHOUT focusing, which is why replaying all of
+    // them does not fight over focus.
+    // Two different keys meet here. The snapshot is keyed by the shell's
+    // `documentKey(ref)`; `DocumentSessions` files its views under the ref's
+    // bare `docId` (what `InkFileDocument` hands `mountView`). Walking the
+    // restored tabs gives both without parsing either.
+    //
+    // The map is per DOCUMENT, not per (document, group), so a document open
+    // in two groups restores the same cursor and scroll to both rather than
+    // each pane independently — `restoreViewState` supports the finer
+    // addressing if that is ever worth persisting.
+    for (const group of restoredEditor.groups) {
+      for (const tab of group.tabs) {
+        const viewState = restoredEditor.viewStates[documentKey(tab.ref)];
+        if (viewState !== undefined) documentsRef?.restoreViewState(tab.ref.docId, viewState);
+      }
+    }
+  }
+
+  // Persist from here on: debounced writes of the structure, with each open
+  // tab's cursor + scroll read at write time so a snapshot is never stale.
+  const detachEditorPersistence =
+    editorScope === undefined
+      ? null
+      : attachEditorPersistence(editorGroups, window.localStorage, {
+          scope: editorScope,
+          viewStates: () => {
+            const out: Record<string, { anchor: number; head: number; scrollTop: number }> = {};
+            const sessions = documentsRef;
+            if (sessions === null) return out;
+            for (const group of editorGroups.getState().groups) {
+              for (const tab of group.tabs) {
+                const key = documentKey(tab.ref);
+                if (key in out) continue;
+                // Read by `docId` (DocumentSessions' own key), store by the
+                // shell's `documentKey` so `reconcileEditorSnapshot` can
+                // prune this map against the tabs it keeps.
+                const state = sessions.viewState(tab.ref.docId);
+                if (state !== null) out[key] = state;
+              }
+            }
+            return out;
+          },
+        });
 
   perfMark("studio.renderStart");
   if (perfOn) {
@@ -1292,6 +1452,10 @@ export async function mountStudio(
     // egress flush must happen first, while the views still exist: push every
     // mounted view's text, then deliver pending host notifications (#154).
     unmount: () => {
+      // Flush the last editor-state write before the views go away — its
+      // `viewStates` callback reads them, and after teardown there is
+      // nothing left to read.
+      detachEditorPersistence?.();
       documents.flushAll();
       project.flushFileChanges();
       root.unmount();

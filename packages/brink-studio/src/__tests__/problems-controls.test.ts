@@ -21,7 +21,12 @@ import {
   summarizeCounts,
   type ProblemRow,
 } from "@brink/studio-ui";
-import { createStudioStore } from "@brink/studio-store";
+import {
+  createStudioStore,
+  loadProblemsPrefs,
+  saveProblemsPrefs,
+  type ProblemsPrefs,
+} from "@brink/studio-store";
 import type { Diagnostic } from "@brink/wasm-types";
 
 function row(
@@ -133,12 +138,13 @@ describe("summarizeCounts", () => {
 // ── Store slice ─────────────────────────────────────────────────────
 
 describe("problems slice", () => {
-  it("defaults reproduce today's panel: all severities, flat, no filter", () => {
+  it("defaults: every severity shown, GROUPED by file, filter closed", () => {
     const s = createStudioStore().getState();
     expect(s.problemsSeverities).toEqual({ error: true, warning: true, info: true });
     expect(s.problemsFilter).toBe("");
     expect(s.problemsFilterOpen).toBe(false);
-    expect(s.problemsGrouped).toBe(false);
+    // Ruled 2026-08-25: a flat list of every diagnostic reads as noise.
+    expect(s.problemsGrouped).toBe(true);
   });
 
   it("toggles one severity bucket at a time", () => {
@@ -166,12 +172,90 @@ describe("problems slice", () => {
 
   it("tracks grouping and per-file collapse independently", () => {
     const store = createStudioStore();
+    // Grouped is now the default, so the first toggle turns it OFF.
     store.getState().toggleProblemsGrouped();
-    expect(store.getState().problemsGrouped).toBe(true);
+    expect(store.getState().problemsGrouped).toBe(false);
 
     store.getState().toggleProblemsFileCollapsed("main.ink");
     expect(store.getState().problemsCollapsedFiles["main.ink"]).toBe(true);
     store.getState().toggleProblemsFileCollapsed("main.ink");
     expect(store.getState().problemsCollapsedFiles["main.ink"]).toBe(false);
+  });
+});
+
+// ── Persistence (ruled 2026-08-25) ──────────────────────────────────
+
+function memoryStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => void map.set(k, v),
+    removeItem: (k: string) => void map.delete(k),
+    clear: () => map.clear(),
+    key: () => null,
+    length: 0,
+  } as unknown as Storage;
+}
+
+describe("problems preferences persist", () => {
+  it("round-trips severities and grouping", () => {
+    const storage = memoryStorage();
+    const prefs: ProblemsPrefs = {
+      severities: { error: true, warning: false, info: false },
+      grouped: false,
+    };
+    saveProblemsPrefs(storage, prefs);
+    expect(loadProblemsPrefs(storage)).toEqual(prefs);
+  });
+
+  it("defaults to shown+grouped when nothing is stored", () => {
+    expect(loadProblemsPrefs(memoryStorage())).toEqual({
+      severities: { error: true, warning: true, info: true },
+      grouped: true,
+    });
+  });
+
+  it("only an explicit false hides a severity — a partial record never does", () => {
+    const storage = memoryStorage();
+    // A record written by an older build, missing keys entirely.
+    storage.setItem("brink-studio.problems.v1", JSON.stringify({ severities: {} }));
+    expect(loadProblemsPrefs(storage).severities).toEqual({
+      error: true,
+      warning: true,
+      info: true,
+    });
+  });
+
+  it("survives garbage without throwing", () => {
+    const storage = memoryStorage();
+    storage.setItem("brink-studio.problems.v1", "{not json");
+    expect(loadProblemsPrefs(storage).grouped).toBe(true);
+  });
+
+  it("toggling a severity or grouping reports through the persistence sink", () => {
+    const store = createStudioStore();
+    const written: ProblemsPrefs[] = [];
+    store.getState().setProblemsPrefsSink((p) => void written.push(p));
+
+    store.getState().toggleProblemSeverity("info");
+    store.getState().toggleProblemsGrouped();
+
+    expect(written).toHaveLength(2);
+    expect(written[0]?.severities.info).toBe(false);
+    expect(written[0]?.grouped).toBe(true);
+    expect(written[1]?.grouped).toBe(false);
+    // The second write carries the first toggle too — a sink that dropped
+    // it would silently un-persist the severity on the next change.
+    expect(written[1]?.severities.info).toBe(false);
+  });
+
+  it("applyProblemsPrefs restores a saved view at boot", () => {
+    const store = createStudioStore();
+    store.getState().applyProblemsPrefs({
+      severities: { error: true, warning: false, info: false },
+      grouped: false,
+    });
+    expect(store.getState().problemsSeverities.warning).toBe(false);
+    expect(store.getState().problemsGrouped).toBe(false);
   });
 });
