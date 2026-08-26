@@ -25,11 +25,13 @@ import { useId, useState } from "react";
 import {
   parseKeymapOverridesText,
   useShell,
+  useShellLayout,
   useThemeId,
   type CommandRegistry,
   type DocumentRef,
   type DocumentViewProps,
   type EditorGroupsStore,
+  type EditorViewId,
 } from "@brink/studio-shell";
 import type { ExternalCheckLevel } from "@brink/studio-store";
 import {
@@ -193,6 +195,57 @@ export function saveEditorSettings(
 }
 
 // ── Sections ────────────────────────────────────────────────────────
+
+/**
+ * Which view fills the editor root area (decision log 2026-08-26). Its own
+ * section rather than a field inside "Editor", because it does not configure
+ * the editor — it chooses what is in the area the editor lives in.
+ *
+ * Radio buttons rather than a select: there are two or three of these ever,
+ * each needs a sentence to explain what it is FOR, and a collapsed select
+ * would hide exactly the part that helps you choose.
+ */
+function EditorViewSection() {
+  const { layout } = useShell();
+  const current = useShellLayout((s) => s.editorView);
+  const views: { id: EditorViewId; label: string; hint: string }[] = [
+    {
+      id: "code",
+      label: "Code",
+      hint: "Tabs, groups and splits. For working across several files at once.",
+    },
+    {
+      id: "single",
+      label: "Single File",
+      hint: "One file with the player beside it, and no tabs. For drafting a scene.",
+    },
+  ];
+  return (
+    <section className="settings-section">
+      <h2 className="settings-section-title">Editor view</h2>
+      <p className="settings-section-hint">
+        What fills the editor area. Switching keeps the file you are on.
+      </p>
+      <div className="settings-radio-group" role="radiogroup" aria-label="Editor view">
+        {views.map((view) => (
+          <label key={view.id} className="settings-radio settings-radio-explained">
+            <input
+              type="radio"
+              name="brink-editor-view"
+              value={view.id}
+              checked={current === view.id}
+              onChange={() => layout.getState().setEditorView(view.id)}
+            />
+            <span className="settings-radio-text">
+              <span>{view.label}</span>
+              <span className="settings-radio-hint">{view.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function ThemeSection() {
   const { themes } = useShell();
@@ -465,6 +518,7 @@ export function SettingsDocument(_props: DocumentViewProps) {
     <div className="settings-doc">
       <div className="settings-doc-inner">
         <ThemeSection />
+        <EditorViewSection />
         <EditorSection />
         <KeymapSection />
         <DiagnosticsSection />

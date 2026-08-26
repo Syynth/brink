@@ -87,6 +87,21 @@ test.describe("single file view", () => {
     await expect(page.locator(".shell-single-file-name")).toHaveText(before ?? "");
   });
 
+  test("Settings offers the view picker, and it switches live", async ({ page }) => {
+    await runPaletteCommand(page, "Settings: Open");
+    const group = page.locator("[aria-label='Editor view']");
+    await expect(group).toBeVisible();
+
+    await group.locator("input[value='single']").check();
+    await expect(page.locator(singleFile)).toBeVisible();
+
+    // And back — the picker reflects the live value, so the radio that is
+    // checked is the view you are actually in.
+    await group.locator("input[value='code']").check();
+    await expect(page.locator(singleFile)).toHaveCount(0);
+    await expect(group.locator("input[value='code']")).toBeChecked();
+  });
+
   test("switching back to Code view keeps the file you were on", async ({ page }) => {
     await runPaletteCommand(page, "View: Single File");
     const inSingle = await page.locator(".shell-single-file-name").textContent();

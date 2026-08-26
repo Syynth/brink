@@ -273,7 +273,9 @@ describe("SettingsDocument — theme section", () => {
   it("reflects the current theme and drives ThemeService.select", () => {
     const h = renderSettings();
     const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(".settings-radio input"),
+      ...container!.querySelectorAll<HTMLInputElement>(
+        "[aria-label='Theme'] .settings-radio input",
+      ),
     ];
     expect(radios.map((r) => r.value)).toEqual(["mocha", "latte", "manuscript", "inky", "inky-dark"]);
     expect(radios[0].checked).toBe(true);
@@ -288,7 +290,9 @@ describe("SettingsDocument — theme section", () => {
     const h = renderSettings();
     act(() => void h.themes.select("latte"));
     const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(".settings-radio input"),
+      ...container!.querySelectorAll<HTMLInputElement>(
+        "[aria-label='Theme'] .settings-radio input",
+      ),
     ];
     expect(radios[1].checked).toBe(true);
   });

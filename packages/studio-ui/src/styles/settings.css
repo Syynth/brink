@@ -62,6 +62,26 @@
   margin: 0;
 }
 
+/* A radio whose option needs a sentence of its own — the editor-view
+   picker, where the label alone ("Code", "Single File") does not tell you
+   what the option is FOR. `align-items: baseline` so the control lines up
+   with the label rather than centring against the two-line block, and the
+   hint sits under the label via a nested column. */
+.brink-studio .settings-radio-explained {
+  align-items: baseline;
+  width: auto;
+}
+.brink-studio .settings-radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.brink-studio .settings-radio-hint {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  line-height: 1.4;
+}
+
 /* Keymap JSON editor */
 .brink-studio .settings-json {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
