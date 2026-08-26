@@ -28,7 +28,7 @@ const { destroyMock } = vi.hoisted(() => ({ destroyMock: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(vi.fn())) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ onCloseRequested: vi.fn(), destroy: destroyMock }),
+  getCurrentWindow: () => ({ onCloseRequested: vi.fn(), onFocusChanged: vi.fn(), destroy: destroyMock }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn() }));
 

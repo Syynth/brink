@@ -42,7 +42,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save } from "@tauri-apps/plugin-dialog";
-import { mountStudio, type StudioApi, type StudioHandle } from "@brink-lang/studio";
+import {
+  mountStudio,
+  type Command,
+  type StudioApi,
+  type StudioHandle,
+} from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
 import {
   TauriFileProvider,
@@ -72,7 +77,7 @@ import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
-import { checkForUpdates, type UpdateApi } from "./updater.js";
+import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -372,6 +377,9 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     provider,
     entryFile,
     entryIsExplicit: opts.entryIsExplicit,
+    // Host commands backing the update toast's buttons — toast actions
+    // dispatch command ids, so the buttons need real commands.
+    extensions: { commands: UPDATE_COMMANDS },
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -811,7 +819,66 @@ void listen<string>("menu:open-recent", (event) => void openRecent(event.payload
 // so it funnels through the same guarded path as the window close below
 // rather than the OS quit item's own (unguarded) native teardown.
 void listen("menu:quit", () => void handleQuitRequested());
-void listen("menu:check-updates", () => void checkForUpdates(updateApi()));
+// Routed through the command so the menu item and the toast's Try Again
+// share one path (and one throttle clock).
+void listen("menu:check-updates", () => {
+  lastUpdateCheckAt = Date.now();
+  void checkForUpdates(updateApi());
+});
+
+/** One id for every update toast, so each stage REPLACES the last rather
+ *  than stacking (the notification service treats a repeated id as a
+ *  replacement). */
+const UPDATE_NOTIFICATION_ID = "update";
+export const UPDATE_INSTALL_COMMAND = "update.install";
+export const UPDATE_LATER_COMMAND = "update.later";
+export const UPDATE_CHECK_COMMAND = "update.check";
+
+/** Resolver for the offer currently on screen, if any. */
+let pendingUpdateOffer: ((accepted: boolean) => void) | null = null;
+
+/** Settle the outstanding offer exactly once. Safe to call when none is up. */
+function settleUpdateOffer(accepted: boolean): void {
+  const resolve = pendingUpdateOffer;
+  pendingUpdateOffer = null;
+  resolve?.(accepted);
+}
+
+/**
+ * Host commands backing the update toast's buttons. Toast actions dispatch
+ * command ids (NotificationAction carries no callbacks), so the buttons
+ * need real commands — contributed through the host extension seam like
+ * any other host command.
+ *
+ * The two offer commands are gated by `when`: with no offer pending they
+ * are unavailable, so neither can be invoked from the palette to "install"
+ * an update that was never staged.
+ */
+export const UPDATE_COMMANDS: Command[] = [
+  {
+    id: UPDATE_INSTALL_COMMAND,
+    title: "Update: Install and Restart",
+    when: () => pendingUpdateOffer !== null,
+    run: () => settleUpdateOffer(true),
+  },
+  {
+    id: UPDATE_LATER_COMMAND,
+    title: "Update: Later",
+    when: () => pendingUpdateOffer !== null,
+    run: () => settleUpdateOffer(false),
+  },
+  {
+    id: UPDATE_CHECK_COMMAND,
+    title: "Update: Check for Updates",
+    run: () => {
+      // Manual checks bypass the throttle (the author asked) but still
+      // restart its clock, so alt-tabbing right afterwards doesn't
+      // immediately fire a second round trip.
+      lastUpdateCheckAt = Date.now();
+      void checkForUpdates(updateApi());
+    },
+  },
+];
 
 /**
  * Bind the injected {@link UpdateApi} to the real plugins (D4). The decision
@@ -823,17 +890,60 @@ function updateApi(): UpdateApi {
     check: async () => {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
-      return update === null
-        ? null
-        : { version: update.version, downloadAndInstall: () => update.downloadAndInstall() };
+      if (update === null) return null;
+      return {
+        version: update.version,
+        downloadAndInstall: async () => {
+          // Amend the offer toast in place (same id) so the accepted
+          // update reports itself instead of going quiet until the app
+          // restarts under the author.
+          current?.api.notify({
+            id: UPDATE_NOTIFICATION_ID,
+            severity: "info",
+            source: "update",
+            message: `Downloading ${update.version}\u2026 the app will restart when it finishes.`,
+            timeoutMs: 0,
+          });
+          await update.downloadAndInstall();
+        },
+      };
     },
     confirm: async (version) => {
-      const { ask } = await import("@tauri-apps/plugin-dialog");
-      return ask(`Brink Studio ${version} is available. Install and restart?`, {
-        title: "Update available",
-        kind: "info",
-        okLabel: "Install and Restart",
-        cancelLabel: "Later",
+      // An update offer is a notification, not an interruption: a modal
+      // steals focus mid-sentence for something that can wait. With a
+      // project open it becomes a sticky toast carrying its own actions;
+      // the promise this returns is settled by whichever the author picks
+      // (see UPDATE_COMMANDS), so updater.ts's decision tree is unchanged.
+      const api = current?.api;
+      if (!api) {
+        // Landing screen: no studio surface exists yet, so there is nowhere
+        // to put a toast. The native dialog stays the fallback.
+        const { ask } = await import("@tauri-apps/plugin-dialog");
+        return ask(`Brink Studio ${version} is available. Install and restart?`, {
+          title: "Update available",
+          kind: "info",
+          okLabel: "Install and Restart",
+          cancelLabel: "Later",
+        });
+      }
+      // A second check while an offer is still up replaces it; the older
+      // promise settles as declined so no caller is left hanging.
+      settleUpdateOffer(false);
+      return new Promise<boolean>((resolve) => {
+        pendingUpdateOffer = resolve;
+        api.notify({
+          id: UPDATE_NOTIFICATION_ID,
+          severity: "info",
+          source: "update",
+          message: `Brink Studio ${version} is available.`,
+          // Sticky: an offer that evaporates while you read it is worse
+          // than no offer at all.
+          timeoutMs: 0,
+          actions: [
+            { label: "Install and Restart", commandId: UPDATE_INSTALL_COMMAND },
+            { label: "Later", commandId: UPDATE_LATER_COMMAND },
+          ],
+        });
       });
     },
     notify: (severity, message) => {
@@ -842,7 +952,20 @@ function updateApi(): UpdateApi {
       // native dialog rather than dropping the message on the floor.
       const api = current?.api;
       if (api) {
-        api.notify({ severity, source: "update", message });
+        api.notify({
+          // Same id as the offer, so an outcome REPLACES the offer in place
+          // rather than stacking a second update toast beside it.
+          id: UPDATE_NOTIFICATION_ID,
+          severity,
+          source: "update",
+          message,
+          // A failed check or install is worth retrying without hunting
+          // through the menu bar. Errors are sticky by severity default.
+          actions:
+            severity === "error"
+              ? [{ label: "Try Again", commandId: UPDATE_CHECK_COMMAND }]
+              : undefined,
+        });
         return;
       }
       void import("@tauri-apps/plugin-dialog").then(({ message: dialog }) =>
@@ -861,11 +984,37 @@ function updateApi(): UpdateApi {
   };
 }
 
+/** When the last check of any kind ran (epoch ms); 0 = never. */
+let lastUpdateCheckAt = 0;
+
+/**
+ * An automatic check — silent, and gated by `shouldAutoCheck` (the policy
+ * itself lives in updater.ts, dependency-free and unit-tested; this is only
+ * the wiring, like the rest of updateApi).
+ */
+async function autoCheckForUpdates(now: number = Date.now()): Promise<void> {
+  if (
+    !shouldAutoCheck({ lastCheckAt: lastUpdateCheckAt, offerPending: pendingUpdateOffer !== null, now })
+  ) {
+    return;
+  }
+  lastUpdateCheckAt = now;
+  await checkForUpdates(updateApi(), { silent: true });
+}
+
 // Launch check (ruled 2026-08-22): silent, and deliberately delayed — the
 // first seconds after startup belong to mounting the editor, not to a
 // network round trip. Silent means a no-update result and an offline failure
 // both say nothing; only an actual update prompts.
-setTimeout(() => void checkForUpdates(updateApi(), { silent: true }), 5_000);
+setTimeout(() => void autoCheckForUpdates(), 5_000);
+
+// Focus check (ruled 2026-08-25): coming back to the window is the natural
+// moment to notice a release that shipped while the author was elsewhere —
+// the launch check only ever fires for people who restart. Same silent,
+// throttled path; `onFocusChanged` fires for blur too, so the flag matters.
+void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  if (focused) void autoCheckForUpdates();
+});
 
 void getCurrentWindow().onCloseRequested(async (event) => {
   // Always prevent the native close first. (`@tauri-apps/api`'s own default
