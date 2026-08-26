@@ -312,6 +312,15 @@ export { ElementType as ElementTypeEnum } from "@brink-lang/editor";
 
 // External-conflict merge state (#320, Track V): the conflict slice plus the
 // deterministic sorted-paths helper for badging conflicted files.
-export type { ProblemSeverityBucket, ProblemsSlice } from "./slices/problems.js";
+export type {
+  ProblemSeverityBucket,
+  ProblemsPrefs,
+  ProblemsSlice,
+} from "./slices/problems.js";
+export {
+  PROBLEMS_STORAGE_KEY,
+  loadProblemsPrefs,
+  saveProblemsPrefs,
+} from "./slices/problems.js";
 export { conflictPaths } from "./slices/conflict.js";
 export type { ConflictSlice } from "./slices/conflict.js";

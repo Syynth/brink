@@ -27,8 +27,11 @@
   background: var(--bs-editor-bg);
 }
 .brink-studio .editor .cm-editor .cm-scroller {
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: var(--bs-font-large);
+  font-family: var(--bs-font-mono);
+  /* The editor's OWN size knob, not a step on the app type scale — this
+     rule outranks the CM6 theme's, so pointing it at the scale silently
+     put the editor under the app knob and broke the two-knob split. */
+  font-size: var(--bs-editor-font-size);
   line-height: 1.6;
 }
 .brink-studio .editor .cm-editor .cm-gutters {

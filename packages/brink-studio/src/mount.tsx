@@ -48,6 +48,8 @@ import {
   type HostPerfBundle,
 } from "@brink-lang/editor";
 import {
+  loadProblemsPrefs,
+  saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
   parseBinderOrder,
@@ -691,13 +693,15 @@ export async function mountStudio(
   commands.register({
     id: "editor.fontSize.increase",
     title: "Editor: Increase Font Size",
+    // ⌘= and ⌘+ (which is ⌘⇧= on most layouts and reports "+").
     keybinding: ["Mod-=", "Mod-Shift-="],
     run: () => stepFontSize(1),
   });
   commands.register({
     id: "editor.fontSize.decrease",
     title: "Editor: Decrease Font Size",
-    keybinding: "Mod--",
+    // "Mod--" is unwritable (it parses as malformed), hence the alias.
+    keybinding: ["Mod-Minus", "Mod-Shift-Minus"],
     run: () => stepFontSize(-1),
   });
   commands.register({
@@ -1266,6 +1270,14 @@ export async function mountStudio(
     store.getState().setAutoOpenForm(editor.autoOpenForm);
     store.getState().setEditorFontSize(editor.fontSize);
     store.getState().setAppFontSize(editor.appFontSize);
+  }
+  // Problems panel view preferences (ruled 2026-08-25: grouped by default,
+  // and the toggles persist). The filter text deliberately does not.
+  {
+    store.getState().applyProblemsPrefs(loadProblemsPrefs(window.localStorage));
+    store
+      .getState()
+      .setProblemsPrefsSink((prefs) => saveProblemsPrefs(window.localStorage, prefs));
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
   // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):
