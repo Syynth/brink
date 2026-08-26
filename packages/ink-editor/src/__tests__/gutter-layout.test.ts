@@ -47,6 +47,28 @@ function mount(options: { wrapping: boolean; gutterWidth: number; hostPadding?: 
   return { view, parent, gutters };
 }
 
+/**
+ * Reproduce the attribute rewrite a first click performs: focus the view,
+ * then let CodeMirror rebuild the editor element's attributes.
+ *
+ * Both halves are required. `updateAttrs` computes the class as
+ * `"cm-editor"` + the focus flag + the `editorAttributes` facet and writes
+ * it with a whole-value `setAttribute` — but only when the computed value
+ * DIFFERS from the last one. Rebuilding without flipping focus writes
+ * nothing and would pass even against the bug (verified: the fix removed,
+ * the test still went green). Focus is what changes the string, and
+ * changing the string is what used to erase the marker.
+ *
+ * `hasFocus` is overridden rather than driven through `contentDOM.focus()`
+ * because jsdom does not treat a contenteditable div as focusable, so the
+ * real call leaves `document.activeElement` on the body and the flag never
+ * flips.
+ */
+function focusAndRebuildAttrs(view: EditorView): void {
+  Object.defineProperty(view, "hasFocus", { get: () => true, configurable: true });
+  (view as unknown as { updateAttrs(): void }).updateAttrs();
+}
+
 /** The plugin measures through `requestMeasure`; flush it deterministically. */
 function flush(view: EditorView): void {
   (view as unknown as { measure(): void }).measure();
@@ -65,6 +87,34 @@ describe("detachedGutters", () => {
     expect(view.dom.classList.contains(DETACHED)).toBe(true);
     // 24px of host padding + an 85px gutter: text lands where it did.
     expect(view.contentDOM.style.paddingLeft).toBe("109px");
+  });
+
+  it("keeps the detached marker when CodeMirror rebuilds the editor's attributes", () => {
+    // The regression: the marker was added with `classList.add` on a node
+    // CodeMirror owns. Its `updateAttrs` rewrites `class` wholesale from
+    // `"cm-editor"` + the focus flag + the `editorAttributes` facet, so the
+    // first focus erased the marker. The gutters fell back to their inline
+    // `sticky`, rejoined the flow, and — with the compensating padding still
+    // applied — the text jumped right by the full gutter width.
+    const { view, parent } = mount({ wrapping: true, gutterWidth: 85, hostPadding: "24px" });
+    cleanups.push(() => { view.destroy(); parent.remove(); });
+    flush(view);
+    expect(view.dom.classList.contains(DETACHED)).toBe(true);
+
+    focusAndRebuildAttrs(view);
+
+    expect(view.dom.classList.contains(DETACHED)).toBe(true);
+    // The padding is the other half of the pair: were the marker to vanish
+    // while this stayed, the text would be offset twice over.
+    expect(view.contentDOM.style.paddingLeft).toBe("109px");
+  });
+
+  it("does not claim the marker for a view it never detached", () => {
+    const { view, parent } = mount({ wrapping: false, gutterWidth: 85 });
+    cleanups.push(() => { view.destroy(); parent.remove(); });
+    flush(view);
+    focusAndRebuildAttrs(view);
+    expect(view.dom.classList.contains(DETACHED)).toBe(false);
   });
 
   it("leaves a non-wrapping view on CodeMirror's stock layout", () => {
