@@ -377,6 +377,11 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     provider,
     entryFile,
     entryIsExplicit: opts.entryIsExplicit,
+    // Scope for the per-project editor state that survives a reload — open
+    // tabs, order, pins, splits, cursor and scroll. The project root is the
+    // identity: stable across sessions, and distinct per project, so two
+    // projects each keep their own tabs instead of overwriting one another.
+    sessionScope: root,
     // Host commands backing the update toast's buttons — toast actions
     // dispatch command ids, so the buttons need real commands.
     extensions: { commands: UPDATE_COMMANDS },

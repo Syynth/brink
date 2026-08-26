@@ -241,6 +241,12 @@ async function main(): Promise<void> {
       : fixture === "native"
         ? "story.brink"
         : "main.ink",
+    // Editor state survives a reload here too, scoped per fixture (and per
+    // fetched project) — the playground has no project root to key by, but
+    // the thing on screen IS identified by these, so restoring one fixture's
+    // tabs over another's is exactly what this avoids. e2e specs that expect
+    // the default two-up open a fresh context, so nothing is remembered.
+    sessionScope: urlFiles ? `url:${fixtureUrl ?? "files"}` : `fixture:${fixture ?? "default"}`,
     extensions: withExtension ? createExampleExtension : undefined,
     // The pretend host's capability manifest (the panel renders the same
     // object). Registered regardless of `?ext=none` — the host's vocabulary

@@ -13,9 +13,11 @@
  * most one unpinned (preview) tab per group, replaced in place by the next
  * preview open; editing or double-clicking pins.
  *
- * No persistence (future work, like dock layout pre-#88) and no nested grids
- * or horizontal splits (non-goals for now). Created inside ShellProvider as a
- * vanilla store — components read it via useEditorGroups(selector).
+ * The durable subset round-trips through `editor-persistence.ts` (scoped per
+ * project); pass its restored structure as this store's `seed`. No nested
+ * grids or horizontal splits (non-goals for now). Created inside
+ * ShellProvider as a vanilla store — components read it via
+ * useEditorGroups(selector).
  */
 
 import { createStore, type StoreApi } from "zustand/vanilla";
@@ -136,8 +138,33 @@ export function focusedTab(state: EditorGroupsState): EditorTab | null {
   return group.tabs.find((t) => documentKey(t.ref) === group.activeKey) ?? null;
 }
 
-export function createEditorGroupsStore(): EditorGroupsStore {
-  let nextGroupId = 2;
+/**
+ * A restored editor structure (see `editor-persistence.ts`). Seeding at
+ * construction rather than `setState`-ing afterwards is what keeps group ids
+ * unique: the id counter lives in this closure, so a store handed
+ * `["group-1", "group-3"]` after the fact would happily mint a second
+ * "group-3" on the next split.
+ */
+export interface EditorGroupsSeed {
+  groups: EditorGroup[];
+  focusedGroupId: string;
+  groupSizes: Record<string, number>;
+}
+
+/** The numeric tail of a "group-N" id, or 0 for any other shape. */
+function groupIdNumber(id: string): number {
+  const parsed = Number(id.startsWith("group-") ? id.slice("group-".length) : NaN);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export function createEditorGroupsStore(seed?: EditorGroupsSeed): EditorGroupsStore {
+  // Past every seeded id, so a restored store never re-mints one that is
+  // already on screen. Ids the seed did not mint (a hand-edited payload)
+  // contribute 0 and simply don't raise the floor.
+  let nextGroupId =
+    seed === undefined
+      ? 2
+      : Math.max(1, ...seed.groups.map((g) => groupIdNumber(g.id))) + 1;
   const newGroup = (): EditorGroup => ({
     id: `group-${nextGroupId++}`,
     tabs: [],
@@ -145,9 +172,9 @@ export function createEditorGroupsStore(): EditorGroupsStore {
   });
 
   return createStore<EditorGroupsState>()((set, get) => ({
-    groups: [{ id: "group-1", tabs: [], activeKey: null }],
-    focusedGroupId: "group-1",
-    groupSizes: {},
+    groups: seed?.groups ?? [{ id: "group-1", tabs: [], activeKey: null }],
+    focusedGroupId: seed?.focusedGroupId ?? "group-1",
+    groupSizes: seed?.groupSizes ?? {},
     maximizedGroupId: null,
 
     openDocument(ref, opts) {
