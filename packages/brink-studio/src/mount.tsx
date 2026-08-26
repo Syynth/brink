@@ -969,7 +969,21 @@ export async function mountStudio(
       : null,
   );
   const revealSource = (target: SourceLocation): void => {
-    store.getState().openTarget({ kind: "file", path: target.file }, true);
+    // Reveal opens the file as the group's PREVIEW tab, not a pinned one.
+    // `editor.reveal` is the shared destination of every navigation surface —
+    // search cards, Problems, TODOs, Find References, cross-file
+    // go-to-definition — so opening pinned meant each jump minted a permanent
+    // tab and a browsing session buried the strip (beta feedback, 2026-08-25).
+    // Preview semantics are already implemented end to end: the next preview
+    // replaces this one in place, editing it auto-pins (onDocEdited), a
+    // double-click pins it, and opening a file that is ALREADY pinned leaves
+    // it pinned (editor-groups only ever upgrades preview -> pinned, never the
+    // reverse).
+    //
+    // NOTE: this is a deliberate stopgap, not the endgame. The maintainer
+    // wants a single "main editor" mode with tabs as an opt-in gesture
+    // (Inky-style); that design supersedes this and is tracked separately.
+    store.getState().openTarget({ kind: "file", path: target.file }, false);
     documents.revealAt(target.file, target.span.start);
   };
   const revealHandlers = new ViewRevealHandlers();

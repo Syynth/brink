@@ -322,3 +322,69 @@ test.describe("search cards (screenplay fixture)", () => {
     await expect.poll(() => cardCount(page)).toBe(before);
   });
 });
+
+test.describe("reveal opens a preview tab (beta feedback 2026-08-25)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".cm-content", { timeout: 10000 });
+  });
+
+  /** Tab labels in the first editor group. */
+  function tabLabels(page: Page): Promise<string[]> {
+    return page
+      .locator(".shell-editor-group")
+      .first()
+      .locator(".brink-tab .brink-tab-label")
+      .allTextContents();
+  }
+
+  test("successive reveals reuse one preview tab instead of minting tabs", async ({
+    page,
+  }) => {
+    const before = (await tabLabels(page)).length;
+
+    // Reveal a match in the OTHER file (main.ink is the bootstrap tab).
+    await openSearch(page);
+    await search(page, "intro");
+    const other = page
+      .locator(".search-card")
+      .filter({ has: page.locator(".search-card-loc", { hasText: "toppled-temple" }) })
+      .first();
+    await other.locator(".search-card-reveal").click();
+
+    // One new tab, and it is the preview (unpinned) tab.
+    await expect
+      .poll(() => tabLabels(page).then((t) => t.length))
+      .toBe(before + 1);
+    await expect(
+      page.locator(".shell-editor-group").first().locator(".brink-tab.unpinned"),
+    ).toHaveCount(1);
+
+    // A second reveal into a different file REPLACES the preview rather than
+    // adding to the strip — the whole point of the change.
+    await search(page, "gold");
+    await page.locator(".search-card-reveal").first().click();
+    await expect
+      .poll(() => tabLabels(page).then((t) => t.length))
+      .toBeLessThanOrEqual(before + 1);
+  });
+
+  test("revealing into an already-pinned tab leaves it pinned", async ({ page }) => {
+    // main.ink opens pinned at bootstrap; revealing into it must not unpin it.
+    await openSearch(page);
+    await search(page, "intro");
+    await page
+      .locator(".search-card")
+      .filter({ has: page.locator(".search-card-loc", { hasText: "main.ink" }) })
+      .first()
+      .locator(".search-card-reveal")
+      .click();
+
+    await expect.poll(() => editorDoc(page)).toContain("-> intro");
+    const mainTab = page
+      .locator(".shell-editor-group")
+      .first()
+      .locator(".brink-tab", { hasText: "main.ink" });
+    await expect(mainTab).not.toHaveClass(/unpinned/);
+  });
+});
