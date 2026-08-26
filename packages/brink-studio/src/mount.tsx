@@ -686,7 +686,16 @@ export async function mountStudio(
     storedEditor === null
       ? null
       : reconcileEditorSnapshot(storedEditor, (ref) => {
-          // Singleton documents (player, settings, compiled output) have no
+          // Tool documents are NOT part of "what I had open". Settings and
+          // Compiled Output are things you consult and dismiss, so bringing
+          // them back on every launch is noise — and worse, restoring one as
+          // the active tab means a reload can land on a document that is not
+          // the manuscript at all. The Player is deliberately not in this
+          // list: it is half of the default two-up, so restoring it is what
+          // keeps a restored session looking like the one you left.
+          if (ref.typeId === SETTINGS_TYPE_ID) return false;
+          if (ref.typeId === COMPILED_OUTPUT_TYPE_ID) return false;
+          // Other non-ink documents (the player, the story graph) have no
           // file behind them and are always available.
           if (ref.typeId !== INK_FILE_TYPE_ID) return true;
           // A symbol tab's docId is "path::symbol"; the file is the path.
