@@ -18,7 +18,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
   cursor: pointer;
   border-radius: 3px;
@@ -39,7 +39,7 @@
 .brink-studio .brink-context-menu-shortcut {
   margin-left: 24px;
   color: var(--bs-fg-muted);
-  font-size: 11px;
+  font-size: var(--bs-font-small);
 }
 .brink-studio .brink-context-menu-item.disabled {
   color: var(--bs-fg-muted);
@@ -55,7 +55,7 @@
   margin: 4px 6px;
 }
 .brink-studio .brink-context-menu-arrow {
-  font-size: 8px;
+  font-size: var(--bs-font-glyph);
   color: var(--bs-fg-muted);
   margin-left: 12px;
 }

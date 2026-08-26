@@ -9,6 +9,7 @@
 @import "./themes/inky.css";
 @import "./themes/inky-dark.css";
 
+@import "./typography.css";
 @import "./frame.css";
 @import "./toolwindow.css";
 @import "./editor-area.css";

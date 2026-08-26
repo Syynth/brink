@@ -92,6 +92,7 @@ describe("editor font size persistence", () => {
       autoOpenForm: true,
       showGutters: false,
       fontSize: 18,
+      appFontSize: 12,
     });
     const loaded = loadEditorSettings(storage);
     expect(loaded.fontSize).toBe(18);

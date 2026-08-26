@@ -33,6 +33,10 @@ import {
 } from "@brink/studio-shell";
 import type { ExternalCheckLevel } from "@brink/studio-store";
 import {
+  DEFAULT_APP_FONT_SIZE,
+  MAX_APP_FONT_SIZE,
+  MIN_APP_FONT_SIZE,
+  clampAppFontSize,
   DEFAULT_EDITOR_FONT_SIZE,
   MAX_EDITOR_FONT_SIZE,
   MIN_EDITOR_FONT_SIZE,
@@ -129,6 +133,9 @@ export interface EditorSettings {
    *  app-wide sizing: this is the prose you stare at, and authors want it
    *  bigger without inflating the chrome around it. */
   fontSize: number;
+  /** App-wide UI text size in px — the base the whole type scale derives
+   *  from. The other half of the two-knob ruling. */
+  appFontSize: number;
 }
 
 const DEFAULT_EDITOR: EditorSettings = {
@@ -136,6 +143,7 @@ const DEFAULT_EDITOR: EditorSettings = {
   autoOpenForm: false,
   showGutters: true,
   fontSize: DEFAULT_EDITOR_FONT_SIZE,
+  appFontSize: DEFAULT_APP_FONT_SIZE,
 };
 
 /** Load persisted editor settings. Never throws; defaults on garbage. */
@@ -158,6 +166,7 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     autoOpenForm?: unknown;
     showGutters?: unknown;
     fontSize?: unknown;
+    appFontSize?: unknown;
   } | null;
   const glyph = obj?.formGlyph === "hover" || obj?.formGlyph === "inline" ? obj.formGlyph : "off";
   return {
@@ -167,6 +176,7 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     showGutters: obj?.showGutters !== false,
     // Garbage, out-of-range, and absent all land on the default.
     fontSize: clampEditorFontSize(obj?.fontSize),
+    appFontSize: clampAppFontSize(obj?.appFontSize),
   };
 }
 
@@ -303,10 +313,13 @@ function EditorSection() {
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
   const fontSize = useStudioStore((s) => s.editorFontSize);
   const setEditorFontSize = useStudioStore((s) => s.setEditorFontSize);
+  const appFontSize = useStudioStore((s) => s.appFontSize);
+  const setAppFontSize = useStudioStore((s) => s.setAppFontSize);
   const selectId = useId();
   const autoId = useId();
   const guttersId = useId();
   const fontSizeId = useId();
+  const appFontSizeId = useId();
 
   const onGlyphChange = (mode: FormGlyphMode): void => {
     setFormGlyph(mode);
@@ -315,6 +328,7 @@ function EditorSection() {
       autoOpenForm,
       showGutters,
       fontSize,
+      appFontSize,
     });
   };
   const onAutoChange = (on: boolean): void => {
@@ -324,6 +338,7 @@ function EditorSection() {
       autoOpenForm: on,
       showGutters,
       fontSize,
+      appFontSize,
     });
   };
   const onGuttersChange = (on: boolean): void => {
@@ -333,6 +348,7 @@ function EditorSection() {
       autoOpenForm,
       showGutters: on,
       fontSize,
+      appFontSize,
     });
   };
   const onFontSizeChange = (px: number): void => {
@@ -343,6 +359,18 @@ function EditorSection() {
       autoOpenForm,
       showGutters,
       fontSize: next,
+      appFontSize,
+    });
+  };
+  const onAppFontSizeChange = (px: number): void => {
+    const next = clampAppFontSize(px);
+    setAppFontSize(next);
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm,
+      showGutters,
+      fontSize,
+      appFontSize: next,
     });
   };
 
@@ -407,6 +435,25 @@ function EditorSection() {
         <p className="settings-section-hint">
           {MIN_EDITOR_FONT_SIZE}–{MAX_EDITOR_FONT_SIZE} px (default{" "}
           {DEFAULT_EDITOR_FONT_SIZE}). Also Mod-= / Mod-- / Mod-0 while editing.
+        </p>
+      </div>
+      <div className="settings-field">
+        <label htmlFor={appFontSizeId}>
+          App font size
+          <input
+            id={appFontSizeId}
+            type="number"
+            min={MIN_APP_FONT_SIZE}
+            max={MAX_APP_FONT_SIZE}
+            value={appFontSize}
+            onChange={(event) => onAppFontSizeChange(Number(event.target.value))}
+            style={{ marginLeft: 8, width: 64 }}
+          />
+        </label>
+        <p className="settings-section-hint">
+          {MIN_APP_FONT_SIZE}–{MAX_APP_FONT_SIZE} px (default{" "}
+          {DEFAULT_APP_FONT_SIZE}). Scales panels, menus, and labels — the
+          whole type scale moves with it; the editor keeps its own size.
         </p>
       </div>
     </section>

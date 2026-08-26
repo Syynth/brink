@@ -367,6 +367,10 @@ export type { SchedulerAction } from "./worker/scheduler.js";
 // `--bs-editor-font-size`; these are the default, bounds, and the shared
 // clamp so the store and the settings parser cannot disagree.
 export {
+  DEFAULT_APP_FONT_SIZE,
+  MIN_APP_FONT_SIZE,
+  MAX_APP_FONT_SIZE,
+  clampAppFontSize,
   DEFAULT_EDITOR_FONT_SIZE,
   MIN_EDITOR_FONT_SIZE,
   MAX_EDITOR_FONT_SIZE,

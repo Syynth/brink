@@ -24,13 +24,13 @@
   text-transform: none;
   letter-spacing: normal;
   font-weight: 400;
-  font-size: 12px;
+  font-size: var(--bs-font-body);
   color: var(--bs-fg);
 }
 
 .brink-studio .shell-toolwindow .header {
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   font-weight: 600;
   color: var(--bs-fg-muted);
   border-bottom: 1px solid var(--bs-border);
@@ -57,7 +57,7 @@
   background: none;
   border: none;
   color: var(--bs-fg-muted);
-  font-size: 10px;
+  font-size: var(--bs-font-tiny);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 3px;

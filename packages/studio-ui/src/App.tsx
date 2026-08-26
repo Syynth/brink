@@ -49,13 +49,19 @@ function App({ children }: { children?: ReactNode }) {
   // a class because the value is continuous, and going through CSS means
   // every mounted editor reflows at once with no CM reconfiguration.
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
+  const appFontSize = useStudioStore((s) => s.appFontSize);
 
   return (
     <div
       className={"brink-studio" + (showGutters ? "" : " brink-gutters-hidden")}
       data-tier={tier}
       data-theme={themeId}
-      style={{ "--bs-editor-font-size": `${editorFontSize}px` } as CSSProperties}
+      style={
+        {
+          "--bs-editor-font-size": `${editorFontSize}px`,
+          "--bs-font-base": `${appFontSize}px`,
+        } as CSSProperties
+      }
       ref={rootRef}
     >
       <ShellFrame />

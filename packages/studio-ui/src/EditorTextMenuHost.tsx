@@ -49,6 +49,7 @@ function EditorTextMenu({
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
   const showGutters = useStudioStore((s) => s.showGutters);
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
+  const appFontSize = useStudioStore((s) => s.appFontSize);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
 
   // Group order per the context-menu spec: Navigate · Rename · Text.
@@ -103,6 +104,7 @@ function EditorTextMenu({
           autoOpenForm,
           showGutters: !showGutters,
           fontSize: editorFontSize,
+          appFontSize,
         });
       },
     },

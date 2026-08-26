@@ -14,7 +14,7 @@
   align-items: center;
   justify-content: center;
   color: var(--bs-fg-muted);
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   user-select: none;
 }
 /* Quiet focused-group cue: the active tab gets the accent underline only in
@@ -32,7 +32,7 @@
 }
 .brink-studio .editor-pane .header {
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   font-weight: 600;
   color: var(--bs-fg-muted);
   background: var(--bs-surface-bg);
@@ -60,7 +60,7 @@
   color: var(--bs-fg-muted);
   border: none;
   border-bottom: 1px solid var(--bs-border);
-  font-size: 16px;
+  font-size: var(--bs-font-xlarge);
   line-height: 1;
   cursor: pointer;
 }
@@ -102,7 +102,7 @@
   min-width: 120px;
   max-width: 200px;
   padding: 6px 8px 6px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg-muted);
   cursor: pointer;
   border-right: 1px solid var(--bs-border);
@@ -135,7 +135,7 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 14px;
+  font-size: var(--bs-font-large);
   line-height: 1;
   border-radius: 3px;
   color: var(--bs-fg-muted);
@@ -187,7 +187,7 @@
   min-width: 120px;
   max-width: 200px;
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   color: var(--bs-fg);
   background: var(--bs-editor-bg);
   border: 1px solid var(--bs-border);
@@ -200,7 +200,7 @@
   display: flex;
   align-items: center;
   padding: 6px 10px;
-  font-size: 16px;
+  font-size: var(--bs-font-xlarge);
   color: var(--bs-fg-muted);
   cursor: pointer;
   user-select: none;
@@ -220,7 +220,7 @@
   border: 1px solid var(--bs-border);
   border-radius: 3px;
   padding: 2px 8px;
-  font-size: 13px;
+  font-size: var(--bs-font-medium);
   font-family: inherit;
   outline: none;
 }

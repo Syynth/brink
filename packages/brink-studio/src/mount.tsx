@@ -1265,6 +1265,7 @@ export async function mountStudio(
     store.getState().setShowGutters(editor.showGutters);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
     store.getState().setEditorFontSize(editor.fontSize);
+    store.getState().setAppFontSize(editor.appFontSize);
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
   // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):

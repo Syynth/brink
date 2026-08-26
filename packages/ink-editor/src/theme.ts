@@ -15,6 +15,20 @@ export const MAX_EDITOR_FONT_SIZE = 32;
  * a usable editor size. One definition, shared by the store's setters and
  * the settings parser, so they can never disagree.
  */
+/** The app-wide UI text size (the `--bs-font-base` the type scale derives
+ *  every step from) and its bounds. Separate knob from the editor's: "make
+ *  the UI bigger" and "make the text I write bigger" are different asks. */
+export const DEFAULT_APP_FONT_SIZE = 12;
+export const MIN_APP_FONT_SIZE = 9;
+export const MAX_APP_FONT_SIZE = 20;
+
+/** Clamp + round an app-wide size; garbage lands on the default. */
+export function clampAppFontSize(value: unknown): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
+  if (Number.isNaN(n)) return DEFAULT_APP_FONT_SIZE;
+  return Math.min(MAX_APP_FONT_SIZE, Math.max(MIN_APP_FONT_SIZE, n));
+}
+
 export function clampEditorFontSize(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
   if (Number.isNaN(n)) return DEFAULT_EDITOR_FONT_SIZE;
