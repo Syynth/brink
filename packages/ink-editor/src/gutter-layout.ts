@@ -46,7 +46,10 @@
  * with margin offsets measured from the document top, which stay correct
  * once the container is detached — verified at scroll depths 0 / 6,000 /
  * 14,000 / 24,000 px, where the line-to-marker delta is constant and
- * identical to stock.
+ * identical to stock. Note that this alignment check CANNOT catch a
+ * container whose own box is mis-sized (both the line and the marker
+ * move together), which is why the `bottom: auto` note below matters and
+ * why the real guard is the play-gutter click e2e.
  *
  * Measured on the same project and harness after this change: keystroke
  * latency 48 ms -> 24 ms (the gutters-removed floor is 16-24 ms), long
@@ -78,8 +81,18 @@ import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 const DETACHED_CLASS = "brink-detached-gutters";
 
 /**
- * `inset: 0 auto 0 0` — top/left/bottom, never a `height`/`min-height`
- * that would restore the full-document stretch this exists to remove.
+ * `inset: 0 auto auto 0` — TOP and LEFT only. Neither a `height` nor a
+ * `min-height` may come back (that full-document stretch is the cost
+ * this exists to remove), and `bottom` must stay `auto` for a subtler
+ * reason: CodeMirror positions gutter markers with margin offsets
+ * measured from the DOCUMENT top, so the container is anchored at the
+ * document origin and scrolls with the content. Pinning `bottom: 0` caps
+ * the box at one viewport height while its markers keep going, so
+ * everything below the fold falls OUTSIDE the container's own box and
+ * silently stops hit-testing — the markers still paint, still measure as
+ * visible, and simply refuse clicks (caught by the play-gutter e2e).
+ * With `bottom: auto` the box grows to contain its markers.
+ *
  * `z-index` keeps fold/play markers above the content, whose padded box
  * now extends underneath them, so gutter clicks still land.
  *
@@ -96,7 +109,7 @@ const detachedTheme = EditorView.baseTheme({
   ".cm-scroller": { position: "relative" },
   [`&.${DETACHED_CLASS} .cm-gutters`]: {
     position: "absolute !important",
-    inset: "0 auto 0 0",
+    inset: "0 auto auto 0",
     height: "auto !important",
     minHeight: "0 !important",
     zIndex: "200",
