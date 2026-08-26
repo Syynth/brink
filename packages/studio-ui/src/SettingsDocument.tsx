@@ -32,6 +32,12 @@ import {
   type EditorGroupsStore,
 } from "@brink/studio-shell";
 import type { ExternalCheckLevel } from "@brink/studio-store";
+import {
+  DEFAULT_EDITOR_FONT_SIZE,
+  MAX_EDITOR_FONT_SIZE,
+  MIN_EDITOR_FONT_SIZE,
+  clampEditorFontSize,
+} from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
 
 export const SETTINGS_TYPE_ID = "settings";
@@ -119,12 +125,17 @@ export interface EditorSettings {
   /** Editor gutters (line numbers, rails, fold/play). Default ON; also the
    *  interim WebKit latency escape hatch on large projects (#3119). */
   showGutters: boolean;
+  /** Editor text size in px (beta feedback 2026-08-25). Separate from any
+   *  app-wide sizing: this is the prose you stare at, and authors want it
+   *  bigger without inflating the chrome around it. */
+  fontSize: number;
 }
 
 const DEFAULT_EDITOR: EditorSettings = {
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
+  fontSize: DEFAULT_EDITOR_FONT_SIZE,
 };
 
 /** Load persisted editor settings. Never throws; defaults on garbage. */
@@ -146,6 +157,7 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     formGlyph?: unknown;
     autoOpenForm?: unknown;
     showGutters?: unknown;
+    fontSize?: unknown;
   } | null;
   const glyph = obj?.formGlyph === "hover" || obj?.formGlyph === "inline" ? obj.formGlyph : "off";
   return {
@@ -153,6 +165,8 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     autoOpenForm: obj?.autoOpenForm === true,
     // Default ON: only an explicit false (a persisted opt-out) hides them.
     showGutters: obj?.showGutters !== false,
+    // Garbage, out-of-range, and absent all land on the default.
+    fontSize: clampEditorFontSize(obj?.fontSize),
   };
 }
 
@@ -287,21 +301,49 @@ function EditorSection() {
   const setAutoOpenForm = useStudioStore((s) => s.setAutoOpenForm);
   const showGutters = useStudioStore((s) => s.showGutters);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
+  const fontSize = useStudioStore((s) => s.editorFontSize);
+  const setEditorFontSize = useStudioStore((s) => s.setEditorFontSize);
   const selectId = useId();
   const autoId = useId();
   const guttersId = useId();
+  const fontSizeId = useId();
 
   const onGlyphChange = (mode: FormGlyphMode): void => {
     setFormGlyph(mode);
-    saveEditorSettings(window.localStorage, { formGlyph: mode, autoOpenForm, showGutters });
+    saveEditorSettings(window.localStorage, {
+      formGlyph: mode,
+      autoOpenForm,
+      showGutters,
+      fontSize,
+    });
   };
   const onAutoChange = (on: boolean): void => {
     setAutoOpenForm(on);
-    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm: on, showGutters });
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm: on,
+      showGutters,
+      fontSize,
+    });
   };
   const onGuttersChange = (on: boolean): void => {
     setShowGutters(on);
-    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm, showGutters: on });
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm,
+      showGutters: on,
+      fontSize,
+    });
+  };
+  const onFontSizeChange = (px: number): void => {
+    const next = clampEditorFontSize(px);
+    setEditorFontSize(next);
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm,
+      showGutters,
+      fontSize: next,
+    });
   };
 
   return (
@@ -348,6 +390,24 @@ function EditorSection() {
           />
           Show editor gutters (line numbers, structure rails, fold/play markers)
         </label>
+      </div>
+      <div className="settings-field">
+        <label htmlFor={fontSizeId}>
+          Editor font size
+          <input
+            id={fontSizeId}
+            type="number"
+            min={MIN_EDITOR_FONT_SIZE}
+            max={MAX_EDITOR_FONT_SIZE}
+            value={fontSize}
+            onChange={(event) => onFontSizeChange(Number(event.target.value))}
+            style={{ marginLeft: 8, width: 64 }}
+          />
+        </label>
+        <p className="settings-section-hint">
+          {MIN_EDITOR_FONT_SIZE}–{MAX_EDITOR_FONT_SIZE} px (default{" "}
+          {DEFAULT_EDITOR_FONT_SIZE}). Also Mod-= / Mod-- / Mod-0 while editing.
+        </p>
       </div>
     </section>
   );

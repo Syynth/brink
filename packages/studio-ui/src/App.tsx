@@ -24,7 +24,7 @@ import { NewFilePrompt } from "./NewFilePrompt.js";
 import { SearchCommands } from "./SearchView.js";
 import { ConflictMergeView } from "./ConflictMergeView.js";
 import { useStudioStore } from "./StoreContext.js";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 /** `children` render inside the `.brink-studio` root — popup hosts and other
  *  fixed-position surfaces MUST live here, or the scoped styles and theme
@@ -44,11 +44,18 @@ function App({ children }: { children?: ReactNode }) {
   // also removes the WebKit per-gutter-element layout cost (#3119).
   const showGutters = useStudioStore((s) => s.showGutters);
 
+  // Editor text size: mirrored onto the root as a CSS custom property the
+  // CM6 theme reads (`--bs-editor-font-size`). A style property rather than
+  // a class because the value is continuous, and going through CSS means
+  // every mounted editor reflows at once with no CM reconfiguration.
+  const editorFontSize = useStudioStore((s) => s.editorFontSize);
+
   return (
     <div
       className={"brink-studio" + (showGutters ? "" : " brink-gutters-hidden")}
       data-tier={tier}
       data-theme={themeId}
+      style={{ "--bs-editor-font-size": `${editorFontSize}px` } as CSSProperties}
       ref={rootRef}
     >
       <ShellFrame />

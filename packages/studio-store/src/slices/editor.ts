@@ -7,6 +7,7 @@
 import type { StateCreator } from "zustand";
 import type { FormGlyphMode, LineInfo } from "@brink-lang/editor";
 import type { StudioState } from "../index.js";
+import { clampEditorFontSize } from "@brink-lang/editor";
 import type { KeyHint } from "../types.js";
 
 export interface EditorSlice {
@@ -24,12 +25,19 @@ export interface EditorSlice {
    *  scales with visible gutter elements (#3119), so it doubles as the
    *  interim latency escape hatch on large projects in the desktop app. */
   showGutters: boolean;
+  /** Editor text size in px (beta feedback 2026-08-25). Mirrored onto the
+   *  studio root as `--bs-editor-font-size`, which the CM6 theme reads. */
+  editorFontSize: number;
 
   setCursor(line: number, col: number): void;
   setLineInfo(info: LineInfo | null, hints: KeyHint[]): void;
   setFormGlyph(mode: FormGlyphMode): void;
   setAutoOpenForm(on: boolean): void;
   setShowGutters(on: boolean): void;
+  /** Set an absolute size (clamped to the usable range). */
+  setEditorFontSize(px: number): void;
+  /** Step the size by `delta` px (clamped) — the zoom in/out commands. */
+  adjustEditorFontSize(delta: number): void;
 }
 
 export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> = (set, get) => ({
@@ -39,6 +47,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
+  editorFontSize: 14,
 
   setCursor(line, col) {
     set({ cursor: { line, col } });
@@ -60,5 +69,13 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
 
   setShowGutters(on) {
     set({ showGutters: on });
+  },
+
+  setEditorFontSize(px) {
+    set({ editorFontSize: clampEditorFontSize(px) });
+  },
+
+  adjustEditorFontSize(delta) {
+    set({ editorFontSize: clampEditorFontSize(get().editorFontSize + delta) });
   },
 });

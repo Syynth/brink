@@ -1,6 +1,26 @@
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 
+/** The editor's shipped text size, and the reset target for the zoom
+ *  commands (beta feedback 2026-08-25: the editor gets its own size knob,
+ *  separate from any app-wide sizing). */
+export const DEFAULT_EDITOR_FONT_SIZE = 14;
+/** Clamp bounds: below 8 the gutter collides with itself; above 32 a single
+ *  line stops fitting a pane at any sane width. */
+export const MIN_EDITOR_FONT_SIZE = 8;
+export const MAX_EDITOR_FONT_SIZE = 32;
+
+/**
+ * Clamp + round an arbitrary value (or garbage from persisted settings) to
+ * a usable editor size. One definition, shared by the store's setters and
+ * the settings parser, so they can never disagree.
+ */
+export function clampEditorFontSize(value: unknown): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
+  if (Number.isNaN(n)) return DEFAULT_EDITOR_FONT_SIZE;
+  return Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, n));
+}
+
 // Colors reference only the semantic --bs-* tokens (studio-shell-spec §7.4);
 // the values come from the active theme's CSS. No hardcoded fallbacks — the
 // editor always mounts under a .brink-studio root that defines the tokens.
@@ -23,7 +43,7 @@ export const brinkTheme: Extension = [
     ".cm-scroller": {
       overflow: "auto",
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
-      fontSize: "14px",
+      fontSize: "var(--bs-editor-font-size, 14px)",
       lineHeight: "1.6",
     },
     ".cm-gutters": {

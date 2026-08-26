@@ -28,6 +28,7 @@ import type {
   StoryGraph,
 } from "@brink/wasm-types";
 import {
+  DEFAULT_EDITOR_FONT_SIZE,
   DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
@@ -120,6 +121,7 @@ import {
   inkFileRef,
   loadDiagnosticsSettings,
   loadEditorSettings,
+  saveEditorSettings,
   openPlayerSplit,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
@@ -672,6 +674,41 @@ export async function mountStudio(
   // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
   documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
   registerSettingsCommand(commands, editorGroups);
+
+  // Editor text size (beta feedback 2026-08-25). Mod-= / Mod-- / Mod-0 are
+  // the universal zoom chords; here they size the EDITOR specifically, which
+  // is what an author means by "make the text bigger". Each command persists
+  // through the same settings record the Settings document writes, so the
+  // choice survives a restart either way it was made.
+  const persistFontSize = (px: number): void => {
+    const current = loadEditorSettings(window.localStorage);
+    saveEditorSettings(window.localStorage, { ...current, fontSize: px });
+  };
+  const stepFontSize = (delta: number): void => {
+    store.getState().adjustEditorFontSize(delta);
+    persistFontSize(store.getState().editorFontSize);
+  };
+  commands.register({
+    id: "editor.fontSize.increase",
+    title: "Editor: Increase Font Size",
+    keybinding: ["Mod-=", "Mod-Shift-="],
+    run: () => stepFontSize(1),
+  });
+  commands.register({
+    id: "editor.fontSize.decrease",
+    title: "Editor: Decrease Font Size",
+    keybinding: "Mod--",
+    run: () => stepFontSize(-1),
+  });
+  commands.register({
+    id: "editor.fontSize.reset",
+    title: "Editor: Reset Font Size",
+    keybinding: "Mod-0",
+    run: () => {
+      store.getState().setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
+      persistFontSize(DEFAULT_EDITOR_FONT_SIZE);
+    },
+  });
   // Story Graph (#97, spec §4.1): custom-rendered, compile-bound singleton
   // over the wasm story-graph query (the component subscribes to storyGraph,
   // refreshed below on each successful compile), with the live session
@@ -1227,6 +1264,7 @@ export async function mountStudio(
     store.getState().setFormGlyph(editor.formGlyph);
     store.getState().setShowGutters(editor.showGutters);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
+    store.getState().setEditorFontSize(editor.fontSize);
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
   // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):
