@@ -12,6 +12,7 @@
  * useShellLayout(selector).
  */
 
+import type { DocumentRef } from "./document.js";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
   DOCK_SECTION_IDS,
@@ -26,6 +27,13 @@ import {
 /** Responsive presentation tier (spec §5.3), driven by the width observer. */
 export type LayoutTier = "wide" | "medium" | "narrow";
 
+/**
+ * The editor root area's possible occupants. "code" is today's tabbed
+ * surface with groups and splits; "single" shows one file with the host's
+ * companion document beside it. "continuous" joins them later.
+ */
+export type EditorViewId = "code" | "single" | "continuous";
+
 export interface ShellLayoutState {
   /** Current responsive tier. */
   tier: LayoutTier;
@@ -37,6 +45,26 @@ export interface ShellLayoutState {
   dockSizes: Record<Dock, number>;
   /** Maximized tool window: covers the editor area until restored (§5.4). */
   maximized: string | null;
+
+  /**
+   * Which view occupies the editor root area (decision log 2026-08-26,
+   * "The editor root area has one occupant"). The area holds exactly one
+   * thing: a view over the project's files, and later the Story Graph,
+   * which takes the area over rather than opening inside a view.
+   *
+   * A preference about how you write rather than a fact about the project,
+   * so it persists with the rest of the layout (globally) rather than
+   * per-project alongside each view's own remembered state.
+   */
+  editorView: EditorViewId;
+
+  /**
+   * A document occupying the whole editor root area, over whichever view is
+   * chosen — null when the view itself is showing. Deliberately NOT
+   * persisted: consulting the graph or changing a setting is an
+   * interruption, and relaunching into one would be a bug, not a restore.
+   */
+  takeover: DocumentRef | null;
 
   // ── Transient compact-tier presentation (reset on tier change) ──
   /** medium/narrow: slide-over drawer visibility per side dock. */
@@ -57,6 +85,10 @@ export interface ShellLayoutState {
    * hidden window reveals it (drawer / narrow overlay) instead of closing.
    */
   toggleToolWindow(id: string): void;
+  /** Choose the editor root area's occupant. */
+  setEditorView(view: EditorViewId): void;
+  /** Show a document over the whole editor area, or `null` to go back. */
+  setTakeover(ref: DocumentRef | null): void;
   /** Re-dock a tool window; if it was open, it opens in the new section. */
   moveToolWindow(id: string, dock: Dock, section: Section): void;
   /** Maximize a tool window over the editor area, or restore it (§5.4). */
@@ -133,6 +165,8 @@ export function createShellLayoutStore(): ShellLayoutStore {
     open: emptyOpen(),
     dockSizes: { left: 220, right: 300, bottom: 180 },
     maximized: null,
+    editorView: "code",
+    takeover: null,
     drawers: { left: false, right: false },
     narrowView: null,
 
@@ -178,6 +212,16 @@ export function createShellLayoutStore(): ShellLayoutStore {
           s.maximized !== null && known.has(s.maximized) ? s.maximized : null;
         return { placements, open, narrowView, maximized };
       });
+    },
+
+    setEditorView(view) {
+      // Choosing a view is choosing what fills the area, so it also
+      // dismisses anything that had taken the area over.
+      set({ editorView: view, takeover: null });
+    },
+
+    setTakeover(ref) {
+      set({ takeover: ref });
     },
 
     toggleToolWindow(id) {

@@ -3393,3 +3393,37 @@
 - **SCOPE:** architectural
 - **WHAT:** Editor state that survives a reload — open tabs, tab order, pin/preview state, the active tab per group, the group split structure and sizes, and each open document's cursor + scroll — is persisted under a storage key namespaced by a project scope the host supplies, not globally. The store keeps one entry per project, most-recently-used first, evicting past a fixed cap so the payload cannot grow without bound. This is the studio's first project-scoped storage key; layout, theme, keymap and editor settings stay global, because they are preferences about the app rather than state about a project.
 - **WHY:** Tabs are the first state whose meaning depends on which project is open — a global slot would either restore tabs naming files that do not exist in the current project, or force dropping them on every project switch, so moving between two projects would permanently cost whichever one you left. Per-project scoping keeps both. The cap is what makes it safe to key by project at all: without eviction the entry count grows with every project ever opened, which is small per entry but unbounded, and unbounded accumulation in a fixed-size store is the failure this repo already guards against elsewhere ("Guard against unbounded growth").
+
+## Continuous view orders files by binder order
+- **WHEN:** 2026-08-26
+- **PROJECT:** brink
+- **SYSTEM:** studio editor surfaces (continuous / "Scrivenings" mode)
+- **SCOPE:** moderate
+- **WHAT:** The continuous editing surface — the one that scrolls through several files as a single view with headings between them — orders those files by BINDER order, not by INCLUDE/compile order.
+- **WHY:** The two orders diverge, and the choice decides what the mode means. Binder order is the authoring order the writer arranged themselves; it is already first-class (the `.binder.json` order sidecar, drag-to-reorder), so the continuous view reads the manuscript the way its author laid it out. Compile order is reachability from the entry file — a property of the story's execution, not of the manuscript, and one the author does not directly control.
+
+## Each editor surface keeps its own persisted state; the active file is shared
+- **WHEN:** 2026-08-26
+- **PROJECT:** brink
+- **SYSTEM:** studio editor surfaces / editor-state persistence
+- **SCOPE:** architectural
+- **WHAT:** The editor region is a swappable SURFACE — the tabbed/code editor, a focused single-document editor, and a continuous multi-file view are alternative components filling the same region, reusing the existing document components (editor, player, graph) unchanged. Each KIND of surface owns its own persistable state, stored separately, rather than all three projecting from one shared model. The likely exception is "the active file", which is shared across surfaces so switching surfaces keeps you on the document you were working on.
+- **WHY:** The surfaces have genuinely different state — a tab list and split geometry mean nothing to a continuous scroll, and a scroll offset through a concatenated manuscript means nothing to a tab strip — so forcing them through one model would either lose state on every switch or accumulate fields most surfaces ignore. Keeping them separate lets each surface restore exactly what it had. The active file is the exception because it is the one piece of state that means the same thing everywhere, and it is what makes switching surfaces feel like changing the view rather than losing your place.
+
+## The three editor views are named Code, Single File, and Continuous
+- **WHEN:** 2026-08-26
+- **PROJECT:** brink
+- **SYSTEM:** studio editor surfaces
+- **SCOPE:** moderate
+- **WHAT:** The swappable editor surfaces are named, and the names are the user-facing vocabulary: **Code view** is what exists today (tabs, groups, splits); **Single File view** shows one file at a time with a native player split; **Continuous view** scrolls through several files as one manuscript. Each is a distinct view the author chooses, not a mode flag mutating the others' behaviour.
+- **WHY:** Naming them settles what each is FOR before any of them is built, which is what the earlier framing lacked — "main-editor mode" described a tab-semantics tweak rather than a view, and pushed the design toward mutating pin rules inside the existing surface. Calling today's surface "Code view" also stops it being the unnamed default that other views are defined against: it is one of three, with its own audience (a writer working across files, wanting structure and splits) rather than the baseline everything else deviates from. "Single File" carries the player split in its definition because a writer on one file still needs to run it — that is what makes it a usable view rather than a stripped-down Code view.
+
+## The editor root area has one occupant; Graph and Settings are peers of the views
+- **WHEN:** 2026-08-26
+- **PROJECT:** brink
+- **SYSTEM:** studio editor surfaces
+- **SCOPE:** architectural
+- **WHAT:** The editor root area holds exactly one occupant at a time. The three views — Single File, Code, Continuous — inhabit it, and the **Story Graph** TAKES OVER the same area rather than opening as a document inside whichever view is active: it is a peer of the views, not a content of them. Single File view is built first.
+- **STATUS:** tentative for Settings — the Graph half is not tentative. Settings placement is OPEN with three candidates raised in quick succession: (a) take over the editor root area like the Graph, (b) a modal, (c) pop out into its own window, "like zed — i like zed's settings view". All three beat the status quo of a tab, because none of them costs you the writing surface permanently.
+  The deciding factor is likely the desktop/web asymmetry rather than taste: brink-desktop is a Tauri app where a second OS window is first-class and matches the Zed reference exactly, but the embeddable studio and the playground cannot open a real window (a popup is blocked as often as not), so (c) means building (b) as the fallback anyway. (a) is the only one that needs no second implementation.
+- **WHY:** It answers "where does the Graph go in a view with no tab strip" without inventing a second mechanism for it. Both are whole-window activities — you consult the graph or change a setting, then go back to writing — so occupying the area you were writing in matches what you are actually doing, and it means every view gets them for free instead of each view needing its own answer. It also keeps the views honest: a view is defined by how it presents FILES, and neither the graph nor settings is a file.

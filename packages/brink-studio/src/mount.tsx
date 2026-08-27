@@ -68,6 +68,7 @@ import {
   VIEW_REVEAL_COMMAND_ID,
   ViewRevealHandlers,
   createEditorGroupsStore,
+  createShellLayoutStore,
   attachEditorPersistence,
   loadEditorSnapshot,
   reconcileEditorSnapshot,
@@ -78,6 +79,7 @@ import {
   type DocumentRef,
   type EditorGroupsState,
   type EditorGroupsStore,
+  type ShellLayoutStore,
   type Location as ShellLocation,
   type SourceLocation,
   type StudioExtensions,
@@ -128,6 +130,8 @@ import {
   loadEditorSettings,
   saveEditorSettings,
   openPlayerSplit,
+  playerRef,
+  StudioContinuousView,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
@@ -407,6 +411,7 @@ interface RootProps {
   statusBarItems: StatusBarRegistry;
   documentTypes: DocumentTypeRegistry;
   editorGroups: EditorGroupsStore;
+  layout: ShellLayoutStore;
   notifications: NotificationCenter;
   api: StudioApi;
 }
@@ -420,6 +425,7 @@ function Root({
   statusBarItems,
   documentTypes,
   editorGroups,
+  layout,
   notifications,
   api,
 }: RootProps) {
@@ -442,7 +448,18 @@ function Root({
       statusBarItems={statusBarItems}
       documents={documentTypes}
       editorGroups={editorGroups}
+      layout={layout}
       notifications={notifications}
+      // Single File view's native split (decision log 2026-08-26). The shell
+      // is told WHICH document sits beside the file, not what it means — so
+      // "run the scene you are writing" is one prop rather than the shell
+      // learning what a player is.
+      companionDocument={playerRef()}
+      // Continuous view's content. An element, not a list: the ORDER is
+      // binder order, which lives in the studio store, and passing the
+      // element lets it render inside the store's provider (decision log
+      // 2026-08-26).
+      continuousView={<StudioContinuousView />}
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>
@@ -702,6 +719,11 @@ export async function mountStudio(
           const path = ref.docId.split("::")[0];
           return Object.hasOwn(options.files, path);
         });
+  // The layout store is created HERE rather than inside ShellProvider so the
+  // takeover commands below — registered outside the React tree — can reach
+  // it (decision log 2026-08-26). The provider restores the persisted
+  // snapshot into whichever store it is given.
+  const shellLayout: ShellLayoutStore = createShellLayoutStore();
   const editorGroups: EditorGroupsStore = createEditorGroupsStore(
     restoredEditor === null
       ? undefined
@@ -730,8 +752,14 @@ export async function mountStudio(
   registerOpenPlayerCommand(commands, editorGroups);
   // Settings (#93): static UI over shell services — not session-bound, not
   // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
-  documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
-  registerSettingsCommand(commands, editorGroups);
+  // Whole-window activities, not files: they occupy the editor root area
+  // rather than opening as tabs (decision log 2026-08-26).
+  documentTypes.register({
+    id: SETTINGS_TYPE_ID,
+    component: SettingsDocument,
+    takeover: true,
+  });
+  registerSettingsCommand(commands, shellLayout);
 
   // Editor text size (beta feedback 2026-08-25). Mod-= / Mod-- / Mod-0 are
   // the universal zoom chords; here they size the EDITOR specifically, which
@@ -775,7 +803,7 @@ export async function mountStudio(
   // overlay from debugState. Opened via story.openGraph (palette/hamburger);
   // reopening focuses the existing tab.
   documentTypes.register({ id: STORY_GRAPH_TYPE_ID, component: StoryGraphDocument });
-  registerStoryGraphCommand(commands, editorGroups);
+  registerStoryGraphCommand(commands, shellLayout);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
@@ -960,6 +988,21 @@ export async function mountStudio(
   // shell's groups store (which applies the §7.8 reveal policy).
   store.getState().setDocumentOpener((target, pinned) => {
     documents.noteTarget(target);
+    // Continuous view renders FILES, so a symbol target has to become a
+    // position within one. Opening `path::symbol` there did nothing visible:
+    // it is a different document, and this view never mounts it — clicking a
+    // knot in the Binder's structure mode simply sat there.
+    //
+    // Everything else already works, because every other navigation surface
+    // (search, Problems, go-to-definition) reveals a FILE plus a span, which
+    // is exactly the shape this turns a symbol into.
+    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+      editorGroups
+        .getState()
+        .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
+      documents.revealAt(target.path, target.start);
+      return;
+    }
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });
   });
 
@@ -1081,6 +1124,12 @@ export async function mountStudio(
     // NOTE: this is a deliberate stopgap, not the endgame. The maintainer
     // wants a single "main editor" mode with tabs as an opt-in gesture
     // (Inky-style); that design supersedes this and is tracked separately.
+    // Revealing source means "take me to the code", so anything that has
+    // taken the editor area over steps aside — otherwise clicking a node in
+    // the Story Graph reveals a location underneath the graph still covering
+    // it, and nothing appears to happen (caught by the graph's own e2e once
+    // the takeover landed).
+    shellLayout.getState().setTakeover(null);
     store.getState().openTarget({ kind: "file", path: target.file }, false);
     documents.revealAt(target.file, target.span.start);
   };
@@ -1418,6 +1467,7 @@ export async function mountStudio(
       statusBarItems={statusBarItems}
       documentTypes={documentTypes}
       editorGroups={editorGroups}
+      layout={shellLayout}
       notifications={notifications}
       api={api}
     />

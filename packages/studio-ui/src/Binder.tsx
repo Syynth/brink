@@ -580,6 +580,37 @@ interface FlatRowOptions extends BuildTreeOptions {
   structureMode?: boolean;
 }
 
+/**
+ * The project's files in Binder DISPLAY order — the `.binder.json` sidecar's
+ * authored order, with the same fallback the tree uses (decision log
+ * 2026-08-26, "Continuous view orders files by binder order").
+ *
+ * Built on `buildFlatRows` rather than re-deriving the order, so Continuous
+ * view and the Binder can never disagree about what "in order" means. Folders
+ * and symbol rows are dropped; collapse state is ignored, because a collapsed
+ * folder still contributes its files to the manuscript.
+ *
+ * The outline is filtered to the same set the Binder TREE shows — mounted
+ * library files (`std/…`) and `brink.toml` are not part of the manuscript.
+ * Filtering here rather than at each call site is deliberate: the first
+ * version took the raw outline and Continuous view duly stacked
+ * `std/conventions/screenplay.brink` between the author's two files.
+ */
+export function binderOrderedFiles(
+  outline: FileOutline[],
+  order: BinderOrder,
+  entry: string | null,
+): string[] {
+  const manuscript = outline.filter((f) => !f.mounted && f.path !== "brink.toml");
+  return buildFlatRows(manuscript, new Set<string>(), {
+    order,
+    entry,
+    structureMode: false,
+  })
+    .filter((row) => row.kind === "file")
+    .map((row) => row.path);
+}
+
 function buildFlatRows(
   outline: FileOutline[],
   collapsed: Set<string>,

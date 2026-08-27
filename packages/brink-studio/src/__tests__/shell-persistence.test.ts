@@ -142,6 +142,15 @@ describe("attachLayoutPersistence", () => {
   it("snapshotLayout picks exactly the durable fields", () => {
     const store = createShellLayoutStore();
     const snap = snapshotLayout(store.getState());
-    expect(Object.keys(snap).sort()).toEqual(["dockSizes", "maximized", "open", "placements"]);
+    // `editorView` joined the durable set with Single File view (decision
+    // log 2026-08-26): which view you write in is a preference that should
+    // outlive a reload, like the dock layout around it.
+    expect(Object.keys(snap).sort()).toEqual([
+      "dockSizes",
+      "editorView",
+      "maximized",
+      "open",
+      "placements",
+    ]);
   });
 });

@@ -26,7 +26,11 @@ import { Keymap, KeymapOverridesService, type KeymapOverrides } from "./keymap.j
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
-import { DocumentTypeRegistry, type DocumentTypeDescriptor } from "./document.js";
+import {
+  DocumentTypeRegistry,
+  type DocumentRef,
+  type DocumentTypeDescriptor,
+} from "./document.js";
 import {
   createEditorGroupsStore,
   type EditorGroupsState,
@@ -55,6 +59,18 @@ export interface ShellContextValue {
   notifications: NotificationCenter;
   themes: ThemeService;
   keymapOverrides: KeymapOverridesService;
+  /**
+   * The document Single File view shows beside the file (§7.2 keeps the
+   * shell from knowing what a player is — the host names one). Undefined
+   * means the view is just the file, full width.
+   */
+  companionDocument?: DocumentRef;
+  /**
+   * The element that fills the area in Continuous view. The host supplies it
+   * because the ORDER files are read in is a project concept (binder order),
+   * not something the shell can know — see `ContinuousView`.
+   */
+  continuousView?: ReactNode;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -95,8 +111,19 @@ export interface ShellProviderProps {
   storage?: Pick<Storage, "getItem" | "setItem">;
   /** Override storage for layout persistence (tests); defaults to localStorage. */
   layoutStorage?: Pick<Storage, "getItem" | "setItem">;
+  /**
+   * The layout store. Pass one when code OUTSIDE the React tree needs it —
+   * the studio registers the commands that take documents over the editor
+   * area, and those run from `mountStudio`, not from a component. Omit it
+   * and the provider owns one, as before.
+   */
+  layout?: ShellLayoutStore;
   /** Override platform detection (tests). */
   isMac?: boolean;
+  /** The companion document for Single File view; see ShellContextValue. */
+  companionDocument?: DocumentRef;
+  /** The Continuous view's content; see ShellContextValue. */
+  continuousView?: ReactNode;
   children: ReactNode;
 }
 
@@ -111,7 +138,10 @@ export function ShellProvider({
   keymapOverrides,
   storage,
   layoutStorage,
+  layout: layoutProp,
   isMac,
+  companionDocument,
+  continuousView,
   children,
 }: ShellProviderProps) {
   const mac = isMac ?? detectMac();
@@ -137,11 +167,16 @@ export function ShellProvider({
   // Layout: restore the persisted snapshot before the first render; the
   // registry-sync effect below then drops unknown ids / seeds new ones
   // (spec §7.1). Persistence is debounced writes of the durable subset.
-  const [layout] = useState<ShellLayoutStore>(() => {
-    const store = createShellLayoutStore();
+  const [fallbackLayout] = useState<ShellLayoutStore>(() => createShellLayoutStore());
+  const layout = layoutProp ?? fallbackLayout;
+  // Restore into whichever store is in use — a HOST-SUPPLIED one included,
+  // or injecting a store would silently cost the user their dock layout.
+  // A state initializer rather than an effect because it has to land before
+  // the first paint, not after it.
+  useState(() => {
     const snapshot = loadLayoutSnapshot(layoutStorage ?? window.localStorage);
-    if (snapshot !== null) store.setState(snapshot);
-    return store;
+    if (snapshot !== null) layout.setState(snapshot);
+    return null;
   });
 
   useEffect(
@@ -189,6 +224,33 @@ export function ShellProvider({
     sync();
     return registry.onDidChange(sync);
   }, [registry, layout]);
+
+  // The editor root area's occupant (decision log 2026-08-26). Registered
+  // here rather than by the host because the layout store that holds the
+  // choice is the provider's, and because every host gets the same views —
+  // there is nothing project-specific to configure.
+  useEffect(() => {
+    const dispose = [
+      commands.register({
+        id: "view.editor.code",
+        title: "View mode: Code (tabs and splits)",
+        run: () => layout.getState().setEditorView("code"),
+      }),
+      commands.register({
+        id: "view.editor.single",
+        title: "View mode: Single File (one file beside the player)",
+        run: () => layout.getState().setEditorView("single"),
+      }),
+      commands.register({
+        id: "view.editor.continuous",
+        title: "View mode: Continuous (every file as one manuscript)",
+        run: () => layout.getState().setEditorView("continuous"),
+      }),
+    ];
+    return () => {
+      for (const d of dispose) d();
+    };
+  }, [commands, layout]);
 
   // Generate view.toggle.<id> commands (Mod-1…9 by registration order),
   // regenerating wholesale on registry changes.
@@ -242,6 +304,8 @@ export function ShellProvider({
       notifications: notificationCenter,
       themes: themeService,
       keymapOverrides: overridesService,
+      companionDocument,
+      continuousView,
     }),
     [
       commands,
@@ -255,7 +319,7 @@ export function ShellProvider({
       notificationCenter,
       themeService,
       overridesService,
-    ],
+      companionDocument,],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

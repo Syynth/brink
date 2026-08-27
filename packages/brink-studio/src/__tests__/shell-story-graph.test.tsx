@@ -18,6 +18,7 @@ import type { StoryGraph } from "@brink/wasm-types";
 import {
   CommandRegistry,
   createEditorGroupsStore,
+  createShellLayoutStore,
   documentKey,
   findTab,
 } from "@brink/studio-shell";
@@ -99,58 +100,44 @@ function makeModel(
 // ── Command wiring (singleton document, spec §7.8) ──────────────────
 
 describe("story.openGraph", () => {
-  it("opens the singleton pinned in the focused group", () => {
+  // Changed with the takeover ruling (decision log 2026-08-26): the graph is
+  // a whole-window activity, not a file, so it occupies the editor root area
+  // instead of opening a tab that only tab-bearing views can show.
+  it("takes over the editor root area", () => {
     const commands = new CommandRegistry();
-    const groups = createEditorGroupsStore();
-    registerStoryGraphCommand(commands, groups);
+    const layout = createShellLayoutStore();
+    registerStoryGraphCommand(commands, layout);
 
     expect(commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID)).toBe(true);
 
-    const key = documentKey(storyGraphRef());
-    const found = findTab(groups.getState().groups, key);
-    expect(found).not.toBeNull();
-    expect(found!.tab.pinned).toBe(true);
-    expect(found!.tab.ref.typeId).toBe(STORY_GRAPH_TYPE_ID);
-    expect(found!.tab.ref.title).toBe("Story Graph");
-    expect(found!.group.activeKey).toBe(key);
+    const takeover = layout.getState().takeover;
+    expect(takeover).not.toBeNull();
+    expect(takeover!.typeId).toBe(STORY_GRAPH_TYPE_ID);
+    expect(takeover!.title).toBe("Story Graph");
   });
 
-  it("re-dispatch focuses the existing tab instead of duplicating", () => {
+  it("re-dispatch is idempotent — one occupant, still the graph", () => {
     const commands = new CommandRegistry();
-    const groups = createEditorGroupsStore();
-    registerStoryGraphCommand(commands, groups);
+    const layout = createShellLayoutStore();
+    registerStoryGraphCommand(commands, layout);
 
     commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID);
-    const homeGroupId = groups.getState().focusedGroupId;
-    groups.getState().openDocument(
-      { typeId: "ink-file", docId: "main.ink", title: "main.ink" },
-      { group: "split-right" },
-    );
-    expect(groups.getState().focusedGroupId).not.toBe(homeGroupId);
-
     commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID);
-    const s = groups.getState();
-    expect(s.focusedGroupId).toBe(homeGroupId);
 
-    const key = documentKey(storyGraphRef());
-    const instances = s.groups.flatMap((g) =>
-      g.tabs.filter((t) => documentKey(t.ref) === key),
-    );
-    expect(instances).toHaveLength(1);
+    expect(layout.getState().takeover?.typeId).toBe(STORY_GRAPH_TYPE_ID);
   });
 
-  it("reopens after the tab is closed", () => {
+  it("reopens after it is dismissed", () => {
     const commands = new CommandRegistry();
-    const groups = createEditorGroupsStore();
-    registerStoryGraphCommand(commands, groups);
-
-    const key = documentKey(storyGraphRef());
-    commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID);
-    groups.getState().closeTab(groups.getState().focusedGroupId, key);
-    expect(findTab(groups.getState().groups, key)).toBeNull();
+    const layout = createShellLayoutStore();
+    registerStoryGraphCommand(commands, layout);
 
     commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID);
-    expect(findTab(groups.getState().groups, key)).not.toBeNull();
+    layout.getState().setTakeover(null);
+    expect(layout.getState().takeover).toBeNull();
+
+    commands.dispatch(OPEN_STORY_GRAPH_COMMAND_ID);
+    expect(layout.getState().takeover?.typeId).toBe(STORY_GRAPH_TYPE_ID);
   });
 });
 

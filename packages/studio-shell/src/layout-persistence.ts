@@ -12,7 +12,7 @@
  * new ones, which is exactly the specced behavior.
  */
 
-import type { ShellLayoutState, ShellLayoutStore } from "./layout-store.js";
+import type { EditorViewId, ShellLayoutState, ShellLayoutStore } from "./layout-store.js";
 import { DOCK_SECTION_IDS, type DockSectionId, type Placement } from "./toolwindow.js";
 
 export const LAYOUT_STORAGE_KEY = "brink-studio.layout.v1";
@@ -27,6 +27,7 @@ export interface LayoutSnapshot {
   open: Record<DockSectionId, string | null>;
   dockSizes: { left: number; right: number; bottom: number };
   maximized: string | null;
+  editorView: EditorViewId;
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -38,6 +39,7 @@ export function snapshotLayout(state: ShellLayoutState): LayoutSnapshot {
     open: state.open,
     dockSizes: state.dockSizes,
     maximized: state.maximized,
+    editorView: state.editorView,
   };
 }
 
@@ -76,11 +78,20 @@ export function loadLayoutSnapshot(storage: Pick<Storage, "getItem">): LayoutSna
   }
 
   const maximized = parsed.maximized;
+  // An unknown view id (an older payload, a hand edit, a view that has since
+  // been removed) falls back to "code" rather than rejecting the whole
+  // snapshot — losing your dock layout over an unreadable view name would be
+  // a worse trade than starting in the default view.
+  const editorView: EditorViewId =
+    parsed.editorView === "single" || parsed.editorView === "continuous"
+      ? parsed.editorView
+      : "code";
   return {
     placements,
     open,
     dockSizes,
     maximized: typeof maximized === "string" ? maximized : null,
+    editorView,
   };
 }
 
@@ -125,7 +136,8 @@ export function attachLayoutPersistence(
       state.placements !== previous.placements ||
       state.open !== previous.open ||
       state.dockSizes !== previous.dockSizes ||
-      state.maximized !== previous.maximized
+      state.maximized !== previous.maximized ||
+      state.editorView !== previous.editorView
     ) {
       schedule();
     }

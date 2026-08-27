@@ -44,7 +44,7 @@ import {
   type CommandRegistry,
   type DocumentRef,
   type DocumentViewProps,
-  type EditorGroupsStore,
+  type ShellLayoutStore,
   type Location as ShellLocation,
 } from "@brink/studio-shell";
 import { sessionDegraded } from "@brink/studio-store";
@@ -84,13 +84,13 @@ export function storyGraphRef(): DocumentRef {
  */
 export function registerStoryGraphCommand(
   commands: CommandRegistry,
-  editorGroups: EditorGroupsStore,
+  layout: ShellLayoutStore,
 ): () => void {
   return commands.register({
     id: OPEN_STORY_GRAPH_COMMAND_ID,
     title: "Story: Open Story Graph",
-    run: () =>
-      editorGroups.getState().openDocument(storyGraphRef(), { pinned: true }),
+    // Takes over the editor root area (decision log 2026-08-26).
+    run: () => layout.getState().setTakeover(storyGraphRef()),
   });
 }
 

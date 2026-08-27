@@ -230,3 +230,184 @@
 .brink-studio .brink-tab-input.error {
   border-color: var(--bs-error);
 }
+
+/* ── Single File view (decision log 2026-08-26) ──────────────────────
+   One file with the host's companion document beside it. Deliberately
+   NO tab strip: the header names the file and nothing else, because a
+   strip with one permanent entry is a tab strip that lies about what it
+   does. */
+.brink-studio .shell-single-file {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-single-file-body {
+  flex: 1;
+  min-height: 0;
+}
+.brink-studio .shell-single-file-primary,
+.brink-studio .shell-single-file-companion {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-single-file-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  height: 30px;
+  flex: none;
+  border-bottom: 1px solid var(--bs-border);
+  /* `--bs-panel-bg`, like the other chrome strips: `--bs-bg-elevated` and
+     `--bs-bg` are not tokens, so this header was transparent too. */
+  background: var(--bs-panel-bg);
+}
+.brink-studio .shell-single-file-name {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .shell-single-file-companion-toggle {
+  flex: none;
+  font: inherit;
+  font-size: var(--bs-font-tiny);
+  color: var(--bs-fg-muted);
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .shell-single-file-companion-toggle:hover {
+  color: var(--bs-fg);
+  background: var(--bs-hover-bg);
+}
+.brink-studio .shell-single-file-doc {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Continuous view (decision log 2026-08-26) ───────────────────────
+   Every file stacked in one scroller, headings between them. The
+   scroller is THIS element, not the individual editors: each section's
+   document sizes to its content so the whole manuscript scrolls as one
+   surface rather than as a column of independently-scrolling boxes. */
+.brink-studio .shell-continuous {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-continuous-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.brink-studio .shell-continuous-section {
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-continuous-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  /* OPAQUE, and `--bs-editor-bg` specifically. This is a sticky header over
+     scrolling prose: without a background the text runs underneath it and
+     both become unreadable. The first version said `var(--bs-bg)`, which is
+     not a token in any theme — an undefined custom property resolves to
+     nothing and the declaration is dropped, so it read as transparent with
+     no error anywhere. Matching the editor's own surface is what makes the
+     header look like part of the manuscript rather than a floating bar. */
+  background: var(--bs-editor-bg);
+}
+.brink-studio .shell-continuous-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--bs-border);
+}
+.brink-studio .shell-continuous-title {
+  flex: none;
+  font-size: var(--bs-font-tiny);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bs-fg-muted);
+  white-space: nowrap;
+}
+.brink-studio .shell-continuous-section[data-active] .shell-continuous-title {
+  color: var(--bs-accent);
+}
+/* The section's editor must size to its content — a percentage height here
+   would collapse it, and an internal scroller would trap the wheel inside
+   one file instead of carrying you into the next. */
+.brink-studio .shell-continuous-doc,
+.brink-studio .shell-continuous-doc .cm-editor,
+.brink-studio .shell-continuous-doc .cm-scroller {
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+/* ── Editor takeover (decision log 2026-08-26) ───────────────────────
+   A whole-window document over the editor root area. Its header is the
+   way back — Escape works too, but a visible control is what tells you
+   the area is temporarily occupied rather than permanently changed. */
+.brink-studio .shell-takeover {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-takeover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px 0 12px;
+  height: 30px;
+  flex: none;
+  border-bottom: 1px solid var(--bs-border);
+  background: var(--bs-panel-bg);
+}
+.brink-studio .shell-takeover-title {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  font-weight: 500;
+}
+.brink-studio .shell-takeover-close {
+  flex: none;
+  font: inherit;
+  font-size: var(--bs-font-medium);
+  line-height: 1;
+  color: var(--bs-fg-muted);
+  background: none;
+  border: none;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .shell-takeover-close:hover {
+  color: var(--bs-fg);
+  background: var(--bs-hover-bg);
+}
+.brink-studio .shell-takeover-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
