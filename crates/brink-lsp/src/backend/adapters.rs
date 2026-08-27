@@ -94,10 +94,24 @@ pub(crate) fn make_stdlib_completion_item(f: &brink_ide::stdlib::StdlibFn) -> Co
     }
 }
 
-pub(crate) fn format_config_from_options(
+/// The formatter settings for a `textDocument/formatting` request.
+///
+/// The client's `FormattingOptions` (its `tabSize`/`insertSpaces`) is
+/// deliberately ignored: ruled 2026-08-27, indentation comes from
+/// `[project] indent` in `brink.toml` and nowhere else, so that the
+/// formatter, the editor and the indent guides cannot disagree. Honouring
+/// the client's setting here would reintroduce exactly the second source
+/// that ruling removed — and silently, since a client sends `tabSize` on
+/// every request whether the user set it or not.
+///
+/// `project` is the config resolved at load time (see
+/// `ConfigLoadOutcome::format`); `None` means no `brink.toml` was found,
+/// which resolves to the shared default rather than to a local one.
+pub(crate) fn format_config_for_request(
     _options: &tower_lsp::lsp_types::FormattingOptions,
+    project: Option<&brink_fmt::FormatConfig>,
 ) -> brink_fmt::FormatConfig {
-    brink_fmt::FormatConfig::default()
+    project.cloned().unwrap_or_default()
 }
 
 /// Convert `brink_ide::diff_to_edits` output to LSP `TextEdit`s.

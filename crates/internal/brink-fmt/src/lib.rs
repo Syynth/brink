@@ -35,9 +35,38 @@ pub struct FormatConfig {
 }
 
 impl Default for FormatConfig {
+    /// The indent width comes from [`brink_project_config::DEFAULT_INDENT`],
+    /// never from a constant of this crate's own (ruled 2026-08-27,
+    /// "everything that indents reads the same setting").
+    ///
+    /// This crate used to default to two spaces while the editor's
+    /// `indentUnit` used four — the exact disagreement the ruling exists to
+    /// kill, and one an author could not diagnose, since a formatter writing
+    /// two spaces under guides drawn every four looks like a rendering
+    /// glitch rather than a config mismatch. Any component reintroducing its
+    /// own default recreates that bug.
     fn default() -> Self {
         Self {
-            indent: IndentStyle::Spaces(2),
+            indent: IndentStyle::Spaces(u32::from(brink_project_config::DEFAULT_INDENT)),
+        }
+    }
+}
+
+impl FormatConfig {
+    /// Build from a parsed `brink.toml`, applying [`Self::default`]'s width
+    /// when `[project] indent` is unset.
+    ///
+    /// The character is not configurable yet — `[project] indent` is a
+    /// SIZE, and tabs-vs-spaces is deliberately a separate question
+    /// (#3149's own body says so), so this always produces
+    /// [`IndentStyle::Spaces`].
+    #[must_use]
+    pub fn from_project_config(config: &brink_project_config::ProjectConfig) -> Self {
+        match config.indent {
+            Some(width) => Self {
+                indent: IndentStyle::Spaces(u32::from(width)),
+            },
+            None => Self::default(),
         }
     }
 }
@@ -69,8 +98,58 @@ mod tests {
     use super::*;
     use brink_syntax::syntax_kind::SyntaxKind;
 
+    /// Two-space indent, pinned rather than taken from
+    /// [`FormatConfig::default`].
+    ///
+    /// The tests below are about STRUCTURE — "a knot body is one level in",
+    /// "choice content is one level inside its choice" — and merely happen
+    /// to spell the width out in their expected strings. Reading the
+    /// default here would make all 17 of them restate it, so a ruling on
+    /// the default (2026-08-27 moved it from 2 to 4) would churn every one
+    /// of them while proving nothing about the default itself.
+    ///
+    /// The default has its own test instead:
+    /// `the_default_indent_comes_from_the_project_config`.
     fn fmt(source: &str) -> String {
-        format(source, &FormatConfig::default())
+        format(
+            source,
+            &FormatConfig {
+                indent: IndentStyle::Spaces(2),
+            },
+        )
+    }
+
+    #[test]
+    fn the_default_indent_comes_from_the_project_config() {
+        // Asserted against the SHIPPING constant, not a literal 4 — a test
+        // that restates the value cannot detect that value being wrong, it
+        // only proves this crate agrees with its own copy. Ruled
+        // 2026-08-27: there is one place the width comes from.
+        assert_eq!(
+            FormatConfig::default().indent,
+            IndentStyle::Spaces(u32::from(brink_project_config::DEFAULT_INDENT)),
+            "the formatter must not keep an indent default of its own"
+        );
+    }
+
+    #[test]
+    fn from_project_config_honours_an_explicit_indent() {
+        let (config, _) =
+            brink_project_config::parse_str("[project]\nindent = 8\n").expect("valid config");
+        assert_eq!(
+            FormatConfig::from_project_config(&config).indent,
+            IndentStyle::Spaces(8)
+        );
+    }
+
+    #[test]
+    fn from_project_config_falls_back_to_the_default_when_unset() {
+        let (config, _) = brink_project_config::parse_str("[project]\nentry = \"main.ink\"\n")
+            .expect("valid config");
+        assert_eq!(
+            FormatConfig::from_project_config(&config).indent,
+            FormatConfig::default().indent
+        );
     }
 
     fn fmt_tabs(source: &str) -> String {
@@ -1034,7 +1113,13 @@ STRUCT Point=#{x:int,y: float}
             .children()
             .find(|c| c.kind() == SyntaxKind::STRUCT_DECL)
             .expect("source must parse to a single STRUCT_DECL");
-        render::render_struct_decl(&node, "", &FormatConfig::default())
+        render::render_struct_decl(
+            &node,
+            "",
+            &FormatConfig {
+                indent: IndentStyle::Spaces(2),
+            },
+        )
     }
 
     #[test]

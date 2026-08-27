@@ -3517,3 +3517,24 @@
   competing with the filename for the same row, and it reads as an
   annotation ON the file rather than a property OF it. Dashed-and-orange
   says "provisional" without words, which is what a draft is.
+
+## The default indent is 4, and drafts are silent in the status bar too
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** moderate
+- **WHAT:** When `[project] indent` is unset the width is **4**, and every
+  component reads that one value. The formatter's own `Spaces(2)` default
+  goes; the editor's `indentUnit` stops hardcoding four spaces and reads the
+  config too. Separately, the status bar's "— file not analyzed" text is
+  suppressed for a draft, as the out-of-scope banner already is.
+- **WHY:** Of the two candidates, 4 was already what an author SEES — the
+  editor indented by four while the formatter wrote two, so picking 2 would
+  have changed the more visible half to match the less visible one. It also
+  matches the `DEFAULT_INDENT` already declared in `brink-project-config`.
+  The cost is real and accepted: `brink fmt` reformats existing projects
+  that never set the key. For the status bar: a draft is deliberately
+  outside the story, so "not analyzed" reports the intended state as though
+  it were a finding — the same noise the `drafts` key exists to remove, in a
+  quieter voice. Suppressing the banner but not this left the feature half
+  done.

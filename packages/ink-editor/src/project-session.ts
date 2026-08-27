@@ -474,6 +474,21 @@ export class ProjectSession {
       : null;
   }
 
+  /**
+   * `[project] indent` from the applied `brink.toml` (#3149), or `null`
+   * when the project set none — feature-detected like
+   * {@link sessionConfiguredEntry}, so an older wasm build without the
+   * accessor degrades to "the project said nothing" rather than throwing.
+   *
+   * The caller resolves `null` to `DEFAULT_INDENT`; this does not, so the
+   * two cases stay distinguishable.
+   */
+  getConfiguredIndent(): number | null {
+    return typeof this.session.getConfiguredIndent === "function"
+      ? this.session.getConfiguredIndent()
+      : null;
+  }
+
   /** Load all files from provider and resolve INCLUDEs. */
   async initialize(): Promise<void> {
     const endInit = perfSpan("project.initialize");

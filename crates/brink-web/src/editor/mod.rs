@@ -188,6 +188,14 @@ pub struct EditorSession {
     /// The other half is reachability, which only [`Self::draft_paths`]
     /// can supply — see that method.
     draft_globs: Vec<String>,
+    /// `[project] indent` from the most recently applied `brink.toml`
+    /// (#3149) — the editor's `indentUnit` reads this so it cannot disagree
+    /// with what the formatter will write. Same wholesale-replace and
+    /// clear-on-missing-config rules as [`Self::configured_entry`]: a stale
+    /// width would silently reintroduce exactly the formatter/editor
+    /// disagreement the ruling removed. `None` means the file set no
+    /// `indent`, in which case the host applies the shared default.
+    configured_indent: Option<u8>,
     /// The full warning-string set returned by the most recent
     /// `apply_project_config`/`discover_project_config` call (issue #2333)
     /// — read by [`Self::dedupe_config_warnings`], the shared filter both
@@ -266,6 +274,7 @@ impl EditorSession {
             explain_cache: brink_ir::ExplainMatchCache::new(),
             configured_entry: None,
             draft_globs: Vec::new(),
+            configured_indent: None,
             last_config_warnings: BTreeSet::new(),
         }
     }
@@ -633,6 +642,7 @@ impl EditorSession {
             // tree no longer names one.
             self.configured_entry = None;
             self.draft_globs.clear();
+            self.configured_indent = None;
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -672,6 +682,19 @@ impl EditorSession {
     #[must_use]
     pub fn configured_entry(&self) -> Option<String> {
         self.configured_entry.clone()
+    }
+
+    /// `[project] indent` from the applied `brink.toml` (#3149), or `None`
+    /// when the file set none (or no file was applied).
+    ///
+    /// `None` deliberately does NOT mean "4" — the host applies the shared
+    /// default itself, so that "the project said nothing" and "the project
+    /// said four" stay distinguishable. Collapsing them here would make a
+    /// later change to the default invisible to any host that had already
+    /// baked the resolved number in.
+    #[must_use]
+    pub fn configured_indent(&self) -> Option<u8> {
+        self.configured_indent
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1072,6 +1095,8 @@ impl EditorSession {
         // `[project] drafts` (#3145): same wholesale-replace rule and the
         // same reason — globs removed from the file must stop applying.
         self.draft_globs.clone_from(&config.drafts);
+        // `[project] indent` (#3149): same wholesale-replace rule.
+        self.configured_indent = config.indent;
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
@@ -4869,6 +4894,34 @@ mod tests {
     // ── Issue #1880: the conventions pointer reaches the live db ───────────
     // (regression: since #2289, an unwired `conventions` reads as
     // "misconfigured" and fires E169 on every claim handler)
+
+    // ── Issue #3149: `[project] indent` ────────────────────────────────
+
+    #[test]
+    fn configured_indent_round_trips_and_clears() {
+        let mut s = EditorSession::new();
+        assert_eq!(s.configured_indent(), None, "nothing applied yet");
+
+        let _ = s.apply_project_config("[project]\nindent = 2\n");
+        assert_eq!(s.configured_indent(), Some(2));
+
+        // A config that dropped the key must CLEAR it, not keep the stale
+        // width — a stale one silently reintroduces the formatter/editor
+        // disagreement the ruling removed.
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        assert_eq!(s.configured_indent(), None);
+    }
+
+    #[test]
+    fn an_unset_indent_is_none_not_the_default() {
+        // `None` means "the project said nothing", which is not the same
+        // claim as "the project said 4". Collapsing them here would make a
+        // later change to the shared default invisible to a host that had
+        // already baked the resolved number in.
+        let mut s = EditorSession::new();
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        assert_eq!(s.configured_indent(), None);
+    }
 
     // ── Issue #3145: `[project] drafts` ────────────────────────────────
 

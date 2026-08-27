@@ -2191,6 +2191,7 @@ name = "brink-fmt"
 version = "0.0.16"
 dependencies = [
  "brink-ir",
+ "brink-project-config",
  "brink-syntax",
  "insta",
  "rowan",

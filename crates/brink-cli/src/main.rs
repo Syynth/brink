@@ -764,10 +764,37 @@ fn run_migrate_xliff(
     Ok(())
 }
 
-fn run_fmt(files: &[PathBuf], check: bool, stdin: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let config = brink_fmt::FormatConfig::default();
+/// The formatter settings that apply to `path`, from the `brink.toml`
+/// discovered by walking up from its directory (#3149).
+///
+/// Per file rather than once for the whole run: `brink fmt a/x.ink b/y.ink`
+/// can legitimately span two projects, and formatting one of them with the
+/// other's indent width would be a silent, whole-file diff.
+///
+/// Every failure here — no config found, unreadable, malformed — falls back
+/// to [`brink_fmt::FormatConfig::default`], which is the shared
+/// `DEFAULT_INDENT` rather than a default of the CLI's own. A malformed
+/// `brink.toml` is reported by `brink check`, and refusing to format over
+/// it would make the formatter the messenger for an unrelated problem.
+fn format_config_for(path: &std::path::Path) -> brink_fmt::FormatConfig {
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let Some(config_path) = brink_project_config::find_config(dir) else {
+        return brink_fmt::FormatConfig::default();
+    };
+    let Ok(text) = std::fs::read_to_string(&config_path) else {
+        return brink_fmt::FormatConfig::default();
+    };
+    match brink_project_config::parse_str(&text) {
+        Ok((config, _)) => brink_fmt::FormatConfig::from_project_config(&config),
+        Err(_) => brink_fmt::FormatConfig::default(),
+    }
+}
 
+fn run_fmt(files: &[PathBuf], check: bool, stdin: bool) -> Result<(), Box<dyn std::error::Error>> {
     if stdin {
+        // Nothing to discover from: stdin has no path, so no project. The
+        // shared default applies.
+        let config = brink_fmt::FormatConfig::default();
         let mut source = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut source)?;
         let formatted = brink_fmt::format(&source, &config);
@@ -782,6 +809,7 @@ fn run_fmt(files: &[PathBuf], check: bool, stdin: bool) -> Result<(), Box<dyn st
     let mut any_unformatted = false;
 
     for path in files {
+        let config = format_config_for(path);
         let source = std::fs::read_to_string(path)?;
         let formatted = brink_fmt::format(&source, &config);
 

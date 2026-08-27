@@ -448,6 +448,20 @@ export class EditorSessionHandle {
   }
 
   /**
+   * `[project] indent` from the applied `brink.toml` (#3149) — the width
+   * the editor's `indentUnit` and the formatter both read, so they cannot
+   * disagree.
+   *
+   * `null` means the project set no `indent`, NOT "four". The caller
+   * applies the shared default, so that "the project said nothing" stays
+   * distinguishable from "the project said four" and a later change to the
+   * default is not silently baked in here.
+   */
+  getConfiguredIndent(): number | null {
+    return this.session.configured_indent() ?? null;
+  }
+
+  /**
    * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
