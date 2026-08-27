@@ -260,6 +260,18 @@ pub struct ProjectConfig {
     /// warns about it rather than silently accepting a likely typo (e.g.
     /// `"node-modules"` instead of `"node_modules"`).
     pub unprune_dirs: Vec<String>,
+    /// `[project] indent`, if set: the number of spaces one indent level
+    /// occupies. THE single source for indentation across the project
+    /// (decision log 2026-08-27) — the formatter emits it, the editor's
+    /// `indentUnit` adopts it, and the indent guides position against it.
+    /// No component may keep its own default, because the failure mode is
+    /// disagreement: a formatter writing four spaces while guides are drawn
+    /// every two looks like a rendering glitch rather than a config
+    /// mismatch, and the author cannot tell which component is wrong.
+    ///
+    /// `None` means unset — callers apply [`DEFAULT_INDENT`].
+    pub indent: Option<u8>,
+
     /// `[project] conventions`, if set (docs/prose-dialect-spec.md §3.4's
     /// pointer mechanism): either a built-in preset name (`"screenplay"`)
     /// or a project-relative path to a `.brink` conventions module
@@ -311,6 +323,7 @@ impl ProjectConfig {
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
             && self.unprune_dirs.is_empty()
+            && self.indent.is_none()
             && self.conventions.is_none()
             && self.entry.is_none()
     }
@@ -563,6 +576,9 @@ fn parse_project_table(
         match pkey.as_str() {
             "dialect" => config.dialect = Some(parse_dialect(path, pkey, pvalue)?),
             "types" => config.types = Some(parse_types(path, pkey, pvalue)?),
+            "indent" => {
+                config.indent = Some(parse_indent(path, pkey, pvalue, warnings)?);
+            }
             "unprune-dirs" => {
                 let dirs = parse_string_list(path, pkey, pvalue)?;
                 for dir in &dirs {
@@ -758,6 +774,46 @@ fn parse_lint_level(path: &str, key: &str, value: &Value) -> Result<LintLevel, C
 /// Every element must itself be a string — a non-string element (`[1, 2]`,
 /// `[true]`) is [`ConfigError::WrongType`], matching the treatment every
 /// other recognized-but-wrong-shaped value gets.
+/// The indent width applied when `[project] indent` is unset.
+pub const DEFAULT_INDENT: u8 = 4;
+
+/// The narrowest and widest indent this accepts.
+///
+/// Zero would make indentation meaningless (and indent guides undrawable);
+/// the upper bound is a sanity rail rather than a technical limit — a value
+/// past it is far more likely to be a typo than an intention, and silently
+/// honouring `indent = 400` would produce a document nobody can read.
+const INDENT_RANGE: std::ops::RangeInclusive<i64> = 1..=16;
+
+/// Parse `[project] indent`.
+///
+/// A non-integer is an ERROR (the author wrote something that cannot mean an
+/// indent width), but an out-of-range integer is a WARNING that falls back to
+/// [`DEFAULT_INDENT`] — unlike `dialect`, this key has a sensible default, so
+/// a typo should not stop the project loading, and the result stays defined.
+fn parse_indent(
+    path: &str,
+    key: &str,
+    value: &Value,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<u8, ConfigError> {
+    let raw = value.as_integer().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
+        key: format!("project.{key}"),
+        found: value_type_name(value),
+    })?;
+    if !INDENT_RANGE.contains(&raw) {
+        let (lo, hi) = (INDENT_RANGE.start(), INDENT_RANGE.end());
+        warnings.push(ConfigWarning(format!(
+            "`project.indent` in {CONFIG_FILE_NAME} is {raw}, outside {lo}..={hi} — using the \
+             default of {DEFAULT_INDENT} spaces instead"
+        )));
+        return Ok(DEFAULT_INDENT);
+    }
+    // The range check above bounds this to INDENT_RANGE.
+    Ok(u8::try_from(raw).unwrap_or(DEFAULT_INDENT))
+}
+
 fn parse_string_list(path: &str, key: &str, value: &Value) -> Result<Vec<String>, ConfigError> {
     let arr = value.as_array().ok_or_else(|| ConfigError::WrongType {
         path: path.to_owned(),
@@ -1170,6 +1226,58 @@ mod tests {
         assert_eq!(config.dialect, Some(Dialect::Brink));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].0.contains("project.future_key"));
+    }
+
+    // ── indent (issue #3149) ────────────────────────────────────────────
+
+    #[test]
+    fn parses_indent() {
+        let (config, warnings) = parse_str("[project]\nindent = 2\n").expect("valid");
+        assert_eq!(config.indent, Some(2));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn indent_is_none_when_unset_so_callers_apply_the_default() {
+        // `None` is meaningfully different from `Some(DEFAULT_INDENT)`: it is
+        // what lets a caller tell "the author did not say" from "the author
+        // chose four", which matters if the default ever moves.
+        let (config, _) = parse_str("[project]\n").expect("valid");
+        assert_eq!(config.indent, None);
+    }
+
+    #[test]
+    fn a_non_integer_indent_is_an_error() {
+        let err = parse_str("[project]\nindent = \"four\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn an_out_of_range_indent_warns_and_falls_back() {
+        // Unlike `dialect`, this key HAS a sensible default, so a silly value
+        // should not stop the project loading — but it must not pass silently
+        // either, or the author sees indentation they did not ask for with no
+        // explanation.
+        for raw in ["0", "17", "400", "-2"] {
+            let (config, warnings) =
+                parse_str(&format!("[project]\nindent = {raw}\n")).expect("loads anyway");
+            assert_eq!(config.indent, Some(DEFAULT_INDENT), "for {raw}");
+            assert_eq!(warnings.len(), 1, "for {raw}: {warnings:?}");
+            assert!(warnings[0].0.contains("indent"), "for {raw}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn the_range_bounds_are_themselves_accepted() {
+        for raw in ["1", "16"] {
+            let (config, warnings) =
+                parse_str(&format!("[project]\nindent = {raw}\n")).expect("valid");
+            assert!(warnings.is_empty(), "for {raw}: {warnings:?}");
+            assert_eq!(
+                config.indent.map(u32::from),
+                Some(raw.parse::<u32>().expect("num"))
+            );
+        }
     }
 
     // ── unprune-dirs (issue #1407) ──────────────────────────────────────
