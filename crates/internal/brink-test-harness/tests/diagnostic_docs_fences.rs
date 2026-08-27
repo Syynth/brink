@@ -14,21 +14,26 @@
 //! the diagnostic it claims to, or start producing a different one — with
 //! nothing catching it. This file is that gate.
 //!
-//! # Placeholder pages are skipped, not tagged
+//! # Placeholder pages were skipped; there are none left
 //!
-//! Issue #1623 (still open) is the *content* pass: most `docs/diagnostics/*.md`
-//! files still carry the scaffold's literal placeholder text in their
-//! `## Example` section (`PLACEHOLDER_MARKER` below) rather than a real
-//! repro. This gate is *enforcement*, not content, and issue #2021 rules
-//! that enforcement should exist before or alongside #1623's content pass —
-//! so a placeholder page is not a gate failure. A whole file is skipped
-//! (counted separately, not silently) whenever its raw markdown contains the
-//! literal placeholder string; this needs no per-file tag because the
-//! placeholder text itself is the "not written yet" signal, and it means
-//! zero of the 150+ still-scaffolded pages needed hand-editing to stand this
-//! gate up. As #1623 fills a page in with a real repro, that page falls out
-//! of the skip set automatically and its fences must carry a real DD-1 tag
-//! from the moment the placeholder text is removed — the closed-taxonomy
+//! Issue #1623 (still open) is the *content* pass. It used to be visible
+//! here as scaffold text: most `docs/diagnostics/*.md` files carried the
+//! scaffold's literal placeholder in their `## Example` section
+//! (`PLACEHOLDER_MARKER` below) rather than a real repro. This gate is
+//! *enforcement*, not content, and issue #2021 rules that enforcement
+//! should exist before or alongside that pass — so a placeholder page was
+//! skipped wholesale rather than failing, which is why standing this gate
+//! up needed no hand-editing of 150+ pages.
+//!
+//! **Those placeholders were all cleared in #3169**, so the skip path now
+//! matches nothing and the census assertion is INVERTED: it requires zero
+//! placeholder pages, and a non-zero count means someone re-introduced
+//! scaffold text rather than writing (or leaving empty) a section. The skip
+//! itself is kept so that reintroduction is caught rather than silently
+//! failing a fence check.
+//!
+//! As #1623 fills a page in with a real repro, its fences must carry a
+//! real DD-1 tag — the closed-taxonomy
 //! check below (`Kind::Malformed` for a bare `ink`/`brink` fence) is exactly
 //! what stops a freshly-written repro from landing untagged.
 //!
@@ -441,17 +446,30 @@ fn every_fence_in_docs_diagnostics_checks_out() {
             })
     );
 
-    // Census guard: as of this gate's introduction, ~30 pages carry real
-    // content (the rest are #1623's open placeholder backlog) with roughly
-    // 50 `fires`/`contrast` fences between them. If the extractor or the
-    // placeholder-skip logic ever silently found far fewer, that is a
-    // regression in this file, not a lighter set of docs.
+    // The scaffold placeholders are GONE (#3169) — all 157 stub pages were
+    // cleared, plus 13 more that had the placeholder sitting in front of
+    // prose someone had since written around it. So this count is now an
+    // inverted guard: it must stay at zero, and a non-zero value means
+    // someone re-introduced scaffold text rather than writing a page.
+    //
+    // It used to assert `>= 100`, because the skip path was load-bearing
+    // while the backlog existed. Keeping that floor would now require the
+    // backlog to come BACK.
+    assert_eq!(
+        placeholder_files, 0,
+        "scaffold placeholder text is back in {placeholder_files} page(s) — write the \
+         section or leave it empty, but do not ship `[Detailed explanation…]` to authors"
+    );
+
+    // Census guard: if the extractor ever silently found far fewer fences,
+    // that is a regression in this file, not a lighter set of docs. The
+    // floors went UP when the placeholders were cleared — those pages stop
+    // being skipped wholesale, so every fence on them is checked now.
     let checked = fired + contrasted;
     assert!(
-        checked >= 30 && fired >= 15 && contrasted >= 10 && placeholder_files >= 100,
-        "fence census too small — extractor or placeholder-skip regression? \
-         fired={fired} contrasted={contrasted} ignored={ignored} skipped={skipped} \
-         placeholder_files={placeholder_files}"
+        checked >= 50 && fired >= 30 && contrasted >= 20,
+        "fence census too small — extractor regression? \
+         fired={fired} contrasted={contrasted} ignored={ignored} skipped={skipped}"
     );
 }
 
