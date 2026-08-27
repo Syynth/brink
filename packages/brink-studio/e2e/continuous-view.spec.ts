@@ -36,7 +36,7 @@ test.describe("continuous view", () => {
         rows.map((r) => r.getAttribute("data-binder-row-key") ?? ""),
       );
 
-    await runPaletteCommand(page, "View: Continuous");
+    await runPaletteCommand(page, "View mode: Continuous");
     await expect(page.locator(continuous)).toBeVisible();
 
     const sections = await page
@@ -54,7 +54,7 @@ test.describe("continuous view", () => {
   });
 
   test("is one scroller, with each file sized to its own content", async ({ page }) => {
-    await runPaletteCommand(page, "View: Continuous");
+    await runPaletteCommand(page, "View mode: Continuous");
     await expect(page.locator(continuous)).toBeVisible();
 
     const metrics = await page.evaluate(() => {
@@ -76,7 +76,7 @@ test.describe("continuous view", () => {
   });
 
   test("each file carries a heading", async ({ page }) => {
-    await runPaletteCommand(page, "View: Continuous");
+    await runPaletteCommand(page, "View mode: Continuous");
     const headings = page.locator(".shell-continuous-title");
     await expect(headings.first()).toBeVisible();
     expect(await headings.count()).toBe(
@@ -85,7 +85,7 @@ test.describe("continuous view", () => {
   });
 
   test("the view survives a reload", async ({ page }) => {
-    await runPaletteCommand(page, "View: Continuous");
+    await runPaletteCommand(page, "View mode: Continuous");
     await page.reload();
     await page.waitForSelector(continuous, { timeout: 10000 });
     await expect(page.locator(".shell-continuous-section").first()).toBeVisible();
@@ -96,13 +96,11 @@ test.describe("continuous view", () => {
     const radio = page.locator("[aria-label='Editor view'] input[value='continuous']");
     await expect(radio).toBeVisible();
 
-    // Dispatched rather than `.check()`, and the reason is worth recording:
-    // choosing Continuous from inside Settings makes Settings VANISH, because
-    // Continuous renders the project's files and Settings is not one of them.
-    // Playwright's actionability check sees the input detach mid-click and
-    // retries until it times out. The ruled fix is the Graph/Settings
-    // takeover of the editor root area (decision log 2026-08-26), which is
-    // not built yet — until it is, this is the honest behaviour.
+    // Dispatched rather than `.check()`: choosing a view dismisses whatever
+    // had taken the area over, so picking Continuous from inside Settings
+    // closes Settings — by design (decision log 2026-08-26). Playwright's
+    // actionability check sees the input detach mid-click and retries until
+    // it times out, which is a fact about the check, not about the app.
     await radio.dispatchEvent("click");
     await expect(page.locator(continuous)).toBeVisible();
   });

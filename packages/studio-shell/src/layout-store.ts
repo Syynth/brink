@@ -12,6 +12,7 @@
  * useShellLayout(selector).
  */
 
+import type { DocumentRef } from "./document.js";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
   DOCK_SECTION_IDS,
@@ -57,6 +58,14 @@ export interface ShellLayoutState {
    */
   editorView: EditorViewId;
 
+  /**
+   * A document occupying the whole editor root area, over whichever view is
+   * chosen — null when the view itself is showing. Deliberately NOT
+   * persisted: consulting the graph or changing a setting is an
+   * interruption, and relaunching into one would be a bug, not a restore.
+   */
+  takeover: DocumentRef | null;
+
   // ── Transient compact-tier presentation (reset on tier change) ──
   /** medium/narrow: slide-over drawer visibility per side dock. */
   drawers: Record<"left" | "right", boolean>;
@@ -78,6 +87,8 @@ export interface ShellLayoutState {
   toggleToolWindow(id: string): void;
   /** Choose the editor root area's occupant. */
   setEditorView(view: EditorViewId): void;
+  /** Show a document over the whole editor area, or `null` to go back. */
+  setTakeover(ref: DocumentRef | null): void;
   /** Re-dock a tool window; if it was open, it opens in the new section. */
   moveToolWindow(id: string, dock: Dock, section: Section): void;
   /** Maximize a tool window over the editor area, or restore it (§5.4). */
@@ -155,6 +166,7 @@ export function createShellLayoutStore(): ShellLayoutStore {
     dockSizes: { left: 220, right: 300, bottom: 180 },
     maximized: null,
     editorView: "code",
+    takeover: null,
     drawers: { left: false, right: false },
     narrowView: null,
 
@@ -203,7 +215,13 @@ export function createShellLayoutStore(): ShellLayoutStore {
     },
 
     setEditorView(view) {
-      set({ editorView: view });
+      // Choosing a view is choosing what fills the area, so it also
+      // dismisses anything that had taken the area over.
+      set({ editorView: view, takeover: null });
+    },
+
+    setTakeover(ref) {
+      set({ takeover: ref });
     },
 
     toggleToolWindow(id) {

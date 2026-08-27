@@ -111,6 +111,13 @@ export interface ShellProviderProps {
   storage?: Pick<Storage, "getItem" | "setItem">;
   /** Override storage for layout persistence (tests); defaults to localStorage. */
   layoutStorage?: Pick<Storage, "getItem" | "setItem">;
+  /**
+   * The layout store. Pass one when code OUTSIDE the React tree needs it —
+   * the studio registers the commands that take documents over the editor
+   * area, and those run from `mountStudio`, not from a component. Omit it
+   * and the provider owns one, as before.
+   */
+  layout?: ShellLayoutStore;
   /** Override platform detection (tests). */
   isMac?: boolean;
   /** The companion document for Single File view; see ShellContextValue. */
@@ -131,6 +138,7 @@ export function ShellProvider({
   keymapOverrides,
   storage,
   layoutStorage,
+  layout: layoutProp,
   isMac,
   companionDocument,
   continuousView,
@@ -159,11 +167,16 @@ export function ShellProvider({
   // Layout: restore the persisted snapshot before the first render; the
   // registry-sync effect below then drops unknown ids / seeds new ones
   // (spec §7.1). Persistence is debounced writes of the durable subset.
-  const [layout] = useState<ShellLayoutStore>(() => {
-    const store = createShellLayoutStore();
+  const [fallbackLayout] = useState<ShellLayoutStore>(() => createShellLayoutStore());
+  const layout = layoutProp ?? fallbackLayout;
+  // Restore into whichever store is in use — a HOST-SUPPLIED one included,
+  // or injecting a store would silently cost the user their dock layout.
+  // A state initializer rather than an effect because it has to land before
+  // the first paint, not after it.
+  useState(() => {
     const snapshot = loadLayoutSnapshot(layoutStorage ?? window.localStorage);
-    if (snapshot !== null) store.setState(snapshot);
-    return store;
+    if (snapshot !== null) layout.setState(snapshot);
+    return null;
   });
 
   useEffect(
@@ -220,17 +233,17 @@ export function ShellProvider({
     const dispose = [
       commands.register({
         id: "view.editor.code",
-        title: "View: Code (tabs and splits)",
+        title: "View mode: Code (tabs and splits)",
         run: () => layout.getState().setEditorView("code"),
       }),
       commands.register({
         id: "view.editor.single",
-        title: "View: Single File (one file beside the player)",
+        title: "View mode: Single File (one file beside the player)",
         run: () => layout.getState().setEditorView("single"),
       }),
       commands.register({
         id: "view.editor.continuous",
-        title: "View: Continuous (every file as one manuscript)",
+        title: "View mode: Continuous (every file as one manuscript)",
         run: () => layout.getState().setEditorView("continuous"),
       }),
     ];

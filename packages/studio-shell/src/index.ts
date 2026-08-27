@@ -83,6 +83,7 @@ export {
 export { EditorArea } from "./editor-area.js";
 export { SingleFileView, type SingleFileViewProps } from "./single-file-view.js";
 export { ContinuousView, type ContinuousViewProps } from "./continuous-view.js";
+export { EditorTakeover } from "./editor-takeover.js";
 export {
   MAX_VISIBLE_NOTIFICATIONS,
   NOTIFICATION_HISTORY_LIMIT,

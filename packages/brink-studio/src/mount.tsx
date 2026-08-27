@@ -68,6 +68,7 @@ import {
   VIEW_REVEAL_COMMAND_ID,
   ViewRevealHandlers,
   createEditorGroupsStore,
+  createShellLayoutStore,
   attachEditorPersistence,
   loadEditorSnapshot,
   reconcileEditorSnapshot,
@@ -78,6 +79,7 @@ import {
   type DocumentRef,
   type EditorGroupsState,
   type EditorGroupsStore,
+  type ShellLayoutStore,
   type Location as ShellLocation,
   type SourceLocation,
   type StudioExtensions,
@@ -409,6 +411,7 @@ interface RootProps {
   statusBarItems: StatusBarRegistry;
   documentTypes: DocumentTypeRegistry;
   editorGroups: EditorGroupsStore;
+  layout: ShellLayoutStore;
   notifications: NotificationCenter;
   api: StudioApi;
 }
@@ -422,6 +425,7 @@ function Root({
   statusBarItems,
   documentTypes,
   editorGroups,
+  layout,
   notifications,
   api,
 }: RootProps) {
@@ -444,6 +448,7 @@ function Root({
       statusBarItems={statusBarItems}
       documents={documentTypes}
       editorGroups={editorGroups}
+      layout={layout}
       notifications={notifications}
       // Single File view's native split (decision log 2026-08-26). The shell
       // is told WHICH document sits beside the file, not what it means — so
@@ -714,6 +719,11 @@ export async function mountStudio(
           const path = ref.docId.split("::")[0];
           return Object.hasOwn(options.files, path);
         });
+  // The layout store is created HERE rather than inside ShellProvider so the
+  // takeover commands below — registered outside the React tree — can reach
+  // it (decision log 2026-08-26). The provider restores the persisted
+  // snapshot into whichever store it is given.
+  const shellLayout: ShellLayoutStore = createShellLayoutStore();
   const editorGroups: EditorGroupsStore = createEditorGroupsStore(
     restoredEditor === null
       ? undefined
@@ -742,8 +752,14 @@ export async function mountStudio(
   registerOpenPlayerCommand(commands, editorGroups);
   // Settings (#93): static UI over shell services — not session-bound, not
   // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
-  documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
-  registerSettingsCommand(commands, editorGroups);
+  // Whole-window activities, not files: they occupy the editor root area
+  // rather than opening as tabs (decision log 2026-08-26).
+  documentTypes.register({
+    id: SETTINGS_TYPE_ID,
+    component: SettingsDocument,
+    takeover: true,
+  });
+  registerSettingsCommand(commands, shellLayout);
 
   // Editor text size (beta feedback 2026-08-25). Mod-= / Mod-- / Mod-0 are
   // the universal zoom chords; here they size the EDITOR specifically, which
@@ -787,7 +803,7 @@ export async function mountStudio(
   // overlay from debugState. Opened via story.openGraph (palette/hamburger);
   // reopening focuses the existing tab.
   documentTypes.register({ id: STORY_GRAPH_TYPE_ID, component: StoryGraphDocument });
-  registerStoryGraphCommand(commands, editorGroups);
+  registerStoryGraphCommand(commands, shellLayout);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
@@ -1430,6 +1446,7 @@ export async function mountStudio(
       statusBarItems={statusBarItems}
       documentTypes={documentTypes}
       editorGroups={editorGroups}
+      layout={shellLayout}
       notifications={notifications}
       api={api}
     />

@@ -362,3 +362,52 @@
   max-height: none;
   overflow: visible;
 }
+
+/* ── Editor takeover (decision log 2026-08-26) ───────────────────────
+   A whole-window document over the editor root area. Its header is the
+   way back — Escape works too, but a visible control is what tells you
+   the area is temporarily occupied rather than permanently changed. */
+.brink-studio .shell-takeover {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-takeover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px 0 12px;
+  height: 30px;
+  flex: none;
+  border-bottom: 1px solid var(--bs-border);
+  background: var(--bs-panel-bg);
+}
+.brink-studio .shell-takeover-title {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  font-weight: 500;
+}
+.brink-studio .shell-takeover-close {
+  flex: none;
+  font: inherit;
+  font-size: var(--bs-font-medium);
+  line-height: 1;
+  color: var(--bs-fg-muted);
+  background: none;
+  border: none;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .shell-takeover-close:hover {
+  color: var(--bs-fg);
+  background: var(--bs-hover-bg);
+}
+.brink-studio .shell-takeover-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

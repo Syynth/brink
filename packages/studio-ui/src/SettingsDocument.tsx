@@ -30,7 +30,7 @@ import {
   type CommandRegistry,
   type DocumentRef,
   type DocumentViewProps,
-  type EditorGroupsStore,
+  type ShellLayoutStore,
   type EditorViewId,
 } from "@brink/studio-shell";
 import type { ExternalCheckLevel } from "@brink/studio-store";
@@ -62,13 +62,15 @@ export function settingsRef(): DocumentRef {
  */
 export function registerSettingsCommand(
   commands: CommandRegistry,
-  editorGroups: EditorGroupsStore,
+  layout: ShellLayoutStore,
 ): () => void {
   return commands.register({
     id: OPEN_SETTINGS_COMMAND_ID,
     title: "Settings: Open",
     keybinding: "Mod-,",
-    run: () => editorGroups.getState().openDocument(settingsRef(), { pinned: true }),
+    // Takes over the editor root area rather than opening a tab (decision
+    // log 2026-08-26): a tab is only reachable from the view that HAS tabs.
+    run: () => layout.getState().setTakeover(settingsRef()),
   });
 }
 

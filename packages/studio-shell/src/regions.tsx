@@ -32,6 +32,7 @@ import {
 } from "./shell-context.js";
 import { EditorArea } from "./editor-area.js";
 import { SingleFileView } from "./single-file-view.js";
+import { EditorTakeover } from "./editor-takeover.js";
 import { formatChord } from "./keymap.js";
 import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
@@ -216,7 +217,11 @@ export function ShellStatusBar() {
  */
 function EditorRoot() {
   const view = useShellLayout((s) => s.editorView);
+  const takeover = useShellLayout((s) => s.takeover);
   const { companionDocument, continuousView } = useShell();
+  // A takeover sits OVER whichever view is chosen: the area has one
+  // occupant, and while the graph or settings is up, that is it.
+  if (takeover !== null) return <EditorTakeover doc={takeover} />;
   if (view === "single") return <SingleFileView companion={companionDocument} />;
   if (view === "continuous") {
     // A host that supplies no continuous content has nothing to stack, so

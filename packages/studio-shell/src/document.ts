@@ -40,6 +40,17 @@ export interface DocumentTypeDescriptor {
   id: string;
   /** Renders one view of a document of this type. */
   component: ComponentType<DocumentViewProps>;
+  /**
+   * This document TAKES OVER the editor root area rather than opening as a
+   * tab inside whichever view is active (decision log 2026-08-26, "The
+   * editor root area has one occupant").
+   *
+   * For whole-window activities that are not files — the Story Graph,
+   * Settings, the compiled output. Without this they are unreachable in any
+   * view that does not render tabs: Continuous view renders the project's
+   * FILES, so a Settings tab opened behind it simply never appears.
+   */
+  takeover?: boolean;
 }
 
 // #2737 (follow-up from #2558/#2733): was `${ref.typeId}\x00${ref.docId}`

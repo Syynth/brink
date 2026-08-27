@@ -30,7 +30,7 @@ test.describe("single file view", () => {
     // Code view is the default, and it has tabs.
     await expect(page.locator("[role='tab']").first()).toBeVisible();
 
-    await runPaletteCommand(page, "View: Single File");
+    await runPaletteCommand(page, "View mode: Single File");
 
     await expect(page.locator(singleFile)).toBeVisible();
     // The defining property: no tab strip at all, not a strip with one entry.
@@ -44,7 +44,7 @@ test.describe("single file view", () => {
   test("the companion collapses and comes back, and never closes into nothing", async ({
     page,
   }) => {
-    await runPaletteCommand(page, "View: Single File");
+    await runPaletteCommand(page, "View mode: Single File");
     const toggle = page.locator(".shell-single-file-companion-toggle");
 
     await toggle.click();
@@ -60,7 +60,7 @@ test.describe("single file view", () => {
   test("opening a file replaces the one on screen rather than adding to it", async ({
     page,
   }) => {
-    await runPaletteCommand(page, "View: Single File");
+    await runPaletteCommand(page, "View mode: Single File");
     const name = page.locator(".shell-single-file-name");
     const first = await name.textContent();
 
@@ -78,7 +78,7 @@ test.describe("single file view", () => {
   });
 
   test("the active file and the chosen view both survive a reload", async ({ page }) => {
-    await runPaletteCommand(page, "View: Single File");
+    await runPaletteCommand(page, "View mode: Single File");
     const before = await page.locator(".shell-single-file-name").textContent();
 
     await page.reload();
@@ -87,26 +87,28 @@ test.describe("single file view", () => {
     await expect(page.locator(".shell-single-file-name")).toHaveText(before ?? "");
   });
 
-  test("Settings offers the view picker, and it switches live", async ({ page }) => {
+  test("Settings offers the view picker, and choosing dismisses Settings", async ({
+    page,
+  }) => {
     await runPaletteCommand(page, "Settings: Open");
     const group = page.locator("[aria-label='Editor view']");
     await expect(group).toBeVisible();
 
-    await group.locator("input[value='single']").check();
-    await expect(page.locator(singleFile)).toBeVisible();
+    await group.locator("input[value='single']").dispatchEvent("click");
 
-    // And back — the picker reflects the live value, so the radio that is
-    // checked is the view you are actually in.
-    await group.locator("input[value='code']").check();
-    await expect(page.locator(singleFile)).toHaveCount(0);
-    await expect(group.locator("input[value='code']")).toBeChecked();
+    // Settings takes over the editor area, and choosing a view is choosing
+    // what fills that area — so picking one puts Settings away rather than
+    // leaving it up over the view you just chose. You cannot pick twice from
+    // the same Settings for the same reason.
+    await expect(page.locator(singleFile)).toBeVisible();
+    await expect(page.locator("[data-takeover]")).toHaveCount(0);
   });
 
   test("switching back to Code view keeps the file you were on", async ({ page }) => {
-    await runPaletteCommand(page, "View: Single File");
+    await runPaletteCommand(page, "View mode: Single File");
     const inSingle = await page.locator(".shell-single-file-name").textContent();
 
-    await runPaletteCommand(page, "View: Code");
+    await runPaletteCommand(page, "View mode: Code");
 
     await expect(page.locator(singleFile)).toHaveCount(0);
     // The active file is the one thing the two views share, so it is still

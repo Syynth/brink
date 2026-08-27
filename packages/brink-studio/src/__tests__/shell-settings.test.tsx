@@ -22,6 +22,7 @@ import {
   ShellProvider,
   ThemeService,
   createEditorGroupsStore,
+  createShellLayoutStore,
   documentKey,
   findTab,
   parseKeymapOverridesText,
@@ -57,51 +58,55 @@ function memoryStorage(initial: Record<string, string> = {}) {
 describe("settings.open", () => {
   it("registers palette-discoverable with the Mod-, binding", () => {
     const commands = new CommandRegistry();
-    registerSettingsCommand(commands, createEditorGroupsStore());
+    registerSettingsCommand(commands, createShellLayoutStore());
     const command = commands.get(OPEN_SETTINGS_COMMAND_ID);
     expect(command?.title).toBe("Settings: Open");
     expect(command?.keybinding).toBe("Mod-,");
   });
 
-  it("opens the singleton pinned in the focused group", () => {
+  it("takes over the editor root area rather than opening a tab", () => {
+    // Changed with the takeover ruling (decision log 2026-08-26): Settings
+    // used to open as a pinned tab, which is only reachable from a view that
+    // HAS tabs. Continuous view renders the project's files, so the tab
+    // never appeared there at all.
     const commands = new CommandRegistry();
-    const groups = createEditorGroupsStore();
-    registerSettingsCommand(commands, groups);
+    const layout = createShellLayoutStore();
+    registerSettingsCommand(commands, layout);
 
     expect(commands.dispatch(OPEN_SETTINGS_COMMAND_ID)).toBe(true);
 
-    const key = documentKey(settingsRef());
-    const found = findTab(groups.getState().groups, key);
-    expect(found).not.toBeNull();
-    expect(found!.tab.pinned).toBe(true);
-    expect(found!.tab.ref.typeId).toBe(SETTINGS_TYPE_ID);
-    expect(found!.tab.ref.title).toBe("Settings");
-    expect(found!.group.activeKey).toBe(key);
+    const takeover = layout.getState().takeover;
+    expect(takeover).not.toBeNull();
+    expect(takeover!.typeId).toBe(SETTINGS_TYPE_ID);
+    expect(takeover!.title).toBe("Settings");
   });
 
-  it("re-dispatch focuses the existing tab instead of duplicating", () => {
+  it("re-dispatch is idempotent — one occupant, still Settings", () => {
     const commands = new CommandRegistry();
-    const groups = createEditorGroupsStore();
-    registerSettingsCommand(commands, groups);
+    const layout = createShellLayoutStore();
+    registerSettingsCommand(commands, layout);
 
     commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
-    const homeGroupId = groups.getState().focusedGroupId;
-    groups.getState().openDocument(
-      { typeId: "ink-file", docId: "main.ink", title: "main.ink" },
-      { group: "split-right" },
-    );
-    expect(groups.getState().focusedGroupId).not.toBe(homeGroupId);
-
     commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
 
-    const s = groups.getState();
-    expect(s.focusedGroupId).toBe(homeGroupId);
-    const key = documentKey(settingsRef());
-    const copies = s.groups.flatMap((g) =>
-      g.tabs.filter((t) => documentKey(t.ref) === key),
-    );
-    expect(copies).toHaveLength(1);
+    expect(layout.getState().takeover?.typeId).toBe(SETTINGS_TYPE_ID);
   });
+
+  it("choosing a view dismisses the takeover", () => {
+    const commands = new CommandRegistry();
+    const layout = createShellLayoutStore();
+    registerSettingsCommand(commands, layout);
+    commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
+
+    layout.getState().setEditorView("continuous");
+
+    // Picking what fills the area also clears what had taken it over —
+    // otherwise switching view from inside Settings would appear to do
+    // nothing.
+    expect(layout.getState().takeover).toBeNull();
+    expect(layout.getState().editorView).toBe("continuous");
+  });
+
 });
 
 // ── Override JSON validation ────────────────────────────────────────
