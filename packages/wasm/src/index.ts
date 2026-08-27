@@ -172,6 +172,16 @@ export interface DiagnosticInfo {
    * codes, since those are the only ones the settings section lists.
    */
   category?: string;
+  /**
+   * Which source surfaces this code can arise on. A project filters its
+   * Diagnostics list by this, so a `strict-ink` project is not offered
+   * settings for markup spans it cannot write.
+   *
+   * Defaults to both: hiding a code an author is actually seeing is worse
+   * than showing one that cannot fire, so only codes the compiler itself
+   * calls native-only are narrowed.
+   */
+  surfaces: ("ink" | "native")[];
 }
 
 let cachedDiagnostics: DiagnosticInfo[] | null = null;

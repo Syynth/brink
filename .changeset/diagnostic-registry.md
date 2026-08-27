@@ -14,3 +14,7 @@ The `overridable` flag matters more than it looks: only 30 of the 189 codes
 can be overridden at all — the analyzer refuses every code whose default
 severity is not `warning`. A UI that ignores it offers a level picker for a
 code the analyzer then discards.
+
+Each row also names the source surfaces the code can arise on, so a
+`strict-ink` project is not offered settings for `.brink`-only diagnostics
+it can never produce.

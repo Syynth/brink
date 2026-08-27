@@ -2838,6 +2838,44 @@ impl DiagnosticCode {
         }
     }
 
+    /// Whether this code can only ever arise on the NATIVE (`.brink`)
+    /// surface (#3169).
+    ///
+    /// Which surface can produce a diagnostic is a property of the
+    /// diagnostic, not of any consumer — an ink-only project cannot produce
+    /// these no matter who is asking, so the answer belongs here rather
+    /// than in whichever tool happens to want it.
+    ///
+    /// **Everything not listed defaults to "both surfaces", deliberately.**
+    /// No analysis pass declares the surface it can fire on, so this is
+    /// read from what each diagnostic MEANS — and the two ways of being
+    /// wrong are not symmetric. Claiming native-only wrongly hides a
+    /// setting from an author who is actually seeing the diagnostic;
+    /// claiming both wrongly shows one that cannot fire. The second is
+    /// clutter, the first is a dead end, so a code earns its place here
+    /// only when the compiler itself says so, and everything uncertain
+    /// stays visible.
+    ///
+    /// Deliberately a predicate rather than a `Surface` set: nothing is
+    /// ink-only today, and would be a real surprise if it were — the ink
+    /// surface is the compatibility floor and native is a superset of it.
+    /// If an ink-only code ever appears, this wants to become a set rather
+    /// than gain a second predicate.
+    #[must_use]
+    pub fn is_native_only(self) -> bool {
+        matches!(
+            self,
+            // "native is the only frontend that can spell markup"
+            // — brink-analyzer/src/markup_check.rs
+            Self::E164 | Self::E165 | Self::E173
+            // These say it in their own titles.
+            | Self::E131 // "native: `<-` (splice) used outside a choice point…"
+            | Self::E132 // "A native file-level `@[was(…)]` rename record…"
+            | Self::E151 // "A native `{? … }` choice's own body falls through…"
+            | Self::E172 // "A native (`.brink`) tag whose text begins with `@`…"
+        )
+    }
+
     /// The written explanation for this code, or `None` when nobody has
     /// written one yet (#3169).
     ///
@@ -3152,6 +3190,57 @@ mod registry_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn native_only_codes_say_so_in_their_own_text() {
+        // The list is judgement, so it is held to its own standard: a code
+        // is native-only only when the compiler itself says so. Every entry
+        // must be justified by its title or its explanation naming the
+        // native surface — if one is not, either the claim is wrong or the
+        // title needs to state what the code is for.
+        //
+        // Markup is the documented exception: `markup_check.rs` says
+        // "native is the only frontend that can spell markup", which is not
+        // repeated in each code's own title.
+        const MARKUP: &[DiagnosticCode] = &[
+            DiagnosticCode::E164,
+            DiagnosticCode::E165,
+            DiagnosticCode::E173,
+        ];
+        for code in DiagnosticCode::ALL.iter().filter(|c| c.is_native_only()) {
+            if MARKUP.contains(code) {
+                continue;
+            }
+            let title = code.title().to_lowercase();
+            let explanation = code.explanation().unwrap_or("").to_lowercase();
+            assert!(
+                title.contains("native")
+                    || title.contains(".brink")
+                    || explanation.contains("native")
+                    || explanation.contains(".brink"),
+                "{} is marked native-only but nothing in its own text says so",
+                code.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn native_only_is_the_exception() {
+        // The default is "both surfaces", and that is load-bearing: hiding
+        // a code an author is actually seeing is worse than showing one
+        // that cannot fire. If most codes became native-only, the default
+        // has stopped being a default and this design wants revisiting
+        // rather than the list growing.
+        let native_only = DiagnosticCode::ALL
+            .iter()
+            .filter(|c| c.is_native_only())
+            .count();
+        assert!(
+            native_only * 4 < DiagnosticCode::ALL.len(),
+            "native-only is no longer an exception: {native_only} of {}",
+            DiagnosticCode::ALL.len()
+        );
     }
 
     #[test]

@@ -2555,6 +2555,7 @@ export function diagnostic_registry(): string {
       title: "knot is missing a name",
       default_severity: "error",
       overridable: false,
+      surfaces: ["ink", "native"],
     },
     {
       code: "E014",
@@ -2562,6 +2563,7 @@ export function diagnostic_registry(): string {
       default_severity: "warning",
       overridable: true,
       category: "Logic",
+      surfaces: ["ink", "native"],
     },
     {
       code: "E035",
@@ -2570,6 +2572,7 @@ export function diagnostic_registry(): string {
       overridable: true,
       category: "Names & shadowing",
       explanation: "A declaration collides with a reserved name.",
+      surfaces: ["native"],
     },
   ]);
 }

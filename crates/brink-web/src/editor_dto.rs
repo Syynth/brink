@@ -1260,6 +1260,14 @@ pub struct DiagnosticInfoJs {
     /// settings section lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Which source surfaces this code can arise on — `["ink", "native"]`,
+    /// or `["native"]` for the ones only `.brink` can produce. A project
+    /// filters its Diagnostics list by this, so a `strict-ink` project is
+    /// not offered settings for markup spans it cannot write.
+    ///
+    /// See `DiagnosticCode::is_native_only` for why the uncertain cases
+    /// say both.
+    pub surfaces: Vec<String>,
 }
 
 /// Every diagnostic code the compiler knows, ordered by code.
@@ -1294,6 +1302,11 @@ pub fn diagnostic_registry() -> String {
                 .iter()
                 .find(|(c, _)| *c == code.as_str())
                 .map(|(_, group)| (*group).to_owned()),
+            surfaces: if code.is_native_only() {
+                vec!["native".to_owned()]
+            } else {
+                vec!["ink".to_owned(), "native".to_owned()]
+            },
         })
         .collect();
     serde_json::to_string(&rows).unwrap_or_default()
@@ -1327,6 +1340,7 @@ mod diagnostic_registry_tests {
         explanation: Option<String>,
         #[serde(default)]
         category: Option<String>,
+        surfaces: Vec<String>,
     }
 
     fn rows() -> Vec<Row> {
@@ -1447,6 +1461,73 @@ mod diagnostic_registry_tests {
         assert!(
             biggest * 2 <= total,
             "one group holds half or more of the codes: {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn every_code_names_at_least_one_surface() {
+        // An empty list would hide a code from EVERY project, which is the
+        // failure mode this field must not have.
+        for r in rows() {
+            assert!(!r.surfaces.is_empty(), "{} names no surface", r.code);
+            for s in &r.surfaces {
+                assert!(
+                    matches!(s.as_str(), "ink" | "native"),
+                    "{} names an unknown surface {s:?}",
+                    r.code
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_only_is_the_exception_and_ink_only_does_not_exist() {
+        // The default is BOTH, on purpose: hiding a code an author is
+        // actually seeing is worse than showing one that cannot fire. If
+        // most codes became native-only, that default has stopped being a
+        // default and this deserves a rethink rather than a bigger list.
+        let rows = rows();
+        let native_only = rows.iter().filter(|r| r.surfaces == ["native"]).count();
+        assert!(
+            native_only * 4 < rows.len(),
+            "native-only is no longer an exception ({native_only} of {})",
+            rows.len()
+        );
+        // Nothing is ink-only today. The ink surface is the compatibility
+        // floor and the native surface is a superset of it, so a code that
+        // ink can produce but native cannot would be a genuine surprise —
+        // worth failing on rather than absorbing silently.
+        let ink_only: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.surfaces == ["ink"])
+            .map(|r| r.code.as_str())
+            .collect();
+        assert!(
+            ink_only.is_empty(),
+            "ink-only codes appeared: {ink_only:?} — is that right?"
+        );
+    }
+
+    #[test]
+    fn a_strict_ink_project_is_not_offered_native_only_settings() {
+        // The point of the field, asserted the way the UI will use it: a
+        // code whose surfaces exclude "ink" must not reach a project that
+        // only writes .ink.
+        let visible: Vec<String> = rows()
+            .into_iter()
+            .filter(|r| r.overridable && r.surfaces.iter().any(|s| s == "ink"))
+            .map(|r| r.code)
+            .collect();
+        for hidden in ["E131", "E132", "E151", "E164", "E165", "E172", "E173"] {
+            assert!(
+                !visible.contains(&hidden.to_owned()),
+                "{hidden} is native-only but reached an ink project"
+            );
+        }
+        assert!(
+            !visible.is_empty(),
+            "an ink project can still configure diagnostics — a filter that hides \
+             everything is not a filter"
         );
     }
 
