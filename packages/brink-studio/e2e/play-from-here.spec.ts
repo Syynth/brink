@@ -11,6 +11,27 @@ async function sessionOptionCount(page: Page): Promise<number> {
   return page.locator(".brink-session-select option").count();
 }
 
+/**
+ * Wait until the project has actually COMPILED, not merely rendered.
+ *
+ * `.cm-content` says the editor mounted. It does not say a compile has
+ * landed — and "Play from here" needs a compiled program to enter, so a
+ * click inside that window no-ops and the session never appears (issue
+ * #3163; the same "the editor is up, therefore the app is ready" mistake
+ * as #3158).
+ *
+ * The entry badge is the signal because it is written by the compile
+ * fan-out itself (`landCompileResult` -> `setEntryFile` -> the Binder's
+ * `entry` badge), and every project has exactly one entry — so this is not
+ * coupled to what the demo fixture happens to contain, the way waiting on
+ * a warning count would be.
+ */
+async function waitForFirstCompile(page: Page): Promise<void> {
+  await expect(page.locator(".brink-binder-badge-entry").first()).toBeVisible({
+    timeout: 15000,
+  });
+}
+
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
   await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
@@ -43,6 +64,7 @@ test.describe("play from here (#186)", () => {
   test("editor gutter ▶ on a knot header opens a session", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content");
+    await waitForFirstCompile(page);
 
     const before = await sessionOptionCount(page);
 
