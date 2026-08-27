@@ -371,11 +371,7 @@
 }
 
 .brink-studio .lint-explanation {
-  margin: 0;
-  padding: 0 10px 8px 62px;
-  font-size: var(--bs-font-small);
-  line-height: 1.6;
-  color: var(--bs-fg);
+  padding: 0 10px 9px 62px;
 }
 
 .brink-studio .lint-empty {
@@ -389,4 +385,62 @@
 
 .brink-studio .lint-row.is-unknown .lint-code {
   color: var(--bs-warning);
+}
+
+/* ── Rendered prose (the diagnostic explanations, #3148) ─────────────
+   The compiler ships these as markdown (docs/diagnostics/*.md);
+   `markdown-to-jsx` renders them. Sized down from body text: reference
+   material inside a row, not the row itself. */
+.brink-studio .md {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: var(--bs-font-small);
+  line-height: 1.6;
+  color: var(--bs-fg);
+}
+.brink-studio .md > :first-child { margin-top: 0; }
+.brink-studio .md > :last-child { margin-bottom: 0; }
+.brink-studio .md p,
+.brink-studio .md ul,
+.brink-studio .md ol {
+  margin: 0;
+}
+.brink-studio .md h1,
+.brink-studio .md h2,
+.brink-studio .md h3,
+.brink-studio .md h4 {
+  margin: 0;
+  font-size: var(--bs-font-small);
+  font-weight: 600;
+}
+.brink-studio .md ul,
+.brink-studio .md ol {
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.brink-studio .md code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-micro);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bs-border) 45%, transparent);
+}
+.brink-studio .md pre {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.brink-studio .md pre code {
+  background: none;
+  padding: 0;
+  line-height: 1.6;
+  white-space: pre;
+}
+.brink-studio .md a {
+  color: var(--bs-accent);
 }

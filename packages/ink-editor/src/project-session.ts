@@ -1233,6 +1233,18 @@ export class ProjectSession {
     if (this.sessionIsReadOnly(path)) return false;
     this.session.updateFile(path, newSource);
     this.notifyFileChanged(path);
+    // Editing `brink.toml` has to re-read it, or the edit changes the file
+    // and nothing else. `initialize`, `addFile`, the external-change
+    // handler and the rename paths all re-apply; this one did not — and it
+    // is the path EVERY in-app config edit takes (the Settings form, the
+    // Diagnostics section, the raw editor). Setting a lint to `allow` wrote
+    // the key and the warning kept being reported (#3148).
+    //
+    // Re-applying per edit is the intended cost, not a new one: the wasm
+    // session's own doc says every edit-flush of `brink.toml` re-runs
+    // `apply_parsed_config`, and #2333 added warning de-duplication because
+    // of exactly that.
+    if (isProjectConfigPath(path)) this.applyProjectConfig();
     return true;
   }
 

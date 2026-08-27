@@ -1,7 +1,7 @@
 {
   "name": "@brink-lang/studio",
   "version": "0.16.0",
-  "description": "Embeddable brink studio — a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
+  "description": "Embeddable brink studio \u2014 a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Syynth/brink",
@@ -81,6 +81,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "codemirror": "^6.0.1",
     "jsdom": "^29.0.0",
+    "markdown-to-jsx": "^7.7.17",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tsup": "^8.5.1",

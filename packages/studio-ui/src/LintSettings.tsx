@@ -34,6 +34,7 @@ import {
 import type { DiagnosticInfo } from "@brink-lang/web";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
+import Markdown from "markdown-to-jsx";
 
 /** The levels `[lints]` accepts, in escalating order. */
 const LEVELS = ["allow", "hint", "warn", "deny"] as const;
@@ -164,7 +165,12 @@ function LintRow({
         )}
       </div>
       {open && info.explanation !== undefined && (
-        <p className="lint-explanation">{info.explanation}</p>
+        <div className="lint-explanation md">
+          {/* The explanations are markdown the COMPILER ships
+              (docs/diagnostics/*.md) — inline code above all, plus bold,
+              italic, lists, links and the occasional fenced block. */}
+          <Markdown options={{ forceBlock: true }}>{info.explanation}</Markdown>
+        </div>
       )}
     </div>
   );
