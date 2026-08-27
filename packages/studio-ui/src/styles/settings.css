@@ -137,3 +137,23 @@
   padding: 3px 8px;
   font-size: var(--bs-font-body);
 }
+
+/* ── Project section (#3166) ─────────────────────────────────────────
+   The real `brink.toml` document — form plus raw text — mounted inside
+   Settings, because Continuous view has nowhere else to put it. Bounded
+   height so the config does not push every other settings section off
+   the page; the editor inside scrolls on its own. */
+.brink-studio .settings-project-doc {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: clamp(220px, 45vh, 560px);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.brink-studio .settings-project-doc .brink-ink-document-frame {
+  flex: 1;
+  min-height: 0;
+}
