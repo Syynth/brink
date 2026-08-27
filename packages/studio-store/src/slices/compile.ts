@@ -36,6 +36,19 @@ export interface CompileSlice {
    */
   closureFiles: string[];
   /**
+   * Project-relative paths that are DRAFTS (#3145) — deliberately
+   * unfinished work the author has not wired into the story. Computed
+   * whole by the wasm session (`matches a [project] drafts glob` AND
+   * `outside the closure`), never reassembled here. Empty before the
+   * first compile.
+   *
+   * Every surface that NAMES a file consults this (ruled 2026-08-27: a
+   * file's name and its draft status never appear apart) — the Binder
+   * row, the Continuous section heading, the Single File header, and the
+   * Code view tab.
+   */
+  draftFiles: string[];
+  /**
    * The project's EFFECTIVE entry file (config precedence already applied
    * by `ProjectSession.getEntryFile`), refreshed on every compile. The
    * Binder's entry badge and its ink-project Library gate (#3014) read
@@ -71,6 +84,7 @@ export interface CompileSlice {
   ): void;
   /** Replace the compile-closure path set (called on each compile, #3017). */
   setClosureFiles(paths: string[]): void;
+  setDraftFiles(paths: string[]): void;
   /** Record the effective entry file (called on each compile, #3014). */
   setEntryFile(path: string | null): void;
   /**
@@ -98,6 +112,7 @@ export interface CompileSlice {
 export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice> = (set, get) => ({
   outline: [],
   closureFiles: [],
+  draftFiles: [],
   entryFile: null,
   diagnostics: { errors: 0, warnings: 0 },
   diagnosticsList: [],
@@ -137,6 +152,10 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
 
   setClosureFiles(paths) {
     set({ closureFiles: paths });
+  },
+
+  setDraftFiles(paths) {
+    set({ draftFiles: paths });
   },
 
   setEntryFile(path) {

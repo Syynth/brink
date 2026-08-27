@@ -131,6 +131,7 @@ import {
   saveEditorSettings,
   openPlayerSplit,
   playerRef,
+  DraftMark,
   StudioContinuousView,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
@@ -460,6 +461,10 @@ function Root({
       // element lets it render inside the store's provider (decision log
       // 2026-08-26).
       continuousView={<StudioContinuousView />}
+      // Draft status beside every document name the shell writes (#3145,
+      // ruled 2026-08-27: a file's name and its draft status never appear
+      // apart). One seam, four surfaces — see DraftMark.
+      documentMark={DraftMark}
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>
@@ -821,12 +826,19 @@ export async function mountStudio(
     void (async () => {
       // W4: projectQuery routes these through the worker road when enabled
       // (same coalesce keys, same ordering guarantees).
-      const [outline, closure, graph] = await Promise.all([
+      const [outline, closure, drafts, graph] = await Promise.all([
         project.projectQuery<FileOutline[]>("getProjectOutline", [], {
           coalesceKey: "panel:outline",
         }),
         project.projectQuery<string[]>("getCompilationClosure", [], {
           coalesceKey: "panel:closure",
+        }),
+        // Draft status (#3145) rides the closure's fan-out because it is
+        // derived from the same compile — pulling it on a different beat
+        // would let the Binder show a draft mark against a closure that
+        // has already moved on.
+        project.projectQuery<string[]>("getDraftPaths", [], {
+          coalesceKey: "panel:drafts",
         }),
         // Failed compile: keep the last good graph (same policy as before)
         // without spending the query.
@@ -837,7 +849,7 @@ export async function mountStudio(
           : Promise.resolve(null),
       ]);
       if (seq !== fanOutSeq) return; // a newer compile's fan-out supersedes
-      landCompileResult(result, outline, closure, graph);
+      landCompileResult(result, outline, closure, drafts, graph);
     })().catch(() => {
       // Dropped/failed panel pull: keep the last good panels — a newer
       // compile is superseding (coalesce keys) or the session is tearing
@@ -849,6 +861,7 @@ export async function mountStudio(
     result: CompileResult,
     outline: FileOutline[],
     closure: string[],
+    drafts: string[],
     storyGraph: StoryGraph | null,
   ): void => {
     // Fan-out spans (measure-first ruling, 2026-08-24): this handler runs
@@ -881,6 +894,7 @@ export async function mountStudio(
     // compile just set — a file in `outline` but not here is on disk, not
     // in the story (the out-of-scope banner + Binder marks read this).
     state.setClosureFiles(closure);
+    state.setDraftFiles(drafts);
     // The effective entry (config precedence applied) — the Binder's entry
     // badge and its ink-project Library gate (#3014) read this.
     state.setEntryFile(project.getEntryFile());

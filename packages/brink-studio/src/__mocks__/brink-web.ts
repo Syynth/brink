@@ -680,6 +680,40 @@ interface MockDoc {
   viewEnd: number | null;
 }
 
+/**
+ * The `[project] drafts` glob dialect (#3145), mirroring
+ * `crates/internal/brink-project-config/src/globs.rs`:
+ *
+ * - `?` — one character, never `/`
+ * - `*` — any run, never `/`
+ * - `**` — any run, `/` included
+ * - trailing `/` — sugar for `/**`
+ * - everything else literal, case-sensitive
+ *
+ * Notably a bare directory name does NOT cover its contents (`scratch`
+ * matches a file called `scratch`, not `scratch/cut.ink`) — the one
+ * deliberate departure from gitignore. Pinned against the Rust side by
+ * `drafts-glob-dialect.test.ts`.
+ */
+export function matchesDraftGlob(path: string, patterns: string[]): boolean {
+  const subject = path.startsWith("./") ? path.slice(2) : path;
+  return patterns.some((pattern) => {
+    if (pattern === "") return false;
+    const p = pattern.endsWith("/") ? `${pattern.slice(0, -1)}/**` : pattern;
+    // Compile to a regex rather than backtracking by hand: `**` first, so
+    // the single-`*` rule never sees half of one.
+    const source = p
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*\//g, "\u0001")
+      .replace(/\*\*/g, "\u0002")
+      .replace(/\*/g, "[^/]*")
+      .replace(/\?/g, "[^/]")
+      .replace(/\u0001/g, "(?:.*\\/)?")
+      .replace(/\u0002/g, ".*");
+    return new RegExp(`^${source}$`).test(subject);
+  });
+}
+
 export class EditorSession {
   private files = new Map<string, string>();
   /**
@@ -2094,6 +2128,34 @@ export class EditorSession {
   }
 
   /**
+   * `[project] drafts` from the most recently parsed `brink.toml` (#3145),
+   * wholesale-replaced on every parse like {@link configuredEntry}.
+   */
+  private draftGlobs: string[] = [];
+
+  /**
+   * Mock of `draft_paths` (#3145). Mirrors the real conjunction — a glob
+   * match that is ALSO outside {@link compilation_closure} — so a studio
+   * test can never assert a shape the real session would not produce.
+   *
+   * `matchesDraftGlob` mirrors the dialect `globs.rs` documents. It is a
+   * second implementation, which is a real risk, so it is pinned by
+   * `drafts-glob-dialect.test.ts` asserting the same table the Rust unit
+   * tests assert: whichever side changes first, that file goes red.
+   */
+  draft_paths(): string {
+    if (this.draftGlobs.length === 0) return "[]";
+    const closure = new Set(JSON.parse(this.compilation_closure()) as string[]);
+    if (closure.size === 0) return "[]";
+    const drafts = [...this.files.keys()]
+      .filter((path) => !this.readOnlyPaths.has(path))
+      .filter((path) => !closure.has(path))
+      .filter((path) => matchesDraftGlob(path, this.draftGlobs));
+    drafts.sort();
+    return JSON.stringify(drafts);
+  }
+
+  /**
    * Mock of `configured_entry` (issue #2331): the `[project] entry` value
    * from the most recently parsed `brink.toml`, or `undefined` if unset.
    */
@@ -2123,6 +2185,7 @@ export class EditorSession {
       "elements",
       "unprune-dirs",
       "entry",
+      "drafts",
     ]);
     const warnings: string[] = [];
     let section: "project" | "lints" | null = null;
@@ -2130,6 +2193,7 @@ export class EditorSession {
     // contract): reset before scanning, so a file that dropped `entry`
     // since the last call actually clears it.
     this.configuredEntry = undefined;
+    this.draftGlobs = [];
     for (const raw of toml.split("\n")) {
       const line = raw.trim();
       if (line === "" || line.startsWith("#")) continue;
@@ -2148,6 +2212,15 @@ export class EditorSession {
       if (section === "project" && key === "entry") {
         const valueMatch = /^"([^"]*)"$/.exec(kv[2]!.trim());
         if (valueMatch && valueMatch[1] !== "") this.configuredEntry = valueMatch[1];
+      }
+      if (section === "project" && key === "drafts") {
+        // Single-line array only — enough for the flat tables tests write.
+        const arrayMatch = /^\[(.*)\]$/.exec(kv[2]!.trim());
+        if (arrayMatch) {
+          this.draftGlobs = [...arrayMatch[1]!.matchAll(/"([^"]*)"/g)]
+            .map((m) => m[1]!)
+            .filter((g) => g !== "");
+        }
       }
     }
     return warnings;
