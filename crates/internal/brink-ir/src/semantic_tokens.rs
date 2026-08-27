@@ -35,6 +35,7 @@ pub fn token_type_names() -> &'static [&'static str] {
         "marker", // 15 narrative structure sigils: choice bullets, gather dashes, weave brackets
         "divert", // 16 flow movement: ->, ->->, <-, glue
         "halt",   // 17 END / DONE
+        "escape", // 18 the `\` of an escape — an authoring mark, not the text it protects
     ]
 }
 
@@ -68,6 +69,7 @@ pub const TT_PROPERTY: u32 = 14;
 pub const TT_MARKER: u32 = 15;
 pub const TT_DIVERT: u32 = 16;
 pub const TT_HALT: u32 = 17;
+pub const TT_ESCAPE: u32 = 18;
 
 // ── Modifier bitmasks ──────────────────────────────────────────────
 
@@ -115,6 +117,25 @@ pub fn classify_token(
 ) -> Option<Classification> {
     let kind = token.kind();
 
+    // The escape's backslash is the ONE thing inside an `ESCAPE` that is
+    // not prose (#3142): it is an authoring mark, so it gets its own token
+    // type and the editor dims it, while the character it protects carries
+    // no token at all and inherits the surrounding narrative colour. The
+    // arm sits ABOVE the prose carve-out below, which would otherwise
+    // swallow it along with everything else inside the escape.
+    //
+    // A `\` that is NOT part of an escape stays unhighlighted, as it was
+    // when this kind lived in the skip list below.
+    if kind == SyntaxKind::BACKSLASH {
+        return token
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::ESCAPE)
+            .then_some(Classification {
+                token_type: TT_ESCAPE,
+                modifiers: 0,
+            });
+    }
+
     // Skip tokens we never highlight
     if matches!(
         kind,
@@ -127,7 +148,6 @@ pub fn classify_token(
             | SyntaxKind::COMMA
             | SyntaxKind::DOT
             | SyntaxKind::COLON
-            | SyntaxKind::BACKSLASH
             | SyntaxKind::DOLLAR
     ) {
         return None;
@@ -555,7 +575,16 @@ fn symbol_kind_to_classification(kind: SymbolKind) -> Classification {
 /// other raw-bump runs the native grammar introduced).
 fn is_prose_run_container(kind: brink_syntax_native::SyntaxKind) -> bool {
     use brink_syntax_native::SyntaxKind as NK;
-    matches!(kind, NK::TEXT | NK::CUE_NAME | NK::TAG | NK::SCENE_TITLE)
+    // `ESCAPE` is here for the same reason and was missing for the same
+    // reason the other three were (#3142): an escaped character's direct
+    // parent is the `ESCAPE` node, so `\{` in a prose line fell straight
+    // through to the operator arm and painted a literal brace as
+    // interpolation syntax. An escape exists precisely to say "this
+    // character is text", which is what this predicate means.
+    matches!(
+        kind,
+        NK::TEXT | NK::CUE_NAME | NK::TAG | NK::SCENE_TITLE | NK::ESCAPE
+    )
 }
 
 #[expect(
@@ -595,6 +624,18 @@ pub fn classify_native_token(
         });
     }
 
+    // The escape's backslash — see `classify_token`'s arm of the same
+    // shape (#3142). Above the prose carve-out for the same reason.
+    if kind == NK::BACKSLASH {
+        return token
+            .parent()
+            .is_some_and(|p| p.kind() == NK::ESCAPE)
+            .then_some(Classification {
+                token_type: TT_ESCAPE,
+                modifiers: 0,
+            });
+    }
+
     // Skip tokens we never highlight (mirrors `classify_token`'s ink list).
     if matches!(
         kind,
@@ -611,7 +652,6 @@ pub fn classify_native_token(
             | NK::COLON
             | NK::COLON_COLON
             | NK::SEMICOLON
-            | NK::BACKSLASH
     ) {
         return None;
     }

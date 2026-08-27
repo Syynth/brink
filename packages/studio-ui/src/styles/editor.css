@@ -300,6 +300,18 @@
 .brink-studio .tok-decorator { color: var(--bs-syn-decorator); }
 .brink-studio .tok-label { color: var(--bs-syn-label); }
 
+/* The escape mark (#3142). An escape exists so the character after it is
+   TEXT, so that character carries no token at all and inherits whatever
+   the surrounding prose is. The backslash is the one part that IS an
+   authoring mark, so it recedes rather than colouring: legible when
+   looked for, invisible when reading. Same shape as the hidden-sigil
+   treatment above — de-emphasise the mark without removing it from the
+   document. Opacity rather than a fixed colour so it recedes against
+   whatever prose colour the active theme uses. */
+.brink-studio .tok-escape {
+  opacity: 0.4;
+}
+
 /* HIR structural overlay (#454). The brink-hir-* inline marks are data
    carriers (kind/identity data-* attributes) and deliberately have NO default
    color — token color stays with tok-*, dialect styling stays with the
