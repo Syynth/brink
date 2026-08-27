@@ -316,6 +316,11 @@
   padding: 0 8px 0 var(--binder-pad-x, 12px);
   border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
+  /* `.brink-binder`'s `padding: 4px 0` puts 4px ABOVE this strip, and the
+     first row used to sit flush against its bottom border — 4px on top, 0
+     underneath, which reads as the toolbar being nudged downwards rather
+     than as deliberate spacing. Matching the gap below evens it out. */
+  margin-bottom: 4px;
 }
 .brink-studio .brink-binder-toolbar .spacer {
   flex-grow: 1;
