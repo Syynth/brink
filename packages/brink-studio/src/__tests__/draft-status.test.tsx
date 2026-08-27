@@ -18,6 +18,7 @@ import {
   Binder,
   DocumentIcon,
   InkFileDocument,
+  ScopeNoteSegment,
   StoreProvider,
   inkFileRef,
 } from "@brink/studio-ui";
@@ -126,6 +127,33 @@ describe("the out-of-scope banner (#3145)", () => {
       }),
     );
     expect(container!.querySelector(".brink-scope-banner")).not.toBeNull();
+  });
+});
+
+describe("the status bar's scope note (#3145)", () => {
+  function mountNote(drafts: string[], activePath: string) {
+    const store = seededStore(drafts);
+    store.getState().setActiveDocKey(activePath);
+    mount(store, createElement(ScopeNoteSegment));
+  }
+
+  it("is silent for a draft", () => {
+    mountNote(["scratch/cut.ink"], "scratch/cut.ink");
+    expect(container!.querySelector(".status-scope-note")).toBeNull();
+  });
+
+  it("still speaks for an out-of-scope file that is not a draft", () => {
+    // The control: without this, a note that never rendered in this
+    // harness at all would make the assertion above look like a pass.
+    mountNote(["scratch/cut.ink"], "offcuts.ink");
+    expect(container!.querySelector(".status-scope-note")?.textContent).toBe(
+      "— file not analyzed",
+    );
+  });
+
+  it("says nothing about a file that is in the story", () => {
+    mountNote(["scratch/cut.ink"], "main.ink");
+    expect(container!.querySelector(".status-scope-note")).toBeNull();
   });
 });
 

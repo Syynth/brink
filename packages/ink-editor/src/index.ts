@@ -1,6 +1,7 @@
 // Editor extension bundle (per-view options; see document-sessions.ts)
 export { brinkStudio, setDialect } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
+export { DEFAULT_INDENT } from "./extensions.js";
 
 // HIR structural overlay (#454): the extension plus identity-query helpers
 // for hosts building on the projection (spans at a position, symbol identity).

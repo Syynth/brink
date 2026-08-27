@@ -2128,6 +2128,17 @@ export class EditorSession {
   }
 
   /**
+   * `[project] indent` from the most recently parsed `brink.toml` (#3149),
+   * wholesale-replaced on every parse like {@link configuredEntry}.
+   */
+  private configuredIndent: number | undefined;
+
+  /** Mock of `configured_indent` (#3149). */
+  configured_indent(): number | undefined {
+    return this.configuredIndent;
+  }
+
+  /**
    * `[project] drafts` from the most recently parsed `brink.toml` (#3145),
    * wholesale-replaced on every parse like {@link configuredEntry}.
    */
@@ -2186,6 +2197,7 @@ export class EditorSession {
       "unprune-dirs",
       "entry",
       "drafts",
+      "indent",
     ]);
     const warnings: string[] = [];
     let section: "project" | "lints" | null = null;
@@ -2193,6 +2205,7 @@ export class EditorSession {
     // contract): reset before scanning, so a file that dropped `entry`
     // since the last call actually clears it.
     this.configuredEntry = undefined;
+    this.configuredIndent = undefined;
     this.draftGlobs = [];
     for (const raw of toml.split("\n")) {
       const line = raw.trim();
@@ -2212,6 +2225,10 @@ export class EditorSession {
       if (section === "project" && key === "entry") {
         const valueMatch = /^"([^"]*)"$/.exec(kv[2]!.trim());
         if (valueMatch && valueMatch[1] !== "") this.configuredEntry = valueMatch[1];
+      }
+      if (section === "project" && key === "indent") {
+        const n = Number.parseInt(kv[2]!.trim(), 10);
+        if (Number.isInteger(n) && n >= 1 && n <= 16) this.configuredIndent = n;
       }
       if (section === "project" && key === "drafts") {
         // Single-line array only — enough for the flat tables tests write.

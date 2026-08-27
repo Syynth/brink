@@ -11,6 +11,7 @@ categories.workspace = true
 
 [dependencies]
 brink-ir = { workspace = true }
+brink-project-config = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true
 

@@ -102,6 +102,8 @@ export interface DocumentSessionsOptions {
   /** Indent guides, forwarded to `brinkStudio` (ruled 2026-08-23): absent ⇒
    *  on; `false` ⇒ off (a fully headless composition draws its own). */
   indentGuides?: boolean;
+  /** Indent width in spaces; see BrinkStudioOptions.indent (#3149). */
+  indent?: number;
 }
 
 export interface DocumentCallbacks {
@@ -1064,6 +1066,17 @@ export class DocumentSessions {
     return {
       theme: this.options.theme,
       indentGuides: this.options.indentGuides,
+      // `[project] indent` wins over the embedder's option (#3149, ruled
+      // 2026-08-27: there is ONE place the width comes from, and it is
+      // brink.toml). Read live rather than captured at construction —
+      // config discovery lands after the session is built, so a captured
+      // value would be the pre-config one forever.
+      //
+      // Known limit: a view already mounted keeps the width it was built
+      // with until it remounts, since `indentUnit` is not in a compartment.
+      // Editing `[project] indent` therefore takes effect on the next
+      // mount (or reload), not mid-keystroke.
+      indent: this.project.getConfiguredIndent() ?? this.options.indent,
       dialect: this.options.dialect,
       compile: (source) => {
         slot.handle?.pushSource(source);

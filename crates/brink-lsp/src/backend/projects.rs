@@ -908,6 +908,7 @@ mod tests {
         let outcome = ConfigLoadOutcome {
             path: Some(dir.join("brink.toml")),
             diagnostic: None,
+            ..ConfigLoadOutcome::default()
         };
         let roots_ctx = NativeProjects::compute_roots_context(std::slice::from_ref(&dir), &outcome);
         projects.apply_roots_context(roots_ctx);

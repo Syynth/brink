@@ -37,7 +37,7 @@ use brink_ide::{
 };
 
 use crate::backend::adapters::{
-    diff_to_lsp_edits, domain_symbol_to_lsp, format_config_from_options, make_completion_item,
+    diff_to_lsp_edits, domain_symbol_to_lsp, format_config_for_request, make_completion_item,
     make_stdlib_completion_item, ranges_overlap,
 };
 use crate::backend::projects::{AnalysisSnapshot, NativeProjects};
@@ -531,6 +531,21 @@ impl Backend {
         uri.to_file_path()
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// The project's resolved formatter settings (#3149), or `None` before
+    /// the initial config load has completed.
+    ///
+    /// Read from the same stored outcome the config diagnostics come from,
+    /// so a `textDocument/formatting` request never re-reads `brink.toml`
+    /// — and so an edit to `[project] indent` takes effect through the same
+    /// reload path as every other key rather than through a second one.
+    fn project_format_config(&self) -> Option<brink_fmt::FormatConfig> {
+        self.initial_config_outcome
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|o| o.format.clone())
     }
 
     /// Publish (or clear) the `textDocument/publishDiagnostics` for a
@@ -1173,6 +1188,15 @@ impl ConfigOverrides {
 struct ConfigLoadOutcome {
     path: Option<PathBuf>,
     diagnostic: Option<tower_lsp::lsp_types::Diagnostic>,
+    /// The formatter settings this `brink.toml` resolves to (#3149).
+    ///
+    /// Carried here rather than in `AnalysisOptions` because indentation is
+    /// a FORMATTING concern and that struct is about analysis — but resolved
+    /// on the same pass, so the LSP never re-reads the file to answer a
+    /// format request. Defaults when no config was found or it set no
+    /// `indent`, which is the shared `DEFAULT_INDENT`, not a default of this
+    /// crate's own (ruled 2026-08-27).
+    format: brink_fmt::FormatConfig,
 }
 
 /// Best-effort byte-span → LSP range for a `ConfigError` (malformed TOML
@@ -1294,6 +1318,7 @@ fn resolve_language_options(
                             for warning in &warnings {
                                 tracing::warn!("[{}] {warning}", path.display());
                             }
+                            outcome.format = brink_fmt::FormatConfig::from_project_config(&config);
                             let lint_warnings = options.apply_project_config(
                                 &config,
                                 overrides.dialect.is_some(),
@@ -2706,7 +2731,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let config = format_config_from_options(&params.options);
+        let config =
+            format_config_for_request(&params.options, self.project_format_config().as_ref());
         let formatted = brink_fmt::format(&source, &config);
 
         if formatted == source {
@@ -2742,7 +2768,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let config = format_config_from_options(&params.options);
+        let config =
+            format_config_for_request(&params.options, self.project_format_config().as_ref());
         let formatted = brink_fmt::format(&source, &config);
 
         if formatted == source {

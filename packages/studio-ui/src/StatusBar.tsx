@@ -74,13 +74,26 @@ function elementLabel(info: LineInfo): string {
  * banner in `docs/design/project-open-flow/ScopeBanner.dc.html`): shown
  * while the active document's file is a source file outside the latest
  * compile's closure. Renders nothing otherwise.
+ *
+ * Silent for a DRAFT (#3145, ruled 2026-08-27), for the same reason the
+ * banner is: a draft is deliberately outside the story, so reporting it as
+ * unanalyzed states the intended condition as though it were a finding.
+ * Suppressing the banner but not this left the feature half done — the
+ * author still got told, just more quietly.
+ *
+ * Note this cannot hide the note from a file that IS in the story: draft
+ * status is only ever granted to files already outside the closure
+ * ("reachability wins"), so the two conditions can never disagree.
  */
 export function ScopeNoteSegment() {
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const closure = useStudioStore((s) => s.closureFiles);
   const outline = useStudioStore((s) => s.outline);
+  const draftFiles = useStudioStore((s) => s.draftFiles);
   if (activeDocKey === "") return null;
-  if (!isOutOfScope(inkDocPath(activeDocKey), closure, outline)) return null;
+  const path = inkDocPath(activeDocKey);
+  if (draftFiles.includes(path)) return null;
+  if (!isOutOfScope(path, closure, outline)) return null;
   return <span className="status-scope-note">— file not analyzed</span>;
 }
 

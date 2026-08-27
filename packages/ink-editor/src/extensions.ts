@@ -35,6 +35,14 @@ import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 
+/**
+ * The indent width when the project declares none — mirrors
+ * `brink_project_config::DEFAULT_INDENT` (#3149). The two must agree; a
+ * disagreement here is the exact failure the ruling exists to prevent,
+ * just relocated across the language boundary.
+ */
+export const DEFAULT_INDENT = 4;
+
 export interface BrinkStudioOptions {
   /** Sync or async (W2a — the studio rides the async session facade);
    *  see `DiagnosticsOptions.compile` for the async landing contract. */
@@ -75,6 +83,23 @@ export interface BrinkStudioOptions {
    * composition that draws its own).
    */
   indentGuides?: boolean;
+
+  /**
+   * Indent width in spaces — `[project] indent` from `brink.toml`, or the
+   * shared default when the project sets none (#3149, ruled 2026-08-27:
+   * "everything that indents reads the same setting").
+   *
+   * Threaded rather than hardcoded because the formatter reads the same
+   * value: an editor typing four spaces under a formatter writing two
+   * looks like a rendering glitch rather than a config mismatch, and the
+   * author has no way to tell which component is wrong. The guides read
+   * `indentUnit` too, so they follow automatically.
+   *
+   * Undefined means "the project did not say", which resolves to
+   * {@link DEFAULT_INDENT} — the same constant `brink-project-config`
+   * declares, mirrored here because this package cannot import Rust.
+   */
+  indent?: number;
 
   /** The view's wasm document-handle slot (per-view DocId, swapped across
    *  mount/unmount). If provided, the editor uses HIR-backed line
@@ -450,10 +475,12 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     dialectCompartment.of(dialectFacet.of(resolvedDialect)),
     elementTypeField,
     theme,
-    // Four-column indent unit (maintainer, 2026-08-23): ink convention —
-    // drives the guide spacing below (the markers package reads this
-    // facet) and any indent-aware command.
-    indentUnit.of("    "),
+    // The project's indent width (#3149) — drives the guide spacing below
+    // (the markers package reads this facet) and any indent-aware command.
+    // Four by default, which was this line's hardcoded value before the
+    // config key existed; the difference is that the formatter now reads
+    // the same number instead of its own.
+    indentUnit.of(" ".repeat(options.indent ?? DEFAULT_INDENT)),
     // Hanging indent for wrapped lines (the literal-whitespace ruling's
     // companion): continuation rows align even with the first row's text
     // start, so the indent guides never cross wrapped text.
