@@ -43,6 +43,39 @@ EXTERNAL teleport(map, x, y)
 -> DONE
 `;
 
+// The demo project's own `brink.toml`. The playground is an embedding host
+// like any other, so the default demo should look like a real project —
+// which means having a config file rather than relying on the host's
+// constructor-time entry argument (discovery supersedes that, and the
+// Settings view has nothing to show without one).
+//
+// `drafts` (#3145) names `scratch/**`, and `scratch/cut-scene.ink` below is
+// deliberately not INCLUDEd from `main.ink` — so the demo shows a real
+// draft: marked in the Binder and beside its name everywhere, with no
+// "not included in the project" banner, because being outside the story is
+// the point of it rather than a problem to report.
+const DEMO_CONFIG = `[project]
+entry = "main.ink"
+
+# Work in progress that is deliberately not wired into the story yet.
+# A file is a draft when it matches one of these AND nothing reaches it
+# from the entry — see the Drafts section of the project-config docs.
+drafts = ["scratch/**"]
+`;
+
+// The demo's draft: cut material, kept around, not part of the story.
+const DEMO_DRAFT = `// Cut from the temple sequence. Kept for parts.
+//
+// Nothing INCLUDEs this file, and it matches the \`drafts\` glob in
+// brink.toml — so the studio marks it as a draft instead of warning that
+// it is not included.
+
+=== abandoned_shrine ===
+The shrine's roof had fallen in long before the temple did.
+* [Search the rubble] -> DONE
+* [Leave it] -> DONE
+`;
+
 // Deterministic single-file project for e2e, loaded via `?fixture=screenplay`.
 // This decouples the binder/decorations/stitches specs from the demo default
 // above (which is multi-file and has no top-level knots). Not used in normal
@@ -184,8 +217,10 @@ async function main(): Promise<void> {
             // (measure-first ruling, 2026-08-24) — see perf-fixture.ts.
             ? generatePerfFixture()
             : {
+                "brink.toml": DEMO_CONFIG,
                 "main.ink": MAIN_INK,
                 "toppled-temple.ink": toppledTemple,
+                "scratch/cut-scene.ink": DEMO_DRAFT,
               });
 
   const appRoot = document.getElementById("app");
