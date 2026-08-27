@@ -284,13 +284,12 @@
   border-color: var(--bs-border, #45475a);
 }
 
-/* A draft is deliberate, so it reads as a state rather than a lack —
-   distinct from `muted`, which says "this file is missing from the
-   story" (#3145). */
-.brink-binder-badge-draft {
-  color: var(--ctp-peach, #fab387);
-  border-color: var(--ctp-peach, #fab387);
-  opacity: 0.85;
+/* A draft's file icon is the same drop, drawn provisionally — dashed by
+   the SVG, orange here (#3145, decision log 2026-08-27 "Draft status is
+   an icon variant, not a text badge"). Kept as a colour rather than an
+   opacity: a draft is deliberate, and dimming would read as "lesser". */
+.brink-binder-icon .brink-file-icon-draft {
+  color: var(--bs-draft, var(--ctp-peach, #fab387));
 }
 
 

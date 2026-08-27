@@ -17,6 +17,7 @@ import {
 } from "@brink/studio-store";
 import {
   BrinkFileIcon,
+  BrinkFileDraftIcon,
   BrinkFileFilledIcon,
   CollapseAllIcon,
   ExpandAllIcon,
@@ -67,6 +68,7 @@ function iconElement(
   isFunction = false,
   expandable = false,
   expanded = false,
+  draft = false,
 ): React.ReactElement | null {
   const filled = expandable && !expanded;
   switch (kind) {
@@ -74,6 +76,10 @@ function iconElement(
       if (expandable && expanded) return <FolderOpenIcon />;
       return filled ? <FolderFilledIcon /> : <FolderIcon />;
     case "file":
+      // A draft is drawn provisionally rather than filled/outline
+      // (decision log 2026-08-27): the fill rule encodes expansion state,
+      // which a file row does not have, so the variant is free here.
+      if (draft) return <BrinkFileDraftIcon />;
       return filled ? <BrinkFileFilledIcon /> : <BrinkFileIcon />;
     case "knot":
       if (isFunction) return <FunctionIcon />;
@@ -263,7 +269,9 @@ interface RowProps {
   editing?: RenameInputProps;
   /** Scope badge after the label (#3014/#3021 — Binder.dc.html): the entry
    *  mark or the "not included" mark. */
-  badge?: { text: string; tone: "entry" | "muted" | "draft" };
+  badge?: { text: string; tone: "entry" | "muted" };
+  /** Draw the file icon in its DRAFT variant (#3145). */
+  draft?: boolean;
   /** Dim the row (a file on disk that nothing INCLUDEs — outside the
    *  compile closure). */
   dimmed?: boolean;
@@ -309,6 +317,7 @@ export function BinderRow({
   draggable,
   editing,
   badge,
+  draft = false,
   dimmed = false,
   marks,
   onMenuClick,
@@ -414,7 +423,7 @@ export function BinderRow({
           }
           onClick={expandable ? handleChevronClick : undefined}
         >
-          {iconElement(kind, isFunction, expandable, isExpanded)}
+          {iconElement(kind, isFunction, expandable, isExpanded, draft)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
@@ -1755,10 +1764,10 @@ function BinderInner() {
     // anchor; a source file outside the compile closure is on disk, not
     // in the story ("not included"), and renders dimmed with a badge.
     const isEntry = entryFile !== null && file.path === entryFile;
-    // A draft (#3145) is out of scope by declaration, so it takes the badge
-    // slot with its own word: "not included" states a problem, and a draft
-    // is not one. Still dimmed, because it genuinely is not in the story —
-    // what changes is what the row CALLS that, not whether it says it.
+    // A draft (#3145) is out of scope by declaration, so it suppresses the
+    // "not included" badge — that badge states a problem, and a draft is
+    // not one. The status moves into the row's ICON instead (decision log
+    // 2026-08-27), which is why nothing takes the badge slot here.
     const isDraft = draftFiles.includes(file.path);
     const notIncluded =
       !isEntry && !isDraft && isOutOfScope(file.path, closureFiles, rawOutline);
@@ -1773,13 +1782,15 @@ function BinderInner() {
           badge={
             isEntry
               ? { text: "entry", tone: "entry" }
-              : isDraft
-                ? { text: "draft", tone: "draft" }
-                : notIncluded
-                  ? { text: "not included", tone: "muted" }
-                  : undefined
+              : notIncluded
+                ? { text: "not included", tone: "muted" }
+                : undefined
           }
-          dimmed={notIncluded || isDraft}
+          // A draft carries its status in its ICON (decision log
+          // 2026-08-27), so it takes no badge and no dimming: dimming
+          // reads as "lesser", and a draft is deliberate, not degraded.
+          draft={isDraft}
+          dimmed={notIncluded}
           marks={marksByFile.get(file.path)}
           onMenuClick={(e) => fileRow && handleContextMenu(e, fileRow)}
           extraActions={

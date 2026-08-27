@@ -412,21 +412,23 @@
   overflow: auto;
 }
 
-/* ── Draft mark (#3145) ──────────────────────────────────────────────
-   The shell's `documentMark` slot, styled here because the shell owns
+/* ── Document icons (#3145, decision log 2026-08-27) ─────────────────
+   The shell's `documentIcon` slot, styled here because the shell owns
    every surface that renders it (tab, Single File header, Continuous
    heading, takeover header) and one rule keeps them identical. The host
-   supplies WHAT the mark says; this says how a mark looks. */
-.brink-studio .brink-draft-mark {
-  font-size: var(--bs-font-micro);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ctp-peach, #fab387);
-  border: 1px solid var(--ctp-peach, #fab387);
-  border-radius: 3px;
-  padding: 0 4px;
-  margin-left: 6px;
+   supplies WHICH icon; this says how one sits next to a name. */
+.brink-studio .brink-doc-icon {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
-  line-height: 1.4;
-  opacity: 0.85;
+  margin-right: 5px;
+  color: var(--bs-fg-dim, #6c7086);
+}
+
+/* A draft's icon is the same drop, drawn provisionally — dashed by the
+   SVG itself, orange here so a theme can restate it in one place. Left
+   as a colour rule rather than an opacity one: a draft is a deliberate
+   state, and dimming would read as "lesser" rather than "provisional". */
+.brink-studio .brink-file-icon-draft {
+  color: var(--bs-draft, var(--ctp-peach, #fab387));
 }

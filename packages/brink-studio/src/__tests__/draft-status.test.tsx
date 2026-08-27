@@ -14,7 +14,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Binder, DraftMark, InkFileDocument, StoreProvider, inkFileRef } from "@brink/studio-ui";
+import {
+  Binder,
+  DocumentIcon,
+  InkFileDocument,
+  StoreProvider,
+  inkFileRef,
+} from "@brink/studio-ui";
 import { createStudioStore } from "@brink/studio-store";
 import type { FileOutline } from "@brink/wasm-types";
 
@@ -64,17 +70,18 @@ function rowFor(path: string): HTMLElement | null {
 }
 
 describe("the Binder row (#3145)", () => {
-  it("badges a draft as a draft, not as `not included`", () => {
+  it("draws a draft with the draft icon and no `not included` badge", () => {
     mount(seededStore(["scratch/cut.ink"]), createElement(Binder));
 
     const draft = rowFor("scratch/cut.ink");
-    expect(draft?.querySelector(".brink-binder-badge-draft")?.textContent).toBe("draft");
+    // Decision log 2026-08-27: the status lives in the ICON, not a badge.
+    expect(draft?.querySelector(".brink-file-icon-draft")).not.toBeNull();
     // The distinction that matters: "not included" states a problem, and a
-    // draft is not one. Both words must not appear on the same row.
+    // draft is not one, so that badge must not appear.
     expect(draft?.querySelector(".brink-binder-badge-muted")).toBeNull();
-    // Still dimmed — it genuinely is not in the story; what changed is
-    // what the row calls that.
-    expect(draft?.classList.contains("brink-binder-dimmed")).toBe(true);
+    // Not dimmed either — dimming reads as "lesser", and a draft is
+    // deliberate rather than degraded.
+    expect(draft?.classList.contains("brink-binder-dimmed")).toBe(false);
   });
 
   it("leaves an unmarked out-of-scope file saying `not included`", () => {
@@ -84,12 +91,13 @@ describe("the Binder row (#3145)", () => {
 
     const offcuts = rowFor("offcuts.ink");
     expect(offcuts?.querySelector(".brink-binder-badge-muted")?.textContent).toBe("not included");
-    expect(offcuts?.querySelector(".brink-binder-badge-draft")).toBeNull();
+    expect(offcuts?.querySelector(".brink-file-icon-draft")).toBeNull();
+    expect(offcuts?.classList.contains("brink-binder-dimmed")).toBe(true);
   });
 
-  it("shows no draft badge when nothing is a draft", () => {
+  it("shows no draft icon when nothing is a draft", () => {
     mount(seededStore([]), createElement(Binder));
-    expect(container!.querySelector(".brink-binder-badge-draft")).toBeNull();
+    expect(container!.querySelector(".brink-file-icon-draft")).toBeNull();
   });
 });
 
@@ -121,21 +129,24 @@ describe("the out-of-scope banner (#3145)", () => {
   });
 });
 
-describe("DraftMark — the shell's documentMark (#3145)", () => {
-  it("marks a draft file", () => {
+describe("DocumentIcon — the shell's documentIcon (#3145)", () => {
+  it("draws the draft variant for a draft file", () => {
     mount(
       seededStore(["scratch/cut.ink"]),
-      createElement(DraftMark, { doc: inkFileRef({ kind: "file", path: "scratch/cut.ink" }) }),
+      createElement(DocumentIcon, { doc: inkFileRef({ kind: "file", path: "scratch/cut.ink" }) }),
     );
-    expect(container!.querySelector(".brink-draft-mark")?.textContent).toBe("Draft");
+    expect(container!.querySelector(".brink-file-icon-draft")).not.toBeNull();
   });
 
-  it("renders nothing for a non-draft file", () => {
+  it("draws the ordinary file icon for a non-draft file", () => {
+    // Not "renders nothing": every file gets an icon now, so the assertion
+    // has to distinguish the two icons rather than presence from absence.
     mount(
       seededStore(["scratch/cut.ink"]),
-      createElement(DraftMark, { doc: inkFileRef({ kind: "file", path: "main.ink" }) }),
+      createElement(DocumentIcon, { doc: inkFileRef({ kind: "file", path: "main.ink" }) }),
     );
-    expect(container!.querySelector(".brink-draft-mark")).toBeNull();
+    expect(container!.querySelector(".brink-doc-icon")).not.toBeNull();
+    expect(container!.querySelector(".brink-file-icon-draft")).toBeNull();
   });
 
   it("renders nothing for a document that is not a file", () => {
@@ -143,16 +154,16 @@ describe("DraftMark — the shell's documentMark (#3145)", () => {
     // there would be claiming something about a document with no file.
     mount(
       seededStore(["scratch/cut.ink"]),
-      createElement(DraftMark, { doc: { typeId: "settings", docId: "scratch/cut.ink" } }),
+      createElement(DocumentIcon, { doc: { typeId: "settings", docId: "scratch/cut.ink" } }),
     );
-    expect(container!.querySelector(".brink-draft-mark")).toBeNull();
+    expect(container!.querySelector(".brink-doc-icon")).toBeNull();
   });
 
   it("follows a symbol (fragment) document back to its file", () => {
     // Fragment doc ids are `path::symbol`; the draft set holds paths.
     mount(
       seededStore(["scratch/cut.ink"]),
-      createElement(DraftMark, {
+      createElement(DocumentIcon, {
         doc: inkFileRef({
           kind: "symbol",
           path: "scratch/cut.ink",
@@ -162,6 +173,6 @@ describe("DraftMark — the shell's documentMark (#3145)", () => {
         }),
       }),
     );
-    expect(container!.querySelector(".brink-draft-mark")?.textContent).toBe("Draft");
+    expect(container!.querySelector(".brink-file-icon-draft")).not.toBeNull();
   });
 });
