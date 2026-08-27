@@ -29,7 +29,12 @@ export interface QuickOpenItem extends QuickPickItem {
  */
 export function buildQuickOpenItems(outline: readonly FileOutline[]): QuickOpenItem[] {
   const items: QuickOpenItem[] = [];
+  // The author's manuscript only — the same set the Binder tree shows, and
+  // the same filter Continuous view needs (#3136). Mounted `std/` library
+  // files are not somewhere you navigate to while writing, and listing them
+  // put two `std/conventions/screenplay.brink` symbols under one React key.
   for (const file of outline) {
+    if (file.mounted || file.path === "brink.toml") continue;
     items.push({
       key: `file:${file.path}`,
       title: file.path,
@@ -41,7 +46,10 @@ export function buildQuickOpenItems(outline: readonly FileOutline[]): QuickOpenI
       for (const symbol of symbols) {
         const qualified = prefix === "" ? symbol.name : `${prefix}.${symbol.name}`;
         items.push({
-          key: `sym:${file.path}:${qualified}`,
+          // Span-qualified: a name is not unique within a file (two knots can
+          // declare the same stitch name), and a duplicate React key silently
+          // drops or duplicates rows rather than erroring.
+          key: `sym:${file.path}:${qualified}:${symbol.start}`,
           title: qualified,
           detail: `${symbol.kind} · ${file.path}`,
           searchText: `${qualified} ${file.path}`,
