@@ -7,7 +7,9 @@
  * project failed — the app fell back to the landing screen showing the
  * validator's error. It reached a release because nothing here ever ran the
  * validator: the tests restated the same wrong literals they were meant to
- * check, so they agreed with the bug.
+ * check, so they agreed with the bug. Importing the real values WAS possible
+ * — `autosave-reopen.test.ts` pulls `AUTOSAVE_MS` out of `main.tsx` with a
+ * dynamic import after its mocks — merely awkward enough that nobody did.
  *
  * The point of this file is that it imports the SHIPPING ids and hands them
  * to the SHIPPING registry. A literal in here would recreate the hole.

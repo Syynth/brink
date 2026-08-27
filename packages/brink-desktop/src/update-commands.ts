@@ -1,11 +1,13 @@
 /**
  * The updater toast's host command ids.
  *
- * A module of their own, with NO side effects, for one reason: `main.tsx`
- * cannot be imported from a test — importing it runs the shell's bootstrap
- * (`listen(...)`, DOM wiring). So while these lived there, every test that
- * referenced them restated the strings as literals, and nothing could
- * validate them.
+ * A module of their own, with NO side effects, so a test can import them
+ * plainly. `main.tsx` runs the shell's bootstrap at module scope
+ * (`listen(...)`, DOM wiring), so importing it means a dynamic
+ * `await import("../main.js")` after `vi.mock` setup — which
+ * `autosave-reopen.test.ts` does do for `AUTOSAVE_MS`. It is possible, just
+ * awkward enough that the updater's test restated the ids as literals
+ * instead. This removes the excuse rather than the obstacle.
  *
  * That is not hypothetical. They shipped in desktop 0.4.0 as `update.install`
  * / `update.later` / `update.check` — unnamespaced. Host commands MUST be
