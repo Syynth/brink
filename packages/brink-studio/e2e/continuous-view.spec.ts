@@ -26,6 +26,10 @@ test.describe("continuous view", () => {
   });
 
   test("stacks exactly the Binder's files, in the Binder's order", async ({ page }) => {
+    // Wait for the tree: `.cm-content` says the editor is up, which is not
+    // the same as the Binder having rendered its rows. Reading too early
+    // gave an empty list and the comparison passed vacuously.
+    await expect(page.locator(".brink-binder-file-row").first()).toBeVisible();
     const binderFiles = await page
       .locator(".brink-binder-file-row")
       .evaluateAll((rows) =>
