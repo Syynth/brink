@@ -3454,3 +3454,12 @@
 - **WHY:** The name has to earn itself: a setting called `drafts` that only silenced one banner would be a lie about what it models, and the honest small version would have been `[lints] unreachable` instead. Making it a status means one declaration explains several behaviours rather than each surface inventing its own rule for "work in progress".
   The Continuous half is the interesting call, and it goes the other way from the obvious one. A read-through arguably wants only the story as it stands — but a view whose whole appeal is "scroll through everything" must not silently omit files, because the author cannot tell the difference between a file they marked draft and a file that failed to load. Marking is legible; disappearing is not. So drafts stay in the scroll and say what they are.
 - **NOT DECIDED:** whether draft status affects search results or compile behaviour. Both are deliberately left open — this ruling covers the banner, the Binder, and Continuous only.
+
+## Draft files are not compiled
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** brink.toml / compile pipeline / studio diagnostics
+- **SCOPE:** moderate
+- **WHAT:** Files with draft status (see "`drafts` is a real document status") are NOT compiled. This closes the compile half of the question that ruling deliberately left open. Search behaviour remains undecided.
+- **WHY:** A draft is work in progress by definition, so compiling it produces diagnostics about text the author already knows is unfinished — noise in the Problems panel that competes with errors in the actual story. Not compiling drafts is what makes the status worth declaring: scratch scenes and cut material stop reporting on themselves.
+- **OPEN, and it needs an answer before implementation:** what happens when a draft file IS reachable from the entry — someone marks a file `drafts` that `main.ink` still INCLUDEs. Skipping it would break diverts into it while the story looks fine, which violates the "nothing disappears silently" principle the drafts ruling rests on. Candidates: compile it anyway and warn that draft status is being overridden by reachability; refuse and diagnose the contradiction; or treat reachability as the stronger signal and ignore the glob. Not decided here.
