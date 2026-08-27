@@ -146,7 +146,17 @@ pub fn classify_token(
     // of it gets a token. Mirrors the native classifier's
     // `is_prose_run_container` carve-out below, which the same review
     // thread (#2280/#2286) already established for `.brink` files.
-    if token.parent().is_some_and(|p| p.kind() == SyntaxKind::TEXT) {
+    // ESCAPE joins TEXT for the same reason, and it is not covered by it:
+    // the escaped character's direct parent is the `ESCAPE` node, not `TEXT`,
+    // so `\*` slipped past this carve-out and the `*` was classified below as
+    // an expression-position operator — painting a literal asterisk in the
+    // machinery colour inside a run of prose (#3142). An escape exists
+    // precisely to say "this character is text", so nothing inside one is
+    // ever code.
+    if token
+        .parent()
+        .is_some_and(|p| matches!(p.kind(), SyntaxKind::TEXT | SyntaxKind::ESCAPE))
+    {
         return None;
     }
 
