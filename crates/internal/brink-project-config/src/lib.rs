@@ -141,6 +141,9 @@
 //! the same "warn, never silently drop" channel this crate's own unknown-key
 //! warnings use.
 
+pub mod edit;
+pub use edit::{ConfigDocument, EditError};
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;

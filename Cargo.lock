@@ -2301,6 +2301,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "toml",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
