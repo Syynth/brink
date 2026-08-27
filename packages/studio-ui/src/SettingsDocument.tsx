@@ -21,7 +21,7 @@
  *   under brink-studio.diagnostics.v1; main.tsx restores it at bootstrap.
  */
 
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   parseKeymapOverridesText,
   useShell,
@@ -45,6 +45,50 @@ import {
   clampEditorFontSize,
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
+import { isConfigPath } from "./ConfigFormPanel.js";
+import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
+
+/**
+ * The project's `brink.toml`, rendered inside Settings (#3166, ruled
+ * 2026-08-27: clicking it in the Binder opens the Settings takeover in
+ * every view, because Continuous view renders the MANUSCRIPT and the
+ * config file is deliberately not part of it).
+ *
+ * This mounts the real ink-file document, not a copy of its form. That is
+ * the load-bearing part: `ConfigFormPanel` models four keys, and #3015
+ * ruled the raw text beneath it to be the escape hatch for everything it
+ * does not — which now includes `drafts` (#3145) and `indent` (#3149).
+ * A form-only section here would have made those two uneditable from the
+ * studio entirely, which is a regression dressed as a feature.
+ *
+ * Renders nothing when the project has no `brink.toml`; there is no
+ * "create one" affordance here, since the Binder already owns file
+ * creation.
+ */
+function ProjectSection({ groupId }: { groupId: string }) {
+  const outline = useStudioStore((s) => s.outline);
+  const configPath = useMemo(
+    () => outline.find((f) => !f.mounted && isConfigPath(f.path))?.path ?? null,
+    [outline],
+  );
+  if (configPath === null) return null;
+  return (
+    <section className="settings-section settings-project">
+      <h2 className="settings-section-title">Project</h2>
+      <p className="settings-section-hint">
+        <code>{configPath}</code> — the form covers the common keys; the text below it is
+        the escape hatch for everything else.
+      </p>
+      <div className="settings-project-doc">
+        <InkFileDocument
+          doc={inkFileRef({ kind: "file", path: configPath })}
+          groupId={groupId}
+          active
+        />
+      </div>
+    </section>
+  );
+}
 
 export const SETTINGS_TYPE_ID = "settings";
 export const SETTINGS_DOC_ID = "settings";
@@ -520,10 +564,11 @@ function EditorSection() {
   );
 }
 
-export function SettingsDocument(_props: DocumentViewProps) {
+export function SettingsDocument({ groupId }: DocumentViewProps) {
   return (
     <div className="settings-doc">
       <div className="settings-doc-inner">
+        <ProjectSection groupId={groupId} />
         <ThemeSection />
         <EditorViewSection />
         <EditorSection />

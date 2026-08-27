@@ -136,6 +136,8 @@ import {
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
+  settingsRef,
+  isConfigPath,
   registerStoryGraphCommand,
   type StudioApi,
 } from "@brink/studio-ui";
@@ -1011,7 +1013,23 @@ export async function mountStudio(
     // Everything else already works, because every other navigation surface
     // (search, Problems, go-to-definition) reveals a FILE plus a span, which
     // is exactly the shape this turns a symbol into.
-    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+    // `brink.toml` opens as the Settings TAKEOVER, in every view (ruled
+    // 2026-08-27, #3166). It has no home in Continuous view — that view
+    // renders the project's MANUSCRIPT, and the config file is deliberately
+    // filtered out of it (`binderOrderedFiles`), so clicking it there did
+    // nothing at all. Routing to Settings answers that once rather than
+    // per-view, and puts project settings where app settings already live.
+    //
+    // The Settings document carries the WHOLE config document — the form
+    // and the raw text under it — so nothing an editor tab could do is
+    // lost. That matters: the form models four keys, and #3015 ruled the
+    // text below it to be the escape hatch for everything else, which now
+    // includes `drafts` and `indent`.
+    if (target.kind === "file" && isConfigPath(target.path)) {
+      shellLayout.getState().setTakeover(settingsRef());
+      return;
+    }
+        if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
       editorGroups
         .getState()
         .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
