@@ -116,7 +116,10 @@ export function ConfigFormPanel({ path }: { path: string }) {
   return (
     <div className="brink-config-form" role="form" aria-label="Project configuration">
       <div className="config-form-head">
-        <span className="config-form-title">Project configuration</span>
+        {/* No title of its own: this sits inside Settings' General section,
+            whose header already says where you are. It said "Project
+            configuration" under a pane header saying "Project" under a
+            scope switch saying "Project" — three of the same word. */}
         <span className="config-form-hint">
           Structured edits — comments are preserved. Use the text below for anything the form
           doesn't cover (e.g. [lints]).

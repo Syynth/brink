@@ -1032,7 +1032,7 @@ export async function mountStudio(
     // text below it to be the escape hatch for everything else, which now
     // includes `drafts` and `indent`.
     if (target.kind === "file" && isConfigPath(target.path)) {
-      store.getState().setSettingsSection(SETTINGS_SECTION_IDS.project);
+      store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
         if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {

@@ -24,8 +24,24 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { registerDismissible } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 
+/**
+ * Which settings a section belongs to — and, crucially, WHERE THEY LIVE.
+ *
+ * `project` writes `brink.toml`: versioned, shared with everyone who opens
+ * the project. `app` writes this machine's storage: yours alone, and it
+ * follows you between projects.
+ *
+ * That is a real distinction an author needs to be able to see, which is
+ * why it is a switch rather than a mixed list. Before it existed,
+ * Diagnostics held both — the `[lints]` table (project) and the
+ * external-function check (a studio preference) — with only a hint to say
+ * so.
+ */
+export type SettingsScope = "app" | "project";
+
 export interface SettingsSection {
   id: string;
+  scope: SettingsScope;
   title: string;
   /** Matched by search alongside the title — what the section is *about*. */
   keywords: string;
@@ -57,10 +73,21 @@ export const SETTINGS_ICONS = {
   keymap: icon("M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"),
 } as const;
 
+const SCOPE_LABEL: Record<SettingsScope, string> = {
+  app: "App",
+  project: "Project",
+};
+
+const SCOPE_HINT: Record<SettingsScope, string> = {
+  app: "Yours, on this machine — they follow you between projects.",
+  project: "Written to brink.toml — shared with everyone who opens this project.",
+};
+
 export function SettingsModal({ sections }: { sections: SettingsSection[] }) {
   const open = useStudioStore((s) => s.settingsSection);
   const setSection = useStudioStore((s) => s.setSettingsSection);
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<SettingsScope>("project");
   const dialogRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -81,6 +108,9 @@ export function SettingsModal({ sections }: { sections: SettingsSection[] }) {
   // The rail filters; it does not jump you somewhere. A search that moved
   // the selection would lose the section you were reading the moment you
   // typed.
+  // Search reaches across BOTH scopes, deliberately: an author looking for
+  // "theme" should not have to know it is an app setting first. Matches
+  // from the other scope carry their scope as a label.
   const needle = query.trim().toLowerCase();
   const matches = useMemo(
     () =>
@@ -102,6 +132,11 @@ export function SettingsModal({ sections }: { sections: SettingsSection[] }) {
   const active = sections.find((s) => s.id === open) ?? sections[0];
   if (active === undefined) return null;
 
+  // The SECTION decides the scope, not the switch: every door names a
+  // section, and one that named a project section while the switch sat on
+  // "App" would show a rail the active section is not in.
+  const shownScope = active.scope;
+
   return (
     <div
       className="brink-settings-backdrop"
@@ -118,6 +153,31 @@ export function SettingsModal({ sections }: { sections: SettingsSection[] }) {
         aria-label="Settings"
       >
         <div className="brink-settings-rail">
+          {/* Scope first: it says WHERE a setting is written, which changes
+              what changing one means. Project settings are versioned and
+              shared; app settings are yours on this machine. */}
+          <div className="brink-settings-scopes" role="tablist" aria-label="Settings scope">
+            {(["project", "app"] as const).map((sc) => (
+              <button
+                key={sc}
+                type="button"
+                role="tab"
+                aria-selected={sc === shownScope}
+                className={"brink-settings-scope" + (sc === shownScope ? " active" : "")}
+                title={SCOPE_HINT[sc]}
+                onClick={() => {
+                  setScope(sc);
+                  // Land on that scope's first section — switching scope is
+                  // a navigation, and leaving the old section showing would
+                  // make the switch look broken.
+                  const first = sections.find((s) => s.scope === sc);
+                  if (first !== undefined) setSection(first.id);
+                }}
+              >
+                {SCOPE_LABEL[sc]}
+              </button>
+            ))}
+          </div>
           <input
             ref={searchRef}
             type="search"
@@ -127,18 +187,27 @@ export function SettingsModal({ sections }: { sections: SettingsSection[] }) {
             onChange={(e) => setQuery(e.target.value)}
           />
           <nav className="brink-settings-nav">
-            {matches.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                className={"brink-settings-nav-item" + (s.id === active.id ? " active" : "")}
-                aria-current={s.id === active.id}
-                onClick={() => setSection(s.id)}
-              >
-                {s.icon}
-                <span>{s.title}</span>
-              </button>
-            ))}
+            {matches
+              // Unsearched, the rail is the current scope. Searching reaches
+              // across BOTH — an author looking for "theme" should not have
+              // to know it is an app setting first — and a result from the
+              // other scope says so.
+              .filter((s) => needle !== "" || s.scope === shownScope)
+              .map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={"brink-settings-nav-item" + (s.id === active.id ? " active" : "")}
+                  aria-current={s.id === active.id}
+                  onClick={() => setSection(s.id)}
+                >
+                  {s.icon}
+                  <span>{s.title}</span>
+                  {needle !== "" && s.scope !== shownScope && (
+                    <span className="brink-settings-nav-scope">{SCOPE_LABEL[s.scope]}</span>
+                  )}
+                </button>
+              ))}
             {matches.length === 0 && (
               <p className="brink-settings-nav-empty">No section matches “{query}”.</p>
             )}

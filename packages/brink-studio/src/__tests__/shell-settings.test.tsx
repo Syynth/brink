@@ -339,12 +339,14 @@ describe("SettingsDocument — external functions section", () => {
     // renders a `.settings-select` (the argument-form glyph) and renders
     // first, so a bare `.settings-select` query would grab that one instead.
     //
-    // It was titled "Diagnostics" until #3148 added the [lints] section,
-    // which is what "Diagnostics" now means. This one is about
-    // external-function checking specifically, and unlike the lints it is a
-    // studio preference rather than a brink.toml setting.
+    // It was titled "Diagnostics" until #3148 added the [lints] section.
+    // #3174 then split them for real: the lints are a PROJECT setting
+    // (brink.toml, shared) and this is an APP one (this machine), which is
+    // what the scope switch now says. The heading is a `settings-group-title`
+    // rather than an `h2` because the modal's pane header owns the section
+    // title now.
     const diagSection = [...container!.querySelectorAll(".settings-section")].find(
-      (s) => s.querySelector(".settings-section-title")?.textContent === "External functions",
+      (s) => s.querySelector(".settings-group-title")?.textContent === "External functions",
     )!;
     const select = diagSection.querySelector<HTMLSelectElement>(".settings-select")!;
     expect(select.value).toBe("error");

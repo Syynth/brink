@@ -34,26 +34,24 @@ import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 export function settingsSections(groupId: string): SettingsSection[] {
   return [
     {
-      id: SETTINGS_SECTION_IDS.project,
-      title: "Project",
-      keywords: "brink.toml entry conventions dialect types indent drafts config",
+      id: SETTINGS_SECTION_IDS.general,
+      scope: "project",
+      title: "General",
+      keywords: "brink.toml entry conventions dialect types indent drafts config project",
       icon: SETTINGS_ICONS.project,
       body: <ProjectSection groupId={groupId} />,
     },
     {
       id: SETTINGS_SECTION_IDS.diagnostics,
+      scope: "project",
       title: "Diagnostics",
-      keywords: "lints warnings errors todo suppress allow deny external functions",
+      keywords: "lints warnings errors todo suppress allow deny",
       icon: SETTINGS_ICONS.diagnostics,
-      body: (
-        <>
-          <LintSettings />
-          <DiagnosticsSection />
-        </>
-      ),
+      body: <LintSettings />,
     },
     {
       id: SETTINGS_SECTION_IDS.editor,
+      scope: "app",
       title: "Editor",
       keywords: "font size view mode code single file continuous tabs",
       icon: SETTINGS_ICONS.editor,
@@ -66,6 +64,7 @@ export function settingsSections(groupId: string): SettingsSection[] {
     },
     {
       id: SETTINGS_SECTION_IDS.appearance,
+      scope: "app",
       title: "Appearance",
       keywords: "theme colour color dark light manuscript inky",
       icon: SETTINGS_ICONS.appearance,
@@ -73,10 +72,23 @@ export function settingsSections(groupId: string): SettingsSection[] {
     },
     {
       id: SETTINGS_SECTION_IDS.keymap,
+      scope: "app",
       title: "Keymap",
       keywords: "keybinding shortcut chord override",
       icon: SETTINGS_ICONS.keymap,
       body: <KeymapSection />,
+    },
+    {
+      // Split out of Diagnostics by the scope switch (#3174): the `[lints]`
+      // table is written to brink.toml and shared, this flag is a studio
+      // preference that stays on your machine. They were one section with a
+      // hint explaining the difference, which the switch now states.
+      id: SETTINGS_SECTION_IDS.external,
+      scope: "app",
+      title: "External functions",
+      keywords: "host manifest binding check severity diagnostics",
+      icon: SETTINGS_ICONS.diagnostics,
+      body: <DiagnosticsSection />,
     },
   ];
 }

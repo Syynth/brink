@@ -3608,3 +3608,23 @@
   "theme" reaches Appearance, neither of which is in the section's name.
   Registered sections keep the page from drifting behind what is actually
   configurable, the standing failure of a hand-built settings screen.
+
+## Settings splits App and Project scope, and the pane header owns the title
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** The Settings modal carries an **App / Project** scope switch at
+  the top of the rail. Project sections write `brink.toml`; App sections
+  write this machine's storage. The `brink.toml` section is renamed
+  **General** (the scope is already called Project), the modal's pane header
+  is the only `<h2>` — section bodies use subordinate group headings — and
+  the inner boxes, dividers and scrollers inside sections are removed.
+- **WHY:** Where a setting is written changes what changing it means:
+  project settings are versioned and shared with everyone who opens the
+  project, app settings are yours and follow you between projects. That was
+  previously only a hint inside a mixed Diagnostics section holding both.
+  The heading cleanup is the same point — "Project" appeared three times in
+  one pane (scope, section, form legend), and one section at a time inside a
+  scrolling pane makes every inner box and scroller a nesting level the pane
+  already provides.

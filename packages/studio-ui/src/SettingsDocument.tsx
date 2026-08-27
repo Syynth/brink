@@ -76,7 +76,6 @@ export function ProjectSection({ groupId }: { groupId: string }) {
   if (configPath === null) return null;
   return (
     <section className="settings-section settings-project">
-      <h2 className="settings-section-title">Project</h2>
       <p className="settings-section-hint">
         <code>{configPath}</code> — the form covers the common keys; the text below it is
         the escape hatch for everything else.
@@ -279,7 +278,7 @@ export function EditorViewSection() {
   ];
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Editor view</h2>
+      <h3 className="settings-group-title">Editor view</h3>
       <p className="settings-section-hint">
         What fills the editor area. Switching keeps the file you are on.
       </p>
@@ -314,7 +313,7 @@ export function ThemeSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Theme</h2>
+      <h3 className="settings-group-title">Theme</h3>
       <p className="settings-section-hint">
         Color theme for the whole studio. Applies immediately.
       </p>
@@ -355,7 +354,7 @@ export function KeymapSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Keymap overrides</h2>
+      <h3 className="settings-group-title">Keymap overrides</h3>
       <p className="settings-section-hint">
         JSON mapping a command id to a keybinding ({'"Mod-K"'}), an array of
         keybindings, or <code>null</code> to unbind. Overrides replace the
@@ -393,7 +392,7 @@ export function DiagnosticsSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">External functions</h2>
+      <h3 className="settings-group-title">External functions</h3>
       <p className="settings-section-hint">
         Severity of external-function checks against a registered host manifest.
         Recompiles on change. Unlike the diagnostics below, this is a studio
@@ -488,7 +487,7 @@ export function EditorSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Editor</h2>
+      <h3 className="settings-group-title">Editor</h3>
       <p className="settings-section-hint">
         The inline argument-form glyph (the clickable mark after a function name).
         The hover card{"'"}s {'"'}edit arguments{'"'} action and the Mod-Shift-A

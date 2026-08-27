@@ -16,6 +16,7 @@ import { createStudioStore } from "@brink/studio-store";
 const SECTIONS: SettingsSection[] = [
   {
     id: "project",
+    scope: "project",
     title: "Project",
     keywords: "brink.toml entry drafts",
     icon: null,
@@ -23,6 +24,7 @@ const SECTIONS: SettingsSection[] = [
   },
   {
     id: "diagnostics",
+    scope: "project",
     title: "Diagnostics",
     keywords: "lints todo suppress",
     icon: null,
@@ -30,6 +32,7 @@ const SECTIONS: SettingsSection[] = [
   },
   {
     id: "appearance",
+    scope: "app",
     title: "Appearance",
     keywords: "theme colour",
     icon: null,
@@ -64,8 +67,12 @@ function mount(section: string | null) {
   return store;
 }
 
+/** The rail's titles alone — a cross-scope search result also renders its
+ *  scope label inside the same button. */
 const railLabels = (): string[] =>
-  [...container!.querySelectorAll(".brink-settings-nav-item")].map((b) => b.textContent ?? "");
+  [...container!.querySelectorAll(".brink-settings-nav-item")].map(
+    (b) => b.querySelector("span")?.textContent ?? "",
+  );
 const title = (): string | undefined =>
   container!.querySelector(".brink-settings-head h2")?.textContent ?? undefined;
 const type = (value: string): void => {
@@ -107,7 +114,9 @@ describe("null means closed", () => {
 describe("the rail", () => {
   it("lists every section and marks the active one", () => {
     mount("diagnostics");
-    expect(railLabels()).toEqual(["Project", "Diagnostics", "Appearance"]);
+    // Scope-filtered: Appearance is an app setting and this is a project
+    // section, so the rail lists the project ones (#3174's scope switch).
+    expect(railLabels()).toEqual(["Project", "Diagnostics"]);
     const active = container!.querySelector(".brink-settings-nav-item.active");
     expect(active?.textContent).toBe("Diagnostics");
   });
@@ -116,11 +125,11 @@ describe("the rail", () => {
     const store = mount("project");
     act(() => {
       [...container!.querySelectorAll<HTMLButtonElement>(".brink-settings-nav-item")]
-        .find((b) => b.textContent === "Appearance")
+        .find((b) => b.textContent === "Diagnostics")
         ?.click();
     });
-    expect(title()).toBe("Appearance");
-    expect(store.getState().settingsSection).toBe("appearance");
+    expect(title()).toBe("Diagnostics");
+    expect(store.getState().settingsSection).toBe("diagnostics");
   });
 
   it("falls back rather than rendering an empty pane for an unknown id", () => {
@@ -132,6 +141,15 @@ describe("the rail", () => {
 });
 
 describe("search", () => {
+  it("reaches ACROSS scopes, and labels the ones from the other", () => {
+    // An author looking for "theme" should not have to know it is an app
+    // setting first. Unsearched the rail is one scope; searching is not.
+    mount("project");
+    type("theme");
+    expect(railLabels()).toContain("Appearance");
+    expect(container!.querySelector(".brink-settings-nav-scope")?.textContent).toBe("App");
+  });
+
   it("filters by what a section is ABOUT, not only its name", () => {
     // "todo" is nowhere in the word "Diagnostics" — the keywords are what
     // make a section findable by the thing you actually want to change.

@@ -143,13 +143,14 @@
    Settings, because Continuous view has nowhere else to put it. Bounded
    height so the config does not push every other settings section off
    the page; the editor inside scrolls on its own. */
+/* The raw TOML editor keeps a bounded height — it is a text editor, so it
+   genuinely needs its own scroll — but loses the border: it already reads
+   as an editor. */
 .brink-studio .settings-project-doc {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: clamp(220px, 45vh, 560px);
-  border: 1px solid var(--bs-border);
-  border-radius: 4px;
+  height: clamp(200px, 38vh, 480px);
   overflow: hidden;
 }
 
@@ -224,12 +225,13 @@
   border-color: var(--bs-accent);
 }
 
+/* No inner scroller and no box: the modal's pane scrolls, and a list that
+   scrolled inside it would be two scrollbars for one list (maintainer,
+   2026-08-27). The group headings carry the structure the border was
+   standing in for. */
 .brink-studio .lint-list {
-  border: 1px solid var(--bs-border);
-  border-radius: 4px;
-  overflow: hidden;
-  max-height: 340px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .brink-studio .lint-group-head {
@@ -376,11 +378,9 @@
 
 .brink-studio .lint-empty {
   margin: 0;
-  padding: 10px;
+  padding: 8px 0;
   font-size: var(--bs-font-small);
   color: var(--bs-fg-muted);
-  border: 1px dashed var(--bs-border);
-  border-radius: 4px;
 }
 
 .brink-studio .lint-row.is-unknown .lint-code {
@@ -592,4 +592,57 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+/* ── Scope switch (#3174) ────────────────────────────────────────────
+   Where a setting is WRITTEN, which changes what changing one means:
+   project settings are versioned and shared, app settings are yours on
+   this machine. */
+.brink-studio .brink-settings-scopes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bs-border) 30%, transparent);
+}
+.brink-studio .brink-settings-scope {
+  flex: 1;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .brink-settings-scope.active {
+  background: var(--bs-panel-bg, #2a2a3d);
+  color: var(--bs-fg);
+}
+
+/* A search result from the other scope says which one it is. */
+.brink-studio .brink-settings-nav-scope {
+  margin-left: auto;
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+}
+
+/* Group heading inside a section — the pane header owns the section title,
+   so these are the subordinate labels (Zed's "Buffer Font"). */
+.brink-studio .settings-group-title {
+  margin: 0;
+  font-size: var(--bs-font-small);
+  font-weight: 600;
+  color: var(--bs-fg);
+}
+
+/* The config form flattens inside Settings (maintainer, 2026-08-27): its
+   own background and bottom rule exist for the case where it sits ABOVE an
+   editor in a document tab, marking where the form ends and the text
+   begins. In the modal that boundary is already drawn by the group
+   headings, so the box is one nesting level too many. */
+.brink-studio .settings-section .brink-config-form {
+  background: transparent;
+  border-bottom: none;
+  padding: 0;
 }
