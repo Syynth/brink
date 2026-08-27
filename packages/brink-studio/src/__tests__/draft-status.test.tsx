@@ -153,7 +153,13 @@ describe("DraftMark — the shell's documentMark (#3145)", () => {
     mount(
       seededStore(["scratch/cut.ink"]),
       createElement(DraftMark, {
-        doc: inkFileRef({ kind: "symbol", path: "scratch/cut.ink", symbol: "intro" }),
+        doc: inkFileRef({
+          kind: "symbol",
+          path: "scratch/cut.ink",
+          name: "intro",
+          start: 0,
+          end: 0,
+        }),
       }),
     );
     expect(container!.querySelector(".brink-draft-mark")?.textContent).toBe("Draft");
