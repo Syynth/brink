@@ -176,6 +176,46 @@ mod tests {
     }
 
     #[test]
+    fn a_native_escaped_brace_is_not_tokenized() {
+        // The native sibling of `an_escaped_marker_is_not_tokenized`
+        // (#3142). The native classifier has its own prose carve-out
+        // (`is_prose_run_container`) listing TEXT/CUE_NAME/TAG/SCENE_TITLE
+        // — an escaped character's parent is the ESCAPE node, so it was in
+        // none of them, and `.brink` had the same mis-highlight `.ink` did.
+        //
+        // Braces rather than a `*`: a native prose line emits NO tokens at
+        // all for plain text (measured), so an escaped `*` there proves
+        // nothing. Interpolation braces DO tokenize on a prose line (see
+        // `native_content_logic_delimiters_classify_as_operator` right
+        // below), so `\\{` is the case where the question is real.
+        //
+        // Only the OPENING brace is escaped here. `\\}` is not a
+        // highlighting matter at all in native: the parser does not
+        // recognise it as an escape, the `\\` lands in an ERROR node, and
+        // the `}` CLOSES THE FLOW'S BLOCK — silently truncating the flow.
+        // That is a parser bug (#3156), not this one, and putting it in
+        // this test would tie a highlighting fix to a structural one.
+        let src = "flow main() {\n    A literal \\{brace here.\n    -> DONE\n}\n";
+        let tokens = analyzed_native_tokens(src);
+        let starred: Vec<&RawToken> = tokens
+            .iter()
+            // Line 1 only: the flow's OWN braces on lines 0 and 3 are real
+            // syntax and must keep their operator classification.
+            .filter(|t| t.line == 1 && matches!(token_text(src, t), "{" | "}"))
+            .collect();
+        assert!(
+            starred.is_empty(),
+            "an escaped brace must not be tokenized in a native file either: {starred:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.line == 0 && token_text(src, t) == "{"),
+            "...but the flow's own brace is still syntax: {tokens:?}"
+        );
+    }
+
+    #[test]
     fn native_content_logic_delimiters_classify_as_operator() {
         // The native mirror of the ink case above: interpolation braces in
         // a flow's prose line get the operator classification too.
@@ -318,6 +358,43 @@ mod tests {
         assert!(
             starred.is_empty(),
             "an escaped `*` must not be tokenized at all, got {starred:?}"
+        );
+    }
+
+    #[test]
+    fn an_escapes_backslash_carries_the_escape_token() {
+        // The other half of #3142: the escaped CHARACTER carries no token
+        // (so it inherits prose colour), while the `\` carries its own
+        // type so the editor can dim it. Both halves are asserted together
+        // here — dimming the mark only reads as an escape if what follows
+        // it reads as text.
+        let src = "\\*Party is a literal asterisk\n";
+        let tokens = parse_and_tokens(src);
+        let by_text: Vec<(&str, u32)> = tokens
+            .iter()
+            .map(|t| (token_text(src, t), t.token_type))
+            .collect();
+        assert_eq!(
+            by_text,
+            vec![("\\", TT_ESCAPE)],
+            "the backslash is the only token on this line: {by_text:?}"
+        );
+    }
+
+    #[test]
+    fn a_backslash_outside_an_escape_carries_no_token() {
+        // The arm is parented on ESCAPE, not on the lexeme — a `\` that is
+        // not an escape mark must stay unhighlighted, exactly as it was
+        // when BACKSLASH lived in the skip list.
+        let src = "VAR path = \"C:\\\\tmp\"\n";
+        let tokens = parse_and_tokens(src);
+        assert!(
+            tokens.iter().all(|t| t.token_type != TT_ESCAPE),
+            "no ESCAPE node here, so no escape token: {:?}",
+            tokens
+                .iter()
+                .map(|t| (token_text(src, t), t.token_type))
+                .collect::<Vec<_>>()
         );
     }
 
