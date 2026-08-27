@@ -175,8 +175,9 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    `Warning`-base code, or — since issue #1674 — an `Info`/`Hint`-base
 ///    one) *is* reachable; the exemption is specifically about `Error`, not
 ///    about `Warning` being the only overridable base.
-/// 3. **`[lints]` per-code override**: `Deny` → `Error`; `Allow` → the base
-///    severity unchanged, immune to step 4; `Info`/`Hint` (issue #1162) →
+/// 3. **`[lints]` per-code override**: `Deny` → `Error`; `Allow` → `None`,
+///    the diagnostic is SUPPRESSED and callers must drop it (#3173);
+///    `Info`/`Hint` (issue #1162) →
 ///    `Severity::Info`/`Severity::Hint`, also immune to step 4 — an author
 ///    who deliberately down-leveled a code to an advisory tier does not want
 ///    `deny-warnings` escalating it back past `Warning`, the same reasoning
@@ -190,12 +191,23 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    default-`Info` `E157`'s whole point is staying quiet until an author
 ///    opts it up through `[lints]` — `deny-warnings` alone must not do that
 ///    for them).
+///
+/// Returns `None` when `[lints]` sets the code to `allow` — the diagnostic
+/// is suppressed and the caller must not report it.
+///
+/// The `Option` is the point (#3173). Until it existed this returned the
+/// code's BASE severity for `allow`, because `Severity` has no suppressed
+/// variant — so `allow` silently did nothing at all, in the CLI, the LSP
+/// and the studio alike, and it is the only level that turns a diagnostic
+/// off. A predicate beside this function would have fixed the symptom
+/// while leaving the cause: that a consumer can ask for a severity and
+/// never learn the diagnostic should not exist.
 #[must_use]
 pub fn effective_severity(
     code: brink_ir::DiagnosticCode,
     types: TypePolicy,
     lints: &LintPolicy,
-) -> brink_ir::Severity {
+) -> Option<brink_ir::Severity> {
     let base = if code == brink_ir::DiagnosticCode::E063 && types == TypePolicy::Strict {
         brink_ir::Severity::Error
     } else {
@@ -203,7 +215,10 @@ pub fn effective_severity(
     };
 
     if base == brink_ir::Severity::Error {
-        return base;
+        // A hard error is never suppressible — `validate_lint_code` refuses
+        // an override for it in the first place, so reaching this with an
+        // `allow` in hand means the override was already rejected upstream.
+        return Some(base);
     }
 
     // The "candidate" severity before `deny-warnings` gets a look: an
@@ -217,10 +232,10 @@ pub fn effective_severity(
     // `info_base_code_*` tests for the new `Info`/`Hint`-base behavior this
     // generalization adds).
     let candidate = match lints.overrides.get(code.as_str()) {
-        Some(LintLevel::Deny) => return brink_ir::Severity::Error,
-        Some(LintLevel::Allow) => return base,
-        Some(LintLevel::Info) => return brink_ir::Severity::Info,
-        Some(LintLevel::Hint) => return brink_ir::Severity::Hint,
+        Some(LintLevel::Deny) => return Some(brink_ir::Severity::Error),
+        Some(LintLevel::Allow) => return None,
+        Some(LintLevel::Info) => return Some(brink_ir::Severity::Info),
+        Some(LintLevel::Hint) => return Some(brink_ir::Severity::Hint),
         // An explicit `warn` always means "Warning", regardless of the
         // code's own base — the one case where the override outranks a
         // non-`Warning` base.
@@ -228,11 +243,13 @@ pub fn effective_severity(
         None => base,
     };
 
-    if candidate == brink_ir::Severity::Warning && lints.deny_warnings {
-        brink_ir::Severity::Error
-    } else {
-        candidate
-    }
+    Some(
+        if candidate == brink_ir::Severity::Warning && lints.deny_warnings {
+            brink_ir::Severity::Error
+        } else {
+            candidate
+        },
+    )
 }
 
 /// `types = strict` + `dialect != brink` is a project-level config error —
@@ -4324,7 +4341,7 @@ mod tests {
                 TypePolicy::Gradual,
                 &LintPolicy::default()
             ),
-            brink_ir::Severity::Warning
+            Some(brink_ir::Severity::Warning)
         );
     }
 
@@ -4336,7 +4353,7 @@ mod tests {
                 TypePolicy::Strict,
                 &LintPolicy::default()
             ),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4347,11 +4364,11 @@ mod tests {
         for policy in [TypePolicy::Gradual, TypePolicy::Strict] {
             assert_eq!(
                 effective_severity(DiagnosticCode::E065, policy, &LintPolicy::default()),
-                DiagnosticCode::E065.severity()
+                Some(DiagnosticCode::E065.severity())
             );
             assert_eq!(
                 effective_severity(DiagnosticCode::E022, policy, &LintPolicy::default()),
-                DiagnosticCode::E022.severity()
+                Some(DiagnosticCode::E022.severity())
             );
         }
     }
@@ -4372,7 +4389,7 @@ mod tests {
             ] {
                 assert_eq!(
                     effective_severity(code, policy, &LintPolicy::default()),
-                    code.severity(),
+                    Some(code.severity()),
                     "code {code:?} under {policy:?} must be unaffected by an empty LintPolicy"
                 );
             }
@@ -4389,19 +4406,23 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
     #[test]
-    fn lint_override_allow_keeps_a_warning_code_at_warning() {
+    fn lint_override_allow_suppresses_a_warning_code() {
+        // Was `..._keeps_a_warning_code_at_warning`, asserting that `allow`
+        // left the severity alone — which is what `allow` did, and was the
+        // bug (#3173). `allow` is the only level that turns a diagnostic
+        // off; a test named for the broken behaviour is how it survived.
         let lints = LintPolicy {
             overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Allow)]),
             deny_warnings: false,
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Warning
+            None
         );
     }
 
@@ -4415,7 +4436,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Info
+            Some(brink_ir::Severity::Info)
         );
     }
 
@@ -4427,7 +4448,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Hint
+            Some(brink_ir::Severity::Hint)
         );
     }
 
@@ -4442,7 +4463,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_info),
-            brink_ir::Severity::Info
+            Some(brink_ir::Severity::Info)
         );
         let lints_hint = LintPolicy {
             overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Hint)]),
@@ -4450,7 +4471,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_hint),
-            brink_ir::Severity::Hint
+            Some(brink_ir::Severity::Hint)
         );
     }
 
@@ -4465,7 +4486,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4477,24 +4498,27 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
         assert_eq!(
             effective_severity(DiagnosticCode::E022, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
     #[test]
-    fn deny_warnings_does_not_touch_an_allow_override() {
-        // `allow` is specifically the "immune to deny-warnings" knob.
+    fn deny_warnings_cannot_resurrect_an_allowed_code() {
+        // `allow` was always described as immune to `deny-warnings`; now
+        // that it suppresses, immunity means the code stays GONE rather
+        // than staying at Warning. `-D warnings` must not promote a
+        // diagnostic the project switched off.
         let lints = LintPolicy {
             overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Allow)]),
             deny_warnings: true,
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Warning
+            None
         );
     }
 
@@ -4510,7 +4534,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4522,7 +4546,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4541,7 +4565,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4567,7 +4591,7 @@ mod tests {
                 TypePolicy::Gradual,
                 &LintPolicy::default()
             ),
-            brink_ir::Severity::Info
+            Some(brink_ir::Severity::Info)
         );
     }
 
@@ -4582,7 +4606,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Info
+            Some(brink_ir::Severity::Info)
         );
     }
 
@@ -4594,7 +4618,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Warning
+            Some(brink_ir::Severity::Warning)
         );
     }
 
@@ -4606,7 +4630,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4618,7 +4642,7 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Error
+            Some(brink_ir::Severity::Error)
         );
     }
 
@@ -4630,21 +4654,25 @@ mod tests {
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Hint,
+            Some(brink_ir::Severity::Hint),
             "an explicit Hint downgrade must stay immune to deny-warnings too"
         );
     }
 
     #[test]
-    fn info_base_code_allow_override_is_a_no_op() {
+    fn allow_suppresses_an_info_base_code_too() {
+        // Was `info_base_code_allow_override_is_a_no_op` — the name said
+        // outright that `allow` did nothing, and asserted it. An advisory
+        // code is exactly the kind an author switches off (E189, the ink
+        // TODO note, is the same tier).
         let lints = LintPolicy {
             overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Allow)]),
             deny_warnings: true,
         };
         assert_eq!(
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
-            brink_ir::Severity::Info,
-            "Allow keeps the code at its own base — Info here, not Warning"
+            None,
+            "an Info-base code set to allow is suppressed, not left at Info"
         );
     }
 

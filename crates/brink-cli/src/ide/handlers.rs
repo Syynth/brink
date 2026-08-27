@@ -221,7 +221,9 @@ pub(super) fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
         .errors
         .iter()
         .chain(report.warnings.iter())
-        .map(|d| project.diag_entry(d))
+        // `filter_map`: a `[lints] allow` code yields no entry at all
+        // (#3173).
+        .filter_map(|d| project.diag_entry(d))
         .collect();
     diags.sort_by(|a, b| {
         (&a.location.path, a.location.byte_start).cmp(&(&b.location.path, b.location.byte_start))

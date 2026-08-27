@@ -274,7 +274,7 @@ impl AnalysisOptions {
     /// `[lints]` without validation. **This is the point that resolves a
     /// key against the real code set** (this crate owns `DiagnosticCode`)
     /// and decides which codes are actually overridable: a key that isn't a
-    /// real code, or names a code whose default severity isn't `Warning`
+    /// real code, or names a code whose default severity IS `Error`
     /// (never reachable through [`effective_severity`]'s hard-error
     /// exemption anyway — see its doc comment), is *not* included in the
     /// replaced [`AnalysisOptions::lints`] and instead earns a returned
@@ -423,7 +423,7 @@ impl AnalysisOptions {
     /// Runs every code through the exact same [`validate_lint_code`] gate
     /// `apply_project_config`'s `[lints]` handling uses — a key that isn't a
     /// real [`DiagnosticCode`], or names a code whose *default* severity
-    /// isn't `Warning`, is never merged into [`Self::lints`] and instead
+    /// IS `Error`, is never merged into [`Self::lints`] and instead
     /// earns a returned [`ConfigWarning`] on the same "warn, never silently
     /// drop" channel (#1160's overridability constraint applies identically
     /// to a CLI/API-set code as to a `brink.toml`-set one).
@@ -2678,5 +2678,54 @@ EXTERNAL add_state(who)
         // The explicit override replaces the file's value for the same
         // code — #1005/#1373's `CLI/API > file` precedence.
         assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Allow));
+    }
+}
+
+#[cfg(test)]
+mod overridability_agreement {
+    use super::{AnalysisOptions, LintLevel};
+    use brink_ir::DiagnosticCode;
+    use std::collections::BTreeMap;
+
+    /// `DiagnosticCode::is_overridable` must agree with the gate that
+    /// actually decides — `apply_lint_overrides` — for every code.
+    ///
+    /// This lives here rather than in `brink-ir` because only this crate can
+    /// see both. The `brink-ir`-side test can only state the rule; this one
+    /// runs the real thing, which is the difference that matters: the
+    /// predicate was wrong for every `Info`-default code (`E189`, the ink
+    /// `TODO:` note) and a test comparing it to a restated rule in the same
+    /// crate could never have said so.
+    #[test]
+    fn agrees_with_the_analyzers_own_gate() {
+        let mut disagreed = Vec::new();
+        for code in DiagnosticCode::ALL {
+            let mut options = AnalysisOptions::default();
+            let overrides = BTreeMap::from([(code.as_str().to_owned(), LintLevel::Allow)]);
+            let warnings = options.apply_lint_overrides(&overrides, None);
+            // Accepted <=> it landed in the policy and earned no warning.
+            let accepted =
+                warnings.is_empty() && options.lints.overrides.contains_key(code.as_str());
+            if accepted != code.is_overridable() {
+                disagreed.push((code.as_str(), code.is_overridable(), accepted));
+            }
+        }
+        assert!(
+            disagreed.is_empty(),
+            "is_overridable disagrees with apply_lint_overrides for \
+             (code, predicate, analyzer): {disagreed:?}"
+        );
+    }
+
+    #[test]
+    fn the_todo_note_can_be_configured() {
+        // Ruled 2026-08-27. E189 is `Info` by default, and an author who
+        // does not want their TODO notes reported has no other lever.
+        let mut options = AnalysisOptions::default();
+        let overrides = BTreeMap::from([("E189".to_owned(), LintLevel::Allow)]);
+        let warnings = options.apply_lint_overrides(&overrides, None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(options.lints.overrides.get("E189"), Some(&LintLevel::Allow));
+        assert!(DiagnosticCode::E189.is_overridable());
     }
 }
