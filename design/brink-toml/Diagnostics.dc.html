@@ -1,0 +1,251 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #f2f4fc; background: #1e1e2e; }
+    a { color: #89b4fa; } a:hover { color: #a6c8ff; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace; }
+    .hit { background: rgba(137,180,250,0.22); border-radius: 2px; }
+    /* The Problems panel's own severity glyphs and tokens, reused verbatim. */
+    .sev { width: 13px; text-align: center; font-size: 10px; line-height: 1; flex-shrink: 0; }
+    .sev.error { color: #f38ba8; }
+    .sev.warning { color: #f9e2af; }
+    .sev.info { color: #89dceb; }
+    .sev.off { color: #45475a; }
+    .lvl { display: flex; align-items: center; padding: 0 7px; color: #6c7086; }
+    .lvl + .lvl { border-left: 1px solid #45475a; }
+  </style>
+</helmet>
+
+<div style="display: flex; flex-direction: column; height: 100%; background: #1e1e2e;">
+
+  <div style="display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-bottom: 1px solid #45475a; flex-shrink: 0;">
+    <span style="font-size: 12px; font-weight: 600; color: #f2f4fc;">Settings</span>
+    <span style="flex-grow: 1;"></span>
+    <span style="color: #6c7086; font-size: 15px; line-height: 1;">&times;</span>
+  </div>
+
+  <div style="display: flex; flex-grow: 1; min-height: 0;">
+
+    <div style="width: 208px; flex-shrink: 0; border-right: 1px solid #45475a; display: flex; flex-direction: column; padding: 10px 8px; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 6px; height: 26px; border: 1px solid #45475a; border-radius: 4px; padding: 0 8px;">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span style="font-size: 11px; color: #6c7086;">Search settings</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 1px;">
+        <div style="display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 4px; color: #6c7086;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c1 2.5 3.5 5.5 5.5 8a7 7 0 1 1-11 0C8.5 8.5 11 5.5 12 3z"/></svg>
+          <span style="font-size: 12px;">Project</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 4px; color: #6c7086;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg>
+          <span style="font-size: 12px; flex-grow: 1;">Formatting</span>
+          <span class="mono" style="font-size: 10px; color: #6c7086;">1</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 4px; color: #6c7086;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7l2 2h7v12H4z"/></svg>
+          <span style="font-size: 12px; flex-grow: 1;">Files</span>
+          <span class="mono" style="font-size: 10px; color: #6c7086;">2</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 4px; background: rgba(137,180,250,0.12); color: #f2f4fc;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+          <span style="font-size: 12px; flex-grow: 1;">Diagnostics</span>
+          <span class="mono" style="font-size: 10px; color: #89b4fa;">3</span>
+        </div>
+      </div>
+      <div style="flex-grow: 1;"></div>
+    </div>
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+      <div style="display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px 0;">
+        <div style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: 600; color: #f2f4fc;">Diagnostics</h2>
+          <span class="mono" style="font-size: 11px; color: #6c7086;">[lints]</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>
+          <span style="font-size: 11px; color: #f2f4fc;">Edit as TOML</span>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; min-height: 0; padding: 12px 20px 18px; display: flex; flex-direction: column; gap: 14px;">
+
+        <div style="display: flex; flex-direction: column;">
+          <div style="height: 1px; background: #45475a;"></div>
+          <div style="display: flex; align-items: center; gap: 16px; padding: 10px 0;">
+            <div style="display: flex; flex-direction: column; gap: 1px; flex-grow: 1; min-width: 0;">
+              <span style="font-size: 12px; color: #f2f4fc;">Deny warnings</span>
+              <span style="font-size: 11px; color: #6c7086;">Promote every warning to an error, the way <span class="mono">-D warnings</span> does.</span>
+            </div>
+            <div style="width: 28px; height: 16px; border-radius: 8px; background: #45475a; position: relative; flex-shrink: 0;">
+              <div style="position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 6px; background: #6c7086;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ══ LIST 1 — in the file, grouped by category ═════════ -->
+        <div style="display: flex; flex-direction: column;">
+          <div style="display: flex; align-items: baseline; gap: 8px; padding-bottom: 6px;">
+            <span class="mono" style="font-size: 11px; color: #f2f4fc;">Project lint configuration</span>
+            <span style="font-size: 11px; color: #6c7086; flex-grow: 1;">Written to <span class="mono">[lints]</span>.</span>
+            <span class="mono" style="font-size: 10px; color: #6c7086;">3 codes</span>
+          </div>
+
+          <div style="border: 1px solid #45475a; border-radius: 4px; overflow: hidden;">
+
+            <div class="mono" style="font-size: 10px; letter-spacing: 0.04em; color: #6c7086; padding: 5px 10px; background: rgba(69,71,90,0.3);">Inline logic</div>
+
+            <!-- an EXPANDED row: the extended description from docs/diagnostics/Exxx.md -->
+            <div style="display: flex; flex-direction: column; background: rgba(137,180,250,0.05);">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 7px 10px;">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M6 9l6 6 6-6"/></svg>
+                <span class="sev error">&#9679;</span>
+                <span class="mono" style="font-size: 11px; color: #89b4fa; width: 40px; flex-shrink: 0;">E014</span>
+                <span style="font-size: 12px; color: #f2f4fc; flex-grow: 1; min-width: 0;">logic line has no effect</span>
+                <span style="font-size: 10px; color: #6c7086; flex-shrink: 0;">default warn</span>
+                <div style="display: flex; height: 22px; border: 1px solid #45475a; border-radius: 4px; overflow: hidden; font-size: 10px; flex-shrink: 0;">
+                  <div class="lvl">allow</div><div class="lvl">hint</div><div class="lvl">warn</div>
+                  <div class="lvl" style="color: #f38ba8; background: rgba(243,139,168,0.16);">deny</div>
+                </div>
+                <div style="width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+                </div>
+              </div>
+              <div style="padding: 0 10px 9px 62px; display: flex; flex-direction: column; gap: 6px;">
+                <p style="margin: 0; font-size: 11px; line-height: 1.6; color: #bac2de;">A <span class="mono">~</span> line whose expression is neither an assignment nor a call computes a value and discards it. Most often a typo for <span class="mono">~ x = 1</span>, or a leftover from an edit.</p>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span class="mono" style="font-size: 10px; color: #6c7086;">docs/diagnostics/E014.md</span>
+                  <span style="font-size: 10px; color: #6c7086;">&middot;</span>
+                  <span style="font-size: 10px; color: #89b4fa;">Open explanation</span>
+                </div>
+              </div>
+            </div>
+
+            <div style="height: 1px; background: #45475a;"></div>
+
+            <div class="mono" style="font-size: 10px; letter-spacing: 0.04em; color: #6c7086; padding: 5px 10px; background: rgba(69,71,90,0.3);">Control flow</div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 7px 10px;">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M9 6l6 6-6 6"/></svg>
+              <span class="sev off">&#9679;</span>
+              <span class="mono" style="font-size: 11px; color: #89b4fa; width: 40px; flex-shrink: 0;">E033</span>
+              <span style="font-size: 12px; color: #f2f4fc; flex-grow: 1; min-width: 0;">unreachable code after divert</span>
+              <span style="font-size: 10px; color: #6c7086; flex-shrink: 0;">default deny</span>
+              <div style="display: flex; height: 22px; border: 1px solid #45475a; border-radius: 4px; overflow: hidden; font-size: 10px; flex-shrink: 0;">
+                <div class="lvl" style="color: #a6e3a1; background: rgba(166,227,161,0.14);">allow</div>
+                <div class="lvl">hint</div><div class="lvl">warn</div><div class="lvl">deny</div>
+              </div>
+              <div style="width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+              </div>
+            </div>
+
+            <div style="height: 1px; background: #45475a;"></div>
+
+            <div class="mono" style="font-size: 10px; letter-spacing: 0.04em; color: #6c7086; padding: 5px 10px; background: rgba(69,71,90,0.3);">Unknown to this compiler</div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 7px 10px; background: rgba(250,179,135,0.05);">
+              <span style="width: 10px; flex-shrink: 0;"></span>
+              <span class="sev" style="color: #fab387;">&#9650;</span>
+              <span class="mono" style="font-size: 11px; color: #fab387; width: 40px; flex-shrink: 0;">E999</span>
+              <span style="font-size: 12px; color: #6c7086; flex-grow: 1; min-width: 0;">Kept &mdash; it may belong to a newer compiler.</span>
+              <div style="display: flex; height: 22px; border: 1px solid #45475a; border-radius: 4px; overflow: hidden; font-size: 10px; flex-shrink: 0; opacity: 0.4;">
+                <div class="lvl">allow</div><div class="lvl">hint</div><div class="lvl">warn</div><div class="lvl">deny</div>
+              </div>
+              <div style="width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ══ LIST 2 — not in the file, same categories ═════════ -->
+        <div style="display: flex; flex-direction: column; min-height: 0; flex-grow: 1;">
+          <div style="display: flex; align-items: center; gap: 8px; padding-bottom: 6px;">
+            <span class="mono" style="font-size: 11px; color: #6c7086;">Not configured</span>
+            <span style="font-size: 11px; color: #6c7086; flex-grow: 1;">Running at their built-in defaults.</span>
+            <div style="display: flex; align-items: center; gap: 6px; height: 24px; border: 1px solid #45475a; border-radius: 4px; padding: 0 8px; width: 196px; flex-shrink: 0;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+              <span class="mono" style="font-size: 11px; color: #f2f4fc; flex-grow: 1;">choice</span>
+              <span class="mono" style="font-size: 10px; color: #6c7086;">4/186</span>
+            </div>
+          </div>
+
+          <div style="border: 1px solid #45475a; border-radius: 4px; overflow: hidden;">
+
+            <div class="mono" style="font-size: 10px; letter-spacing: 0.04em; color: #6c7086; padding: 5px 10px; background: rgba(69,71,90,0.3);">Choices</div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 6px 10px;">
+              <span style="width: 10px; flex-shrink: 0;"></span>
+              <span class="sev error">&#9679;</span>
+              <span class="mono" style="font-size: 11px; color: #6c7086; width: 40px; flex-shrink: 0;">E029</span>
+              <span style="font-size: 12px; color: #6c7086; flex-grow: 1; min-width: 0;"><span class="hit">choice</span> in conditional must explicitly divert</span>
+              <div style="display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                <span style="font-size: 10px; color: #89b4fa;">Configure</span>
+              </div>
+            </div>
+            <div style="height: 1px; background: #45475a;"></div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 6px 10px;">
+              <span style="width: 10px; flex-shrink: 0;"></span>
+              <span class="sev warning">&#9650;</span>
+              <span class="mono" style="font-size: 11px; color: #6c7086; width: 40px; flex-shrink: 0;">E034</span>
+              <span style="font-size: 12px; color: #6c7086; flex-grow: 1; min-width: 0;"><span class="hit">choice</span> set has only fallback choices</span>
+              <div style="display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                <span style="font-size: 10px; color: #89b4fa;">Configure</span>
+              </div>
+            </div>
+            <div style="height: 1px; background: #45475a;"></div>
+
+            <div class="mono" style="font-size: 10px; letter-spacing: 0.04em; color: #6c7086; padding: 5px 10px; background: rgba(69,71,90,0.3);">Warnings</div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 6px 10px;">
+              <span style="width: 10px; flex-shrink: 0;"></span>
+              <span class="sev warning">&#9650;</span>
+              <span class="mono" style="font-size: 11px; color: #6c7086; width: 40px; flex-shrink: 0;">E058</span>
+              <span style="font-size: 12px; color: #6c7086; flex-grow: 1; min-width: 0;">sticky <span class="hit">choice</span> in a once-only weave</span>
+              <div style="display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                <span style="font-size: 10px; color: #89b4fa;">Configure</span>
+              </div>
+            </div>
+            <div style="height: 1px; background: #45475a;"></div>
+
+            <div style="display: flex; align-items: center; gap: 9px; padding: 6px 10px;">
+              <span style="width: 10px; flex-shrink: 0;"></span>
+              <span class="sev info">&#8505;</span>
+              <span class="mono" style="font-size: 11px; color: #6c7086; width: 40px; flex-shrink: 0;">E141</span>
+              <span style="font-size: 12px; color: #6c7086; flex-grow: 1; min-width: 0;"><span class="hit">choice</span> label is never referenced</span>
+              <div style="display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid #45475a; border-radius: 4px; flex-shrink: 0;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                <span style="font-size: 10px; color: #89b4fa;">Configure</span>
+              </div>
+            </div>
+
+          </div>
+
+          <div style="margin-top: 10px; display: flex; align-items: flex-start; gap: 6px; padding: 9px 10px; border: 1px solid #45475a; border-radius: 4px;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; margin-top: 1px;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <span style="font-size: 11px; line-height: 1.5; color: #6c7086;">Glyphs are the Problems panel's own &mdash; <span class="sev error" style="display: inline;">&#9679;</span> error, <span class="sev warning" style="display: inline;">&#9650;</span> warning, <span class="sev info" style="display: inline;">&#8505;</span> info &mdash; showing each code's EFFECTIVE level, so a row reads the same here as the problem it will produce. <span class="sev off" style="display: inline;">&#9679;</span> is <span class="mono">allow</span>: no problem at all.</span>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

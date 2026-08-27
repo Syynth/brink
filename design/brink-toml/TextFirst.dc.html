@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #f2f4fc; background: #1e1e2e; }
+    a { color: #89b4fa; } a:hover { color: #a6c8ff; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace; }
+  </style>
+</helmet>
+
+<div style="display: flex; flex-direction: column; height: 100%; background: #1e1e2e;">
+
+  <div style="display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-bottom: 1px solid #45475a; flex-shrink: 0;">
+    <span style="font-size: 12px; font-weight: 600; color: #f2f4fc;">Settings</span>
+    <span style="flex-grow: 1;"></span>
+    <span style="color: #6c7086; font-size: 15px; line-height: 1;">&times;</span>
+  </div>
+
+  <div style="flex-grow: 1; min-height: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px;">
+
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <h2 style="margin: 0; font-size: 13px; font-weight: 600; color: #f2f4fc;">Project</h2>
+      <span style="flex-grow: 1;"></span>
+      <!-- the mode switch IS the direction -->
+      <div style="display: flex; height: 24px; border: 1px solid #45475a; border-radius: 4px; overflow: hidden; font-size: 11px;">
+        <div style="display: flex; align-items: center; gap: 5px; padding: 0 10px; color: #6c7086;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>
+          Form
+        </div>
+        <div style="display: flex; align-items: center; gap: 5px; padding: 0 10px; color: #89b4fa; background: rgba(137,180,250,0.14); border-left: 1px solid #45475a;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#89b4fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>
+          TOML
+        </div>
+      </div>
+    </div>
+
+    <p style="margin: 0; font-size: 11px; line-height: 1.5; color: #6c7086;">One surface at a time, for the WHOLE file &mdash; not per section. The sections are a way to navigate the form; the text is the file, and switching back re-reads whatever you wrote.</p>
+
+    <!-- The text mode, shown active -->
+    <div style="flex-grow: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid #45475a; border-radius: 4px; overflow: hidden;">
+      <div class="mono" style="flex-grow: 1; padding: 8px 0; font-size: 11px; line-height: 1.75; color: #f2f4fc;">
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">1</span><span style="color: #8ba6cb;">[project]</span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">2</span><span><span style="color: #f2f4fc;">entry</span> <span style="color: #90afcc;">=</span> <span style="color: #98bab4;">"main.ink"</span></span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">3</span><span><span style="color: #f2f4fc;">indent</span> <span style="color: #90afcc;">=</span> <span style="color: #fab387;">4</span></span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">4</span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">5</span><span style="color: #6c7086;"># Cut material, kept for parts.</span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">6</span><span><span style="color: #f2f4fc;">drafts</span> <span style="color: #90afcc;">=</span> [<span style="color: #98bab4;">"scratch/**"</span>, <span style="color: #98bab4;">"../old-drafts/**"</span>]</span></div>
+
+        <!-- squiggle + inline diagnostic, exactly as the editor already does elsewhere -->
+        <div style="display: flex; padding: 0 10px;">
+          <span style="width: 20px; color: #45475a;">&nbsp;</span>
+          <span style="display: flex; align-items: flex-start; gap: 6px; padding: 3px 0 5px;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fab387" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; margin-top: 1px;"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+            <span style="font-family: system-ui, sans-serif; font-size: 11px; line-height: 1.45; color: #fab387;">Not project-relative &mdash; <span class="mono">"../old-drafts/**"</span> never matches anything.</span>
+          </span>
+        </div>
+
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">7</span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">8</span><span style="color: #8ba6cb;">[lints]</span></div>
+        <div style="display: flex; padding: 0 10px;"><span style="width: 20px; color: #45475a;">9</span><span><span style="color: #f2f4fc;">E014</span> <span style="color: #90afcc;">=</span> <span style="color: #98bab4;">"deny"</span></span></div>
+      </div>
+
+      <!-- completion popup: the text mode earns its keep by knowing the schema -->
+      <div style="margin: -70px 0 0 96px; width: 264px; border: 1px solid #45475a; border-radius: 4px; background: #181825; box-shadow: 0 6px 20px rgba(0,0,0,0.45); overflow: hidden; position: relative;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 5px 9px; background: rgba(137,180,250,0.12);">
+          <span class="mono" style="font-size: 11px; color: #89b4fa;">unprune-dirs</span>
+          <span style="font-size: 10px; color: #6c7086;">array of directory names</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 5px 9px;">
+          <span class="mono" style="font-size: 11px; color: #f2f4fc;">conventions</span>
+          <span style="font-size: 10px; color: #6c7086;">preset or .brink module</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 5px 9px;">
+          <span class="mono" style="font-size: 11px; color: #f2f4fc;">types</span>
+          <span style="font-size: 10px; color: #6c7086;">gradual | strict</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: flex-start; gap: 6px;">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6c7086" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; margin-top: 1px;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <span style="font-size: 11px; line-height: 1.45; color: #6c7086;">The text gets the whole pane, so it can carry schema completion, hover docs and the parser's warnings inline &mdash; the same treatment a <span class="mono">.ink</span> file already gets, and the reason this beats a cramped panel below a form.</span>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

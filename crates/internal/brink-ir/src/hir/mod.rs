@@ -7,6 +7,7 @@
 
 mod classify;
 pub mod construct;
+mod diagnostic_explanations;
 mod diagnostics;
 pub(crate) mod doc_block;
 pub mod emit_native;
