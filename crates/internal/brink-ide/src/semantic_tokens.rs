@@ -303,6 +303,62 @@ mod tests {
     }
 
     #[test]
+    fn an_escaped_marker_is_not_tokenized() {
+        // `\*` is an ESCAPE: the author wants a literal asterisk in prose.
+        // Tokenizing the `*` paints it in the operator colour while the
+        // surrounding run is prose, so the escape reads as machinery — the
+        // reported symptom (#3142).
+        let src = "\\*Party is a literal asterisk\n";
+        let tokens = parse_and_tokens(src);
+        let starred: Vec<u32> = tokens
+            .iter()
+            .filter(|t| token_text(src, t) == "*")
+            .map(|t| t.token_type)
+            .collect();
+        assert!(
+            starred.is_empty(),
+            "an escaped `*` must not be tokenized at all, got {starred:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_inside_an_escape_is_tokenized() {
+        // The carve-out is on the ESCAPE node, not on one lexeme, so every
+        // escapable sigil is covered — a fix that only special-cased `*`
+        // would leave the same bug for brackets and braces.
+        for src in [
+            "A literal \\*star\\* here\n",
+            "A literal \\[bracket\\] here\n",
+            "A literal \\{brace\\} here\n",
+            "A literal \\-dash here\n",
+        ] {
+            let tokens = parse_and_tokens(src);
+            let sigils: Vec<(&str, u32)> = tokens
+                .iter()
+                .map(|t| (token_text(src, t), t.token_type))
+                .filter(|(x, _)| matches!(*x, "*" | "[" | "]" | "{" | "}" | "-"))
+                .collect();
+            assert!(
+                sigils.is_empty(),
+                "escaped sigils tokenized in {src:?}: {sigils:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unescaped_marker_is_still_a_marker() {
+        // The other half: the carve-out must not swallow real structure.
+        let src = "* A real choice\n";
+        let tokens = parse_and_tokens(src);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| token_text(src, t) == "*" && t.token_type == TT_MARKER),
+            "an unescaped bullet must still be a marker"
+        );
+    }
+
+    #[test]
     fn prose_punctuation_is_not_classified_as_operator_or_string() {
         // #2293's named remainder beyond #2280/#2286: a hyphen inside a
         // hyphenated word, and other punctuation `text_content`'s stop set
