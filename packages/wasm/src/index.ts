@@ -167,6 +167,11 @@ export interface DiagnosticInfo {
    * a blank panel.
    */
   explanation?: string;
+  /**
+   * The author-facing group this belongs to. Present only for overridable
+   * codes, since those are the only ones the settings section lists.
+   */
+  category?: string;
 }
 
 let cachedDiagnostics: DiagnosticInfo[] | null = null;

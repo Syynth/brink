@@ -2561,12 +2561,14 @@ export function diagnostic_registry(): string {
       title: "logic line has no effect",
       default_severity: "warning",
       overridable: true,
+      category: "Logic",
     },
     {
       code: "E035",
       title: "name shadows a built-in function",
       default_severity: "warning",
       overridable: true,
+      category: "Names & shadowing",
       explanation: "A declaration collides with a reserved name.",
     },
   ]);

@@ -1175,6 +1175,67 @@ mod explain_match_to_js_tests {
     }
 }
 
+/// The author-facing grouping for the codes a project can actually
+/// configure (#3169/#3148).
+///
+/// **This is a UI taxonomy, and it is deliberately not on `DiagnosticCode`.**
+/// The enum IS sectioned by comment, but into 37 sections named after the
+/// milestone that added each code — `B0.6 native frontend`, `Lambda
+/// lifting, LIR (issue #1709 review)`. That is developer organisation, and
+/// showing it to an author would be nonsense. So this groups by what a
+/// diagnostic is ABOUT, read from its title, not by where it sits in the
+/// enum.
+///
+/// Only OVERRIDABLE codes appear: those are the only ones `[lints]` can
+/// set, so they are the only ones the settings section lists. A new
+/// overridable code with no entry here fails
+/// `every_overridable_code_has_a_category` rather than quietly landing in
+/// a fallback bucket — assigning it is a judgement someone should make,
+/// not a default.
+const CATEGORIES: &[(&str, &str)] = &[
+    // Where the story goes next.
+    ("E033", "Flow"),
+    ("E131", "Flow"),
+    // The shape of a choice point.
+    ("E034", "Choices"),
+    ("E151", "Choices"),
+    // `~` lines and what they evaluate to.
+    ("E014", "Logic"),
+    ("E030", "Logic"),
+    // Calling something, and with what.
+    ("E031", "Functions & calls"),
+    ("E176", "Functions & calls"),
+    // Two things claiming one name.
+    ("E022", "Names & shadowing"),
+    ("E023", "Names & shadowing"),
+    ("E026", "Names & shadowing"),
+    ("E035", "Names & shadowing"),
+    ("E054", "Names & shadowing"),
+    ("E188", "Names & shadowing"),
+    // Annotations, inference, key domains.
+    ("E063", "Types"),
+    ("E106", "Types"),
+    ("E152", "Types"),
+    // Module boundaries and what crosses them.
+    ("E092", "Modules & visibility"),
+    ("E095", "Modules & visibility"),
+    ("E132", "Modules & visibility"),
+    ("E190", "Modules & visibility"),
+    // `@[convention(…)]` handlers competing for the same prose.
+    ("E168", "Conventions"),
+    ("E170", "Conventions"),
+    // Inline markup checked against the host manifest.
+    ("E164", "Host markup"),
+    ("E165", "Host markup"),
+    ("E173", "Host markup"),
+    // `///` tags on declarations.
+    ("E038", "Doc comments"),
+    ("E043", "Doc comments"),
+    // Spellings that still work but have been superseded.
+    ("E110", "Deprecated spellings"),
+    ("E172", "Deprecated spellings"),
+];
+
 /// One diagnostic code, as the settings UI needs it (#3169).
 #[derive(serde::Serialize)]
 pub struct DiagnosticInfoJs {
@@ -1194,6 +1255,11 @@ pub struct DiagnosticInfoJs {
     /// blank panel by forgetting to check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
+    /// The author-facing group this belongs to — see [`CATEGORIES`].
+    /// Present only for overridable codes, which are the only ones the
+    /// settings section lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 /// Every diagnostic code the compiler knows, ordered by code.
@@ -1224,6 +1290,10 @@ pub fn diagnostic_registry() -> String {
             .to_owned(),
             overridable: code.is_overridable(),
             explanation: code.explanation().map(str::to_owned),
+            category: CATEGORIES
+                .iter()
+                .find(|(c, _)| *c == code.as_str())
+                .map(|(_, group)| (*group).to_owned()),
         })
         .collect();
     serde_json::to_string(&rows).unwrap_or_default()
@@ -1255,6 +1325,8 @@ mod diagnostic_registry_tests {
         overridable: bool,
         #[serde(default)]
         explanation: Option<String>,
+        #[serde(default)]
+        category: Option<String>,
     }
 
     fn rows() -> Vec<Row> {
@@ -1318,6 +1390,63 @@ mod diagnostic_registry_tests {
             overridable * 4 < rows.len(),
             "overridable codes are no longer a small minority ({overridable} of {})              — the Diagnostics section was designed around that",
             rows.len()
+        );
+    }
+
+    #[test]
+    fn every_overridable_code_has_a_category() {
+        // The drift guard for the taxonomy. A NEW overridable code lands
+        // here with no group, and this fails — which is the point: picking
+        // its group is a judgement someone should make, not something a
+        // fallback bucket should paper over.
+        let uncategorised: Vec<String> = rows()
+            .into_iter()
+            .filter(|r| r.overridable && r.category.is_none())
+            .map(|r| r.code)
+            .collect();
+        assert!(
+            uncategorised.is_empty(),
+            "overridable codes with no category: {uncategorised:?} \
+             — add them to CATEGORIES in editor_dto.rs"
+        );
+    }
+
+    #[test]
+    fn only_overridable_codes_carry_a_category() {
+        // The settings section lists only what can be configured, so a
+        // category on anything else is dead data that would imply the row
+        // belongs in a list it can never appear in.
+        for r in rows() {
+            if !r.overridable {
+                assert!(
+                    r.category.is_none(),
+                    "{} is not overridable but has a category",
+                    r.code
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn categories_group_rather_than_enumerate() {
+        // A taxonomy with one code per group is a list wearing a hat, and
+        // one group holding everything is no taxonomy at all. Both are
+        // real failure modes when codes get added without thought.
+        use std::collections::BTreeMap;
+        let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
+        for r in rows().into_iter().filter(|r| r.overridable) {
+            *sizes.entry(r.category.unwrap_or_default()).or_default() += 1;
+        }
+        let total: usize = sizes.values().sum();
+        assert!(sizes.len() >= 4, "too few groups: {sizes:?}");
+        assert!(
+            sizes.len() * 2 <= total,
+            "groups are averaging fewer than two codes each — that is a list, not a grouping: {sizes:?}"
+        );
+        let biggest = sizes.values().max().copied().unwrap_or(0);
+        assert!(
+            biggest * 2 <= total,
+            "one group holds half or more of the codes: {sizes:?}"
         );
     }
 

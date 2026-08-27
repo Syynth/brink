@@ -3,8 +3,9 @@
 ---
 
 `getDiagnosticRegistry()` — every diagnostic code the compiler knows, with
-its title, default severity, whether `[lints]` can override it, and its
-written explanation when one exists.
+its title, default severity, whether `[lints]` can override it, its written
+explanation when one exists, and an author-facing category for the codes a
+project can actually configure.
 
 Read this rather than keeping a code list in TypeScript: a hand-maintained
 copy is wrong the moment a code is added, and wrong silently.
