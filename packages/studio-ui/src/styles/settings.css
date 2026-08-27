@@ -646,3 +646,221 @@
   border-bottom: none;
   padding: 0;
 }
+
+/* ── Settings rows (#3174) ───────────────────────────────────────────
+   Zed's row: title and description left, control right, a rule between.
+   It reads at a glance — the eye runs down the left edge for WHAT and
+   down the right for WHAT IT IS SET TO. The old `settings-field` put the
+   label and control adjacent with no room for a description, so every
+   explanation had to become a paragraph above the group instead of
+   belonging to the setting it explained. */
+.brink-studio .settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brink-studio .settings-group-label {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.05em;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.brink-studio .settings-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 11px 0;
+}
+.brink-studio .settings-row + .settings-row {
+  border-top: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+}
+/* A row whose meaning depends on the one above it (Zed indents Theme Name
+   under Theme Mode). Subordinate, not decorative. */
+.brink-studio .settings-row.indented {
+  padding-left: 22px;
+}
+
+.brink-studio .settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.brink-studio .settings-row-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--bs-font-body);
+  color: var(--bs-fg);
+}
+.brink-studio .settings-row-desc {
+  font-size: var(--bs-font-small);
+  line-height: 1.5;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-row-badge {
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--bs-warning);
+  border: 1px solid var(--bs-warning);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+.brink-studio .settings-row-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  /* Aligns with the TITLE's line, not the block's centre — a two-line
+     description would otherwise drag the control down away from the thing
+     it belongs to. */
+  min-height: 26px;
+}
+.brink-studio .settings-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.brink-studio .settings-stepper {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.brink-studio .settings-stepper button {
+  width: 26px;
+  height: 100%;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .settings-stepper button:hover:not(:disabled) {
+  color: var(--bs-fg);
+}
+.brink-studio .settings-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.brink-studio .settings-stepper-value {
+  min-width: 62px;
+  text-align: center;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  border-left: 1px solid var(--bs-border);
+  border-right: 1px solid var(--bs-border);
+  padding: 0 6px;
+  line-height: 24px;
+}
+.brink-studio .settings-stepper-suffix {
+  color: var(--bs-fg-muted);
+}
+
+.brink-studio .settings-revert {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .settings-revert:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-border);
+}
+
+/* A control that exists but is not settable yet — drawn, not hidden, so an
+   open question has somewhere to live. */
+.brink-studio .settings-segmented {
+  display: flex;
+  height: 26px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .settings-segmented span {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-segmented span + span {
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .settings-segmented.is-disabled {
+  opacity: 0.45;
+}
+
+.brink-studio .settings-empty {
+  margin: 0;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+
+/* A boolean as a switch. The native checkbox is OS chrome that ignores every
+   token here — beside a 26px stepper it reads as an unstyled hole. The input
+   is still the real control (kept, not replaced): it carries the label
+   association, the focus ring and the keyboard behaviour. */
+.brink-studio .settings-toggle {
+  position: relative;
+  display: inline-flex;
+  width: 32px;
+  height: 18px;
+}
+.brink-studio .settings-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+.brink-studio .settings-toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: var(--ctp-base, #1e1e2e);
+  border: 1px solid var(--bs-border);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.brink-studio .settings-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bs-fg-muted);
+  transition: transform 120ms ease, background 120ms ease;
+}
+.brink-studio .settings-toggle input:checked + .settings-toggle-track {
+  background: var(--bs-accent);
+  border-color: var(--bs-accent);
+}
+.brink-studio .settings-toggle input:checked + .settings-toggle-track::after {
+  transform: translateX(14px);
+  background: var(--ctp-base, #1e1e2e);
+}
+.brink-studio .settings-toggle input:focus-visible + .settings-toggle-track {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 2px;
+}

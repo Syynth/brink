@@ -45,6 +45,12 @@ import {
   clampEditorFontSize,
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsStepper,
+  SettingsToggle,
+} from "./SettingsRow.js";
 import { DEFAULT_SETTINGS_SECTION } from "./settingsSectionIds.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { LintSettings } from "./LintSettings.js";
@@ -278,27 +284,25 @@ export function EditorViewSection() {
   ];
   return (
     <section className="settings-section">
-      <h3 className="settings-group-title">Editor view</h3>
-      <p className="settings-section-hint">
-        What fills the editor area. Switching keeps the file you are on.
-      </p>
-      <div className="settings-radio-group" role="radiogroup" aria-label="Editor view">
-        {views.map((view) => (
-          <label key={view.id} className="settings-radio settings-radio-explained">
-            <input
-              type="radio"
-              name="brink-editor-view"
-              value={view.id}
-              checked={current === view.id}
-              onChange={() => layout.getState().setEditorView(view.id)}
-            />
-            <span className="settings-radio-text">
-              <span>{view.label}</span>
-              <span className="settings-radio-hint">{view.hint}</span>
-            </span>
-          </label>
-        ))}
-      </div>
+      <SettingsGroup title="View">
+        <div className="settings-radio-group" role="radiogroup" aria-label="Editor view">
+          {views.map((view) => (
+            <label key={view.id} className="settings-radio settings-radio-explained">
+              <input
+                type="radio"
+                name="brink-editor-view"
+                value={view.id}
+                checked={current === view.id}
+                onChange={() => layout.getState().setEditorView(view.id)}
+              />
+              <span className="settings-radio-text">
+                <span>{view.label}</span>
+                <span className="settings-radio-hint">{view.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </SettingsGroup>
     </section>
   );
 }
@@ -313,24 +317,24 @@ export function ThemeSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-group-title">Theme</h3>
-      <p className="settings-section-hint">
-        Color theme for the whole studio. Applies immediately.
-      </p>
-      <div className="settings-radio-group" role="radiogroup" aria-label="Theme">
-        {themes.list().map((theme) => (
-          <label key={theme.id} className="settings-radio">
-            <input
-              type="radio"
-              name={groupName}
-              value={theme.id}
-              checked={current === theme.id}
-              onChange={() => void themes.select(theme.id)}
-            />
-            <span>{theme.label}</span>
-          </label>
-        ))}
-      </div>
+      <SettingsRow
+        htmlFor={groupName}
+        title="Theme"
+        description="Colour theme for the whole studio. Applies immediately."
+      >
+        <select
+          id={groupName}
+          className="settings-select"
+          value={current ?? ""}
+          onChange={(event) => void themes.select(event.target.value)}
+        >
+          {themes.list().map((theme) => (
+            <option key={theme.id} value={theme.id}>
+              {theme.label}
+            </option>
+          ))}
+        </select>
+      </SettingsRow>
     </section>
   );
 }
@@ -354,7 +358,6 @@ export function KeymapSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-group-title">Keymap overrides</h3>
       <p className="settings-section-hint">
         JSON mapping a command id to a keybinding ({'"Mod-K"'}), an array of
         keybindings, or <code>null</code> to unbind. Overrides replace the
@@ -392,15 +395,11 @@ export function DiagnosticsSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-group-title">External functions</h3>
-      <p className="settings-section-hint">
-        Severity of external-function checks against a registered host manifest.
-        Recompiles on change. Unlike the diagnostics below, this is a studio
-        preference rather than a <code>brink.toml</code> setting &mdash; it stays
-        on this machine.
-      </p>
-      <div className="settings-field">
-        <label htmlFor={selectId}>External function checking</label>
+      <SettingsRow
+        htmlFor={selectId}
+        title="External function checking"
+        description="Severity of external-function checks against a registered host manifest. Recompiles on change."
+      >
         <select
           id={selectId}
           className="settings-select"
@@ -410,7 +409,7 @@ export function DiagnosticsSection() {
           <option value="error">Error</option>
           <option value="off">Off</option>
         </select>
-      </div>
+      </SettingsRow>
     </section>
   );
 }
@@ -487,86 +486,67 @@ export function EditorSection() {
 
   return (
     <section className="settings-section">
-      <h3 className="settings-group-title">Editor</h3>
-      <p className="settings-section-hint">
-        The inline argument-form glyph (the clickable mark after a function name).
-        The hover card{"'"}s {'"'}edit arguments{'"'} action and the Mod-Shift-A
-        shortcut are always available regardless of this setting.
-      </p>
-      <div className="settings-field">
-        <label htmlFor={selectId}>Argument-form glyph</label>
-        <select
-          id={selectId}
-          className="settings-select"
-          value={formGlyph}
-          onChange={(event) => onGlyphChange(event.target.value as FormGlyphMode)}
+      <SettingsGroup title="Arguments">
+        <SettingsRow
+          htmlFor={selectId}
+          title="Argument-form glyph"
+          description="When the inline glyph appears. The hover card's “edit arguments” action and Mod-Shift-A work regardless."
         >
-          <option value="off">Off (card + shortcut only)</option>
-          <option value="hover">On line hover</option>
-          <option value="inline">Always visible</option>
-        </select>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={autoId}>
-          <input
-            id={autoId}
-            type="checkbox"
-            checked={autoOpenForm}
-            onChange={(event) => onAutoChange(event.target.checked)}
-            style={{ marginRight: 8 }}
-          />
-          Open the form when accepting a function completion
-        </label>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={guttersId}>
-          <input
-            id={guttersId}
-            type="checkbox"
-            checked={showGutters}
-            onChange={(event) => onGuttersChange(event.target.checked)}
-            style={{ marginRight: 8 }}
-          />
-          Show editor gutters (line numbers, structure rails, fold/play markers)
-        </label>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={fontSizeId}>
-          Editor font size
-          <input
-            id={fontSizeId}
-            type="number"
+          <select
+            id={selectId}
+            className="settings-select"
+            value={formGlyph}
+            onChange={(event) => onGlyphChange(event.target.value as FormGlyphMode)}
+          >
+            <option value="off">Off</option>
+            <option value="hover">On line hover</option>
+            <option value="inline">Always visible</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow
+          htmlFor={autoId}
+          title="Open the form on completion"
+          description="Accepting a function completion opens its argument form."
+        >
+          <SettingsToggle id={autoId} checked={autoOpenForm} onChange={onAutoChange} />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Appearance">
+        <SettingsRow
+          htmlFor={guttersId}
+          title="Show gutters"
+          description="Line numbers, structure rails, and the fold and play markers."
+        >
+          <SettingsToggle id={guttersId} checked={showGutters} onChange={onGuttersChange} />
+        </SettingsRow>
+        <SettingsRow
+          title="Editor font size"
+          description={`${MIN_EDITOR_FONT_SIZE}–${MAX_EDITOR_FONT_SIZE}px, default ${DEFAULT_EDITOR_FONT_SIZE}. Mod-= / Mod-- / Mod-0 while editing do the same.`}
+        >
+          <SettingsStepper
+            value={fontSize}
             min={MIN_EDITOR_FONT_SIZE}
             max={MAX_EDITOR_FONT_SIZE}
-            value={fontSize}
-            onChange={(event) => onFontSizeChange(Number(event.target.value))}
-            style={{ marginLeft: 8, width: 64 }}
+            label="editor font size"
+            suffix="px"
+            onChange={onFontSizeChange}
           />
-        </label>
-        <p className="settings-section-hint">
-          {MIN_EDITOR_FONT_SIZE}–{MAX_EDITOR_FONT_SIZE} px (default{" "}
-          {DEFAULT_EDITOR_FONT_SIZE}). Also Mod-= / Mod-- / Mod-0 while editing.
-        </p>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={appFontSizeId}>
-          App font size
-          <input
-            id={appFontSizeId}
-            type="number"
+        </SettingsRow>
+        <SettingsRow
+          title="App font size"
+          description={`${MIN_APP_FONT_SIZE}–${MAX_APP_FONT_SIZE}px, default ${DEFAULT_APP_FONT_SIZE}. Sizes the studio's own chrome.`}
+        >
+          <SettingsStepper
+            value={appFontSize}
             min={MIN_APP_FONT_SIZE}
             max={MAX_APP_FONT_SIZE}
-            value={appFontSize}
-            onChange={(event) => onAppFontSizeChange(Number(event.target.value))}
-            style={{ marginLeft: 8, width: 64 }}
+            label="app font size"
+            suffix="px"
+            onChange={onAppFontSizeChange}
           />
-        </label>
-        <p className="settings-section-hint">
-          {MIN_APP_FONT_SIZE}–{MAX_APP_FONT_SIZE} px (default{" "}
-          {DEFAULT_APP_FONT_SIZE}). Scales panels, menus, and labels — the
-          whole type scale moves with it; the editor keeps its own size.
-        </p>
-      </div>
+        </SettingsRow>
+      </SettingsGroup>
     </section>
   );
 }

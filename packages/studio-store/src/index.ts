@@ -204,8 +204,10 @@ export { insertIncludeLine, relativeIncludePath } from "./include-insert.js";
 // the studio's config form panel.
 export {
   getTomlBool,
+  getTomlInteger,
   getTomlString,
   setTomlBool,
+  setTomlInteger,
   setTomlString,
   tomlTableKeys,
 } from "./toml-edit.js";

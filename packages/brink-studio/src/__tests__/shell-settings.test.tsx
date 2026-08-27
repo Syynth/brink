@@ -260,31 +260,39 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
 }
 
 describe("SettingsDocument — theme section", () => {
+  // A select, not a stack of radios, since #3174's row pass: every theme is
+  // an equal alternative with no description to carry, so a radio per theme
+  // spent a whole pane on a list the row's control states in one line.
+  const themeSelect = (): HTMLSelectElement =>
+    [...container!.querySelectorAll<HTMLSelectElement>(".settings-select")].find(
+      (s) => s.closest(".settings-row")?.querySelector(".settings-row-title")
+        ?.textContent === "Theme",
+    )!;
+
   it("reflects the current theme and drives ThemeService.select", () => {
     const h = renderSettings();
-    const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(
-        "[aria-label='Theme'] .settings-radio input",
-      ),
-    ];
-    expect(radios.map((r) => r.value)).toEqual(["mocha", "latte", "manuscript", "inky", "inky-dark"]);
-    expect(radios[0].checked).toBe(true);
+    const select = themeSelect();
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "mocha",
+      "latte",
+      "manuscript",
+      "inky",
+      "inky-dark",
+    ]);
+    expect(select.value).toBe("mocha");
 
-    act(() => radios[1].click());
+    act(() => {
+      select.value = "latte";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     expect(h.themes.current).toBe("latte");
-    expect(radios[1].checked).toBe(true);
-    expect(radios[0].checked).toBe(false);
+    expect(themeSelect().value).toBe("latte");
   });
 
   it("reflects external changes (e.g. the palette theme command)", () => {
     const h = renderSettings();
     act(() => void h.themes.select("latte"));
-    const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(
-        "[aria-label='Theme'] .settings-radio input",
-      ),
-    ];
-    expect(radios[1].checked).toBe(true);
+    expect(themeSelect().value).toBe("latte");
   });
 });
 
@@ -342,13 +350,16 @@ describe("SettingsDocument — external functions section", () => {
     // It was titled "Diagnostics" until #3148 added the [lints] section.
     // #3174 then split them for real: the lints are a PROJECT setting
     // (brink.toml, shared) and this is an APP one (this machine), which is
-    // what the scope switch now says. The heading is a `settings-group-title`
-    // rather than an `h2` because the modal's pane header owns the section
-    // title now.
-    const diagSection = [...container!.querySelectorAll(".settings-section")].find(
-      (s) => s.querySelector(".settings-group-title")?.textContent === "External functions",
+    // what the scope switch now says — and the section carries NO heading of
+    // its own any more, since the modal's pane header owns the title. So the
+    // anchor is the row's own label, which is the durable thing: it is what
+    // an author reads to find this control.
+    const row = [...container!.querySelectorAll(".settings-row")].find(
+      (r) =>
+        r.querySelector(".settings-row-title")?.textContent ===
+        "External function checking",
     )!;
-    const select = diagSection.querySelector<HTMLSelectElement>(".settings-select")!;
+    const select = row.querySelector<HTMLSelectElement>(".settings-select")!;
     expect(select.value).toBe("error");
 
     act(() => {

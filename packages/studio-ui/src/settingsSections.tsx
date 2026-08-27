@@ -23,6 +23,7 @@ import {
   ThemeSection,
 } from "./SettingsDocument.js";
 import { LintSettings } from "./LintSettings.js";
+import { FormattingSettings } from "./FormattingSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
 /**
@@ -40,6 +41,14 @@ export function settingsSections(groupId: string): SettingsSection[] {
       keywords: "brink.toml entry conventions dialect types indent drafts config project",
       icon: SETTINGS_ICONS.project,
       body: <ProjectSection groupId={groupId} />,
+    },
+    {
+      id: SETTINGS_SECTION_IDS.formatting,
+      scope: "project",
+      title: "Formatting",
+      keywords: "indent spaces tabs width fmt format whitespace",
+      icon: SETTINGS_ICONS.formatting,
+      body: <FormattingSettings />,
     },
     {
       id: SETTINGS_SECTION_IDS.diagnostics,

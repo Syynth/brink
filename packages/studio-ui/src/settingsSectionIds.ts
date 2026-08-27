@@ -15,6 +15,7 @@
  */
 export const SETTINGS_SECTION_IDS = {
   general: "general",
+  formatting: "formatting",
   diagnostics: "diagnostics",
   editor: "editor",
   appearance: "appearance",
