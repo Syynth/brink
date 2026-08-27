@@ -988,6 +988,21 @@ export async function mountStudio(
   // shell's groups store (which applies the §7.8 reveal policy).
   store.getState().setDocumentOpener((target, pinned) => {
     documents.noteTarget(target);
+    // Continuous view renders FILES, so a symbol target has to become a
+    // position within one. Opening `path::symbol` there did nothing visible:
+    // it is a different document, and this view never mounts it — clicking a
+    // knot in the Binder's structure mode simply sat there.
+    //
+    // Everything else already works, because every other navigation surface
+    // (search, Problems, go-to-definition) reveals a FILE plus a span, which
+    // is exactly the shape this turns a symbol into.
+    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+      editorGroups
+        .getState()
+        .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
+      documents.revealAt(target.path, target.start);
+      return;
+    }
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });
   });
 

@@ -21,6 +21,16 @@ export interface DocumentsSlice {
   /** docKey ("main.ink" / "main.ink::start") of the focused group's active
    *  ink document; "" when none. */
   activeDocKey: string;
+  /**
+   * Bumped on every `openTarget`, including one that names the document
+   * already active.
+   *
+   * Continuous view needs it: there, navigating IS scrolling, and the active
+   * document does not change when you jump between two knots in the file you
+   * are already in — or click the file you are already in from the Binder.
+   * Watching `activeDocKey` alone made both do nothing at all.
+   */
+  navSeq: number;
   /** Count of files whose session content diverges from the last-saved /
    *  last-notified baseline (mirrored from the project's FileChangeHub by
    *  a mount.tsx listener; feeds StudioPublicState.dirtyFiles). */
@@ -73,6 +83,7 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   get,
 ) => ({
   activeDocKey: "",
+  navSeq: 0,
   dirtyFiles: 0,
   _openTarget: null,
   _closeDocsForPath: null,
@@ -80,6 +91,7 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   _renameSymbolDoc: null,
 
   openTarget(target, pinned) {
+    set({ navSeq: get().navSeq + 1 });
     get()._openTarget?.(target, pinned);
   },
 

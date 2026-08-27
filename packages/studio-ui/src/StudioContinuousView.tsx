@@ -12,8 +12,8 @@
  * tree, where the store's context is available.
  */
 
-import { useMemo } from "react";
-import { ContinuousView, documentKey, type DocumentRef } from "@brink/studio-shell";
+import { useCallback, useMemo } from "react";
+import { ContinuousView, type DocumentRef } from "@brink/studio-shell";
 
 import { useStudioStore } from "./StoreContext.js";
 import { binderOrderedFiles } from "./Binder.js";
@@ -25,6 +25,7 @@ export function StudioContinuousView() {
   const entryFile = useStudioStore((s) => s.entryFile);
   const openTarget = useStudioStore((s) => s.openTarget);
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
+  const navSeq = useStudioStore((s) => s.navSeq);
 
   const documents = useMemo<DocumentRef[]>(
     () =>
@@ -34,15 +35,28 @@ export function StudioContinuousView() {
     [outline, binderOrder, entryFile],
   );
 
+  // Where navigation actually aimed inside the file. `revealAt` moves the
+  // caret, and CodeMirror marks the line it landed on — so the active line is
+  // the target, when there is one. Kept on this side of §7.2: the shell would
+  // otherwise have to know a CodeMirror class name to scroll correctly.
+  const resolveRevealTarget = useCallback(
+    (section: HTMLElement) => section.querySelector<HTMLElement>(".cm-activeLine"),
+    [],
+  );
+
   return (
     <ContinuousView
       documents={documents}
-      activeKey={activeDocKey}
+      // The store's active doc key is a PATH, and may name a symbol
+      // ("main.ink::start"); the sections are files, so take the file half.
+      activeDocId={activeDocKey.split("::")[0] || null}
+      resolveRevealTarget={resolveRevealTarget}
+      navSeq={navSeq}
       // Focusing a section makes that file the active one — the state the
       // views share, so scrolling to a scene here and switching to Single
       // File lands on the scene you were reading.
       onActivate={(ref: DocumentRef) => {
-        if (documentKey(ref) === activeDocKey) return;
+        if (ref.docId === activeDocKey.split("::")[0]) return;
         openTarget({ kind: "file", path: ref.docId }, false);
       }}
     />

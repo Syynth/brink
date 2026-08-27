@@ -84,6 +84,56 @@ test.describe("continuous view", () => {
     );
   });
 
+  test("navigating to a file scrolls the manuscript to it", async ({ page }) => {
+    await runPaletteCommand(page, "View mode: Continuous");
+    await expect(page.locator(continuous)).toBeVisible();
+    await expect(page.locator(".brink-binder-file-row").first()).toBeVisible();
+
+    const scroller = page.locator(".shell-continuous-scroller");
+    // Start at the far end, so landing on the first file has to move.
+    await scroller.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    const before = await scroller.evaluate((el) => el.scrollTop);
+    expect(before).toBeGreaterThan(0);
+
+    await page.locator(".brink-binder-file-row").first().click();
+
+    // Navigation here IS scrolling: nothing opens, the manuscript moves.
+    await expect
+      .poll(async () => scroller.evaluate((el) => el.scrollTop))
+      .toBeLessThan(before);
+    await expect(page.locator(".shell-continuous-section[data-active]")).toHaveCount(1);
+  });
+
+  test("a structural reveal scrolls to the knot, not just the file", async ({ page }) => {
+    await runPaletteCommand(page, "View mode: Continuous");
+    await expect(page.locator(continuous)).toBeVisible();
+
+    // Structure mode lists symbols; clicking one used to open a
+    // `path::symbol` document, which this view does not render — so the
+    // click did nothing at all. Symbol targets now resolve to a position
+    // inside the file's section.
+    await page.locator(".brink-binder-mode-toggle button").last().click();
+    const symbol = page.locator(".brink-binder-row", { hasText: "warden_golem" }).first();
+    await expect(symbol).toBeVisible();
+
+    const scroller = page.locator(".shell-continuous-scroller");
+    await scroller.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+
+    await symbol.click();
+
+    await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    // The revealed line is the knot itself, and it is on screen.
+    const line = page.locator(
+      "[data-continuous-file='toppled-temple.ink'] .cm-activeLine",
+    );
+    await expect(line).toContainText("warden_golem");
+    await expect(line).toBeInViewport();
+  });
+
   test("the view survives a reload", async ({ page }) => {
     await runPaletteCommand(page, "View mode: Continuous");
     await page.reload();
