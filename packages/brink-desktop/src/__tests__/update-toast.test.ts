@@ -18,6 +18,10 @@ import {
   type PendingUpdate,
   type UpdateApi,
 } from "../updater.js";
+import {
+  UPDATE_INSTALL_COMMAND,
+  UPDATE_LATER_COMMAND,
+} from "../update-commands.js";
 
 /** The half of main.tsx's wiring under test, restated: an offer parks a
  *  resolver, and command dispatch settles it exactly once. */
@@ -40,7 +44,7 @@ function offerHarness() {
       raised.push({
         id: "update",
         timeoutMs: 0,
-        actions: ["update.install", "update.later"],
+        actions: [UPDATE_INSTALL_COMMAND, UPDATE_LATER_COMMAND],
         message: `Brink Studio ${version} is available.`,
       });
     });
@@ -90,7 +94,7 @@ describe("update offer toast", () => {
     // Sticky (<= 0), because an offer that times out while you read it is
     // worse than no offer.
     expect(offer.raised[0]?.timeoutMs).toBe(0);
-    expect(offer.raised[0]?.actions).toEqual(["update.install", "update.later"]);
+    expect(offer.raised[0]?.actions).toEqual([UPDATE_INSTALL_COMMAND, UPDATE_LATER_COMMAND]);
 
     offer.click("install");
     expect(await run).toBe("installed");

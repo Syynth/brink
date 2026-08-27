@@ -78,6 +78,11 @@ import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
 import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
+import {
+  UPDATE_CHECK_COMMAND,
+  UPDATE_INSTALL_COMMAND,
+  UPDATE_LATER_COMMAND,
+} from "./update-commands.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -868,9 +873,13 @@ void listen("menu:check-updates", () => {
  *  than stacking (the notification service treats a repeated id as a
  *  replacement). */
 const UPDATE_NOTIFICATION_ID = "update";
-export const UPDATE_INSTALL_COMMAND = "update.install";
-export const UPDATE_LATER_COMMAND = "update.later";
-export const UPDATE_CHECK_COMMAND = "update.check";
+// The ids live in `update-commands.ts` (no side effects) so tests can
+// import and validate them; see that file for why 0.4.0 shipped them wrong.
+export {
+  UPDATE_INSTALL_COMMAND,
+  UPDATE_LATER_COMMAND,
+  UPDATE_CHECK_COMMAND,
+} from "./update-commands.js";
 
 /** Resolver for the offer currently on screen, if any. */
 let pendingUpdateOffer: ((accepted: boolean) => void) | null = null;
