@@ -131,7 +131,7 @@ import {
   saveEditorSettings,
   openPlayerSplit,
   playerRef,
-  DraftMark,
+  DocumentIcon,
   StudioContinuousView,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
@@ -461,10 +461,11 @@ function Root({
       // element lets it render inside the store's provider (decision log
       // 2026-08-26).
       continuousView={<StudioContinuousView />}
-      // Draft status beside every document name the shell writes (#3145,
+      // The file icon before every document name the shell writes (#3145,
       // ruled 2026-08-27: a file's name and its draft status never appear
-      // apart). One seam, four surfaces — see DraftMark.
-      documentMark={DraftMark}
+      // apart, and the icon is what carries the status). One seam, four
+      // surfaces — see DocumentIcon.
+      documentIcon={DocumentIcon}
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>

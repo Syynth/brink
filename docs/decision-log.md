@@ -3499,3 +3499,21 @@
 - **WHAT:** The formatter gets a configurable indent size, declared in `brink.toml`. That setting is the SINGLE SOURCE for indentation: the formatter emits it, the editor's `indentUnit` adopts it, and the indent guides position against it. No component may hardcode a width.
 - **WHY:** It also settles the indent-guide decision made minutes earlier and makes the alternative retroactively wrong. Overriding the indentation-markers package from CSS required hardcoding `4ch`, which was already a silent-drift hazard against `indentUnit` — with a user-configurable indent it stops being a hazard and becomes a guaranteed break the first time anyone sets a different width. Owning the guides is what allows them to read the configured value at all.
   Stated as "everything that indents reads the same setting" rather than as two separate features, because the failure mode is disagreement: a formatter that writes four spaces while guides are drawn every two is worse than either choice alone, and the bug would look like a rendering glitch rather than a config mismatch.
+
+## Draft status is an icon variant, not a text badge
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Tabs get file icons, and a file's draft status is carried by a
+  VARIANT of the ink-file icon — orange, dashed — rather than by a separate
+  "DRAFT" text badge. The variant replaces the badge everywhere the studio
+  names a file (Binder row, Code tab, Single File header, Continuous section
+  heading).
+- **WHY:** Icons in tabs were wanted independently, and once every naming
+  surface carries a file icon, the icon is already the thing sitting beside
+  the name — so encoding status in it costs no additional space and cannot
+  drift away from the name it describes. A text badge is a second element
+  competing with the filename for the same row, and it reads as an
+  annotation ON the file rather than a property OF it. Dashed-and-orange
+  says "provisional" without words, which is what a draft is.
