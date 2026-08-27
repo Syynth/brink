@@ -171,13 +171,15 @@ test.describe("story graph document", () => {
     // Prove the edit landed before blaming the graph for not showing it.
     await expect(page.locator(".cm-content").first()).toContainText("xyzzy");
 
-    // This settle is NOT ordinary flakiness padding — it works around a real
-    // bug (#3137). An edit reaches the wasm session on the editor's compile
-    // debounce, and `unmountSlot` destroys a view WITHOUT flushing it, so
-    // opening the graph (which unmounts the editor, one occupant) inside that
-    // window means the session never sees the edit and the graph is built
-    // from stale source. Waiting lets the debounce land first. Remove this
-    // line when #3137 is fixed; the test should pass without it.
+    // This settle is NOT ordinary flakiness padding — it waits for a
+    // RECOMPILE (#3137). The graph renders the last compiled program, and the
+    // compile is debounced 500ms in `diagnostics.ts`; `destroy()` cancels a
+    // pending one, and opening the graph unmounts the editor (one occupant).
+    // So opening it inside that window shows the pre-edit program.
+    //
+    // Note what this is NOT: the SOURCE is not lost. It reaches the session
+    // synchronously on the transaction, so a save writes the right text —
+    // measured, after an earlier version of this comment claimed otherwise.
     await page.waitForTimeout(2500);
     await openStoryGraph(page);
     await expect(graphNode(page, "xyzzy")).toBeAttached({ timeout: 15000 });
