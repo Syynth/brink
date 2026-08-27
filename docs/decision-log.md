@@ -3589,3 +3589,22 @@
   accepted them (`validate_lint_code` refuses only `Error`); what excluded
   them was a too-narrow predicate added alongside the settings surface,
   which hid them from the UI while the compiler would have honoured them.
+
+## Settings is a modal with a section rail, Zed-shaped
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Settings opens as a **modal** over the studio, laid out as a
+  searchable section rail on the left and ONE section at a time on the right.
+  It is no longer a document type and no longer takes over the editor area.
+  Sections are registered entries (id, title, keywords, icon, body), not a
+  hand-laid-out page.
+- **WHY:** Implements the 2026-08-27 modal ruling now that the `brink.toml`
+  interface is done. The single scrolling page put the project's lint table
+  and the theme picker in one column, so finding anything meant scrolling
+  past everything else — the rail is what makes it scale. Search matches a
+  section's KEYWORDS as well as its title, so "todo" reaches Diagnostics and
+  "theme" reaches Appearance, neither of which is in the section's name.
+  Registered sections keep the page from drifting behind what is actually
+  configurable, the standing failure of a hand-built settings screen.

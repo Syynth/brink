@@ -45,6 +45,7 @@ import {
   clampEditorFontSize,
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
+import { DEFAULT_SETTINGS_SECTION } from "./settingsSectionIds.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { LintSettings } from "./LintSettings.js";
 import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
@@ -66,7 +67,7 @@ import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
  * "create one" affordance here, since the Binder already owns file
  * creation.
  */
-function ProjectSection({ groupId }: { groupId: string }) {
+export function ProjectSection({ groupId }: { groupId: string }) {
   const outline = useStudioStore((s) => s.outline);
   const configPath = useMemo(
     () => outline.find((f) => !f.mounted && isConfigPath(f.path))?.path ?? null,
@@ -107,15 +108,19 @@ export function settingsRef(): DocumentRef {
  */
 export function registerSettingsCommand(
   commands: CommandRegistry,
-  layout: ShellLayoutStore,
+  openSettings: (section: string | null) => void,
 ): () => void {
   return commands.register({
     id: OPEN_SETTINGS_COMMAND_ID,
     title: "Settings: Open",
     keybinding: "Mod-,",
-    // Takes over the editor root area rather than opening a tab (decision
-    // log 2026-08-26): a tab is only reachable from the view that HAS tabs.
-    run: () => layout.getState().setTakeover(settingsRef()),
+    // A MODAL, not an editor occupant (ruled 2026-08-27, #3174). It was a
+    // takeover while Settings was small — right at the time, because a tab
+    // is unreachable from any view without tabs — but the brink.toml
+    // interface made it a surface you consult, and taking over the editor
+    // cost you the file you were reading for something you leave in
+    // seconds.
+    run: () => openSettings(DEFAULT_SETTINGS_SECTION),
   });
 }
 
@@ -252,7 +257,7 @@ export function saveEditorSettings(
  * each needs a sentence to explain what it is FOR, and a collapsed select
  * would hide exactly the part that helps you choose.
  */
-function EditorViewSection() {
+export function EditorViewSection() {
   const { layout } = useShell();
   const current = useShellLayout((s) => s.editorView);
   const views: { id: EditorViewId; label: string; hint: string }[] = [
@@ -299,7 +304,7 @@ function EditorViewSection() {
   );
 }
 
-function ThemeSection() {
+export function ThemeSection() {
   const { themes } = useShell();
   const current = useThemeId();
   // Radio group name must be unique per mounted view (the singleton can
@@ -331,7 +336,7 @@ function ThemeSection() {
   );
 }
 
-function KeymapSection() {
+export function KeymapSection() {
   const { keymapOverrides } = useShell();
   const [text, setText] = useState(() =>
     JSON.stringify(keymapOverrides.current, null, 2),
@@ -376,7 +381,7 @@ function KeymapSection() {
   );
 }
 
-function DiagnosticsSection() {
+export function DiagnosticsSection() {
   const externalCheck = useStudioStore((s) => s.externalCheck);
   const setExternalCheck = useStudioStore((s) => s.setExternalCheck);
   const selectId = useId();
@@ -411,7 +416,7 @@ function DiagnosticsSection() {
   );
 }
 
-function EditorSection() {
+export function EditorSection() {
   const formGlyph = useStudioStore((s) => s.formGlyph);
   const setFormGlyph = useStudioStore((s) => s.setFormGlyph);
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
