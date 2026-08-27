@@ -33,13 +33,14 @@ const TAKEOVER_GROUP = "takeover";
 export function EditorTakeover({ doc }: { doc: DocumentRef }) {
   const descriptors = useDocumentTypes();
   const types = useMemo(() => new Map(descriptors.map((d) => [d.id, d])), [descriptors]);
-  const { layout } = useShell();
+  const { layout, documentMark: DocumentMark } = useShell();
   const descriptor = types.get(doc.typeId);
 
   return (
     <section className="editor-pane shell-takeover" data-takeover={doc.typeId}>
       <header className="shell-takeover-head">
         <span className="shell-takeover-title">{doc.title}</span>
+        {DocumentMark && <DocumentMark doc={doc} />}
         <button
           type="button"
           className="shell-takeover-close"

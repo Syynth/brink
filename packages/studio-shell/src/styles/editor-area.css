@@ -411,3 +411,22 @@
   min-height: 0;
   overflow: auto;
 }
+
+/* ── Draft mark (#3145) ──────────────────────────────────────────────
+   The shell's `documentMark` slot, styled here because the shell owns
+   every surface that renders it (tab, Single File header, Continuous
+   heading, takeover header) and one rule keeps them identical. The host
+   supplies WHAT the mark says; this says how a mark looks. */
+.brink-studio .brink-draft-mark {
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ctp-peach, #fab387);
+  border: 1px solid var(--ctp-peach, #fab387);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 6px;
+  flex-shrink: 0;
+  line-height: 1.4;
+  opacity: 0.85;
+}

@@ -142,6 +142,7 @@
 //! warnings use.
 
 pub mod edit;
+pub mod globs;
 pub use edit::{ConfigDocument, EditError};
 
 use std::collections::BTreeMap;
@@ -271,6 +272,23 @@ pub struct ProjectConfig {
     ///
     /// `None` means unset — callers apply [`DEFAULT_INDENT`].
     pub indent: Option<u8>,
+
+    /// `[project] drafts`, if set: path globs (see [`globs`]) naming
+    /// work-in-progress the author has deliberately not wired into the story
+    /// — scratch scenes, cut material, notes.
+    ///
+    /// A match here is only HALF of draft status. Ruled 2026-08-27
+    /// ("reachability wins"): a file is a draft when it matches one of these
+    /// globs **and** is not reachable from the entry. A marked file the entry
+    /// still INCLUDEs is not a draft at all — it compiles normally. That is
+    /// deliberately a deleted state rather than a diagnosed one: draft status
+    /// can then never exclude a file the story actually reaches, so it can
+    /// never break a divert. This crate carries only the glob half, because
+    /// reachability is the compile closure's answer and lives in the analysis
+    /// roads; see `EditorSession::draft_paths` for the conjunction.
+    ///
+    /// Empty (the default) means no file is ever a draft.
+    pub drafts: Vec<String>,
 
     /// `[project] conventions`, if set (docs/prose-dialect-spec.md §3.4's
     /// pointer mechanism): either a built-in preset name (`"screenplay"`)
@@ -578,6 +596,25 @@ fn parse_project_table(
             "types" => config.types = Some(parse_types(path, pkey, pvalue)?),
             "indent" => {
                 config.indent = Some(parse_indent(path, pkey, pvalue, warnings)?);
+            }
+            "drafts" => {
+                let globs = parse_string_list(path, pkey, pvalue)?;
+                for glob in &globs {
+                    if glob.is_empty() {
+                        warnings.push(ConfigWarning(format!(
+                            "`project.drafts` in {CONFIG_FILE_NAME} contains an empty string \
+                             (ignored) — expected a project-relative path or glob (e.g. \
+                             \"scratch/**\")"
+                        )));
+                    } else if glob.starts_with('/') || glob.contains("..") {
+                        warnings.push(ConfigWarning(format!(
+                            "`project.drafts` entry `{glob}` in {CONFIG_FILE_NAME} is not \
+                             project-relative (ignored) — drafts globs match paths inside the \
+                             project, so leading `/` and `..` never match anything"
+                        )));
+                    }
+                }
+                config.drafts = globs;
             }
             "unprune-dirs" => {
                 let dirs = parse_string_list(path, pkey, pvalue)?;
@@ -1162,6 +1199,47 @@ pub fn load_from_entry(
 
 #[cfg(test)]
 mod tests {
+
+    mod drafts {
+        use super::super::{globs, parse_str};
+
+        #[test]
+        fn drafts_parse_as_a_string_list() {
+            let (config, warnings) =
+                parse_str("[project]\ndrafts = [\"scratch/**\", \"*.draft.ink\"]\n")
+                    .expect("valid config");
+            assert_eq!(config.drafts, vec!["scratch/**", "*.draft.ink"]);
+            assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        }
+
+        #[test]
+        fn drafts_default_to_empty() {
+            let (config, _) = parse_str("[project]\nentry = \"main.ink\"\n").expect("valid");
+            assert!(config.drafts.is_empty());
+        }
+
+        #[test]
+        fn a_non_project_relative_glob_warns_but_still_parses() {
+            // Kept rather than rejected: an absolute or `..` pattern simply
+            // never matches, and a warning says so where an error would
+            // block the whole config over one inert line.
+            let (config, warnings) =
+                parse_str("[project]\ndrafts = [\"/tmp/**\", \"../out/**\", \"\"]\n")
+                    .expect("valid config");
+            assert_eq!(config.drafts.len(), 3);
+            assert_eq!(warnings.len(), 3, "got {warnings:?}");
+            assert!(warnings.iter().any(|w| w.0.contains("/tmp/**")));
+            assert!(warnings.iter().any(|w| w.0.contains("../out/**")));
+            assert!(warnings.iter().any(|w| w.0.contains("empty string")));
+            // ...and the warning is honest about them being inert.
+            assert!(!globs::matches_any("tmp/notes.ink", &config.drafts));
+        }
+
+        #[test]
+        fn a_non_list_value_is_an_error() {
+            assert!(parse_str("[project]\ndrafts = \"scratch/**\"\n").is_err());
+        }
+    }
     use super::*;
 
     // ── parse_str ────────────────────────────────────────────────────

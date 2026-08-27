@@ -85,11 +85,20 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
   const path = inkDocPath(doc.docId);
   const closure = useStudioStore((s) => s.closureFiles);
   const outline = useStudioStore((s) => s.outline);
+  const draftFiles = useStudioStore((s) => s.draftFiles);
   const includeInEntry = useStudioStore((s) => s.includeInEntry);
 
+  // A draft is out of scope BY DECLARATION (#3145) — that is what the
+  // `drafts` glob says, so the banner has nothing to tell the author. Note
+  // the suppression is one-directional: draft status is only ever granted
+  // to files that are already out of scope ("reachability wins", ruled
+  // 2026-08-27), so this can never hide the banner from a file that is in
+  // the story. The DraftMark beside the file's name is what remains, so
+  // the state is still visible — it is stated once, quietly, instead of
+  // being announced on every open.
   const outOfScope = useMemo(
-    () => isOutOfScope(path, closure, outline),
-    [path, closure, outline],
+    () => isOutOfScope(path, closure, outline) && !draftFiles.includes(path),
+    [path, closure, outline, draftFiles],
   );
   // The entry is re-read per compile (closure identity changes each
   // compile), which is exactly as often as it can change.
