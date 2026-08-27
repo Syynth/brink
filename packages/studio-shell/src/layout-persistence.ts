@@ -82,7 +82,10 @@ export function loadLayoutSnapshot(storage: Pick<Storage, "getItem">): LayoutSna
   // been removed) falls back to "code" rather than rejecting the whole
   // snapshot — losing your dock layout over an unreadable view name would be
   // a worse trade than starting in the default view.
-  const editorView = parsed.editorView === "single" ? "single" : "code";
+  const editorView: EditorViewId =
+    parsed.editorView === "single" || parsed.editorView === "continuous"
+      ? parsed.editorView
+      : "code";
   return {
     placements,
     open,

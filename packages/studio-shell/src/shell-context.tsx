@@ -65,6 +65,12 @@ export interface ShellContextValue {
    * means the view is just the file, full width.
    */
   companionDocument?: DocumentRef;
+  /**
+   * The element that fills the area in Continuous view. The host supplies it
+   * because the ORDER files are read in is a project concept (binder order),
+   * not something the shell can know — see `ContinuousView`.
+   */
+  continuousView?: ReactNode;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -109,6 +115,8 @@ export interface ShellProviderProps {
   isMac?: boolean;
   /** The companion document for Single File view; see ShellContextValue. */
   companionDocument?: DocumentRef;
+  /** The Continuous view's content; see ShellContextValue. */
+  continuousView?: ReactNode;
   children: ReactNode;
 }
 
@@ -125,6 +133,7 @@ export function ShellProvider({
   layoutStorage,
   isMac,
   companionDocument,
+  continuousView,
   children,
 }: ShellProviderProps) {
   const mac = isMac ?? detectMac();
@@ -219,6 +228,11 @@ export function ShellProvider({
         title: "View: Single File (one file beside the player)",
         run: () => layout.getState().setEditorView("single"),
       }),
+      commands.register({
+        id: "view.editor.continuous",
+        title: "View: Continuous (every file as one manuscript)",
+        run: () => layout.getState().setEditorView("continuous"),
+      }),
     ];
     return () => {
       for (const d of dispose) d();
@@ -278,6 +292,7 @@ export function ShellProvider({
       themes: themeService,
       keymapOverrides: overridesService,
       companionDocument,
+      continuousView,
     }),
     [
       commands,

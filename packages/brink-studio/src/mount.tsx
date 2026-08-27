@@ -129,6 +129,7 @@ import {
   saveEditorSettings,
   openPlayerSplit,
   playerRef,
+  StudioContinuousView,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
@@ -449,6 +450,11 @@ function Root({
       // "run the scene you are writing" is one prop rather than the shell
       // learning what a player is.
       companionDocument={playerRef()}
+      // Continuous view's content. An element, not a list: the ORDER is
+      // binder order, which lives in the studio store, and passing the
+      // element lets it render inside the store's provider (decision log
+      // 2026-08-26).
+      continuousView={<StudioContinuousView />}
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>

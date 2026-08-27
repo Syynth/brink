@@ -219,6 +219,11 @@ function EditorViewSection() {
       label: "Single File",
       hint: "One file with the player beside it, and no tabs. For drafting a scene.",
     },
+    {
+      id: "continuous",
+      label: "Continuous",
+      hint: "Every file stacked in binder order, as one manuscript. For reading straight through.",
+    },
   ];
   return (
     <section className="settings-section">

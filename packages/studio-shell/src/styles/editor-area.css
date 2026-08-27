@@ -294,3 +294,62 @@
   min-height: 0;
   overflow: hidden;
 }
+
+/* ── Continuous view (decision log 2026-08-26) ───────────────────────
+   Every file stacked in one scroller, headings between them. The
+   scroller is THIS element, not the individual editors: each section's
+   document sizes to its content so the whole manuscript scrolls as one
+   surface rather than as a column of independently-scrolling boxes. */
+.brink-studio .shell-continuous {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.brink-studio .shell-continuous-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.brink-studio .shell-continuous-section {
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-continuous-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--bs-space-3, 12px);
+  padding: var(--bs-space-4, 16px) var(--bs-space-4, 16px) var(--bs-space-2, 8px);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bs-bg);
+}
+.brink-studio .shell-continuous-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--bs-border);
+}
+.brink-studio .shell-continuous-title {
+  flex: none;
+  font-size: var(--bs-font-tiny);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bs-fg-muted);
+  white-space: nowrap;
+}
+.brink-studio .shell-continuous-section[data-active] .shell-continuous-title {
+  color: var(--bs-accent);
+}
+/* The section's editor must size to its content — a percentage height here
+   would collapse it, and an internal scroller would trap the wheel inside
+   one file instead of carrying you into the next. */
+.brink-studio .shell-continuous-doc,
+.brink-studio .shell-continuous-doc .cm-editor,
+.brink-studio .shell-continuous-doc .cm-scroller {
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}

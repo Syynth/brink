@@ -31,7 +31,7 @@ export type LayoutTier = "wide" | "medium" | "narrow";
  * surface with groups and splits; "single" shows one file with the host's
  * companion document beside it. "continuous" joins them later.
  */
-export type EditorViewId = "code" | "single";
+export type EditorViewId = "code" | "single" | "continuous";
 
 export interface ShellLayoutState {
   /** Current responsive tier. */

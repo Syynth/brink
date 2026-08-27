@@ -1,0 +1,105 @@
+/**
+ * Continuous view (decision log 2026-08-26): every file stacked in binder
+ * order as one manuscript.
+ *
+ * The properties worth guarding are the ones that distinguish this from "a
+ * column of editors": one scroller rather than per-file scrollers, sections
+ * that match the Binder exactly, and files sized to their own content.
+ */
+
+import { expect, test, type Page } from "@playwright/test";
+
+async function runPaletteCommand(page: Page, title: string): Promise<void> {
+  await page.keyboard.press("ControlOrMeta+Shift+P");
+  const input = page.locator(".shell-palette-input");
+  await expect(input).toBeVisible();
+  await input.fill(title);
+  await page.locator(".shell-palette-item", { hasText: title }).first().click();
+}
+
+const continuous = "[data-editor-view='continuous']";
+
+test.describe("continuous view", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".cm-content", { timeout: 10000 });
+  });
+
+  test("stacks exactly the Binder's files, in the Binder's order", async ({ page }) => {
+    const binderFiles = await page
+      .locator(".brink-binder-file-row")
+      .evaluateAll((rows) =>
+        rows.map((r) => r.getAttribute("data-binder-row-key") ?? ""),
+      );
+
+    await runPaletteCommand(page, "View: Continuous");
+    await expect(page.locator(continuous)).toBeVisible();
+
+    const sections = await page
+      .locator(".shell-continuous-section")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-continuous-file") ?? ""));
+
+    // Same files, same order. A mounted std/ library file appearing here was
+    // the first bug this view had: the outline carries them, the Binder tree
+    // filters them, and the ordering helper has to filter them too.
+    expect(sections.length).toBeGreaterThan(0);
+    expect(sections.some((s) => s.startsWith("std/"))).toBe(false);
+    expect(sections).toEqual(
+      binderFiles.filter((f) => f !== "").slice(0, sections.length),
+    );
+  });
+
+  test("is one scroller, with each file sized to its own content", async ({ page }) => {
+    await runPaletteCommand(page, "View: Continuous");
+    await expect(page.locator(continuous)).toBeVisible();
+
+    const metrics = await page.evaluate(() => {
+      const sc = document.querySelector(".shell-continuous-scroller");
+      const editors = [...document.querySelectorAll(".shell-continuous-doc .cm-editor")];
+      return {
+        scrollHeight: sc?.scrollHeight ?? 0,
+        clientHeight: sc?.clientHeight ?? 0,
+        editorHeights: editors.map((e) => Math.round(e.getBoundingClientRect().height)),
+      };
+    });
+
+    // The manuscript is taller than the window — that is the point.
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    // Files differ in length, so equal heights would mean each editor had
+    // been sized to the viewport instead of to its text — which is what an
+    // internal scroller per file looks like.
+    expect(new Set(metrics.editorHeights).size).toBeGreaterThan(1);
+  });
+
+  test("each file carries a heading", async ({ page }) => {
+    await runPaletteCommand(page, "View: Continuous");
+    const headings = page.locator(".shell-continuous-title");
+    await expect(headings.first()).toBeVisible();
+    expect(await headings.count()).toBe(
+      await page.locator(".shell-continuous-section").count(),
+    );
+  });
+
+  test("the view survives a reload", async ({ page }) => {
+    await runPaletteCommand(page, "View: Continuous");
+    await page.reload();
+    await page.waitForSelector(continuous, { timeout: 10000 });
+    await expect(page.locator(".shell-continuous-section").first()).toBeVisible();
+  });
+
+  test("Settings offers it alongside the other views", async ({ page }) => {
+    await runPaletteCommand(page, "Settings: Open");
+    const radio = page.locator("[aria-label='Editor view'] input[value='continuous']");
+    await expect(radio).toBeVisible();
+
+    // Dispatched rather than `.check()`, and the reason is worth recording:
+    // choosing Continuous from inside Settings makes Settings VANISH, because
+    // Continuous renders the project's files and Settings is not one of them.
+    // Playwright's actionability check sees the input detach mid-click and
+    // retries until it times out. The ruled fix is the Graph/Settings
+    // takeover of the editor root area (decision log 2026-08-26), which is
+    // not built yet — until it is, this is the honest behaviour.
+    await radio.dispatchEvent("click");
+    await expect(page.locator(continuous)).toBeVisible();
+  });
+});

@@ -216,8 +216,14 @@ export function ShellStatusBar() {
  */
 function EditorRoot() {
   const view = useShellLayout((s) => s.editorView);
-  const { companionDocument } = useShell();
+  const { companionDocument, continuousView } = useShell();
   if (view === "single") return <SingleFileView companion={companionDocument} />;
+  if (view === "continuous") {
+    // A host that supplies no continuous content has nothing to stack, so
+    // the area falls back to Code view rather than showing an empty scroller
+    // the user cannot get out of.
+    return continuousView !== undefined ? <>{continuousView}</> : <EditorArea />;
+  }
   return <EditorArea />;
 }
 
