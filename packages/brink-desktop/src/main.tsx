@@ -824,6 +824,18 @@ void listen<string>("menu:open-recent", (event) => void openRecent(event.payload
 // so it funnels through the same guarded path as the window close below
 // rather than the OS quit item's own (unguarded) native teardown.
 void listen("menu:quit", () => void handleQuitRequested());
+// View → view mode (decision log 2026-08-26). The menu is a second door onto
+// the same commands the palette and the Settings picker use, so all three
+// agree by construction rather than by being kept in step.
+void listen("menu:view-mode-code", () => {
+  current?.api.dispatch("view.editor.code");
+});
+void listen("menu:view-mode-single", () => {
+  current?.api.dispatch("view.editor.single");
+});
+void listen("menu:view-mode-continuous", () => {
+  current?.api.dispatch("view.editor.continuous");
+});
 // View → editor font size. The native items carry no accelerators (see
 // `build_menu` in src-tauri/src/lib.rs); they dispatch the same commands the
 // studio's own ⌘+/⌘−/⌘0 bindings do, so the menu is a second door onto one

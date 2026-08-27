@@ -771,6 +771,19 @@ const OPEN_RECENT_ID_PREFIX: &str = "open-recent:";
 /// the same drift argument as `OPEN_RECENT_ID_PREFIX`.
 const VIEW_PANEL_ID_PREFIX: &str = "view-panel:";
 
+/// The editor view modes (decision log 2026-08-26, "The three editor views
+/// are named Code, Single File, and Continuous"), as `(menu id, label)`.
+///
+/// Plain items rather than checkmarks: showing which one is current would
+/// mean rebuilding the native menu every time the view changes, and the menu
+/// is built in Rust before the webview exists. The Settings picker is where
+/// the current view is shown.
+const VIEW_MODES: &[(&str, &str)] = &[
+    ("view-mode-code", "Code"),
+    ("view-mode-single", "Single File"),
+    ("view-mode-continuous", "Continuous"),
+];
+
 /// The tool windows the View menu can toggle, as `(command suffix, label)`.
 ///
 /// This is a COPY of what `brink-studio` registers in `mount.tsx`: the
@@ -1294,6 +1307,10 @@ fn build_view_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Subm
         true,
         None::<&str>,
     )?;
+    let mode_items: Vec<MenuItem<tauri::Wry>> = VIEW_MODES
+        .iter()
+        .map(|(id, label)| MenuItem::with_id(handle, *id, label, true, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
     let panel_items: Vec<MenuItem<tauri::Wry>> = VIEW_PANELS
         .iter()
         .map(|(id, title)| {
@@ -1309,12 +1326,20 @@ fn build_view_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Subm
     let view_sep_panels = PredefinedMenuItem::separator(handle)?;
     let view_sep_fullscreen = PredefinedMenuItem::separator(handle)?;
     let fullscreen = PredefinedMenuItem::fullscreen(handle, None)?;
-    let mut view_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &font_increase,
-        &font_decrease,
-        &font_reset,
-        &view_sep_panels,
-    ];
+    let view_sep_modes = PredefinedMenuItem::separator(handle)?;
+    // View mode first: it is what the View menu is most likely to be opened
+    // for, and the rest of the menu adjusts whichever mode is showing.
+    let mut view_items: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
+    view_items.extend(
+        mode_items
+            .iter()
+            .map(|item| -> &dyn IsMenuItem<tauri::Wry> { item }),
+    );
+    view_items.push(&view_sep_modes);
+    view_items.push(&font_increase);
+    view_items.push(&font_decrease);
+    view_items.push(&font_reset);
+    view_items.push(&view_sep_panels);
     view_items.extend(
         panel_items
             .iter()
@@ -1369,6 +1394,9 @@ fn route_menu_event(id: &str) -> MenuRoute {
         "export-inkb" => MenuRoute::emit("menu:export-inkb"),
         "export-xliff" => MenuRoute::emit("menu:export-xliff"),
         "check-updates" => MenuRoute::emit("menu:check-updates"),
+        "view-mode-code" => MenuRoute::emit("menu:view-mode-code"),
+        "view-mode-single" => MenuRoute::emit("menu:view-mode-single"),
+        "view-mode-continuous" => MenuRoute::emit("menu:view-mode-continuous"),
         "view-font-increase" => MenuRoute::emit("menu:view-font-increase"),
         "view-font-decrease" => MenuRoute::emit("menu:view-font-decrease"),
         "view-font-reset" => MenuRoute::emit("menu:view-font-reset"),
