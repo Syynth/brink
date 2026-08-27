@@ -8,13 +8,17 @@
  * status bar's compile segment surface the same counts.
  */
 
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
 import { lineColAt } from "@brink-lang/editor";
 import type { ProblemSeverityBucket } from "@brink/studio-store";
 import type { Diagnostic } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
 import { ChevronIcon, FilterIcon, GroupByFileIcon } from "./icons.js";
+import {
+  ProblemsContextMenu,
+  type ProblemsMenuTarget,
+} from "./ProblemsContextMenu.js";
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────────
 
@@ -256,10 +260,12 @@ function ProblemRowItem({
   row,
   showFile,
   onReveal,
+  onContextMenu,
 }: {
   row: ProblemRow;
   showFile: boolean;
   onReveal: (row: ProblemRow) => void;
+  onContextMenu: (row: ProblemRow, x: number, y: number) => void;
 }) {
   const d = row.diagnostic;
   const bucket = severityBucket(d);
@@ -272,6 +278,10 @@ function ProblemRowItem({
         type="button"
         className="problems-row"
         onClick={() => onReveal(row)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onContextMenu(row, e.clientX, e.clientY);
+        }}
         title={`${d.message} — ${row.location}`}
       >
         <span className={`problems-severity is-${bucket}`} aria-label={label}>
@@ -285,6 +295,14 @@ function ProblemRowItem({
 }
 
 function ProblemsViewInner() {
+  // Right-click suppression (#3148). One menu for the whole panel rather
+  // than one per row: only ever one is open, and a per-row menu would mount
+  // hundreds of dismiss listeners on a project with many problems.
+  const [menu, setMenu] = useState<ProblemsMenuTarget | null>(null);
+  const openMenu = useCallback((row: ProblemRow, x: number, y: number) => {
+    setMenu({ x, y, diagnostic: row.diagnostic });
+  }, []);
+
   const diagnostics = useStudioStore((s) => s.diagnosticsList);
   const project = useStudioStore((s) => s._project);
   const severities = useStudioStore((s) => s.problemsSeverities);
@@ -392,6 +410,7 @@ function ProblemsViewInner() {
                         row={row}
                         showFile={false}
                         onReveal={reveal}
+                        onContextMenu={openMenu}
                       />
                     ))}
                   </ul>
@@ -408,9 +427,13 @@ function ProblemsViewInner() {
               row={row}
               showFile
               onReveal={reveal}
+              onContextMenu={openMenu}
             />
           ))}
         </ul>
+      )}
+      {menu !== null && (
+        <ProblemsContextMenu target={menu} onClose={() => setMenu(null)} />
       )}
     </div>
   );
