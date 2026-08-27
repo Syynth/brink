@@ -57,22 +57,43 @@ test.describe("continuous view", () => {
     await runPaletteCommand(page, "View mode: Continuous");
     await expect(page.locator(continuous)).toBeVisible();
 
-    const metrics = await page.evaluate(() => {
-      const sc = document.querySelector(".shell-continuous-scroller");
-      const editors = [...document.querySelectorAll(".shell-continuous-doc .cm-editor")];
-      return {
-        scrollHeight: sc?.scrollHeight ?? 0,
-        clientHeight: sc?.clientHeight ?? 0,
-        editorHeights: editors.map((e) => Math.round(e.getBoundingClientRect().height)),
-      };
-    });
+    // This used to assert `scrollHeight > clientHeight` on the manuscript
+    // scroller, which failed intermittently with the two EXACTLY equal
+    // (744 vs 744, issue #3158): the fixture happens to be almost precisely
+    // one screen tall in CI's viewport, so a strict inequality there was
+    // decided by a pixel and by whether the measurement landed mid-render.
+    // It also was not the property this test is named for — a manuscript
+    // shorter than the window is still one scroller.
+    //
+    // What replaces it: no PER-FILE editor scrolls internally. Counted
+    // rather than asserted element-by-element, and the count of candidates
+    // is asserted first — a selector that matched nothing would otherwise
+    // make "none of them overflow" true for the wrong reason.
+    //
+    // `expect.poll` because this is read after layout, and a measurement
+    // taken between render passes should retry rather than fail.
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const scrollers = [
+            ...document.querySelectorAll(".shell-continuous-doc .cm-scroller"),
+          ];
+          return {
+            count: scrollers.length,
+            overflowing: scrollers.filter((e) => e.scrollHeight > e.clientHeight).length,
+          };
+        }),
+      )
+      .toEqual({ count: await page.locator(".shell-continuous-doc").count(), overflowing: 0 });
 
-    // The manuscript is taller than the window — that is the point.
-    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    const editorHeights = await page
+      .locator(".shell-continuous-doc .cm-editor")
+      .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
+
     // Files differ in length, so equal heights would mean each editor had
     // been sized to the viewport instead of to its text — which is what an
     // internal scroller per file looks like.
-    expect(new Set(metrics.editorHeights).size).toBeGreaterThan(1);
+    expect(new Set(editorHeights).size).toBeGreaterThan(1);
   });
 
   test("each file carries a heading", async ({ page }) => {
