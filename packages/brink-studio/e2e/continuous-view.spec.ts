@@ -57,21 +57,25 @@ test.describe("continuous view", () => {
     await runPaletteCommand(page, "View mode: Continuous");
     await expect(page.locator(continuous)).toBeVisible();
 
-    // This used to assert `scrollHeight > clientHeight` on the manuscript
-    // scroller, which failed intermittently with the two EXACTLY equal
-    // (744 vs 744, issue #3158): the fixture happens to be almost precisely
-    // one screen tall in CI's viewport, so a strict inequality there was
-    // decided by a pixel and by whether the measurement landed mid-render.
-    // It also was not the property this test is named for — a manuscript
-    // shorter than the window is still one scroller.
+    // Wait for the view to actually have editors before measuring anything.
+    // `toBeVisible()` on the container says the view mounted; it does NOT
+    // say the per-file editors inside it have. Measuring in that window is
+    // what issue #3158 really was: the first version of this test read
+    // `scrollHeight > clientHeight` off an EMPTY scroller and got 744 vs
+    // 744 — a strict inequality failing on two equal numbers looked like a
+    // one-pixel boundary, but the scroller simply had nothing in it yet.
+    const docs = page.locator(".shell-continuous-doc");
+    await expect(docs.first()).toBeVisible();
+    const editors = page.locator(".shell-continuous-doc .cm-editor");
+    await expect.poll(async () => editors.count()).toBe(await docs.count());
+
+    // The claim this test is named for, asserted directly: no PER-FILE
+    // editor scrolls internally — one manuscript scroller, not one per
+    // file. (Being TALLER than the window, which the old version checked,
+    // is incidental: a short manuscript is still one scroller.)
     //
-    // What replaces it: no PER-FILE editor scrolls internally. Counted
-    // rather than asserted element-by-element, and the count of candidates
-    // is asserted first — a selector that matched nothing would otherwise
-    // make "none of them overflow" true for the wrong reason.
-    //
-    // `expect.poll` because this is read after layout, and a measurement
-    // taken between render passes should retry rather than fail.
+    // The candidate count rides along, because "none of them overflow" is
+    // trivially true of a selector that matched nothing.
     await expect
       .poll(async () =>
         page.evaluate(() => {
@@ -84,11 +88,12 @@ test.describe("continuous view", () => {
           };
         }),
       )
-      .toEqual({ count: await page.locator(".shell-continuous-doc").count(), overflowing: 0 });
+      .toEqual({ count: await docs.count(), overflowing: 0 });
 
-    const editorHeights = await page
-      .locator(".shell-continuous-doc .cm-editor")
-      .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
+    const editorHeights = await editors.evaluateAll((els) =>
+      els.map((e) => Math.round(e.getBoundingClientRect().height)),
+    );
+    expect(editorHeights.length).toBeGreaterThan(1);
 
     // Files differ in length, so equal heights would mean each editor had
     // been sized to the viewport instead of to its text — which is what an
