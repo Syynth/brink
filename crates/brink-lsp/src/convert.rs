@@ -106,17 +106,19 @@ fn is_unnecessary(code: brink_ir::DiagnosticCode) -> bool {
 /// code shows at its overridden severity in the client (issue #1367).
 /// `tags` carries `DiagnosticTag::UNNECESSARY` for the narrow set of codes
 /// [`is_unnecessary`] recognizes (issue #1618).
+/// Returns `None` when `[lints]` sets the code to `allow` — a suppressed
+/// diagnostic is not published at all rather than published quietly
+/// (#3173). There is no LSP severity that means "ignore this".
 pub fn diagnostic_to_lsp(
     diag: &brink_ir::Diagnostic,
     idx: &LineIndex,
     types: brink_analyzer::TypePolicy,
     lints: &brink_analyzer::LintPolicy,
-) -> lsp_types::Diagnostic {
-    lsp_types::Diagnostic {
+) -> Option<lsp_types::Diagnostic> {
+    let severity = brink_analyzer::effective_severity(diag.code, types, lints)?;
+    Some(lsp_types::Diagnostic {
         range: to_lsp_range(diag.range, idx),
-        severity: Some(severity_to_lsp(brink_analyzer::effective_severity(
-            diag.code, types, lints,
-        ))),
+        severity: Some(severity_to_lsp(severity)),
         code: Some(lsp_types::NumberOrString::String(
             diag.code.as_str().to_owned(),
         )),
@@ -124,7 +126,7 @@ pub fn diagnostic_to_lsp(
         message: diag.message.clone(),
         tags: is_unnecessary(diag.code).then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
         ..Default::default()
-    }
+    })
 }
 
 /// Undeclared-rename detection (issue #1672 part 2, docs/modules-spec.md
@@ -241,7 +243,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::WARNING));
     }
 
@@ -262,7 +265,8 @@ mod tests {
         lints
             .overrides
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
-        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
+        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints)
+            .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
     }
 
@@ -282,7 +286,8 @@ mod tests {
         lints
             .overrides
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Hint);
-        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
+        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints)
+            .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::HINT));
     }
 
@@ -303,7 +308,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
     }
 
@@ -326,7 +332,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
     }
 
@@ -353,7 +360,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.tags, None);
     }
 
@@ -376,7 +384,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.tags, None);
     }
 
@@ -399,7 +408,8 @@ mod tests {
             &idx,
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by an empty LintPolicy");
         assert_eq!(lsp.tags, None);
     }
 }

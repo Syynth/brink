@@ -28,12 +28,18 @@ fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedD
     let types = opts.type_policy();
     diags
         .into_iter()
-        .map(|d| ResolvedDiagnostic {
+        // A `[lints] allow` code is suppressed, so it never becomes a
+        // resolved diagnostic at all (#3173).
+        .filter_map(|d| {
+            let severity = brink_driver::effective_severity(d.code, types, &opts.lints)?;
+            Some((d, severity))
+        })
+        .map(|(d, severity)| ResolvedDiagnostic {
             path: db.file_path(d.file).unwrap_or_default().to_string(),
             file: d.file,
             range: d.range,
             message: d.message,
-            severity: brink_driver::effective_severity(d.code, types, &opts.lints),
+            severity,
             code: d.code,
         })
         .collect()

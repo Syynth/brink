@@ -2895,16 +2895,25 @@ impl DiagnosticCode {
 
     /// Whether `[lints]` can override this code's severity (#1160).
     ///
-    /// Only codes whose DEFAULT severity is `Warning` are overridable —
-    /// `brink_analyzer::validate_lint_code` refuses everything else and
-    /// returns a `ConfigWarning` instead of applying it. That is a much
-    /// narrower set than the code list suggests, which is exactly why this
-    /// belongs in the registry: a settings UI that offers a level picker for
-    /// a code the analyzer will refuse has built the silent no-op it exists
-    /// to prevent.
+    /// Everything except a hard error: `brink_analyzer::validate_lint_code`
+    /// accepts any code whose default severity is not `Error`, and refuses
+    /// the rest with a `ConfigWarning` rather than applying them. You cannot
+    /// `allow` something that stops the compile.
+    ///
+    /// That deliberately INCLUDES the advisory tiers — `E189`, the ink
+    /// `TODO:` note, is `Info` by default and is exactly the sort of thing
+    /// an author wants to turn off (ruled 2026-08-27). An earlier version of
+    /// this predicate said `Warning` only, which silently hid every
+    /// `Info`-default code from the settings surface; the analyzer would
+    /// have accepted them all along.
+    ///
+    /// `agrees_with_the_analyzers_own_gate` in `brink-analyzer` pins this
+    /// against `apply_lint_overrides` itself rather than against a restated
+    /// rule — the earlier mistake survived a test that compared this
+    /// predicate to its own implementation.
     #[must_use]
     pub fn is_overridable(self) -> bool {
-        matches!(self.severity(), Severity::Warning)
+        !matches!(self.severity(), Severity::Error)
     }
 
     /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
@@ -3244,18 +3253,25 @@ mod registry_tests {
     }
 
     #[test]
-    fn only_warning_default_codes_are_overridable() {
-        // `brink_analyzer::validate_lint_code` refuses every other code, so
-        // this predicate has to agree with it — otherwise a settings UI
-        // offers an override the analyzer then silently discards.
+    fn a_hard_error_is_never_overridable_and_an_advisory_always_is() {
+        // Stated as the RULE, not as a copy of the implementation. The
+        // version of this test that said `== matches!(severity, Warning)`
+        // could not catch the predicate being wrong, because it asserted
+        // the predicate against itself — and it did not catch it: every
+        // `Info`-default code (`E189`, the ink TODO note) was hidden from
+        // the settings surface for exactly that reason.
         for code in DiagnosticCode::ALL {
-            assert_eq!(
-                code.is_overridable(),
-                matches!(code.severity(), Severity::Warning),
-                "{}",
-                code.as_str()
-            );
+            match code.severity() {
+                Severity::Error => assert!(!code.is_overridable(), "{}", code.as_str()),
+                Severity::Warning | Severity::Info | Severity::Hint => {
+                    assert!(code.is_overridable(), "{}", code.as_str());
+                }
+            }
         }
+        assert!(
+            DiagnosticCode::E189.is_overridable(),
+            "the ink TODO: note must be configurable (ruled 2026-08-27)"
+        );
         let overridable = DiagnosticCode::ALL
             .iter()
             .filter(|c| c.is_overridable())

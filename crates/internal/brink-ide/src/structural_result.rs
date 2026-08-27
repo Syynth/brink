@@ -224,11 +224,16 @@ pub(crate) fn introduced_diagnostics(
             *count -= 1;
             continue;
         }
+        // Suppressed by `[lints] allow` — not an introduced diagnostic,
+        // because it is not a diagnostic (#3173).
+        let Some(severity) = brink_analyzer::effective_severity(d.code, types, lints) else {
+            continue;
+        };
         let path = new_db.file_path(d.file).unwrap_or_default().to_owned();
         let src = new_db.source(d.file).unwrap_or_default();
         let (line, col) = LineIndex::new(src).line_col(d.range.start());
         introduced.push(IntroducedDiagnostic {
-            severity: brink_analyzer::effective_severity(d.code, types, lints),
+            severity,
             code: d.code,
             message: d.message.clone(),
             path,

@@ -599,13 +599,18 @@ fn resolve_diagnostics(
     let types = opts.type_policy();
     diags
         .into_iter()
-        .map(|d| ResolvedDiagnostic {
-            path: db.file_path(d.file).unwrap_or_default().to_string(),
-            file: d.file,
-            range: d.range,
-            message: d.message,
-            severity: brink_driver::effective_severity(d.code, types, &opts.lints),
-            code: d.code,
+        // Suppressed by `[lints] allow` — dropped rather than resolved
+        // (#3173).
+        .filter_map(|d| {
+            let severity = brink_driver::effective_severity(d.code, types, &opts.lints)?;
+            Some(ResolvedDiagnostic {
+                path: db.file_path(d.file).unwrap_or_default().to_string(),
+                file: d.file,
+                range: d.range,
+                message: d.message,
+                severity,
+                code: d.code,
+            })
         })
         .collect()
 }
