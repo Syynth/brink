@@ -347,14 +347,19 @@ describe("SettingsDocument — keymap section", () => {
   });
 });
 
-describe("SettingsDocument — diagnostics section", () => {
+describe("SettingsDocument — external functions section", () => {
   it("dispatches the store action and persists under the versioned key", () => {
     const h = renderSettings();
-    // Scope to the Diagnostics section — the Editor section also renders a
-    // `.settings-select` (the argument-form glyph) and renders first, so a bare
-    // `.settings-select` query would grab that one instead.
+    // Scope to the External functions section — the Editor section also
+    // renders a `.settings-select` (the argument-form glyph) and renders
+    // first, so a bare `.settings-select` query would grab that one instead.
+    //
+    // It was titled "Diagnostics" until #3148 added the [lints] section,
+    // which is what "Diagnostics" now means. This one is about
+    // external-function checking specifically, and unlike the lints it is a
+    // studio preference rather than a brink.toml setting.
     const diagSection = [...container!.querySelectorAll(".settings-section")].find(
-      (s) => s.querySelector(".settings-section-title")?.textContent === "Diagnostics",
+      (s) => s.querySelector(".settings-section-title")?.textContent === "External functions",
     )!;
     const select = diagSection.querySelector<HTMLSelectElement>(".settings-select")!;
     expect(select.value).toBe("error");

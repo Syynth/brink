@@ -17,7 +17,7 @@
  */
 
 import type { FileProvider } from "./provider.js";
-import { EditorSessionHandle } from "@brink-lang/web";
+import { EditorSessionHandle, getDiagnosticRegistry } from "@brink-lang/web";
 import type { CompileResult, RenameDiagnostic } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
@@ -487,6 +487,22 @@ export class ProjectSession {
     return typeof this.session.getConfiguredIndent === "function"
       ? this.session.getConfiguredIndent()
       : null;
+  }
+
+  /**
+   * Every diagnostic code the compiler knows (#3169) — the Settings
+   * Diagnostics section's list.
+   *
+   * Reads the MODULE-level accessor rather than anything on `this.session`.
+   * The registry is static compiler data: it depends on no session, cannot
+   * go stale within a build, and is exported alongside `getTokenTypeNames`
+   * for exactly that reason. Reaching for `this.session.…` here was a real
+   * bug — the method does not exist there, so the section rendered an empty
+   * registry and filed every configured code under "unknown to this
+   * compiler".
+   */
+  getDiagnosticRegistry(): unknown[] {
+    return getDiagnosticRegistry();
   }
 
   /** Load all files from provider and resolve INCLUDEs. */
@@ -1216,6 +1232,11 @@ export class ProjectSession {
   applyEdit(path: string, newSource: string): boolean {
     if (this.sessionIsReadOnly(path)) return false;
     this.session.updateFile(path, newSource);
+    // `notifyFileChanged` re-applies `brink.toml` for us — see its own
+    // comment. Do NOT add a second `applyProjectConfig()` call here: it
+    // applies the config twice per edit, which
+    // `project-config-application.test.ts` catches by counting warning
+    // batches.
     this.notifyFileChanged(path);
     return true;
   }

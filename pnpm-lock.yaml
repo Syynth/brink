@@ -145,6 +145,9 @@ importers:
       jsdom:
         specifier: ^29.0.0
         version: 29.0.1
+      markdown-to-jsx:
+        specifier: ^7.7.17
+        version: 7.7.17(react@19.2.8)
       react:
         specifier: ^19.2.8
         version: 19.2.8
@@ -314,6 +317,9 @@ importers:
       '@xyflow/react':
         specifier: ^12.11.3
         version: 12.11.3(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      markdown-to-jsx:
+        specifier: ^7.7.17
+        version: 7.7.17(react@19.2.8)
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -1707,6 +1713,15 @@ packages:
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
+
+  markdown-to-jsx@7.7.17:
+    resolution: {integrity: sha512-7mG/1feQ0TX5I7YyMZVDgCC/y2I3CiEhIRQIhyov9nGBP5eoVrOXXHuL5ZP8GRfxVZKRiXWJgwXkb9It+nQZfQ==}
+    engines: {node: '>= 10'}
+    peerDependencies:
+      react: '>= 0.14.0'
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -3560,6 +3575,10 @@ snapshots:
   magic-string@0.30.21:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  markdown-to-jsx@7.7.17(react@19.2.8):
+    optionalDependencies:
+      react: 19.2.8
 
   mdn-data@2.27.1: {}
 

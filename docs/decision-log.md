@@ -3558,6 +3558,22 @@
   now includes `drafts` and `indent`. A form-only Settings section would
   have made those two uneditable from the studio entirely.
 
+## Settings becomes a modal or window before ship
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Before shipping, Settings moves out of the editor takeover and
+  into a modal or its own window. Sequenced AFTER the `brink.toml` interface
+  is finished.
+- **WHY:** Settings is consult-and-adjust, not a place you work — taking over
+  the editor area costs the file you were looking at for something you leave
+  in seconds. The takeover was the right call while Settings was small
+  (2026-08-26, "the editor root area has one occupant"); the `brink.toml`
+  interface makes it a substantial surface with its own navigation, which is
+  what a modal or window is for. Sequenced second so the surface is built
+  once, in its final shape, rather than moved twice.
+
 ## TODO notes must be configurable, like any advisory diagnostic
 - **WHEN:** 2026-08-27
 - **PROJECT:** brink

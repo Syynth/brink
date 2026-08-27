@@ -5,7 +5,13 @@
  * discards an author's comments".
  */
 import { describe, expect, it } from "vitest";
-import { getTomlString, setTomlString } from "@brink/studio-store";
+import {
+  getTomlBool,
+  getTomlString,
+  setTomlBool,
+  setTomlString,
+  tomlTableKeys,
+} from "@brink/studio-store";
 
 const SOURCE = `# My story's config
 [project]
@@ -64,5 +70,61 @@ describe("setTomlString", () => {
   it("escapes quotes and backslashes in written values", () => {
     const updated = setTomlString("[project]\n", "project", "entry", 'we"ird\\name.ink');
     expect(getTomlString(updated, "project", "entry")).toBe('we"ird\\name.ink');
+  });
+});
+
+describe("tomlTableKeys / bool values — what [lints] needs (#3148)", () => {
+  const CONFIG = `[project]
+entry = "main.ink"
+
+# which diagnostics this project has decided about
+[lints]
+deny-warnings = false
+E014 = "deny"
+E033 = "allow"
+`;
+
+  it("lists a table's keys in file order", () => {
+    // File order, not sorted: the Diagnostics section groups by category
+    // itself, and re-ordering here would fight the file rather than the UI.
+    expect(tomlTableKeys(CONFIG, "lints")).toEqual(["deny-warnings", "E014", "E033"]);
+  });
+
+  it("returns nothing for a table that is not there", () => {
+    expect(tomlTableKeys('[project]\nentry = "main.ink"\n', "lints")).toEqual([]);
+  });
+
+  it("does not leak keys from a neighbouring table", () => {
+    expect(tomlTableKeys(CONFIG, "project")).toEqual(["entry"]);
+  });
+
+  it("reads a bool, and does not read one as a string", () => {
+    expect(getTomlBool(CONFIG, "lints", "deny-warnings")).toBe(false);
+    // The reason this helper exists: a bare `true` is not a TOML string, so
+    // reading it with getTomlString would make the key invisible to the
+    // form while it is plainly set in the file.
+    expect(getTomlString(CONFIG, "lints", "deny-warnings")).toBeNull();
+  });
+
+  it("writes and removes a bool without quoting it", () => {
+    const on = setTomlBool(CONFIG, "lints", "deny-warnings", true);
+    expect(on).toContain("deny-warnings = true");
+    expect(on).not.toContain('deny-warnings = "true"');
+    expect(getTomlBool(setTomlBool(on, "lints", "deny-warnings", null), "lints", "deny-warnings"))
+      .toBeNull();
+  });
+
+  it("preserves the comment above the table when adding a code", () => {
+    // The whole point of the line editors: an author's comments survive.
+    const next = setTomlString(CONFIG, "lints", "E063", "warn");
+    expect(next).toContain("# which diagnostics this project has decided about");
+    expect(next).toContain('E063 = "warn"');
+    expect(tomlTableKeys(next, "lints")).toEqual(["deny-warnings", "E014", "E033", "E063"]);
+  });
+
+  it("removing a code leaves the others alone", () => {
+    const next = setTomlString(CONFIG, "lints", "E014", null);
+    expect(tomlTableKeys(next, "lints")).toEqual(["deny-warnings", "E033"]);
+    expect(next).toContain('E033 = "allow"');
   });
 });

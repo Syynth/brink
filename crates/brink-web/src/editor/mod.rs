@@ -6751,3 +6751,61 @@ mod dialect_wasm_tests {
         assert_eq!(s.session.source(id).map(str::to_owned), before);
     }
 }
+
+#[cfg(test)]
+mod lint_override_reaches_compile {
+    //! `[lints] Exxx = "allow"` suppresses the diagnostic (#3173).
+    //!
+    //! End to end through `compile_project`, because the bug was never in
+    //! `effective_severity` alone: it returned the code's base severity for
+    //! `Allow`, and every consumer dutifully reported it. A unit test on
+    //! the analyzer would not have caught the consumers.
+    use super::EditorSession;
+
+    /// `VAR roll` shadows the `roll` builtin — E035, Warning by default and
+    /// therefore overridable.
+    const SRC: &str = "VAR roll = 0\n=== intro ===\nHi.\n-> DONE\n";
+
+    fn e035_count(json: &str) -> usize {
+        json.matches("E035").count()
+    }
+
+    #[test]
+    fn allow_suppresses_the_diagnostic() {
+        // The bug this pins (#3148): setting a lint to `allow` in
+        // `brink.toml` wrote the key and the warning kept being reported.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", SRC);
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        let before = s.compile_project("main.ink");
+        assert!(
+            e035_count(&before) > 0,
+            "fixture must actually produce E035, or this test proves nothing: {}",
+            &before[before.len().saturating_sub(600)..]
+        );
+
+        let _ = s
+            .apply_project_config("[project]\nentry = \"main.ink\"\n\n[lints]\nE035 = \"allow\"\n");
+        let after = s.compile_project("main.ink");
+        assert_eq!(
+            e035_count(&after),
+            0,
+            "E035 = \"allow\" must suppress it: {}",
+            &after[after.len().saturating_sub(600)..]
+        );
+    }
+
+    #[test]
+    fn removing_the_override_brings_it_back() {
+        // The other direction — otherwise a compile that reported nothing
+        // for an unrelated reason would look like a pass above.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", SRC);
+        let _ = s
+            .apply_project_config("[project]\nentry = \"main.ink\"\n\n[lints]\nE035 = \"allow\"\n");
+        assert_eq!(e035_count(&s.compile_project("main.ink")), 0);
+
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        assert!(e035_count(&s.compile_project("main.ink")) > 0);
+    }
+}
