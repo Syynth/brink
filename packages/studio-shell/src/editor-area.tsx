@@ -42,7 +42,7 @@ interface GroupTabBarProps {
  * old FileTabBar so existing styling and tests carry over.
  */
 function GroupTabBar({ group, drag }: GroupTabBarProps) {
-  const { editorGroups, documentMark: DocumentMark } = useShell();
+  const { editorGroups, documentIcon: DocumentIcon } = useShell();
   const scrollRef = useRef<HTMLDivElement>(null);
   // Which scroll-affordance chevrons to show. The bar is a horizontal scroller
   // (overflow-x: auto) with a hidden scrollbar, so without these the overflow
@@ -134,8 +134,8 @@ function GroupTabBar({ group, drag }: GroupTabBarProps) {
               if (!tab.pinned) editorGroups.getState().pinTab(group.id, key);
             }}
           >
+            {DocumentIcon && <DocumentIcon doc={tab.ref} />}
             <span className="brink-tab-label">{tab.ref.title}</span>
-            {DocumentMark && <DocumentMark doc={tab.ref} />}
             <span
               className="brink-tab-close"
               title="Close"

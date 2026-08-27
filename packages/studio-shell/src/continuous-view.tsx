@@ -73,7 +73,7 @@ export function ContinuousView({
 }: ContinuousViewProps) {
   const descriptors = useDocumentTypes();
   const types = useMemo(() => new Map(descriptors.map((d) => [d.id, d])), [descriptors]);
-  const { editorGroups, documentMark: DocumentMark } = useShell();
+  const { editorGroups, documentIcon: DocumentIcon } = useShell();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   // Navigation in this view IS scrolling. Every navigation surface — the
@@ -145,8 +145,8 @@ export function ContinuousView({
             >
               <header className="shell-continuous-heading">
                 <span className="shell-continuous-rule" />
+                {DocumentIcon && <DocumentIcon doc={ref} />}
                 <span className="shell-continuous-title">{ref.title}</span>
-                {DocumentMark && <DocumentMark doc={ref} />}
                 <span className="shell-continuous-rule" />
               </header>
               <div className="editor shell-continuous-doc">{body}</div>

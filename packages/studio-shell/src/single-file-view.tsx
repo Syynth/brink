@@ -43,7 +43,7 @@ export interface SingleFileViewProps {
 }
 
 export function SingleFileView({ companion }: SingleFileViewProps) {
-  const { editorGroups, documentMark: DocumentMark } = useShell();
+  const { editorGroups, documentIcon: DocumentIcon } = useShell();
   const descriptors = useDocumentTypes();
   const types = useMemo(() => new Map(descriptors.map((d) => [d.id, d])), [descriptors]);
   const tab = useEditorGroups(focusedTab);
@@ -82,10 +82,10 @@ export function SingleFileView({ companion }: SingleFileViewProps) {
         <Panel id="single-primary" key="single-primary" minSize="240px">
           <div className="shell-single-file-primary">
             <header className="shell-single-file-head">
+              {DocumentIcon && tab && <DocumentIcon doc={tab.ref} />}
               <span className="shell-single-file-name">
                 {tab?.ref.title ?? "No file open"}
               </span>
-              {DocumentMark && tab && <DocumentMark doc={tab.ref} />}
               {companionBody !== null && (
                 <button
                   type="button"

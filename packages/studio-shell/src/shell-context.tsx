@@ -73,22 +73,24 @@ export interface ShellContextValue {
    */
   continuousView?: ReactNode;
   /**
-   * Rendered next to a document's NAME wherever the shell writes one — the
-   * Code view's tab, the Single File header, the Continuous section
-   * heading, the takeover header.
+   * Rendered immediately BEFORE a document's name, wherever the shell
+   * writes one — the Code view's tab, the Single File header, the
+   * Continuous section heading, the takeover header.
    *
-   * The host supplies it because what a file's status IS (a draft, #3145)
-   * is a project concept the shell has no way to know. It is a COMPONENT,
-   * not a lookup function, so it can subscribe to whatever the host keeps
-   * that status in and re-render itself; a plain `(ref) => node` would
-   * render once per tab-strip render and go stale.
+   * The host supplies it because what a document IS (a story file, a
+   * draft, a settings page) is a project concept the shell has no way to
+   * know. It is a COMPONENT, not a lookup function, so it can subscribe to
+   * whatever the host keeps that status in and re-render itself; a plain
+   * `(ref) => node` would render once per tab-strip render and go stale.
    *
    * Ruled 2026-08-27: a file's name and its draft status never appear
    * apart. That is why this is one seam every naming surface renders
    * rather than four independent additions — a surface added later
-   * inherits the rule by using it.
+   * inherits the rule by using it. The second ruling that day made the
+   * icon itself the carrier (a dashed variant) rather than a badge beside
+   * it, which is why this sits before the name rather than after.
    */
-  documentMark?: ComponentType<{ doc: DocumentRef }>;
+  documentIcon?: ComponentType<{ doc: DocumentRef }>;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -142,8 +144,8 @@ export interface ShellProviderProps {
   companionDocument?: DocumentRef;
   /** The Continuous view's content; see ShellContextValue. */
   continuousView?: ReactNode;
-  /** Per-document status mark; see ShellContextValue. */
-  documentMark?: ComponentType<{ doc: DocumentRef }>;
+  /** Per-document icon; see ShellContextValue. */
+  documentIcon?: ComponentType<{ doc: DocumentRef }>;
   children: ReactNode;
 }
 
@@ -162,7 +164,7 @@ export function ShellProvider({
   isMac,
   companionDocument,
   continuousView,
-  documentMark,
+  documentIcon,
   children,
 }: ShellProviderProps) {
   const mac = isMac ?? detectMac();
@@ -327,7 +329,7 @@ export function ShellProvider({
       keymapOverrides: overridesService,
       companionDocument,
       continuousView,
-      documentMark,
+      documentIcon,
     }),
     [
       commands,
@@ -342,7 +344,7 @@ export function ShellProvider({
       themeService,
       overridesService,
       companionDocument,
-      documentMark,
+      documentIcon,
     ],
   );
 

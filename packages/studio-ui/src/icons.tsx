@@ -49,6 +49,41 @@ export function BrinkFileIcon({ size = 13 }: IconProps) {
   );
 }
 
+/**
+ * The ink-file drop, DASHED — a draft (#3145, decision log 2026-08-27
+ * "Draft status is an icon variant, not a text badge").
+ *
+ * Same path as {@link BrinkFileIcon} on purpose: a draft is the same kind
+ * of thing as any other story file, drawn provisionally. The dash pattern
+ * is tuned to the path's own length so the gaps land evenly around the
+ * drop rather than bunching at the point.
+ *
+ * The colour comes from `.brink-file-icon-draft` rather than a `stroke`
+ * here, so a theme can restate it — and so the icon still inherits
+ * `currentColor` if that class is ever missing, degrading to a dashed
+ * outline rather than to an invisible one.
+ */
+export function BrinkFileDraftIcon({ size = 13 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeDasharray="14 11"
+      className="brink-file-icon-draft"
+      aria-hidden
+      focusable={false}
+    >
+      <path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z" />
+    </svg>
+  );
+}
+
 /** A generic document — non-story files (brink.toml uses GearIcon). */
 export function DocIcon({ size = 13 }: IconProps) {
   return (
