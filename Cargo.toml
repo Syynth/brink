@@ -66,6 +66,10 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # `brink.toml` project settings file (#1005): dialect + type policy.
 toml = "0.8"
+# Round-trip-preserving TOML for the config WRITER (brink-project-config):
+# `toml` discards comments and formatting, which is unacceptable for a file
+# the author hand-maintains and several features now edit programmatically.
+toml_edit = "0.25"
 thiserror = "2"
 insta = "1.46.3"
 pest = "2"
