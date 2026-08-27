@@ -36,6 +36,7 @@ export {
 export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef, inkDocPath, isOutOfScope } from "./InkFileDocument.js";
 export { DocumentIcon, type DocumentIconProps } from "./DocumentIcon.js";
+export { LintSettings } from "./LintSettings.js";
 export { ConfigFormPanel, isConfigPath } from "./ConfigFormPanel.js";
 export {
   COMPILED_OUTPUT_DOC_ID,

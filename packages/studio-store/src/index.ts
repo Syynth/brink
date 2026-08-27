@@ -202,7 +202,13 @@ export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
 export { insertIncludeLine, relativeIncludePath } from "./include-insert.js";
 // Comment-preserving structured edits for brink.toml (#3015) — used by
 // the studio's config form panel.
-export { getTomlString, setTomlString } from "./toml-edit.js";
+export {
+  getTomlBool,
+  getTomlString,
+  setTomlBool,
+  setTomlString,
+  tomlTableKeys,
+} from "./toml-edit.js";
 // The .binder.json order sidecar's pure model (#3038).
 export {
   BINDER_SIDECAR_PATH,

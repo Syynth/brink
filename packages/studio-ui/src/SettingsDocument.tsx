@@ -46,6 +46,7 @@ import {
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
+import { LintSettings } from "./LintSettings.js";
 import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 
 /**
@@ -387,10 +388,12 @@ function DiagnosticsSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Diagnostics</h2>
+      <h2 className="settings-section-title">External functions</h2>
       <p className="settings-section-hint">
-        Severity of external-function checks against a registered host
-        manifest. Recompiles on change.
+        Severity of external-function checks against a registered host manifest.
+        Recompiles on change. Unlike the diagnostics below, this is a studio
+        preference rather than a <code>brink.toml</code> setting &mdash; it stays
+        on this machine.
       </p>
       <div className="settings-field">
         <label htmlFor={selectId}>External function checking</label>
@@ -574,6 +577,7 @@ export function SettingsDocument({ groupId }: DocumentViewProps) {
         <EditorSection />
         <KeymapSection />
         <DiagnosticsSection />
+        <LintSettings />
       </div>
     </div>
   );

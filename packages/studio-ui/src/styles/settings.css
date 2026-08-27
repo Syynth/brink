@@ -157,3 +157,236 @@
   flex: 1;
   min-height: 0;
 }
+
+/* ── Diagnostics: the [lints] section (#3148) ────────────────────────
+   Two lists, grouped by category. Which list a code is in IS whether it
+   is in brink.toml, so the visual weight difference between them is
+   carrying meaning, not decoration. */
+.brink-studio .lint-settings {
+  gap: 10px;
+}
+
+.brink-studio .lint-policy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.brink-studio .lint-policy-label {
+  font-size: var(--bs-font-body);
+  color: var(--bs-fg);
+}
+.brink-studio .lint-policy-hint {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+
+.brink-studio .lint-list-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.brink-studio .lint-list-title {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+}
+.brink-studio .lint-list-title.is-muted {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .lint-list-hint,
+.brink-studio .lint-list-count {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .lint-list-hint {
+  flex-grow: 1;
+}
+.brink-studio .lint-list-count {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-micro);
+  margin-left: auto;
+}
+
+.brink-studio .lint-search {
+  width: 190px;
+  height: 24px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .lint-search:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+
+.brink-studio .lint-list {
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.brink-studio .lint-group-head {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.04em;
+  color: var(--bs-fg-muted);
+  padding: 5px 10px;
+  background: color-mix(in srgb, var(--bs-border) 35%, transparent);
+}
+
+.brink-studio .lint-row + .lint-row {
+  border-top: 1px solid var(--bs-border);
+}
+.brink-studio .lint-row-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+}
+
+.brink-studio .lint-disclose {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .lint-disclose.is-empty {
+  cursor: default;
+}
+
+/* The Problems panel's severity tokens, so a row reads the same here as
+   the problem it will produce. `is-allow` is deliberately blank: allow
+   reports nothing, so it should look like nothing. */
+.brink-studio .lint-sev {
+  width: 13px;
+  text-align: center;
+  font-size: var(--bs-font-micro);
+  flex-shrink: 0;
+}
+.brink-studio .lint-sev.is-error { color: var(--bs-error); }
+.brink-studio .lint-sev.is-warning { color: var(--bs-warning); }
+.brink-studio .lint-sev.is-info { color: var(--bs-info); }
+
+.brink-studio .lint-code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-small);
+  width: 42px;
+  flex-shrink: 0;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .lint-row.is-configured .lint-code {
+  color: var(--bs-accent);
+}
+.brink-studio .lint-title {
+  flex-grow: 1;
+  min-width: 0;
+  font-size: var(--bs-font-body);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .lint-row.is-configured .lint-title {
+  color: var(--bs-fg);
+}
+.brink-studio .lint-default {
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  flex-shrink: 0;
+}
+
+.brink-studio .lint-levels {
+  display: flex;
+  height: 22px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.brink-studio .lint-level {
+  padding: 0 7px;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+  cursor: pointer;
+}
+.brink-studio .lint-level + .lint-level {
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .lint-level.on.is-deny {
+  color: var(--bs-error);
+  background: color-mix(in srgb, var(--bs-error) 16%, transparent);
+}
+.brink-studio .lint-level.on.is-warn {
+  color: var(--bs-warning);
+  background: color-mix(in srgb, var(--bs-warning) 16%, transparent);
+}
+.brink-studio .lint-level.on.is-hint {
+  color: var(--bs-info);
+  background: color-mix(in srgb, var(--bs-info) 16%, transparent);
+}
+.brink-studio .lint-level.on.is-allow {
+  color: var(--bs-fg);
+  background: color-mix(in srgb, var(--bs-fg-muted) 24%, transparent);
+}
+
+.brink-studio .lint-move,
+.brink-studio .lint-configure {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.brink-studio .lint-move {
+  padding: 0;
+  width: 22px;
+  justify-content: center;
+}
+.brink-studio .lint-configure {
+  color: var(--bs-accent);
+}
+.brink-studio .lint-move:hover,
+.brink-studio .lint-configure:hover {
+  border-color: var(--bs-accent);
+}
+
+.brink-studio .lint-explanation {
+  margin: 0;
+  padding: 0 10px 8px 62px;
+  font-size: var(--bs-font-small);
+  line-height: 1.6;
+  color: var(--bs-fg);
+}
+
+.brink-studio .lint-empty {
+  margin: 0;
+  padding: 10px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  border: 1px dashed var(--bs-border);
+  border-radius: 4px;
+}
+
+.brink-studio .lint-row.is-unknown .lint-code {
+  color: var(--bs-warning);
+}

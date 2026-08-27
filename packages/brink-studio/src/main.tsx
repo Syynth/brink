@@ -61,6 +61,12 @@ entry = "main.ink"
 # A file is a draft when it matches one of these AND nothing reaches it
 # from the entry — see the Drafts section of the project-config docs.
 drafts = ["scratch/**"]
+
+# Diagnostics this project has decided about. Everything else runs at its
+# built-in default — see Settings > Diagnostics.
+[lints]
+E014 = "deny"
+E033 = "allow"
 `;
 
 // The demo's draft: cut material, kept around, not part of the story.

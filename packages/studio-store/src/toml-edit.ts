@@ -81,19 +81,28 @@ function tomlString(value: string): string {
  * - table absent → `[table]` + key appended at the end (removal of a key
  *   in a missing table is a no-op).
  */
-export function setTomlString(
+/**
+ * Write an already-rendered TOML value at `[table] key`, or remove the key
+ * when `rendered` is null.
+ *
+ * The shared body behind {@link setTomlString} and {@link setTomlBool} —
+ * they differ only in how the value is spelled, and duplicating the
+ * table-location and insertion-point logic to vary a quoting rule would be
+ * two places to get "insert after the table's last real line" wrong.
+ */
+function setTomlValue(
   source: string,
   table: string,
   key: string,
-  value: string | null,
+  rendered: string | null,
 ): string {
   const lines = source.split("\n");
   const range = tableRange(lines, table);
   const re = keyLineRe(key);
 
   if (range === null) {
-    if (value === null) return source;
-    const suffix = `[${table}]\n${key} = ${tomlString(value)}\n`;
+    if (rendered === null) return source;
+    const suffix = `[${table}]\n${key} = ${rendered}\n`;
     if (source === "") return suffix;
     return source.endsWith("\n") ? `${source}${suffix}` : `${source}\n${suffix}`;
   }
@@ -101,16 +110,16 @@ export function setTomlString(
   for (let i = range.start; i < range.end; i++) {
     const line = lines[i] ?? "";
     if (!re.test(line)) continue;
-    if (value === null) {
+    if (rendered === null) {
       lines.splice(i, 1);
     } else {
       const indent = /^\s*/.exec(line)?.[0] ?? "";
-      lines[i] = `${indent}${key} = ${tomlString(value)}`;
+      lines[i] = `${indent}${key} = ${rendered}`;
     }
     return lines.join("\n");
   }
 
-  if (value === null) return source;
+  if (rendered === null) return source;
   // Insert after the table's last non-blank, non-comment line so the key
   // joins the existing block rather than trailing the blank separator
   // before the next table.
@@ -119,6 +128,74 @@ export function setTomlString(
     const trimmed = (lines[i] ?? "").trim();
     if (trimmed !== "" && !trimmed.startsWith("#")) insertAt = i + 1;
   }
-  lines.splice(insertAt, 0, `${key} = ${tomlString(value)}`);
+  lines.splice(insertAt, 0, `${key} = ${rendered}`);
   return lines.join("\n");
+}
+
+export function setTomlString(
+  source: string,
+  table: string,
+  key: string,
+  value: string | null,
+): string {
+  return setTomlValue(source, table, key, value === null ? null : tomlString(value));
+}
+
+/**
+ * The keys present in `[table]`, in the order the file writes them (#3148).
+ *
+ * The Diagnostics section needs "which codes has this project decided
+ * about", which is a question about key PRESENCE rather than any key's
+ * value — and the answer is what puts a code in the configured list rather
+ * than the unconfigured one.
+ *
+ * Same deliberate narrowness as the rest of this module: simple `key =`
+ * lines only. A dotted or quoted key reads as absent, and the raw editor
+ * remains the way to touch one.
+ */
+export function tomlTableKeys(source: string, table: string): string[] {
+  const lines = source.split("\n");
+  const range = tableRange(lines, table);
+  if (range === null) return [];
+  const keys: string[] = [];
+  for (const line of lines.slice(range.start, range.end)) {
+    const m = /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line);
+    if (m?.[1] !== undefined) keys.push(m[1]);
+  }
+  return keys;
+}
+
+/**
+ * Read `[table] key` as a boolean, or null when absent or not literally
+ * `true`/`false`.
+ *
+ * Separate from {@link getTomlString} because a bare `true` is not a TOML
+ * string, and reading it as one would make `deny-warnings` invisible to the
+ * form while it is plainly set in the file.
+ */
+export function getTomlBool(source: string, table: string, key: string): boolean | null {
+  const lines = source.split("\n");
+  const range = tableRange(lines, table);
+  if (range === null) return null;
+  const re = keyLineRe(key);
+  for (const line of lines.slice(range.start, range.end)) {
+    const m = re.exec(line);
+    if (m) {
+      const raw = (m[1] ?? "").replace(/\s*#.*$/, "").trim();
+      if (raw === "true") return true;
+      if (raw === "false") return false;
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Write `[table] key = true|false`, or remove it when `value` is null. */
+export function setTomlBool(
+  source: string,
+  table: string,
+  key: string,
+  value: boolean | null,
+): string {
+  return setTomlValue(source, table, key, value === null ? null : String(value));
 }
