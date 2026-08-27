@@ -103,6 +103,34 @@ impl EditorSession {
 }
 
 impl EditorSession {
+    /// The draft path set behind [`EditorSession::draft_paths`] — see that
+    /// method for the ruling this implements. Sorted, so the JSON the host
+    /// reads is stable across calls that didn't change anything (an
+    /// unstable order would churn every React memo keyed on it).
+    pub(crate) fn draft_path_list(&self) -> Vec<String> {
+        if self.draft_globs.is_empty() {
+            return Vec::new();
+        }
+        let closure = self.session.compilation_closure_paths();
+        if closure.is_empty() {
+            // Before the first compile nothing is known to be unreachable.
+            return Vec::new();
+        }
+        let mut drafts: Vec<String> = self
+            .session
+            .db()
+            .file_ids()
+            // A mounted stdlib file is never the author's draft, however the
+            // globs happen to be spelled — it isn't their file.
+            .filter(|id| !self.mounted_std_ids.contains(id))
+            .filter_map(|id| self.session.db().file_path(id).map(str::to_owned))
+            .filter(|path| !closure.contains(path))
+            .filter(|path| brink_project_config::globs::matches_any(path, &self.draft_globs))
+            .collect();
+        drafts.sort();
+        drafts
+    }
+
     fn project_outline_inner(&self) -> String {
         let db = self.session.db();
         let mut outline: Vec<FileOutlineJs> = Vec::new();
