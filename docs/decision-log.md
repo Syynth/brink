@@ -3463,3 +3463,13 @@
 - **WHAT:** Files with draft status (see "`drafts` is a real document status") are NOT compiled. This closes the compile half of the question that ruling deliberately left open. Search behaviour remains undecided.
 - **WHY:** A draft is work in progress by definition, so compiling it produces diagnostics about text the author already knows is unfinished — noise in the Problems panel that competes with errors in the actual story. Not compiling drafts is what makes the status worth declaring: scratch scenes and cut material stop reporting on themselves.
 - **OPEN, and it needs an answer before implementation:** what happens when a draft file IS reachable from the entry — someone marks a file `drafts` that `main.ink` still INCLUDEs. Skipping it would break diverts into it while the story looks fine, which violates the "nothing disappears silently" principle the drafts ruling rests on. Candidates: compile it anyway and warn that draft status is being overridden by reachability; refuse and diagnose the contradiction; or treat reachability as the stronger signal and ignore the glob. Not decided here.
+
+## Reachability wins: a file is a draft only if marked AND not included
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** brink.toml / compile pipeline / studio
+- **SCOPE:** moderate
+- **WHAT:** Draft status is DERIVED, not merely declared: a file is a draft when it matches a `drafts` glob **and** is not reachable from the entry. A marked file that `main.ink` still reaches is simply not a draft — it compiles normally, with no special treatment. This resolves the open question left by "Draft files are not compiled".
+- **WHY:** It removes the contradictory state instead of handling it. The earlier framing allowed "marked draft but included", which forced a choice between breaking diverts silently, diagnosing a conflict the author has to resolve, or letting a glob quietly disable part of a working story — all three bad, and the first violates the principle that nothing disappears silently. Making reachability the stronger signal means **draft status can never break the story by construction**: the only files it can exclude from compilation are files the compilation never reached anyway.
+  It also makes the rest coherent rather than coincidental. The "not included from main" banner is precisely the not-reachable signal, so suppressing it for drafts is exact — an included file has no banner to suppress. And "drafts are not compiled" stops being a compile-pipeline exclusion at all; it is just the existing behaviour for unreachable files, minus the diagnostics noise.
+- **ALSO:** a draft file's EDITOR should be badged or styled so the state is visible while writing in it, not only in the Binder. Exact treatment open.
