@@ -41,7 +41,7 @@ mod value_marshal;
 pub use classifier::ClassifierSession;
 pub use compile::{compile, compile_fragment, program_checksum};
 pub use editor::EditorSession;
-pub use editor_dto::{token_modifier_names, token_type_names};
+pub use editor_dto::{diagnostic_registry, token_modifier_names, token_type_names};
 pub use session::{WebSession, diff_snapshots};
 pub use speculation::WebSpeculation;
 pub use story_runner::StoryRunner;

@@ -2838,6 +2838,37 @@ impl DiagnosticCode {
         }
     }
 
+    /// The written explanation for this code, or `None` when nobody has
+    /// written one yet (#3169).
+    ///
+    /// The prose lives in `docs/diagnostics/Exxx.md` under `## Explanation`.
+    /// Every code has a file; only 31 of 189 have that section filled in, so
+    /// `None` is the common answer and callers must render something else —
+    /// [`Self::title`] is the intended fallback. Returning `None` rather than
+    /// an empty string is deliberate: a caller that forgets to check gets a
+    /// type error instead of a blank panel.
+    #[must_use]
+    pub fn explanation(self) -> Option<&'static str> {
+        super::diagnostic_explanations::EXPLANATIONS
+            .iter()
+            .find(|(code, _)| *code == self)
+            .map(|(_, text)| *text)
+    }
+
+    /// Whether `[lints]` can override this code's severity (#1160).
+    ///
+    /// Only codes whose DEFAULT severity is `Warning` are overridable —
+    /// `brink_analyzer::validate_lint_code` refuses everything else and
+    /// returns a `ConfigWarning` instead of applying it. That is a much
+    /// narrower set than the code list suggests, which is exactly why this
+    /// belongs in the registry: a settings UI that offers a level picker for
+    /// a code the analyzer will refuse has built the silent no-op it exists
+    /// to prevent.
+    #[must_use]
+    pub fn is_overridable(self) -> bool {
+        matches!(self.severity(), Severity::Warning)
+    }
+
     /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
     #[must_use]
     #[expect(
@@ -3037,5 +3068,114 @@ impl DiagnosticCode {
             "E190" => Some(Self::E190),
             _ => None,
         }
+    }
+}
+
+// ── Issue #3169: the registry the settings UI reads ────────────────
+
+#[cfg(test)]
+mod registry_tests {
+    use super::{DiagnosticCode, Severity};
+
+    /// Read the `## Explanation` section out of a doc file, the same way the
+    /// generator does.
+    fn doc_explanation(text: &str) -> String {
+        let Some((_, rest)) = text.split_once("## Explanation\n") else {
+            return String::new();
+        };
+        rest.split("\n## ").next().unwrap_or("").trim().to_owned()
+    }
+
+    fn docs_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/diagnostics")
+    }
+
+    #[test]
+    fn explanations_match_the_docs() {
+        // The table is embedded (the docs live outside this crate's package
+        // directory, and the wasm build has no filesystem), so nothing keeps
+        // it in step with the markdown except this test. It runs in the
+        // workspace, where `docs/` exists — which is also the only place the
+        // drift can happen.
+        let root = docs_dir();
+        assert!(
+            root.is_dir(),
+            "expected diagnostics docs at {}",
+            root.display()
+        );
+
+        let mut wrong = Vec::new();
+        for code in DiagnosticCode::ALL {
+            let text = std::fs::read_to_string(root.join(format!("{}.md", code.as_str())))
+                .unwrap_or_default();
+            if doc_explanation(&text) != code.explanation().unwrap_or("") {
+                wrong.push(code.as_str());
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "diagnostic_explanations.rs is out of step with docs/diagnostics for {wrong:?} \
+             — regenerate it so the settings UI does not show stale prose"
+        );
+    }
+
+    #[test]
+    fn every_code_has_an_explanation_file() {
+        let root = docs_dir();
+        let missing: Vec<_> = DiagnosticCode::ALL
+            .iter()
+            .filter(|c| !root.join(format!("{}.md", c.as_str())).is_file())
+            .map(|c| c.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "codes with no explanation file: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn no_explanation_is_a_leftover_placeholder() {
+        // The generated stubs carried bracketed placeholder prose. Embedding
+        // one would put "[Detailed explanation of this diagnostic...]" in
+        // front of an author, which is worse than showing nothing at all.
+        for code in DiagnosticCode::ALL {
+            if let Some(text) = code.explanation() {
+                assert!(
+                    !text.contains("[Detailed explanation"),
+                    "{} still carries placeholder text",
+                    code.as_str()
+                );
+                assert!(
+                    !text.is_empty(),
+                    "{} has an empty explanation",
+                    code.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_warning_default_codes_are_overridable() {
+        // `brink_analyzer::validate_lint_code` refuses every other code, so
+        // this predicate has to agree with it — otherwise a settings UI
+        // offers an override the analyzer then silently discards.
+        for code in DiagnosticCode::ALL {
+            assert_eq!(
+                code.is_overridable(),
+                matches!(code.severity(), Severity::Warning),
+                "{}",
+                code.as_str()
+            );
+        }
+        let overridable = DiagnosticCode::ALL
+            .iter()
+            .filter(|c| c.is_overridable())
+            .count();
+        assert!(
+            overridable > 0 && overridable < DiagnosticCode::ALL.len(),
+            "a flag that is true (or false) for every code would be pointless: \
+             {overridable} of {}",
+            DiagnosticCode::ALL.len()
+        );
     }
 }

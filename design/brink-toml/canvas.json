@@ -1,0 +1,115 @@
+{
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "Settings surface"
+    },
+    {
+      "id": "page-2",
+      "name": "First round"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1120,
+      "h": 720,
+      "title": "Shell \u2014 Project",
+      "page": "page-1"
+    },
+    {
+      "file": "Formatting.dc.html",
+      "x": 1240,
+      "y": 0,
+      "w": 1120,
+      "h": 720,
+      "title": "Formatting",
+      "page": "page-1"
+    },
+    {
+      "file": "Diagnostics.dc.html",
+      "x": 0,
+      "y": 880,
+      "w": 1120,
+      "h": 960,
+      "title": "Diagnostics \u2014 categorized, two lists",
+      "page": "page-1"
+    },
+    {
+      "file": "SearchAll.dc.html",
+      "x": 1240,
+      "y": 880,
+      "w": 1120,
+      "h": 720,
+      "title": "Search across sections",
+      "page": "page-1"
+    },
+    {
+      "file": "TextFirst.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1080,
+      "h": 700,
+      "title": "C \u2014 Mode switch (chosen)",
+      "page": "page-2"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -230,
+      "w": 1120,
+      "text": "C's mode switch, A's field vocabulary, divided into sections \u2014 with a Zed-shaped shell around it.\n\nThe Zed reference settles the direction question rather than adding to it: \"Edit in settings.json\" IS the mode switch. So the escape hatch stops being a panel competing for space and becomes a button, which is what buys the room for sections and search."
+    },
+    {
+      "id": "sections",
+      "x": 0,
+      "y": 760,
+      "w": 1120,
+      "text": "Sections are the unit, and they are registered rather than laid out.\n\nA section = id, title, icon, rows. The shell knows how to draw a row (label, description, control, revert-to-default) and nothing else. Adding a key to brink.toml means adding a row to a section \u2014 never editing this page.\n\nThat is what keeps the form from drifting behind the parser, which is the standing failure mode of a hand-built settings form: the parser grows a key, the form does not, and nobody notices until someone asks why it cannot be set."
+    },
+    {
+      "id": "diag",
+      "x": 0,
+      "y": 1880,
+      "w": 1120,
+      "text": "Two lists, both grouped by the analyzer's own categories.\n\nWhich list a code is in IS whether it is in brink.toml \u2014 no second state to read. Configure moves a code up, writing the key at its current default (so the first click changes nothing about the build); the down arrow moves it back out.\n\nThe categories are not invented: DiagnosticCode is already sectioned in source \u2014 Containers, Declarations, Control flow, Expressions, Choices, Inline logic, Cross-file analysis, Compile errors, Warnings, Structural validation. They just need to survive into the DTO.\n\nSeverity glyphs are the Problems panel's own (\u25cf error, \u25b2 warning, \u2139 info, dim \u25cf for allow), showing each code's EFFECTIVE level \u2014 so a row reads the same here as the problem it will produce.\n\nE999 is the drift case: a code in the file this compiler does not know. Kept rather than deleted, under its own group heading, since the parser warns about it anyway."
+    },
+    {
+      "id": "search",
+      "x": 1240,
+      "y": 1640,
+      "w": 1120,
+      "text": "Search covers labels, help text AND key names, so unprune-dirs is findable by typing either the key or what it does.\n\nThe rail becomes a result filter rather than navigation, and results stay editable in place \u2014 searching is not a mode you have to leave to change something.\n\nThe third result is deliberately a near miss, matched on help text rather than a label. Worth seeing that the design tolerates one legibly rather than pretending search is exact."
+    },
+    {
+      "id": "notruled",
+      "x": 1240,
+      "y": 760,
+      "w": 1120,
+      "text": "\"Not ruled\" is a real state on this surface, not a placeholder.\n\nIndent character is drawn because brink-fmt already models tabs \u2014 but brink.toml has no key for it, and tabs-vs-spaces was deliberately left out of the indent-size ruling. Showing it disabled-and-labelled is more honest than omitting it, and it gives open questions somewhere to live where you will actually run into them.\n\nSay if you would rather these never appear \u2014 it is a one-line rule either way."
+    },
+    {
+      "id": "round1",
+      "x": 0,
+      "y": 740,
+      "w": 1080,
+      "page": "page-2",
+      "text": "The first round, kept for reference. A (stacked peers) and B (linked split) are gone; C is here because it is what the current design is built on.\n\nWhat changed after your note: the switch applies to the WHOLE file rather than a section, because the sections are a way to navigate the form and the text is the file."
+    },
+    {
+      "id": "extended",
+      "x": 1240,
+      "y": 1880,
+      "w": 1120,
+      "text": "Extended description, from docs/diagnostics/Exxx.md.\n\nE014 is drawn expanded. The chevron is the only affordance; collapsed rows stay one line, so a long list does not become a wall.\n\nThese files already exist \u2014 one per code, all 189 \u2014 with Summary / Explanation / Example / Fix sections. But only 32 are actually written; the other 157 are still the generated stub ('[Detailed explanation of this diagnostic...]').\n\nSo the row needs to handle a stub gracefully rather than print the placeholder text at people. Simplest honest rule: show the Explanation when it is written, and fall back to title() alone when it is not \u2014 never render a bracketed placeholder. Worth deciding whether unwritten ones should also be visible as a docs gap somewhere."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-1"
+  }
+}

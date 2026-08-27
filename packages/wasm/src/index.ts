@@ -13,6 +13,7 @@ import init, {
   compile_fragment as wasmCompileFragment,
   program_checksum as wasmProgramChecksum,
   token_type_names,
+  diagnostic_registry,
   token_modifier_names,
   EditorSession as WasmEditorSession,
   StoryRunner,
@@ -143,6 +144,45 @@ export function programChecksum(storyBytes: Uint8Array): string {
 
 let cachedTypeNames: string[] | null = null;
 let cachedModifierNames: string[] | null = null;
+
+/** One diagnostic code, as the settings UI needs it (#3169). */
+export interface DiagnosticInfo {
+  /** `"E014"`. */
+  code: string;
+  /** One line; always present. */
+  title: string;
+  /** The code's DEFAULT severity. */
+  default_severity: "error" | "warning" | "info";
+  /**
+   * Whether `[lints]` can override it AT ALL. Only 30 of the 189 codes can
+   * — the analyzer refuses every code whose default severity is not
+   * `warning`. A UI that ignores this offers a level picker for a code the
+   * analyzer then discards, which is the silent no-op the settings surface
+   * exists to prevent.
+   */
+  overridable: boolean;
+  /**
+   * The written explanation, absent when nobody has written one (158 of 189
+   * today). Absent rather than empty, so forgetting to check cannot render
+   * a blank panel.
+   */
+  explanation?: string;
+}
+
+let cachedDiagnostics: DiagnosticInfo[] | null = null;
+
+/**
+ * Every diagnostic code the compiler knows, ordered by code (#3169).
+ *
+ * Static for a given build, so it is cached after the first call. Read this
+ * rather than keeping a list in TypeScript: a hand-maintained copy is wrong
+ * the moment a code is added, and wrong SILENTLY — a missing code simply
+ * never appears, and nobody notices a diagnostic they cannot configure.
+ */
+export function getDiagnosticRegistry(): DiagnosticInfo[] {
+  cachedDiagnostics ??= JSON.parse(diagnostic_registry()) as DiagnosticInfo[];
+  return cachedDiagnostics;
+}
 
 export function getTokenTypeNames(): string[] {
   if (!cachedTypeNames) {

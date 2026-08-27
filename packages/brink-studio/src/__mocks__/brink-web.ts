@@ -2538,6 +2538,40 @@ export function program_checksum(bytes: Uint8Array): string {
   return "0x" + sum.toString(16).padStart(8, "0");
 }
 
+/**
+ * Mock of `diagnostic_registry` (#3169). A handful of REAL rows, not a
+ * generated copy of all 189 — a mock that mirrored the whole registry would
+ * be a second source of truth to keep in step, which is the drift this
+ * accessor exists to remove.
+ *
+ * The rows are chosen to cover the shapes the UI branches on: an
+ * overridable code with an explanation, an overridable one without, and a
+ * non-overridable one (most codes are — only 30 of 189 can be configured).
+ */
+export function diagnostic_registry(): string {
+  return JSON.stringify([
+    {
+      code: "E001",
+      title: "knot is missing a name",
+      default_severity: "error",
+      overridable: false,
+    },
+    {
+      code: "E014",
+      title: "logic line has no effect",
+      default_severity: "warning",
+      overridable: true,
+    },
+    {
+      code: "E035",
+      title: "name shadows a built-in function",
+      default_severity: "warning",
+      overridable: true,
+      explanation: "A declaration collides with a reserved name.",
+    },
+  ]);
+}
+
 export function token_type_names(): string {
   return JSON.stringify(["comment", "keyword", "string", "number", "function", "variable"]);
 }

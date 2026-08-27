@@ -1175,6 +1175,60 @@ mod explain_match_to_js_tests {
     }
 }
 
+/// One diagnostic code, as the settings UI needs it (#3169).
+#[derive(serde::Serialize)]
+pub struct DiagnosticInfoJs {
+    /// `"E014"`.
+    pub code: String,
+    /// One line, from `DiagnosticCode::title` — always present.
+    pub title: String,
+    /// `"error" | "warning" | "info"`, the code's DEFAULT severity.
+    pub default_severity: String,
+    /// Whether `[lints]` can override it at all. Only 30 of the 189 codes
+    /// can: `validate_lint_code` refuses every code whose default severity
+    /// is not `Warning`. A UI that ignores this offers a level picker for a
+    /// code the analyzer then discards.
+    pub overridable: bool,
+    /// The written explanation, absent when nobody has written one (158 of
+    /// 189 today). Absent rather than empty so a caller cannot render a
+    /// blank panel by forgetting to check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+/// Every diagnostic code the compiler knows, ordered by code.
+///
+/// Static data — it depends on no session and cannot go stale within a
+/// build, which is why it is a free function rather than an `EditorSession`
+/// method. The settings UI reads this so its list cannot drift behind the
+/// analyzer; a hand-maintained copy in TypeScript would be wrong the moment
+/// a code is added, and wrong *silently* (a missing code simply never
+/// appears, and nobody notices a diagnostic they cannot configure).
+#[wasm_bindgen]
+#[must_use]
+pub fn diagnostic_registry() -> String {
+    use brink_ir::hir::{DiagnosticCode, Severity};
+    let rows: Vec<DiagnosticInfoJs> = DiagnosticCode::ALL
+        .iter()
+        .map(|code| DiagnosticInfoJs {
+            code: code.as_str().to_owned(),
+            title: code.title().to_owned(),
+            default_severity: match code.severity() {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                // Hint joins Info: the Problems panel already buckets them
+                // together (`severityBucket`), so splitting them here would
+                // hand the UI a distinction it does not draw.
+                Severity::Info | Severity::Hint => "info",
+            }
+            .to_owned(),
+            overridable: code.is_overridable(),
+            explanation: code.explanation().map(str::to_owned),
+        })
+        .collect();
+    serde_json::to_string(&rows).unwrap_or_default()
+}
+
 // ── Legacy stateless functions (token legend) ───────────────────────
 
 /// Get token type names for the legend.
@@ -1187,4 +1241,105 @@ pub fn token_type_names() -> String {
 #[wasm_bindgen]
 pub fn token_modifier_names() -> String {
     serde_json::to_string(brink_ide::semantic_tokens::token_modifier_names()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod diagnostic_registry_tests {
+    use super::diagnostic_registry;
+
+    #[derive(serde::Deserialize)]
+    struct Row {
+        code: String,
+        title: String,
+        default_severity: String,
+        overridable: bool,
+        #[serde(default)]
+        explanation: Option<String>,
+    }
+
+    fn rows() -> Vec<Row> {
+        serde_json::from_str(&diagnostic_registry()).expect("valid json")
+    }
+
+    #[test]
+    fn lists_every_code_the_compiler_knows() {
+        // Asserted against `ALL` rather than a literal count: a test that
+        // restates 189 only proves this file agrees with its own copy, and
+        // would go stale the next time a code is added.
+        assert_eq!(rows().len(), brink_ir::hir::DiagnosticCode::ALL.len());
+    }
+
+    #[test]
+    fn is_ordered_by_code_so_the_ui_never_has_to_sort() {
+        let codes: Vec<String> = rows().into_iter().map(|r| r.code).collect();
+        let mut sorted = codes.clone();
+        sorted.sort();
+        assert_eq!(codes, sorted);
+    }
+
+    #[test]
+    fn every_row_carries_a_title_and_a_known_severity() {
+        for r in rows() {
+            assert!(!r.title.is_empty(), "{} has no title", r.code);
+            assert!(
+                matches!(r.default_severity.as_str(), "error" | "warning" | "info"),
+                "{} has severity {:?}",
+                r.code,
+                r.default_severity
+            );
+        }
+    }
+
+    #[test]
+    fn only_warning_default_codes_are_marked_overridable() {
+        // The flag exists to stop the UI offering a level picker the
+        // analyzer will refuse, so it has to track the severity exactly.
+        for r in rows() {
+            assert_eq!(
+                r.overridable,
+                r.default_severity == "warning",
+                "{} overridable={} severity={}",
+                r.code,
+                r.overridable,
+                r.default_severity
+            );
+        }
+    }
+
+    #[test]
+    fn overridable_is_a_small_minority_and_the_ui_must_say_so() {
+        // The number that reshaped the settings design: most codes cannot
+        // be configured at all. If this ever approaches the total, the
+        // "Not configured" list stops being a short, browsable thing and
+        // the design needs revisiting rather than the test relaxing.
+        let rows = rows();
+        let overridable = rows.iter().filter(|r| r.overridable).count();
+        assert!(
+            overridable * 4 < rows.len(),
+            "overridable codes are no longer a small minority ({overridable} of {})              — the Diagnostics section was designed around that",
+            rows.len()
+        );
+    }
+
+    #[test]
+    fn an_absent_explanation_is_absent_not_empty() {
+        for r in rows() {
+            if let Some(text) = &r.explanation {
+                assert!(
+                    !text.trim().is_empty(),
+                    "{} serialized an empty explanation",
+                    r.code
+                );
+                assert!(
+                    !text.contains("[Detailed explanation"),
+                    "{} carries placeholder prose",
+                    r.code
+                );
+            }
+        }
+        assert!(
+            rows().iter().any(|r| r.explanation.is_some()),
+            "no explanations at all — the table is not reaching the DTO"
+        );
+    }
 }
