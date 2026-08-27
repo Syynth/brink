@@ -6754,13 +6754,12 @@ mod dialect_wasm_tests {
 
 #[cfg(test)]
 mod lint_override_reaches_compile {
-    //! `[lints] Exxx = "allow"` does not suppress anything (#3173).
+    //! `[lints] Exxx = "allow"` suppresses the diagnostic (#3173).
     //!
-    //! These are the reproduction, kept in-tree and ignored rather than
-    //! deleted: `effective_severity` returns the code's BASE severity for
-    //! `Allow`, and `Severity` has no suppressed variant for it to return
-    //! instead — so no caller can drop the diagnostic, and none does.
-    //! Un-ignore them with the fix.
+    //! End to end through `compile_project`, because the bug was never in
+    //! `effective_severity` alone: it returned the code's base severity for
+    //! `Allow`, and every consumer dutifully reported it. A unit test on
+    //! the analyzer would not have caught the consumers.
     use super::EditorSession;
 
     /// `VAR roll` shadows the `roll` builtin — E035, Warning by default and
@@ -6772,7 +6771,6 @@ mod lint_override_reaches_compile {
     }
 
     #[test]
-    #[ignore = "#3173: `allow` is a no-op — effective_severity cannot express suppression"]
     fn allow_suppresses_the_diagnostic() {
         // The bug this pins (#3148): setting a lint to `allow` in
         // `brink.toml` wrote the key and the warning kept being reported.
@@ -6798,7 +6796,6 @@ mod lint_override_reaches_compile {
     }
 
     #[test]
-    #[ignore = "#3173: pairs with the test above"]
     fn removing_the_override_brings_it_back() {
         // The other direction — otherwise a compile that reported nothing
         // for an unrelated reason would look like a pass above.
