@@ -31,19 +31,22 @@ test.describe("settings document", () => {
     await page.waitForSelector(".cm-content", { timeout: 10000 });
   });
 
-  test("opens via the palette; reopening focuses the existing tab", async ({
+  test("opens via the palette; reopening keeps the one occupant", async ({
     page,
   }) => {
+    // Settings TAKES OVER the editor root area rather than opening as a tab
+    // (decision log 2026-08-26): a tab is only reachable from a view that has
+    // tabs, and Continuous view has none. So its name is on the takeover
+    // header, and "don't duplicate the singleton" becomes "the area still has
+    // exactly one occupant".
     await openSettings(page);
     await expect(
-      page.locator(".brink-tab-label", { hasText: "Settings" }),
+      page.locator(".shell-takeover-title", { hasText: "Settings" }),
     ).toBeVisible();
 
-    // Re-running the command never duplicates the singleton.
     await runPaletteCommand(page, "Settings: Open");
-    await expect(
-      page.locator(".brink-tab-label", { hasText: "Settings" }),
-    ).toHaveCount(1);
+    await expect(page.locator(".shell-takeover-title")).toHaveCount(1);
+    await expect(page.locator(".settings-doc")).toHaveCount(1);
   });
 
   test("opens via the Mod-, default binding", async ({ page }) => {

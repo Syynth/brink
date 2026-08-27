@@ -27,8 +27,11 @@ function graphNode(page: Page, id: string): Locator {
 
 async function openStoryGraph(page: Page): Promise<void> {
   await runPaletteCommand(page, "Story: Open Story Graph");
+  // The graph TAKES OVER the editor root area rather than opening as a tab
+  // (decision log 2026-08-26) — so its name is on the takeover header, and
+  // there is no tab label to look for.
   await expect(
-    page.locator(".brink-tab-label", { hasText: "Story Graph" }),
+    page.locator(".shell-takeover-title", { hasText: "Story Graph" }),
   ).toBeVisible();
   // The canvas renders once the startup compile delivers a graph.
   await expect(page.locator(".brink-story-graph")).toBeVisible({ timeout: 10000 });
@@ -70,10 +73,10 @@ test.describe("story graph document", () => {
     await expect(page.locator(".brink-graph-legend")).toContainText("divert");
     await expect(page.locator(".brink-graph-legend")).toContainText("choice");
 
-    // Reopening focuses the existing tab — still exactly one.
+    // Reopening leaves the area with its one occupant, still the graph.
     await runPaletteCommand(page, "Story: Open Story Graph");
     await expect(
-      page.locator(".brink-tab-label", { hasText: "Story Graph" }),
+      page.locator(".shell-takeover-title", { hasText: "Story Graph" }),
     ).toHaveCount(1);
   });
 
@@ -83,7 +86,10 @@ test.describe("story graph document", () => {
     await graphNode(page, "barter").click();
 
     // editor.reveal opens the declaring file (the knots live in the include)
-    // and scrolls the knot header into the viewport.
+    // and scrolls the knot header into the viewport. It also puts the graph
+    // away: revealing source means "take me to the code", so the takeover
+    // steps aside rather than covering what it just revealed.
+    await expect(page.locator("[data-takeover]")).toHaveCount(0);
     await expect(
       page.locator(".brink-tab-label", { hasText: "toppled-temple.ink" }),
     ).toBeVisible();
@@ -141,20 +147,19 @@ test.describe("story graph document", () => {
     await expect(graphNode(page, "intro")).toHaveAttribute("data-current", "true");
   });
 
-  test("the graph refreshes after an edit + recompile", async ({ page }) => {
-    await openStoryGraph(page);
-    await expect(graphNode(page, "xyzzy")).toHaveCount(0);
-
-    // Put the graph in its own right group so it stays mounted while editing.
-    await runPaletteCommand(page, "Editor: Move Tab to Right Group");
-    await expect(page.locator(".shell-editor-group")).toHaveCount(2);
-
-    // Add a new knot to main.ink (debounced recompile).
-    await page
-      .locator(".shell-editor-group")
-      .first()
-      .locator(".cm-content")
-      .click();
+  test("the graph reflects an edit once it recompiles", async ({ page }) => {
+    // Typing, a debounced recompile, and then opening the graph do not fit
+    // in the suite's 15s default — the old version overlapped the compile
+    // with an already-mounted graph, which this one cannot.
+    test.setTimeout(45_000);
+    // This used to park the graph in a right-hand split and type in the other
+    // group, so a MOUNTED graph could be watched following the recompile.
+    // The takeover ruling (decision log 2026-08-26) makes that impossible on
+    // purpose: the editor root area has one occupant, so the graph and the
+    // editor are never on screen together. Editing first and opening the
+    // graph after is the shape the design now allows — see the note in the
+    // Wave 3 PR about what that costs.
+    await page.locator(".cm-content").first().click();
     await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Enter");
     await page.keyboard.type("=== xyzzy ===");
@@ -163,7 +168,18 @@ test.describe("story graph document", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.type("-> END");
 
-    // The mounted graph follows the successful compile.
-    await expect(graphNode(page, "xyzzy")).toBeAttached({ timeout: 10000 });
+    // Prove the edit landed before blaming the graph for not showing it.
+    await expect(page.locator(".cm-content").first()).toContainText("xyzzy");
+
+    // This settle is NOT ordinary flakiness padding — it works around a real
+    // bug (#3137). An edit reaches the wasm session on the editor's compile
+    // debounce, and `unmountSlot` destroys a view WITHOUT flushing it, so
+    // opening the graph (which unmounts the editor, one occupant) inside that
+    // window means the session never sees the edit and the graph is built
+    // from stale source. Waiting lets the debounce land first. Remove this
+    // line when #3137 is fixed; the test should pass without it.
+    await page.waitForTimeout(2500);
+    await openStoryGraph(page);
+    await expect(graphNode(page, "xyzzy")).toBeAttached({ timeout: 15000 });
   });
 });

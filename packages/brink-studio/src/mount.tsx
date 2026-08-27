@@ -1124,6 +1124,12 @@ export async function mountStudio(
     // NOTE: this is a deliberate stopgap, not the endgame. The maintainer
     // wants a single "main editor" mode with tabs as an opt-in gesture
     // (Inky-style); that design supersedes this and is tracked separately.
+    // Revealing source means "take me to the code", so anything that has
+    // taken the editor area over steps aside — otherwise clicking a node in
+    // the Story Graph reveals a location underneath the graph still covering
+    // it, and nothing appears to happen (caught by the graph's own e2e once
+    // the takeover landed).
+    shellLayout.getState().setTakeover(null);
     store.getState().openTarget({ kind: "file", path: target.file }, false);
     documents.revealAt(target.file, target.span.start);
   };
