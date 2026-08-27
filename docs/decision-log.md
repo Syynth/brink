@@ -3473,3 +3473,11 @@
 - **WHY:** It removes the contradictory state instead of handling it. The earlier framing allowed "marked draft but included", which forced a choice between breaking diverts silently, diagnosing a conflict the author has to resolve, or letting a glob quietly disable part of a working story — all three bad, and the first violates the principle that nothing disappears silently. Making reachability the stronger signal means **draft status can never break the story by construction**: the only files it can exclude from compilation are files the compilation never reached anyway.
   It also makes the rest coherent rather than coincidental. The "not included from main" banner is precisely the not-reachable signal, so suppressing it for drafts is exact — an included file has no banner to suppress. And "drafts are not compiled" stops being a compile-pipeline exclusion at all; it is just the existing behaviour for unreachable files, minus the diagnostics noise.
 - **ALSO:** a draft file's EDITOR should be badged or styled so the state is visible while writing in it, not only in the Binder. Exact treatment open.
+
+## Draft status travels with the filename
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** studio (binder, editor views, tabs)
+- **SCOPE:** minor/local
+- **WHAT:** A draft file is marked wherever the studio NAMES it: the Binder row, the Continuous view section heading, the Single File view header, and the Code view tab.
+- **WHY:** Stated as a rule rather than a list of four places, because the list is not the point — the point is that a file's name and its draft status should never be shown apart. Any surface added later that names files inherits the requirement without needing another ruling. It also answers the question the previous ruling left open ("badge or style the editor somehow") in a way that does not depend on which view is active: whichever surface you are looking at, the file that is a draft says so.
