@@ -466,13 +466,17 @@
      stops reading as a thing over the app. */
   width: min(920px, calc(100vw - 64px));
   height: min(640px, calc(100vh - 80px));
-  background: var(--bs-bg, #1e1e2e);
   border: 1px solid var(--bs-border);
   border-radius: 6px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 
+/* Two tones, and they carry the structure (maintainer, 2026-08-27): the
+   rail sits on the app's own ground and the pane is RAISED above it, so
+   the dialog reads as navigation-plus-content rather than one flat surface
+   split by a hairline. The border stays, but it is no longer doing the
+   work of separating them. */
 .brink-studio .brink-settings-rail {
   width: 196px;
   flex-shrink: 0;
@@ -480,6 +484,7 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px 8px;
+  background: var(--ctp-base, #1e1e2e);
   border-right: 1px solid var(--bs-border);
   min-height: 0;
 }
@@ -524,7 +529,10 @@
   color: var(--bs-fg);
 }
 .brink-studio .brink-settings-nav-item.active {
-  background: color-mix(in srgb, var(--bs-accent) 14%, transparent);
+  /* Lifted toward the pane's tone rather than tinted with the accent: the
+     selected row is the one whose CONTENT is showing, so it should read as
+     continuous with the pane beside it. */
+  background: var(--bs-panel-bg, #2a2a3d);
   color: var(--bs-fg);
 }
 .brink-studio .brink-settings-nav-item.active svg {
@@ -542,6 +550,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bs-panel-bg, #2a2a3d);
 }
 
 .brink-studio .brink-settings-head {
