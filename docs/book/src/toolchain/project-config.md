@@ -33,6 +33,9 @@ unprune-dirs = ["node_modules"]  # directory names a native (.brink) compile
                                  # the default target/.git/node_modules list
                                  # — see "Directory discovery pruning" below
                                  # (issue #1407)
+drafts = ["scratch/**", "*.draft.ink"]  # path globs naming deliberately
+                                       # unfinished work — see "Drafts"
+                                       # below (issue #3145)
 conventions = "conventions.brink"  # a project-relative path, or a bare
                                    # built-in preset name (e.g.
                                    # "screenplay"), pointing at the
@@ -70,6 +73,56 @@ see [Lint severity](#lint-severity) below) — are reported as
 guarantee: a `brink.toml` written against a newer schema still compiles with
 an older `brink` binary, just with a warning about the keys it didn't
 understand.
+
+
+## Drafts
+
+`[project] drafts` names work the author has deliberately not wired into
+the story — scratch scenes, cut material, notes-to-self. A file is a
+**draft** when both halves hold:
+
+```text
+draft(file) := matches(file, drafts) && !reachable_from_entry(file)
+```
+
+Reachability wins (ruled 2026-08-27). A file that matches a glob but the
+entry still `INCLUDE`s is **not** a draft: it compiles normally, with no
+special treatment. There is deliberately no "marked draft but included"
+state to diagnose, which is what makes draft status unable to break a
+story — the only files it can touch are files compilation never reached
+anyway.
+
+Being a draft means:
+
+- no "not included in the project" banner in the editor;
+- the file is marked as a draft wherever the studio names it — the Binder
+  row, the Continuous view's section heading, the Single File header, and
+  the Code view's tab. (The rule is that a file's name and its draft
+  status never appear apart, so a naming surface added later inherits it.)
+
+### Glob syntax
+
+Patterns match the whole **project-relative**, `/`-separated path, and
+are case-sensitive.
+
+| Token | Matches |
+|-------|---------|
+| `?` | exactly one character, never `/` |
+| `*` | any run of characters (including none), never `/` |
+| `**` | any run of characters, `/` included |
+| anything else | itself, literally |
+
+A trailing `/` is sugar for `/**`, so `scratch/` and `scratch/**` are the
+same. Note that a **bare directory name does not cover its contents** —
+`scratch` matches a file *called* `scratch`, and nothing else. Write
+`scratch/**` for everything under a directory. (This is the one place the
+dialect departs from `.gitignore`, whose bare-name rule is a common
+source of surprise matches; in a short, hand-written list, saying what
+you mean is cheaper than a silent over-match.)
+
+A pattern that is absolute (`/tmp/**`) or escapes the project (`../**`)
+parses but never matches anything, and is reported as a warning.
+
 
 ## Lint severity
 

@@ -17,6 +17,7 @@ import {
   useMemo,
   useState,
   useSyncExternalStore,
+  type ComponentType,
   type ReactNode,
 } from "react";
 import { useStore } from "zustand";
@@ -71,6 +72,23 @@ export interface ShellContextValue {
    * not something the shell can know — see `ContinuousView`.
    */
   continuousView?: ReactNode;
+  /**
+   * Rendered next to a document's NAME wherever the shell writes one — the
+   * Code view's tab, the Single File header, the Continuous section
+   * heading, the takeover header.
+   *
+   * The host supplies it because what a file's status IS (a draft, #3145)
+   * is a project concept the shell has no way to know. It is a COMPONENT,
+   * not a lookup function, so it can subscribe to whatever the host keeps
+   * that status in and re-render itself; a plain `(ref) => node` would
+   * render once per tab-strip render and go stale.
+   *
+   * Ruled 2026-08-27: a file's name and its draft status never appear
+   * apart. That is why this is one seam every naming surface renders
+   * rather than four independent additions — a surface added later
+   * inherits the rule by using it.
+   */
+  documentMark?: ComponentType<{ doc: DocumentRef }>;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -124,6 +142,8 @@ export interface ShellProviderProps {
   companionDocument?: DocumentRef;
   /** The Continuous view's content; see ShellContextValue. */
   continuousView?: ReactNode;
+  /** Per-document status mark; see ShellContextValue. */
+  documentMark?: ComponentType<{ doc: DocumentRef }>;
   children: ReactNode;
 }
 
@@ -142,6 +162,7 @@ export function ShellProvider({
   isMac,
   companionDocument,
   continuousView,
+  documentMark,
   children,
 }: ShellProviderProps) {
   const mac = isMac ?? detectMac();
@@ -306,6 +327,7 @@ export function ShellProvider({
       keymapOverrides: overridesService,
       companionDocument,
       continuousView,
+      documentMark,
     }),
     [
       commands,
@@ -319,7 +341,9 @@ export function ShellProvider({
       notificationCenter,
       themeService,
       overridesService,
-      companionDocument,],
+      companionDocument,
+      documentMark,
+    ],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

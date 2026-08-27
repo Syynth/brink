@@ -263,7 +263,7 @@ interface RowProps {
   editing?: RenameInputProps;
   /** Scope badge after the label (#3014/#3021 — Binder.dc.html): the entry
    *  mark or the "not included" mark. */
-  badge?: { text: string; tone: "entry" | "muted" };
+  badge?: { text: string; tone: "entry" | "muted" | "draft" };
   /** Dim the row (a file on disk that nothing INCLUDEs — outside the
    *  compile closure). */
   dimmed?: boolean;
@@ -771,6 +771,7 @@ function BinderInner() {
   const marksByFile = useMemo(() => fileMarks(diagnosticsList), [diagnosticsList]);
   const libraryFiles = useMemo(() => rawOutline.filter((f) => f.mounted), [rawOutline]);
   const closureFiles = useStudioStore((s) => s.closureFiles);
+  const draftFiles = useStudioStore((s) => s.draftFiles);
   const entryFile = useStudioStore((s) => s.entryFile);
   // #3014: an ink project provably cannot reach the mounted `.brink`
   // stdlib — `compilation_closure_files` never includes it — so the
@@ -1754,7 +1755,13 @@ function BinderInner() {
     // anchor; a source file outside the compile closure is on disk, not
     // in the story ("not included"), and renders dimmed with a badge.
     const isEntry = entryFile !== null && file.path === entryFile;
-    const notIncluded = !isEntry && isOutOfScope(file.path, closureFiles, rawOutline);
+    // A draft (#3145) is out of scope by declaration, so it takes the badge
+    // slot with its own word: "not included" states a problem, and a draft
+    // is not one. Still dimmed, because it genuinely is not in the story —
+    // what changes is what the row CALLS that, not whether it says it.
+    const isDraft = draftFiles.includes(file.path);
+    const notIncluded =
+      !isEntry && !isDraft && isOutOfScope(file.path, closureFiles, rawOutline);
 
     return (
       <div key={fileKey}>
@@ -1766,11 +1773,13 @@ function BinderInner() {
           badge={
             isEntry
               ? { text: "entry", tone: "entry" }
-              : notIncluded
-                ? { text: "not included", tone: "muted" }
-                : undefined
+              : isDraft
+                ? { text: "draft", tone: "draft" }
+                : notIncluded
+                  ? { text: "not included", tone: "muted" }
+                  : undefined
           }
-          dimmed={notIncluded}
+          dimmed={notIncluded || isDraft}
           marks={marksByFile.get(file.path)}
           onMenuClick={(e) => fileRow && handleContextMenu(e, fileRow)}
           extraActions={

@@ -177,6 +177,17 @@ pub struct EditorSession {
     /// place that knows whether the named path resolves to a real project
     /// file.
     configured_entry: Option<String>,
+    /// `[project] drafts` from the most recently applied `brink.toml`
+    /// (issue #3145): the path globs half of draft status. Empty means no
+    /// file is a draft — which is also what a *missing* `brink.toml` means,
+    /// so this is cleared on the no-config-found path exactly like
+    /// [`Self::configured_entry`], and for the same reason: a stale glob
+    /// list would keep silencing a file's out-of-scope banner after the
+    /// config that declared it went away.
+    ///
+    /// The other half is reachability, which only [`Self::draft_paths`]
+    /// can supply — see that method.
+    draft_globs: Vec<String>,
     /// The full warning-string set returned by the most recent
     /// `apply_project_config`/`discover_project_config` call (issue #2333)
     /// — read by [`Self::dedupe_config_warnings`], the shared filter both
@@ -254,6 +265,7 @@ impl EditorSession {
             mounted_std_ids,
             explain_cache: brink_ir::ExplainMatchCache::new(),
             configured_entry: None,
+            draft_globs: Vec::new(),
             last_config_warnings: BTreeSet::new(),
         }
     }
@@ -620,6 +632,7 @@ impl EditorSession {
             // repoints compilation/the initial tab at a file the current
             // tree no longer names one.
             self.configured_entry = None;
+            self.draft_globs.clear();
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -659,6 +672,31 @@ impl EditorSession {
     #[must_use]
     pub fn configured_entry(&self) -> Option<String> {
         self.configured_entry.clone()
+    }
+
+    /// Project-relative paths that are **drafts** (issue #3145) — JSON
+    /// string array, sorted.
+    ///
+    /// Ruled 2026-08-27, "reachability wins":
+    ///
+    /// ```text
+    /// draft(file) := matches(file, [project] drafts) && !reachable_from_entry(file)
+    /// ```
+    ///
+    /// Both halves are computed here rather than reassembled by the host,
+    /// because they come from two different places (the config and the
+    /// compile closure) and a host that combined them itself would be a second
+    /// definition free to drift from this one. Callers ask this; they do not
+    /// re-derive it.
+    ///
+    /// Empty before the first compile: [`Self::compilation_closure`] is
+    /// empty then, so nothing is known to be unreachable yet, and reporting
+    /// every glob match as a draft during that window would flash draft
+    /// marks onto files that turn out to be part of the story. That mirrors
+    /// `isOutOfScope`'s own "closure empty means nothing to contradict" rule on
+    /// the TS side, which is what draws the banner this suppresses.
+    pub fn draft_paths(&self) -> String {
+        serde_json::to_string(&self.draft_path_list()).unwrap_or_default()
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -1031,6 +1069,9 @@ impl EditorSession {
         // poll after discovery to learn whether the file named an entry
         // file at all.
         self.configured_entry.clone_from(&config.entry);
+        // `[project] drafts` (#3145): same wholesale-replace rule and the
+        // same reason — globs removed from the file must stop applying.
+        self.draft_globs.clone_from(&config.drafts);
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
@@ -4828,6 +4869,104 @@ mod tests {
     // ── Issue #1880: the conventions pointer reaches the live db ───────────
     // (regression: since #2289, an unwired `conventions` reads as
     // "misconfigured" and fires E169 on every claim handler)
+
+    // ── Issue #3145: `[project] drafts` ────────────────────────────────
+
+    /// Seed a project whose entry INCLUDEs one scene, plus two files it
+    /// does not reach: one inside `scratch/`, one beside the entry.
+    fn drafts_session(config: &str) -> EditorSession {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "INCLUDE scenes/harbour.ink\n-> END\n");
+        s.update_file("scenes/harbour.ink", "-> END\n");
+        s.update_file("scratch/cut.ink", "-> END\n");
+        s.update_file("offcuts.ink", "-> END\n");
+        let _ = s.apply_project_config(config);
+        let _ = s.compile_project("main.ink");
+        s
+    }
+
+    fn drafts_of(s: &EditorSession) -> Vec<String> {
+        serde_json::from_str(&s.draft_paths()).expect("valid json")
+    }
+
+    #[test]
+    fn a_glob_match_outside_the_closure_is_a_draft() {
+        let s = drafts_session("[project]\ndrafts = [\"scratch/**\"]\n");
+        assert_eq!(drafts_of(&s), vec!["scratch/cut.ink".to_owned()]);
+    }
+
+    #[test]
+    fn an_unmatched_file_outside_the_closure_is_not_a_draft() {
+        // `offcuts.ink` is just as unreachable as `scratch/cut.ink`; being
+        // out of scope is not by itself draft status, or the config key
+        // would do nothing.
+        let s = drafts_session("[project]\ndrafts = [\"scratch/**\"]\n");
+        assert!(!drafts_of(&s).contains(&"offcuts.ink".to_owned()));
+    }
+
+    #[test]
+    fn reachability_wins_over_a_glob_that_names_a_reachable_file() {
+        // The 2026-08-27 ruling, stated as a test: a marked file the entry
+        // still reaches is not a draft at all. This is what makes draft
+        // status unable to break a story — the only files it can touch are
+        // files compilation never reached.
+        let s = drafts_session("[project]\ndrafts = [\"scenes/**\", \"main.ink\"]\n");
+        assert!(
+            drafts_of(&s).is_empty(),
+            "both globs name files inside the closure, so neither is a draft: {:?}",
+            drafts_of(&s)
+        );
+    }
+
+    #[test]
+    fn nothing_is_a_draft_before_the_first_compile() {
+        // The closure is empty until something compiles, so "not in the
+        // closure" is not yet a claim anyone can make. Reporting glob
+        // matches during that window would flash draft marks onto files
+        // that turn out to be part of the story.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "INCLUDE scratch/cut.ink\n-> END\n");
+        s.update_file("scratch/cut.ink", "-> END\n");
+        let _ = s.apply_project_config("[project]\ndrafts = [\"scratch/**\"]\n");
+        assert!(drafts_of(&s).is_empty(), "{:?}", drafts_of(&s));
+    }
+
+    #[test]
+    fn no_drafts_key_means_no_drafts() {
+        let s = drafts_session("[project]\nentry = \"main.ink\"\n");
+        assert!(drafts_of(&s).is_empty(), "{:?}", drafts_of(&s));
+    }
+
+    #[test]
+    fn removing_the_drafts_key_stops_files_being_drafts() {
+        // Same staleness hazard `configured_entry` documents: a glob list
+        // that outlived the config declaring it would go on silencing a
+        // file's out-of-scope banner with nothing in the project saying so.
+        let mut s = drafts_session("[project]\ndrafts = [\"scratch/**\"]\n");
+        assert_eq!(drafts_of(&s).len(), 1);
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        let _ = s.compile_project("main.ink");
+        assert!(
+            drafts_of(&s).is_empty(),
+            "a brink.toml that dropped `drafts` must clear them: {:?}",
+            drafts_of(&s)
+        );
+    }
+
+    #[test]
+    fn draft_paths_are_sorted() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> END\n");
+        for name in ["scratch/z.ink", "scratch/a.ink", "scratch/m.ink"] {
+            s.update_file(name, "-> END\n");
+        }
+        let _ = s.apply_project_config("[project]\ndrafts = [\"scratch/**\"]\n");
+        let _ = s.compile_project("main.ink");
+        let drafts = drafts_of(&s);
+        let mut sorted = drafts.clone();
+        sorted.sort();
+        assert_eq!(drafts, sorted, "unstable order churns every host-side memo");
+    }
 
     /// A pattern-claiming handler declared inside the project's own
     /// correctly-configured conventions module must NOT be flagged `E169`.

@@ -877,6 +877,23 @@ export class EditorSessionHandle {
   }
 
   /**
+   * Project-relative paths that are DRAFTS (#3145) — files matching a
+   * `[project] drafts` glob that are also outside the compile closure.
+   * Sorted; empty before any compile, and empty when `brink.toml` sets no
+   * `drafts`.
+   *
+   * Both halves of that definition are applied on the Rust side on
+   * purpose. Do not reconstruct draft status here by intersecting
+   * {@link getCompilationClosure} with a glob list — the ruling
+   * ("reachability wins", 2026-08-27) has exactly one implementation, and
+   * a second one in TS would be free to drift from it.
+   */
+  getDraftPaths(): string[] {
+    const json = this.session.draft_paths();
+    return JSON.parse(json) as string[];
+  }
+
+  /**
    * Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
    * plus END/DONE pseudo-nodes, and divert/choice/tunnel/thread edges. Each
    * edge lists the source occurrences (divert sites, UTF-16 spans) that
