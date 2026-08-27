@@ -427,15 +427,17 @@ impl Project {
     /// caller-supplied `"warning"` literal would misreport it here exactly
     /// as `brink compile`'s CLI renderer did before `ResolvedDiagnostic::
     /// severity` landed in #1615).
-    pub(super) fn diag_entry(&self, d: &Diagnostic) -> DiagEntry {
+    /// `None` when `[lints]` sets the code to `allow` — the caller drops it
+    /// rather than printing a suppressed diagnostic (#3173).
+    pub(super) fn diag_entry(&self, d: &Diagnostic) -> Option<DiagEntry> {
         let opts = self.driver.db().analysis_options();
-        let severity = brink_driver::effective_severity(d.code, opts.type_policy(), &opts.lints);
-        DiagEntry {
+        let severity = brink_driver::effective_severity(d.code, opts.type_policy(), &opts.lints)?;
+        Some(DiagEntry {
             severity: severity_str(severity).to_string(),
             code: d.code.as_str().to_string(),
             message: d.message.clone(),
             location: self.location_of(d.file, d.range),
-        }
+        })
     }
 
     /// Apply rename edits in-memory, returning the new source per touched file.
@@ -565,7 +567,13 @@ impl Project {
                     .to_string();
                 let src = driver.db().source(d.file).unwrap_or_default();
                 let (line, col) = LineIndex::new(src).line_col(d.range.start());
-                let severity = brink_driver::effective_severity(d.code, new_types, &new_opts.lints);
+                // Suppressed by `[lints] allow` — not an introduced
+                // diagnostic (#3173).
+                let Some(severity) =
+                    brink_driver::effective_severity(d.code, new_types, &new_opts.lints)
+                else {
+                    continue;
+                };
                 introduced.push(DiagEntry {
                     severity: severity_str(severity).to_string(),
                     code: d.code.as_str().into(),

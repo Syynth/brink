@@ -48,7 +48,9 @@ fn compile_result_json(
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| {
+                // `filter_map`: a `[lints] allow` code produces no
+                // diagnostic at all (#3173).
+                .filter_map(|d| {
                     diagnostic_to_js(
                         d,
                         &source_of(&d.path),
@@ -77,7 +79,8 @@ fn compile_result_json(
                 LoadOrCompileError::Compile(brink_compiler::CompileError::Diagnostics(diags)) => {
                     diagnostics = diags
                         .iter()
-                        .map(|d| {
+                        // `filter_map`: `[lints] allow` suppresses (#3173).
+                        .filter_map(|d| {
                             diagnostic_to_js(
                                 d,
                                 &source_of(&d.path),

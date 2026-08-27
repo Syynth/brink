@@ -3573,3 +3573,19 @@
   interface makes it a substantial surface with its own navigation, which is
   what a modal or window is for. Sequenced second so the surface is built
   once, in its final shape, rather than moved twice.
+
+## TODO notes must be configurable, like any advisory diagnostic
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** compiler
+- **SCOPE:** minor/local
+- **WHAT:** `[lints]` can override any diagnostic whose default severity is
+  not `Error` — including the advisory `Info` tier, of which `E189` (the ink
+  `TODO:` author note) is one.
+- **WHY:** A TODO note is the clearest case of a diagnostic an author might
+  not want reported: it marks work they already know about. `allow` is the
+  only lever that turns a diagnostic off, so excluding advisory codes from
+  overridability left them with none. The analyzer's own gate always
+  accepted them (`validate_lint_code` refuses only `Error`); what excluded
+  them was a too-narrow predicate added alongside the settings surface,
+  which hid them from the UI while the compiler would have honoured them.

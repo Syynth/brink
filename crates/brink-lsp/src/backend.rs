@@ -680,7 +680,9 @@ impl Backend {
 
             let mut lsp_diags: Vec<_> = filtered
                 .iter()
-                .map(|d| convert::diagnostic_to_lsp(d, &idx, types, &lints))
+                // `filter_map`: a `[lints] allow` code is not published
+                // (#3173).
+                .filter_map(|d| convert::diagnostic_to_lsp(d, &idx, types, &lints))
                 .collect();
 
             // Undeclared-rename detection (issue #1672 part 2,
@@ -3155,8 +3157,14 @@ fn collect_multiproject_diags(
                     related.push(annotation);
                 }
             } else {
-                let mut lsp_diag =
-                    convert::diagnostic_to_lsp(d, idx, opts.type_policy(), &opts.lints);
+                // Suppressed by `[lints] allow` — never enters the publish
+                // set, and so never gets a project annotation either
+                // (#3173).
+                let Some(mut lsp_diag) =
+                    convert::diagnostic_to_lsp(d, idx, opts.type_policy(), &opts.lints)
+                else {
+                    continue;
+                };
                 if let Some(root_path) = file_path_map.get(root)
                     && let Some(annotation) = make_project_annotation(root_path)
                 {
@@ -3256,7 +3264,11 @@ async fn publish_all_diagnostics(
 
                 let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered_lowering
                     .iter()
-                    .map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
+                    // `filter_map`: a `[lints] allow` code is not published
+                    // (#3173).
+                    .filter_map(|d| {
+                        convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints)
+                    })
                     .collect();
 
                 let roots = projects
@@ -3306,7 +3318,8 @@ async fn publish_all_diagnostics(
 
         let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered
             .iter()
-            .map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
+            // `filter_map`: a `[lints] allow` code is not published (#3173).
+            .filter_map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
             .collect();
         if let Some(new_manifest) = manifests.get(file_id) {
             lsp_diags.extend(rename_suspicion_diags(

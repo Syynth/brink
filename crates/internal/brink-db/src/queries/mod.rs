@@ -2763,10 +2763,19 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // program regardless of dialect). Error-severity lowering diagnostics
     // (T1b-3's E055/E056) still gate `program: None` exactly like an
     // analysis-phase error would.
-    let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) =
-        lir_diagnostics.into_iter().partition(|d| {
-            brink_analyzer::effective_severity(d.code, types, &lints) == Severity::Error
-        });
+    // Three-way, not a partition: `[lints] Exxx = "allow"` suppresses a
+    // diagnostic outright (#3173), and a suppressed one belongs in neither
+    // bucket. Filing it as a warning was the old behaviour and is exactly
+    // what made `allow` a no-op.
+    let mut lir_errors: Vec<Diagnostic> = Vec::new();
+    let mut lir_warnings: Vec<Diagnostic> = Vec::new();
+    for d in lir_diagnostics {
+        match brink_analyzer::effective_severity(d.code, types, &lints) {
+            None => {}
+            Some(Severity::Error) => lir_errors.push(d),
+            Some(_) => lir_warnings.push(d),
+        }
+    }
 
     if lir_errors.is_empty() {
         LirLowering {
@@ -3175,10 +3184,12 @@ pub fn partition_diagnostics(
     let mut warnings = Vec::new();
 
     let mut partition = |d: Diagnostic| {
-        if brink_analyzer::effective_severity(d.code, types, lints) == Severity::Error {
-            errors.push(d);
-        } else {
-            warnings.push(d);
+        // `None` is `[lints] allow` — dropped, not demoted to a warning
+        // (#3173).
+        match brink_analyzer::effective_severity(d.code, types, lints) {
+            None => {}
+            Some(Severity::Error) => errors.push(d),
+            Some(_) => warnings.push(d),
         }
     };
 

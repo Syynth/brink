@@ -879,28 +879,25 @@ impl EditorSession {
                     ix.byte_to_utf16(d.range.end().into()),
                 )
             });
-            DiagnosticJs {
+            // Effective severity (issue #1367), not the raw
+            // `DiagnosticCode::severity()` default — `options` is the same
+            // `AnalysisOptions` `compile` above ran under. `None` is
+            // `[lints] allow`: the diagnostic is suppressed and never
+            // reaches the editor (#3173).
+            let severity =
+                brink_analyzer::effective_severity(d.code, options.type_policy(), &options.lints)?;
+            Some(DiagnosticJs {
                 message: d.message.clone(),
                 start,
                 end,
-                // Effective severity (issue #1367), not the raw
-                // `DiagnosticCode::severity()` default — `options` is the
-                // same `AnalysisOptions` `compile` above ran under.
-                severity: format!(
-                    "{:?}",
-                    brink_analyzer::effective_severity(
-                        d.code,
-                        options.type_policy(),
-                        &options.lints
-                    )
-                ),
+                severity: format!("{severity:?}"),
                 code: d.code.as_str().to_owned(),
                 file: self.session.file_path(d.file).unwrap_or("").to_owned(),
-            }
+            })
         };
 
         if let Some(story) = product.story {
-            let warnings: Vec<DiagnosticJs> = product.warnings.iter().map(to_js).collect();
+            let warnings: Vec<DiagnosticJs> = product.warnings.iter().filter_map(to_js).collect();
 
             let mut bytes = Vec::new();
             brink_format::write_inkb(&story, &mut bytes);
@@ -920,7 +917,7 @@ impl EditorSession {
                 .errors
                 .iter()
                 .chain(product.warnings.iter())
-                .map(to_js)
+                .filter_map(to_js)
                 .collect();
 
             let resp = CompileResult {

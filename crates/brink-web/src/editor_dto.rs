@@ -597,18 +597,21 @@ pub(crate) fn diagnostic_to_js(
     source: &str,
     types: brink_analyzer::TypePolicy,
     lints: &brink_analyzer::LintPolicy,
-) -> DiagnosticJs {
-    DiagnosticJs {
+) -> Option<DiagnosticJs> {
+    // `None` when `[lints]` sets the code to `allow` — the diagnostic is
+    // suppressed and must not reach the editor at all (#3173). Returning
+    // `Option` rather than formatting whatever `effective_severity` gives
+    // back: `format!("{:?}", …)` of an `Option` would have put the literal
+    // string `Some(Warning)` on the wire.
+    let severity = brink_analyzer::effective_severity(d.code, types, lints)?;
+    Some(DiagnosticJs {
         message: d.message.clone(),
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
-        severity: format!(
-            "{:?}",
-            brink_analyzer::effective_severity(d.code, types, lints)
-        ),
+        severity: format!("{severity:?}"),
         code: d.code.as_str().to_owned(),
         file: d.path.clone(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -640,14 +643,16 @@ mod diagnostic_to_js_tests {
             "x",
             brink_analyzer::TypePolicy::Gradual,
             &brink_analyzer::LintPolicy::default(),
-        );
+        )
+        .expect("not suppressed by these lints");
         assert_eq!(no_override.severity, "Warning");
 
         let mut lints = brink_analyzer::LintPolicy::default();
         lints
             .overrides
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
-        let overridden = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &lints);
+        let overridden = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &lints)
+            .expect("not suppressed by these lints");
         assert_eq!(overridden.severity, "Error");
     }
 
@@ -664,14 +669,16 @@ mod diagnostic_to_js_tests {
         info_lints
             .overrides
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Info);
-        let info = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &info_lints);
+        let info = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &info_lints)
+            .expect("not suppressed by these lints");
         assert_eq!(info.severity, "Info");
 
         let mut hint_lints = brink_analyzer::LintPolicy::default();
         hint_lints
             .overrides
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Hint);
-        let hint = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &hint_lints);
+        let hint = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &hint_lints)
+            .expect("not suppressed by these lints");
         assert_eq!(hint.severity, "Hint");
     }
 }
@@ -1234,6 +1241,11 @@ const CATEGORIES: &[(&str, &str)] = &[
     // Spellings that still work but have been superseded.
     ("E110", "Deprecated spellings"),
     ("E172", "Deprecated spellings"),
+    // The advisory tiers. `Info`-default codes are overridable too — an
+    // author who does not want TODO notes reported has no other lever
+    // (ruled 2026-08-27, #3173).
+    ("E157", "Author notes"),
+    ("E189", "Author notes"),
 ];
 
 /// One diagnostic code, as the settings UI needs it (#3169).
@@ -1377,19 +1389,25 @@ mod diagnostic_registry_tests {
     }
 
     #[test]
-    fn only_warning_default_codes_are_marked_overridable() {
+    fn everything_but_a_hard_error_is_marked_overridable() {
         // The flag exists to stop the UI offering a level picker the
-        // analyzer will refuse, so it has to track the severity exactly.
+        // analyzer will refuse. It said `== "warning"` until #3173, which
+        // hid every advisory code — `E189`, the ink TODO note — from the
+        // settings surface even though the analyzer accepted them.
         for r in rows() {
             assert_eq!(
                 r.overridable,
-                r.default_severity == "warning",
+                r.default_severity != "error",
                 "{} overridable={} severity={}",
                 r.code,
                 r.overridable,
                 r.default_severity
             );
         }
+        assert!(
+            rows().iter().any(|r| r.code == "E189" && r.overridable),
+            "the ink TODO: note must be configurable"
+        );
     }
 
     #[test]
