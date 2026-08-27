@@ -3538,3 +3538,22 @@
   it were a finding — the same noise the `drafts` key exists to remove, in a
   quieter voice. Suppressing the banner but not this left the feature half
   done.
+
+## brink.toml opens in the Settings takeover, in every view
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Clicking `brink.toml` in the Binder opens the **Settings**
+  takeover rather than an editor tab, in every editor view. Settings gains a
+  "Project" section carrying the whole config document — the structured form
+  AND the raw text below it, unchanged from what an editor tab showed.
+- **WHY:** Continuous view renders the project's MANUSCRIPT, and `brink.toml`
+  is deliberately not part of it — so it had nowhere to go and was simply
+  unreachable there (#3166). Routing to Settings answers that once for every
+  view instead of per-view, and puts project settings where app settings
+  already live. Carrying the raw text along is not optional: the form models
+  only `entry`/`conventions`/`dialect`/`types`, and #3015 ruled the text
+  below it to be the escape hatch for everything it does not model — which
+  now includes `drafts` and `indent`. A form-only Settings section would
+  have made those two uneditable from the studio entirely.
