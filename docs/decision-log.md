@@ -3642,7 +3642,7 @@
   with two explicit non-analogues named rather than faked — a `Thread`
   frame is not returnable-from (ink's own `->->` strips Thread frames
   rather than returning through them), and a condition-park (`until` on the
-  native code ground, `~ await`/`~ while await` in the prose dialect — both
+  native code ground, `~ await`/`~ while await` on the ink surface — both
   lower to the same `AwaitStmt` HIR node) ends the VM turn
   (`Step::Suspended`) with no synchronous "next instruction" to step to
   until `wakeCheck()` next resolves the parked condition true.
