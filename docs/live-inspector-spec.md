@@ -152,7 +152,8 @@ same predicate machinery" claim from #127, made concrete.
 ## 5. Program identity & degraded mode
 
 Source mapping — reveal-from-stack-frame, graph current-location highlighting, visit-count →
-node badges — is valid **only when the studio's local compile is the program running in the
+node badges, and (D9, #3187) the Program Explorer's current-knot/current-instruction
+highlight — is valid **only when the studio's local compile is the program running in the
 game.** The author editing `.ink` while the game runs is the *normal* case, so skew is expected,
 not an error.
 

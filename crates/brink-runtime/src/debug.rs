@@ -41,6 +41,24 @@ pub struct DebugPosition {
     pub offset: usize,
 }
 
+/// The result of resolving a [`DebugPosition`] to source via the program's
+/// `DebugInfo` section (D6, `docs/debugger-spec.md` §2.2) — see
+/// [`crate::Program::resolve_debug_position`] (D9, issue #3187). This is
+/// the "program → source" half of the studio's Location protocol
+/// (`docs/studio-shell-spec.md` §6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugSourceLocation {
+    /// Project-root-relative source path, or `None` for the reserved
+    /// synthetic sentinel file (compiler-generated content with no author
+    /// source).
+    pub file: Option<String>,
+    /// Absolute source byte offset within `file`.
+    pub range_start: u32,
+    /// Length in bytes of the source range (`range_start + range_len` is
+    /// the exclusive end).
+    pub range_len: u32,
+}
+
 /// A structured, read-only snapshot of the runtime's current state.
 pub struct DebugSnapshot {
     /// Execution status: `active` / `waiting_for_choice` / `done` / `ended`.

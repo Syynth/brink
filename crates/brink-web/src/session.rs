@@ -127,6 +127,44 @@ impl WebSession {
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The program→source resolver (D9, issue #3187) — the studio Location
+    /// protocol's `program` resolver (`docs/studio-shell-spec.md` §6.1)
+    /// resolves through this. Resolves a `(container_idx, offset)` bytecode
+    /// position — exactly what `debug_snapshot()`'s `position`/call-stack
+    /// frame `position` fields report (D4, #3182) — to the source range it
+    /// was compiled from, via the loaded program's `DebugInfo` section (D6,
+    /// #3184). Mirrors `StoryRunner::resolve_debug_position` — this is the
+    /// `WebSession` (journal/replay-session) counterpart, since
+    /// `LocalSessionProvider` (`packages/studio-store`) drives the studio's
+    /// live session through `StorySessionHandle`/`WebSession`, not
+    /// `StoryRunner`/`StoryRunnerHandle`.
+    ///
+    /// Returns JSON `null`, not an error, when the program carries no
+    /// `DebugInfo` section (a compile without `--debug-info`) or the
+    /// position doesn't resolve. Otherwise `{ "file": string | null,
+    /// "range_start": number, "range_len": number }`.
+    ///
+    /// Callers MUST gate this on program identity before trusting the
+    /// result for anything source-position-sensitive — see
+    /// `StoryRunner::resolve_debug_position`'s doc for the full argument;
+    /// `docs/live-inspector-spec.md` §5's `sessionDegraded` predicate is
+    /// the gate.
+    pub fn resolve_debug_position(
+        &self,
+        container_idx: u32,
+        offset: u32,
+    ) -> Result<String, JsError> {
+        let position = brink_runtime::DebugPosition {
+            container_idx,
+            offset: offset as usize,
+        };
+        let resolved = self
+            .program
+            .resolve_debug_position(position)
+            .map(crate::value_marshal::debug_source_location_to_js);
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// The compiled program rendered as `.inkt` text for the Program Explorer:
     /// checksum, name table, globals, lists, externals, address paths, and
     /// containers with bytecode disassembly. Static for the loaded program —
@@ -767,6 +805,74 @@ fn step_outcome_to_js<R: brink_runtime::StoryRng>(
             deferred: true,
             name: session.story().pending_external_name().map(str::to_owned),
         },
+    }
+}
+
+// ── WebSession::resolve_debug_position tests (D9, #3187) ─────────────
+//
+// Host-target, unlike `websession_wasm_tests` below: `resolve_debug_position`
+// takes/returns only plain Rust types, never a `JsValue` parameter, so it is
+// exercised directly over a real `WebSession` — the actual session type
+// `LocalSessionProvider` (`packages/studio-store`) drives — on the host
+// target.
+#[cfg(test)]
+mod resolve_debug_position_tests {
+    use super::WebSession;
+
+    fn debug_bytes(src: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), src.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn resolves_the_active_flows_position_to_source() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let snap_json = session.debug_snapshot().expect("debug_snapshot");
+        let snap: serde_json::Value = serde_json::from_str(&snap_json).expect("valid JSON");
+        let pos = snap["position"]
+            .as_object()
+            .expect("position present at flow entry");
+        let container_idx =
+            u32::try_from(pos["container_idx"].as_u64().expect("container_idx")).expect("fits u32");
+        let offset = u32::try_from(pos["offset"].as_u64().expect("offset")).expect("fits u32");
+
+        let resolved_json = session
+            .resolve_debug_position(container_idx, offset)
+            .expect("resolve_debug_position serializes");
+        let resolved: serde_json::Value = serde_json::from_str(&resolved_json).expect("valid JSON");
+        assert_eq!(resolved["file"], serde_json::json!("main.ink"));
+    }
+
+    #[test]
+    fn returns_null_json_without_debug_info() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let session = WebSession::new(&bytes, None, None).expect("session constructs");
+
+        let resolved_json = session
+            .resolve_debug_position(0, 0)
+            .expect("resolve_debug_position serializes even without debug info");
+        assert_eq!(resolved_json, "null");
     }
 }
 

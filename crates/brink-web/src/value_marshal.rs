@@ -836,6 +836,29 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
     }
 }
 
+/// The wasm shape of [`brink_runtime::DebugSourceLocation`] — the
+/// program→source resolver's result (D9, #3187). `file` is `None` for the
+/// reserved synthetic sentinel (no author source); a caller building a
+/// `{ kind: "source" }` studio Location (`docs/studio-shell-spec.md` §6.1)
+/// treats `file: null` as "unresolvable to source" the same as the whole
+/// value being absent.
+#[derive(Serialize)]
+pub(crate) struct DebugSourceLocationJs {
+    pub file: Option<String>,
+    pub range_start: u32,
+    pub range_len: u32,
+}
+
+pub(crate) fn debug_source_location_to_js(
+    loc: brink_runtime::DebugSourceLocation,
+) -> DebugSourceLocationJs {
+    DebugSourceLocationJs {
+        file: loc.file,
+        range_start: loc.range_start,
+        range_len: loc.range_len,
+    }
+}
+
 pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
     match step {
         brink_runtime::Step::Line(line) => LineJs {

@@ -327,6 +327,7 @@ mod tests {
             }],
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 

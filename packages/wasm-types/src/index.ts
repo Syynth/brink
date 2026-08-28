@@ -1153,8 +1153,8 @@ export interface DebugFrame {
   location?: string;
   /** Precise `(container_idx, offset)` this frame will resume at (#3182).
    *  Absent for a frame whose container stack is empty — including every
-   *  `external` frame, which carries no bytecode position. Not yet
-   *  resolved to source (D6/D9). */
+   *  `external` frame, which carries no bytecode position. Resolve to
+   *  source with `StoryRunnerHandle.resolveDebugPosition` (D9, #3187). */
   position?: { container_idx: number; offset: number };
   temps: number;
 }
@@ -1188,8 +1188,8 @@ export interface DebugState {
   status: string;
   current_location?: string;
   /** Precise `(container_idx, offset)` for the active flow (#3182); mirrors
-   *  `call_stack[0].position` when the call stack is non-empty. Not yet
-   *  resolved to source (D6/D9). */
+   *  `call_stack[0].position` when the call stack is non-empty. Resolve to
+   *  source with `StoryRunnerHandle.resolveDebugPosition` (D9, #3187). */
   position?: { container_idx: number; offset: number };
   turn_index: number;
   globals: DebugGlobal[];
@@ -1197,6 +1197,20 @@ export interface DebugState {
   visit_counts: DebugVisit[];
   pending_choices: DebugChoice[];
   rng: DebugRng;
+}
+
+/**
+ * The program→source resolver's result (D9, #3187) —
+ * `StoryRunnerHandle.resolveDebugPosition`'s return shape, mirroring
+ * `brink_runtime::DebugSourceLocation`. `file: null` marks the reserved
+ * synthetic sentinel (compiler-generated content with no author source),
+ * distinct from the whole value being `null` ("doesn't resolve at all" —
+ * no `DebugInfo` section, or an out-of-range position).
+ */
+export interface DebugSourceLocation {
+  file: string | null;
+  range_start: number;
+  range_len: number;
 }
 
 // ── Program model (Program Explorer) ─────────────────────────────
@@ -1224,6 +1238,18 @@ export interface ProgramExternal {
   fallback?: string;
 }
 
+/**
+ * One decoded bytecode instruction, with the byte offset it decoded from
+ * (D9, #3187) — the key a live `DebugPosition`/`DebugFrame.position`
+ * (D4, #3182) is matched against for a "current instruction" highlight in
+ * the Program Explorer.
+ */
+export interface DisasmLine {
+  /** Byte offset within the owning container's own bytecode. */
+  offset: number;
+  text: string;
+}
+
 /** A knot or stitch in the compiled-program tree. */
 export interface KnotNode {
   path: string;
@@ -1233,8 +1259,15 @@ export interface KnotNode {
   /** Counting flags: "visits" | "turns" | "start_only" */
   flags: string[];
   path_hash: number;
-  /** Resolved bytecode disassembly, one mnemonic per entry. */
-  disasm: string[];
+  /**
+   * This container's index in the compiled program's container table — the
+   * same `container_idx` a runtime `DebugPosition` addresses. `0xffffffff`
+   * (`u32::MAX`) for a synthesized knot node with no backing container
+   * (rare — a knot with stitches but no own scope container).
+   */
+  container_idx: number;
+  /** Resolved bytecode disassembly, one instruction per entry. */
+  disasm: DisasmLine[];
   children: KnotNode[];
 }
 

@@ -204,6 +204,7 @@ mod tests {
             struct_shapes: vec![],
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 

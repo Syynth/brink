@@ -69,6 +69,16 @@ pub struct Program {
     /// sorted by `old` — [`Program::resolve_alias`] binary-searches it.
     /// Empty for every story that uses no `#@was`.
     pub(crate) alias_table: Vec<AliasEntry>,
+    /// D6's `DebugInfo` section (`docs/debugger-spec.md` §2), carried
+    /// through unchanged from `StoryData::debug_info` — `None` for a
+    /// release-exported / non-debug compile (§1.2 ship policy). The one
+    /// consumer is [`crate::debug::resolve_debug_position`] (D9, issue
+    /// #3187): a running `(container_idx, offset)` position resolves to a
+    /// source range with a direct index into `containers[container_idx]`,
+    /// lockstep with the `Containers` table this `Program` already links —
+    /// no `DefinitionId` lookup on the read path, per the section's own
+    /// design.
+    pub(crate) debug_info: Option<brink_format::DebugInfoSection>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -196,6 +206,73 @@ impl Program {
     #[cfg(feature = "testing")]
     pub fn resolve_address(&self, id: DefinitionId) -> Option<(u32, usize)> {
         self.resolve_target(id)
+    }
+
+    /// The program→source resolver (D9, issue #3187; wire encoding: D6,
+    /// `docs/debugger-spec.md` §2.2). Resolves a runtime execution position
+    /// — [`crate::DebugPosition`], as reported by
+    /// [`crate::DebugSnapshot::position`]/[`crate::DebugFrame::position`]
+    /// (D4, #3182) — to the source range it was compiled from, via this
+    /// program's `DebugInfo` section.
+    ///
+    /// `None` when:
+    /// - no `DebugInfo` section is present (a release-exported or
+    ///   `--debug-info`-less compile — §1.2 ship policy: this is the
+    ///   expected, non-error case for most builds, not a fault);
+    /// - `container_idx` is out of range for the section's container table
+    ///   (defensive — should not happen for a position this same `Program`
+    ///   produced);
+    /// - `offset` is before the container's first recorded entry (the
+    ///   section's coverage guarantee, §2.2, means this should not happen
+    ///   for a real instruction boundary either, but a reader must not
+    ///   panic on an adversarial/malformed position).
+    ///
+    /// The returned range's `file` is `None` for the reserved synthetic
+    /// sentinel file (index 0, §2.5) — a compiler-synthesized construct
+    /// with no author source to point at — and `Some(path)` (project-root-
+    /// relative) otherwise. This is exactly the `path`/`span` pair the
+    /// studio's `source` Location space needs (`docs/studio-shell-spec.md`
+    /// §6.1) — a caller's `program` resolver wraps this method and returns
+    /// `{ kind: "source", file, span: { start: range_start, end:
+    /// range_start + range_len } }`.
+    ///
+    /// Entries within a container are sorted ascending by
+    /// `bytecode_offset` and cover the container's full address range with
+    /// no gaps (§2.2), so a floor lookup — the last entry whose
+    /// `bytecode_offset` is `<= offset` — always names the instruction's
+    /// own statement, matching how a running VM's `offset` (the *next*
+    /// instruction to execute, always itself a decoded instruction
+    /// boundary) lines up against entries recorded at instruction
+    /// boundaries during codegen's own walk.
+    #[must_use]
+    pub fn resolve_debug_position(
+        &self,
+        position: crate::debug::DebugPosition,
+    ) -> Option<crate::debug::DebugSourceLocation> {
+        let debug_info = self.debug_info.as_ref()?;
+        let table = debug_info.containers.get(position.container_idx as usize)?;
+        let target = u32::try_from(position.offset).ok()?;
+        let idx = match table
+            .entries
+            .binary_search_by_key(&target, |e| e.bytecode_offset)
+        {
+            Ok(i) => i,
+            Err(0) => return None,
+            Err(i) => i - 1,
+        };
+        let entry = table.entries.get(idx)?;
+        let file = debug_info.files.get(entry.file_idx as usize)?;
+        let path = match file.surface {
+            brink_format::FileSurface::Synthetic => None,
+            brink_format::FileSurface::Ink | brink_format::FileSurface::Native => {
+                Some(file.path.clone())
+            }
+        };
+        Some(crate::debug::DebugSourceLocation {
+            file: path,
+            range_start: entry.range_start,
+            range_len: entry.range_len,
+        })
     }
 
     /// Get a container by its index.
@@ -657,6 +734,7 @@ mod find_address_tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 
