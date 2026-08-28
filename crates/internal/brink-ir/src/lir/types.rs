@@ -210,10 +210,11 @@ pub enum ConstMapKey {
 pub struct Container {
     pub id: DefinitionId,
     /// Source provenance of the construct this container was lowered from
-    /// (issue #3183, `docs/debugger-spec.md`) — a knot/stitch definition's
-    /// own header range, a gather's `-` (or its label), a choice's target
-    /// body, a sequence/conditional branch wrapper's own construct, or the
-    /// enclosing knot's range for the implicit root container. Bare, never
+    /// (issue #3183, `docs/sourcemap-epic-evaluation.md` §1 verdict table
+    /// row 1, "LIR provenance (spans on `lir::Stmt`/`Expr`)") — a knot/stitch
+    /// definition's own header range, a gather's `-` (or its label), a
+    /// choice's target body, or a sequence/conditional branch wrapper's own
+    /// construct. Bare, never
     /// `Option`: every container is lowered from exactly one HIR shape that
     /// itself carries (or, for a handful of always-synthetic wrapper kinds,
     /// is deliberately stamped with [`Provenance::synthetic`] for) a real
@@ -294,7 +295,8 @@ pub struct Param {
 // ─── Statements ──────────────────────────────────────────────────────
 
 /// A statement within a container body, paired with the source provenance
-/// it was lowered from (issue #3183, `docs/debugger-spec.md`).
+/// it was lowered from (issue #3183, `docs/sourcemap-epic-evaluation.md` §1
+/// verdict table row 1, "LIR provenance (spans on `lir::Stmt`/`Expr`)").
 ///
 /// Bare `Provenance`, never `Option` — see [`Container::provenance`]'s doc
 /// for the "no Option" rationale (the retired `Return.ptr`-presence trap).
@@ -304,6 +306,14 @@ pub struct Param {
 /// honestly shared across every synthesized sibling, never a fabricated
 /// value. See `lower::stmts::stmt_provenance`/`LowerCtx::current_stmt_provenance`
 /// for how that's computed and threaded.
+///
+/// **Obligation for future LIR-to-LIR passes (#2336):** any pass that
+/// rewrites, folds, or eliminates a `Stmt`/[`Container`] node must propagate
+/// or merge its provenance — never silently drop it (the project's "flag
+/// silent data drops" rule applies directly once such a pass exists). No
+/// ruling exists yet on ordering `Stmt`/`Container` provenance (this issue)
+/// against #2336 (LIR-to-LIR optimization); this obligation was not written
+/// down anywhere before issue #3183 landed provenance on these types.
 #[derive(Clone)]
 pub struct Stmt {
     pub kind: StmtKind,

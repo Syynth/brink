@@ -178,6 +178,8 @@ LIR is the critical bridge between the high-level semantic HIR and backend codeg
 
 - **Fully resolved.** No unresolved `Path` nodes. Every reference is a `DefinitionId` (globals, containers, list items, externals) or a temp slot index (`u16`). The LIR never needs the `SymbolIndex` or `ResolutionMap` — all lookups are done during lowering. Unresolved paths (expected to be already reported by the analyzer) fall back to `Expr::Null` for expressions and `DivertTarget::Done` for diverts.
 
+- **Provenance-carrying (issue #3183).** `Container` and `Stmt` each carry a bare (non-`Option`) `Provenance` recording the source construct they were lowered from, copied off the originating HIR node's own already-stamped range at lowering time. A node synthesized during a desugar with no single corresponding HIR node (an RMW take/mutate/write-back leg, an auto-inserted `-> DONE`, a goto-gather divert, …) inherits the provenance of the HIR statement it was desugared from via `LowerCtx::current_stmt_provenance`, rather than a fabricated value. `Expr` does not yet carry provenance — deferred pending a debugger consumer that needs per-expression (not per-statement) granularity; see `docs/sourcemap-epic-evaluation.md` §1.
+
 #### LIR lowering responsibilities
 
 - **Container planning:** decides which source constructs become containers (knots, stitches, gathers, choice targets, sequence wrappers) and assigns `DefinitionId`s.

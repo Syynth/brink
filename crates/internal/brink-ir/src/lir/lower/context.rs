@@ -688,7 +688,8 @@ pub struct LowerCtx<'a> {
     /// placement is the safe one).
     pub lifted: &'a mut Vec<crate::lir::types::Container>,
     /// The provenance of the innermost HIR statement currently being
-    /// lowered (issue #3183, `docs/debugger-spec.md`) — set by
+    /// lowered (issue #3183, `docs/sourcemap-epic-evaluation.md` §1 verdict
+    /// table row 1, "LIR provenance (spans on `lir::Stmt`/`Expr`)") — set by
     /// [`Self::enter_stmt`] whenever a HIR statement carries (or can derive)
     /// its own real range, and read as the fallback for any `lir::Stmt`/
     /// `lir::Container` synthesized during that statement's lowering with

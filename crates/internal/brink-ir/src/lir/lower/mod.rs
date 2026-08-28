@@ -1092,8 +1092,18 @@ fn lower_block_with_children(
         let stmt = &block.stmts[pos];
         // Issue #3183: every `lir::Stmt`/`lir::Container` synthesized while
         // handling `stmt` — including by helpers this loop calls into —
-        // inherits its provenance via `ctx.current_stmt_provenance`.
-        ctx.enter_stmt(stmts::stmt_provenance(stmt, ctx));
+        // inherits its provenance via `ctx.current_stmt_provenance`. The
+        // value is also captured locally (`stmt_prov`) because recursing
+        // into a child body (a choice's body, a conditional/sequence
+        // branch) through the same `ctx` mutates the ambient as a side
+        // effect — anything in *this* arm that still needs `stmt`'s own
+        // provenance after such a recursive call must read `stmt_prov`,
+        // never `ctx.current_stmt_provenance`, and the ambient is restored
+        // to `stmt_prov` at the bottom of the loop so a later sibling
+        // statement that falls back to the ambient (EndOfLine,
+        // EndElementRun, an option-less Divert/Content) inherits this
+        // statement's own context, not a nested descendant's.
+        let stmt_prov = ctx.enter_stmt(stmts::stmt_provenance(stmt, ctx));
         match stmt {
             hir::Stmt::ChoiceSet(cs) => {
                 // Every choice set gets a gather target — read from stamped HIR.
@@ -1120,7 +1130,7 @@ fn lower_block_with_children(
                         choices,
                         gather_target,
                     }),
-                    ctx.current_stmt_provenance,
+                    stmt_prov,
                 ));
                 children.append(&mut choice_children);
 
@@ -1134,6 +1144,7 @@ fn lower_block_with_children(
                     *gather_counter - 1,
                     choice_counter,
                     gather_counter,
+                    stmt_prov,
                 );
                 children.push(gather_container);
                 pos += 1;
@@ -1148,7 +1159,7 @@ fn lower_block_with_children(
 
                 stmts.push(lir::Stmt::new(
                     lir::StmtKind::EnterContainer(wrapper_id),
-                    ctx.current_stmt_provenance,
+                    stmt_prov,
                 ));
 
                 let display_name = labeled
@@ -1185,14 +1196,14 @@ fn lower_block_with_children(
                                 target: lir::DivertTarget::Address(gather_id),
                                 args: Vec::new(),
                             }),
-                            ctx.current_stmt_provenance,
+                            stmt_prov,
                         ));
                     }
                 }
 
                 children.push(lir::Container {
                     id: wrapper_id,
-                    provenance: ctx.current_stmt_provenance,
+                    provenance: stmt_prov,
                     name: Some(display_name),
                     kind: lir::ContainerKind::Gather,
                     params: Vec::new(),
@@ -1314,7 +1325,7 @@ fn lower_block_with_children(
 
                 stmts.push(lir::Stmt::new(
                     lir::StmtKind::Conditional(lir::Conditional { kind, branches }),
-                    ctx.current_stmt_provenance,
+                    stmt_prov,
                 ));
                 pos += 1;
             }
@@ -1382,7 +1393,7 @@ fn lower_block_with_children(
                 ctx.scope_path = old_scope;
                 let wrapper = lir::Container {
                     id: wrapper_id,
-                    provenance: ctx.current_stmt_provenance,
+                    provenance: stmt_prov,
                     name: Some(display_name),
                     kind: lir::ContainerKind::Sequence,
                     params: Vec::new(),
@@ -1391,7 +1402,7 @@ fn lower_block_with_children(
                             kind: seq.kind,
                             branches,
                         }),
-                        ctx.current_stmt_provenance,
+                        stmt_prov,
                     )],
                     children: wrapper_children,
                     counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
@@ -1405,17 +1416,14 @@ fn lower_block_with_children(
 
                 stmts.push(lir::Stmt::new(
                     lir::StmtKind::EnterContainer(wrapper_id),
-                    ctx.current_stmt_provenance,
+                    stmt_prov,
                 ));
                 pos += 1;
             }
             hir::Stmt::Content(content) => {
                 // Try direct recognition first.
                 if let Some(emission) = recognize::try_recognize(content, ctx) {
-                    stmts.push(lir::Stmt::new(
-                        lir::StmtKind::EmitLine(emission),
-                        ctx.current_stmt_provenance,
-                    ));
+                    stmts.push(lir::Stmt::new(lir::StmtKind::EmitLine(emission), stmt_prov));
                 }
                 // Try with boundary glue stripping.
                 else if let Some((leading, emission, trailing)) =
@@ -1427,20 +1435,17 @@ fn lower_block_with_children(
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
                             }),
-                            ctx.current_stmt_provenance,
+                            stmt_prov,
                         ));
                     }
-                    stmts.push(lir::Stmt::new(
-                        lir::StmtKind::EmitLine(emission),
-                        ctx.current_stmt_provenance,
-                    ));
+                    stmts.push(lir::Stmt::new(lir::StmtKind::EmitLine(emission), stmt_prov));
                     if trailing {
                         stmts.push(lir::Stmt::new(
                             lir::StmtKind::EmitContent(lir::Content {
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
                             }),
-                            ctx.current_stmt_provenance,
+                            stmt_prov,
                         ));
                     }
                 }
@@ -1448,7 +1453,7 @@ fn lower_block_with_children(
                 else {
                     stmts.push(lir::Stmt::new(
                         lir::StmtKind::EmitContent(content::lower_content(content, ctx)),
-                        ctx.current_stmt_provenance,
+                        stmt_prov,
                     ));
                 }
                 children.append(&mut ctx.pending_children);
@@ -1553,6 +1558,16 @@ fn lower_block_with_children(
                 pos += 1;
             }
         }
+
+        // Restore the ambient to this statement's own provenance — a
+        // recursive call above (a choice's body, a conditional/sequence
+        // branch) may have advanced `ctx.current_stmt_provenance` to a
+        // nested descendant's value. Without this, the next sibling
+        // statement that falls back to the ambient (EndOfLine,
+        // EndElementRun, an option-less Divert/Content) would inherit that
+        // descendant's context instead of its own preceding sibling's
+        // (issue #3183 follow-up).
+        ctx.current_stmt_provenance = stmt_prov;
     }
 
     if pending_split_scope {
@@ -1574,6 +1589,7 @@ fn build_continuation_container(
     gather_index: usize,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
+    provenance: Provenance,
 ) -> lir::Container {
     let id = gather_id.unwrap_or(ctx.root_id);
     let display_name = continuation
@@ -1603,7 +1619,7 @@ fn build_continuation_container(
                     target: lir::DivertTarget::Done,
                     args: Vec::new(),
                 }),
-                ctx.current_stmt_provenance,
+                provenance,
             )]
         } else {
             Vec::new()
@@ -1611,9 +1627,14 @@ fn build_continuation_container(
         return lir::Container {
             id,
             // `hir::Block` (the continuation) carries no `.ptr` of its own —
-            // inherit the ambient, which at every call site is the
-            // enclosing `ChoiceSet`'s own provenance (issue #3183).
-            provenance: ctx.current_stmt_provenance,
+            // inherit the explicit `provenance` the caller passed, which is
+            // the enclosing `ChoiceSet`'s own provenance (issue #3183). This
+            // is passed explicitly rather than read off
+            // `ctx.current_stmt_provenance` because by the time this
+            // function runs, the choices have already been lowered through
+            // the same `ctx` (each recursing into its own body), so the
+            // ambient no longer reflects the ChoiceSet's own provenance.
+            provenance,
             name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
@@ -1634,7 +1655,12 @@ fn build_continuation_container(
 
     lir::Container {
         id,
-        provenance: ctx.current_stmt_provenance,
+        // Same reasoning as the empty-continuation branch above: `provenance`
+        // is the ChoiceSet's own provenance passed explicitly by the caller,
+        // not the (by-now-stale) ambient — the `lower_block_with_children`
+        // call just above advances `ctx.current_stmt_provenance` to whatever
+        // the continuation's own last statement is.
+        provenance,
         name: Some(display_name),
         kind: lir::ContainerKind::Gather,
         params: Vec::new(),
