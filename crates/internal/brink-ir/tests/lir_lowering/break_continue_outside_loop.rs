@@ -4,7 +4,7 @@ use brink_ir::lir;
 // ─── #577: break/continue outside a loop is a targeted compile error ──────
 //
 // Previously `~ { break }`/`~ { continue }` with no enclosing `while`/`for`
-// lowered unconditionally to `lir::Stmt::LogicBreak`/`LogicContinue`, and
+// lowered unconditionally to `lir::StmtKind::LogicBreak`/`LogicContinue`, and
 // codegen's `container.rs` silently degraded the resulting unguarded jump
 // to `Opcode::Nop` (`self.loop_stack.is_empty()`) instead of ever surfacing
 // an error. `blocks::lower_block_stmt` now rejects it at LIR-lowering time
@@ -30,7 +30,7 @@ fn break_outside_any_loop_emits_e057_error_and_is_not_lowered() {
             .root
             .body
             .iter()
-            .any(|s| matches!(s, lir::Stmt::LogicBreak)),
+            .any(|s| matches!(&s.kind, lir::StmtKind::LogicBreak)),
         "the unguarded break must not be lowered to a LogicBreak statement"
     );
 }
@@ -46,7 +46,7 @@ fn continue_outside_any_loop_emits_e057_error_and_is_not_lowered() {
             .root
             .body
             .iter()
-            .any(|s| matches!(s, lir::Stmt::LogicContinue)),
+            .any(|s| matches!(&s.kind, lir::StmtKind::LogicContinue)),
         "the unguarded continue must not be lowered to a LogicContinue statement"
     );
 }

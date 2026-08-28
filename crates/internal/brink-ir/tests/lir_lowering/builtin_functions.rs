@@ -9,8 +9,8 @@ fn builtin_random_recognized() {
     let r = root(&p);
     let has_builtin = r.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::CallBuiltin {
                     builtin: lir::BuiltinFn::Random,
                     ..
@@ -35,8 +35,8 @@ VAR t = 0
     let knot = find_child(&p.root, "scene");
     let has_turns = knot.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::CallBuiltin {
                     builtin: lir::BuiltinFn::TurnsSince,
                     ..

@@ -362,8 +362,8 @@ pub(crate) fn count_all(container: &lir::Container) -> usize {
 pub(crate) fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
     let mut texts = Vec::new();
     for stmt in stmts {
-        match stmt {
-            lir::Stmt::EmitContent(content) => {
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(content) => {
                 let mut line = String::new();
                 for part in &content.parts {
                     if let lir::ContentPart::Text(t) = part {
@@ -374,7 +374,7 @@ pub(crate) fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
                     texts.push(line);
                 }
             }
-            lir::Stmt::EmitLine(emission) => match &emission.line {
+            lir::StmtKind::EmitLine(emission) => match &emission.line {
                 lir::RecognizedLine::Plain(s) => {
                     if !s.is_empty() {
                         texts.push(s.clone());
@@ -402,7 +402,7 @@ pub(crate) fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
 pub(crate) fn ends_with_divert(stmts: &[lir::Stmt]) -> bool {
     stmts
         .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)))
+        .is_some_and(|s| matches!(&s.kind, lir::StmtKind::Divert(_)))
 }
 
 /// Recursively find any container matching a predicate.

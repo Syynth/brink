@@ -23,8 +23,8 @@ fn ref_marked_bare_var_call_arg_lowers_exactly_like_the_unmarked_form() {
         .root
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(ref gold) should lower to an ExprStmt(Call)");

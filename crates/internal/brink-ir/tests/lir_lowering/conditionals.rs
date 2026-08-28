@@ -20,7 +20,7 @@ VAR x = true
     let has_cond = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Conditional(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Conditional(_)));
     assert!(has_cond, "should have a Conditional statement");
 }
 
@@ -41,7 +41,7 @@ VAR x = 1
     );
     let r = root(&p);
     let cond = r.body.iter().find_map(|s| {
-        if let lir::Stmt::Conditional(c) = s {
+        if let lir::StmtKind::Conditional(c) = &s.kind {
             Some(c)
         } else {
             None
@@ -66,7 +66,7 @@ VAR x = 1
     );
     let r = root(&p);
     let cond = r.body.iter().find_map(|s| {
-        if let lir::Stmt::Conditional(c) = s {
+        if let lir::StmtKind::Conditional(c) = &s.kind {
             Some(c)
         } else {
             None

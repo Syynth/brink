@@ -7,6 +7,7 @@ use rowan::TextRange;
 
 use crate::FileId;
 use crate::determinism::{LookupMap, LookupSet};
+use crate::provenance::{NodeClass, Provenance};
 use crate::symbols::{ResolutionMap, SymbolIndex, SymbolInfo};
 
 use super::structs::{GlobalShapeMap, ShapeTable};
@@ -686,6 +687,20 @@ pub struct LowerCtx<'a> {
     /// that created it (see `lower::lambda`'s module doc for why that
     /// placement is the safe one).
     pub lifted: &'a mut Vec<crate::lir::types::Container>,
+    /// The provenance of the innermost HIR statement currently being
+    /// lowered (issue #3183, `docs/debugger-spec.md`) — set by
+    /// [`Self::enter_stmt`] whenever a HIR statement carries (or can derive)
+    /// its own real range, and read as the fallback for any `lir::Stmt`/
+    /// `lir::Container` synthesized during that statement's lowering with
+    /// no single HIR node of its own to point at (e.g. one leg of a
+    /// multi-statement RMW desugar, or a structural marker like
+    /// `StmtKind::EndOfLine`). Never left at its `LowerCtx`-construction
+    /// seed for a real statement — every top-level dispatch point
+    /// (`stmts::lower_stmt`, `blocks::lower_block_stmt`, the `ChoiceSet`/
+    /// `Conditional`/`Sequence`/`LogicBlock` arms in `lower_block_with_children`)
+    /// updates it before lowering that statement's body, so a nested
+    /// desugar never inherits a stale, unrelated statement's location.
+    pub current_stmt_provenance: Provenance,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -698,6 +713,40 @@ impl<'a> LowerCtx<'a> {
     /// Resolve a HIR path to its `DefinitionId`.
     pub fn resolve_id(&self, range: TextRange) -> Option<DefinitionId> {
         self.resolutions.resolve(self.file, range)
+    }
+
+    /// Set [`Self::current_stmt_provenance`] to `provenance` — the choke
+    /// point every top-level statement dispatch calls (with the HIR
+    /// statement's own already-stamped [`Provenance`], or one built by
+    /// [`Self::provenance_at`] when only a bare range is available) before
+    /// lowering that statement's body, so nested/desugared `lir::Stmt`s
+    /// synthesized while lowering it inherit the right ambient fallback
+    /// (issue #3183). Returns `provenance` unchanged, for chaining into the
+    /// constructed `lir::Stmt`/`lir::Container` at the same call site.
+    pub fn enter_stmt(&mut self, provenance: Provenance) -> Provenance {
+        self.current_stmt_provenance = provenance;
+        provenance
+    }
+
+    /// Build a [`Provenance`] for `range` in the file being lowered, under
+    /// the frontend-agnostic `class`. Use this when only a bare
+    /// [`TextRange`] is available — a derived/union span (e.g.
+    /// [`crate::hir::spans::expr_span`]) or a best-effort diagnostic anchor
+    /// with no dedicated `.ptr` field — never for a HIR node that already
+    /// carries its own real [`Provenance`], which should be copied as-is
+    /// (it resolves through the frontend's live resolver; this constructor
+    /// stamps [`crate::provenance::KindToken::SYNTHETIC_RAW`], which never
+    /// does).
+    #[must_use]
+    pub fn provenance_at(&self, range: TextRange, class: NodeClass) -> Provenance {
+        Provenance::new(
+            self.file,
+            range,
+            crate::provenance::KindToken {
+                class,
+                raw: crate::provenance::KindToken::SYNTHETIC_RAW,
+            },
+        )
     }
 
     /// Look up a name in the temp map for the current scope.

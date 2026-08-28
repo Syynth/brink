@@ -162,28 +162,30 @@ fn remap_stmts(stmts: &mut [lir::Stmt], map: &[NameId]) {
 }
 
 fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
-    use lir::Stmt;
-    match stmt {
-        Stmt::EmitContent(content) => remap_content(content, map),
-        Stmt::EmitLine(emission) | Stmt::EvalLine(emission) => remap_emission(emission, map),
-        Stmt::ChoiceOutput { content, emission } => {
+    use lir::StmtKind;
+    match &mut stmt.kind {
+        StmtKind::EmitContent(content) => remap_content(content, map),
+        StmtKind::EmitLine(emission) | StmtKind::EvalLine(emission) => {
+            remap_emission(emission, map);
+        }
+        StmtKind::ChoiceOutput { content, emission } => {
             remap_content(content, map);
             if let Some(e) = emission {
                 remap_emission(e, map);
             }
         }
-        Stmt::Divert(d) => remap_divert(d, map),
-        Stmt::TunnelCall(t) => {
+        StmtKind::Divert(d) => remap_divert(d, map),
+        StmtKind::TunnelCall(t) => {
             for target in &mut t.targets {
                 remap_divert_target(&mut target.target, map);
                 remap_call_args(&mut target.args, map);
             }
         }
-        Stmt::ThreadStart(t) => {
+        StmtKind::ThreadStart(t) => {
             remap_divert_target(&mut t.target, map);
             remap_call_args(&mut t.args, map);
         }
-        Stmt::DeclareTemp {
+        StmtKind::DeclareTemp {
             slot: _,
             name,
             value,
@@ -193,7 +195,7 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
                 remap_expr(v, map);
             }
         }
-        Stmt::Assign {
+        StmtKind::Assign {
             target,
             op: _,
             value,
@@ -201,7 +203,7 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
             remap_assign_target(target, map);
             remap_expr(value, map);
         }
-        Stmt::Return {
+        StmtKind::Return {
             value,
             is_tunnel: _,
             args,
@@ -211,25 +213,25 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
             }
             remap_call_args(args, map);
         }
-        Stmt::ChoiceSet(cs) => {
+        StmtKind::ChoiceSet(cs) => {
             for choice in &mut cs.choices {
                 remap_choice(choice, map);
             }
         }
-        Stmt::Conditional(cond) => remap_conditional(cond, map),
-        Stmt::Sequence(seq) => remap_sequence(seq, map),
-        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => remap_expr(e, map),
-        Stmt::LogicWhile(w) => {
+        StmtKind::Conditional(cond) => remap_conditional(cond, map),
+        StmtKind::Sequence(seq) => remap_sequence(seq, map),
+        StmtKind::ExprStmt(e) | StmtKind::AttachElement(e) => remap_expr(e, map),
+        StmtKind::LogicWhile(w) => {
             remap_expr(&mut w.condition, map);
             remap_stmts(&mut w.body, map);
             remap_stmts(&mut w.post, map);
         }
         // No name references.
-        Stmt::EnterContainer(_)
-        | Stmt::EndOfLine
-        | Stmt::LogicBreak
-        | Stmt::LogicContinue
-        | Stmt::EndElementRun => {}
+        StmtKind::EnterContainer(_)
+        | StmtKind::EndOfLine
+        | StmtKind::LogicBreak
+        | StmtKind::LogicContinue
+        | StmtKind::EndElementRun => {}
     }
 }
 
@@ -579,6 +581,13 @@ mod tests {
     use super::*;
     use brink_format::NameId;
 
+    /// A placeholder `Provenance` for fixture `lir::Stmt`s in this module's
+    /// tests — the remap machinery under test never reads it, only the
+    /// `NameId`s it relocates.
+    fn test_provenance() -> crate::Provenance {
+        crate::Provenance::synthetic(crate::NodeClass::Stmt, rowan::TextRange::empty(0.into()))
+    }
+
     #[test]
     fn relocate_maps_local_to_assembled() {
         let map = vec![NameId(5), NameId(2), NameId(9)];
@@ -622,11 +631,14 @@ mod tests {
         let pre = names.intern("existing"); // NameId(0)
 
         let chunk = ScopeChunk::root_content(
-            vec![lir::Stmt::DeclareTemp {
-                slot: 0,
-                name: NameId(1),                               // local -> "fresh"
-                value: Some(lir::Expr::GetTemp(0, NameId(0))), // local -> "existing"
-            }],
+            vec![lir::Stmt::new(
+                lir::StmtKind::DeclareTemp {
+                    slot: 0,
+                    name: NameId(1),                               // local -> "fresh"
+                    value: Some(lir::Expr::GetTemp(0, NameId(0))), // local -> "existing"
+                },
+                test_provenance(),
+            )],
             Vec::new(),
             vec!["existing".to_string(), "fresh".to_string()],
         );
@@ -639,8 +651,8 @@ mod tests {
         assert_eq!(entries, vec!["existing".to_string(), "fresh".to_string()]);
         assert_eq!(pre, NameId(0));
 
-        let (name, value) = match body.remove(0) {
-            lir::Stmt::DeclareTemp { name, value, .. } => Some((name, value)),
+        let (name, value) = match body.remove(0).kind {
+            lir::StmtKind::DeclareTemp { name, value, .. } => Some((name, value)),
             _ => None,
         }
         .expect("expected declare temp");

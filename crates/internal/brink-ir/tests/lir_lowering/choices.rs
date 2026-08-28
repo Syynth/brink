@@ -38,7 +38,7 @@ fn choice_set_in_knot_body() {
     let has_choice_set = knot
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)));
     assert!(has_choice_set, "knot should contain a ChoiceSet statement");
 }
 
@@ -132,7 +132,7 @@ fn choice_set_has_gather_target() {
     );
     let knot = find_child(&p.root, "scene");
     let cs = knot.body.iter().find_map(|s| {
-        if let lir::Stmt::ChoiceSet(cs) = s {
+        if let lir::StmtKind::ChoiceSet(cs) = &s.kind {
             Some(cs)
         } else {
             None
@@ -170,7 +170,7 @@ fn sticky_choice_flag() {
     );
     let knot = find_child(&p.root, "scene");
     let choice = knot.body.iter().find_map(|s| {
-        if let lir::Stmt::ChoiceSet(cs) = s {
+        if let lir::StmtKind::ChoiceSet(cs) = &s.kind {
             cs.choices.first()
         } else {
             None
@@ -193,7 +193,7 @@ fn once_only_choice_flag() {
     );
     let knot = find_child(&p.root, "scene");
     let choice = knot.body.iter().find_map(|s| {
-        if let lir::Stmt::ChoiceSet(cs) = s {
+        if let lir::StmtKind::ChoiceSet(cs) = &s.kind {
             cs.choices.first()
         } else {
             None

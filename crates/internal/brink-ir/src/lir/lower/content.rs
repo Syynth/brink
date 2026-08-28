@@ -133,16 +133,25 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
         .map(|b| lower_inline_block(&b.body, ctx))
         .collect();
 
+    // The wrapper container and its one Sequence statement are both
+    // synthesized *from* `seq` — stamp both with its own real provenance
+    // (issue #3183), not the ambient left over from lowering the last
+    // branch above.
+    let provenance = ctx.enter_stmt(seq.ptr);
     let display_name = format!("s-{seq_idx}");
     let wrapper = lir::Container {
         id: wrapper_id,
+        provenance,
         name: Some(display_name),
         kind: lir::ContainerKind::Sequence,
         params: Vec::new(),
-        body: vec![lir::Stmt::Sequence(lir::Sequence {
-            kind: seq.kind,
-            branches,
-        })],
+        body: vec![lir::Stmt::new(
+            lir::StmtKind::Sequence(lir::Sequence {
+                kind: seq.kind,
+                branches,
+            }),
+            provenance,
+        )],
         children: Vec::new(),
         counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
         temp_slot_count: 0,

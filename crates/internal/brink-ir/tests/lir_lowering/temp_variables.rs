@@ -15,8 +15,8 @@ fn temp_decl_in_knot() {
     let knot = find_child(&p.root, "func");
     let has_temp = knot.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::DeclareTemp {
+            &s.kind,
+            lir::StmtKind::DeclareTemp {
                 slot: 0,
                 value: Some(lir::Expr::Int(42)),
                 ..
@@ -44,6 +44,6 @@ fn params_occupy_first_temp_slots() {
     let has_temp_at_2 = knot
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::DeclareTemp { slot: 2, .. }));
+        .any(|s| matches!(&s.kind, lir::StmtKind::DeclareTemp { slot: 2, .. }));
     assert!(has_temp_at_2, "temp 'c' should be at slot 2 (after params)");
 }

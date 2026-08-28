@@ -25,7 +25,7 @@ fn root_has_implicit_done() {
         ends_with_divert(&r.body),
         "root should end with implicit DONE"
     );
-    if let Some(lir::Stmt::Divert(d)) = r.body.last() {
+    if let Some(lir::StmtKind::Divert(d)) = r.body.last().map(|s| &s.kind) {
         assert!(
             matches!(d.target, lir::DivertTarget::Done),
             "root should end with DONE, not {:?}",

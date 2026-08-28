@@ -1,6 +1,7 @@
 use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
 use crate::lir::lower::CoalesceShape;
+use crate::provenance::Provenance;
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
 // ─── Program ─────────────────────────────────────────────────────────
@@ -208,6 +209,19 @@ pub enum ConstMapKey {
 #[derive(Clone)]
 pub struct Container {
     pub id: DefinitionId,
+    /// Source provenance of the construct this container was lowered from
+    /// (issue #3183, `docs/debugger-spec.md`) — a knot/stitch definition's
+    /// own header range, a gather's `-` (or its label), a choice's target
+    /// body, a sequence/conditional branch wrapper's own construct, or the
+    /// enclosing knot's range for the implicit root container. Bare, never
+    /// `Option`: every container is lowered from exactly one HIR shape that
+    /// itself carries (or, for a handful of always-synthetic wrapper kinds,
+    /// is deliberately stamped with [`Provenance::synthetic`] for) a real
+    /// range — there is no "we don't know" case to distinguish, so presence
+    /// carries no meaning beyond identifying where this container came
+    /// from (see the retired `Return.ptr`-presence trap this deliberately
+    /// avoids repeating).
+    pub provenance: Provenance,
     /// Local name of this container (e.g. `"order"` for stitch `tavern.order`).
     /// `None` for the root container and anonymous gathers.
     pub name: Option<String>,
@@ -279,10 +293,35 @@ pub struct Param {
 
 // ─── Statements ──────────────────────────────────────────────────────
 
-/// A statement within a container body. Structured — branches and
-/// choice sets preserve their shape for both backends to consume.
+/// A statement within a container body, paired with the source provenance
+/// it was lowered from (issue #3183, `docs/debugger-spec.md`).
+///
+/// Bare `Provenance`, never `Option` — see [`Container::provenance`]'s doc
+/// for the "no Option" rationale (the retired `Return.ptr`-presence trap).
+/// A statement synthesized during lowering with no single corresponding HIR
+/// node (e.g. one leg of a multi-statement RMW desugar) inherits the
+/// provenance of the HIR statement it was desugared *from* — real geometry,
+/// honestly shared across every synthesized sibling, never a fabricated
+/// value. See `lower::stmts::stmt_provenance`/`LowerCtx::current_stmt_provenance`
+/// for how that's computed and threaded.
 #[derive(Clone)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub provenance: Provenance,
+}
+
+impl Stmt {
+    #[must_use]
+    pub const fn new(kind: StmtKind, provenance: Provenance) -> Self {
+        Self { kind, provenance }
+    }
+}
+
+/// A statement's shape, independent of its provenance — see [`Stmt`].
+/// Structured — branches and choice sets preserve their shape for both
+/// backends to consume.
+#[derive(Clone)]
+pub enum StmtKind {
     /// Emit a line of text content (with optional inline elements and tags).
     EmitContent(Content),
 
@@ -364,7 +403,7 @@ pub enum Stmt {
     //
     // `~ { … }` blocks are pure logic — no weave concepts (content, choices,
     // diverts, gathers, threads) ever appear in these bodies; `if`/`else`
-    // reuse `Stmt::Conditional` above (identical shape: a list of
+    // reuse `StmtKind::Conditional` above (identical shape: a list of
     // `(Option<condition>, body)` branches, no sub-containers needed since
     // block bodies never contain choices).
     /// `while cond { … }`. Compiles to a flat backward-jump loop in the
@@ -383,7 +422,7 @@ pub enum Stmt {
     /// merge its (expected-`Record`) fields into the VM's per-block
     /// attachment state instead of the output buffer — no line, no event.
     AttachElement(Expr),
-    /// Closes the run an [`Stmt::AttachElement`] opened — see
+    /// Closes the run an [`Self::AttachElement`] opened — see
     /// [`crate::hir::Stmt::EndElementRun`]'s doc. Lowers to
     /// `Opcode::EndElementRun`: clears the VM's accumulated attachment data
     /// and starts a fresh block.

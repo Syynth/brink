@@ -17,11 +17,11 @@ impl ContainerEmitter<'_> {
         reason = "one match arm per LIR Stmt variant; splitting would obscure the dispatch"
     )]
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
-        match stmt {
-            lir::Stmt::EmitContent(content) => self.emit_content(content),
-            lir::Stmt::EmitLine(emission) => self.emit_recognized_line(emission),
-            lir::Stmt::EvalLine(emission) => self.emit_eval_line(emission),
-            lir::Stmt::ChoiceOutput {
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(content) => self.emit_content(content),
+            lir::StmtKind::EmitLine(emission) => self.emit_recognized_line(emission),
+            lir::StmtKind::EvalLine(emission) => self.emit_eval_line(emission),
+            lir::StmtKind::ChoiceOutput {
                 content, emission, ..
             } => {
                 if let Some(em) = emission {
@@ -33,9 +33,9 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Stmt::Divert(divert) => self.emit_divert(divert),
+            lir::StmtKind::Divert(divert) => self.emit_divert(divert),
 
-            lir::Stmt::TunnelCall(tunnel) => {
+            lir::StmtKind::TunnelCall(tunnel) => {
                 for target in &tunnel.targets {
                     for arg in &target.args {
                         self.emit_call_arg(arg);
@@ -58,7 +58,7 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Stmt::ThreadStart(thread) => {
+            lir::StmtKind::ThreadStart(thread) => {
                 for arg in &thread.args {
                     self.emit_call_arg(arg);
                 }
@@ -79,7 +79,7 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Stmt::DeclareTemp { slot, value, .. } => {
+            lir::StmtKind::DeclareTemp { slot, value, .. } => {
                 if let Some(expr) = value {
                     self.emit_expr(expr, false);
                 } else {
@@ -88,11 +88,11 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::DeclareTemp(*slot));
             }
 
-            lir::Stmt::Assign { target, op, value } => {
+            lir::StmtKind::Assign { target, op, value } => {
                 self.emit_assign(target, *op, value);
             }
 
-            lir::Stmt::Return {
+            lir::StmtKind::Return {
                 value,
                 is_tunnel,
                 args,
@@ -112,28 +112,28 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Stmt::ChoiceSet(cs) => self.emit_choice_set(cs),
+            lir::StmtKind::ChoiceSet(cs) => self.emit_choice_set(cs),
 
-            lir::Stmt::Conditional(cond) => self.emit_conditional(cond),
+            lir::StmtKind::Conditional(cond) => self.emit_conditional(cond),
 
-            lir::Stmt::Sequence(seq) => self.emit_sequence(seq),
+            lir::StmtKind::Sequence(seq) => self.emit_sequence(seq),
 
-            lir::Stmt::EnterContainer(id) => {
+            lir::StmtKind::EnterContainer(id) => {
                 self.emit(Opcode::EnterContainer(*id));
             }
 
-            lir::Stmt::ExprStmt(expr) => {
+            lir::StmtKind::ExprStmt(expr) => {
                 self.emit_expr(expr, false);
                 self.emit(Opcode::Pop);
             }
 
-            lir::Stmt::EndOfLine => {
+            lir::StmtKind::EndOfLine => {
                 self.emit(Opcode::EmitNewline);
             }
 
-            lir::Stmt::LogicWhile(w) => self.emit_logic_while(w),
+            lir::StmtKind::LogicWhile(w) => self.emit_logic_while(w),
 
-            lir::Stmt::LogicBreak => {
+            lir::StmtKind::LogicBreak => {
                 // Patched to land just after the whole loop once it's fully
                 // emitted (`emit_logic_while`). LIR lowering (E057,
                 // `brink-ir::lir::lower::blocks`) rejects `break` outside
@@ -175,16 +175,16 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Stmt::AttachElement(expr) => {
+            lir::StmtKind::AttachElement(expr) => {
                 self.emit_expr(expr, false);
                 self.emit(Opcode::AttachElement);
             }
 
-            lir::Stmt::EndElementRun => {
+            lir::StmtKind::EndElementRun => {
                 self.emit(Opcode::EndElementRun);
             }
 
-            lir::Stmt::LogicContinue => {
+            lir::StmtKind::LogicContinue => {
                 // See `LogicBreak` above — identical reasoning, `continue`'s
                 // own jump target.
                 if self.loop_stack.is_empty() {

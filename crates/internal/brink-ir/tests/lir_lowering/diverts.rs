@@ -10,7 +10,7 @@ fn divert_to_done() {
     let has_done = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Done)));
     assert!(has_done, "should have a DONE divert");
 }
 
@@ -21,7 +21,7 @@ fn divert_to_end() {
     let has_end = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::End)));
     assert!(has_end, "should have an END divert");
 }
 
@@ -44,7 +44,7 @@ The end.
     let middle = find_child(&p.root, "middle");
 
     let start_diverts_to_middle = start.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == middle.id))
+        matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == middle.id))
     });
     assert!(start_diverts_to_middle);
 }
@@ -65,7 +65,7 @@ One ale, please.
     let stitch = find_child(knot, "order");
 
     let diverts_to_stitch = knot.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == stitch.id))
+        matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == stitch.id))
     });
     assert!(diverts_to_stitch, "knot should divert to its stitch");
 }

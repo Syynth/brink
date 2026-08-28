@@ -15,7 +15,7 @@ fn slot_only_content_not_recognized_as_template() {
     let p = lower_ink("VAR name = \"world\"\n{name}\n");
     let r = root(&p);
     let has_template = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         !has_template,
@@ -31,7 +31,7 @@ fn whitespace_only_text_between_slots_not_recognized_as_template() {
     let p = lower_ink("VAR x = 1\nVAR y = 2\n{x} {y}\n");
     let r = root(&p);
     let has_template = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         !has_template,
@@ -46,7 +46,7 @@ fn text_with_interpolation_recognized_as_template() {
     let p = lower_ink("VAR name = \"world\"\nHello {name}!\n");
     let r = root(&p);
     let has_template = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         has_template,

@@ -11,10 +11,12 @@ mod structs;
 mod temps;
 
 use brink_format::CountingFlags;
+use rowan::TextRange;
 
 use crate::FileId;
 use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
+use crate::provenance::{NodeClass, Provenance};
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
 use super::types as lir;
@@ -817,16 +819,35 @@ pub fn assemble_program(
 
     let ends_with_divert = root_body
         .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
+        .is_some_and(|s| matches!(&s.kind, lir::StmtKind::Divert(_)));
     if !ends_with_divert {
-        root_body.push(lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Done,
-            args: Vec::new(),
-        }));
+        // No single HIR node produced this implicit `-> DONE` — it is
+        // whole-program assembly filling in ink's "falling off the end of
+        // root content is a safe implicit end" rule (issue #1503), not a
+        // desugar of any one statement. Inherit the last real statement's
+        // provenance when there is one (closest honest anchor: "right
+        // after whatever came last"); a project with no root content at
+        // all falls back to a synthetic marker, since there is truly
+        // nothing to point at (issue #3183 — bare `Provenance`, never a
+        // fabricated-but-plausible-looking range).
+        let provenance = root_body.last().map_or_else(
+            || crate::Provenance::synthetic(crate::NodeClass::Stmt, TextRange::empty(0.into())),
+            |s| s.provenance,
+        );
+        root_body.push(lir::Stmt::new(
+            lir::StmtKind::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            }),
+            provenance,
+        ));
     }
 
     let mut root = lir::Container {
         id: prelude.root_id,
+        // The implicit root container spans the whole project, not one
+        // definition site — synthetic by construction (issue #3183).
+        provenance: Provenance::synthetic(NodeClass::Knot, TextRange::empty(0.into())),
         name: None,
         kind: lir::ContainerKind::Root,
         params: Vec::new(),
@@ -946,14 +967,18 @@ fn lower_knot(
             .iter()
             .find(|c| c.kind == lir::ContainerKind::Stitch)
     {
-        final_body.push(lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Address(first_stitch.id),
-            args: Vec::new(),
-        }));
+        final_body.push(lir::Stmt::new(
+            lir::StmtKind::Divert(lir::Divert {
+                target: lir::DivertTarget::Address(first_stitch.id),
+                args: Vec::new(),
+            }),
+            knot.ptr,
+        ));
     }
 
     lir::Container {
         id: knot_id,
+        provenance: knot.ptr,
         name: Some(knot_name.clone()),
         kind: lir::ContainerKind::Knot,
         params,
@@ -1020,6 +1045,7 @@ fn lower_stitch(
 
     lir::Container {
         id: stitch_id,
+        provenance: stitch.ptr,
         name: Some(stitch_name.clone()),
         kind: lir::ContainerKind::Stitch,
         params,
@@ -1064,6 +1090,10 @@ fn lower_block_with_children(
 
     while pos < block.stmts.len() {
         let stmt = &block.stmts[pos];
+        // Issue #3183: every `lir::Stmt`/`lir::Container` synthesized while
+        // handling `stmt` — including by helpers this loop calls into —
+        // inherits its provenance via `ctx.current_stmt_provenance`.
+        ctx.enter_stmt(stmts::stmt_provenance(stmt, ctx));
         match stmt {
             hir::Stmt::ChoiceSet(cs) => {
                 // Every choice set gets a gather target — read from stamped HIR.
@@ -1085,10 +1115,13 @@ fn lower_block_with_children(
                     })
                     .collect();
 
-                stmts.push(lir::Stmt::ChoiceSet(lir::ChoiceSet {
-                    choices,
-                    gather_target,
-                }));
+                stmts.push(lir::Stmt::new(
+                    lir::StmtKind::ChoiceSet(lir::ChoiceSet {
+                        choices,
+                        gather_target,
+                    }),
+                    ctx.current_stmt_provenance,
+                ));
                 children.append(&mut choice_children);
 
                 // Build gather container from the continuation block.
@@ -1113,7 +1146,10 @@ fn lower_block_with_children(
                 let wrapper_id = labeled.container_id.unwrap_or(ctx.root_id);
                 *gather_counter += 1;
 
-                stmts.push(lir::Stmt::EnterContainer(wrapper_id));
+                stmts.push(lir::Stmt::new(
+                    lir::StmtKind::EnterContainer(wrapper_id),
+                    ctx.current_stmt_provenance,
+                ));
 
                 let display_name = labeled
                     .label
@@ -1134,25 +1170,29 @@ fn lower_block_with_children(
                 if let Some(gather_id) = ctx.choice_gather_target {
                     let ends_terminal = inner_stmts.last().is_some_and(|s| {
                         matches!(
-                            s,
-                            lir::Stmt::Divert(d) if matches!(
+                            &s.kind,
+                            lir::StmtKind::Divert(d) if matches!(
                                 d.target,
                                 lir::DivertTarget::Done
                                     | lir::DivertTarget::End
                                     | lir::DivertTarget::Address(_)
                             )
-                        ) || matches!(s, lir::Stmt::ChoiceSet(_))
+                        ) || matches!(&s.kind, lir::StmtKind::ChoiceSet(_))
                     });
                     if !ends_terminal {
-                        inner_stmts.push(lir::Stmt::Divert(lir::Divert {
-                            target: lir::DivertTarget::Address(gather_id),
-                            args: Vec::new(),
-                        }));
+                        inner_stmts.push(lir::Stmt::new(
+                            lir::StmtKind::Divert(lir::Divert {
+                                target: lir::DivertTarget::Address(gather_id),
+                                args: Vec::new(),
+                            }),
+                            ctx.current_stmt_provenance,
+                        ));
                     }
                 }
 
                 children.push(lir::Container {
                     id: wrapper_id,
+                    provenance: ctx.current_stmt_provenance,
                     name: Some(display_name),
                     kind: lir::ContainerKind::Gather,
                     params: Vec::new(),
@@ -1232,8 +1272,15 @@ fn lower_block_with_children(
                         // Read pre-stamped container ID from HIR.
                         let branch_id = b.container_id.unwrap_or(ctx.root_id);
 
+                        // `b.ptr` is this branch's own span (condition + body,
+                        // issue #404) — finer-grained than the enclosing
+                        // Conditional's whole-construct range, so both the
+                        // branch container and its `EnterContainer` marker
+                        // stamp it directly rather than the coarser ambient
+                        // (issue #3183).
                         let branch_container = lir::Container {
                             id: branch_id,
+                            provenance: b.ptr,
                             name: Some(format!("{branch_idx}")),
                             kind: lir::ContainerKind::ConditionalBranch,
                             params: Vec::new(),
@@ -1254,7 +1301,10 @@ fn lower_block_with_children(
                         // The branch body in the Conditional struct is just EnterContainer
                         lir::CondBranch {
                             condition,
-                            body: vec![lir::Stmt::EnterContainer(branch_id)],
+                            body: vec![lir::Stmt::new(
+                                lir::StmtKind::EnterContainer(branch_id),
+                                b.ptr,
+                            )],
                         }
                     })
                     .collect();
@@ -1262,7 +1312,10 @@ fn lower_block_with_children(
                 // Restore scope_path after processing branches.
                 ctx.scope_path = old_scope;
 
-                stmts.push(lir::Stmt::Conditional(lir::Conditional { kind, branches }));
+                stmts.push(lir::Stmt::new(
+                    lir::StmtKind::Conditional(lir::Conditional { kind, branches }),
+                    ctx.current_stmt_provenance,
+                ));
                 pos += 1;
             }
             hir::Stmt::Sequence(seq) => {
@@ -1299,8 +1352,11 @@ fn lower_block_with_children(
                         // Read pre-stamped container ID from HIR branch block.
                         let branch_id = b.body.container_id.unwrap_or(ctx.root_id);
 
+                        // `b.ptr` is this branch's own span — sibling of
+                        // `CondBranch::ptr` above (issue #3183).
                         let branch_container = lir::Container {
                             id: branch_id,
+                            provenance: b.ptr,
                             name: Some(format!("{branch_idx}")),
                             kind: lir::ContainerKind::SequenceBranch,
                             params: Vec::new(),
@@ -1316,20 +1372,27 @@ fn lower_block_with_children(
                         wrapper_children.push(branch_container);
 
                         // The branch body in the Sequence struct is just EnterContainer
-                        vec![lir::Stmt::EnterContainer(branch_id)]
+                        vec![lir::Stmt::new(
+                            lir::StmtKind::EnterContainer(branch_id),
+                            b.ptr,
+                        )]
                     })
                     .collect();
 
                 ctx.scope_path = old_scope;
                 let wrapper = lir::Container {
                     id: wrapper_id,
+                    provenance: ctx.current_stmt_provenance,
                     name: Some(display_name),
                     kind: lir::ContainerKind::Sequence,
                     params: Vec::new(),
-                    body: vec![lir::Stmt::Sequence(lir::Sequence {
-                        kind: seq.kind,
-                        branches,
-                    })],
+                    body: vec![lir::Stmt::new(
+                        lir::StmtKind::Sequence(lir::Sequence {
+                            kind: seq.kind,
+                            branches,
+                        }),
+                        ctx.current_stmt_provenance,
+                    )],
                     children: wrapper_children,
                     counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
                     temp_slot_count: 0,
@@ -1340,35 +1403,53 @@ fn lower_block_with_children(
                 };
                 children.push(wrapper);
 
-                stmts.push(lir::Stmt::EnterContainer(wrapper_id));
+                stmts.push(lir::Stmt::new(
+                    lir::StmtKind::EnterContainer(wrapper_id),
+                    ctx.current_stmt_provenance,
+                ));
                 pos += 1;
             }
             hir::Stmt::Content(content) => {
                 // Try direct recognition first.
                 if let Some(emission) = recognize::try_recognize(content, ctx) {
-                    stmts.push(lir::Stmt::EmitLine(emission));
+                    stmts.push(lir::Stmt::new(
+                        lir::StmtKind::EmitLine(emission),
+                        ctx.current_stmt_provenance,
+                    ));
                 }
                 // Try with boundary glue stripping.
                 else if let Some((leading, emission, trailing)) =
                     recognize::try_recognize_with_glue(content, ctx)
                 {
                     if leading {
-                        stmts.push(lir::Stmt::EmitContent(lir::Content {
-                            parts: vec![lir::ContentPart::Glue],
-                            tags: vec![],
-                        }));
+                        stmts.push(lir::Stmt::new(
+                            lir::StmtKind::EmitContent(lir::Content {
+                                parts: vec![lir::ContentPart::Glue],
+                                tags: vec![],
+                            }),
+                            ctx.current_stmt_provenance,
+                        ));
                     }
-                    stmts.push(lir::Stmt::EmitLine(emission));
+                    stmts.push(lir::Stmt::new(
+                        lir::StmtKind::EmitLine(emission),
+                        ctx.current_stmt_provenance,
+                    ));
                     if trailing {
-                        stmts.push(lir::Stmt::EmitContent(lir::Content {
-                            parts: vec![lir::ContentPart::Glue],
-                            tags: vec![],
-                        }));
+                        stmts.push(lir::Stmt::new(
+                            lir::StmtKind::EmitContent(lir::Content {
+                                parts: vec![lir::ContentPart::Glue],
+                                tags: vec![],
+                            }),
+                            ctx.current_stmt_provenance,
+                        ));
                     }
                 }
                 // Fallback: emit content parts individually.
                 else {
-                    stmts.push(lir::Stmt::EmitContent(content::lower_content(content, ctx)));
+                    stmts.push(lir::Stmt::new(
+                        lir::StmtKind::EmitContent(content::lower_content(content, ctx)),
+                        ctx.current_stmt_provenance,
+                    ));
                 }
                 children.append(&mut ctx.pending_children);
                 pos += 1;
@@ -1517,15 +1598,22 @@ fn build_continuation_container(
         // the VM's normal frame-exhaustion path (`handle_frame_exhaustion`)
         // surface that instead of masking it as a safe exit (issue #1503).
         let body = if ctx.is_root_content_scope {
-            vec![lir::Stmt::Divert(lir::Divert {
-                target: lir::DivertTarget::Done,
-                args: Vec::new(),
-            })]
+            vec![lir::Stmt::new(
+                lir::StmtKind::Divert(lir::Divert {
+                    target: lir::DivertTarget::Done,
+                    args: Vec::new(),
+                }),
+                ctx.current_stmt_provenance,
+            )]
         } else {
             Vec::new()
         };
         return lir::Container {
             id,
+            // `hir::Block` (the continuation) carries no `.ptr` of its own —
+            // inherit the ambient, which at every call site is the
+            // enclosing `ChoiceSet`'s own provenance (issue #3183).
+            provenance: ctx.current_stmt_provenance,
             name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
@@ -1546,6 +1634,7 @@ fn build_continuation_container(
 
     lir::Container {
         id,
+        provenance: ctx.current_stmt_provenance,
         name: Some(display_name),
         kind: lir::ContainerKind::Gather,
         params: Vec::new(),
@@ -1696,13 +1785,18 @@ fn lower_choice_with_child(
             output_tags.extend(ic.tags.clone());
         }
         if !output_parts.is_empty() || !output_tags.is_empty() {
-            body.push(lir::Stmt::ChoiceOutput {
-                content: lir::Content {
-                    parts: output_parts,
-                    tags: output_tags,
+            body.push(lir::Stmt::new(
+                lir::StmtKind::ChoiceOutput {
+                    content: lir::Content {
+                        parts: output_parts,
+                        tags: output_tags,
+                    },
+                    emission: output_emission.clone(),
                 },
-                emission: output_emission.clone(),
-            });
+                // `choice.ptr` — this choice's own range (issue #3183),
+                // finer-grained than the ambient ChoiceSet-wide fallback.
+                choice.ptr,
+            ));
         }
     }
 
@@ -1712,14 +1806,14 @@ fn lower_choice_with_child(
     // 5. Auto-gather divert when the body doesn't end with Done/End.
     let ends_with_terminal = body.last().is_some_and(|s| {
         matches!(
-            s,
-            lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done | lir::DivertTarget::End)
+            &s.kind,
+            lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Done | lir::DivertTarget::End)
         )
     });
     if !ends_with_terminal && let Some(gather_id) = gather_target {
         let body_ends_with_choice_set = body
             .last()
-            .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+            .is_some_and(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)));
 
         let divert = lir::Divert {
             target: lir::DivertTarget::Address(gather_id),
@@ -1735,7 +1829,7 @@ fn lower_choice_with_child(
             // in-gather chains (multi-level weaves).
             patch_innermost_gather(&mut children, divert);
         } else {
-            body.push(lir::Stmt::Divert(divert));
+            body.push(lir::Stmt::new(lir::StmtKind::Divert(divert), choice.ptr));
         }
     }
 
@@ -1748,6 +1842,7 @@ fn lower_choice_with_child(
     let child_name = format!("c-{}", *choice_counter - 1);
     let child = lir::Container {
         id: target,
+        provenance: choice.ptr,
         name: Some(child_name),
         kind: lir::ContainerKind::ChoiceTarget,
         params: Vec::new(),
@@ -1832,6 +1927,11 @@ fn make_ctx<'a>(
         temp_shapes: LookupMap::new(),
         tables,
         lifted,
+        // Overwritten by `ctx.enter_stmt(..)` before any real statement
+        // lowers (issue #3183) — this seed is never observed by a
+        // well-formed container, whose body is never empty of statements
+        // reaching a dispatch point.
+        current_stmt_provenance: Provenance::synthetic(NodeClass::Stmt, TextRange::empty(0.into())),
     }
 }
 
@@ -1988,11 +2088,11 @@ fn collect_counting_refs(
     turns_ids: &mut Vec<brink_format::DefinitionId>,
 ) {
     for stmt in stmts {
-        match stmt {
-            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput { content, .. } => {
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(content) | lir::StmtKind::ChoiceOutput { content, .. } => {
                 collect_counting_refs_content(content, visit_ids, turns_ids);
             }
-            lir::Stmt::EmitLine(emission) | lir::Stmt::EvalLine(emission) => {
+            lir::StmtKind::EmitLine(emission) | lir::StmtKind::EvalLine(emission) => {
                 // Template slot expressions may contain counting refs.
                 if let lir::RecognizedLine::Template { slot_exprs, .. } = &emission.line {
                     for e in slot_exprs {
@@ -2008,13 +2108,13 @@ fn collect_counting_refs(
                     }
                 }
             }
-            lir::Stmt::Assign { value: e, .. }
-            | lir::Stmt::DeclareTemp { value: Some(e), .. }
-            | lir::Stmt::Return { value: Some(e), .. }
-            | lir::Stmt::ExprStmt(e) => {
+            lir::StmtKind::Assign { value: e, .. }
+            | lir::StmtKind::DeclareTemp { value: Some(e), .. }
+            | lir::StmtKind::Return { value: Some(e), .. }
+            | lir::StmtKind::ExprStmt(e) => {
                 collect_counting_refs_expr(e, visit_ids, turns_ids);
             }
-            lir::Stmt::ChoiceSet(cs) => {
+            lir::StmtKind::ChoiceSet(cs) => {
                 for choice in &cs.choices {
                     if let Some(ref cond) = choice.condition {
                         collect_counting_refs_expr(cond, visit_ids, turns_ids);
@@ -2042,7 +2142,7 @@ fn collect_counting_refs(
                     }
                 }
             }
-            lir::Stmt::Conditional(cond) => {
+            lir::StmtKind::Conditional(cond) => {
                 for branch in &cond.branches {
                     if let Some(ref e) = branch.condition {
                         collect_counting_refs_expr(e, visit_ids, turns_ids);
@@ -2050,24 +2150,24 @@ fn collect_counting_refs(
                     collect_counting_refs(&branch.body, visit_ids, turns_ids);
                 }
             }
-            lir::Stmt::Sequence(seq) => {
+            lir::StmtKind::Sequence(seq) => {
                 for branch in &seq.branches {
                     collect_counting_refs(branch, visit_ids, turns_ids);
                 }
             }
-            lir::Stmt::Divert(d) => {
+            lir::StmtKind::Divert(d) => {
                 for arg in &d.args {
                     collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                 }
             }
-            lir::Stmt::TunnelCall(tc) => {
+            lir::StmtKind::TunnelCall(tc) => {
                 for t in &tc.targets {
                     for arg in &t.args {
                         collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                     }
                 }
             }
-            lir::Stmt::ThreadStart(ts) => {
+            lir::StmtKind::ThreadStart(ts) => {
                 for arg in &ts.args {
                     collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                 }
@@ -2242,15 +2342,23 @@ fn attach_root_final_gather(children: &mut Vec<lir::Container>, ids: &mut contex
         return;
     }
 
+    // Whole-program synthetic (issue #3183) — C#'s implicit end-of-root-
+    // weave marker has no HIR node of its own to point at, and this
+    // assembly-time function has no `LowerCtx` to fall back on either.
+    let provenance = Provenance::synthetic(NodeClass::Stmt, TextRange::empty(0.into()));
     children.push(lir::Container {
         id: terminus_id,
+        provenance,
         name: Some(ROOT_TERMINUS_NAME.to_string()),
         kind: lir::ContainerKind::Gather,
         params: Vec::new(),
-        body: vec![lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Done,
-            args: Vec::new(),
-        })],
+        body: vec![lir::Stmt::new(
+            lir::StmtKind::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            }),
+            provenance,
+        )],
         children: Vec::new(),
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
@@ -2295,7 +2403,7 @@ fn patch_root_loose_end(
     if gather
         .body
         .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+        .is_some_and(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)))
     {
         return patch_root_loose_end(&mut gather.children, terminus);
     }
@@ -2306,8 +2414,8 @@ fn patch_root_loose_end(
 
     let ends_terminal = gather.body.last().is_some_and(|s| {
         matches!(
-            s,
-            lir::Stmt::Divert(d)
+            &s.kind,
+            lir::StmtKind::Divert(d)
                 if matches!(
                     d.target,
                     lir::DivertTarget::End
@@ -2320,10 +2428,17 @@ fn patch_root_loose_end(
         return false;
     }
 
-    gather.body.push(lir::Stmt::Divert(lir::Divert {
-        target: lir::DivertTarget::Address(terminus),
-        args: Vec::new(),
-    }));
+    // No `LowerCtx` reaches this post-assembly patching pass — inherit the
+    // gather container's own provenance (issue #3183), stamped when it was
+    // built, for the divert being spliced into its body.
+    let provenance = gather.provenance;
+    gather.body.push(lir::Stmt::new(
+        lir::StmtKind::Divert(lir::Divert {
+            target: lir::DivertTarget::Address(terminus),
+            args: Vec::new(),
+        }),
+        provenance,
+    ));
     true
 }
 
@@ -2346,7 +2461,7 @@ fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) 
     let gather_body_ends_with_choice_set = gather
         .body
         .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+        .is_some_and(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)));
 
     if gather_body_ends_with_choice_set {
         // Recurse into the gather's children to find the deeper gather
@@ -2356,8 +2471,8 @@ fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) 
 
     let gather_body_ends_terminal = gather.body.last().is_some_and(|s| {
         matches!(
-            s,
-            lir::Stmt::Divert(d)
+            &s.kind,
+            lir::StmtKind::Divert(d)
                 if matches!(
                     d.target,
                     lir::DivertTarget::End
@@ -2367,11 +2482,16 @@ fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) 
         )
     });
 
+    // Same no-`LowerCtx`-here rationale as `patch_root_loose_end`: inherit
+    // the gather's own provenance.
+    let provenance = gather.provenance;
     if gather_body_ends_terminal {
         // Replace the terminal (e.g., Done) with the outer gather divert
         let last_idx = gather.body.len() - 1;
-        gather.body[last_idx] = lir::Stmt::Divert(divert);
+        gather.body[last_idx] = lir::Stmt::new(lir::StmtKind::Divert(divert), provenance);
     } else {
-        gather.body.push(lir::Stmt::Divert(divert));
+        gather
+            .body
+            .push(lir::Stmt::new(lir::StmtKind::Divert(divert), provenance));
     }
 }

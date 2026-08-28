@@ -24,27 +24,27 @@ fn has_get_global(container: &lir::Container) -> bool {
         })
     }
     fn in_stmts(stmts: &[lir::Stmt]) -> bool {
-        stmts.iter().any(|s| match s {
-            lir::Stmt::ExprStmt(e) => in_expr(e),
-            lir::Stmt::Assign { value, .. } => in_expr(value),
-            lir::Stmt::DeclareTemp { value, .. } => value.as_ref().is_some_and(in_expr),
-            lir::Stmt::Conditional(c) => c
+        stmts.iter().any(|s| match &s.kind {
+            lir::StmtKind::ExprStmt(e) => in_expr(e),
+            lir::StmtKind::Assign { value, .. } => in_expr(value),
+            lir::StmtKind::DeclareTemp { value, .. } => value.as_ref().is_some_and(in_expr),
+            lir::StmtKind::Conditional(c) => c
                 .branches
                 .iter()
                 .any(|b| b.condition.as_ref().is_some_and(in_expr) || in_stmts(&b.body)),
-            lir::Stmt::ChoiceSet(cs) => cs
+            lir::StmtKind::ChoiceSet(cs) => cs
                 .choices
                 .iter()
                 .any(|ch| ch.condition.as_ref().is_some_and(in_expr)),
-            lir::Stmt::EmitContent(c) => in_content(c),
-            lir::Stmt::EmitLine(em) | lir::Stmt::EvalLine(em) => {
+            lir::StmtKind::EmitContent(c) => in_content(c),
+            lir::StmtKind::EmitLine(em) | lir::StmtKind::EvalLine(em) => {
                 if let lir::RecognizedLine::Template { slot_exprs, .. } = &em.line {
                     slot_exprs.iter().any(in_expr)
                 } else {
                     false
                 }
             }
-            lir::Stmt::ChoiceOutput { content, emission } => {
+            lir::StmtKind::ChoiceOutput { content, emission } => {
                 in_content(content)
                     || emission.as_ref().is_some_and(|em| {
                         if let lir::RecognizedLine::Template { slot_exprs, .. } = &em.line {
