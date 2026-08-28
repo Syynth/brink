@@ -621,6 +621,34 @@ fn walk_container(
         (!container.body.is_empty()).then_some(0)
     };
 
+    // D7 (`docs/debugger-spec.md` §3, issue #3185): this container's own
+    // `LocalsTable` rows — one per declared parameter (bound by the bare
+    // `DeclareTemp` opcodes emitted below, no `lir::Stmt`/source range of
+    // their own) plus one per top-level `~ temp` declaration in this
+    // container's own body (a nested child container's `DeclareTemp`s are
+    // recorded when *it* is walked, into *its own* table — §2.2's
+    // container-lockstep framing, not this container's). `raw_locals` stays
+    // empty (no allocation) on the default `emit()` path.
+    let mut raw_locals: Vec<debug_info::RawLocal> = Vec::new();
+    if debug_enabled {
+        for param in &container.params {
+            raw_locals.push(debug_info::RawLocal {
+                slot: param.slot,
+                name: param.name,
+                declaring_range: None,
+            });
+        }
+        for stmt in &container.body {
+            if let lir::StmtKind::DeclareTemp { slot, name, .. } = &stmt.kind {
+                raw_locals.push(debug_info::RawLocal {
+                    slot: *slot,
+                    name: *name,
+                    declaring_range: Some(stmt.provenance),
+                });
+            }
+        }
+    }
+
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state, scope_id);
     if debug_enabled {
@@ -737,7 +765,7 @@ fn walk_container(
     // the eventual `StoryData::containers`, matching §2.2's `container_idx`
     // contract. A no-op (`state.debug` is `None`) on the default path.
     if let Some(debug) = state.debug.as_mut() {
-        debug.push_container(raw_entries);
+        debug.push_container(raw_entries, raw_locals);
     }
 
     // Primary address: every container is addressable by its own id.

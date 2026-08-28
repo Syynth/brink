@@ -760,6 +760,95 @@ struct DebugFrameJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     position: Option<DebugPositionJs>,
     temps: usize,
+    /// D7 (`docs/debugger-spec.md` §3, #3185): this frame's named locals.
+    /// Additive alongside `temps` (D4's bare count, kept as-is). `None`
+    /// when the linked program carries no `DebugInfo` at all — see
+    /// `brink_runtime::debug::DebugFrame::locals`'s own doc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locals: Option<Vec<DebugLocalJs>>,
+}
+
+#[derive(Serialize)]
+struct DebugLocalJs {
+    slot: u16,
+    name: String,
+    value: DebugValueJs,
+}
+
+/// Structured mirror of `brink_runtime::debug::DebugValue`
+/// (`docs/debugger-spec.md` §3, D7/#3185) — internally tagged on `type` so
+/// a JS consumer can `switch` on it directly rather than probing for which
+/// field is present.
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum DebugValueJs {
+    #[serde(rename = "int")]
+    Int { value: i32 },
+    #[serde(rename = "float")]
+    Float { value: f32 },
+    #[serde(rename = "bool")]
+    Bool { value: bool },
+    #[serde(rename = "string")]
+    Str { value: String },
+    #[serde(rename = "null")]
+    Null,
+    #[serde(rename = "list")]
+    List { members: Vec<String> },
+    #[serde(rename = "divertTarget")]
+    DivertTarget {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    #[serde(rename = "struct")]
+    Struct {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        fields: Vec<DebugFieldJs>,
+    },
+    // `id` crosses as a decimal string, not a `number` — the same
+    // full-range-`u64`-as-`f64` precision hazard `value_to_js`'s own
+    // `Value::Handle` arm documents (this file, above): a token's whole
+    // point is exact equality, never arithmetic.
+    #[serde(rename = "handle")]
+    Handle { kind: String, id: String },
+    /// Every value kind not modeled above — see
+    /// `brink_runtime::debug::DebugValue::Other`'s own doc.
+    #[serde(rename = "other")]
+    Other { display: String },
+}
+
+#[derive(Serialize)]
+struct DebugFieldJs {
+    name: String,
+    value: DebugValueJs,
+}
+
+fn debug_value_to_js(v: brink_runtime::DebugValue) -> DebugValueJs {
+    use brink_runtime::DebugValue;
+    match v {
+        DebugValue::Int(i) => DebugValueJs::Int { value: i },
+        DebugValue::Float(f) => DebugValueJs::Float { value: f },
+        DebugValue::Bool(b) => DebugValueJs::Bool { value: b },
+        DebugValue::Str(s) => DebugValueJs::Str { value: s },
+        DebugValue::Null => DebugValueJs::Null,
+        DebugValue::List(members) => DebugValueJs::List { members },
+        DebugValue::DivertTarget(path) => DebugValueJs::DivertTarget { path },
+        DebugValue::Struct { name, fields } => DebugValueJs::Struct {
+            name,
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| DebugFieldJs {
+                    name,
+                    value: debug_value_to_js(value),
+                })
+                .collect(),
+        },
+        DebugValue::Handle { kind, id } => DebugValueJs::Handle {
+            kind,
+            id: id.to_string(),
+        },
+        DebugValue::Other(display) => DebugValueJs::Other { display },
+    }
 }
 
 #[derive(Serialize)]
@@ -810,6 +899,16 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
                     offset: p.offset,
                 }),
                 temps: f.temps,
+                locals: f.locals.map(|locals| {
+                    locals
+                        .into_iter()
+                        .map(|l| DebugLocalJs {
+                            slot: l.slot,
+                            name: l.name,
+                            value: debug_value_to_js(l.value),
+                        })
+                        .collect()
+                }),
             })
             .collect(),
         visit_counts: s

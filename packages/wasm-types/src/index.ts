@@ -1157,6 +1157,52 @@ export interface DebugFrame {
    *  resolved to source (D6/D9). */
   position?: { container_idx: number; offset: number };
   temps: number;
+  /** D7 (`docs/debugger-spec.md` §3, #3185): this frame's named locals —
+   *  every declared parameter/`~ temp` slot currently in scope, bound to
+   *  its live value. Additive alongside `temps` (D4's bare count, kept
+   *  as-is). Absent when the linked program carries no `DebugInfo` at all
+   *  (a release-exported story, or one compiled before D6) — a frame with
+   *  `DebugInfo` but genuinely zero declared locals reports `[]`, not
+   *  absent, so a consumer can tell the two apart. */
+  locals?: DebugLocal[];
+}
+
+export interface DebugLocal {
+  /** The VM temp slot this local occupies — matches
+   *  `DeclareTemp`/`GetTemp`/`SetTemp`'s `u16` operand. */
+  slot: number;
+  name: string;
+  value: DebugValue;
+}
+
+/** A structured, read-only view of a runtime value for the debugger's
+ *  locals panel (`docs/debugger-spec.md` §3, D7/#3185). Deliberately more
+ *  structured than `DebugGlobal.value` (a display string, unchanged): a
+ *  locals panel needs to tell "a list with these members" from "a string
+ *  that reads like a list", expand a struct's fields, etc. Covers every
+ *  kind the runtime distinguishes that the issue calls out by name (int,
+ *  float, string, list, divert target, struct, handle) plus `bool`/`null`;
+ *  every other kind (closures, arrays, maps, weighted tables, fn refs,
+ *  pointers, vector/matrix/quaternion, ranges, options, projections) falls
+ *  back to `other`'s display string, the same form `DebugGlobal.value`
+ *  already uses. */
+export type DebugValue =
+  | { type: "int"; value: number }
+  | { type: "float"; value: number }
+  | { type: "bool"; value: boolean }
+  | { type: "string"; value: string }
+  | { type: "null" }
+  | { type: "list"; members: string[] }
+  | { type: "divertTarget"; path?: string }
+  | { type: "struct"; name?: string; fields: DebugField[] }
+  /** `id` is a decimal string, not `number` — a full-range host token id
+   *  would silently lose precision above 2^53 as a JS number. */
+  | { type: "handle"; kind: string; id: string }
+  | { type: "other"; display: string };
+
+export interface DebugField {
+  name: string;
+  value: DebugValue;
 }
 
 export interface DebugVisit {

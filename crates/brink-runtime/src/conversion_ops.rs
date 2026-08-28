@@ -185,6 +185,7 @@ mod tests {
                 param_count: 0,
                 params: Vec::new(),
                 scope_table_idx: 0,
+                scope_id: DefinitionId::new(DefinitionTag::Address, 0),
             }],
             address_map: HashMap::new(),
             scope_ids: vec![DefinitionId::new(DefinitionTag::Address, 0)],
@@ -204,6 +205,7 @@ mod tests {
             struct_shapes: vec![],
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 
