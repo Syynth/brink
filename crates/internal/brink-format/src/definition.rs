@@ -390,34 +390,42 @@ pub struct AddressPath {
     pub target: DefinitionId,
 }
 
-/// Compute a deterministic hash of line content text.
+/// Compute a stable hash of source text — FNV-1a, 64-bit, over the UTF-8
+/// bytes.
 ///
-/// Used by both the compiler codegen and the converter to populate
-/// [`LineEntry::source_hash`]. The hash detects when source text has
-/// changed across builds, enabling the regeneration workflow in the
-/// internationalization pipeline.
+/// **Part of the wire contract** (`docs/format-spec.md`), not an
+/// implementation detail. Hashes produced here are written into artifacts
+/// ([`LineEntry::source_hash`] for the intl regeneration workflow;
+/// [`DebugFileEntry::source_hash`] for the debugger's staleness check,
+/// issue #3261) and compared later — potentially by a different binary, a
+/// different toolchain, or a `no_std` build. So the algorithm is specified
+/// and identical on every path, and must not change without treating it as
+/// a format change.
+///
+/// This is why it is no longer `std`'s `DefaultHasher`: Rust documents that
+/// hasher's algorithm as unspecified and subject to change between
+/// releases, and the `no_std` fallback it used to sit beside was explicitly
+/// not bit-identical to it. Both were fine while nothing compared hashes
+/// across builds. Recording a hash in an artifact makes that exactly what
+/// happens, and a silent algorithm change would make every comparison
+/// report "changed" forever, with no obvious cause.
+///
+/// FNV-1a is a **change detector, not a proof**: it is not collision
+/// resistant and is not a security primitive. A collision means changed
+/// text is reported as unchanged — for the intl workflow, a line missed for
+/// retranslation; for the debugger, a stale source accepted as fresh, which
+/// is no worse than the silent wrong answer the check exists to replace.
+#[must_use]
 pub fn content_hash(text: &str) -> u64 {
-    #[cfg(feature = "std")]
-    {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        text.hash(&mut hasher);
-        hasher.finish()
+    // FNV-1a 64-bit: offset basis, then per-byte xor-and-multiply by the
+    // FNV prime. Written out rather than pulled from a crate so the wire
+    // contract has no dependency that could revise it underneath us.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    #[cfg(not(feature = "std"))]
-    {
-        // `std::collections::hash_map::DefaultHasher` isn't available
-        // without `std`. This is a plain FNV-1a fallback: still
-        // deterministic, but NOT bit-identical to the `std` path above —
-        // nothing compares hashes produced by the two builds against each
-        // other, so that's fine.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in text.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        hash
-    }
+    hash
 }
 
 /// An externally-bound function definition.
@@ -580,6 +588,53 @@ mod tests {
         let a = content_hash("Hello, world!");
         let b = content_hash("Hello, world!");
         assert_eq!(a, b);
+    }
+
+    // ── #3261: the hash is a wire contract, so pin the DIGESTS ──────────
+    //
+    // `content_hash_deterministic` above hashes the same string twice in
+    // one process. That proves same-run stability — which is NOT the
+    // property anything depends on. These hashes are written into
+    // artifacts and compared later, possibly by a different binary or
+    // toolchain, so what matters is that the algorithm itself never moves.
+    // A same-process round trip cannot see an algorithm change; hard-coded
+    // digests can, and are the reason `std`'s `DefaultHasher` (documented
+    // as unspecified between Rust releases) is no longer used here.
+
+    #[test]
+    fn content_hash_matches_the_canonical_fnv_1a_64_vectors() {
+        // Published FNV-1a 64-bit test vectors — independent of this
+        // implementation, so they prove the ALGORITHM is right rather than
+        // merely self-consistent. If these fail, the function is no longer
+        // FNV-1a and `docs/format-spec.md` is lying.
+        assert_eq!(content_hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(content_hash("foobar"), 0x8594_4171_f739_67e8);
+        // The empty string is the bare offset basis.
+        assert_eq!(content_hash(""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    #[test]
+    fn content_hash_digests_are_pinned_for_representative_source_text() {
+        // Including non-ASCII, because brink is a narrative language: em
+        // dashes and curly quotes are the normal case, and a change that
+        // hashed chars instead of UTF-8 bytes would pass ASCII-only tests.
+        assert_eq!(content_hash("Hello, world!"), 0x38d1_3341_4498_7bf4);
+        assert_eq!(content_hash("some text"), 0x15b9_e594_d5d3_b704);
+        assert_eq!(
+            content_hash("The vendor — she of the curly quotes — said \u{201c}no\u{201d}."),
+            0x9de0_0913_8091_d4e5
+        );
+    }
+
+    #[test]
+    fn content_hash_distinguishes_texts_that_differ_only_late() {
+        // A rolling hash that failed to mix would collide on these; the
+        // detector would then miss exactly the small edits it exists for.
+        assert_ne!(content_hash("chapter one"), content_hash("chapter onf"));
+        assert_ne!(
+            content_hash("a long line of prose"),
+            content_hash("a long line of prosf")
+        );
     }
 
     #[test]
