@@ -6,37 +6,48 @@ use brink_ir::lir;
 use crate::{CodegenError, ContainerEmitter, LoopCtx};
 
 impl ContainerEmitter<'_> {
+    /// Emit every statement in `stmts`, recording one
+    /// [`crate::debug_info::RawDebugEntry`] per statement first whenever
+    /// `self.debug_entries` is `Some` (a no-op otherwise — see
+    /// [`Self::record_debug_entry`]). Used for **every** body walk in this
+    /// container's bytecode — the container's own top-level body (via
+    /// [`Self::emit_body_top_level`], which additionally flags the
+    /// prologue-end entry) *and* every nested body (`Conditional`/
+    /// `Sequence` branch bodies, `LogicWhile` body/post) reached through
+    /// [`Self::emit_stmt`] below — so a statement inside a branch or loop
+    /// gets an entry the same way a top-level one does (#3219 review: this
+    /// used to be true only at the top level). `prologue_end` is always
+    /// `false` here; §2.4's prologue-end marker is a per-container concept,
+    /// decided once by [`Self::emit_body_top_level`], not re-derived per
+    /// nesting level.
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
         for stmt in stmts {
+            self.record_debug_entry(stmt, false);
             self.emit_stmt(stmt);
         }
     }
 
-    /// D6 (`docs/debugger-spec.md` §2.2): like [`Self::emit_body`], but
-    /// records one [`crate::debug_info::RawDebugEntry`] per top-level
-    /// statement into `out` before emitting it — `bytecode_offset` is this
-    /// container's own running bytecode length at that point (so entries
-    /// come out already sorted ascending, matching §2.2's contract), and
-    /// `provenance` is `stmt.provenance`. The first statement's entry
-    /// always carries `prologue_end: true` (§2.4): whatever precedes it —
-    /// parameter-binding `DeclareTemp`s the caller already emitted directly
-    /// (never through a `Stmt`, so `walk_container` records that prologue
-    /// entry itself before calling this), or nothing at all — the first
-    /// *statement proper* is always the landing point for a breakpoint set
-    /// on this container.
-    pub(super) fn emit_body_recording(
+    /// D6 (`docs/debugger-spec.md` §2.2/§2.4): the container's own top-level
+    /// body walk — the only call site that may set `PROLOGUE_END` on a
+    /// recorded entry. `prologue_end_index` names which statement in
+    /// `stmts` (by position) is the landing point past this container's
+    /// prologue bytecode; `walk_container` computes it before calling this
+    /// (see its own doc): `Some(0)` in the common case (no leading
+    /// `ChoiceOutput`, so the first statement proper *is* the landing
+    /// point), `Some(1)` when `stmts[0]` is a choice-target body's leading
+    /// `ChoiceOutput` (itself prologue bytecode per §2.4 — the landing point
+    /// is the statement *after* it, not the `ChoiceOutput` itself), or
+    /// `None` when there is no statement to flag at all (empty body, or a
+    /// choice-target body containing only the `ChoiceOutput`) — in which
+    /// case `walk_container` pushes its own synthetic coverage entry after
+    /// this returns.
+    pub(super) fn emit_body_top_level(
         &mut self,
         stmts: &[lir::Stmt],
-        out: &mut Vec<crate::debug_info::RawDebugEntry>,
+        prologue_end_index: Option<usize>,
     ) {
         for (i, stmt) in stmts.iter().enumerate() {
-            #[expect(clippy::cast_possible_truncation)]
-            let offset = self.bytecode.len() as u32;
-            out.push(crate::debug_info::RawDebugEntry {
-                offset,
-                provenance: stmt.provenance,
-                prologue_end: i == 0,
-            });
+            self.record_debug_entry(stmt, Some(i) == prologue_end_index);
             self.emit_stmt(stmt);
         }
     }

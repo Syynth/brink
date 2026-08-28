@@ -766,7 +766,16 @@ pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
         write_varint(buf, table.entries.len() as u64);
         let mut prev_offset: u32 = 0;
         for entry in &table.entries {
-            write_varint(buf, u64::from(entry.bytecode_offset - prev_offset));
+            // Saturating, not `-`: entries are contracted to arrive sorted
+            // ascending (§2.2), so this is normally an exact delta, but a
+            // caller that violates that contract must not panic (debug) or
+            // silently wrap to a huge varint (release) — clamp to 0 instead,
+            // matching the reader's own `wrapping_add` tolerance on the
+            // decode side (`read_inkb_index`'s counterpart in `read.rs`).
+            write_varint(
+                buf,
+                u64::from(entry.bytecode_offset.saturating_sub(prev_offset)),
+            );
             prev_offset = entry.bytecode_offset;
             write_varint(buf, u64::from(entry.file_idx));
             write_varint(buf, u64::from(entry.range_start));

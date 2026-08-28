@@ -75,9 +75,21 @@ impl DebugCollector {
 
     /// Finish collecting and produce the wire-shaped section. `program`
     /// resolves each interned `FileId` to its project-root-relative path
-    /// and lets each file be classified by surface (§2.3).
-    pub(crate) fn finish(self, program: &lir::Program) -> DebugInfoSection {
-        let files = self.files.to_entries(program);
+    /// and lets each file be classified by surface (§2.3). `errors` is
+    /// `EmitState::errors` (#3219 review): an interned `FileId` missing from
+    /// `program.file_paths` is a defect in the LIR fed to codegen — the same
+    /// class of thing `CodegenError` exists for — and must be surfaced
+    /// there, not silently defaulted to an empty path (which
+    /// `FileTableBuilder::to_entries` used to do, misclassifying the entry
+    /// as `FileSurface::Ink` in the process — worse than a crash, since it
+    /// routes a resolver lookup to the wrong `ProvenanceResolver` instead of
+    /// failing loudly).
+    pub(crate) fn finish(
+        self,
+        program: &lir::Program,
+        errors: &mut Vec<crate::CodegenError>,
+    ) -> DebugInfoSection {
+        let files = self.files.to_entries(program, errors);
         let index_of = |file: FileId| -> u32 { self.files.index_of(file) };
         let containers = self
             .containers
@@ -154,7 +166,20 @@ impl FileTableBuilder {
         self.index.get(&file).copied().unwrap_or(0)
     }
 
-    fn to_entries(&self, program: &lir::Program) -> Vec<DebugFileEntry> {
+    /// `errors` receives a [`crate::CodegenError`] for every interned
+    /// `FileId` that `program.file_paths` cannot resolve (#3219 review): a
+    /// silent `unwrap_or_default()` used to land such a file at its
+    /// already-assigned real index as `{surface: Ink, path: ""}` — a wrong
+    /// answer stamped with unwarranted confidence, worse than failing,
+    /// since a reader would route that file's entries through the ink
+    /// `ProvenanceResolver` for a file that was never ink at all. The
+    /// fallback shape here (`Synthetic`, empty path) is only ever reached
+    /// alongside a pushed error, never silently.
+    fn to_entries(
+        &self,
+        program: &lir::Program,
+        errors: &mut Vec<crate::CodegenError>,
+    ) -> Vec<DebugFileEntry> {
         self.order
             .iter()
             .map(|file| {
@@ -164,10 +189,21 @@ impl FileTableBuilder {
                         path: String::new(),
                     };
                 }
-                let path = program.file_paths.get(file).cloned().unwrap_or_default();
-                DebugFileEntry {
-                    surface: surface_from_path(&path),
-                    path,
+                if let Some(path) = program.file_paths.get(file) {
+                    DebugFileEntry {
+                        surface: surface_from_path(path),
+                        path: path.clone(),
+                    }
+                } else {
+                    errors.push(crate::CodegenError::new(format!(
+                        "codegen: DebugInfo file table references {file:?}, which has no \
+                         entry in Program.file_paths — cannot resolve its path or surface \
+                         for the debug-info section (#3219)"
+                    )));
+                    DebugFileEntry {
+                        surface: FileSurface::Synthetic,
+                        path: String::new(),
+                    }
                 }
             })
             .collect()

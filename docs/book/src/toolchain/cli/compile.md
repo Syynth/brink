@@ -3,7 +3,7 @@
 Compile `.ink` source files to bytecode. The input file is the story's entry point; `INCLUDE` directives are resolved automatically.
 
 ```sh
-brink compile <INPUT> [--output <OUTPUT>] [--dialect <strict-ink|brink>] [--types <gradual|strict>] [-D <CODE>]... [--warn <CODE>]... [--allow <CODE>]...
+brink compile <INPUT> [--output <OUTPUT>] [--dialect <strict-ink|brink>] [--types <gradual|strict>] [-D <CODE>]... [--warn <CODE>]... [--allow <CODE>]... [--debug-info]
 ```
 
 ## Options
@@ -16,6 +16,7 @@ brink compile <INPUT> [--output <OUTPUT>] [--dialect <strict-ink|brink>] [--type
 | `--deny <CODE>` / `-D <CODE>` | — (repeatable) | Promote diagnostic `CODE` to a hard compile error. Only codes whose *default* severity is not `Error` are overridable — see [Lint severity](../project-config.md#lint-severity). The special code `warnings` (`-D warnings`, mirroring `rustc`) is `deny-warnings`: promote every otherwise-`Warning` diagnostic to `Error`. |
 | `--warn <CODE>` | — (repeatable) | Force `CODE` to `Warning`, still promotable by `-D warnings`/a project's `deny-warnings`. |
 | `--allow <CODE>` | — (repeatable) | Force `CODE` to stay `Warning` even under `-D warnings`/`deny-warnings`. |
+| `--debug-info` | off | Emit the `DebugInfo` section (`.inkb` tag `0x11`) mapping bytecode offsets to source ranges — a dev/studio-compile debug flag (`docs/debugger-spec.md` §1.2/§2). Off by default: a release compile omits the section entirely and the output stays byte-identical to a pre-D6 compile. Mount-time only — no `brink.toml` spelling. |
 
 `--dialect`/`--types`/`--deny`/`--warn`/`--allow`/`-D warnings` are the highest-priority source: any of these, when actually passed, wins over a project's `brink.toml`, which in turn wins over the plain defaults above. See [Project Settings](../project-config.md) for the file's discovery rule and precedence.
 
