@@ -468,7 +468,7 @@ fn radio(chan: string, text: content) {
   rationale.
   The dispatch mechanism itself (`hir::lower_native::element::
   capture_block`, both `try_claim` and `try_dispatch`) builds the internal
-  `hir::Expr::Fragment`/`lir::Expr::Fragment` node the 2026-08-01
+  `hir::Expr::Fragment`/`lir::ExprKind::Fragment` node the 2026-08-01
   "Content-as-value" ruling adds (`docs/decision-log.md`) — the same
   `BeginFragment`…`EndFragment` → `Value::FragmentRef` machinery an
   ordinary call's display-position composition already uses

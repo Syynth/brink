@@ -19,7 +19,7 @@ VAR s = -> knot
     let has_call_var = root(&prog).body.iter().any(|stmt| {
         matches!(
             &stmt.kind,
-            lir::StmtKind::ExprStmt(lir::Expr::CallVariable { .. })
+            lir::StmtKind::ExprStmt(e) if matches!(&e.kind, lir::ExprKind::CallVariable { .. })
         )
     });
     assert!(
@@ -46,9 +46,9 @@ fn call_through_temp_variable() {
         matches!(
             &stmt.kind,
             lir::StmtKind::Return {
-                value: Some(lir::Expr::CallVariableTemp { .. }),
+                value: Some(v),
                 ..
-            }
+            } if matches!(&v.kind, lir::ExprKind::CallVariableTemp { .. })
         )
     });
     assert!(

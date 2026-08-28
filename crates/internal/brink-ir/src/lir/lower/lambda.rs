@@ -8,7 +8,7 @@
 //!
 //! ## The shape
 //!
-//! The runtime's only fn value is T1c's [`lir::Expr::MakeFnValue`] over a
+//! The runtime's only fn value is T1c's [`lir::ExprKind::MakeFnValue`] over a
 //! *named* target: zero bound args codegen to `PushFnRef` (a `VAL_FN_REF`),
 //! a bound prefix to `MakeClosure` (a `VAL_CLOSURE` carrying a
 //! `{name, is_ref, payload}` captured environment). Lifting rides that
@@ -239,14 +239,15 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
         local: false,
     });
 
-    lir::Expr::MakeFnValue {
+    lir::ExprKind::MakeFnValue {
         target: id,
         bound: captures
             .into_iter()
-            .map(|(name, slot)| lir::Expr::GetTemp(slot, ctx.names.intern(&name)))
+            .map(|(name, slot)| lir::ExprKind::GetTemp(slot, ctx.names.intern(&name)).at(l.ptr))
             .map(lir::CallArg::Value)
             .collect(),
     }
+    .at(l.ptr)
 }
 
 /// The scope-relative path the lifted function is addressed by.

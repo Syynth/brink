@@ -3,7 +3,7 @@
 //! `docs/t1c-spec.md` §2a).
 //!
 //! #1862 made a statically-named function in expression position lower to a
-//! fn value on the `.brink` surface (`lir::Expr::MakeFnValue`), but left
+//! fn value on the `.brink` surface (`lir::ExprKind::MakeFnValue`), but left
 //! inference behind: `infer::body::InferPass::ty_of_def` had no per-file
 //! frontend flag, so the same reference still typed `Ty::Unknown`. Since
 //! #1680 a fn value's type is *where its effect row lives*

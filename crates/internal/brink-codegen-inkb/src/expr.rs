@@ -14,27 +14,27 @@ impl ContainerEmitter<'_> {
         reason = "one match arm per LIR Expr variant; splitting would obscure the dispatch"
     )]
     pub(super) fn emit_expr(&mut self, expr: &lir::Expr, display: bool) {
-        match expr {
-            lir::Expr::Int(n) => self.emit(Opcode::PushInt(*n)),
-            lir::Expr::Float(f) => self.emit(Opcode::PushFloat(*f)),
-            lir::Expr::Bool(b) => self.emit(Opcode::PushBool(*b)),
-            lir::Expr::Null => self.emit(Opcode::PushNull),
+        match &expr.kind {
+            lir::ExprKind::Int(n) => self.emit(Opcode::PushInt(*n)),
+            lir::ExprKind::Float(f) => self.emit(Opcode::PushFloat(*f)),
+            lir::ExprKind::Bool(b) => self.emit(Opcode::PushBool(*b)),
+            lir::ExprKind::Null => self.emit(Opcode::PushNull),
 
-            lir::Expr::String(s) => self.emit_string_expr(s),
+            lir::ExprKind::String(s) => self.emit_string_expr(s),
 
-            lir::Expr::GetGlobal(id) => self.emit(Opcode::GetGlobal(*id)),
-            lir::Expr::GetTemp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
-            lir::Expr::TakeGlobal(id) => self.emit(Opcode::TakeGlobal(*id)),
-            lir::Expr::TakeTemp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
+            lir::ExprKind::GetGlobal(id) => self.emit(Opcode::GetGlobal(*id)),
+            lir::ExprKind::GetTemp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
+            lir::ExprKind::TakeGlobal(id) => self.emit(Opcode::TakeGlobal(*id)),
+            lir::ExprKind::TakeTemp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
 
-            lir::Expr::VisitCount(id) => {
+            lir::ExprKind::VisitCount(id) => {
                 self.emit(Opcode::PushDivertTarget(*id));
                 self.emit(Opcode::VisitCount);
             }
 
-            lir::Expr::DivertTarget(id) => self.emit(Opcode::PushDivertTarget(*id)),
+            lir::ExprKind::DivertTarget(id) => self.emit(Opcode::PushDivertTarget(*id)),
 
-            lir::Expr::ListLiteral { items, origins } => {
+            lir::ExprKind::ListLiteral { items, origins } => {
                 let lv = ListValue {
                     items: items.clone(),
                     origins: origins.clone(),
@@ -45,7 +45,7 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::PushList(idx as u16));
             }
 
-            lir::Expr::Prefix(op, inner) => {
+            lir::ExprKind::Prefix(op, inner) => {
                 self.emit_expr(inner, false);
                 match op {
                     brink_ir::PrefixOp::Negate => self.emit(Opcode::Negate),
@@ -53,7 +53,7 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Expr::Infix(lhs, op, rhs) => {
+            lir::ExprKind::Infix(lhs, op, rhs) => {
                 self.emit_expr(lhs, false);
                 self.emit_expr(rhs, false);
                 self.emit(infix_op_to_opcode(*op));
@@ -62,8 +62,8 @@ impl ContainerEmitter<'_> {
             // B1 `or`-coalescing, short-circuited (issue #1471) — a real
             // branch, not a binary opcode, so `rhs`'s bytecode is only on
             // the path that actually reaches it (the `none` fall-through).
-            // See `lir::Expr::Coalesce`'s own doc for the full shape.
-            lir::Expr::Coalesce { lhs, rhs, shape } => {
+            // See `lir::ExprKind::Coalesce`'s own doc for the full shape.
+            lir::ExprKind::Coalesce { lhs, rhs, shape } => {
                 self.emit_expr(lhs, false);
                 // Pops `lhs`; `some(v)` pushes the unwrapped `v` and jumps
                 // to `some_site` below; `none` pushes nothing and falls
@@ -82,7 +82,7 @@ impl ContainerEmitter<'_> {
                 self.patch_jump(end_site);
             }
 
-            lir::Expr::Postfix(inner, op) => {
+            lir::ExprKind::Postfix(inner, op) => {
                 self.emit_expr(inner, false);
                 match op {
                     brink_ir::PostfixOp::Increment => {
@@ -96,14 +96,14 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Expr::Call { target, args } => {
+            lir::ExprKind::Call { target, args } => {
                 for arg in args {
                     self.emit_call_arg(arg);
                 }
                 self.emit_fragment_wrapped(display, Opcode::Call(*target));
             }
 
-            lir::Expr::CallExternal {
+            lir::ExprKind::CallExternal {
                 target,
                 args,
                 arg_count,
@@ -114,7 +114,7 @@ impl ContainerEmitter<'_> {
                 self.emit_fragment_wrapped(display, Opcode::CallExternal(*target, *arg_count));
             }
 
-            lir::Expr::CallVariable { target, args } => {
+            lir::ExprKind::CallVariable { target, args } => {
                 for arg in args {
                     self.emit_call_arg(arg);
                 }
@@ -129,7 +129,7 @@ impl ContainerEmitter<'_> {
                 );
             }
 
-            lir::Expr::CallVariableTemp { slot, args, .. } => {
+            lir::ExprKind::CallVariableTemp { slot, args, .. } => {
                 for arg in args {
                     self.emit_call_arg(arg);
                 }
@@ -144,12 +144,12 @@ impl ContainerEmitter<'_> {
                 );
             }
 
-            lir::Expr::CallBuiltin { builtin, args } => {
+            lir::ExprKind::CallBuiltin { builtin, args } => {
                 self.emit_builtin(*builtin, args);
             }
 
             // ── Function values (T1c, #700) ──────────────────────────
-            lir::Expr::MakeFnValue { target, bound } => {
+            lir::ExprKind::MakeFnValue { target, bound } => {
                 for arg in bound {
                     self.emit_call_arg(arg);
                 }
@@ -167,7 +167,7 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Expr::CallValue { callee, args } => {
+            lir::ExprKind::CallValue { callee, args } => {
                 for arg in args {
                     self.emit_expr(arg, false);
                 }
@@ -182,7 +182,7 @@ impl ContainerEmitter<'_> {
                 );
             }
 
-            lir::Expr::BindValue { callee, args } => {
+            lir::ExprKind::BindValue { callee, args } => {
                 // Same stack shape as `CallValue`: push the supplied args
                 // (bottom), then the callee (top). `BindValue` returns a new
                 // function value rather than entering the target, so it never
@@ -201,13 +201,13 @@ impl ContainerEmitter<'_> {
             }
 
             // ── Collections (T1b) ────────────────────────────────────
-            lir::Expr::ConstLiteral(v) => self.emit_literal_pool_push(v),
+            lir::ExprKind::ConstLiteral(v) => self.emit_literal_pool_push(v),
 
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "collection literals stay well under u32::MAX elements"
             )]
-            lir::Expr::ArrayNew(elements) => {
+            lir::ExprKind::ArrayNew(elements) => {
                 for e in elements {
                     self.emit_expr(e, false);
                 }
@@ -218,7 +218,7 @@ impl ContainerEmitter<'_> {
                 clippy::cast_possible_truncation,
                 reason = "collection literals stay well under u32::MAX entries"
             )]
-            lir::Expr::MapNew(entries) => {
+            lir::ExprKind::MapNew(entries) => {
                 for (k, v) in entries {
                     self.emit_expr(k, false);
                     self.emit_expr(v, false);
@@ -226,69 +226,69 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapNew(entries.len() as u32));
             }
 
-            lir::Expr::Index { base, index } => {
+            lir::ExprKind::Index { base, index } => {
                 self.emit_expr(base, false);
                 self.emit_expr(index, false);
                 self.emit(Opcode::IndexGet);
             }
 
-            lir::Expr::IndexSet { base, index, value } => {
+            lir::ExprKind::IndexSet { base, index, value } => {
                 self.emit_expr(base, false);
                 self.emit_expr(index, false);
                 self.emit_expr(value, false);
                 self.emit(Opcode::IndexSet);
             }
 
-            lir::Expr::CollectionLen(inner) => {
+            lir::ExprKind::CollectionLen(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::CollectionLen);
             }
 
-            lir::Expr::CollectionKeys(inner) => {
+            lir::ExprKind::CollectionKeys(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::CollectionKeys);
             }
 
-            lir::Expr::CollectionValues(inner) => {
+            lir::ExprKind::CollectionValues(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::CollectionValues);
             }
 
-            lir::Expr::CollectionContains { container, needle } => {
+            lir::ExprKind::CollectionContains { container, needle } => {
                 self.emit_expr(container, false);
                 self.emit_expr(needle, false);
                 self.emit(Opcode::MapContains);
             }
 
-            lir::Expr::CollectionInsert { base, key, value } => {
+            lir::ExprKind::CollectionInsert { base, key, value } => {
                 self.emit_expr(base, false);
                 self.emit_expr(key, false);
                 self.emit_expr(value, false);
                 self.emit(Opcode::MapInsert);
             }
 
-            lir::Expr::CollectionRemove { base, key } => {
+            lir::ExprKind::CollectionRemove { base, key } => {
                 self.emit_expr(base, false);
                 self.emit_expr(key, false);
                 self.emit(Opcode::MapRemove);
             }
 
-            lir::Expr::SeqRemoveAt { base, index } => {
+            lir::ExprKind::SeqRemoveAt { base, index } => {
                 self.emit_expr(base, false);
                 self.emit_expr(index, false);
                 self.emit(Opcode::SeqRemoveAt);
             }
 
-            lir::Expr::CharAt { s, index } => {
+            lir::ExprKind::CharAt { s, index } => {
                 self.emit_expr(s, false);
                 self.emit_expr(index, false);
                 self.emit(Opcode::CharAt);
             }
 
             // ── NS-A1: Option[T] + the ruled stdlib flips (#1107) ────
-            lir::Expr::OptionNone => self.emit(Opcode::PushNone),
+            lir::ExprKind::OptionNone => self.emit(Opcode::PushNone),
 
-            lir::Expr::OptionSome(inner) => {
+            lir::ExprKind::OptionSome(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::MakeSome);
             }
@@ -299,39 +299,39 @@ impl ContainerEmitter<'_> {
             // writes the unwrapped payload to the binding's slot. `name`
             // is lowering-time provenance only — the slot is what the VM
             // addresses, exactly as for `GetTemp`/`SetTemp`.
-            lir::Expr::OptionBind { value, slot, .. } => {
+            lir::ExprKind::OptionBind { value, slot, .. } => {
                 self.emit_expr(value, false);
                 self.emit(Opcode::OptionBind(*slot));
             }
 
-            lir::Expr::StrFind { s, sub } => {
+            lir::ExprKind::StrFind { s, sub } => {
                 self.emit_expr(s, false);
                 self.emit_expr(sub, false);
                 self.emit(Opcode::StrFind);
             }
 
-            lir::Expr::SeqIndexOf { seq, needle } => {
+            lir::ExprKind::SeqIndexOf { seq, needle } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(needle, false);
                 self.emit(Opcode::SeqIndexOf);
             }
 
-            lir::Expr::SeqMin(inner) => {
+            lir::ExprKind::SeqMin(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::SeqMin);
             }
 
-            lir::Expr::SeqMax(inner) => {
+            lir::ExprKind::SeqMax(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::SeqMax);
             }
 
-            lir::Expr::SeqFirst(inner) => {
+            lir::ExprKind::SeqFirst(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::SeqFirst);
             }
 
-            lir::Expr::SeqLast(inner) => {
+            lir::ExprKind::SeqLast(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::SeqLast);
             }
@@ -342,7 +342,7 @@ impl ContainerEmitter<'_> {
             // the array) leaves the Option on top as the expression value.
             // Take/Set auto-deref temp-held pointers, so a `ref`-bound
             // param receiver writes through to its target cell for free.
-            lir::Expr::SeqPop { root } => {
+            lir::ExprKind::SeqPop { root } => {
                 match root {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
                     lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
@@ -354,43 +354,43 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Expr::MapGetOpt { map, key } => {
+            lir::ExprKind::MapGetOpt { map, key } => {
                 self.emit_expr(map, false);
                 self.emit_expr(key, false);
                 self.emit(Opcode::MapGetOpt);
             }
 
-            lir::Expr::MapContainsValue { map, value } => {
+            lir::ExprKind::MapContainsValue { map, value } => {
                 self.emit_expr(map, false);
                 self.emit_expr(value, false);
                 self.emit(Opcode::MapContainsValue);
             }
 
             // ── NS-A6: the `std::rand` draw verbs (#1112) ────────────
-            lir::Expr::RandFloat => self.emit(Opcode::RandFloat),
+            lir::ExprKind::RandFloat => self.emit(Opcode::RandFloat),
 
-            lir::Expr::RandChance(p) => {
+            lir::ExprKind::RandChance(p) => {
                 self.emit_expr(p, false);
                 self.emit(Opcode::RandChance);
             }
 
-            lir::Expr::RandPick(coll) => {
+            lir::ExprKind::RandPick(coll) => {
                 self.emit_expr(coll, false);
                 self.emit(Opcode::RandPick);
             }
 
-            lir::Expr::RandShuffle(arr) => {
+            lir::ExprKind::RandShuffle(arr) => {
                 self.emit_expr(arr, false);
                 self.emit(Opcode::RandShuffle);
             }
 
             // ── NS-A4: the ordering verbs (#1110, stdlib-spec §4b) ───
-            lir::Expr::SeqSorted(arr) => {
+            lir::ExprKind::SeqSorted(arr) => {
                 self.emit_expr(arr, false);
                 self.emit(Opcode::SeqSorted);
             }
 
-            lir::Expr::SeqSortedBy { seq, cmp } => {
+            lir::ExprKind::SeqSortedBy { seq, cmp } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(cmp, false);
                 self.emit(Opcode::SeqSortedBy);
@@ -399,17 +399,17 @@ impl ContainerEmitter<'_> {
             // ── The fn-value verbs (#1679, stdlib-spec §4) ───────────
             // Operands in source order, callback last — the `SeqSortedBy`
             // stack shape, so the VM pops callback-first.
-            lir::Expr::SeqMap { seq, f } => {
+            lir::ExprKind::SeqMap { seq, f } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(f, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::Map));
             }
-            lir::Expr::SeqFilter { seq, pred } => {
+            lir::ExprKind::SeqFilter { seq, pred } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(pred, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::Filter));
             }
-            lir::Expr::SeqFold { seq, init, f } => {
+            lir::ExprKind::SeqFold { seq, init, f } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(init, false);
                 self.emit_expr(f, false);
@@ -419,24 +419,24 @@ impl ContainerEmitter<'_> {
             // stack shape as `map`/`filter`); `each`/`map_each` are the
             // effectful spellings — same codegen shape, the runtime op is
             // what changes their contract.
-            lir::Expr::SeqFilterMap { seq, f } => {
+            lir::ExprKind::SeqFilterMap { seq, f } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(f, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::FilterMap));
             }
-            lir::Expr::SeqEach { seq, f } => {
+            lir::ExprKind::SeqEach { seq, f } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(f, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::Each));
             }
-            lir::Expr::SeqMapEach { seq, f } => {
+            lir::ExprKind::SeqMapEach { seq, f } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(f, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::MapEach));
             }
 
             // ── NS-A5: range values (#1111) ──────────────────────────
-            lir::Expr::RangeMake {
+            lir::ExprKind::RangeMake {
                 start,
                 end,
                 inclusive,
@@ -450,12 +450,12 @@ impl ContainerEmitter<'_> {
                 });
             }
 
-            lir::Expr::RangeNonEmpty(r) => {
+            lir::ExprKind::RangeNonEmpty(r) => {
                 self.emit_expr(r, false);
                 self.emit(Opcode::RangeNonEmpty);
             }
 
-            lir::Expr::MapClear(inner) => {
+            lir::ExprKind::MapClear(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::MapClear);
             }
@@ -469,7 +469,7 @@ impl ContainerEmitter<'_> {
             // value, construction order), gather it with `ArrayNew(2n)` (a
             // transient artifact the `WeightedNew` op immediately
             // consumes), then build the table.
-            lir::Expr::WeightedNew { pairs } => {
+            lir::ExprKind::WeightedNew { pairs } => {
                 for (w, v) in pairs {
                     self.emit_expr(w, false);
                     self.emit_expr(v, false);
@@ -481,11 +481,11 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::ArrayNew(2 * pairs.len() as u32));
                 self.emit(Opcode::Collect(brink_format::CollectOp::WeightedNew));
             }
-            lir::Expr::RandRoll(table) => {
+            lir::ExprKind::RandRoll(table) => {
                 self.emit_expr(table, false);
                 self.emit(Opcode::Collect(brink_format::CollectOp::RandRoll));
             }
-            lir::Expr::HeapPush { seq, value } => {
+            lir::ExprKind::HeapPush { seq, value } => {
                 self.emit_expr(seq, false);
                 self.emit_expr(value, false);
                 self.emit(Opcode::Collect(brink_format::CollectOp::HeapPush));
@@ -495,7 +495,7 @@ impl ContainerEmitter<'_> {
             // exactly (the op pushes the Option *under* the re-heapified
             // array, so the trailing store leaves the Option on top as the
             // expression value).
-            lir::Expr::HeapPop { root } => {
+            lir::ExprKind::HeapPop { root } => {
                 match root {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
                     lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
@@ -506,12 +506,12 @@ impl ContainerEmitter<'_> {
                     lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
                 }
             }
-            lir::Expr::HeapPeek(seq) => {
+            lir::ExprKind::HeapPeek(seq) => {
                 self.emit_expr(seq, false);
                 self.emit(Opcode::Collect(brink_format::CollectOp::HeapPeek));
             }
 
-            lir::Expr::Tower { op, args } => {
+            lir::ExprKind::Tower { op, args } => {
                 for arg in args {
                     self.emit_expr(arg, false);
                 }
@@ -519,7 +519,7 @@ impl ContainerEmitter<'_> {
             }
 
             // ── Records (TM-4c) ──────────────────────────────────────
-            lir::Expr::RecordNew {
+            lir::ExprKind::RecordNew {
                 shape_id,
                 fields,
                 prelude,
@@ -537,7 +537,7 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::RecordNew(*shape_id));
             }
 
-            lir::Expr::RecordGet {
+            lir::ExprKind::RecordGet {
                 base,
                 field,
                 static_offset,
@@ -550,7 +550,7 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::Expr::RecordSet {
+            lir::ExprKind::RecordSet {
                 base,
                 field,
                 static_offset,
@@ -566,17 +566,17 @@ impl ContainerEmitter<'_> {
             }
 
             // ── Conversion intrinsics (TM-3 completion, #659) ─────────
-            lir::Expr::ConvertInt(inner) => {
+            lir::ExprKind::ConvertInt(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::ConvertInt);
             }
 
-            lir::Expr::ConvertFloat(inner) => {
+            lir::ExprKind::ConvertFloat(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::ConvertFloat);
             }
 
-            lir::Expr::ConvertString(inner) => {
+            lir::ExprKind::ConvertString(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::ConvertString);
             }
@@ -587,7 +587,7 @@ impl ContainerEmitter<'_> {
             // output — `emit_body` lowers each statement through the
             // normal per-statement path, so a recognized line inside stays
             // a real line-table entry.
-            lir::Expr::Fragment(stmts) => {
+            lir::ExprKind::Fragment(stmts) => {
                 self.emit(Opcode::BeginFragment);
                 self.emit_body(stmts);
                 self.emit(Opcode::EndFragment);
@@ -739,12 +739,12 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
         brink_ir::InfixOp::Has => Opcode::ListContains,
         brink_ir::InfixOp::HasNot => Opcode::ListNotContains,
         // Structurally unreachable: `lir::lower::expr::lower_expr`
-        // special-cases `InfixOp::Coalesce` into `lir::Expr::Coalesce`
+        // special-cases `InfixOp::Coalesce` into `lir::ExprKind::Coalesce`
         // (issue #1471's short-circuit branch) before it can ever become a
-        // generic `lir::Expr::Infix` — the only shape that reaches this
-        // function. See `lir::Expr::Coalesce`'s own doc.
+        // generic `lir::ExprKind::Infix` — the only shape that reaches this
+        // function. See `lir::ExprKind::Coalesce`'s own doc.
         brink_ir::InfixOp::Coalesce => {
-            unreachable!("InfixOp::Coalesce lowers to lir::Expr::Coalesce, never generic Infix")
+            unreachable!("InfixOp::Coalesce lowers to lir::ExprKind::Coalesce, never generic Infix")
         }
     }
 }

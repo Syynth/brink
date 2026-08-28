@@ -209,14 +209,13 @@ fn test(m) {
     // `v`'s value is `Index { base: GetTemp(__for_container), index: GetTemp(k) }`.
     // `lir::Stmt`/`lir::Expr` don't derive `Debug`, so failures below name
     // the expectation in prose rather than dumping the value.
-    let lir::StmtKind::DeclareTemp {
-        value: Some(lir::Expr::Index { base, index }),
-        ..
-    } = &logic_while.body[1].kind
-    else {
+    let lir::StmtKind::DeclareTemp { value: Some(v), .. } = &logic_while.body[1].kind else {
+        panic!("expected v's DeclareTemp to hold a value");
+    };
+    let lir::ExprKind::Index { base, index } = &v.kind else {
         panic!("expected v's DeclareTemp to hold an Index expr");
     };
-    let lir::Expr::GetTemp(_, base_name) = base.as_ref() else {
+    let lir::ExprKind::GetTemp(_, base_name) = &base.kind else {
         panic!("expected v's Index base to read a temp");
     };
     assert_eq!(
@@ -224,7 +223,7 @@ fn test(m) {
         "v reads through the same snapshot the keys were taken from, not \
          the raw iterable expression (which must only evaluate once)"
     );
-    let lir::Expr::GetTemp(_, index_name) = index.as_ref() else {
+    let lir::ExprKind::GetTemp(_, index_name) = &index.kind else {
         panic!("expected v's Index index to read a temp");
     };
     assert_eq!(

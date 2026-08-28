@@ -57,7 +57,7 @@ impl ResolutionLookup {
 pub enum UfcsVerdict {
     /// The call's final path segment names a function-typed field on the
     /// receiver's type — lower as a call *through* that field's value
-    /// (`lir::Expr::CallValue`). No further data is needed: the field name
+    /// (`lir::ExprKind::CallValue`). No further data is needed: the field name
     /// and the receiver chain are already carried structurally by the HIR
     /// `Path` this verdict is keyed against.
     FieldCall,

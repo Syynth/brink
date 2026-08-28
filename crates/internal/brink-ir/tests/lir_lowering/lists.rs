@@ -91,7 +91,7 @@ fn list_global_referenced_in_expression() {
     let r = root(&p);
 
     fn expr_refs_global(expr: &lir::Expr, id: brink_format::DefinitionId) -> bool {
-        matches!(expr, lir::Expr::GetGlobal(x) if *x == id)
+        matches!(&expr.kind, lir::ExprKind::GetGlobal(x) if *x == id)
     }
 
     let has_ref = r.body.iter().any(|s| match &s.kind {

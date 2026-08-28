@@ -1196,7 +1196,7 @@ fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e05
 // → native HIR lowering (`InfixOp::Coalesce`) → analyzer typing
 // (`infer::ty::coalesce`, recorded per step by `brink_analyzer::
 // coalesce_types` and threaded to lowering by `brink-db`'s
-// `coalesce_types_query`) → LIR (`lir::Expr::Coalesce`, a real branch) →
+// `coalesce_types_query`) → LIR (`lir::ExprKind::Coalesce`, a real branch) →
 // codegen (`Opcode::CoalesceSome`) → runtime VM
 // (`value_ops::coalesce_unwrap_some`) → `Story` output. Compiles and *runs*
 // the program (not just a diagnostics-clean compile) so the opcode is
@@ -1356,7 +1356,7 @@ fn native_or_coalescing_chain_preserves_optionality_through_intermediate_some() 
 
 /// The BLOCKING review finding on PR #1479, now a passing test (issue
 /// #1492's ruling, re-driven here): an `Option`-returning **call** as the
-/// intermediate fallback. `maybe()` lowers to `lir::Expr::Call`, whose
+/// intermediate fallback. `maybe()` lowers to `lir::ExprKind::Call`, whose
 /// `Option`-ness lives in the callee's inferred return type — invisible to
 /// any syntactic shape-sniff at lowering time, which is exactly why the
 /// deleted `rhs_is_option_shaped` heuristic collapsed the inner step and
@@ -1385,7 +1385,7 @@ fn native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some() {
 /// A `VisitCount`/`DivertTarget`/`TURNS_SINCE` reference reachable only
 /// through a coalesce operand must still register on the counting walk
 /// (`lir::lower::collect_counting_refs_expr`) — a BLOCKING silent-data-drop
-/// finding on PR #1479: the new `lir::Expr::Coalesce` variant fell into the
+/// finding on PR #1479: the new `lir::ExprKind::Coalesce` variant fell into the
 /// walker's `_ => {}` catch-all, so the referenced container's
 /// `CountingFlags::VISITS` was never set and its visit count read back `0`
 /// instead of the true count. No diagnostic, no fault — just a wrong
@@ -1486,7 +1486,7 @@ fn native_or_coalescing_falls_through_to_an_option_returning_call() {
 // Full pipeline, in both ruled condition positions: native parser
 // (`AS_BINDING`) → native HIR lowering (`IfStmt`/`WhileStmt`/
 // `CondBranch::binding`) → analyzer typing (`Option[T]` → `T`) → LIR
-// (`lir::Expr::OptionBind`) → codegen (`Opcode::OptionBind`) → runtime VM
+// (`lir::ExprKind::OptionBind`) → codegen (`Opcode::OptionBind`) → runtime VM
 // → `Story` output. Each fixture *runs*, so the opcode is proven reachable
 // end to end rather than merely wired at the type level.
 
@@ -1592,7 +1592,7 @@ fn native_as_binding_scope_ends_at_the_arm() {
 // Full pipeline, riding the *same* `OptionBind` + frame-slot machinery the
 // B1b tests above already prove: native parser (`AS_BINDING` inside
 // `CHOICE_GUARD`) → native HIR lowering (`hir::Choice::binding`) → LIR
-// (`lir::Expr::OptionBind`, scoped across condition *and* the choice's own
+// (`lir::ExprKind::OptionBind`, scoped across condition *and* the choice's own
 // body — `lir::lower::mod::lower_choice_with_child`) → codegen
 // (`Opcode::OptionBind` inside the guard's condition eval) → runtime VM
 // (the write lands in the same frame `BeginChoice`'s `fork_thread`

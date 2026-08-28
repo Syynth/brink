@@ -6,7 +6,7 @@
 //! `blocks.rs`'s `BlockStmt::ExprStmt` arm had no postfix-to-`Assign`
 //! conversion the way `stmts.rs`'s classic-line arm does (issue #2185/PR
 //! #2897's fix), so `lower_expr` lowered a bare-variable postfix inside a
-//! block to a pure, discarded `lir::Expr::Postfix` — it computed `x + 1`/
+//! block to a pure, discarded `lir::ExprKind::Postfix` — it computed `x + 1`/
 //! `x - 1` and threw the result away, with no diagnostic. These tests
 //! compile a real `.ink` source using the `brink` dialect extension (the
 //! only surface `~ { … }` parses on), run it to completion, and assert the

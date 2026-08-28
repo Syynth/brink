@@ -93,7 +93,7 @@
 //! ordinary call already composes through (`brink-codegen-inkb::content::
 //! emit_slot_expr`), widened to hold an arbitrary captured statement run
 //! rather than one call's own output (`docs/decision-log.md` 2026-08-01
-//! "Content-as-value": the internal `hir::Expr::Fragment` / `lir::Expr::
+//! "Content-as-value": the internal `hir::Expr::Fragment` / `lir::ExprKind::
 //! Fragment` node this produces). Both [`try_claim`] and [`try_dispatch`]
 //! support it identically — see either function's own "Block capture" doc
 //! section — via the shared terminator search, [`capture_block`]. The

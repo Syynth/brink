@@ -6,10 +6,10 @@ use brink_ir::lir;
 /// Return true if any expression in the container tree is `GetGlobal`.
 fn has_get_global(container: &lir::Container) -> bool {
     fn in_expr(e: &lir::Expr) -> bool {
-        match e {
-            lir::Expr::GetGlobal(_) => true,
-            lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => in_expr(inner),
-            lir::Expr::Infix(a, _, b) => in_expr(a) || in_expr(b),
+        match &e.kind {
+            lir::ExprKind::GetGlobal(_) => true,
+            lir::ExprKind::Prefix(_, inner) | lir::ExprKind::Postfix(inner, _) => in_expr(inner),
+            lir::ExprKind::Infix(a, _, b) => in_expr(a) || in_expr(b),
             _ => false,
         }
     }

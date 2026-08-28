@@ -90,7 +90,7 @@ fn var_lambda_literal_decl_default_also_folds() {
 /// override would be read through if one existed at file scope (there is no
 /// separate "capture" spelling for a flow-local cell; see the ruling's WHY).
 /// Reading `base` must resolve as an ordinary global reference, not a
-/// capture: `lir::Expr::MakeFnValue`'s `bound` row must stay empty
+/// capture: `lir::ExprKind::MakeFnValue`'s `bound` row must stay empty
 /// (`ConstValue::FnRef`, never `Closure`). If a future change ever gave file
 /// scope a real temp/param frame — the only thing
 /// `lower::lambda::captured_locals` treats as capturable — this assertion
@@ -146,10 +146,10 @@ fn coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape() {
         .expect("the decl-default lambda must lift into its own function container");
 
     let shape = lambda.body.iter().find_map(|stmt| match &stmt.kind {
-        lir::StmtKind::DeclareTemp {
-            value: Some(lir::Expr::Coalesce { shape, .. }),
-            ..
-        } => Some(*shape),
+        lir::StmtKind::DeclareTemp { value: Some(v), .. } => match &v.kind {
+            lir::ExprKind::Coalesce { shape, .. } => Some(*shape),
+            _ => None,
+        },
         _ => None,
     });
     assert_eq!(

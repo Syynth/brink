@@ -7,7 +7,7 @@ use crate::support::*;
 // diagnostics before lowering to LIR. Through T1b-1, a `LogicBlock`/`Index`/…
 // HIR node reaching `lower_to_program` this way would panic via
 // `debug_assert!` in debug builds and silently drop data (`None` /
-// `lir::Expr::Null`) in release builds — caught by the (now-retired) E053
+// `lir::ExprKind::Null`) in release builds — caught by the (now-retired) E053
 // backstop, which refused to produce a program at all (#572 review). T1b-2
 // replaces that rejection with real lowering, so these HIR node kinds are no
 // longer "residual" — this test now proves the opposite of its T1b-1

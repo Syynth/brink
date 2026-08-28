@@ -281,11 +281,12 @@ pub(super) fn lower_bound_condition(
     // The binding is immutable by ruling — record the slot so every write
     // path refuses it (`stmts::lower_assign_target`, E148).
     ctx.as_binding_slots.insert(slot);
-    lir::Expr::OptionBind {
+    lir::ExprKind::OptionBind {
         value: Box::new(value),
         slot,
         name,
     }
+    .at(ctx.current_stmt_provenance)
 }
 
 /// Declare a block-scoped `temp`, emitting the E054 shadow warning if `name`
@@ -688,15 +689,19 @@ fn lower_single_level_field_write(
     // 2. Pre-mutation `current = root.field`, ALWAYS computed (fault
     //    pre-check + compound assignment's operand), via an ordinary
     //    (non-taking) read of the still-intact root.
-    let current = lir::Expr::RecordGet {
-        base: Box::new(get_expr_for_target(&root_target)),
+    let current = lir::ExprKind::RecordGet {
+        base: Box::new(get_expr_for_target(
+            &root_target,
+            ctx.current_stmt_provenance,
+        )),
         field,
         static_offset,
-    };
+    }
+    .at(ctx.current_stmt_provenance);
     let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
 
     let rhs = if op == AssignOp::Set {
-        lir::Expr::GetTemp(rhs_slot, rhs_name)
+        lir::ExprKind::GetTemp(rhs_slot, rhs_name).at(ctx.current_stmt_provenance)
     } else {
         // `op == AssignOp::Set` is excluded above, so only `Add`/`Sub` ever
         // reach here.
@@ -705,28 +710,39 @@ fn lower_single_level_field_write(
         } else {
             InfixOp::Add
         };
-        lir::Expr::Infix(
-            Box::new(lir::Expr::GetTemp(current_slot, current_name)),
+        lir::ExprKind::Infix(
+            Box::new(
+                lir::ExprKind::GetTemp(current_slot, current_name).at(ctx.current_stmt_provenance),
+            ),
             infix_op,
-            Box::new(lir::Expr::GetTemp(rhs_slot, rhs_name)),
+            Box::new(lir::ExprKind::GetTemp(rhs_slot, rhs_name).at(ctx.current_stmt_provenance)),
         )
+        .at(ctx.current_stmt_provenance)
     };
 
     // 3. Take the root — step 2 already proved this exact field is valid
     //    against this exact record value (nothing mutated in between), so
     //    nothing from here on can fault; the root is never left holding
     //    `Value::Null` on this path.
-    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    let (c_slot, c_name) = declare_synthetic(
+        "__c",
+        take_expr_for_target(&root_target, ctx.current_stmt_provenance),
+        ctx,
+        out,
+    );
     out.push(lir::Stmt::new(
         lir::StmtKind::Assign {
             target: lir::AssignTarget::Temp(c_slot, c_name),
             op: AssignOp::Set,
-            value: lir::Expr::RecordSet {
-                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            value: lir::ExprKind::RecordSet {
+                base: Box::new(
+                    lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+                ),
                 field,
                 static_offset,
                 value: Box::new(rhs),
-            },
+            }
+            .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -737,7 +753,7 @@ fn lower_single_level_field_write(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::TakeTemp(c_slot, c_name),
+            value: lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -757,10 +773,10 @@ fn flatten_index_chain(idx: &hir::IndexExpr) -> (&hir::Expr, Vec<&hir::Expr>) {
     (cur_base, indices_outer_first)
 }
 
-fn get_expr_for_target(target: &lir::AssignTarget) -> lir::Expr {
+fn get_expr_for_target(target: &lir::AssignTarget, provenance: crate::Provenance) -> lir::Expr {
     match target {
-        lir::AssignTarget::Global(id) => lir::Expr::GetGlobal(*id),
-        lir::AssignTarget::Temp(slot, name) => lir::Expr::GetTemp(*slot, *name),
+        lir::AssignTarget::Global(id) => lir::ExprKind::GetGlobal(*id).at(provenance),
+        lir::AssignTarget::Temp(slot, name) => lir::ExprKind::GetTemp(*slot, *name).at(provenance),
     }
 }
 
@@ -770,10 +786,10 @@ fn get_expr_for_target(target: &lir::AssignTarget) -> lir::Expr {
 /// Only safe to use where nothing else needs `target`'s old value again
 /// before it's written back — see [`lower_flat_indexed_assignment`] and
 /// [`lower_bare_mutator`], the two call sites that establish this.
-fn take_expr_for_target(target: &lir::AssignTarget) -> lir::Expr {
+fn take_expr_for_target(target: &lir::AssignTarget, provenance: crate::Provenance) -> lir::Expr {
     match target {
-        lir::AssignTarget::Global(id) => lir::Expr::TakeGlobal(*id),
-        lir::AssignTarget::Temp(slot, name) => lir::Expr::TakeTemp(*slot, *name),
+        lir::AssignTarget::Global(id) => lir::ExprKind::TakeGlobal(*id).at(provenance),
+        lir::AssignTarget::Temp(slot, name) => lir::ExprKind::TakeTemp(*slot, *name).at(provenance),
     }
 }
 
@@ -920,12 +936,18 @@ fn lower_flat_indexed_assignment(
     //    fault causes (array OOB, invalid-domain map key, non-collection
     //    root) are still faults, just inside the take-based mutate step.
     let rhs = if op == AssignOp::Set {
-        lir::Expr::GetTemp(rhs_slot, rhs_name)
+        lir::ExprKind::GetTemp(rhs_slot, rhs_name).at(ctx.current_stmt_provenance)
     } else {
-        let current = lir::Expr::Index {
-            base: Box::new(get_expr_for_target(&root_target)),
-            index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-        };
+        let current = lir::ExprKind::Index {
+            base: Box::new(get_expr_for_target(
+                &root_target,
+                ctx.current_stmt_provenance,
+            )),
+            index: Box::new(
+                lir::ExprKind::GetTemp(idx_slot, idx_name).at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance);
         let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
         // `op == AssignOp::Set` is excluded above, so only `Add`/`Sub`
         // ever reach here.
@@ -934,11 +956,14 @@ fn lower_flat_indexed_assignment(
         } else {
             InfixOp::Add
         };
-        lir::Expr::Infix(
-            Box::new(lir::Expr::GetTemp(current_slot, current_name)),
+        lir::ExprKind::Infix(
+            Box::new(
+                lir::ExprKind::GetTemp(current_slot, current_name).at(ctx.current_stmt_provenance),
+            ),
             infix_op,
-            Box::new(lir::Expr::GetTemp(rhs_slot, rhs_name)),
+            Box::new(lir::ExprKind::GetTemp(rhs_slot, rhs_name).at(ctx.current_stmt_provenance)),
         )
+        .at(ctx.current_stmt_provenance)
     };
 
     // 4. Take the root. For compound assignment, step 3 already proved this
@@ -949,7 +974,12 @@ fn lower_flat_indexed_assignment(
     //    non-collection root) — the documented, deliberate trade-off
     //    `fault_during_insert_leaves_root_null` already accepts for
     //    `insert`/`remove`/`remove_at`'s author-supplied keys applies here too.
-    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    let (c_slot, c_name) = declare_synthetic(
+        "__c",
+        take_expr_for_target(&root_target, ctx.current_stmt_provenance),
+        ctx,
+        out,
+    );
 
     // 5. Mutate in place: base is a *take* from `c_slot` too — `c_slot`'s
     //    old value is never read again (this statement's own result
@@ -961,11 +991,16 @@ fn lower_flat_indexed_assignment(
         lir::StmtKind::Assign {
             target: lir::AssignTarget::Temp(c_slot, c_name),
             op: AssignOp::Set,
-            value: lir::Expr::IndexSet {
-                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-                index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+            value: lir::ExprKind::IndexSet {
+                base: Box::new(
+                    lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+                ),
+                index: Box::new(
+                    lir::ExprKind::GetTemp(idx_slot, idx_name).at(ctx.current_stmt_provenance),
+                ),
                 value: Box::new(rhs),
-            },
+            }
+            .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -976,7 +1011,7 @@ fn lower_flat_indexed_assignment(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::TakeTemp(c_slot, c_name),
+            value: lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -1008,17 +1043,20 @@ fn lower_chained_indexed_assignment(
     //    each level once: c[0] = root; c[k+1] = c[k][idx[k]].
     let mut c_slots: Vec<(u16, brink_format::NameId)> = vec![declare_synthetic(
         "__c",
-        get_expr_for_target(&root_target),
+        get_expr_for_target(&root_target, ctx.current_stmt_provenance),
         ctx,
         out,
     )];
     for k in 0..n - 1 {
-        let base = lir::Expr::GetTemp(c_slots[k].0, c_slots[k].1);
-        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
-        let read = lir::Expr::Index {
+        let base =
+            lir::ExprKind::GetTemp(c_slots[k].0, c_slots[k].1).at(ctx.current_stmt_provenance);
+        let index =
+            lir::ExprKind::GetTemp(idx_slots[k].0, idx_slots[k].1).at(ctx.current_stmt_provenance);
+        let read = lir::ExprKind::Index {
             base: Box::new(base),
             index: Box::new(index),
-        };
+        }
+        .at(ctx.current_stmt_provenance);
         c_slots.push(declare_synthetic("__c", read, ctx, out));
     }
 
@@ -1029,12 +1067,15 @@ fn lower_chained_indexed_assignment(
     //     re-reads the target path via the already-materialized temps (no
     //     re-evaluation of the root/index expressions).
     if op != AssignOp::Set {
-        let last_base = lir::Expr::GetTemp(c_slots[n - 1].0, c_slots[n - 1].1);
-        let last_index = lir::Expr::GetTemp(idx_slots[n - 1].0, idx_slots[n - 1].1);
-        let current = lir::Expr::Index {
+        let last_base = lir::ExprKind::GetTemp(c_slots[n - 1].0, c_slots[n - 1].1)
+            .at(ctx.current_stmt_provenance);
+        let last_index = lir::ExprKind::GetTemp(idx_slots[n - 1].0, idx_slots[n - 1].1)
+            .at(ctx.current_stmt_provenance);
+        let current = lir::ExprKind::Index {
             base: Box::new(last_base),
             index: Box::new(last_index),
-        };
+        }
+        .at(ctx.current_stmt_provenance);
         // `op == AssignOp::Set` is excluded by the guard above, so only
         // `Add`/`Sub` ever reach here.
         let infix_op = if op == AssignOp::Sub {
@@ -1042,24 +1083,27 @@ fn lower_chained_indexed_assignment(
         } else {
             InfixOp::Add
         };
-        rhs = lir::Expr::Infix(Box::new(current), infix_op, Box::new(rhs));
+        rhs = lir::ExprKind::Infix(Box::new(current), infix_op, Box::new(rhs))
+            .at(ctx.current_stmt_provenance);
     }
 
     // 4. Mutate the deepest level in place: c[N-1] = IndexSet(c[N-1],
     //    idx[N-1], rhs). Turn-terminating fault on OOB/missing-key (§6).
     {
         let (slot, name) = c_slots[n - 1];
-        let base = lir::Expr::GetTemp(slot, name);
-        let index = lir::Expr::GetTemp(idx_slots[n - 1].0, idx_slots[n - 1].1);
+        let base = lir::ExprKind::GetTemp(slot, name).at(ctx.current_stmt_provenance);
+        let index = lir::ExprKind::GetTemp(idx_slots[n - 1].0, idx_slots[n - 1].1)
+            .at(ctx.current_stmt_provenance);
         out.push(lir::Stmt::new(
             lir::StmtKind::Assign {
                 target: lir::AssignTarget::Temp(slot, name),
                 op: AssignOp::Set,
-                value: lir::Expr::IndexSet {
+                value: lir::ExprKind::IndexSet {
                     base: Box::new(base),
                     index: Box::new(index),
                     value: Box::new(rhs),
-                },
+                }
+                .at(ctx.current_stmt_provenance),
             },
             ctx.current_stmt_provenance,
         ));
@@ -1069,18 +1113,21 @@ fn lower_chained_indexed_assignment(
     //    c[k+1]) for k = N-2 down to 0.
     for k in (0..n - 1).rev() {
         let (slot, name) = c_slots[k];
-        let base = lir::Expr::GetTemp(slot, name);
-        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
-        let inner = lir::Expr::GetTemp(c_slots[k + 1].0, c_slots[k + 1].1);
+        let base = lir::ExprKind::GetTemp(slot, name).at(ctx.current_stmt_provenance);
+        let index =
+            lir::ExprKind::GetTemp(idx_slots[k].0, idx_slots[k].1).at(ctx.current_stmt_provenance);
+        let inner = lir::ExprKind::GetTemp(c_slots[k + 1].0, c_slots[k + 1].1)
+            .at(ctx.current_stmt_provenance);
         out.push(lir::Stmt::new(
             lir::StmtKind::Assign {
                 target: lir::AssignTarget::Temp(slot, name),
                 op: AssignOp::Set,
-                value: lir::Expr::IndexSet {
+                value: lir::ExprKind::IndexSet {
                     base: Box::new(base),
                     index: Box::new(index),
                     value: Box::new(inner),
-                },
+                }
+                .at(ctx.current_stmt_provenance),
             },
             ctx.current_stmt_provenance,
         ));
@@ -1092,7 +1139,7 @@ fn lower_chained_indexed_assignment(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::GetTemp(root_slot, root_name),
+            value: lir::ExprKind::GetTemp(root_slot, root_name).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -1130,25 +1177,35 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
     let snapshot_source = if f.val_name.is_some() {
         let (container_slot, container_name) =
             declare_synthetic("__for_container", iterable, ctx, out);
-        lir::Expr::GetTemp(container_slot, container_name)
+        lir::ExprKind::GetTemp(container_slot, container_name).at(ctx.current_stmt_provenance)
     } else {
         iterable
     };
     let (snap_slot, snap_name) = declare_synthetic(
         "__for_snapshot",
-        lir::Expr::CollectionKeys(Box::new(snapshot_source.clone())),
+        lir::ExprKind::CollectionKeys(Box::new(snapshot_source.clone()))
+            .at(ctx.current_stmt_provenance),
         ctx,
         out,
     );
-    let (idx_slot, idx_name) = declare_synthetic("__for_idx", lir::Expr::Int(0), ctx, out);
-
-    let condition = lir::Expr::Infix(
-        Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-        InfixOp::Lt,
-        Box::new(lir::Expr::CollectionLen(Box::new(lir::Expr::GetTemp(
-            snap_slot, snap_name,
-        )))),
+    let (idx_slot, idx_name) = declare_synthetic(
+        "__for_idx",
+        lir::ExprKind::Int(0).at(ctx.current_stmt_provenance),
+        ctx,
+        out,
     );
+
+    let condition = lir::ExprKind::Infix(
+        Box::new(lir::ExprKind::GetTemp(idx_slot, idx_name).at(ctx.current_stmt_provenance)),
+        InfixOp::Lt,
+        Box::new(
+            lir::ExprKind::CollectionLen(Box::new(
+                lir::ExprKind::GetTemp(snap_slot, snap_name).at(ctx.current_stmt_provenance),
+            ))
+            .at(ctx.current_stmt_provenance),
+        ),
+    )
+    .at(ctx.current_stmt_provenance);
 
     ctx.push_block_scope();
     let (var_slot, var_name) = declare_shadow_checked(&f.var_name.text, f.var_name.range, ctx);
@@ -1156,10 +1213,18 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
         lir::StmtKind::DeclareTemp {
             slot: var_slot,
             name: var_name,
-            value: Some(lir::Expr::Index {
-                base: Box::new(lir::Expr::GetTemp(snap_slot, snap_name)),
-                index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-            }),
+            value: Some(
+                lir::ExprKind::Index {
+                    base: Box::new(
+                        lir::ExprKind::GetTemp(snap_slot, snap_name)
+                            .at(ctx.current_stmt_provenance),
+                    ),
+                    index: Box::new(
+                        lir::ExprKind::GetTemp(idx_slot, idx_name).at(ctx.current_stmt_provenance),
+                    ),
+                }
+                .at(ctx.current_stmt_provenance),
+            ),
         },
         ctx.current_stmt_provenance,
     )];
@@ -1169,10 +1234,16 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
             lir::StmtKind::DeclareTemp {
                 slot: val_slot,
                 name: val_name_id,
-                value: Some(lir::Expr::Index {
-                    base: Box::new(snapshot_source),
-                    index: Box::new(lir::Expr::GetTemp(var_slot, var_name)),
-                }),
+                value: Some(
+                    lir::ExprKind::Index {
+                        base: Box::new(snapshot_source),
+                        index: Box::new(
+                            lir::ExprKind::GetTemp(var_slot, var_name)
+                                .at(ctx.current_stmt_provenance),
+                        ),
+                    }
+                    .at(ctx.current_stmt_provenance),
+                ),
             },
             ctx.current_stmt_provenance,
         ));
@@ -1186,7 +1257,7 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
         lir::StmtKind::Assign {
             target: lir::AssignTarget::Temp(idx_slot, idx_name),
             op: AssignOp::Add,
-            value: lir::Expr::Int(1),
+            value: lir::ExprKind::Int(1).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     )];
@@ -1404,10 +1475,13 @@ fn try_lower_seed_stmt(
     }
     let arg = lower_expr(&args[0], ctx);
     out.push(lir::Stmt::new(
-        lir::StmtKind::ExprStmt(lir::Expr::CallBuiltin {
-            builtin: lir::BuiltinFn::SeedRandom,
-            args: vec![arg],
-        }),
+        lir::StmtKind::ExprStmt(
+            lir::ExprKind::CallBuiltin {
+                builtin: lir::BuiltinFn::SeedRandom,
+                args: vec![arg],
+            }
+            .at(ctx.current_stmt_provenance),
+        ),
         ctx.current_stmt_provenance,
     ));
     true
@@ -1423,7 +1497,7 @@ fn try_lower_seed_stmt(
 ///
 /// Without this conversion, a bare-variable postfix reached only the
 /// generic `lower_expr` fallback, which lowers `hir::Expr::Postfix` to a
-/// *pure* `lir::Expr::Postfix` — codegen computes `x + 1`/`x - 1` as a value
+/// *pure* `lir::ExprKind::Postfix` — codegen computes `x + 1`/`x - 1` as a value
 /// and the enclosing `ExprStmt` immediately pops it
 /// (`brink-codegen-inkb/src/expr.rs`): the write never happens, with no
 /// diagnostic at all (a `~ { x++ }` compiled clean and silently did
@@ -1505,7 +1579,7 @@ pub(super) fn try_lower_postfix_stmt(
         lir::StmtKind::Assign {
             target,
             op: assign_op,
-            value: lir::Expr::Int(1),
+            value: lir::ExprKind::Int(1).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -1601,6 +1675,11 @@ pub(super) fn try_lower_mutator_stmt(
 /// `expr::lower_ufcs_desugared_call` already handles correctly, and a
 /// receiver more than one field deep, which `brink-analyzer`'s own gate
 /// still refuses with `E143` before lowering ever sees it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one straight-line RMW desugar (read/call/write-back); issue #3183's \
+              provenance stamping pushed it just over the line budget"
+)]
 pub(super) fn try_lower_frame_local_auto_ref_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -1679,11 +1758,15 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
 
     // 1. Read the field into a synthetic temp — the call's receiver
     //    argument. A non-mutating read, so it can't itself trigger a COW.
-    let current = lir::Expr::RecordGet {
-        base: Box::new(get_expr_for_target(&root_target)),
+    let current = lir::ExprKind::RecordGet {
+        base: Box::new(get_expr_for_target(
+            &root_target,
+            ctx.current_stmt_provenance,
+        )),
         field,
         static_offset,
-    };
+    }
+    .at(ctx.current_stmt_provenance);
     let (recv_slot, recv_name) = declare_synthetic("__recv", current, ctx, out);
 
     // 2. The call: `target(ref __recv, args…)` — a bare receiver, so it
@@ -1695,7 +1778,7 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
     call_args.push(lir::CallArg::RefTemp(recv_slot, recv_name));
     call_args.extend(super::expr::lower_call_args(args, rest_params, ctx));
     let call_expr = if target_info.kind == SymbolKind::External {
-        lir::Expr::CallExternal {
+        lir::ExprKind::CallExternal {
             target,
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1704,11 +1787,13 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
             arg_count: target_info.params.len() as u8,
             args: call_args,
         }
+        .at(ctx.current_stmt_provenance)
     } else {
-        lir::Expr::Call {
+        lir::ExprKind::Call {
             target,
             args: call_args,
         }
+        .at(ctx.current_stmt_provenance)
     };
     out.push(lir::Stmt::new(
         lir::StmtKind::ExprStmt(call_expr),
@@ -1719,12 +1804,18 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
     //    fault pre-check is needed here — step 1's read already proved this
     //    exact field is valid on this exact root, and nothing between then
     //    and now could have invalidated that.
-    let write_back = lir::Expr::RecordSet {
-        base: Box::new(take_expr_for_target(&root_target)),
+    let write_back = lir::ExprKind::RecordSet {
+        base: Box::new(take_expr_for_target(
+            &root_target,
+            ctx.current_stmt_provenance,
+        )),
         field,
         static_offset,
-        value: Box::new(lir::Expr::GetTemp(recv_slot, recv_name)),
-    };
+        value: Box::new(
+            lir::ExprKind::GetTemp(recv_slot, recv_name).at(ctx.current_stmt_provenance),
+        ),
+    }
+    .at(ctx.current_stmt_provenance);
     out.push(lir::Stmt::new(
         lir::StmtKind::Assign {
             target: root_target,
@@ -1861,51 +1952,71 @@ fn lower_mutator_call(
     let Some(&(last_slot, last_name)) = c_slots.last() else {
         return;
     };
-    let container = || lir::Expr::GetTemp(last_slot, last_name);
+    // Snapshot the ambient provenance before the closure below captures it —
+    // `container` reads it on every call, but a `Copy` snapshot (not `ctx`
+    // itself) keeps `ctx` free for the `&mut` calls (`lower_expr`, etc.)
+    // this function still needs alongside it.
+    let stmt_prov = ctx.current_stmt_provenance;
+    let container = move || lir::ExprKind::GetTemp(last_slot, last_name).at(stmt_prov);
 
     let new_container = match kind {
         MutatorKind::Push => {
             let value = lower_expr(&args[1], ctx);
-            lir::Expr::CollectionInsert {
+            lir::ExprKind::CollectionInsert {
                 base: Box::new(container()),
-                key: Box::new(lir::Expr::CollectionLen(Box::new(container()))),
+                key: Box::new(
+                    lir::ExprKind::CollectionLen(Box::new(container()))
+                        .at(ctx.current_stmt_provenance),
+                ),
                 value: Box::new(value),
             }
+            .at(ctx.current_stmt_provenance)
         }
         MutatorKind::Insert => {
             let key = lower_expr(&args[1], ctx);
             let value = lower_expr(&args[2], ctx);
-            lir::Expr::CollectionInsert {
+            lir::ExprKind::CollectionInsert {
                 base: Box::new(container()),
                 key: Box::new(key),
                 value: Box::new(value),
             }
+            .at(ctx.current_stmt_provenance)
         }
         MutatorKind::Remove => {
             let key = lower_expr(&args[1], ctx);
-            lir::Expr::CollectionRemove {
+            lir::ExprKind::CollectionRemove {
                 base: Box::new(container()),
                 key: Box::new(key),
             }
+            .at(ctx.current_stmt_provenance)
         }
         MutatorKind::RemoveAt => {
             let index = lower_expr(&args[1], ctx);
-            lir::Expr::SeqRemoveAt {
+            lir::ExprKind::SeqRemoveAt {
                 base: Box::new(container()),
                 index: Box::new(index),
             }
+            .at(ctx.current_stmt_provenance)
         }
-        MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
-        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
-        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
-        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+        MutatorKind::Clear => {
+            lir::ExprKind::MapClear(Box::new(container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::Shuffle => {
+            lir::ExprKind::RandShuffle(Box::new(container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::Sort => {
+            lir::ExprKind::SeqSorted(Box::new(container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::SortBy => lir::ExprKind::SeqSortedBy {
             seq: Box::new(container()),
             cmp: Box::new(lower_expr(&args[1], ctx)),
-        },
-        MutatorKind::HeapPush => lir::Expr::HeapPush {
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::HeapPush => lir::ExprKind::HeapPush {
             seq: Box::new(container()),
             value: Box::new(lower_expr(&args[1], ctx)),
-        },
+        }
+        .at(ctx.current_stmt_provenance),
     };
 
     out.push(lir::Stmt::new(
@@ -1954,6 +2065,12 @@ fn lower_mutator_call(
 /// `fault_during_push_leaves_root_unchanged` and
 /// `fault_during_insert_leaves_root_null` (runtime crate) for the property
 /// tests.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatch arm per MutatorKind; issue #3183's provenance stamping \
+              pushed it just over the line budget, splitting would obscure the \
+              exhaustive dispatch"
+)]
 fn lower_bare_mutator(
     kind: MutatorKind,
     root_expr: &hir::Expr,
@@ -1984,14 +2101,23 @@ fn lower_bare_mutator(
     let push_len = matches!(kind, MutatorKind::Push).then(|| {
         declare_synthetic(
             "__len",
-            lir::Expr::CollectionLen(Box::new(get_expr_for_target(&root_target))),
+            lir::ExprKind::CollectionLen(Box::new(get_expr_for_target(
+                &root_target,
+                ctx.current_stmt_provenance,
+            )))
+            .at(ctx.current_stmt_provenance),
             ctx,
             out,
         )
     });
 
     // Take the root.
-    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    let (c_slot, c_name) = declare_synthetic(
+        "__c",
+        take_expr_for_target(&root_target, ctx.current_stmt_provenance),
+        ctx,
+        out,
+    );
 
     let new_container = match kind {
         MutatorKind::Push => {
@@ -2000,38 +2126,76 @@ fn lower_bare_mutator(
                 // `MutatorKind::Push` by the `matches!` guard above.
                 return;
             };
-            lir::Expr::CollectionInsert {
-                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-                key: Box::new(lir::Expr::GetTemp(len_slot, len_name)),
-                value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+            lir::ExprKind::CollectionInsert {
+                base: Box::new(
+                    lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+                ),
+                key: Box::new(
+                    lir::ExprKind::GetTemp(len_slot, len_name).at(ctx.current_stmt_provenance),
+                ),
+                value: Box::new(
+                    lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                        .at(ctx.current_stmt_provenance),
+                ),
             }
+            .at(ctx.current_stmt_provenance)
         }
-        MutatorKind::Insert => lir::Expr::CollectionInsert {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-            value: Box::new(lir::Expr::GetTemp(arg_slots[1].0, arg_slots[1].1)),
-        },
-        MutatorKind::Remove => lir::Expr::CollectionRemove {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
-        MutatorKind::Shuffle => {
-            lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
+        MutatorKind::Insert => lir::ExprKind::CollectionInsert {
+            base: Box::new(lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance)),
+            key: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+            value: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[1].0, arg_slots[1].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
         }
-        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
-        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
-            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::HeapPush => lir::Expr::HeapPush {
-            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Remove => lir::ExprKind::CollectionRemove {
+            base: Box::new(lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance)),
+            key: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::RemoveAt => lir::ExprKind::SeqRemoveAt {
+            base: Box::new(lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance)),
+            index: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Clear => lir::ExprKind::MapClear(Box::new(
+            lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+        ))
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Shuffle => lir::ExprKind::RandShuffle(Box::new(
+            lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+        ))
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Sort => lir::ExprKind::SeqSorted(Box::new(
+            lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
+        ))
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::SortBy => lir::ExprKind::SeqSortedBy {
+            seq: Box::new(lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance)),
+            cmp: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::HeapPush => lir::ExprKind::HeapPush {
+            seq: Box::new(lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance)),
+            value: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
     };
 
     out.push(lir::Stmt::new(
@@ -2046,7 +2210,7 @@ fn lower_bare_mutator(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::TakeTemp(c_slot, c_name),
+            value: lir::ExprKind::TakeTemp(c_slot, c_name).at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -2196,20 +2360,27 @@ fn lower_field_mutator(
 
     // 2. `current = root.field`, ALWAYS computed via a non-taking read (the
     //    fault pre-check, exactly like `lower_single_level_field_write`).
-    let current = lir::Expr::RecordGet {
-        base: Box::new(get_expr_for_target(&root_target)),
+    let current = lir::ExprKind::RecordGet {
+        base: Box::new(get_expr_for_target(
+            &root_target,
+            ctx.current_stmt_provenance,
+        )),
         field,
         static_offset,
-    };
+    }
+    .at(ctx.current_stmt_provenance);
     let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
-    let container = || lir::Expr::GetTemp(current_slot, current_name);
+    // Same `ctx`-vs-closure-capture reason as `lower_bare_mutator`'s own
+    // `container` closure above.
+    let stmt_prov = ctx.current_stmt_provenance;
+    let container = move || lir::ExprKind::GetTemp(current_slot, current_name).at(stmt_prov);
 
     // `push`'s fault pre-check doubles as its key (see `lower_bare_mutator`'s
     // doc) — read from the field's current value, before anything is taken.
     let push_len = matches!(kind, MutatorKind::Push).then(|| {
         declare_synthetic(
             "__len",
-            lir::Expr::CollectionLen(Box::new(container())),
+            lir::ExprKind::CollectionLen(Box::new(container())).at(ctx.current_stmt_provenance),
             ctx,
             out,
         )
@@ -2221,18 +2392,26 @@ fn lower_field_mutator(
     //    `current_slot` is the field's sole owner whenever nothing else
     //    aliases it, which is the entire point of this fix (see the
     //    function doc's step 3).
-    let (dealias_slot, dealias_name) =
-        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    let (dealias_slot, dealias_name) = declare_synthetic(
+        "__c",
+        take_expr_for_target(&root_target, ctx.current_stmt_provenance),
+        ctx,
+        out,
+    );
     out.push(lir::Stmt::new(
         lir::StmtKind::Assign {
             target: lir::AssignTarget::Temp(dealias_slot, dealias_name),
             op: AssignOp::Set,
-            value: lir::Expr::RecordSet {
-                base: Box::new(lir::Expr::TakeTemp(dealias_slot, dealias_name)),
+            value: lir::ExprKind::RecordSet {
+                base: Box::new(
+                    lir::ExprKind::TakeTemp(dealias_slot, dealias_name)
+                        .at(ctx.current_stmt_provenance),
+                ),
                 field,
                 static_offset,
-                value: Box::new(lir::Expr::Null),
-            },
+                value: Box::new(lir::ExprKind::Null.at(ctx.current_stmt_provenance)),
+            }
+            .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -2240,7 +2419,8 @@ fn lower_field_mutator(
         lir::StmtKind::Assign {
             target: root_target.clone(),
             op: AssignOp::Set,
-            value: lir::Expr::TakeTemp(dealias_slot, dealias_name),
+            value: lir::ExprKind::TakeTemp(dealias_slot, dealias_name)
+                .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -2255,7 +2435,8 @@ fn lower_field_mutator(
     // instead means the value handed to the opcode is `current_slot`'s
     // *only* reference, so uniqueness (and step 3's de-alias) is what
     // `array_make_mut` actually sees.
-    let take_container = || lir::Expr::TakeTemp(current_slot, current_name);
+    let take_container =
+        || lir::ExprKind::TakeTemp(current_slot, current_name).at(ctx.current_stmt_provenance);
 
     let new_field = match kind {
         MutatorKind::Push => {
@@ -2264,36 +2445,71 @@ fn lower_field_mutator(
                 // `MutatorKind::Push` by the `matches!` guard above.
                 return;
             };
-            lir::Expr::CollectionInsert {
+            lir::ExprKind::CollectionInsert {
                 base: Box::new(take_container()),
-                key: Box::new(lir::Expr::GetTemp(len_slot, len_name)),
-                value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+                key: Box::new(
+                    lir::ExprKind::GetTemp(len_slot, len_name).at(ctx.current_stmt_provenance),
+                ),
+                value: Box::new(
+                    lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                        .at(ctx.current_stmt_provenance),
+                ),
             }
+            .at(ctx.current_stmt_provenance)
         }
-        MutatorKind::Insert => lir::Expr::CollectionInsert {
+        MutatorKind::Insert => lir::ExprKind::CollectionInsert {
             base: Box::new(take_container()),
-            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-            value: Box::new(lir::Expr::GetTemp(arg_slots[1].0, arg_slots[1].1)),
-        },
-        MutatorKind::Remove => lir::Expr::CollectionRemove {
+            key: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+            value: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[1].0, arg_slots[1].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Remove => lir::ExprKind::CollectionRemove {
             base: Box::new(take_container()),
-            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
+            key: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::RemoveAt => lir::ExprKind::SeqRemoveAt {
             base: Box::new(take_container()),
-            index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::Clear => lir::Expr::MapClear(Box::new(take_container())),
-        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(take_container())),
-        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(take_container())),
-        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            index: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::Clear => {
+            lir::ExprKind::MapClear(Box::new(take_container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::Shuffle => {
+            lir::ExprKind::RandShuffle(Box::new(take_container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::Sort => {
+            lir::ExprKind::SeqSorted(Box::new(take_container())).at(ctx.current_stmt_provenance)
+        }
+        MutatorKind::SortBy => lir::ExprKind::SeqSortedBy {
             seq: Box::new(take_container()),
-            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
-        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            cmp: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
+        MutatorKind::HeapPush => lir::ExprKind::HeapPush {
             seq: Box::new(take_container()),
-            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
-        },
+            value: Box::new(
+                lir::ExprKind::GetTemp(arg_slots[0].0, arg_slots[0].1)
+                    .at(ctx.current_stmt_provenance),
+            ),
+        }
+        .at(ctx.current_stmt_provenance),
     };
 
     // 4. Materialize the RMW result into its own temp — reads only
@@ -2316,18 +2532,28 @@ fn lower_field_mutator(
     //    step 2's `RecordGet`, permanently pinning every iteration's array
     //    at `strong_count == 2` and reintroducing the cliff this whole fix
     //    exists to close.
-    let (writeback_slot, writeback_name) =
-        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    let (writeback_slot, writeback_name) = declare_synthetic(
+        "__c",
+        take_expr_for_target(&root_target, ctx.current_stmt_provenance),
+        ctx,
+        out,
+    );
     out.push(lir::Stmt::new(
         lir::StmtKind::Assign {
             target: lir::AssignTarget::Temp(writeback_slot, writeback_name),
             op: AssignOp::Set,
-            value: lir::Expr::RecordSet {
-                base: Box::new(lir::Expr::TakeTemp(writeback_slot, writeback_name)),
+            value: lir::ExprKind::RecordSet {
+                base: Box::new(
+                    lir::ExprKind::TakeTemp(writeback_slot, writeback_name)
+                        .at(ctx.current_stmt_provenance),
+                ),
                 field,
                 static_offset,
-                value: Box::new(lir::Expr::TakeTemp(new_slot, new_name)),
-            },
+                value: Box::new(
+                    lir::ExprKind::TakeTemp(new_slot, new_name).at(ctx.current_stmt_provenance),
+                ),
+            }
+            .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -2335,7 +2561,8 @@ fn lower_field_mutator(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::TakeTemp(writeback_slot, writeback_name),
+            value: lir::ExprKind::TakeTemp(writeback_slot, writeback_name)
+                .at(ctx.current_stmt_provenance),
         },
         ctx.current_stmt_provenance,
     ));
@@ -2400,17 +2627,20 @@ fn lower_lvalue_container_chain(
 
     let mut c_slots: Vec<(u16, brink_format::NameId)> = vec![declare_synthetic(
         "__c",
-        get_expr_for_target(&root_target),
+        get_expr_for_target(&root_target, ctx.current_stmt_provenance),
         ctx,
         out,
     )];
     for k in 0..idx_slots.len() {
-        let base = lir::Expr::GetTemp(c_slots[k].0, c_slots[k].1);
-        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
-        let read = lir::Expr::Index {
+        let base =
+            lir::ExprKind::GetTemp(c_slots[k].0, c_slots[k].1).at(ctx.current_stmt_provenance);
+        let index =
+            lir::ExprKind::GetTemp(idx_slots[k].0, idx_slots[k].1).at(ctx.current_stmt_provenance);
+        let read = lir::ExprKind::Index {
             base: Box::new(base),
             index: Box::new(index),
-        };
+        }
+        .at(ctx.current_stmt_provenance);
         c_slots.push(declare_synthetic("__c", read, ctx, out));
     }
 
@@ -2438,18 +2668,19 @@ fn writeback_lvalue_container_chain(
         let Some(&(next_slot, next_name)) = c_slots.get(k + 1) else {
             return;
         };
-        let base = lir::Expr::GetTemp(slot, name);
-        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
-        let inner = lir::Expr::GetTemp(next_slot, next_name);
+        let base = lir::ExprKind::GetTemp(slot, name).at(provenance);
+        let index = lir::ExprKind::GetTemp(idx_slots[k].0, idx_slots[k].1).at(provenance);
+        let inner = lir::ExprKind::GetTemp(next_slot, next_name).at(provenance);
         out.push(lir::Stmt::new(
             lir::StmtKind::Assign {
                 target: lir::AssignTarget::Temp(slot, name),
                 op: AssignOp::Set,
-                value: lir::Expr::IndexSet {
+                value: lir::ExprKind::IndexSet {
                     base: Box::new(base),
                     index: Box::new(index),
                     value: Box::new(inner),
-                },
+                }
+                .at(provenance),
             },
             provenance,
         ));
@@ -2461,7 +2692,7 @@ fn writeback_lvalue_container_chain(
         lir::StmtKind::Assign {
             target: root_target,
             op: AssignOp::Set,
-            value: lir::Expr::GetTemp(root_slot, root_name),
+            value: lir::ExprKind::GetTemp(root_slot, root_name).at(provenance),
         },
         provenance,
     ));

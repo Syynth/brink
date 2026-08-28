@@ -25,7 +25,10 @@ fn infix_expression_in_assignment() {
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::Infix(_, brink_ir::InfixOp::Add, _),
+                value: lir::Expr {
+                    kind: lir::ExprKind::Infix(_, brink_ir::InfixOp::Add, _),
+                    ..
+                },
                 ..
             }
         )
@@ -41,7 +44,10 @@ fn prefix_negate() {
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::Prefix(brink_ir::PrefixOp::Negate, _),
+                value: lir::Expr {
+                    kind: lir::ExprKind::Prefix(brink_ir::PrefixOp::Negate, _),
+                    ..
+                },
                 ..
             }
         )
@@ -57,7 +63,10 @@ fn boolean_not() {
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::Prefix(brink_ir::PrefixOp::Not, _),
+                value: lir::Expr {
+                    kind: lir::ExprKind::Prefix(brink_ir::PrefixOp::Not, _),
+                    ..
+                },
                 ..
             }
         )

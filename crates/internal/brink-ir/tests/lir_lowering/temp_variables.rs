@@ -18,7 +18,10 @@ fn temp_decl_in_knot() {
             &s.kind,
             lir::StmtKind::DeclareTemp {
                 slot: 0,
-                value: Some(lir::Expr::Int(42)),
+                value: Some(lir::Expr {
+                    kind: lir::ExprKind::Int(42),
+                    ..
+                }),
                 ..
             }
         )
