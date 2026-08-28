@@ -141,8 +141,8 @@ fn lower_call_args(src: &str) -> Vec<lir::CallArg> {
     main_knot
         .body
         .iter()
-        .find_map(|stmt| match stmt {
-            lir::Stmt::ExprStmt(lir::Expr::Call { args, .. }) => Some(args.clone()),
+        .find_map(|stmt| match &stmt.kind {
+            lir::StmtKind::ExprStmt(lir::Expr::Call { args, .. }) => Some(args.clone()),
             _ => None,
         })
         .expect("a call statement in `main`'s body")

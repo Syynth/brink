@@ -145,8 +145,8 @@ fn coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape() {
     let lambda = find_any(&program.root, &|c| c.is_function)
         .expect("the decl-default lambda must lift into its own function container");
 
-    let shape = lambda.body.iter().find_map(|stmt| match stmt {
-        lir::Stmt::DeclareTemp {
+    let shape = lambda.body.iter().find_map(|stmt| match &stmt.kind {
+        lir::StmtKind::DeclareTemp {
             value: Some(lir::Expr::Coalesce { shape, .. }),
             ..
         } => Some(*shape),

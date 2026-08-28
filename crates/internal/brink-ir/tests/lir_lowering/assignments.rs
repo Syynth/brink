@@ -7,7 +7,10 @@ use brink_ir::lir;
 fn assignment_to_global() {
     let p = lower_ink("VAR x = 0\n~ x = 5\n");
     let r = root(&p);
-    let has_assign = r.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. }));
+    let has_assign = r
+        .body
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::Assign { .. }));
     assert!(has_assign, "root should have an assignment statement");
 }
 
@@ -17,8 +20,8 @@ fn assignment_with_operator() {
     let r = root(&p);
     let has_assign = r.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 op: brink_ir::AssignOp::Add,
                 ..
             }

@@ -13,13 +13,13 @@ fn glue_leading_recognized_as_plain() {
     let mut found_glue = false;
     let mut found_line = false;
     for stmt in body {
-        match stmt {
-            lir::Stmt::EmitContent(c)
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(c)
                 if c.parts.len() == 1 && matches!(c.parts[0], lir::ContentPart::Glue) =>
             {
                 found_glue = true;
             }
-            lir::Stmt::EmitLine(e) => {
+            lir::StmtKind::EmitLine(e) => {
                 assert!(
                     matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
                     "expected Plain(\"Hello world\")"
@@ -44,8 +44,8 @@ fn glue_trailing_recognized_as_plain() {
     let mut line_pos = None;
     let mut glue_pos = None;
     for (i, stmt) in body.iter().enumerate() {
-        match stmt {
-            lir::Stmt::EmitLine(e) => {
+        match &stmt.kind {
+            lir::StmtKind::EmitLine(e) => {
                 assert!(
                     matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
                     "expected Plain(\"Hello world\")"
@@ -53,7 +53,7 @@ fn glue_trailing_recognized_as_plain() {
                 found_line = true;
                 line_pos = Some(i);
             }
-            lir::Stmt::EmitContent(c)
+            lir::StmtKind::EmitContent(c)
                 if c.parts.len() == 1 && matches!(c.parts[0], lir::ContentPart::Glue) =>
             {
                 found_trailing_glue = true;
@@ -79,13 +79,13 @@ fn glue_both_ends_recognized_as_template() {
     let mut glue_count = 0;
     let mut found_template = false;
     for stmt in body {
-        match stmt {
-            lir::Stmt::EmitContent(c)
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(c)
                 if c.parts.len() == 1 && matches!(c.parts[0], lir::ContentPart::Glue) =>
             {
                 glue_count += 1;
             }
-            lir::Stmt::EmitLine(e) => {
+            lir::StmtKind::EmitLine(e) => {
                 assert!(
                     matches!(&e.line, lir::RecognizedLine::Template { .. }),
                     "expected Template"
@@ -112,7 +112,7 @@ fn interior_text_glue_text_merged() {
     let body = &root(&program).body;
 
     let found_line = body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Helloworld"))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Helloworld"))
     });
     assert!(
         found_line,
@@ -127,7 +127,7 @@ fn no_glue_plain_still_works() {
     let body = &root(&program).body;
 
     let found_line = body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"))
     });
     assert!(found_line, "plain text should still be recognized as Plain");
 }

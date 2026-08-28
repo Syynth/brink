@@ -10,9 +10,9 @@ fn content_tags() {
     let tag_sets: Vec<&Vec<Vec<lir::ContentPart>>> = r
         .body
         .iter()
-        .filter_map(|s| match s {
-            lir::Stmt::EmitContent(c) if !c.tags.is_empty() => Some(&c.tags),
-            lir::Stmt::EmitLine(e) if !e.tags.is_empty() => Some(&e.tags),
+        .filter_map(|s| match &s.kind {
+            lir::StmtKind::EmitContent(c) if !c.tags.is_empty() => Some(&c.tags),
+            lir::StmtKind::EmitLine(e) if !e.tags.is_empty() => Some(&e.tags),
             _ => None,
         })
         .collect();

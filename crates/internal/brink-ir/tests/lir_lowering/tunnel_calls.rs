@@ -21,6 +21,6 @@ Helping.
     let has_tunnel = start
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::TunnelCall(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::TunnelCall(_)));
     assert!(has_tunnel, "should have a TunnelCall statement");
 }

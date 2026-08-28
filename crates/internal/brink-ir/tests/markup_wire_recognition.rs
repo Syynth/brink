@@ -71,7 +71,7 @@ fn find_flow_f(program: &lir::Program) -> &lir::Container {
 fn find_root_template(program: &lir::Program) -> (Vec<brink_format::LinePart>, u64) {
     let root = find_flow_f(program);
     for stmt in &root.body {
-        if let lir::Stmt::EmitLine(e) = stmt
+        if let lir::StmtKind::EmitLine(e) = &stmt.kind
             && let lir::RecognizedLine::Template { parts, .. } = &e.line
         {
             return (parts.clone(), e.metadata.source_hash);
@@ -138,8 +138,8 @@ fn span_hash_transparency_markup_normalizes_out_of_source_hash() {
     let hash_without_span = root
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::EmitLine(e) => Some(e.metadata.source_hash),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::EmitLine(e) => Some(e.metadata.source_hash),
             _ => None,
         })
         .expect("plain EmitLine");

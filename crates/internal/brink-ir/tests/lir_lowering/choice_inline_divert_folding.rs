@@ -25,18 +25,18 @@ Arrived.
     // Body should be: EmitLine("Go somewhere") or ChoiceOutput, Divert(other), EndOfLine, Divert(gather)
     assert!(
         matches!(
-            &c0.body[0],
-            lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput { .. }
+            &c0.body[0].kind,
+            lir::StmtKind::EmitLine(_) | lir::StmtKind::ChoiceOutput { .. }
         ),
         "first stmt should be EmitLine or ChoiceOutput with content, got {:?}",
-        std::mem::discriminant(&c0.body[0])
+        std::mem::discriminant(&c0.body[0].kind)
     );
     assert!(
-        matches!(&c0.body[1], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
+        matches!(&c0.body[1].kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
         "second stmt should be Divert to 'other'"
     );
     assert!(
-        matches!(&c0.body[2], lir::Stmt::EndOfLine),
+        matches!(&c0.body[2].kind, lir::StmtKind::EndOfLine),
         "third stmt should be EndOfLine"
     );
 }
@@ -60,19 +60,19 @@ fn choice_no_divert_endofline_in_target_body() {
     // Body: EmitLine("Stay here") or ChoiceOutput, EndOfLine, EmitContent("Some body text."), EndOfLine, Divert(gather)
     assert!(
         matches!(
-            &c0.body[0],
-            lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput { .. }
+            &c0.body[0].kind,
+            lir::StmtKind::EmitLine(_) | lir::StmtKind::ChoiceOutput { .. }
         ),
         "first stmt should be EmitLine or ChoiceOutput"
     );
     assert!(
-        matches!(&c0.body[1], lir::Stmt::EndOfLine),
+        matches!(&c0.body[1].kind, lir::StmtKind::EndOfLine),
         "second stmt should be EndOfLine"
     );
     assert!(
         matches!(
-            &c0.body[2],
-            lir::Stmt::EmitContent(_) | lir::Stmt::EmitLine(_)
+            &c0.body[2].kind,
+            lir::StmtKind::EmitContent(_) | lir::StmtKind::EmitLine(_)
         ),
         "third stmt should be EmitContent or EmitLine"
     );
@@ -101,12 +101,12 @@ Arrived.
     // Fallback has no start/inner content → no ChoiceOutput.
     // Body: Divert(other), EndOfLine, Divert(gather)
     assert!(
-        matches!(&c1.body[0], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
+        matches!(&c1.body[0].kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
         "first stmt should be Divert to 'other', got {:?}",
-        std::mem::discriminant(&c1.body[0])
+        std::mem::discriminant(&c1.body[0].kind)
     );
     assert!(
-        matches!(&c1.body[1], lir::Stmt::EndOfLine),
+        matches!(&c1.body[1].kind, lir::StmtKind::EndOfLine),
         "second stmt should be EndOfLine"
     );
 }
@@ -127,14 +127,14 @@ fn choice_output_is_content_only() {
     let c0 = find_child(scene, "c-0");
 
     // Output should be EmitLine (recognized) or ChoiceOutput (fallback)
-    match &c0.body[0] {
-        lir::Stmt::EmitLine(emission) => {
+    match &c0.body[0].kind {
+        lir::StmtKind::EmitLine(emission) => {
             assert!(
                 matches!(&emission.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
                 "EmitLine should contain 'Hello world'"
             );
         }
-        lir::Stmt::ChoiceOutput { content, .. } => {
+        lir::StmtKind::ChoiceOutput { content, .. } => {
             assert!(
                 content
                     .parts
@@ -151,11 +151,11 @@ fn choice_output_is_content_only() {
 
     // The divert to END follows as a separate stmt
     assert!(
-        matches!(&c0.body[1], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
+        matches!(&c0.body[1].kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
         "second stmt should be Divert to END"
     );
     assert!(
-        matches!(&c0.body[2], lir::Stmt::EndOfLine),
+        matches!(&c0.body[2].kind, lir::StmtKind::EndOfLine),
         "third stmt should be EndOfLine"
     );
 }
@@ -176,8 +176,8 @@ VAR name = \"Alice\"
     let choice_set = scene
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::ChoiceSet(cs) => Some(cs),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::ChoiceSet(cs) => Some(cs),
             _ => None,
         })
         .unwrap();

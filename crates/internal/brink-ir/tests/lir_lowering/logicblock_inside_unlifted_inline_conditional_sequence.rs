@@ -30,11 +30,12 @@ fn logic_block_in_choice_text_inline_conditional_lowers_without_panicking() {
     // lowered choice's display text (not silently dropped): find the
     // top-level ChoiceSet, dig into its one choice's `start_content`, and
     // confirm the `InlineConditional`'s branches carry `Stmt::Assign`.
-    let Some(lir::Stmt::ChoiceSet(cs)) = program
+    let Some(lir::StmtKind::ChoiceSet(cs)) = program
         .root
         .body
         .iter()
-        .find(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+        .find(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)))
+        .map(|s| &s.kind)
     else {
         panic!("expected a ChoiceSet in the root body");
     };
@@ -47,9 +48,11 @@ fn logic_block_in_choice_text_inline_conditional_lowers_without_panicking() {
         let lir::ContentPart::InlineConditional(cond) = p else {
             return false;
         };
-        cond.branches
-            .iter()
-            .any(|b| b.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. })))
+        cond.branches.iter().any(|b| {
+            b.body
+                .iter()
+                .any(|s| matches!(&s.kind, lir::StmtKind::Assign { .. }))
+        })
     });
     assert!(
         has_assign_in_branches,

@@ -12,7 +12,7 @@ fn inline_conditional_in_content() {
     let has_block_cond = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Conditional(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Conditional(_)));
     assert!(
         has_block_cond,
         "inline conditional should be lifted to block-level Conditional"
@@ -23,7 +23,7 @@ fn inline_conditional_in_content() {
         .body
         .iter()
         .find_map(|s| {
-            if let lir::Stmt::Conditional(c) = s {
+            if let lir::StmtKind::Conditional(c) = &s.kind {
                 Some(c)
             } else {
                 None
@@ -55,7 +55,7 @@ fn inline_conditional_lifted_produces_recognized_lines() {
     let has_cond = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Conditional(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Conditional(_)));
     assert!(
         has_cond,
         "inline conditional should be lifted to block-level Conditional"
@@ -134,7 +134,7 @@ fn glue_in_content() {
     let p = lower_ink("Hello<>\n, world!\n");
     let r = root(&p);
     let has_glue = r.body.iter().any(|s| {
-        if let lir::Stmt::EmitContent(c) = s {
+        if let lir::StmtKind::EmitContent(c) = &s.kind {
             c.parts.iter().any(|p| matches!(p, lir::ContentPart::Glue))
         } else {
             false

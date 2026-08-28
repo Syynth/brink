@@ -151,8 +151,8 @@ fn find_child<'a>(container: &'a lir::Container, name: &str) -> &'a lir::Contain
 fn declare_temp_names<'a>(stmts: &[lir::Stmt], program: &'a lir::Program) -> Vec<&'a str> {
     stmts
         .iter()
-        .filter_map(|s| match s {
-            lir::Stmt::DeclareTemp { name, .. } => {
+        .filter_map(|s| match &s.kind {
+            lir::StmtKind::DeclareTemp { name, .. } => {
                 Some(program.name_table[name.0 as usize].as_str())
             }
             _ => None,
@@ -188,11 +188,12 @@ fn test(m) {
          since `v` needs to index it again"
     );
 
-    let lir::Stmt::LogicWhile(logic_while) = test
+    let lir::StmtKind::LogicWhile(logic_while) = &test
         .body
         .iter()
-        .find(|s| matches!(s, lir::Stmt::LogicWhile(_)))
+        .find(|s| matches!(&s.kind, lir::StmtKind::LogicWhile(_)))
         .expect("expected a LogicWhile")
+        .kind
     else {
         unreachable!()
     };
@@ -208,10 +209,10 @@ fn test(m) {
     // `v`'s value is `Index { base: GetTemp(__for_container), index: GetTemp(k) }`.
     // `lir::Stmt`/`lir::Expr` don't derive `Debug`, so failures below name
     // the expectation in prose rather than dumping the value.
-    let lir::Stmt::DeclareTemp {
+    let lir::StmtKind::DeclareTemp {
         value: Some(lir::Expr::Index { base, index }),
         ..
-    } = &logic_while.body[1]
+    } = &logic_while.body[1].kind
     else {
         panic!("expected v's DeclareTemp to hold an Index expr");
     };
@@ -255,11 +256,12 @@ fn test(m) {
         "single-binding `for` never allocates a container snapshot temp"
     );
 
-    let lir::Stmt::LogicWhile(logic_while) = test
+    let lir::StmtKind::LogicWhile(logic_while) = &test
         .body
         .iter()
-        .find(|s| matches!(s, lir::Stmt::LogicWhile(_)))
+        .find(|s| matches!(&s.kind, lir::StmtKind::LogicWhile(_)))
         .expect("expected a LogicWhile")
+        .kind
     else {
         unreachable!()
     };

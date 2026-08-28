@@ -726,12 +726,24 @@ pub(crate) struct DebugStateJs {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     current_location: Option<String>,
+    /// Precise `(container_idx, offset)` for the active flow (issue #3182).
+    /// Additive: existing consumers of `current_location`/`call_stack[].location`
+    /// are unaffected. Not yet resolved to source — that lands with the
+    /// wasm-bridge integration (D9, #3187, `docs/debugger-spec.md` §6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<DebugPositionJs>,
     turn_index: u32,
     globals: Vec<DebugGlobalJs>,
     call_stack: Vec<DebugFrameJs>,
     visit_counts: Vec<DebugVisitJs>,
     pending_choices: Vec<DebugChoiceJs>,
     rng: DebugRngJs,
+}
+
+#[derive(Serialize)]
+struct DebugPositionJs {
+    container_idx: u32,
+    offset: usize,
 }
 
 #[derive(Serialize)]
@@ -745,6 +757,8 @@ struct DebugFrameJs {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<DebugPositionJs>,
     temps: usize,
 }
 
@@ -772,6 +786,10 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
     DebugStateJs {
         status: s.status,
         current_location: s.current_location,
+        position: s.position.map(|p| DebugPositionJs {
+            container_idx: p.container_idx,
+            offset: p.offset,
+        }),
         turn_index: s.turn_index,
         globals: s
             .globals
@@ -787,6 +805,10 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
             .map(|f| DebugFrameJs {
                 kind: f.kind,
                 location: f.location,
+                position: f.position.map(|p| DebugPositionJs {
+                    container_idx: p.container_idx,
+                    offset: p.offset,
+                }),
                 temps: f.temps,
             })
             .collect(),

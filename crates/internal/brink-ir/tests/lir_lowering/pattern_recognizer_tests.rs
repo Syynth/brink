@@ -8,7 +8,7 @@ fn plain_text_recognized() {
     let program = lower_ink("Hello, world!\n");
     let body = &root(&program).body;
     assert!(
-        matches!(&body[0], lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello, world!")),
+        matches!(&body[0].kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello, world!")),
         "plain text should be recognized as EmitLine(Plain(...))"
     );
 }
@@ -17,7 +17,7 @@ fn plain_text_recognized() {
 fn plain_text_source_hash() {
     let program = lower_ink("Hello\n");
     let body = &root(&program).body;
-    if let lir::Stmt::EmitLine(emission) = &body[0] {
+    if let lir::StmtKind::EmitLine(emission) = &body[0].kind {
         assert_eq!(
             emission.metadata.source_hash,
             brink_format::content_hash("Hello"),
@@ -26,7 +26,7 @@ fn plain_text_source_hash() {
     } else {
         panic!(
             "expected EmitLine, got {:?}",
-            std::mem::discriminant(&body[0])
+            std::mem::discriminant(&body[0].kind)
         );
     }
 }
@@ -35,7 +35,7 @@ fn plain_text_source_hash() {
 fn plain_text_with_tag_recognized() {
     let program = lower_ink("Hello #tag\n");
     let body = &root(&program).body;
-    if let lir::Stmt::EmitLine(emission) = &body[0] {
+    if let lir::StmtKind::EmitLine(emission) = &body[0].kind {
         assert!(
             matches!(&emission.line, lir::RecognizedLine::Plain(s) if s == "Hello "),
             "text before tag should be plain"
@@ -48,7 +48,7 @@ fn plain_text_with_tag_recognized() {
 
 fn find_template(body: &[lir::Stmt]) -> Option<(Vec<brink_format::LinePart>, usize)> {
     body.iter().find_map(|s| {
-        if let lir::Stmt::EmitLine(e) = s
+        if let lir::StmtKind::EmitLine(e) = &s.kind
             && let lir::RecognizedLine::Template { parts, slot_exprs } = &e.line
         {
             return Some((parts.clone(), slot_exprs.len()));
@@ -94,7 +94,9 @@ fn interpolation_only_not_recognized_as_template() {
         "slot-only content {{x}} should NOT be recognized as Template"
     );
     // Should be EmitContent instead.
-    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    let has_emit_content = body
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::EmitContent(_)));
     assert!(
         has_emit_content,
         "slot-only content should fall through to EmitContent"
@@ -105,7 +107,9 @@ fn interpolation_only_not_recognized_as_template() {
 fn glue_not_recognized() {
     let program = lower_ink("Hello<>\n");
     let body = &root(&program).body;
-    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    let has_emit_content = body
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::EmitContent(_)));
     assert!(
         has_emit_content,
         "content with glue should fall back to EmitContent"
@@ -116,7 +120,9 @@ fn glue_not_recognized() {
 fn glue_with_interpolation_not_recognized() {
     let program = lower_ink("VAR x = 1\nHello<>{x}\n");
     let body = &root(&program).body;
-    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    let has_emit_content = body
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::EmitContent(_)));
     assert!(
         has_emit_content,
         "content with glue and interpolation should fall back to EmitContent"
@@ -129,7 +135,7 @@ fn multiple_plain_lines() {
     let body = &root(&program).body;
     let emit_lines: Vec<_> = body
         .iter()
-        .filter(|s| matches!(s, lir::Stmt::EmitLine(_)))
+        .filter(|s| matches!(&s.kind, lir::StmtKind::EmitLine(_)))
         .collect();
     assert_eq!(
         emit_lines.len(),

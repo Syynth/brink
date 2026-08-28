@@ -266,6 +266,19 @@ fn lower_choice_region(
     let Some(node) = node else {
         return (None, None);
     };
+    // Real provenance from `node` itself (issue #3181) — mirrors the ink
+    // frontend's matching `choice.rs` fix and top-level content lines'
+    // own `NodeClass::Content` stamp; `node`'s range was available right
+    // here all along, just never captured. `None` when the range is empty
+    // (review finding, #3181): a region node can be zero-width (a choice
+    // with no start text before its `[bracket]`), and B0.3 admission's
+    // E124 rejects an empty range unconditionally — `None` is the honest
+    // answer for a node with no real span, not a regression.
+    let ptr = if node.text_range().is_empty() {
+        None
+    } else {
+        Some(native_provenance(file_id, NodeClass::Content, &node))
+    };
     let mut parts = Vec::new();
     let mut divert = None;
     for child in node.children() {
@@ -310,7 +323,7 @@ fn lower_choice_region(
     }
     (
         Some(Content {
-            ptr: None,
+            ptr,
             parts,
             tags: Vec::new(),
         }),

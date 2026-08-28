@@ -104,12 +104,16 @@ struct SourceLocation {
 
 **`source_location`** — the file and byte range of the ink source text that produced this line. Populated during LIR lowering from `AstPtr` → `TextRange`. The runtime ignores this field.
 
+Populated on both the recognized-line path (`RecognizedLine::{Plain,Template}`'s `LineMetadata`, below) and the flattening fallback path (`EmitContent`/`ChoiceOutput`, when recognition declines — issue #3181): `lir::Content::source_location` is resolved once, from the same `hir::Content::ptr`, in `lir::lower::content::lower_content`, and threaded through to every `add_line` call the flattened path reaches. Granularity is one location per **content line** (or composed choice display/output region), not one per emitted fragment — every `Text` fragment of a flattened multi-part line carries a clone of the same `Content`-level location, matching the recognized path's own one-per-line contract. A choice's start/bracket/inner regions are each their own `Content`, so composing two of them (`combine_choice_content`; `lower_choice_with_child`'s `ChoiceOutput`) takes the **union/cover** of both regions' ranges rather than either one alone — the composed location may be wider than any single fragment's own span, but it always contains it.
+
+Two documented cases stay permanently `None`, not a threading gap: a tag's own line-table entry (`lir::Content::tags` is a bare `Vec<Vec<ContentPart>>` — `hir::Tag::ptr` is discarded flattening a tag into that shape, and reusing the enclosing content's range would misattribute a tag's own byte span) and a content line inside a string-literal interpolation (`lir::StringPart::Literal` — `hir::StringPart::Literal` carries no span at all today; `hir::expr_span`'s `Expr::String` arm unions only interpolation sub-expression spans).
+
 ### Template recognition
 
 Template recognition runs during **LIR lowering** in `recognize.rs`. The recognizer inspects HIR content nodes and either:
 
 - **Matches:** produces a `RecognizedLine::Template` with the `LineTemplate`, slot expressions, and full metadata (source hash, slot info, source location)
-- **Declines:** falls through to plain text recognition or per-part lowering
+- **Declines:** falls through to plain text recognition or per-part lowering (`lir::lower::content::lower_content`'s `EmitContent`/`ChoiceOutput` fallback) — `source_hash` and `slot_info` are recognizer-only (no `LineMetadata` is built on this path), but `source_location` **is** still populated here (issue #3181/#3202, see the `source_location` bullet above): it is resolved once per `Content` outside recognition entirely, so both paths carry it.
 
 The LIR `RecognizedLine` enum carries the recognition result:
 

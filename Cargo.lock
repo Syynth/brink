@@ -2181,6 +2181,7 @@ version = "0.0.16"
 dependencies = [
  "brink-format",
  "brink-ir",
+ "rowan",
 ]
 
 [[package]]

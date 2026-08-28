@@ -42,7 +42,7 @@ opcode option (3b) is the one that can actually perturb oracle episodes.
 
 | # | Epic workstream | Status | Note |
 |---|---|---|---|
-| 1 | LIR provenance (spans on `lir::Stmt`/`Expr`) | **accommodate-now** | Reuse B0.1's `Provenance` type verbatim (same crate). Three B0.1 constraints below. Cheaper than the epic assumed. |
+| 1 | LIR provenance (spans on `lir::Stmt`/`Expr`) | **partially delivered (issue #3183)** | `lir::Container` and `lir::Stmt` now carry a bare (non-`Option`) `Provenance`, reusing B0.1's `Provenance` type verbatim as this row anticipated. `lir::Expr` is deliberately deferred — no consumer needs per-expression granularity yet (D8 breakpoints and variable inspection are served by Container/Stmt granularity); see the issue #3183 PR's own scope-cut rationale for the blast-radius accounting (`lir::Expr` is a 90+-variant enum touching ~700+ sites vs. `Stmt`'s ~150). Cheaper than the epic assumed. |
 | 2 | Codegen emission (offset → range map) | unchanged | Blocked on WS1 + the carrier ruling. Constraint A2 (projectable `kind_token`) is its enabler. |
 | 3 | `brink-format` carrier (3a section vs 3b opcode) | **blocked-on-ruling** | Q-R1 below. Recommendation: 3a. Risk profile inverted vs the epic's framing (§4). |
 | 4 | Runtime introspection API (`ContainerPosition` accessor) | **unblocked** | Contract-independent; accessor half startable any time. Resolver half follows WS3. |

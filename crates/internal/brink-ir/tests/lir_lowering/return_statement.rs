@@ -16,7 +16,7 @@ fn return_from_function() {
     let has_return = knot
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Return { value: Some(_), .. }));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Return { value: Some(_), .. }));
     assert!(has_return, "function should have a Return statement");
 }
 
@@ -90,8 +90,8 @@ Hello.
     let tun = find_by_path(&program, "tun");
     let has_tunnel_return = tun.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Return {
+            &s.kind,
+            lir::StmtKind::Return {
                 is_tunnel: true,
                 ..
             }

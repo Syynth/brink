@@ -68,7 +68,9 @@ mod vm;
 mod world;
 
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
-pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
+pub use debug::{
+    DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot, DebugVisit,
+};
 pub use error::{RanOutOfContentCause, RuntimeError};
 pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};
 pub use iter::ValueIter;

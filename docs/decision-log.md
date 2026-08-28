@@ -3681,3 +3681,80 @@
   unbounded, and a config file that is mostly word list stops reading as
   configuration. Editor-only is a semantic claim: a misspelling is not a
   compiler claim about the program.
+||||||| 545cd2b41
+
+## Debugger epic (#452): v1 DebugInfo contract + D1 design round
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** brink-format + brink-runtime (debugger epic #452, D1/#3179)
+- **SCOPE:** architectural
+- **WHAT:** (1) **Scope**: full GDB-style debugging (breakpoints, step
+  in/over/out, call stack, variable inspection), brink-desktop as first
+  consumer; **both source surfaces** (`.ink` and `.brink`) must be
+  debuggable. (2) **Carrier**: an in-file, strippable
+  `SectionKind::DebugInfo` (tag `0x11`) inside `StoryData`, not a sidecar
+  file — confirms Q-R1. (3) **Ship policy**: dev/studio compiles and an
+  explicit `brink compile` debug flag emit the section; release export
+  omits it entirely (byte-identical release artifacts, no VERSION bump, no
+  oracle exposure). (4) **Breakpoint anchors**: range-keyed in v1; the
+  `NodeId` column stays reserved for v2 per Q-R4. (5) **VM seam**:
+  feature-gated debug hooks on the `effect-trace` paired-cfg-stub pattern,
+  not a promotion of `step_once` to public API. (6) **Granularity**: a
+  DWARF-`is_stmt`-style statement-boundary flag in v1 (every v1 entry
+  flagged, since only `lir::Stmt`/`Container` provenance exists yet, #3183)
+  plus a real prologue-end marker (a flag bit on the entry whose own
+  offset is the landing point, not a separate field) — expression-level
+  rows arrive later as unflagged entries sharing the same shape, no version
+  bump, no reader change; `lir::Expr` provenance is now critical-path for
+  #3183, not optional. (7) **v1 entry encoding** (`docs/debugger-spec.md`
+  §2): `(bytecode_offset_delta, file_idx, range_start, range_len,
+  kind_token, flags)`, unsigned-LEB128 varint for the high-cardinality
+  per-container entry table (new `codec::write_varint`/`read_varint`,
+  scoped to this section only — every other section keeps the format's
+  fixed-width house style), sorted ascending by offset per container for
+  floor/binary-search lookup, indexed by `container_idx` in lockstep with
+  the `Containers` section so a running VM position resolves with a direct
+  array index. (8) **File table**: section-local (fresh numbering per
+  artifact, not the compiler's project-wide `FileId` space),
+  project-root-relative paths, and — RULED — **records which surface
+  (ink/native) parsed each file**, because `KindToken.raw` is
+  frontend-private and the two `ProvenanceResolver` impls have independent
+  `u16` numbering; v1 carries the full `KindToken` (class + raw)
+  unconditionally now that surface-per-file disambiguates `raw` on read.
+  (9) **Synthetic sentinel**: `Provenance::synthetic`'s `FileId(u32::MAX)`
+  (reaching LIR on the root container and `#root-terminus` gather, #3189)
+  maps to a reserved `file_idx = 0` in the section-local file table, never
+  a real file — chosen over omitting the entry so the "every container has
+  a covering entry at offset 0" invariant holds uniformly. (10) **Locals**:
+  a per-container `LocalsTable` (`slot: u16 -> name`, matching the real
+  `DeclareTemp`/`GetTemp`/`SetTemp` operand width) **includes an optional
+  declaring source range in v1** — cheap (one row per declared temp, not
+  per instruction) and doubles as the disambiguation key if slot reuse
+  across sibling scopes turns out to be real. (11) **Frame semantics**:
+  step in/over/out defined per `CallFrameType` across both vocabularies,
+  with two explicit non-analogues named rather than faked — a `Thread`
+  frame is not returnable-from (ink's own `->->` strips Thread frames
+  rather than returning through them), and a condition-park (`until` on the
+  native code ground, `~ await`/`~ while await` on the ink surface — both
+  lower to the same `AwaitStmt` HIR node) ends the VM turn
+  (`Step::Suspended`) with no synchronous "next instruction" to step to
+  until `wakeCheck()` next resolves the parked condition true.
+- **WHY:** Recorded on issue #3179 to remove `needs-design` from the rest
+  of the debugger epic (#452) — every other debugger ticket (D2–D9) should
+  be buildable against this contract without a further ruling. The carrier
+  and the VM seam, ruled independently by the maintainer, avoid two known
+  failure modes: an opcode-interleave carrier would perturb the VM's
+  step-limit accounting and could flip oracle episode outcomes (the
+  2026-07-19 evaluation memo's risk table, corrected — a new section is the
+  *safe* option, not the risky one), and a public `step_once` would put
+  debugger instrumentation on the production hot path (`CLAUDE.md`
+  "Instrumentation doesn't belong in the production path"). The
+  statement-flag-now / expression-rows-later design pays a one-bit cost
+  today specifically so the eventual fine-grained table the maintainer
+  expects never needs a breaking version bump — the same "no version bump"
+  property release-export omission and the `NodeId`-reservation already
+  rely on elsewhere in this same design. Naming the two "no honest
+  analogue" cases explicitly (Thread step-out, await-park stepping) rather
+  than picking a plausible-looking but false analogy keeps the debugger
+  from lying to authors about what just happened, which is worse than an
+  operation simply being unavailable.

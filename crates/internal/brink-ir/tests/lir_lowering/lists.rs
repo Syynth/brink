@@ -94,11 +94,11 @@ fn list_global_referenced_in_expression() {
         matches!(expr, lir::Expr::GetGlobal(x) if *x == id)
     }
 
-    let has_ref = r.body.iter().any(|s| match s {
-        lir::Stmt::EmitContent(c) => c.parts.iter().any(
+    let has_ref = r.body.iter().any(|s| match &s.kind {
+        lir::StmtKind::EmitContent(c) => c.parts.iter().any(
             |p| matches!(p, lir::ContentPart::Interpolation(expr) if expr_refs_global(expr, g.id)),
         ),
-        lir::Stmt::ExprStmt(expr) => expr_refs_global(expr, g.id),
+        lir::StmtKind::ExprStmt(expr) => expr_refs_global(expr, g.id),
         _ => false,
     });
     assert!(
@@ -116,7 +116,7 @@ fn list_assignment_targets_global_var() {
     let r = root(&p);
 
     let has_assign_to_var = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Assign {
+        matches!(&s.kind, lir::StmtKind::Assign {
             target: lir::AssignTarget::Global(id),
             ..
         } if *id == g.id)

@@ -5,9 +5,19 @@ use crate::hir;
 use super::context::LowerCtx;
 use super::expr::lower_expr;
 use super::lir;
+use super::recognize::build_source_location;
 
 /// Lower HIR Content to LIR Content.
+///
+/// `source_location` is resolved here — not deferred to codegen (issue
+/// #3181) — because `ctx.file_paths` (the `FileId → path` map) lives only
+/// on this side of the pipeline; `brink-codegen-inkb` sees a bare
+/// `lir::Program` with no such map to resolve one from later. Mirrors
+/// `recognize::build_source_location`'s treatment of the exact same
+/// `hir::Content::ptr` on the recognized-line path, so both paths answer
+/// "where did this line come from" the same way.
 pub fn lower_content(content: &hir::Content, ctx: &mut LowerCtx<'_>) -> lir::Content {
+    let source_location = build_source_location(content, ctx);
     lir::Content {
         parts: lower_content_parts(&content.parts, ctx),
         tags: content
@@ -15,6 +25,7 @@ pub fn lower_content(content: &hir::Content, ctx: &mut LowerCtx<'_>) -> lir::Con
             .iter()
             .map(|t| lower_content_parts(&t.parts, ctx))
             .collect(),
+        source_location,
     }
 }
 
@@ -133,16 +144,25 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
         .map(|b| lower_inline_block(&b.body, ctx))
         .collect();
 
+    // The wrapper container and its one Sequence statement are both
+    // synthesized *from* `seq` — stamp both with its own real provenance
+    // (issue #3183), not the ambient left over from lowering the last
+    // branch above.
+    let provenance = ctx.enter_stmt(seq.ptr);
     let display_name = format!("s-{seq_idx}");
     let wrapper = lir::Container {
         id: wrapper_id,
+        provenance,
         name: Some(display_name),
         kind: lir::ContainerKind::Sequence,
         params: Vec::new(),
-        body: vec![lir::Stmt::Sequence(lir::Sequence {
-            kind: seq.kind,
-            branches,
-        })],
+        body: vec![lir::Stmt::new(
+            lir::StmtKind::Sequence(lir::Sequence {
+                kind: seq.kind,
+                branches,
+            }),
+            provenance,
+        )],
         children: Vec::new(),
         counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
         temp_slot_count: 0,

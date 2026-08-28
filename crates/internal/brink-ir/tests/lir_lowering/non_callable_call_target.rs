@@ -109,9 +109,7 @@ fn lower_call_refuses_a_resolution_pointed_at_a_non_callable_symbol() {
     // against the list item's id either way.
     let program = program.expect("lower_to_program still returns a program alongside E183");
     let has_bogus_call = program.root.body.iter().any(|stmt| {
-        matches!(
-            stmt,
-            lir::Stmt::ExprStmt(lir::Expr::Call { target, .. }) if *target == list_item_id
+        matches!(&stmt.kind, lir::StmtKind::ExprStmt(lir::Expr::Call { target, .. }) if *target == list_item_id
         )
     });
     assert!(

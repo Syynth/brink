@@ -9,16 +9,63 @@ use super::context::LowerCtx;
 use super::expr::{lower_expr, path_to_string};
 use super::lir;
 
+/// Best-known provenance for a HIR statement (issue #3183, `docs/debugger-
+/// spec.md`) — the payload's own stamped `.ptr` where it carries one
+/// (real, non-`Option`: `TunnelCall`/`ThreadStart`/`TempDecl`/`Assignment`/
+/// `Conditional`/`Sequence`/`LogicBlock`/`Await` all always have one). Three
+/// payloads carry `Option<Provenance>` for legitimately synthesized nodes
+/// with no author-written token (`Content`, `Divert`, `Return` — the last
+/// is the retired `Return.ptr`-presence trap this design deliberately does
+/// not repeat: presence there now only means "do we have a location",
+/// nothing semantic, since `ReturnKind` carries the tunnel-vs-explicit bit)
+/// and fall back to `ctx.current_stmt_provenance`. `ChoiceSet`/
+/// `LabeledBlock` carry no `.ptr` at all — anchored via the same
+/// best-effort range already computed for their `E059` diagnostic, just shy
+/// of any frontend-specific token so it stamps `NodeClass::Stmt`, the
+/// reserved coarse fallback. `ExprStmt`/`AttachElement` derive a range via
+/// [`crate::hir::expr_span`] (own-provenance-first, subtree-union fallback)
+/// when the wrapped expression has one, else also fall back to ambient.
+/// `EndOfLine`/`EndElementRun` are pure structural markers with no source
+/// token of their own — always ambient.
+pub(super) fn stmt_provenance(stmt: &hir::Stmt, ctx: &LowerCtx<'_>) -> crate::Provenance {
+    match stmt {
+        hir::Stmt::Content(c) => c.ptr.unwrap_or(ctx.current_stmt_provenance),
+        hir::Stmt::Divert(d) => d.ptr.unwrap_or(ctx.current_stmt_provenance),
+        hir::Stmt::TunnelCall(t) => t.ptr,
+        hir::Stmt::ThreadStart(t) => t.ptr,
+        hir::Stmt::TempDecl(t) => t.ptr,
+        hir::Stmt::Assignment(a) => a.ptr,
+        hir::Stmt::Return(r) => r.ptr.unwrap_or(ctx.current_stmt_provenance),
+        hir::Stmt::ChoiceSet(cs) => {
+            ctx.provenance_at(choice_set_anchor_range(cs), crate::NodeClass::Stmt)
+        }
+        hir::Stmt::LabeledBlock(b) => {
+            ctx.provenance_at(labeled_block_anchor_range(b), crate::NodeClass::Stmt)
+        }
+        hir::Stmt::Conditional(c) => c.ptr,
+        hir::Stmt::Sequence(s) => s.ptr,
+        hir::Stmt::LogicBlock(lb) => lb.ptr,
+        hir::Stmt::Await(a) => a.ptr,
+        hir::Stmt::ExprStmt(e) | hir::Stmt::AttachElement(e) => crate::hir::expr_span(e)
+            .map_or(ctx.current_stmt_provenance, |r| {
+                ctx.provenance_at(r, crate::NodeClass::Expr)
+            }),
+        hir::Stmt::EndOfLine | hir::Stmt::EndElementRun => ctx.current_stmt_provenance,
+    }
+}
+
 /// Lower a single HIR statement to a LIR statement.
 ///
 /// `ChoiceSet`, `LabeledBlock`, `Conditional`, and `Sequence` are handled
 /// by the caller (`lower_block_with_children`) since they may produce child
 /// containers. This function handles all remaining statement types.
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
-    match stmt {
-        hir::Stmt::Divert(divert) => {
-            Some(lir::Stmt::Divert(lower_divert_target(&divert.target, ctx)))
-        }
+    let provenance = ctx.enter_stmt(stmt_provenance(stmt, ctx));
+    let kind = match stmt {
+        hir::Stmt::Divert(divert) => Some(lir::StmtKind::Divert(lower_divert_target(
+            &divert.target,
+            ctx,
+        ))),
 
         hir::Stmt::TunnelCall(tunnel) => {
             let targets = tunnel
@@ -32,12 +79,12 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
                     }
                 })
                 .collect();
-            Some(lir::Stmt::TunnelCall(lir::TunnelCall { targets }))
+            Some(lir::StmtKind::TunnelCall(lir::TunnelCall { targets }))
         }
 
         hir::Stmt::ThreadStart(thread) => {
             let d = lower_divert_target(&thread.target, ctx);
-            Some(lir::Stmt::ThreadStart(lir::ThreadStart {
+            Some(lir::StmtKind::ThreadStart(lir::ThreadStart {
                 target: d.target,
                 args: d.args,
             }))
@@ -49,13 +96,13 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
             ctx.visible_temps.insert(decl.name.text.clone());
             ctx.record_temp_annotation(slot, decl.annotation.as_ref());
-            Some(lir::Stmt::DeclareTemp { slot, name, value })
+            Some(lir::StmtKind::DeclareTemp { slot, name, value })
         }
 
         hir::Stmt::Assignment(assign) => {
             let target = lower_assign_target(&assign.target, ctx)?;
             let value = lower_expr(&assign.value, ctx);
-            Some(lir::Stmt::Assign {
+            Some(lir::StmtKind::Assign {
                 target,
                 op: assign.op,
                 value,
@@ -72,7 +119,7 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
                 .iter()
                 .map(|a| lir::CallArg::Value(lower_expr(a, ctx)))
                 .collect();
-            Some(lir::Stmt::Return {
+            Some(lir::StmtKind::Return {
                 value,
                 is_tunnel,
                 args,
@@ -121,7 +168,7 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             if super::blocks::try_lower_postfix_stmt(expr, ctx, &mut postfix_out) {
                 return postfix_out.into_iter().next();
             }
-            Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))
+            Some(lir::StmtKind::ExprStmt(lower_expr(expr, ctx)))
         }
 
         // ChoiceSet, LabeledBlock, Conditional, and Sequence are dispatched
@@ -134,9 +181,9 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         // recognition, but may still reach here from lower_inline_block.
         hir::Stmt::Content(content) => {
             if let Some(emission) = super::recognize::try_recognize(content, ctx) {
-                Some(lir::Stmt::EmitLine(emission))
+                Some(lir::StmtKind::EmitLine(emission))
             } else {
-                Some(lir::Stmt::EmitContent(lower_content(content, ctx)))
+                Some(lir::StmtKind::EmitContent(lower_content(content, ctx)))
             }
         }
 
@@ -168,7 +215,7 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             None
         }
 
-        hir::Stmt::EndOfLine => Some(lir::Stmt::EndOfLine),
+        hir::Stmt::EndOfLine => Some(lir::StmtKind::EndOfLine),
 
         // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2) are dispatched
         // by `lower_block_with_children` — like ChoiceSet/LabeledBlock/
@@ -202,9 +249,10 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         // side-effects is entirely in what codegen emits after evaluating
         // it (`Opcode::AttachElement` vs `Pop`), not in how the call
         // expression itself lowers.
-        hir::Stmt::AttachElement(expr) => Some(lir::Stmt::AttachElement(lower_expr(expr, ctx))),
-        hir::Stmt::EndElementRun => Some(lir::Stmt::EndElementRun),
-    }
+        hir::Stmt::AttachElement(expr) => Some(lir::StmtKind::AttachElement(lower_expr(expr, ctx))),
+        hir::Stmt::EndElementRun => Some(lir::StmtKind::EndElementRun),
+    };
+    kind.map(|k| lir::Stmt::new(k, provenance))
 }
 
 /// Emit the `await` lowering fence (`E052`, docs/flow-suspension-spec.md §3):

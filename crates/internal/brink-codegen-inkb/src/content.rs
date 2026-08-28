@@ -43,7 +43,8 @@ impl ContainerEmitter<'_> {
 
         for tag in &emission.tags {
             self.emit(Opcode::BeginTag);
-            self.emit_content_parts(tag);
+            // No per-tag location — see `emit_content`'s tag loop doc.
+            self.emit_content_parts(tag, None);
             self.emit(Opcode::EndTag);
         }
     }
@@ -100,7 +101,8 @@ impl ContainerEmitter<'_> {
     pub(super) fn emit_tags(&mut self, tags: &[Vec<lir::ContentPart>]) {
         for tag in tags {
             self.emit(Opcode::BeginTag);
-            self.emit_content_parts(tag);
+            // No per-tag location — see `emit_content`'s tag loop doc.
+            self.emit_content_parts(tag, None);
             self.emit(Opcode::EndTag);
         }
     }
@@ -141,22 +143,40 @@ impl ContainerEmitter<'_> {
     }
 
     pub(super) fn emit_content(&mut self, content: &lir::Content) {
-        self.emit_content_parts(&content.parts);
+        self.emit_content_parts(&content.parts, content.source_location.as_ref());
 
         for tag in &content.tags {
             self.emit(Opcode::BeginTag);
-            self.emit_content_parts(tag);
+            // Tags carry no location of their own here (issue #3181):
+            // `lir::Content::tags` is `Vec<Vec<ContentPart>>` — the
+            // `hir::Tag::ptr` each one had is discarded flattening it in
+            // `lower_content`, and the enclosing content's range would
+            // over-claim precision for a tag's own byte span (a tag can sit
+            // on the same source line as content it isn't co-extensive
+            // with). Reusing it would be exactly the "confidently wrong"
+            // location the issue warns against — `None` stays honest.
+            self.emit_content_parts(tag, None);
             self.emit(Opcode::EndTag);
         }
     }
 
     /// Emit content parts for choice display text (no trailing newline).
     pub(super) fn emit_choice_content(&mut self, content: &lir::Content) {
-        self.emit_content_parts(&content.parts);
+        self.emit_content_parts(&content.parts, content.source_location.as_ref());
     }
 
     /// Emit content parts — text, glue, interpolations, inline conditionals/sequences.
-    pub(super) fn emit_content_parts(&mut self, parts: &[lir::ContentPart]) {
+    ///
+    /// `source_location` covers the whole enclosing `Content` line (issue
+    /// #3181) — the same one-location-per-line granularity the recognized
+    /// path uses (`LineMetadata::source_location`), not a separate range
+    /// per flattened `Text` fragment; every non-empty `Text` part reaching
+    /// [`Self::add_line`] here gets a clone of it.
+    pub(super) fn emit_content_parts(
+        &mut self,
+        parts: &[lir::ContentPart],
+        source_location: Option<&brink_format::SourceLocation>,
+    ) {
         for part in parts {
             match part {
                 lir::ContentPart::Text(s) => {
@@ -169,7 +189,7 @@ impl ContainerEmitter<'_> {
                         self.emit(Opcode::Spring);
                     }
                     if !trimmed.is_empty() {
-                        let idx = self.add_line(trimmed);
+                        let idx = self.add_line(trimmed, source_location.cloned());
                         self.emit(Opcode::EmitLine(idx, 0));
                     }
                     if has_trailing_ws && !trimmed.is_empty() {

@@ -48,8 +48,8 @@ fn resolve_field<'a>(
 }
 
 fn declare_temp_value(stmt: &lir::Stmt) -> Option<&lir::Expr> {
-    match stmt {
-        lir::Stmt::DeclareTemp { value: Some(v), .. } => Some(v),
+    match &stmt.kind {
+        lir::StmtKind::DeclareTemp { value: Some(v), .. } => Some(v),
         _ => None,
     }
 }
@@ -360,7 +360,7 @@ fn postfix_increment_field_projection_in_block_emits_e074() {
 fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
     // Issue #2894 — before the fix, `BlockStmt::ExprStmt` had no
     // postfix-to-`Assign` conversion at all, so `~ { x++ }` lowered to a
-    // discarded, pure `lir::Expr::Postfix` (`lir::Stmt::ExprStmt(Postfix(..))`)
+    // discarded, pure `lir::Expr::Postfix` (`lir::StmtKind::ExprStmt(Postfix(..))`)
     // instead of a real `Assign`. This pins the correct LIR shape directly —
     // the runtime end-to-end proof lives in `brink-runtime`'s
     // `issue_2894_block_postfix.rs` (the issue's mandated real-pipeline RED
@@ -376,8 +376,8 @@ fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
     let program = program.expect("bare-variable block postfix should lower to a real program");
     let has_real_assign = program.root.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 op: brink_ir::AssignOp::Add,
                 value: lir::Expr::Int(1),
                 ..
@@ -399,7 +399,7 @@ fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
         .root
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::ExprStmt(lir::Expr::Postfix(..))));
+        .any(|s| matches!(&s.kind, lir::StmtKind::ExprStmt(lir::Expr::Postfix(..))));
     assert!(
         !has_discarded_postfix,
         "`x++` inside a block must not lower to a discarded, pure `Postfix` expression \
@@ -421,8 +421,8 @@ fn postfix_decrement_bare_variable_in_block_lowers_to_real_assign() {
     let program = program.expect("bare-variable block postfix should lower to a real program");
     let has_real_assign = program.root.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 op: brink_ir::AssignOp::Sub,
                 value: lir::Expr::Int(1),
                 ..
@@ -493,9 +493,7 @@ fn single_level_field_write_lowers_via_take_make_mut_write_back() {
     // The RMW desugaring produces a TakeGlobal(p) somewhere, feeding a
     // RecordSet, whose result is written back into the p global.
     let has_take_then_record_set = program.root.body.iter().any(|s| {
-        matches!(
-            s,
-            lir::Stmt::Assign {
+        matches!(&s.kind, lir::StmtKind::Assign {
                 value: lir::Expr::RecordSet { base, .. },
                 ..
             } if matches!(**base, lir::Expr::TakeTemp(..) | lir::Expr::TakeGlobal(_))
@@ -507,8 +505,8 @@ fn single_level_field_write_lowers_via_take_make_mut_write_back() {
     );
     let writes_back_to_p = program.root.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 target: lir::AssignTarget::Global(_),
                 ..
             }
