@@ -814,6 +814,28 @@ Spent.
     }
 
     #[test]
+    fn the_rng_cell_is_named_rng_not_a_raw_handle() {
+        // Shipped bug: hovering any function that calls `RANDOM` showed
+        // `writes: GlobalVar(0x5eed0000d1ce)` — the compiler-owned RNG cell
+        // has no symbol-index entry, so the name lookup fell through to the
+        // id's debug form and put a raw internal handle in author-facing UI.
+        //
+        // `rng` is the spelling the assertion surface uses
+        // (`@[effects(writes rng)]`), so the name an author reads here is
+        // the name they would write.
+        let content = hover_at(
+            "=== function roll(lo, hi) ===\n~ return RANDOM(lo, hi)\n",
+            "roll",
+        );
+        assert!(content.contains("writes: rng"), "{content}");
+        assert!(
+            !content.contains("GlobalVar("),
+            "raw handle leaked: {content}"
+        );
+        assert!(!content.contains("0x"), "raw handle leaked: {content}");
+    }
+
+    #[test]
     fn hover_shows_no_type_suffix_when_inference_cannot_resolve_one() {
         // `x` is a parameter never used in the body — inference can't pin
         // it down (stays `Unknown`), and hover must show nothing rather

@@ -65,12 +65,12 @@ impl EffectRowView {
     /// exceedance message uses — so the display never silently drops an atom.
     #[must_use]
     pub fn from_row(row: &EffectRow, index: &SymbolIndex) -> Self {
-        let name_of = |id: &DefinitionId| {
-            index
-                .symbols
-                .get(id)
-                .map_or_else(|| format!("{id:?}"), |info| info.name.clone())
-        };
+        // Naming lives in `brink_analyzer::effect_atom_name`, not here: the
+        // `E103` exceedance message prints the same atoms, and an author
+        // reads one then goes looking for the other. A local lookup missed
+        // the compiler-owned RNG cell and printed its debug form —
+        // `GlobalVar(0x5eed0000d1ce)` — into hover.
+        let name_of = |id: &DefinitionId| brink_analyzer::effect_atom_name(*id, index);
         let mut reads: Vec<String> = row.reads.iter().map(name_of).collect();
         let mut writes: Vec<String> = row.writes.iter().map(name_of).collect();
         let mut calls: Vec<String> = row.calls.iter().cloned().collect();

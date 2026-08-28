@@ -70,6 +70,7 @@ pub use conventions_confinement::{
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,
+    effect_atom_name,
 };
 pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
