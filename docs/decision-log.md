@@ -3628,3 +3628,56 @@
   one pane (scope, section, form legend), and one section at a time inside a
   scrolling pane makes every inner box and scroller a nesting level the pane
   already provides.
+
+## Prose checking uses Harper, in its own wasm module, not LanguageTool
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** architectural
+- **WHAT:** The editor gets spelling and light grammar checking backed by
+  **Harper** (`harper-core`, Apache-2.0), shipped as a **separate
+  `brink-prose` cdylib** loaded on demand behind a `ProseChecker` seam —
+  never compiled into `brink-web`. LanguageTool is ruled out entirely. A
+  sentence-rewrite feature, if ever wanted, is a *separate* seam invoked on
+  a selection, not a bigger checker.
+- **WHY:** LanguageTool has no offline Rust engine — `languagetool-rust` is
+  an HTTP client for the Java server, offline means bundling a JRE, its best
+  rules need a ~16GB n-gram set, and its sentence rewriting is a cloud AI
+  tier absent from the self-hosted build. Harper is offline and fast, and
+  the separate module is forced by measurement rather than taste: a probe
+  containing nothing but `harper-core` is **6.15 MB gzipped against
+  `brink-web`'s entire 2.61 MB**, and `wasm-opt -Os` moves it 2% because the
+  payload is data (an FST dictionary plus POS-tagger weights), not code.
+  "Ship it and shrink it later" is therefore not available — shrinking would
+  mean forking Harper. `harper.js` costs the same bytes, so the choice was
+  never size; it was when the bytes load and whether we can supply our own
+  parser. A real `impl Parser` over content spans wins over feeding Harper
+  blanked text, because blanking loses true positives on every line holding
+  an interpolation.
+
+## Prose checking is scoped by measurement: no per-element rules, dialect day one
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Prose lints check **content spans only**, with **no
+  per-element-kind rule scoping** in v1 (the seam stays able to add it).
+  The dictionary is **seeded from the project symbol table, cue names
+  included**; an author word list lives in **its own file**, not
+  `brink.toml`. `[prose] dialect` ships day one. Prose lints ride the
+  diagnostics channel but are **editor-only** — never emitted by `brink
+  compile`, never reaching the oracle ratchet or the editor acceptance gate.
+- **WHY:** Each clause was measured against real brink-shaped prose rather
+  than assumed. The predicted failure — stylized dialogue drowning in
+  squiggles — does not occur: `"Not tonight."` and `"You shouldn't be here.
+  Not after dark. Not you."` both produce zero lints, as do cue lines and
+  scene headings, so per-element scoping would be budget spent on a problem
+  that is not there. The failure that *does* occur is `"Kaelen"` flagged as
+  a misspelling suggesting "Karen" — fatal for fiction, and uniquely
+  solvable here because a cue line is structural, so the manuscript naming
+  its own characters teaches the dictionary for free. `"colour"`/`"harbour"`
+  flagged under the American dialect makes dialect unusable-without, not a
+  refinement. The word list is separate because it is machine-appended and
+  unbounded, and a config file that is mostly word list stops reading as
+  configuration. Editor-only is a semantic claim: a misspelling is not a
+  compiler claim about the program.
