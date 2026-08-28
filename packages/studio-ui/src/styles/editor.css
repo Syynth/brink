@@ -467,7 +467,24 @@
 .brink-studio {
   --bs-tooltip-max-width: 460px;
 }
-.brink-studio .cm-tooltip.cm-tooltip-lint {
+/* ⚠ The DOM is two elements, and this cost a shipped no-op fix.
+   `cm-tooltip-lint` is a `<ul>` NESTED INSIDE the tooltip box:
+
+       <div class="cm-tooltip-hover cm-tooltip">   ← the sized box
+         <ul class="cm-tooltip-lint cm-tooltip-section">
+           <li class="cm-diagnostic">…
+
+   So `.cm-tooltip.cm-tooltip-lint` (both classes, one element) matches
+   NOTHING — measured `max-width: none` and a 936px-wide tooltip while that
+   rule was in the stylesheet. The cap has to go on the outer box.
+
+   `cm-tooltip-hover` is the right host: it carries the hover card and the
+   lint tooltip, which are exactly the two floating explainers that share
+   this width. Autocomplete is `cm-tooltip-autocomplete` and sizes itself. */
+.brink-studio .cm-editor .cm-tooltip-hover {
+  max-width: var(--bs-tooltip-max-width);
+}
+.brink-studio .cm-tooltip-lint {
   padding: 0;
   max-width: var(--bs-tooltip-max-width);
 }
