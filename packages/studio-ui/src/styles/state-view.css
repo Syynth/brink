@@ -158,3 +158,74 @@
   border-radius: 3px;
 }
 .brink-studio .sv-changed-row td:first-child { color: var(--bs-warning); }
+
+/* ── Frame locals (#3140, consuming D7/#3185) ────────────────────────
+   Nested INSIDE a call-stack frame, because a local is scoped to the frame
+   that owns it — two frames can hold different `gold`s at once, and a flat
+   list would have to invent a disambiguation the data does not have. */
+.brink-studio .sv-frame-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.brink-studio .sv-locals {
+  width: 100%;
+  margin: 3px 0 2px 0;
+  border-collapse: collapse;
+  /* Indented to the frame's badge, so the eye reads them as belonging to
+     the frame above rather than as a sibling row in the stack. */
+  padding-left: 10px;
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .sv-locals td {
+  padding: 1px 4px;
+  vertical-align: baseline;
+}
+.brink-studio .sv-locals .sv-key {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--bs-syn-parameter, var(--bs-fg-muted));
+}
+.brink-studio .sv-locals-none {
+  margin: 2px 0 2px 10px;
+  font-size: var(--bs-font-tiny);
+  font-style: italic;
+}
+
+/* ── Structured values ───────────────────────────────────────────────
+   Locals arrive as a tagged union rather than a display string (D7), so
+   the kinds are distinguishable at a glance — telling "a list with these
+   members" from "a string that reads like a list" is the whole point. */
+.brink-studio .sv-v-num { color: var(--bs-syn-number, var(--bs-fg)); }
+.brink-studio .sv-v-bool { color: var(--bs-syn-keyword, var(--bs-fg)); }
+.brink-studio .sv-v-str { color: var(--bs-syn-string, var(--bs-fg)); }
+.brink-studio .sv-v-null,
+.brink-studio .sv-v-other { color: var(--bs-fg-muted); }
+.brink-studio .sv-v-divert { color: var(--bs-syn-divert, var(--bs-syn-operator)); }
+.brink-studio .sv-v-handle { color: var(--bs-syn-enum, var(--bs-fg-muted)); }
+
+.brink-studio .sv-v-list,
+.brink-studio .sv-v-struct {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: baseline;
+}
+.brink-studio .sv-v-member {
+  padding: 0 4px;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  color: var(--bs-syn-enum, var(--bs-fg));
+}
+.brink-studio .sv-v-struct-name {
+  color: var(--bs-syn-namespace, var(--bs-fg-muted));
+}
+.brink-studio .sv-v-field {
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+}
+.brink-studio .sv-v-field-name {
+  color: var(--bs-syn-property, var(--bs-fg-muted));
+}
+.brink-studio .sv-v-field-name::after { content: ":"; }
