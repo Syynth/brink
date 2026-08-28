@@ -31,12 +31,25 @@
 //!   by asserting a leaf expression's provenance is byte-identical to its
 //!   *enclosing statement's* provenance, not merely "non-empty".
 //!
-//! The `Coalesce` per-step test additionally guards the granularity
-//! decision `lower_coalesce_chain` makes (see its own doc): each folded
-//! `Coalesce` node in an `a or b or c` chain gets *its own* originating
-//! `Infix` node's range, not the whole chain's range — the same
-//! "read the ambient back after recursing" bug class the nested/ambient
-//! section above guards for `Stmt`, one level down at `Expr` granularity.
+//! The `Coalesce` per-step test guards a *different* bug: the granularity
+//! decision `lower_coalesce_chain` makes (see its own doc), where each
+//! folded `Coalesce` node in an `a or b or c` chain must get *its own*
+//! originating `Infix` node's range, not the whole chain's. It does **not**
+//! exercise the "read the ambient back after recursing" bug class:
+//! `lower_coalesce_chain` stamps each step from `ie.ptr` values copied off
+//! the spine *before* any recursion, so the ambient path never runs there.
+//!
+//! The Fragment-granularity test below is the one that actually earns that
+//! claim, one level down from the nested/ambient `Stmt` section above:
+//! block capture's `hir::Expr::Fragment` recurses into
+//! `super::stmts::lower_stmt` through the same `ctx`; `lower_stmt` opens
+//! with `ctx.enter_stmt(...)` and never restores it, and the only restore
+//! is one level *above* `lower_expr`'s `Fragment` arm
+//! (`lower_block_with_children`'s loop). So both the Fragment expr itself
+//! and the leaf call expression that wraps it — lowered right after the
+//! Fragment argument, in the same statement — must be proven to still read
+//! the enclosing statement's own ambient, not whatever the captured body's
+//! last inner statement left behind.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
@@ -489,7 +502,10 @@ fn native_coalesce_chain_stamps_each_step_with_its_own_infix_range() {
         .iter()
         .find(|s| matches!(&s.kind, lir::StmtKind::DeclareTemp { .. }))
         .expect("main body should contain the `~ let v = ...` declaration");
-    let lir::StmtKind::DeclareTemp { value: Some(value), .. } = &decl.kind else {
+    let lir::StmtKind::DeclareTemp {
+        value: Some(value), ..
+    } = &decl.kind
+    else {
         panic!("expected a DeclareTemp with a value")
     };
     let lir::ExprKind::Coalesce {
@@ -531,5 +547,81 @@ fn native_coalesce_chain_stamps_each_step_with_its_own_infix_range() {
          its OWN originating Infix node's range, not the whole chain's \
          range the outer node has: this is exactly the granularity a \
          blind 'whole chain gets one ambient value' bug would collapse"
+    );
+}
+
+#[test]
+fn native_fragment_expr_and_its_wrapping_call_both_inherit_the_enclosing_statements_provenance() {
+    // Regression for the stale-ambient-after-recursion bug found in this
+    // PR's own review round: `lower_stmt` (`super::stmts::lower_stmt`)
+    // opens with `ctx.enter_stmt(...)` and never restores it — the only
+    // restore is `lower_block_with_children`'s loop, one level *above*
+    // `lower_expr`'s `Fragment` arm. Before the fix, lowering a block
+    // capture's captured body (which recurses into `lower_stmt` through
+    // the same `ctx`, once per inner statement) left
+    // `ctx.current_stmt_provenance` pointing at the captured body's *last*
+    // inner statement — so (a) the `Fragment` expr itself got stamped with
+    // that stale value instead of its enclosing statement's own, and (b)
+    // the wrapping call expression — a leaf shape with no `.ptr` of its
+    // own, lowered via `lower_call_args` *after* the Fragment argument, in
+    // the very same `lower_expr` call — inherited the identical stale
+    // ambient too.
+    //
+    // Block capture (issue #1839, "Content-as-value") is the sole producer
+    // of `hir::Expr::Fragment`, reached here via a `block` convention
+    // claim (same shape as `tests/tier1-native/annotations-element-block/`'s
+    // own fixture): `VENDOR` claims the following line as `cue`'s captured
+    // `body: content` argument.
+    let src = "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10, block)]\n\
+               fn cue(name: string, body: content) >{\n  {name}\n  {body}\n}\n\n\
+               flow main() {\n  VENDOR\n  You shouldn't be here.\n  -> END\n}\n";
+    let program = lower_native(src);
+    let main = program
+        .root
+        .children
+        .iter()
+        .find(|c| c.name.as_deref() == Some("main"))
+        .expect("a `main` flow container");
+    let claimed = main
+        .body
+        .iter()
+        .find(|s| matches!(&s.kind, lir::StmtKind::EmitContent(_)))
+        .expect("main body should contain the claimed `VENDOR` line's EmitContent stmt");
+    let lir::StmtKind::EmitContent(content) = &claimed.kind else {
+        panic!("just matched EmitContent above")
+    };
+    let call = content
+        .parts
+        .iter()
+        .find_map(|p| match p {
+            lir::ContentPart::Interpolation(e) => Some(e),
+            _ => None,
+        })
+        .expect("the claimed line rewrites to a single call interpolation");
+    assert_eq!(
+        text_at(src, call.provenance),
+        text_at(src, claimed.provenance),
+        "(b): the wrapping call expression is a leaf shape (no `.ptr` of \
+         its own) lowered *after* the Fragment argument recurses through \
+         `ctx` in the same statement — it must inherit the enclosing \
+         statement's own ambient, not the stale value the Fragment's last \
+         inner statement left behind"
+    );
+    let lir::ExprKind::Call { args, .. } = &call.kind else {
+        panic!("expected the rewritten claim to lower to a plain Call")
+    };
+    let fragment = args
+        .iter()
+        .find_map(|a| match a {
+            lir::CallArg::Value(v) if matches!(&v.kind, lir::ExprKind::Fragment(_)) => Some(v),
+            _ => None,
+        })
+        .expect("`cue`'s trailing `content`-typed param captures a Fragment arg");
+    assert_eq!(
+        text_at(src, fragment.provenance),
+        text_at(src, claimed.provenance),
+        "(a): the Fragment expr itself has no `.ptr` of its own either, so \
+         it too must inherit the enclosing statement's ambient — not its \
+         own captured body's last inner statement"
     );
 }

@@ -183,12 +183,25 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // their own line-table entry) rather than being flattened. Codegen
         // (`brink-codegen-inkb::content`) wraps the result in
         // `BeginFragment`/`EndFragment`.
+        //
+        // `lower_stmt` opens with `ctx.enter_stmt(...)` and never restores
+        // it — the only restore is `lower_block_with_children`'s loop, one
+        // level above this call. So the ambient must be snapshotted here
+        // *before* recursing and restored *after*, or (a) this Fragment
+        // expr gets stamped with the last inner statement's provenance
+        // instead of its enclosing statement's, and (b) the stale value
+        // leaks into every sibling expression lowered afterwards in the
+        // same statement (the exact bug class #3189's review round caught
+        // for `Stmt`, one level down at `Expr` granularity — see
+        // `issue_3183_lir_provenance.rs`'s Fragment ambient-restore test).
         hir::Expr::Fragment(stmts) => {
+            let ambient = ctx.current_stmt_provenance;
             let lowered = stmts
                 .iter()
                 .filter_map(|s| super::stmts::lower_stmt(s, ctx))
                 .collect();
-            lir::ExprKind::Fragment(lowered).at(ctx.current_stmt_provenance)
+            ctx.current_stmt_provenance = ambient;
+            lir::ExprKind::Fragment(lowered).at(ambient)
         }
     }
 }
