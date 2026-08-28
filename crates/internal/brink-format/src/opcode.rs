@@ -386,8 +386,10 @@ const RANGE_NON_EMPTY: u8 = 0xF6;
 // blocks above). ONE discriminant byte with a `u8` kind immediate —
 // deliberate opcode-space economy: after NS-A5 the free one-byte space is
 // down to 0xF7-0xFD + 0xFF (0xF0-0xF3 are lifecycle, 0xF4-0xF6 the range
-// ops, 0xFE debug), so the tower's thirteen operations share a single
-// `Tower(TowerOp)` opcode instead of eating most of what remains. Wire:
+// ops; 0xFE held the retired debug opcode, freed by #3180 — see the
+// retirement comment below `END_STRING_EVAL`), so the tower's thirteen
+// operations share a single `Tower(TowerOp)` opcode instead of eating
+// most of what remains. Wire:
 // `0xF7`, then the [`TowerOp`] kind byte (a `SequenceKind`-style closed
 // sub-enum; unknown kinds are a decode error, the same reserved-tag
 // discipline as everywhere else).
@@ -2985,7 +2987,7 @@ mod tests {
 
     /// `0xFE` held the retired `SourceLocation` opcode (issue #3180, Q-R1
     /// 2026-07-19). Nothing claims the byte yet (see the retirement comment
-    /// above `const BEGIN_STRING_EVAL`/end of the const block), so it must
+    /// at the end of the const block, below `END_STRING_EVAL`), so it must
     /// decode as unknown — pinning that the byte is truly gone from the
     /// decoder, not just unreachable from encode.
     #[test]
