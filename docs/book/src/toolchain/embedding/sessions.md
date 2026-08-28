@@ -129,7 +129,7 @@ right now — a `Story` gives you a `DebugSnapshot` directly, no session require
 # use brink_runtime::Story;
 # fn demo(story: &Story) {
 let snap = story.debug_snapshot();
-// snap.current_location, snap.globals, snap.call_stack,
+// snap.current_location, snap.position, snap.globals, snap.call_stack,
 // snap.visit_counts, snap.pending_choices, snap.rng
 # let _ = snap;
 # }
