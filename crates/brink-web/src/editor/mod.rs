@@ -385,6 +385,40 @@ impl EditorSession {
         self.fold_runs_enabled = enabled;
     }
 
+    /// Turn the D6 `DebugInfo` section on or off for this session's
+    /// compiles (`docs/debugger-spec.md` §1.2, issue #3229) — the toggle
+    /// that makes the debugger reachable from a studio at all.
+    ///
+    /// The studio's live session runs on exactly the bytes this session's
+    /// `compile_project` produces (studio-store `compile.ts`'s
+    /// `setCompileResult(storyBytes)` → `LocalSessionProvider`'s
+    /// `new StorySessionHandle(bytes)`). Without the section, D4's runtime
+    /// position, D6's tables, D7's locals and D9's program→source resolver
+    /// all resolve to nothing, however correct they are.
+    ///
+    /// **Per-session by ruling (2026-08-28), not always-on and not a
+    /// `brink.toml` key.** A host turns it on for the session it is about
+    /// to debug and off when that session ends, so ordinary authoring
+    /// never pays the size/time cost and debuggability never becomes a
+    /// property of the project. The caller must **recompile** for the flag
+    /// to take effect — it changes what the next `compile_project` emits,
+    /// not the artifact already produced. That recompile is codegen only:
+    /// diagnostics are byte-identical either way and stay memoized.
+    ///
+    /// No-ops when unchanged, so calling it on every debug-session start
+    /// is safe and does not invalidate an artifact already carrying the
+    /// section.
+    pub fn set_debug_info_enabled(&mut self, enabled: bool) {
+        self.session.set_emit_debug_info(enabled);
+    }
+
+    /// Whether this session's compiles emit the `DebugInfo` section
+    /// (#3229). See [`Self::set_debug_info_enabled`].
+    #[must_use]
+    pub fn debug_info_enabled(&self) -> bool {
+        self.session.emit_debug_info()
+    }
+
     /// Set the T1b compiler dialect (docs/t1b-surface-spec.md §1, #589,
     /// #600, #611): `"brink"` or `"strict-ink"`; any other value (or never
     /// calling this at all) keeps the `StrictInk` default. Mirrors
@@ -1073,20 +1107,14 @@ impl EditorSession {
             host_manifest: None,
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
-            // D6 (`docs/debugger-spec.md` §1.2): the editor session has no
-            // debug-compile toggle of its own — hardcoded off, matching the
-            // ship-policy default. The studio's live session is built from
-            // exactly these bytes (studio-store `compile.ts`'s
-            // `setCompileResult(storyBytes)` -> `LocalSessionProvider`'s
-            // `new StorySessionHandle(bytes)`), so with this off,
-            // `WebSession::resolve_debug_position` returns `None` for
-            // every position in the real studio today — the D9 (#3187)
-            // program/session resolver chain is proven only in Rust tests
-            // that opt in via `OptionOverrides { debug_info: true }`.
-            // Flipping this is a real design call (compile size, editor
-            // acceptance-gate goldens) and is intentionally NOT done here;
-            // it stays open, undone, tracked against #3187.
-            emit_debug_info: false,
+            // D6/#3229: the session's own value, NOT a hardcoded `false`.
+            // `apply_analysis_options` ignores this field entirely (see its
+            // destructuring comment), so what is written here changes
+            // nothing — but writing `false` would tell the next reader that
+            // re-reading `brink.toml` turns a live debug session's compiles
+            // back off, which is exactly the behaviour that method's
+            // ignore-rather-than-honour posture exists to prevent.
+            emit_debug_info: self.session.emit_debug_info(),
         };
         // Keep this session's own dialect cache (read by completion/
         // signature-help gating, see the field doc) in lockstep with what
@@ -6526,6 +6554,162 @@ mod tests {
         assert!(
             v["error"].as_str().unwrap_or_default().contains("nope.ink"),
             "error names the missing entry: {result}"
+        );
+    }
+
+    // ── #3229: the per-session debug-compile toggle ─────────────────────
+    //
+    // This is the test whose ABSENCE was the bug. D4's runtime position,
+    // D6's `DebugInfo` section, D7's locals table and D9's program→source
+    // resolver all landed green and were all inert in the real studio,
+    // because `EditorSession`'s own compile hardcoded `emit_debug_info:
+    // false` and the studio's live session runs on exactly those bytes.
+    // Every existing proof opted in via `OptionOverrides { debug_info:
+    // true }` — a path no studio code takes — so nothing failed.
+    //
+    // So this drives the PRODUCTION road end to end: a real
+    // `EditorSession`, its own `compile_project`, the bytes that JSON
+    // actually carries to the studio, fed to the same `WebSession` the
+    // studio's `LocalSessionProvider` constructs. Both states are pinned —
+    // off resolving to nothing is as much the contract as on resolving to
+    // source, since "off" is what every ordinary authoring session gets.
+
+    /// The `story_bytes` a successful `compile_project` hands the studio.
+    fn compiled_story_bytes(s: &mut EditorSession) -> Vec<u8> {
+        let raw = s.compile_project("main.ink");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("compile JSON");
+        assert_eq!(
+            parsed["ok"],
+            serde_json::json!(true),
+            "compile must succeed: {raw}"
+        );
+        parsed["story_bytes"]
+            .as_array()
+            .expect("story_bytes array on a successful compile")
+            .iter()
+            .map(|b| u8::try_from(b.as_u64().expect("byte")).expect("fits u8"))
+            .collect()
+    }
+
+    /// Resolve the flow's entry position through the same `WebSession` the
+    /// studio's `LocalSessionProvider` builds, returning the resolver's
+    /// JSON (`"null"` when the artifact carries no `DebugInfo`).
+    fn resolve_entry_position(bytes: &[u8]) -> String {
+        let session =
+            crate::session::WebSession::new(bytes, None, None).expect("session constructs");
+        let snap_json = session.debug_snapshot().expect("debug_snapshot");
+        let snap: serde_json::Value = serde_json::from_str(&snap_json).expect("valid JSON");
+        let pos = snap["position"]
+            .as_object()
+            .expect("a position at flow entry");
+        let container_idx =
+            u32::try_from(pos["container_idx"].as_u64().expect("container_idx")).expect("u32");
+        let offset = u32::try_from(pos["offset"].as_u64().expect("offset")).expect("u32");
+        session
+            .resolve_debug_position(container_idx, offset)
+            .expect("resolver serializes")
+    }
+
+    #[test]
+    fn debug_info_is_off_by_default_and_the_toggle_makes_the_studios_own_bytes_debuggable() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+
+        // Off by default — the ship-policy posture (§1.2) every ordinary
+        // authoring session keeps.
+        assert!(
+            !s.debug_info_enabled(),
+            "a fresh session must not emit debug info"
+        );
+        assert_eq!(
+            resolve_entry_position(&compiled_story_bytes(&mut s)),
+            "null",
+            "without the toggle the studio's own bytes must carry no DebugInfo — \
+             this is the #3229 gap, pinned so it cannot silently return"
+        );
+
+        // On: same session, same source, recompiled.
+        s.set_debug_info_enabled(true);
+        assert!(s.debug_info_enabled(), "the toggle must stick");
+
+        let resolved_json = resolve_entry_position(&compiled_story_bytes(&mut s));
+        assert_ne!(
+            resolved_json, "null",
+            "with the toggle on, a position from the studio's own compile must resolve"
+        );
+        let resolved: serde_json::Value = serde_json::from_str(&resolved_json).expect("valid JSON");
+        assert_eq!(resolved["file"], serde_json::json!("main.ink"));
+
+        // Byte-exact, not merely "something came back": the recorded range
+        // must slice out of the ORIGINAL source, which is the only thing
+        // that proves the section describes this compile rather than
+        // carrying plausible-looking numbers.
+        let start = usize::try_from(resolved["range_start"].as_u64().expect("range_start"))
+            .expect("fits usize");
+        let len =
+            usize::try_from(resolved["range_len"].as_u64().expect("range_len")).expect("usize");
+        let slice = src
+            .get(start..start + len)
+            .expect("the recorded range must lie inside the source it names");
+        assert!(
+            src.contains(slice) && !slice.is_empty(),
+            "resolved range {start}..{} sliced {slice:?}, which is not real source text",
+            start + len
+        );
+    }
+
+    #[test]
+    fn turning_the_debug_toggle_back_off_stops_emitting_the_section() {
+        // The other half of "per-session": a host that ends a debug session
+        // must be able to return to ordinary authoring cost. If this only
+        // ratcheted on, the flag would be a one-way door and every session
+        // that ever debugged would pay for it forever.
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+
+        s.set_debug_info_enabled(true);
+        assert_ne!(
+            resolve_entry_position(&compiled_story_bytes(&mut s)),
+            "null",
+            "precondition: the section is present while the toggle is on"
+        );
+
+        s.set_debug_info_enabled(false);
+        assert!(!s.debug_info_enabled());
+        assert_eq!(
+            resolve_entry_position(&compiled_story_bytes(&mut s)),
+            "null",
+            "turning the toggle off must actually stop emitting the section"
+        );
+    }
+
+    #[test]
+    fn re_reading_project_config_does_not_switch_a_live_debug_session_back_off() {
+        // `apply_parsed_config` rebuilds an `AnalysisOptions` from
+        // `brink.toml` on every config apply. Before #3229 that literal
+        // carried a hardcoded `emit_debug_info: false`; the field is
+        // ignored by `apply_analysis_options`' change guard, but nothing
+        // pinned that, and "honour it here" is a one-line change a future
+        // reader could make in good faith — which would silently kill
+        // debugging on the next config re-read.
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        s.set_debug_info_enabled(true);
+
+        s.apply_project_config("[project]\nentry = \"main.ink\"\n")
+            .expect("valid brink.toml applies");
+
+        assert!(
+            s.debug_info_enabled(),
+            "a brink.toml re-read must not clear the session's debug toggle"
+        );
+        assert_ne!(
+            resolve_entry_position(&compiled_story_bytes(&mut s)),
+            "null",
+            "and the next compile must still carry the section"
         );
     }
 

@@ -102,6 +102,20 @@ pub struct IdeSession {
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` the
     /// same way.
     conventions: Option<String>,
+    /// D6/#3229: whether this session's compiles emit the `DebugInfo`
+    /// section (`docs/debugger-spec.md` §1.2's ship policy). **Per-session,
+    /// not per-project** — ruled 2026-08-28: a studio turns it on for the
+    /// session it is about to debug and off again afterwards, so an
+    /// ordinary authoring session never pays the size/time cost, and no
+    /// `brink.toml` key makes it a property of the project.
+    ///
+    /// Unlike `language_dialect`/`type_policy`/`lints`/`conventions` above,
+    /// this is NOT an analysis input: it changes only what codegen emits.
+    /// `debug_info_policy_query`'s narrow salsa projection gives it a cheap
+    /// cutoff, so toggling it re-runs `story_data_query` and leaves every
+    /// diagnostic query backdated — which is exactly why flipping it at
+    /// debug-start is affordable.
+    emit_debug_info: bool,
 }
 
 impl IdeSession {
@@ -118,6 +132,7 @@ impl IdeSession {
             type_policy: None,
             lints: LintPolicy::default(),
             conventions: None,
+            emit_debug_info: false,
         }
     }
 
@@ -341,10 +356,16 @@ impl IdeSession {
             dialect,
             types,
             lints,
-            // D6 (`docs/debugger-spec.md` §1.2): a mount-time compile flag
-            // with no diagnostics-relevant effect on an IDE session — not
-            // one of the four fields this method change-detects, same
-            // posture as the three ignored fields above.
+            // D6/#3229: a compile flag with no diagnostics-relevant
+            // effect — not one of the four fields this method
+            // change-detects, same posture as the three ignored fields
+            // above. Deliberately ignored rather than honoured: since
+            // #3229 the flag is **session-owned state**
+            // (`set_emit_debug_info`), and every caller of this method
+            // rebuilds an `AnalysisOptions` from a `brink.toml` re-read
+            // (`EditorSession::apply_parsed_config`) — honouring it here
+            // would let each such re-apply silently switch a live debug
+            // session's compiles back off.
             emit_debug_info: _,
             conventions,
         } = options.clone();
@@ -374,6 +395,45 @@ impl IdeSession {
         if changed {
             self.reanalyze();
         }
+    }
+
+    /// Turn the D6 `DebugInfo` section on or off for **this session's**
+    /// compiles (`docs/debugger-spec.md` §1.2, issue #3229).
+    ///
+    /// This is the toggle that makes the debugger reachable at all: D4's
+    /// runtime position, D6's section, D7's locals table and D9's
+    /// program→source resolver are all inert against an artifact compiled
+    /// without it. A studio turns it on for the session it is about to
+    /// debug and off again when that session ends, per the 2026-08-28
+    /// ruling — per-session rather than always-on (which would pay the
+    /// size and time cost on every keystroke of ordinary authoring) or a
+    /// `brink.toml` key (which would make debuggability a property of the
+    /// project, and default every existing project to off).
+    ///
+    /// **Not an analysis input.** Diagnostics are byte-identical either
+    /// way; only what codegen emits changes. `debug_info_policy_query`'s
+    /// narrow projection means an already-analyzed project re-runs
+    /// `story_data_query` and nothing else — so the recompile a host pays
+    /// for at debug-start is a codegen pass, not a reanalysis. Hence
+    /// `sync_db_options` here and deliberately no `reanalyze()`: calling
+    /// it would throw away memoized diagnostics to no effect.
+    ///
+    /// No-ops when the value is unchanged, so a host may call it
+    /// unconditionally on every debug-session start without invalidating
+    /// the compiled artifact it already has.
+    pub fn set_emit_debug_info(&mut self, enabled: bool) {
+        if self.emit_debug_info == enabled {
+            return;
+        }
+        self.emit_debug_info = enabled;
+        self.sync_db_options();
+    }
+
+    /// Whether this session's compiles emit the `DebugInfo` section
+    /// (#3229). See [`Self::set_emit_debug_info`].
+    #[must_use]
+    pub fn emit_debug_info(&self) -> bool {
+        self.emit_debug_info
     }
 
     /// Set the severity policy for manifest-driven external checks, then
@@ -644,12 +704,14 @@ impl IdeSession {
             // the policy `set_lint_policy` resolved. Spelled out explicitly,
             // not `..Default::default()` — see that note for why.
             lints: self.lints.clone(),
-            // D6 (`docs/debugger-spec.md` §1.2): no `IdeSession` state
-            // tracks this — an editor/diagnostics session has no
-            // `--debug-info`-equivalent toggle of its own, so it stays off,
-            // matching the ship-policy default every mount without an
-            // explicit debug compile gets.
-            emit_debug_info: false,
+            // D6/#3229: the session's own per-session debug-compile flag
+            // (`set_emit_debug_info`). Off unless a host turned it on for
+            // this session — the ship-policy default (§1.2) every mount
+            // without an explicit debug compile still gets. This method's
+            // result is what `sync_db_options` writes into `ProjectDb`, so
+            // this field is the single thing standing between a studio
+            // session and a debuggable artifact.
+            emit_debug_info: self.emit_debug_info,
             // `set_conventions` (issue #1880) — see the matching note on
             // `IdeSnapshot::analyze` above. This method's result is also
             // what `sync_db_options` writes into `ProjectDb`, so an

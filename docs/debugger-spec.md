@@ -88,6 +88,46 @@ Studio compiles and an explicit `brink compile` debug flag emit the
 section; release export omits it. The exact CLI flag spelling is a D6/D9
 implementation detail, not fixed here.
 
+**RULED 2026-08-28 (#3229) — "studio compiles" means a PER-SESSION flag.**
+The editor session owns a `emit_debug_info` toggle
+(`IdeSession::set_emit_debug_info`, reaching the studio as
+`EditorSession::set_debug_info_enabled` / `@brink-lang/web`'s
+`setDebugInfoEnabled`). A host turns it **on for the session it is about to
+debug and off when that session ends**; it is not a project property and
+not on by default.
+
+Two alternatives were considered and rejected. *Always-on for editor
+sessions* is simplest but pays the section's size and time cost on every
+keystroke of ordinary authoring, and re-baselines the editor acceptance
+gate. *A `brink.toml` key* makes debuggability a property of the project
+and would leave the debugger off for every project that predates it.
+
+Three consequences the implementation depends on:
+
+1. **It is not an analysis input.** Diagnostics are byte-identical either
+   way. `debug_info_policy_query`'s narrow salsa projection gives the flag
+   a cheap cutoff, so toggling re-runs `story_data_query` (codegen) and
+   leaves every diagnostic query backdated. That is what makes flipping it
+   at debug-start affordable rather than a full reanalysis.
+2. **The caller must recompile.** The flag governs what the *next* compile
+   emits, not the artifact already in hand. Toggling bumps the session
+   generation, so the next compile is a real one and not a cache hit.
+3. **It must reach the worker replica.** `compileProjectAsync` — the road
+   the studio actually compiles on — routes through `projectQuery`, which
+   runs on the worker session whenever one is live. The toggle is therefore
+   in `project-session.ts`'s `WORKER_CONFIG_METHODS`; without that it would
+   set cleanly on the main session and change nothing in the real studio,
+   reproducing #3229 one layer up.
+
+Until this landed, every position feature D4/D6/D7/D9 built was inert in
+the studio: `EditorSession`'s own compile hardcoded the flag off, and the
+live session runs on exactly its bytes. Nothing failed, because every proof
+opted in through `OptionOverrides { debug_info: true }` — a path no studio
+code takes. The regression tests for this ruling therefore drive
+`EditorSession::compile_project` itself and feed its `story_bytes` to the
+same `WebSession` `LocalSessionProvider` constructs, asserting both states:
+off resolving to nothing is as much the contract as on resolving to source.
+
 The 2026-08-25 perf-ruling went the other way for the perf HUD (that stayed
 in release builds); the distinction is payload: the perf panel is
 structurally content-free (counters, timings), whereas debug info embeds
