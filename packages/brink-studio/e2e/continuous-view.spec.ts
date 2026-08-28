@@ -169,15 +169,20 @@ test.describe("continuous view", () => {
 
   test("Settings offers it alongside the other views", async ({ page }) => {
     await runPaletteCommand(page, "Settings: Open");
+    // App scope → Editor since #3174: the view picker is a machine
+    // preference, not a project one, and sections are one at a time now.
+    await page.locator(".brink-settings-scope", { hasText: "App" }).click();
+    await page.locator(".brink-settings-nav-item", { hasText: "Editor" }).click();
+
     const radio = page.locator("[aria-label='Editor view'] input[value='continuous']");
     await expect(radio).toBeVisible();
+    await radio.check();
 
-    // Dispatched rather than `.check()`: choosing a view dismisses whatever
-    // had taken the area over, so picking Continuous from inside Settings
-    // closes Settings — by design (decision log 2026-08-26). Playwright's
-    // actionability check sees the input detach mid-click and retries until
-    // it times out, which is a fact about the check, not about the app.
-    await radio.dispatchEvent("click");
+    // The view changes UNDERNEATH the modal, which stays up. That is the
+    // change #3174 bought: the takeover had to dismiss itself when you chose
+    // a view (it WAS the area you were choosing what to fill), so you could
+    // only pick once per visit. A modal has no such constraint.
     await expect(page.locator(continuous)).toBeVisible();
+    await expect(page.locator(".brink-settings-modal")).toBeVisible();
   });
 });
