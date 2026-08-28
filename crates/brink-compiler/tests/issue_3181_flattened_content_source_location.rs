@@ -162,3 +162,45 @@ fn flattened_choice_content_gets_a_real_source_location_brink() {
         assert_byte_exact_location(entry, src, &expected_file, whole_region);
     }
 }
+
+/// Regression (review finding, #3202): a bracket/inner choice's own
+/// location must be a real *cover* of the composed regions, not
+/// "start's location wins" — `combine_choice_content` (display side,
+/// `container.rs`) and `lower_choice_with_child`'s `ChoiceOutput`
+/// composition (output side, `lir/lower/mod.rs`) both used to keep only
+/// the *first* region's `source_location` and stamp it on every fragment
+/// `emit_content_parts` emits, including fragments that came from the
+/// *other* region. For `* Start {h: A|B} [Bracket] Inner`, that meant the
+/// `"Bracket"` and `"Inner"` line-table entries carried the *start*
+/// region's own span — a range that does not even contain the text
+/// `"Bracket"`/`"Inner"` — instead of `None` (which the flattening
+/// fallback would honestly have produced pre-#3181). The fix takes the
+/// union of both regions' ranges, which is not byte-exact to a single
+/// fragment but is always honest: it contains every fragment it is
+/// attributed to.
+#[test]
+fn bracket_and_inner_choice_content_get_a_covering_source_location_ink() {
+    let src = "VAR h = true\n-> intro\n\n== intro ==\n\
+               * Start {h: A|B} [Bracket] Inner\n    -> END\n";
+    let output = brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .expect("fixture should compile");
+
+    // Display side: `combine_choice_content(start, bracket)` — the union
+    // must cover from the start of the start-content region through the
+    // end of the bracket-content region, i.e. the whole `"Start {h: A|B}
+    // [Bracket]"` span (byte-exact, computed from the real fixture text).
+    let display_cover = "Start {h: A|B} [Bracket]";
+    for entry in find_lines(&output.data, "Bracket") {
+        assert_byte_exact_location(entry, src, "story.ink", display_cover);
+    }
+
+    // Output side: `lower_choice_with_child`'s `ChoiceOutput` — the union
+    // of start+inner (bracket is excluded from the output text itself,
+    // but its byte range falls between start's and inner's in the source,
+    // so the honest cover still spans through it) must cover the whole
+    // `"Start {h: A|B} [Bracket] Inner"` span.
+    let output_cover = "Start {h: A|B} [Bracket] Inner";
+    for entry in find_lines(&output.data, "Inner") {
+        assert_byte_exact_location(entry, src, "story.ink", output_cover);
+    }
+}

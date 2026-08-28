@@ -690,6 +690,8 @@ SourceLocation {
 
 `slot_info` and `source_location` are metadata for tooling. They are serialized into the `.inkb` line tables section but are not loaded by the runtime's fast path. The `.inkl` overlay format carries `content` and `audio_ref` but NOT slot info or source location — those are source-language concerns, not translation concerns.
 
+`source_location` is populated for both the recognized-line path and the `EmitContent`/`ChoiceOutput` flattening fallback (issue #3181/#3202; see `docs/intl-spec.md`'s `LineEntry` §`source_location` for the full contract) — one location per content line, `None` only for a tag's own entry and a `StringPart::Literal` inside a string interpolation.
+
 ### Line template types
 
 ```

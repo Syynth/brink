@@ -168,11 +168,24 @@ discards it in the same arm as `Nop` (`crates/brink-runtime/src/vm.rs:198`).
 The `brink_format::SourceLocation` struct (`definition.rs:73`) is real and
 *is* populated by codegen — but it is **per line-table entry**
 (`LineEntry::source_location`, `definition.rs:87`; `LineEntry` at `:81`),
-not per-definition: it is built per *content* node
-(`build_source_location`, `crates/internal/brink-ir/src/lir/lower/recognize.rs:252`),
-and `brink-codegen-inkb` populates it at every line-emission site
-(`content.rs:11,61,112`) — the `lib.rs:349,371` mentions are call sites of
-that same struct, not something unrelated. `ContainerDef`
+not per-definition: it is resolved once per *content* node
+(`lir::lower::content::lower_content`, which calls
+`recognize::build_source_location` —
+`crates/internal/brink-ir/src/lir/lower/recognize.rs`; issue #3181/#3202)
+onto `lir::Content::source_location`, and threaded from there into codegen —
+**not** populated independently at each `brink-codegen-inkb` line-emission
+site as earlier revisions of this doc claimed. Concretely: the flattening
+path's one remaining `add_line` call site
+(`crates/internal/brink-codegen-inkb/src/content.rs`, inside
+`emit_content_parts`) receives that already-resolved location and clones it
+onto every fragment it emits; the string-interpolation-literal call site
+(`crates/internal/brink-codegen-inkb/src/expr.rs`) still passes `None` —
+`hir::StringPart::Literal` carries no span to thread — and a tag's own
+`add_line` call (routed through the same `emit_content_parts`, called with
+an explicit `None` location) is `None` too, since `hir::Tag::ptr` is
+discarded before it gets there. So "every line-emission site" was never
+quite accurate and is more clearly not so now: two of the three sites are
+permanently `None`, by design, not oversight. `ContainerDef`
 (`definition.rs:11-52`) — the actual per-*definition* record — carries
 **no source range field at all**, only `id`, `scope_id`, a `NameId`, and
 `bytecode`.

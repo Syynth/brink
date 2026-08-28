@@ -325,7 +325,18 @@ fn splice_around(
         extend_merging_text(&mut new_parts, suffix);
         c.parts = new_parts;
         c.tags.extend_from_slice(tags);
-        if c.ptr.is_none() {
+        // The branch's own `ptr` (if any) covers only the branch body's own
+        // node — narrower than the whole spliced line once prefix/suffix
+        // text is actually merged in (review finding, #3202). When that's
+        // happening and the caller handed us a real enclosing-line `ptr`,
+        // it is the more correct answer and must win over the branch's own,
+        // even though the branch's own is already `Some` (e.g.
+        // `wrap_content_as_block`/native's per-branch provenance) — the
+        // `c.ptr.is_none()` half of this condition is what covers the
+        // no-splice case, where the branch's own body genuinely is the
+        // whole line and there is nothing to prefer over it except an
+        // actual gap.
+        if ((has_prefix || has_suffix) && ptr.is_some()) || c.ptr.is_none() {
             c.ptr = ptr;
         }
         return;
@@ -349,7 +360,10 @@ fn splice_around(
             extend_merging_text(&mut new_parts, &original);
             c.parts = new_parts;
             c.tags.extend_from_slice(tags);
-            if c.ptr.is_none() {
+            // Same enclosing-line-wins rule as the single-Content-stmt case
+            // above (review finding, #3202) — `has_prefix` is always true
+            // in this branch, so the splice is genuinely happening here.
+            if ptr.is_some() || c.ptr.is_none() {
                 c.ptr = ptr;
             }
         } else if !tags.is_empty()
@@ -852,5 +866,84 @@ mod tests {
         // The branch body should have been normalized — Sequence instead of Content+EOL.
         assert_eq!(c.branches[0].body.stmts.len(), 1);
         assert!(matches!(c.branches[0].body.stmts[0], Stmt::Sequence(_)));
+    }
+
+    /// Regression (review finding, #3202): the enclosing line's own `ptr`
+    /// must win over a lifted branch's own (narrower) `ptr` once
+    /// prefix/suffix text is actually spliced in — a real branch-node `ptr`
+    /// is not proof the branch already covers the whole line.
+    ///
+    /// Before this fix, `splice_around`'s `if c.ptr.is_none() { c.ptr = ptr }`
+    /// only ever filled in a location when the branch itself had none. Once
+    /// callers started stamping a real (but narrower) branch-node `ptr`
+    /// (`wrap_content_as_block`/native's per-branch provenance, both fixed
+    /// for #3181), that fallback stopped firing — so a lifted line like
+    /// `"Ready {h: high|low} now."` kept only the branch's own sub-range
+    /// (e.g. just `" high"`) instead of the whole line's byte-exact span,
+    /// even though the whole-line `ptr` was sitting right there, passed to
+    /// `splice_around` and ignored.
+    fn range(lo: u32, hi: u32) -> rowan::TextRange {
+        rowan::TextRange::new(rowan::TextSize::new(lo), rowan::TextSize::new(hi))
+    }
+
+    #[test]
+    fn spliced_branch_takes_enclosing_line_location_over_its_own_narrower_one() {
+        // Whole line "Ready {h: high|low} now." spans 0..25; the branch's
+        // own inline-conditional-body node ("high") spans only 8..12 —
+        // deliberately narrower and disjoint-looking from the enclosing
+        // span's numbers, so a test failure can't be mistaken for the two
+        // ranges coincidentally matching.
+        let enclosing_ptr =
+            crate::Provenance::synthetic(crate::provenance::NodeClass::Content, range(0, 25));
+        let branch_ptr =
+            crate::Provenance::synthetic(crate::provenance::NodeClass::Content, range(8, 12));
+
+        let branch_body_stmts = vec![Stmt::Content(Content {
+            ptr: Some(branch_ptr),
+            parts: vec![text("high")],
+            tags: Vec::new(),
+        })];
+        let tail = crate::tail_from_stmts(&branch_body_stmts);
+        let inline_cond = ContentPart::InlineConditional(Conditional {
+            ptr: dummy_ptr(),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                ptr: dummy_ptr(),
+                condition: Some(Expr::Bool(true)),
+                binding: None,
+                body: Block {
+                    label: None,
+                    stmts: branch_body_stmts,
+                    container_id: None,
+                    tail,
+                },
+                container_id: None,
+            }],
+        });
+        let content = Content {
+            ptr: Some(enclosing_ptr),
+            parts: vec![text("Ready "), inline_cond, text(" now.")],
+            tags: Vec::new(),
+        };
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+
+        normalize_file(&mut hir);
+
+        let Stmt::Conditional(cond) = &hir.root_content.stmts[0] else {
+            panic!("expected Conditional, got {:?}", hir.root_content.stmts[0]);
+        };
+        let Stmt::Content(spliced) = &cond.branches[0].body.stmts[0] else {
+            panic!(
+                "expected spliced Content, got {:?}",
+                cond.branches[0].body.stmts[0]
+            );
+        };
+        assert_eq!(content_text(spliced), "Ready high now.");
+        assert_eq!(
+            spliced.ptr,
+            Some(enclosing_ptr),
+            "spliced branch must carry the whole line's location, not its own narrower one: {:?}",
+            spliced.ptr
+        );
     }
 }
