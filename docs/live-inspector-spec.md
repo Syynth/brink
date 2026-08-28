@@ -226,6 +226,13 @@ channel.
 
 ## 9. Out of scope
 
-Pause/step execution control, breakpoints, hot-reload of the running game's story, and
-multi-game connections (per #127). Author-time host vocabulary (Phase 9). These may reuse the
-channel later but are not designed here.
+Hot-reload of the running game's story, and multi-game connections (per #127). Author-time host
+vocabulary (Phase 9). These may reuse the channel later but are not designed here.
+
+**Superseded, 2026-08-28:** pause/step execution control and breakpoints were listed here as out
+of scope when this spec was written, but the debugger epic (#452) has since claimed that
+territory — `docs/debugger-spec.md` is the owning spec (§1.4 the VM seam, §4 frame semantics),
+and D8 (#3186) shipped the runtime hooks (`Story::debug_run`/`debug_step`/`debug_run_watching`).
+Issue #3186's own "standing rulings this must respect" assigned recording this reversal here
+rather than leaving the two specs disagreeing — see `docs/decision-log.md`'s "Debugger epic
+(#452): v1 DebugInfo contract + D1 design round" entry and its D8 follow-up.

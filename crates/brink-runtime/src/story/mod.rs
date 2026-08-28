@@ -17,7 +17,7 @@ use crate::error::RuntimeError;
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
 use crate::state::{ContextAccess, WriteObserver};
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "debug-hooks"))]
 use crate::vm;
 use crate::world::{ContextView, FlowLocal, World};
 
@@ -1480,6 +1480,461 @@ impl<R: StoryRng> Story<R> {
             Some((ci, off, None)) => Ok(Some(("(end of container)".to_string(), ci, off))),
             None => Ok(None),
         }
+    }
+
+    // ── D8 debugger control seam (issue #3186) ──────────────────────────
+    //
+    // Feature-gated per `debug_control`'s own module doc — with
+    // `debug-hooks` off, none of this exists and nothing below is
+    // compiled in. Every method here bypasses the buffered line-output
+    // path (`continue_single` and friends) entirely, stepping `vm::step`
+    // directly — the same primitive the `testing`-gated `step_once` probe
+    // above already uses — so a caller sees every opcode boundary, not
+    // just line boundaries. None of it changes `advance_with_limit` or
+    // `vm::step_impl`; see `debug_control`'s module doc for the zero-cost
+    // argument this depends on.
+
+    /// The default flow's current execution position, or `None` when the
+    /// innermost frame has an empty container stack — mirrors
+    /// [`debug_snapshot`](Self::debug_snapshot)'s `position` field without
+    /// building the rest of the snapshot.
+    #[cfg(feature = "debug-hooks")]
+    #[must_use]
+    pub fn debug_position(&self) -> Option<crate::DebugPosition> {
+        Self::position_of(&self.default.flow)
+    }
+
+    /// The default flow's current thread's call-stack depth — the raw
+    /// count [`debug_step`](Self::debug_step)'s step-over/out logic is
+    /// derived from (`docs/debugger-spec.md` §4).
+    #[cfg(feature = "debug-hooks")]
+    #[must_use]
+    pub fn debug_call_stack_depth(&self) -> usize {
+        Self::depth_of(&self.default.flow)
+    }
+
+    /// Run the default flow forward one VM instruction at a time until an
+    /// enabled breakpoint in `breakpoints` is reached — checked *before*
+    /// the matching instruction executes, so execution halts BEFORE it
+    /// runs, not after — or the flow reaches a stopping VM outcome (a
+    /// choice point or a terminal `-> DONE`/`-> END`).
+    ///
+    /// The breakpoint check is skipped on this call's very first
+    /// iteration, before any `vm::step` has run — otherwise a resumed
+    /// `debug_run` called right after a previous `debug_run`/`debug_step`
+    /// stopped exactly on an armed breakpoint would immediately re-report
+    /// that same breakpoint without making any forward progress, forever
+    /// (issue #3186 review: "resume is impossible"). At least one
+    /// instruction always executes before a breakpoint at the position
+    /// already stopped at is honored again.
+    ///
+    /// A choice point (`-> DONE`/exhaustion with pending choices) reports
+    /// [`DebugStopReason::Choices`](crate::DebugStopReason::Choices), not
+    /// [`DebugStopReason::Terminal`](crate::DebugStopReason::Terminal) —
+    /// distinguishing the two matters because
+    /// [`Story::choose`](Self::choose) only accepts the former. The same
+    /// turn-index bump and invisible-default auto-select the production
+    /// per-turn loop performs on this outcome are applied here too, via
+    /// [`flow_instance::apply_done_bookkeeping`], so `status` and
+    /// `turn_index` never diverge from what a production-path caller would
+    /// see (issue #3186 review: "turn boundaries are mislabeled").
+    ///
+    /// Bounded by `budget_ceiling` VM steps — **not** the production step
+    /// limit, and this never reads or writes `Stats::steps` (the counter
+    /// `advance_with_limit`'s own step-limit check reads); the debug
+    /// budget is tracked in a loop-local variable instead. See
+    /// `debug_control`'s module doc for the full accounting argument
+    /// (2026-08-28 step-limit ruling on issue #3186). Pass
+    /// [`crate::DEFAULT_DEBUG_BUDGET`] unless the caller has a reason to
+    /// override it.
+    ///
+    /// # Errors
+    /// [`RuntimeError::DebugBudgetExceeded`] if `budget_ceiling` VM steps
+    /// pass without hitting a breakpoint or a stopping outcome — never
+    /// [`RuntimeError::StepLimitExceeded`], which is the *production*
+    /// step-limit error and would misreport which budget fired. Any other
+    /// error `vm::step` itself can produce, e.g.
+    /// [`RuntimeError::UnresolvedExternalCall`] if the run crosses an
+    /// `EXTERNAL` call — this raw seam has no handler to resolve one, so
+    /// it surfaces the same error `vm::step`'s own preamble already raises
+    /// for an unresolved `External` frame, rather than silently stepping
+    /// past it.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run(
+        &mut self,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        use crate::debug_control::DebugStopReason;
+
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let mut steps: u64 = 0;
+        let mut past_entry = false;
+        loop {
+            if past_entry
+                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(bp) = breakpoints.hit(pos)
+            {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Breakpoint {
+                        id: bp.id,
+                        name: bp.name.clone(),
+                    },
+                    position: Some(pos),
+                    depth: Self::depth_of(&self.default.flow),
+                });
+            }
+            past_entry = true;
+            steps += 1;
+            if steps > budget_ceiling {
+                return Err(RuntimeError::DebugBudgetExceeded {
+                    breakpoint: "run".to_owned(),
+                    ceiling: budget_ceiling,
+                });
+            }
+
+            let stepped = vm::step::<R>(
+                &mut self.default.flow,
+                &self.program,
+                &self.line_tables,
+                &mut view,
+                &mut self.default.stats,
+                self.resolver.as_deref(),
+            )?;
+
+            match stepped {
+                vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
+                    &mut self.default.flow,
+                    &mut view,
+                    &mut self.default.status,
+                    &mut self.default.stats,
+                )? {
+                    flow_instance::DoneBookkeeping::AutoSelected => {}
+                    flow_instance::DoneBookkeeping::WaitingForChoice => {
+                        return Ok(crate::DebugRunOutcome {
+                            reason: DebugStopReason::Choices,
+                            position: Self::position_of(&self.default.flow),
+                            depth: Self::depth_of(&self.default.flow),
+                        });
+                    }
+                    flow_instance::DoneBookkeeping::Terminal => {
+                        return Ok(crate::DebugRunOutcome {
+                            reason: DebugStopReason::Terminal,
+                            position: Self::position_of(&self.default.flow),
+                            depth: Self::depth_of(&self.default.flow),
+                        });
+                    }
+                },
+                vm::Stepped::Ended => {
+                    view.increment_turn_index();
+                    self.default.status = StoryStatus::Ended;
+                    return Ok(crate::DebugRunOutcome {
+                        reason: DebugStopReason::Terminal,
+                        position: Self::position_of(&self.default.flow),
+                        depth: Self::depth_of(&self.default.flow),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Like [`debug_run`](Self::debug_run), but writes are routed through
+    /// `watchpoints` (a [`crate::WatchpointObserver`]) via the existing
+    /// [`ObservedContext`](crate::ObservedContext) seam — reusing
+    /// [`WriteObserver`] rather than a second observer mechanism, exactly
+    /// as `continue_single_observed` already does for the buffered
+    /// production path. Also stops, with
+    /// [`DebugStopReason::Watchpoint`](crate::DebugStopReason::Watchpoint),
+    /// the moment a watched global is written, in addition to every
+    /// `debug_run` stop condition.
+    ///
+    /// # Errors
+    /// Same as [`debug_run`](Self::debug_run).
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_watching(
+        &mut self,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        watchpoints: &mut crate::WatchpointObserver,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        use crate::debug_control::DebugStopReason;
+        use crate::state::ObservedContext;
+
+        let mut steps: u64 = 0;
+        // Same resume fix as `debug_run` — see its doc: skip the
+        // breakpoint check on this call's first iteration so a resumed
+        // call doesn't immediately re-report the breakpoint it's already
+        // stopped at.
+        let mut past_entry = false;
+        loop {
+            if past_entry
+                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(bp) = breakpoints.hit(pos)
+            {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Breakpoint {
+                        id: bp.id,
+                        name: bp.name.clone(),
+                    },
+                    position: Some(pos),
+                    depth: Self::depth_of(&self.default.flow),
+                });
+            }
+            past_entry = true;
+            steps += 1;
+            if steps > budget_ceiling {
+                return Err(RuntimeError::DebugBudgetExceeded {
+                    breakpoint: "run".to_owned(),
+                    ceiling: budget_ceiling,
+                });
+            }
+
+            let stepped = {
+                let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+                let mut obs_ctx = ObservedContext::new(&mut view, watchpoints);
+                vm::step::<R>(
+                    &mut self.default.flow,
+                    &self.program,
+                    &self.line_tables,
+                    &mut obs_ctx,
+                    &mut self.default.stats,
+                    self.resolver.as_deref(),
+                )?
+            };
+
+            if let Some(hit) = watchpoints.take_hit() {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Watchpoint {
+                        global_idx: hit.global_idx,
+                    },
+                    position: Self::position_of(&self.default.flow),
+                    depth: Self::depth_of(&self.default.flow),
+                });
+            }
+
+            match stepped {
+                vm::Stepped::Done => {
+                    let mut view =
+                        ContextView::new(&mut self.default_context, &mut self.default_local);
+                    match flow_instance::apply_done_bookkeeping(
+                        &mut self.default.flow,
+                        &mut view,
+                        &mut self.default.status,
+                        &mut self.default.stats,
+                    )? {
+                        flow_instance::DoneBookkeeping::AutoSelected => {}
+                        flow_instance::DoneBookkeeping::WaitingForChoice => {
+                            return Ok(crate::DebugRunOutcome {
+                                reason: DebugStopReason::Choices,
+                                position: Self::position_of(&self.default.flow),
+                                depth: Self::depth_of(&self.default.flow),
+                            });
+                        }
+                        flow_instance::DoneBookkeeping::Terminal => {
+                            return Ok(crate::DebugRunOutcome {
+                                reason: DebugStopReason::Terminal,
+                                position: Self::position_of(&self.default.flow),
+                                depth: Self::depth_of(&self.default.flow),
+                            });
+                        }
+                    }
+                }
+                vm::Stepped::Ended => {
+                    let mut view =
+                        ContextView::new(&mut self.default_context, &mut self.default_local);
+                    view.increment_turn_index();
+                    self.default.status = StoryStatus::Ended;
+                    return Ok(crate::DebugRunOutcome {
+                        reason: DebugStopReason::Terminal,
+                        position: Self::position_of(&self.default.flow),
+                        depth: Self::depth_of(&self.default.flow),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Step the default flow by one [`StepMode`](crate::StepMode) unit,
+    /// derived from call-stack depth deltas (`docs/debugger-spec.md` §4):
+    ///
+    /// - [`StepMode::Into`](crate::StepMode::Into): execute exactly one
+    ///   instruction, descending into any newly-entered frame.
+    /// - [`StepMode::Over`](crate::StepMode::Over): execute instructions
+    ///   until back at (or still at) the starting depth — runs through any
+    ///   call the first instruction makes without stopping inside it.
+    /// - [`StepMode::Out`](crate::StepMode::Out): execute instructions
+    ///   until the current frame returns to its caller (depth strictly
+    ///   less than the starting depth). Refused up front, with
+    ///   [`DebugStopReason::NoStepOutTarget`](crate::DebugStopReason::NoStepOutTarget)
+    ///   and no VM stepping at all, when the starting depth is the
+    ///   outermost (`Root`) frame — §4: "The debugger must disable
+    ///   step-out... exactly as GDB disables `finish` in the outermost
+    ///   frame" — **or** when the innermost frame is a
+    ///   [`CallFrameType::Thread`]: §4's ruled `Thread` row ("a thread is
+    ///   not a frame you can return from... must not offer step out as if
+    ///   it returns anywhere", decision-log D1 entry item 11) applies the
+    ///   same refusal for the same reason — a thread exhausting just pops
+    ///   it (`vm::step`'s `Opcode::Done`/`Yield` handling), which is not a
+    ///   return to a caller and must not be reported as `Step`.
+    ///
+    /// `breakpoints` is checked on every iteration after the first (same
+    /// "skip the entry position" rule [`debug_run`](Self::debug_run)
+    /// documents) — an armed breakpoint reached partway through a
+    /// `StepMode::Over`/`Out` run halts the step early, before the
+    /// matching instruction executes, exactly as it would inside
+    /// `debug_run`. A `StepMode::Into` step always stops after its own
+    /// single instruction, so it never reaches a second iteration where a
+    /// breakpoint could fire mid-step.
+    ///
+    /// A choice point reached mid-step reports
+    /// [`DebugStopReason::Choices`](crate::DebugStopReason::Choices) (with
+    /// the same turn-index/auto-select bookkeeping
+    /// [`debug_run`](Self::debug_run) applies), taking priority over the
+    /// requested step's own stop condition — see `debug_run`'s doc.
+    ///
+    /// Bounded by `budget_ceiling` VM steps on the same terms as
+    /// [`debug_run`](Self::debug_run) — never touches `Stats::steps`.
+    ///
+    /// # Errors
+    /// [`RuntimeError::DebugBudgetExceeded`] if the step target is never
+    /// reached within `budget_ceiling` VM steps (a `StepMode::Over`/`Out`
+    /// whose target frame never returns — e.g. a runaway loop between
+    /// entering and leaving it). Any other error `vm::step` itself can
+    /// produce.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_step(
+        &mut self,
+        mode: crate::debug_control::StepMode,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        use crate::debug_control::{DebugStopReason, StepMode};
+
+        let depth_before = Self::depth_of(&self.default.flow);
+        if mode == StepMode::Out {
+            let innermost_is_thread = self
+                .default
+                .flow
+                .current_thread()
+                .call_stack
+                .last()
+                .is_some_and(|frame| frame.frame_type == CallFrameType::Thread);
+            if depth_before <= 1 || innermost_is_thread {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::NoStepOutTarget,
+                    position: Self::position_of(&self.default.flow),
+                    depth: depth_before,
+                });
+            }
+        }
+
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let mut steps: u64 = 0;
+        let mut past_entry = false;
+        loop {
+            if past_entry
+                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(bp) = breakpoints.hit(pos)
+            {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Breakpoint {
+                        id: bp.id,
+                        name: bp.name.clone(),
+                    },
+                    position: Some(pos),
+                    depth: Self::depth_of(&self.default.flow),
+                });
+            }
+            past_entry = true;
+            steps += 1;
+            if steps > budget_ceiling {
+                return Err(RuntimeError::DebugBudgetExceeded {
+                    breakpoint: "step".to_owned(),
+                    ceiling: budget_ceiling,
+                });
+            }
+
+            let stepped = vm::step::<R>(
+                &mut self.default.flow,
+                &self.program,
+                &self.line_tables,
+                &mut view,
+                &mut self.default.stats,
+                self.resolver.as_deref(),
+            )?;
+
+            match stepped {
+                vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
+                    &mut self.default.flow,
+                    &mut view,
+                    &mut self.default.status,
+                    &mut self.default.stats,
+                )? {
+                    flow_instance::DoneBookkeeping::AutoSelected => continue,
+                    flow_instance::DoneBookkeeping::WaitingForChoice => {
+                        return Ok(crate::DebugRunOutcome {
+                            reason: DebugStopReason::Choices,
+                            position: Self::position_of(&self.default.flow),
+                            depth: Self::depth_of(&self.default.flow),
+                        });
+                    }
+                    flow_instance::DoneBookkeeping::Terminal => {
+                        return Ok(crate::DebugRunOutcome {
+                            reason: DebugStopReason::Terminal,
+                            position: Self::position_of(&self.default.flow),
+                            depth: Self::depth_of(&self.default.flow),
+                        });
+                    }
+                },
+                vm::Stepped::Ended => {
+                    view.increment_turn_index();
+                    self.default.status = StoryStatus::Ended;
+                    return Ok(crate::DebugRunOutcome {
+                        reason: DebugStopReason::Terminal,
+                        position: Self::position_of(&self.default.flow),
+                        depth: Self::depth_of(&self.default.flow),
+                    });
+                }
+                _ => {}
+            }
+
+            let depth_after = Self::depth_of(&self.default.flow);
+            let stop = match mode {
+                StepMode::Into => true,
+                StepMode::Over => depth_after <= depth_before,
+                StepMode::Out => depth_after < depth_before,
+            };
+            if stop {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Step,
+                    position: Self::position_of(&self.default.flow),
+                    depth: depth_after,
+                });
+            }
+        }
+    }
+
+    /// The default flow's current `(container_idx, offset)`, or `None`
+    /// when the innermost frame's container stack is empty — same read
+    /// `build_debug_snapshot`'s own `frame_position` closure performs.
+    #[cfg(feature = "debug-hooks")]
+    fn position_of(flow: &Flow) -> Option<crate::DebugPosition> {
+        flow.current_thread()
+            .call_stack
+            .last()
+            .and_then(|frame| frame.container_stack.last())
+            .map(|cp| crate::DebugPosition {
+                container_idx: cp.container_idx,
+                offset: cp.offset,
+            })
+    }
+
+    /// The default flow's current thread's call-stack depth.
+    #[cfg(feature = "debug-hooks")]
+    fn depth_of(flow: &Flow) -> usize {
+        flow.current_thread().call_stack.len()
     }
 }
 
