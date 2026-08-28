@@ -1,0 +1,23 @@
+# Two granularities are wanted, both first-class (ruled 2026-08-28): the
+# studio will show the .inkt disassembly beside the source, so an author
+# can watch a line and the instructions it became at the same time.
+#
+# `stepi` is what exists today — VM-instruction stepping with call-depth
+# awareness. Line stepping (`step`) is #3264 and is NOT implemented; the
+# parser refuses it with a pointer rather than aliasing it here.
+#
+# This golden therefore records instruction granularity as CORRECT
+# behaviour for `stepi`, not as a defect: four instructions happen to make
+# up line 7. What #3264 adds is a second verb, so this transcript should
+# stay as it is when that lands.
+break story.ink:7
+run
+expect-line 7
+stepi over
+stepi over
+stepi over
+stepi over
+expect-line 8
+locals
+expect-local who = "vendor"
+stack
