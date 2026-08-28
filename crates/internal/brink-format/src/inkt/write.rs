@@ -721,9 +721,6 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         // Visit
         Opcode::CurrentVisitCount => write!(w, "current_visit_count"),
 
-        // Debug
-        Opcode::SourceLocation(line, col) => write!(w, "source_location {line}:{col}"),
-
         // Records (TM-4)
         Opcode::RecordNew(shape_id) => write!(w, "record_new {shape_id}"),
         Opcode::RecordGetDyn(name_id) => write!(w, "record_get_dyn {name_id}"),

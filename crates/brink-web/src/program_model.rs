@@ -588,9 +588,6 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         // Visit
         Opcode::CurrentVisitCount => "current_visit_count".to_owned(),
 
-        // Debug
-        Opcode::SourceLocation(line, col) => format!("source_location {line}:{col}"),
-
         // Records (TM-4)
         Opcode::RecordNew(shape_id) => format!("record_new {shape_id}"),
         Opcode::RecordGetDyn(name_id) => format!("record_get_dyn {name_id}"),

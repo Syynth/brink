@@ -616,7 +616,6 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::Nop
         | Opcode::BeginStringEval
         | Opcode::EndStringEval
-        | Opcode::SourceLocation(_, _)
         | Opcode::AttachElement
         | Opcode::EndElementRun => {}
     }
