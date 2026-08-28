@@ -3665,3 +3665,42 @@
   than picking a plausible-looking but false analogy keeps the debugger
   from lying to authors about what just happened, which is worse than an
   operation simply being unavailable.
+
+## Debugger epic (#452): D8 debug budget + live-inspector-spec §9 supersession
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime (debugger epic #452, D8/#3186)
+- **SCOPE:** moderate — **orchestrator call recorded during PR #3218's fix
+  round, pending maintainer confirmation** (spec-drift review findings on
+  #3186: the budget semantics were previously recorded nowhere but an
+  issue comment, and `docs/live-inspector-spec.md` §9 still read as if it
+  contradicted this ruling).
+- **WHAT:** (1) **Debug budget**: `Story::debug_run`/`debug_step`/
+  `debug_run_watching` (D8, `crates/brink-runtime/src/debug_control.rs`)
+  get their own step budget, `DEFAULT_DEBUG_BUDGET = 200_000`, tracked in
+  a loop-local variable — entirely separate accounting from the
+  production step limit (`FlowInstance::STEP_LIMIT`/`Stats::steps`).
+  Debug-hook code never reads or writes `Stats::steps`. Exceeding the
+  debug budget is the new public `RuntimeError::DebugBudgetExceeded {
+  breakpoint, ceiling }` — never `RuntimeError::StepLimitExceeded`, which
+  would misreport which budget fired. Documented in
+  `docs/debugger-spec.md` §1.4. (2) **`docs/live-inspector-spec.md` §9
+  supersession**: that section's "Pause/step execution control,
+  breakpoints... are not designed here" is now stale — D8 shipped exactly
+  that, owned by `docs/debugger-spec.md` (§1.4, §4) instead. §9 now
+  records the supersession rather than silently disagreeing with the
+  debugger epic.
+- **WHY:** D8's own PR (#3218) implemented the budget per a 2026-08-28
+  decision-comment ruling on issue #3186, but that ruling was never
+  transcribed into either owning spec (`docs/debugger-spec.md` §1.4, which
+  covers the VM seam this budget belongs to) or this log — an adversarial
+  review of the PR flagged both as spec drift: an orphaned ruling
+  (comment-only, no spec/log record) and a contradicted spec
+  (`live-inspector-spec.md` §9 reading as if it still excluded this
+  territory). Recording both here during the fix round keeps the two
+  debugger-related specs from disagreeing and gives the budget semantics
+  a durable home instead of an issue comment, while leaving the ruling
+  itself flagged as **orchestrator-recorded, not yet maintainer-confirmed**
+  — a human should still sign off on `DEFAULT_DEBUG_BUDGET`'s specific
+  value and the never-touch-`Stats::steps` accounting rule the next time
+  this area gets a design pass.

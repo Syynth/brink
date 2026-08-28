@@ -567,4 +567,31 @@ pub enum RuntimeError {
     /// robustness discipline, never a panic).
     #[error("`weighted` construction received {detail}")]
     WeightedMalformedTable { detail: &'static str },
+
+    // ── D8 debugger control seam (issue #3186, `docs/debugger-spec.md`
+    // §1.4) — feature-gated so this variant does not exist at all in an
+    // ordinary build (`debug-hooks` off), matching the effect-trace/
+    // bench-counters precedent for this crate's instrumentation features.
+    /// A `Story::debug_run`/`debug_step` call exceeded its own debug-only
+    /// step budget (`debug_control::DEFAULT_DEBUG_BUDGET` unless the caller
+    /// overrides the ceiling) before reaching a breakpoint, watchpoint, or
+    /// step target. **Distinct from [`StepLimitExceeded`](Self::StepLimitExceeded)
+    /// on purpose** — that variant reports the *production* step-limit
+    /// firing; this one reports the *separate* debug-stepping budget
+    /// firing (2026-08-28 step-limit ruling on issue #3186: "Exceeding the
+    /// debug budget MUST be its own distinct reportable outcome, never
+    /// `StepLimitExceeded`, which would be a lie about what happened").
+    /// `breakpoint` names what the debugger was doing when the budget ran
+    /// out (a breakpoint/watchpoint name, or `"step"`/`"run"` for an
+    /// unconditional step/run) so the studio can report "breakpoint
+    /// condition ran too long" and name it, per the ruling's own framing.
+    #[cfg(feature = "debug-hooks")]
+    #[error("debug step budget exceeded ({ceiling} steps) while evaluating '{breakpoint}'")]
+    DebugBudgetExceeded {
+        /// Name of the breakpoint/watchpoint/step operation in progress
+        /// when the budget was exhausted.
+        breakpoint: String,
+        /// The debug budget's ceiling (not the production step limit).
+        ceiling: u64,
+    },
 }

@@ -55,6 +55,20 @@ bench-counters = []
 # `cargo build -p brink-runtime`) never compiles it in: no module, no
 # lock, no call-site branches. See `crates/brink-runtime/src/effect_trace.rs`.
 effect-trace = ["std"]
+# Debugger control seam (D8, issue #3186; wire encoding designed in
+# `docs/debugger-spec.md`, VM-seam ruling §1.4): breakpoints, pause/resume,
+# and step in/over/out, plus a `WatchpointObserver` built on the existing
+# `WriteObserver` seam (`state.rs`). Follows the `effect-trace`/
+# `bench-counters` precedent — a distinct flag, not a widening of
+# `testing` — and, unlike those two, adds ZERO code to the production hot
+# loop: `debug_control`'s stepping wraps the existing `pub(crate) vm::step`
+# in its OWN loop from outside `flow_instance.rs::advance_with_limit`
+# entirely, rather than adding a cfg-gated branch inside it. So the
+# production step loop and `vm::step_impl`'s dispatch body are byte-for-byte
+# identical whether this feature is on or off — see
+# `crates/brink-runtime/src/debug_control.rs`'s module doc for the argument
+# in full. Off by default; no released consumer should enable it.
+debug-hooks = []
 
 [dev-dependencies]
 # `test-util` (issue #2168): tests and `benches/runtime.rs` compile
