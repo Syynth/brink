@@ -3641,13 +3641,15 @@
   step in/over/out defined per `CallFrameType` across both vocabularies,
   with two explicit non-analogues named rather than faked — a `Thread`
   frame is not returnable-from (ink's own `->->` strips Thread frames
-  rather than returning through them), and a park at an `await` site ends
-  the VM turn (`Step::Suspended`) with no synchronous "next instruction" to
-  step to until the host wakes it.
+  rather than returning through them), and a condition-park (`until` on the
+  native code ground, `~ await`/`~ while await` in the prose dialect — both
+  lower to the same `AwaitStmt` HIR node) ends the VM turn
+  (`Step::Suspended`) with no synchronous "next instruction" to step to
+  until `wakeCheck()` next resolves the parked condition true.
 - **WHY:** Recorded on issue #3179 to remove `needs-design` from the rest
   of the debugger epic (#452) — every other debugger ticket (D2–D9) should
   be buildable against this contract without a further ruling. The carrier
-  or the VM seam, ruled independently by the maintainer, avoid two known
+  and the VM seam, ruled independently by the maintainer, avoid two known
   failure modes: an opcode-interleave carrier would perturb the VM's
   step-limit accounting and could flip oracle episode outcomes (the
   2026-07-19 evaluation memo's risk table, corrected — a new section is the
