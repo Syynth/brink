@@ -28,6 +28,48 @@ pub struct HoverInfo {
     pub links: Vec<HoverLink>,
 }
 
+/// [`HoverInfo::content`] with its `[text](#N)` link references flattened
+/// back to their labels.
+///
+/// **For every consumer that is not the studio.** The `#N` reference is an
+/// index into [`HoverInfo::links`], which only a renderer holding that list
+/// can resolve — the LSP delivers `content` straight to an editor as
+/// `MarkupKind::Markdown`, and the `brink ide hover` CLI prints it, so both
+/// would show a live markdown link pointing at a fragment that does not
+/// exist. Flattening is not a downgrade for them: it restores exactly what
+/// they rendered before links existed.
+///
+/// A consumer that CAN resolve targets should use `links` and build its own
+/// URIs rather than calling this.
+#[must_use]
+pub fn strip_link_refs(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(open) = rest.find('[') {
+        // A `[` that does not begin a well-formed `[label](#digits)` is
+        // ordinary text — `*[function]*` in a signature line, or an author's
+        // own bracket inside a message.
+        let Some(close) = rest[open..].find("](#") else {
+            out.push_str(&rest[..=open]);
+            rest = &rest[open + 1..];
+            continue;
+        };
+        let close = open + close;
+        let after = &rest[close + 3..];
+        let digits = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        if digits == 0 || !after[digits..].starts_with(')') {
+            out.push_str(&rest[..=open]);
+            rest = &rest[open + 1..];
+            continue;
+        }
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..close]);
+        rest = &after[digits + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One navigable target behind a `[text](#N)` link in hover content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoverLink {
@@ -897,6 +939,41 @@ Spent.
             &[(file_id, "test.ink".to_string(), src.to_string())],
         )
         .expect("hover")
+    }
+
+    #[test]
+    fn link_refs_flatten_for_consumers_that_cannot_resolve_them() {
+        // The LSP hands `content` to an editor as markdown and the CLI
+        // prints it; neither carries `links`, so a live `[torch](#0)` would
+        // be a link to a fragment that does not exist.
+        use super::strip_link_refs;
+        assert_eq!(strip_link_refs("writes: [`torch`](#0)"), "writes: `torch`");
+        assert_eq!(
+            strip_link_refs("*Defined in* [`a/b.ink`](#12)"),
+            "*Defined in* `a/b.ink`"
+        );
+        assert_eq!(
+            strip_link_refs("reads: [`a`](#0), [`b`](#1)"),
+            "reads: `a`, `b`"
+        );
+    }
+
+    #[test]
+    fn flattening_leaves_ordinary_brackets_alone() {
+        // A signature line's `*[function]*`, and an author's own brackets
+        // inside a message, are not links.
+        use super::strip_link_refs;
+        assert_eq!(
+            strip_link_refs("**knot** `f` *[function]*"),
+            "**knot** `f` *[function]*"
+        );
+        assert_eq!(
+            strip_link_refs("choice [The dark] is unnamed"),
+            "choice [The dark] is unnamed"
+        );
+        // Link-shaped but not a link reference: no digits, or no closing paren.
+        assert_eq!(strip_link_refs("[x](#)"), "[x](#)");
+        assert_eq!(strip_link_refs("[x](#1"), "[x](#1");
     }
 
     #[test]

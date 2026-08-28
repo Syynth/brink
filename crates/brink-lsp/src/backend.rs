@@ -2086,7 +2086,11 @@ impl LanguageServer for Backend {
         Ok(Some(Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: info.content,
+                // Flattened: `[text](#N)` indexes `HoverInfo::links`, which
+                // this response has no way to carry, so a live link here
+                // would point at a fragment that does not exist in the
+                // editor showing it.
+                value: brink_ide::hover::strip_link_refs(&info.content),
             }),
             range: hover_range,
         }))

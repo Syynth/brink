@@ -505,17 +505,20 @@ pub(super) fn run_hover(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, S
         &project_files,
     )
     .ok_or("no hover information for that symbol")?;
+    // `[text](#N)` indexes `HoverInfo::links`, which this command does not
+    // emit — printing the raw reference would show a link to nothing.
+    let content = brink_ide::hover::strip_link_refs(&info.content);
 
     let mut out = io::stdout().lock();
     match opts.format {
         Format::Json => {
             let v = serde_json::json!({
-                "content": info.content,
+                "content": content,
                 "location": project.location_of(sym.file, sym.range),
             });
             writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
         }
-        Format::Text => writeln!(out, "{}", info.content.trim_end()).map_err(|e| e.to_string())?,
+        Format::Text => writeln!(out, "{}", content.trim_end()).map_err(|e| e.to_string())?,
     }
     Ok(ExitCode::SUCCESS)
 }
