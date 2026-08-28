@@ -2838,18 +2838,22 @@ on:
         assert_eq!(
             admitted,
             [
+                "colored",
                 "cssparser",
                 "cssparser-macros",
                 "dtoa-short",
                 "option-ext",
                 "selectors"
             ],
-            "deny.toml's [licenses] exceptions should admit {MPL} for exactly the five \
-             crates the 2026-08-15 ruling names — they are unavoidable transitively \
+            "deny.toml's [licenses] exceptions should admit {MPL} for exactly the six \
+             crates the two rulings name. FIVE from 2026-08-15, unavoidable transitively \
              through Tauri (selectors/cssparser/cssparser-macros/dtoa-short via dom_query \
              under tauri-utils and wry; option-ext via dirs-sys -> dirs under tauri, \
-             tauri-build and wry). A SIXTH MPL crate appearing here is outside that \
-             ruling and needs its own."
+             tauri-build and wry). ONE from 2026-08-28 — `colored`, via burn under \
+             harper-core, the prose checker's engine (#3207) — ruled separately because \
+             it arrives through a dependency this project CHOSE rather than a framework \
+             it was already committed to. A SEVENTH MPL crate appearing here is outside \
+             both rulings and needs its own."
         );
 
         // Precondition, or the assertion below fails OPEN: `licences_array`

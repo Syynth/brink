@@ -94,9 +94,26 @@ allow = [
 # the root `check` still reports `advisories ok, bans ok, licenses ok,
 # sources ok`.
 #
+# SECOND RULING, 2026-08-28 (see docs/decision-log.md "MPL-2.0 admitted for
+# `colored`, reached through Harper"): `colored` joins the list on the same
+# per-crate basis but for a DIFFERENT reason, recorded here so the two are not
+# read as one precedent. It arrives through a dependency this project CHOSE —
+# harper-core, the prose checker's engine (#3207) — not through a framework
+# it was already committed to:
+#
+#     colored <- burn-tensor <- burn-core <- burn <- harper-pos-utils
+#             <- harper-brill <- harper-core <- brink-prose
+#
+# It is a terminal-colouring crate, `optional` in burn-tensor and pulled in
+# only by that crate's `std` feature, so it is almost certainly dead code in
+# the wasm artifact brink-prose actually ships. There is no feature flag on
+# this side that removes it without patching Harper's own dependency tree.
+# The licence reasoning is the 2026-08-15 one unchanged: MPL-2.0 is
+# file-level copyleft over files this project links and never modifies.
+#
 # GUARDED BY `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`
 # (packages/brink-desktop/src-tauri/src/lib.rs), which asserts these exact
-# five crate names and that "MPL-2.0" stays out of the blanket `allow` list
+# six crate names and that "MPL-2.0" stays out of the blanket `allow` list
 # above. Edit either list and that test is what fails.
 exceptions = [
     # selectors <- dom_query <- tauri-utils, wry
@@ -109,6 +126,9 @@ exceptions = [
     { crate = "dtoa-short", allow = ["MPL-2.0"] },
     # option-ext <- dirs-sys <- dirs <- tauri, tauri-build, wry
     { crate = "option-ext", allow = ["MPL-2.0"] },
+    # colored <- burn-tensor <- burn <- harper-pos-utils <- harper-core
+    # (2026-08-28 ruling — NOT the Tauri one; see the note above)
+    { crate = "colored", allow = ["MPL-2.0"] },
 ]
 # Crates whose license must be confirmed by hand can be pinned here; none needed.
 confidence-threshold = 0.9

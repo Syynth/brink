@@ -3758,3 +3758,30 @@
   than picking a plausible-looking but false analogy keeps the debugger
   from lying to authors about what just happened, which is worse than an
   operation simply being unavailable.
+
+## MPL-2.0 admitted for `colored`, reached through Harper
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** moderate
+- **WHAT:** `deny.toml`'s `[licenses] exceptions` table admits **MPL-2.0 for
+  `colored`**, the sixth per-crate exception. The blanket `allow` list stays
+  permissive-only — the licence is still not accepted graph-wide.
+- **WHY:** `colored` arrives through `harper-core`, the prose checker's
+  engine (#3207): `colored <- burn-tensor <- burn <- harper-pos-utils <-
+  harper-brill <- harper-core <- brink-prose`. It is a terminal-colouring
+  crate, `optional` in `burn-tensor` and enabled only by that crate's `std`
+  feature, so it is almost certainly dead code in the wasm artifact
+  `brink-prose` actually ships — and there is no feature flag on this side
+  that removes it without patching Harper's own dependency tree. The licence
+  reasoning is the 2026-08-15 Tauri ruling's, unchanged: MPL-2.0 is
+  file-level copyleft whose obligations attach to modifying and distributing
+  those files, which this project links rather than modifies.
+
+  Recorded as its OWN ruling rather than folded into the 2026-08-15 one
+  because the two differ in the part that matters: those five are
+  unavoidable through a framework the project was already committed to,
+  whereas this one came in with a dependency the project CHOSE and could
+  have declined by dropping Harper. Reading them as one precedent would
+  make "it was transitive" sound like the standard, when the standard is
+  the per-crate ruling itself.
