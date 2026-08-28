@@ -294,6 +294,96 @@ impl Program {
         })
     }
 
+    /// The inverse of [`Self::resolve_debug_position`] (D9/#3187): the
+    /// program address to break on for a span of **source** text — issue
+    /// #3246, the half a breakpoint gutter needs. `BreakpointSet` is keyed
+    /// by `(container_idx, offset)`; an editor speaks in source. This maps
+    /// the latter to the former.
+    ///
+    /// # Why a byte range and not a line number
+    ///
+    /// The `DebugInfo` section records **byte ranges**, and a `Program`
+    /// holds neither source text nor a line table — so it physically
+    /// cannot turn "line 7" into bytes. That conversion belongs where the
+    /// source already lives (the editor, the CLI's own file read), which
+    /// also keeps the UTF-8/UTF-16 question out of the runtime entirely.
+    /// The caller passes the half-open byte range `[start, end)` it
+    /// considers "the line" (or a selection, or any span), and this answers
+    /// where to break within it.
+    ///
+    /// # Which candidate wins
+    ///
+    /// Every entry in every container whose file is `file` and whose
+    /// `range_start` lies in `[start, end)` is a candidate. The winner is
+    /// the minimum by `(range_start, container_idx, bytecode_offset)`:
+    ///
+    /// - **`range_start` first** — the textually earliest construct in the
+    ///   span, which is what "break on this line" means to a person. Note
+    ///   this is deliberately *not* "lowest `container_idx`": containers
+    ///   are independent bytecode streams with no execution order between
+    ///   them, so ordering by container index would be arbitrary dressed
+    ///   up as a rule.
+    /// - **then `container_idx`, then `bytecode_offset`** — pure
+    ///   tie-breaking, so a given span always yields the same address
+    ///   rather than whichever entry iteration happened to reach first
+    ///   (`CLAUDE.md`: determinism matters).
+    ///
+    /// # `None` is a real answer, not a failure
+    ///
+    /// Returns `None` when the span contains no executable code at all — a
+    /// comment, a blank line, a line whose code folded away — and when the
+    /// artifact carries no `DebugInfo` or names no such file. Callers
+    /// **must** surface that: a gutter has to refuse to arm visibly,
+    /// because a breakpoint that silently never hits is worse than no
+    /// breakpoint.
+    ///
+    /// Entries whose file is the reserved synthetic sentinel (§2.5) never
+    /// match, since no author-facing path names it.
+    #[must_use]
+    pub fn resolve_source_range(
+        &self,
+        file: &str,
+        start: u32,
+        end: u32,
+    ) -> Option<crate::debug::DebugPosition> {
+        let debug_info = self.debug_info.as_ref()?;
+
+        // Path -> file table index. Synthetic entries carry no
+        // author-facing path and must never match one.
+        let file_idx = u32::try_from(debug_info.files.iter().position(|f| {
+            matches!(
+                f.surface,
+                brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+            ) && f.path == file
+        })?)
+        .ok()?;
+
+        let mut best: Option<(u32, u32, u32)> = None;
+        for (container_idx, table) in debug_info.containers.iter().enumerate() {
+            let Ok(container_idx) = u32::try_from(container_idx) else {
+                continue;
+            };
+            for entry in &table.entries {
+                if entry.file_idx != file_idx
+                    || entry.range_start < start
+                    || entry.range_start >= end
+                {
+                    continue;
+                }
+                let candidate = (entry.range_start, container_idx, entry.bytecode_offset);
+                if best.is_none_or(|current| candidate < current) {
+                    best = Some(candidate);
+                }
+            }
+        }
+
+        let (_, container_idx, bytecode_offset) = best?;
+        Some(crate::debug::DebugPosition {
+            container_idx,
+            offset: bytecode_offset as usize,
+        })
+    }
+
     /// Get a container by its index.
     pub(crate) fn container(&self, idx: u32) -> &LinkedContainer {
         &self.containers[idx as usize]
