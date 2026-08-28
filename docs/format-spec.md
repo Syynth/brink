@@ -530,6 +530,7 @@ Each offset table entry (8 bytes):
 | `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
 | `0x0F` | Alias table (M-3) | Section-local version byte, then per entry: old `DefinitionId` → new `DefinitionId`, sorted by old. Always present (possibly empty). See below. |
 | `0x10` | Frame shapes (FS-3) | Section-local version byte, then per `await` site: the site's stable `DefinitionId` (the synthesized continuation container) + its name-keyed crossing-local slots (`NameId`s), sorted by site. **Optional** — omitted when empty. See below. |
+| `0x11` | DebugInfo (D1/#3179) | reserved — see `docs/debugger-spec.md` §2. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
@@ -606,6 +607,22 @@ The synthesized continuation containers this section names are **invisible**
 targets, and are hidden from IDE navigation/completion (debug views such as
 the `.inkt` dump excepted). The flag rides the container's existing counting
 byte — no new field, no layout change.
+
+**`DebugInfo` section (`0x11`, D1/#452 debugger epic)** — reserved for the
+v1 debug-info encoding designed in `docs/debugger-spec.md` §2: a
+section-local version byte, a section-local file table, and one
+`(bytecode_offset_delta, file_idx, range_start, range_len, kind_token,
+flags)` entry table plus one `LocalsTable` per `Containers` entry, addressed
+by `container_idx` in lockstep with the `Containers` section. Like
+`Visibility`/`FrameShapes`, it is **optional** — omitted entirely for a
+release export (§1.2 of the debugger spec: dev/studio compiles only), so
+every release-shipped `.inkb` stays byte-identical and this reservation
+needs **no** `VERSION` bump. D6 (#3184) is the milestone that adds the real
+`SectionKind::DebugInfo` variant and flips
+`from_u8_rejects_unclaimed_section_tag`'s pin for `0x11`; until then the
+strict reader keeps rejecting it, the same reserved-then-materialized
+discipline `StructShapes`/`EffectRows` follow. `0x10` is taken by
+`FrameShapes`, so this takes the next free tag, `0x11`.
 
 #### Value type tags in `.inkb`
 
