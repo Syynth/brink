@@ -84,6 +84,7 @@ fn program_with_root_children(children: Vec<lir::Container>) -> lir::Program {
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
         aliases: Vec::new(),
+        file_paths: std::collections::BTreeMap::new(),
     }
 }
 

@@ -6,12 +6,15 @@
 //! Pure `mod` extraction (issue #685) from the former monolithic `read.rs` —
 //! no logic changes, only the module boundary is new.
 
-use super::primitives::{err, next_rule, parse_def_id, parse_u16, unescape_string};
+use super::primitives::{
+    err, next_rule, parse_def_id, parse_u8, parse_u16, parse_u32, unescape_string,
+};
 use super::values::{parse_value, parse_value_type};
 use super::{InktParseError, P, Rule};
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, DirectEffects, DispatchEntry,
-    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, ListDef, ListItemDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, DebugContainerTable,
+    DebugEntry, DebugFileEntry, DebugInfoSection, DebugLocalEntry, DirectEffects, DispatchEntry,
+    EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef, ListDef, ListItemDef,
     StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
@@ -411,6 +414,157 @@ fn parse_frame_shape_entry(pair: P<'_>) -> Result<FrameShapeDef, InktParseError>
         slots.push(NameId(parse_u16(&slot)?));
     }
     Ok(FrameShapeDef { site, slots })
+}
+
+/// D6 (`docs/debugger-spec.md` §2): parse
+/// `(debug_info (files …)? (dcontainer $idx (entry …)* (locals …)?)* )`.
+/// `debug_info` is only present in the text at all when debug info was
+/// requested (mirroring [`crate::StoryData::debug_info`]'s `Option`), so
+/// the caller in `parse_story` sets `Some` unconditionally on a match —
+/// there is no empty-but-present case for this rule to produce.
+pub(super) fn parse_debug_info(pair: P<'_>) -> Result<DebugInfoSection, InktParseError> {
+    let mut files = Vec::new();
+    let mut containers = Vec::new();
+    for section in pair.into_inner() {
+        match section.as_rule() {
+            Rule::debug_files => {
+                for entry in section.into_inner() {
+                    if entry.as_rule() == Rule::debug_file_entry {
+                        files.push(parse_debug_file_entry(entry)?);
+                    }
+                }
+            }
+            Rule::debug_container => containers.push(parse_debug_container(section)?),
+            _ => {}
+        }
+    }
+    Ok(DebugInfoSection { files, containers })
+}
+
+/// `(file $idx synthetic|ink|native "path")`. The leading index is
+/// positional bookkeeping the writer emits for readability — the reader
+/// trusts encounter order (matching the writer's own `enumerate()`), not
+/// this integer, exactly like [`parse_debug_container`] below.
+fn parse_debug_file_entry(pair: P<'_>) -> Result<DebugFileEntry, InktParseError> {
+    let mut inner = pair.into_inner();
+    let _idx = inner.next().ok_or_else(|| InktParseError {
+        message: "expected file index".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let surface_pair = next_rule(&mut inner, Rule::debug_surface, "debug file entry")?;
+    let surface = match surface_pair.as_str() {
+        "synthetic" => FileSurface::Synthetic,
+        "ink" => FileSurface::Ink,
+        "native" => FileSurface::Native,
+        other => return Err(err(&surface_pair, format!("unknown surface: {other}"))),
+    };
+    let path_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected path string in file entry".into(),
+        line: 0,
+        col: 0,
+    })?;
+    Ok(DebugFileEntry {
+        surface,
+        path: unescape_string(path_pair.as_str()),
+    })
+}
+
+/// `(dcontainer $idx (entry …)* (locals …)?)`. The leading index is
+/// positional bookkeeping the writer emits (matching
+/// `debug_info.containers`' own position, which is `Containers`-lockstep) —
+/// the reader trusts encounter order, not this integer, so a
+/// hand-edited `.inkt` with a misleading index still round-trips on
+/// structure; only a genuinely reordered/missing block changes behavior.
+fn parse_debug_container(pair: P<'_>) -> Result<DebugContainerTable, InktParseError> {
+    let mut entries = Vec::new();
+    let mut locals = Vec::new();
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::debug_entry => entries.push(parse_debug_entry(inner)?),
+            Rule::debug_locals => {
+                for local in inner.into_inner() {
+                    if local.as_rule() == Rule::debug_local_entry {
+                        locals.push(parse_debug_local_entry(local)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(DebugContainerTable { entries, locals })
+}
+
+/// `(entry $offset $file_idx $range_start $range_len $kind_token $flags)`.
+fn parse_debug_entry(pair: P<'_>) -> Result<DebugEntry, InktParseError> {
+    let mut inner = pair.into_inner();
+    let mut next_u32 = |ctx: &str| -> Result<u32, InktParseError> {
+        let p = inner.next().ok_or_else(|| InktParseError {
+            message: format!("expected {ctx} in debug entry"),
+            line: 0,
+            col: 0,
+        })?;
+        parse_u32(&p)
+    };
+    let bytecode_offset = next_u32("bytecode_offset")?;
+    let file_idx = next_u32("file_idx")?;
+    let range_start = next_u32("range_start")?;
+    let range_len = next_u32("range_len")?;
+    let kind_token = next_u32("kind_token")?;
+    let flags_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected flags in debug entry".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let flags = parse_u8(&flags_pair)?;
+    Ok(DebugEntry {
+        bytecode_offset,
+        file_idx,
+        range_start,
+        range_len,
+        kind_token,
+        flags,
+    })
+}
+
+/// `(local $slot "name" (range $file_idx $start $len)?)`.
+fn parse_debug_local_entry(pair: P<'_>) -> Result<DebugLocalEntry, InktParseError> {
+    let mut inner = pair.into_inner();
+    let slot_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected slot in local entry".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let slot = parse_u16(&slot_pair)?;
+    let name_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected name in local entry".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let name = unescape_string(name_pair.as_str());
+    let declaring_range = match inner.next() {
+        Some(range_pair) if range_pair.as_rule() == Rule::debug_range => {
+            let mut r = range_pair.into_inner();
+            let mut next_u32 = |ctx: &str| -> Result<u32, InktParseError> {
+                let p = r.next().ok_or_else(|| InktParseError {
+                    message: format!("expected {ctx} in local declaring range"),
+                    line: 0,
+                    col: 0,
+                })?;
+                parse_u32(&p)
+            };
+            let file_idx = next_u32("file_idx")?;
+            let range_start = next_u32("range_start")?;
+            let range_len = next_u32("range_len")?;
+            Some((file_idx, range_start, range_len))
+        }
+        _ => None,
+    };
+    Ok(DebugLocalEntry {
+        slot,
+        name,
+        declaring_range,
+    })
 }
 
 /// T2-3 (`docs/effects-spec.md` §11): parse `(effect_rows (row …) …)`.

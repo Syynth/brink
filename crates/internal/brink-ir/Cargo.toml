@@ -30,6 +30,12 @@ brink-analyzer = { path = "../brink-analyzer" }
 brink-codegen-inkb = { path = "../brink-codegen-inkb" }
 insta.workspace = true
 serde_json.workspace = true
+# D6 (issue #3184): `issue_3184_debug_info.rs`'s `.inkt` dump-parity test
+# needs both directions — `brink-compiler`/`brink-test-harness` already
+# enable the read side (`inkt`) elsewhere in the workspace, but a crate's
+# own dev-dependency features should not depend on incidental leakage from
+# an unrelated workspace member's build graph.
+brink-format = { workspace = true, features = ["inkt", "inkt-write"] }
 
 [lints]
 workspace = true

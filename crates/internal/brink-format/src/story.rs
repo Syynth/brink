@@ -2,8 +2,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, EffectRowEntry, ExternalFnDef,
-    FrameShapeDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, DebugInfoSection, EffectRowEntry,
+    ExternalFnDef, FrameShapeDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable,
+    StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::value::ListValue;
@@ -87,6 +88,14 @@ pub struct StoryData {
     /// the offset table, like `Visibility`), so existing stories stay
     /// byte-identical.
     pub frame_shapes: Vec<FrameShapeDef>,
+    /// D6 `DebugInfo` (`docs/debugger-spec.md` §2, `.inkb` tag `0x11`):
+    /// bytecode-offset → source-range map. `None` when debug info was not
+    /// requested at compile time — the ship-policy default (§1.2): a
+    /// release-exported story never carries this, so the section is
+    /// omitted entirely from `.inkb` and every existing byte stays
+    /// identical to before this field existed. `Some` only for a dev/studio
+    /// compile or an explicit CLI debug flag.
+    pub debug_info: Option<DebugInfoSection>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

@@ -76,6 +76,10 @@ fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
         types: config.and_then(|c| c.types),
         lints: config.map(|c| c.lints.clone()).unwrap_or_default(),
         deny_warnings: config.and_then(|c| c.deny_warnings),
+        // D6 (`docs/debugger-spec.md` §1.2): no engine-runtime path opts a
+        // `bevy-brink` compile into debug info today — that's D9's studio
+        // wiring, not this loader's.
+        debug_info: false,
     }
 }
 

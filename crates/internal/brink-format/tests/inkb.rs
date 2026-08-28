@@ -1205,6 +1205,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         alias_table: vec![],
         effect_rows: vec![],
         frame_shapes: Vec::new(),
+        debug_info: None,
         source_checksum: 0,
     };
 
@@ -1300,6 +1301,7 @@ fn roundtrip_line_part_span() {
         alias_table: vec![],
         effect_rows: vec![],
         frame_shapes: Vec::new(),
+        debug_info: None,
         source_checksum: 0,
     };
 
@@ -1395,6 +1397,7 @@ fn roundtrip_line_flags_for_template_content() {
         alias_table: vec![],
         effect_rows: vec![],
         frame_shapes: Vec::new(),
+        debug_info: None,
         source_checksum: 0,
     };
 
@@ -1591,6 +1594,258 @@ fn frame_shapes_rejects_unknown_section_version() {
             section: SectionKind::FrameShapes as u8,
             version: 0xFF,
         }
+    );
+}
+
+// ── D6 DebugInfo section (tag 0x11, docs/debugger-spec.md §2) ───────────────
+
+/// A small but structurally rich `DebugInfoSection`: two files (one ink, one
+/// native — §2.3's per-file surface tagging), the reserved sentinel at index
+/// 0 (§2.5), two containers, and one populated `DebugEntry` per container
+/// exercising every field including the flag bits and a non-zero delta.
+fn sample_debug_info() -> brink_format::DebugInfoSection {
+    use brink_format::{
+        DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DebugContainerTable, DebugEntry,
+        DebugFileEntry, DebugInfoSection, FileSurface,
+    };
+
+    DebugInfoSection {
+        files: vec![
+            DebugFileEntry {
+                surface: FileSurface::Synthetic,
+                path: String::new(),
+            },
+            DebugFileEntry {
+                surface: FileSurface::Ink,
+                path: "story.ink".to_string(),
+            },
+            DebugFileEntry {
+                surface: FileSurface::Native,
+                path: "scene.brink".to_string(),
+            },
+        ],
+        containers: vec![
+            DebugContainerTable {
+                entries: vec![
+                    DebugEntry {
+                        bytecode_offset: 0,
+                        file_idx: 1,
+                        range_start: 10,
+                        range_len: 5,
+                        kind_token: 0x0001_0002,
+                        flags: DEBUG_FLAG_IS_STMT | DEBUG_FLAG_PROLOGUE_END,
+                    },
+                    DebugEntry {
+                        bytecode_offset: 4,
+                        file_idx: 1,
+                        range_start: 20,
+                        range_len: 3,
+                        kind_token: 0x0001_0003,
+                        flags: DEBUG_FLAG_IS_STMT,
+                    },
+                ],
+                locals: Vec::new(),
+            },
+            DebugContainerTable {
+                entries: vec![DebugEntry {
+                    bytecode_offset: 0,
+                    file_idx: 2,
+                    range_start: 0,
+                    range_len: 8,
+                    kind_token: 0x0000_002C,
+                    flags: DEBUG_FLAG_IS_STMT | DEBUG_FLAG_PROLOGUE_END,
+                }],
+                locals: Vec::new(),
+            },
+        ],
+    }
+}
+
+#[test]
+fn roundtrip_debug_info_section() {
+    let mut data = i001_data();
+    data.debug_info = Some(sample_debug_info());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::DebugInfo),
+        "DebugInfo section present when Some"
+    );
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data.debug_info, recovered.debug_info);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn debug_info_section_omitted_when_none() {
+    // The ship-policy default (§1.2): a story compiled without the debug
+    // flag carries `debug_info: None`, and the section is omitted entirely
+    // — existing stories stay byte-identical, no `VERSION` bump.
+    let data = i001_data();
+    assert!(data.debug_info.is_none());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        !index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::DebugInfo),
+        "no DebugInfo section for a story compiled without the debug flag"
+    );
+
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.debug_info.is_none());
+}
+
+#[test]
+fn missing_debug_info_section_decodes_none() {
+    use brink_format::read_section_debug_info;
+
+    // A buffer whose index carries no DebugInfo section reads back `None`,
+    // not an empty-but-`Some` section — see `StoryData::debug_info`'s doc
+    // for why `Option` (not emptiness) is this section's "requested" signal.
+    let data = i001_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(read_section_debug_info(&buf, &index).unwrap().is_none());
+}
+
+#[test]
+fn debug_info_rejects_unknown_section_version() {
+    use brink_format::{
+        InkbIndex, SectionEntry, read_section_debug_info, write_section_debug_info,
+    };
+
+    let mut buf = Vec::new();
+    write_section_debug_info(&sample_debug_info(), &mut buf);
+    buf[0] = 0xFF; // bogus section-local version
+
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::DebugInfo,
+            offset: 0,
+        }],
+    };
+    let err = read_section_debug_info(&buf, &index).unwrap_err();
+    assert_eq!(
+        err,
+        DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::DebugInfo as u8,
+            version: 0xFF,
+        }
+    );
+}
+
+/// §2.2's ruled, explicit departure from this format's default
+/// strict-rejection posture: a `DebugInfo` reader MUST NOT reject an entry
+/// solely because a reserved `flags` bit is set. Round-tripping an entry
+/// with every reserved bit (2-7) set must preserve those bits exactly, not
+/// mask or reject them.
+#[test]
+fn debug_info_reader_tolerates_reserved_flag_bits() {
+    use brink_format::{
+        DEBUG_FLAG_IS_STMT, DEBUG_FLAG_RESERVED_MASK, DebugContainerTable, DebugEntry,
+        read_section_debug_info, write_section_debug_info,
+    };
+
+    let mut section = sample_debug_info();
+    // Overwrite with a single container/entry carrying every reserved bit.
+    section.containers = vec![DebugContainerTable {
+        entries: vec![DebugEntry {
+            bytecode_offset: 0,
+            file_idx: 0,
+            range_start: 0,
+            range_len: 1,
+            kind_token: 0,
+            flags: DEBUG_FLAG_IS_STMT | DEBUG_FLAG_RESERVED_MASK,
+        }],
+        locals: Vec::new(),
+    }];
+
+    let mut buf = Vec::new();
+    write_section_debug_info(&section, &mut buf);
+    let index = debug_info_index_for(&buf);
+    let recovered = read_section_debug_info(&buf, &index).unwrap().unwrap();
+    assert_eq!(
+        recovered.containers[0].entries[0].flags,
+        DEBUG_FLAG_IS_STMT | DEBUG_FLAG_RESERVED_MASK,
+        "reserved bits must round-trip unmodified, not be masked or rejected"
+    );
+}
+
+/// Local helper: wrap a raw `write_section_debug_info` buffer (no header
+/// framing) in the minimal `InkbIndex` `read_section_debug_info` needs —
+/// mirrors `debug_info_rejects_unknown_section_version`'s inline
+/// construction, factored out since two tests need it now.
+fn debug_info_index_for(buf: &[u8]) -> brink_format::InkbIndex {
+    brink_format::InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![brink_format::SectionEntry {
+            kind: SectionKind::DebugInfo,
+            offset: 0,
+        }],
+    }
+}
+
+/// Documents actual current behavior against a claim in
+/// `docs/debugger-spec.md` §1.1 ("the 2026-07-27 format durability doctrine
+/// made unknown sections skippable-by-length") — verified here, not merely
+/// cited. The skip mechanism that doctrine promises (`SectionEntry` gaining
+/// a per-entry LENGTH, `docs/decision-log.md` "Format durability doctrine:
+/// strictness follows durability; sections skippable") is issue #1519,
+/// still **OPEN** per `docs/ruling-ledger.md` ("`SectionEntry` has **no
+/// length**"). `read_inkb_index` calls `SectionKind::from_u8(kind_tag)?`
+/// unconditionally for every offset-table entry, so ANY unrecognized tag —
+/// this test uses the current true frontier, `0x12`, one past `DebugInfo` —
+/// fails the entire file's index parse (Tier 2), not just that one section.
+/// A reader that predates `SectionKind::DebugInfo` therefore fails CLOSED
+/// on a debug-info-bearing `.inkb` today, not skip-harmlessly: #1519 is the
+/// prerequisite that would make it actually skippable, and is out of D6's
+/// scope (a separate, larger ticket) — flagged on issue #3184 rather than
+/// silently building a workaround here.
+#[test]
+fn unrecognized_section_kind_hard_rejects_the_whole_file_pending_1519() {
+    let mut data = i001_data();
+    data.debug_info = Some(sample_debug_info());
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    let debug_pos = index
+        .sections
+        .iter()
+        .position(|s| s.kind == SectionKind::DebugInfo)
+        .expect("DebugInfo section present");
+    // Header layout, per `crates/internal/brink-format/src/inkb/mod.rs`'s
+    // own module doc: a 16-byte preamble, then 8 bytes per offset-table
+    // entry with the kind tag as that entry's first byte.
+    let kind_byte_offset = 16 + debug_pos * 8;
+    assert_eq!(buf[kind_byte_offset], SectionKind::DebugInfo as u8);
+    buf[kind_byte_offset] = 0x12; // one past the current real frontier
+
+    let err = read_inkb_index(&buf).unwrap_err();
+    assert_eq!(
+        err,
+        DecodeError::InvalidSectionKind(0x12),
+        "an unrecognized SectionKind tag fails the WHOLE file's index parse \
+         today (pending #1519), not just the one unknown section"
     );
 }
 

@@ -175,6 +175,11 @@ impl LanguageOptions {
             dialect,
             types,
             lints,
+            // D6 (`docs/debugger-spec.md` §1.2): a mount-time compile flag —
+            // brink-lsp runs diagnostics, not shippable compiles, so it has
+            // no source for this either, same posture as the three ignored
+            // fields above.
+            emit_debug_info: _,
             conventions,
         } = resolved;
         if let Ok(mut guard) = self.dialect.lock() {
@@ -212,6 +217,11 @@ impl LanguageOptions {
             host_manifest: None,
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
+            // D6 (`docs/debugger-spec.md` §1.2): no brink-lsp-side source
+            // today (see `Self::store`'s doc) — same explicit-default
+            // posture as `host_manifest`/`external_check`/
+            // `semantic_type_check` above, not an implicit `..`.
+            emit_debug_info: false,
             dialect: self
                 .dialect
                 .lock()

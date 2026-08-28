@@ -260,6 +260,14 @@ pub struct OptionOverrides {
     /// set. `None` means "the caller has no explicit value," same as
     /// `dialect`/`types`.
     pub deny_warnings: Option<bool>,
+    /// D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): the CLI's
+    /// explicit `--debug-info` flag. Unlike `dialect`/`types`/
+    /// `deny_warnings`, this is a plain `bool` rather than `Option<bool>` —
+    /// there is no `brink.toml` project-file spelling for it to defer to
+    /// (the ship-policy ruling scopes this to mount-time compiles only), so
+    /// there is no "caller didn't say" case to distinguish from "caller
+    /// said off." `false` (the `Default`) never turns the section on.
+    pub debug_info: bool,
 }
 
 // ── The effectful producer ───────────────────────────────────────────
@@ -525,6 +533,10 @@ fn resolve_options(
     if let Some(types) = overrides.types {
         options.types = Some(types);
     }
+    // D6 (`docs/debugger-spec.md` §1.2): no `brink.toml` spelling to defer
+    // to (see `OptionOverrides::debug_info`'s doc) — a plain unconditional
+    // assignment, not an `if let Some(...)` like `dialect`/`types` above.
+    options.emit_debug_info = overrides.debug_info;
 
     // The top of the `CLI/API > file > default` stack (#1373): applied last
     // so an explicit `--deny`/`--warn`/`--allow`/`-D warnings` always wins

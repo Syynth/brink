@@ -1049,6 +1049,14 @@ pub enum DecodeError {
     /// this mirrors `InvalidSectionKind`'s single-variant-per-codec posture
     /// rather than minting three near-duplicate variants.
     InvalidConventionsProjectionTag(u8),
+    /// A `DebugInfo` (`0x11`, `docs/debugger-spec.md` §2.3) file-table entry
+    /// carried an unknown `surface` byte (only `0` Synthetic / `1` Ink / `2`
+    /// Native are defined). Unlike the section's own `flags` reserved-bit
+    /// tolerance (§2.2 — unknown bits are ignored, never rejected), an
+    /// unknown surface tag is a structurally different file table this
+    /// reader cannot interpret at all (it decides which `ProvenanceResolver`
+    /// even applies), so it is rejected rather than silently mis-surfaced.
+    InvalidFileSurface(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -1123,6 +1131,9 @@ impl fmt::Display for DecodeError {
             Self::DuplicateMapKey => write!(f, "duplicate key in map value"),
             Self::InvalidConventionsProjectionTag(b) => {
                 write!(f, "invalid conventions-projection wire tag: {b:#04x}")
+            }
+            Self::InvalidFileSurface(b) => {
+                write!(f, "invalid DebugInfo file-table surface tag: {b:#04x}")
             }
         }
     }

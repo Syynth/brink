@@ -2756,8 +2756,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         }
     }
 
-    let program =
-        brink_ir::lir::assemble_program(&prelude, ordered_chunks, root_temp_slots, &resolved.index);
+    let program = brink_ir::lir::assemble_program(
+        &prelude,
+        ordered_chunks,
+        root_temp_slots,
+        &resolved.index,
+        &paths,
+    );
 
     // LIR lowering itself is total (T1b-2: every construct lowers to a
     // program regardless of dialect). Error-severity lowering diagnostics
@@ -3092,7 +3097,17 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
             warnings: lir.warnings.clone(),
         };
     };
-    match brink_codegen_inkb::emit(program) {
+    // D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): the mount-time
+    // `emit_debug_info` flag (CLI `--debug-info`, or a studio compile that
+    // sets it) is the only thing that ever takes this off the exact
+    // `brink_codegen_inkb::emit` path every existing story compiled through
+    // — `false` (the default) hits the byte-identical `emit_with_options`
+    // fallback that reproduces `emit`'s own behavior, never a parallel
+    // code path.
+    let debug_options = brink_codegen_inkb::EmitOptions {
+        emit_debug_info: project.analysis_options(db).emit_debug_info,
+    };
+    match brink_codegen_inkb::emit_with_options(program, debug_options) {
         Ok(mut story) => {
             // T2-3 (#862, `docs/effects-spec.md` §11): first real emission into
             // the `EffectRows` section. Codegen has no analyzer access, so the

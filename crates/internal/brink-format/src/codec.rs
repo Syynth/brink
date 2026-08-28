@@ -44,6 +44,24 @@ pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
+/// Unsigned LEB128 varint — scoped to the `DebugInfo` section (`0x11`,
+/// `docs/debugger-spec.md` §2.2) only. Every other `.inkb` section keeps the
+/// format's established fixed-width house style (`write_u8`/`u16`/`u32`/
+/// `u64` above); this is a deliberate, ruled departure for one section
+/// whose row count scales with statement (later, expression) count, not a
+/// format-wide encoding change.
+pub(crate) fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v == 0 {
+            buf.push(byte);
+            break;
+        }
+        buf.push(byte | 0x80);
+    }
+}
+
 // ── Decoding helpers ────────────────────────────────────────────────────────
 
 pub(crate) fn read_u8(buf: &[u8], offset: &mut usize) -> Result<u8, DecodeError> {
@@ -129,6 +147,27 @@ pub(crate) fn read_def_id(buf: &[u8], offset: &mut usize) -> Result<DefinitionId
     DefinitionId::from_raw(raw).ok_or(DecodeError::InvalidDefinitionId(raw))
 }
 
+/// Unsigned LEB128 varint reader, paired with [`write_varint`]. Bounded at
+/// 10 bytes (`ceil(64/7)`) — a crafted `.inkb` cannot force an unbounded
+/// read loop off a truncated/malformed varint (`CLAUDE.md` "Guard against
+/// unbounded growth"); a longer continuation run is `DecodeError::
+/// UnexpectedEof`, the same failure a truncated fixed-width field gives.
+pub(crate) fn read_varint(buf: &[u8], offset: &mut usize) -> Result<u64, DecodeError> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    for _ in 0..10 {
+        let byte = read_u8(buf, offset)?;
+        if shift < 64 {
+            result |= u64::from(byte & 0x7F) << shift;
+        }
+        if byte & 0x80 == 0 {
+            return Ok(result);
+        }
+        shift += 7;
+    }
+    Err(DecodeError::UnexpectedEof)
+}
+
 pub(crate) fn read_str(buf: &[u8], offset: &mut usize) -> Result<String, DecodeError> {
     let len = read_u32(buf, offset)? as usize;
     if *offset + len > buf.len() {
@@ -169,4 +208,76 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
         crc = (crc >> 8) ^ TABLE[idx];
     }
     crc ^ 0xFFFF_FFFF
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_varint, write_varint};
+    use alloc::vec::Vec;
+
+    /// D6 (`docs/debugger-spec.md` §2.2): the `DebugInfo` section's varint
+    /// codec round-trips across the interesting boundaries — the single-byte
+    /// range, the first two-byte value (128, where the continuation bit
+    /// first turns on), and both ends of the `u32`/`u64` domains the section
+    /// actually stores values in.
+    #[test]
+    fn varint_round_trips_boundary_values() {
+        for v in [
+            0u64,
+            1,
+            0x7F,   // last single-byte value
+            0x80,   // first two-byte value
+            0x3FFF, // last two-byte value
+            0x4000, // first three-byte value
+            u64::from(u32::MAX),
+            u64::MAX,
+        ] {
+            let mut buf = Vec::new();
+            write_varint(&mut buf, v);
+            let mut off = 0;
+            let read = read_varint(&buf, &mut off).unwrap();
+            assert_eq!(read, v, "round-trip mismatch for {v:#x}");
+            assert_eq!(
+                off,
+                buf.len(),
+                "read_varint must consume exactly what write_varint wrote"
+            );
+        }
+    }
+
+    /// Single-byte values encode in exactly one byte — this is the whole
+    /// point of choosing varint for the entry table (`docs/debugger-spec.md`
+    /// §2.2: "most spans are a few dozen bytes... exactly the varint-friendly
+    /// case").
+    #[test]
+    fn varint_small_values_are_one_byte() {
+        for v in [0u64, 1, 42, 0x7F] {
+            let mut buf = Vec::new();
+            write_varint(&mut buf, v);
+            assert_eq!(buf.len(), 1, "value {v} should encode in one byte");
+        }
+    }
+
+    /// A truncated continuation run (every byte has the high bit set, buffer
+    /// runs out) is `UnexpectedEof`, not an infinite loop or a panic — the
+    /// `CLAUDE.md` "Guard against unbounded growth" contract for a reader
+    /// facing a crafted/corrupt `.inkb`.
+    #[test]
+    fn read_varint_rejects_truncated_continuation_run() {
+        let buf = [0x80u8; 3]; // every byte says "more follows"; buffer ends
+        let mut off = 0;
+        let err = read_varint(&buf, &mut off).unwrap_err();
+        assert_eq!(err, crate::opcode::DecodeError::UnexpectedEof);
+    }
+
+    /// A continuation run longer than 10 bytes (`ceil(64/7)`) is rejected
+    /// rather than read forever — bounds the reader against a crafted input
+    /// that never sets the terminating bit.
+    #[test]
+    fn read_varint_rejects_overlong_continuation_run() {
+        let buf = [0x80u8; 11];
+        let mut off = 0;
+        let err = read_varint(&buf, &mut off).unwrap_err();
+        assert_eq!(err, crate::opcode::DecodeError::UnexpectedEof);
+    }
 }

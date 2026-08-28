@@ -3,12 +3,16 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
+use crate::codec::{
+    crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64, read_varint,
+};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    DispatchEntry, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef,
+    DebugContainerTable, DebugEntry, DebugFileEntry, DebugInfoSection, DebugLocalEntry,
+    DirectEffects, DispatchEntry, EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef,
+    GlobalVarDef, LineEntry, ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo,
+    SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -19,7 +23,8 @@ use crate::value::{
 };
 
 use super::write::{
-    ALIAS_TABLE_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION, FRAME_SHAPES_SECTION_VERSION,
+    ALIAS_TABLE_SECTION_VERSION, DEBUG_INFO_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION,
+    FRAME_SHAPES_SECTION_VERSION,
 };
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
@@ -64,6 +69,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let alias_table = read_section_alias_table(buf, &index)?;
     let effect_rows = read_section_effect_rows(buf, &index)?;
     let frame_shapes = read_section_frame_shapes(buf, &index)?;
+    let debug_info = read_section_debug_info(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -82,6 +88,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         alias_table,
         effect_rows,
         frame_shapes,
+        debug_info,
         source_checksum: index.checksum,
     })
 }
@@ -840,6 +847,119 @@ pub fn read_section_frame_shapes(
         shapes.push(FrameShapeDef { site, slots });
     }
     Ok(shapes)
+}
+
+/// Read the D6 `DebugInfo` section (`docs/debugger-spec.md` §2) from a
+/// complete `.inkb` file using its index. Absent section (every story
+/// compiled without the debug flag) decodes as `None`, distinct from the
+/// other optional sections above, which decode absence as an empty `Vec` —
+/// see [`crate::StoryData::debug_info`]'s doc for why presence itself is
+/// meaningful here.
+///
+/// Reserved `flags` bits are read through unmodified, never rejected — the
+/// section's explicit, ruled departure from this format's default
+/// strict-rejection posture (§2.2's "reserved-bit forward compatibility").
+/// A future revision needing genuinely new per-entry bytes still bumps
+/// [`DEBUG_INFO_SECTION_VERSION`] like any other section-local encoding
+/// change; nothing about this leniency exempts that.
+pub fn read_section_debug_info(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Option<DebugInfoSection>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::DebugInfo) else {
+        return Ok(None);
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != DEBUG_INFO_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::DebugInfo as u8,
+            version: section_version,
+        });
+    }
+
+    let file_count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-entry footprint: surface(1) + path length prefix(4) = 5 bytes.
+    let mut files = Vec::with_capacity(safe_capacity(file_count, buf.len(), off, 5));
+    for _ in 0..file_count {
+        let surface = FileSurface::from_u8(read_u8(buf, &mut off)?)?;
+        let path = read_str(buf, &mut off)?;
+        files.push(DebugFileEntry { surface, path });
+    }
+
+    let container_count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-container footprint: entry_count varint(1) + locals_count
+    // varint(1) = 2 bytes (both tables may legitimately be empty).
+    let mut containers = Vec::with_capacity(safe_capacity(container_count, buf.len(), off, 2));
+    for _ in 0..container_count {
+        // A count that cannot fit in `usize` cannot be satisfied by any
+        // buffer we could be holding — treat it as malformed input rather
+        // than truncating it into a plausible-looking small number.
+        let entry_count =
+            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
+        // Minimum per-entry footprint: 4 varints of at least 1 byte each +
+        // kind_token u32(4) + flags u8(1) = 9 bytes.
+        let mut entries = Vec::with_capacity(safe_capacity(entry_count, buf.len(), off, 9));
+        let mut prev_offset: u32 = 0;
+        for _ in 0..entry_count {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "wire fields are u32-domain values re-widened to u64 for varint transport"
+            )]
+            let delta = read_varint(buf, &mut off)? as u32;
+            let bytecode_offset = prev_offset.wrapping_add(delta);
+            prev_offset = bytecode_offset;
+            #[expect(clippy::cast_possible_truncation)]
+            let file_idx = read_varint(buf, &mut off)? as u32;
+            #[expect(clippy::cast_possible_truncation)]
+            let range_start = read_varint(buf, &mut off)? as u32;
+            #[expect(clippy::cast_possible_truncation)]
+            let range_len = read_varint(buf, &mut off)? as u32;
+            let kind_token = read_u32(buf, &mut off)?;
+            // Reserved bits are carried through as-is — never masked,
+            // never rejected (§2.2's reserved-bit tolerance contract).
+            let flags = read_u8(buf, &mut off)?;
+            entries.push(DebugEntry {
+                bytecode_offset,
+                file_idx,
+                range_start,
+                range_len,
+                kind_token,
+                flags,
+            });
+        }
+
+        let local_count =
+            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
+        // Minimum per-local footprint: slot u16(2) + name length prefix
+        // u32(4) + has_range u8(1) = 7 bytes.
+        let mut locals = Vec::with_capacity(safe_capacity(local_count, buf.len(), off, 7));
+        for _ in 0..local_count {
+            let slot = read_u16(buf, &mut off)?;
+            let name = read_str(buf, &mut off)?;
+            let has_range = read_u8(buf, &mut off)?;
+            let declaring_range = if has_range == 0 {
+                None
+            } else {
+                #[expect(clippy::cast_possible_truncation)]
+                let file_idx = read_varint(buf, &mut off)? as u32;
+                #[expect(clippy::cast_possible_truncation)]
+                let range_start = read_varint(buf, &mut off)? as u32;
+                #[expect(clippy::cast_possible_truncation)]
+                let range_len = read_varint(buf, &mut off)? as u32;
+                Some((file_idx, range_start, range_len))
+            };
+            locals.push(DebugLocalEntry {
+                slot,
+                name,
+                declaring_range,
+            });
+        }
+
+        containers.push(DebugContainerTable { entries, locals });
+    }
+
+    Ok(Some(DebugInfoSection { files, containers }))
 }
 
 /// Decode a [`DirectEffects`] block written by `encode_direct_effects`.

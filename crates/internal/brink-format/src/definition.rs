@@ -429,6 +429,148 @@ pub struct ExternalFnDef {
     pub fallback: Option<DefinitionId>,
 }
 
+// ── DebugInfo (D6, `docs/debugger-spec.md` §2) ──────────────────────────────
+
+/// `flags` bit 0: this entry marks a recommended stop location / the start
+/// of a statement (`docs/debugger-spec.md` §2.1's DWARF-`is_stmt` design).
+/// v1 sets this on every entry (statement-level rows only); a later
+/// expression-level entry arrives with this bit unset, additively — no
+/// version bump, no reader change.
+pub const DEBUG_FLAG_IS_STMT: u8 = 0b0000_0001;
+
+/// `flags` bit 1: this entry's own `bytecode_offset` is the prologue-end
+/// landing point for a breakpoint set on the enclosing container
+/// (`docs/debugger-spec.md` §2.4) — past any leading parameter-binding
+/// `DeclareTemp`s / choice-output prologue bytes. At most one entry per
+/// container carries this bit.
+pub const DEBUG_FLAG_PROLOGUE_END: u8 = 0b0000_0010;
+
+/// Bits 2–7 of `flags` are reserved. Per `docs/debugger-spec.md` §2.2's
+/// explicit, ruled departure from this format's default strict-rejection
+/// posture, a `DebugInfo` reader **must ignore** any reserved bit it does
+/// not recognize rather than reject the entry — this constant exists so
+/// callers can mask deliberately (e.g. a round-trip test asserting v1 never
+/// sets a reserved bit) without hand-writing the mask twice.
+pub const DEBUG_FLAG_RESERVED_MASK: u8 = !(DEBUG_FLAG_IS_STMT | DEBUG_FLAG_PROLOGUE_END);
+
+/// Which frontend parsed a `DebugInfo` file-table entry's file
+/// (`docs/debugger-spec.md` §2.3) — `KindToken::raw` is frontend-private
+/// (two independent `ProvenanceResolver` numberings), so a reader must know
+/// which resolver applies before interpreting an entry's `kind_token`.
+/// Recorded once per file (not per entry) since surface is a property of
+/// where the code came from, constant for every entry pointing at that
+/// file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FileSurface {
+    /// The reserved sentinel file (index 0) — synthetic provenance
+    /// (`Provenance::synthetic`'s `FileId(u32::MAX)`, §2.5). Never a real
+    /// file; `path` is always empty for this surface.
+    Synthetic = 0,
+    /// Parsed by the `.ink` compatibility surface (`brink-syntax`).
+    Ink = 1,
+    /// Parsed by the `.brink` native surface (`brink-syntax-native`).
+    Native = 2,
+}
+
+impl FileSurface {
+    pub(crate) fn from_u8(tag: u8) -> Result<Self, crate::opcode::DecodeError> {
+        match tag {
+            0 => Ok(Self::Synthetic),
+            1 => Ok(Self::Ink),
+            2 => Ok(Self::Native),
+            _ => Err(crate::opcode::DecodeError::InvalidFileSurface(tag)),
+        }
+    }
+}
+
+/// One entry in the `DebugInfo` section's section-local file table
+/// (`docs/debugger-spec.md` §2.3). Index 0 is always the reserved synthetic
+/// sentinel (§2.5) — `surface = Synthetic`, `path = ""` — real files start
+/// at index 1. Paths are project-root-relative (`root_relative_key`), not
+/// process-cwd-relative or absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugFileEntry {
+    pub surface: FileSurface,
+    pub path: String,
+}
+
+/// One row in a container's `DebugInfo` entry table
+/// (`docs/debugger-spec.md` §2.2): maps a bytecode offset (within that
+/// container's own bytecode) to the source range it was lowered from.
+/// Entries for one container are sorted ascending by `bytecode_offset` so a
+/// reader can floor-lookup via binary search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugEntry {
+    /// Byte offset within the owning container's own bytecode.
+    pub bytecode_offset: u32,
+    /// Index into the section's file table (§2.3) — not the compiler's
+    /// project-wide `FileId`.
+    pub file_idx: u32,
+    /// Absolute source byte offset within the file at `file_idx`.
+    pub range_start: u32,
+    /// Length in bytes of the source range (`range_end = range_start +
+    /// range_len`).
+    pub range_len: u32,
+    /// `KindToken::as_u32()` verbatim (class in the high 16 bits, raw in
+    /// the low 16) — `brink-format` carries this opaquely; interpreting it
+    /// needs `file_table[file_idx].surface` to pick the right
+    /// `ProvenanceResolver` (§2.3), which is `brink-ir`'s job, not this
+    /// crate's (no dependency edge from `brink-format` to `brink-ir`).
+    pub kind_token: u32,
+    /// `DEBUG_FLAG_IS_STMT` / `DEBUG_FLAG_PROLOGUE_END`, plus reserved bits
+    /// a reader must tolerate (never reject on) — see those constants' docs.
+    pub flags: u8,
+}
+
+/// One row in a container's `DebugInfo` locals table
+/// (`docs/debugger-spec.md` §3): a VM temp slot's declared name, and
+/// optionally the source range it was declared at (for slot-reuse
+/// disambiguation). **D7's payload** (`docs/debugger-spec.md` §3, issue
+/// #3185) — D6 emits the structural framing (an empty `locals` per
+/// container) but does not populate real entries; the wire shape ships now
+/// so D7 adds data without a layout change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugLocalEntry {
+    /// Matches the `u16` operand `DeclareTemp`/`GetTemp`/`SetTemp` use.
+    pub slot: u16,
+    pub name: String,
+    /// The declaring range, if known: `(file_idx, range_start, range_len)`,
+    /// the same triple shape entries use (§2.2).
+    pub declaring_range: Option<(u32, u32, u32)>,
+}
+
+/// One container's `DebugInfo` table (`docs/debugger-spec.md` §2.2): the
+/// `DebugInfo` section's Nth `DebugContainerTable` describes the container
+/// at `StoryData::containers[N]` — addressed by the same `container_idx`
+/// the runtime's `ContainerPosition` uses, lockstep with the `Containers`
+/// section, no `DefinitionId` lookup needed on the read path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugContainerTable {
+    /// Sorted ascending by `bytecode_offset`; covers the container's full
+    /// address range with no gaps (§2.2's coverage guarantee).
+    pub entries: Vec<DebugEntry>,
+    /// D7's payload (see [`DebugLocalEntry`]) — empty until D7 lands.
+    pub locals: Vec<DebugLocalEntry>,
+}
+
+/// The `DebugInfo` section (`docs/debugger-spec.md` §2, `.inkb` tag
+/// `0x11`): bytecode-offset → source-range map, plus the section-local file
+/// table it's keyed against. Carried on [`crate::StoryData::debug_info`] as
+/// `Option` — `None` when not requested (dev/studio compiles and an
+/// explicit CLI debug flag opt in; release export never does, §1.2 ship
+/// policy) — distinct from the other "always present, possibly empty"
+/// section types, because presence here tracks *whether debug info was
+/// requested*, not merely whether any entry was produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugInfoSection {
+    /// Index 0 is always the reserved synthetic sentinel (§2.5).
+    pub files: Vec<DebugFileEntry>,
+    /// One table per container, in the same order and count as
+    /// [`crate::StoryData::containers`].
+    pub containers: Vec<DebugContainerTable>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

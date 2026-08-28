@@ -3,9 +3,11 @@
 mod chunk;
 mod container;
 mod content;
+mod debug_info;
 mod expr;
 
 pub use chunk::{ContainerChunk, NameRef, Relocation, UNRESOLVED_NAME_ID};
+pub use debug_info::EmitOptions;
 
 use std::collections::HashMap;
 
@@ -98,7 +100,24 @@ fn collapse_whitespace(s: &str) -> String {
 /// Returns `Err(CodegenError)` only for a defect in the LIR itself — see
 /// [`CodegenError`]. A well-formed `Program` (the only kind
 /// `brink-ir::lir::lower` ever hands back) always succeeds.
+///
+/// Equivalent to [`emit_with_options`] with [`EmitOptions::default()`] —
+/// `emit_debug_info: false`, reproducing every byte this function has ever
+/// emitted (the D6 byte-identical guarantee, `docs/debugger-spec.md` §1.2).
 pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
+    emit_with_options(program, EmitOptions::default())
+}
+
+/// [`emit`] with explicit [`EmitOptions`] — the D6 (`docs/debugger-spec.md`
+/// §2) entry point. `options.emit_debug_info` gates the `DebugInfo` section
+/// (`SectionKind::DebugInfo`, tag `0x11`): `false` takes the exact same code
+/// path `emit` always has, byte-for-byte; `true` additionally records
+/// `(bytecode_offset, source_range)` pairs during the same container walk
+/// and attaches them as `StoryData::debug_info`.
+pub fn emit_with_options(
+    program: &lir::Program,
+    options: EmitOptions,
+) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
         chunks: Vec::new(),
         addresses: Vec::new(),
@@ -110,6 +129,9 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         name_table: program.name_table.clone(),
         name_index: HashMap::new(),
         errors: Vec::new(),
+        debug: options
+            .emit_debug_info
+            .then(debug_info::DebugCollector::new),
     };
 
     // Build the name index from the existing name table for dedup.
@@ -182,6 +204,11 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         // frame shapes are synthesized. Emitted empty; first population rides
         // the continuation-splitting codegen when the fence drops (FS-3r).
         frame_shapes: Vec::new(),
+        // D6 `DebugInfo` (`docs/debugger-spec.md` §2, tag 0x11): `None`
+        // unless `options.emit_debug_info` was set — the section is
+        // omitted entirely from `.inkb` in that case, so a release compile
+        // stays byte-identical (§1.2 ship policy).
+        debug_info: state.debug.map(|d| d.finish(program)),
         source_checksum: 0,
     })
 }
@@ -237,6 +264,13 @@ struct EmitState {
     /// `Result` through every recursive emitter call. Bounded by the size
     /// of the `Program` being walked, same as every other `Vec` here.
     errors: Vec<CodegenError>,
+    /// D6 (`docs/debugger-spec.md` §2, issue #3184) debug-info recording —
+    /// `None` unless `EmitOptions::emit_debug_info` was set. Kept as an
+    /// `Option` rather than an always-present, conditionally-populated
+    /// collector so the container walk pays nothing (no branch, no
+    /// allocation) on the default `emit()` path — the byte-identical
+    /// guarantee this section's whole design depends on.
+    debug: Option<debug_info::DebugCollector>,
 }
 
 /// Intern a string into a story name table, deduping against entries already
@@ -487,6 +521,27 @@ fn walk_container(
         scope_author_path
     };
 
+    // D6 (`docs/debugger-spec.md` §2.2/§2.4): read before `state` is
+    // (re)borrowed by `ContainerEmitter::new` below — `emitter` holds a
+    // mutable borrow of `*state` for its whole lifetime, so `state.debug`
+    // must be read here, not after. When debug info is on, the leading
+    // parameter-binding `DeclareTemp`s below are real prologue bytecode
+    // with no `lir::Stmt` of their own (they're emitted as bare opcodes,
+    // never through `emit_stmt`) — so if this container has params, that
+    // offset-0 span needs its own entry, recorded here before they're
+    // emitted, using the *container's* own provenance (there is no
+    // statement to point at). `raw_entries` stays empty (no allocation) on
+    // the default `emit()` path.
+    let debug_enabled = state.debug.is_some();
+    let mut raw_entries: Vec<debug_info::RawDebugEntry> = Vec::new();
+    if debug_enabled && !container.params.is_empty() {
+        raw_entries.push(debug_info::RawDebugEntry {
+            offset: 0,
+            provenance: container.provenance,
+            prologue_end: false,
+        });
+    }
+
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state, scope_id);
 
@@ -507,7 +562,24 @@ fn walk_container(
         emitter.emit(Opcode::DeclareTemp(param.slot));
     }
 
-    emitter.emit_body(&container.body);
+    if debug_enabled {
+        let prologue_end_offset = emitter.bytecode.len();
+        emitter.emit_body_recording(&container.body, &mut raw_entries);
+        if container.body.is_empty() {
+            // Coverage guarantee (§2.4): even a container with no
+            // statements at all (params-only, or truly empty) must have an
+            // entry covering its post-prologue offset, so the floor-lookup
+            // binary search never runs off the end of the table.
+            #[expect(clippy::cast_possible_truncation)]
+            raw_entries.push(debug_info::RawDebugEntry {
+                offset: prologue_end_offset as u32,
+                provenance: container.provenance,
+                prologue_end: true,
+            });
+        }
+    } else {
+        emitter.emit_body(&container.body);
+    }
 
     let path_hash: i32 = path.chars().map(|c| c as i32).sum();
 
@@ -566,6 +638,13 @@ fn walk_container(
         local: container.local,
     };
     state.chunks.push(ContainerChunk { def, relocations });
+
+    // D6: pushed in the same order as `state.chunks` above — lockstep with
+    // the eventual `StoryData::containers`, matching §2.2's `container_idx`
+    // contract. A no-op (`state.debug` is `None`) on the default path.
+    if let Some(debug) = state.debug.as_mut() {
+        debug.push_container(raw_entries);
+    }
 
     // Primary address: every container is addressable by its own id.
     state.addresses.push(AddressDef {

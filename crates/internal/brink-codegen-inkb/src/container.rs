@@ -12,6 +12,35 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    /// D6 (`docs/debugger-spec.md` §2.2): like [`Self::emit_body`], but
+    /// records one [`crate::debug_info::RawDebugEntry`] per top-level
+    /// statement into `out` before emitting it — `bytecode_offset` is this
+    /// container's own running bytecode length at that point (so entries
+    /// come out already sorted ascending, matching §2.2's contract), and
+    /// `provenance` is `stmt.provenance`. The first statement's entry
+    /// always carries `prologue_end: true` (§2.4): whatever precedes it —
+    /// parameter-binding `DeclareTemp`s the caller already emitted directly
+    /// (never through a `Stmt`, so `walk_container` records that prologue
+    /// entry itself before calling this), or nothing at all — the first
+    /// *statement proper* is always the landing point for a breakpoint set
+    /// on this container.
+    pub(super) fn emit_body_recording(
+        &mut self,
+        stmts: &[lir::Stmt],
+        out: &mut Vec<crate::debug_info::RawDebugEntry>,
+    ) {
+        for (i, stmt) in stmts.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation)]
+            let offset = self.bytecode.len() as u32;
+            out.push(crate::debug_info::RawDebugEntry {
+                offset,
+                provenance: stmt.provenance,
+                prologue_end: i == 0,
+            });
+            self.emit_stmt(stmt);
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one match arm per LIR Stmt variant; splitting would obscure the dispatch"

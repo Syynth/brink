@@ -5,11 +5,12 @@ use alloc::vec::Vec;
 
 use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
+    write_varint,
 };
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DebugInfoSection,
+    DirectEffects, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -30,7 +31,7 @@ use super::{
 // ── Tier 1: Full story write ────────────────────────────────────────────────
 
 /// Encode a [`StoryData`] into the `.inkb` binary format with sectioned header.
-#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     let base = buf.len();
 
@@ -46,8 +47,18 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // E052 fence no `await` compiles, so this is always empty today and every
     // existing story omits it (byte-identical, no `VERSION` bump).
     let has_frame_shapes = !story.frame_shapes.is_empty();
-    let section_count =
-        SECTION_COUNT as usize + usize::from(has_visibility) + usize::from(has_frame_shapes);
+    // The `DebugInfo` section (D6, tag `0x11`) is likewise **optional**:
+    // emitted only when the story was compiled with the debug flag on
+    // (`docs/debugger-spec.md` §1.2 ship policy — dev/studio compiles and
+    // an explicit CLI flag opt in; release export never does). Presence
+    // tracks *whether debug info was requested*, not whether any entry
+    // exists, so this checks `is_some()` rather than emptiness like the
+    // sections above.
+    let has_debug_info = story.debug_info.is_some();
+    let section_count = SECTION_COUNT as usize
+        + usize::from(has_visibility)
+        + usize::from(has_frame_shapes)
+        + usize::from(has_debug_info);
     let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
 
     // Write placeholder header (zeros) — we'll patch it after writing sections.
@@ -140,6 +151,16 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         section!(
             SectionKind::FrameShapes,
             write_section_frame_shapes(&story.frame_shapes, buf)
+        );
+    }
+    // DebugInfo (D6, tag 0x11) is optional and emitted last (highest tag) —
+    // omitted entirely when not requested so every story compiled without
+    // the debug flag stays byte-identical to a pre-D6 compile (the
+    // oracle-safety guarantee, `docs/debugger-spec.md` §1.2/§6).
+    if let Some(debug_info) = &story.debug_info {
+        section!(
+            SectionKind::DebugInfo,
+            write_section_debug_info(debug_info, buf)
         );
     }
 
@@ -706,6 +727,67 @@ pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
         write_u32(buf, shape.slots.len() as u32);
         for slot in &shape.slots {
             write_u16(buf, slot.0);
+        }
+    }
+}
+
+/// Section-local encoding version for `DebugInfo` (D6,
+/// `docs/debugger-spec.md` §2.2) — independent of the `.inkb` format
+/// `VERSION`, so the entry encoding can grow (e.g. the reserved `NodeId`
+/// column, §1.3) without another whole-format bump.
+pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 1;
+
+/// Write the D6 `DebugInfo` section (no header framing): a one-byte
+/// section-local version, the section-local file table (§2.3), then one
+/// entry table per container in `Containers` order (§2.2). Callers emit
+/// this section only when debug info was requested (`story.debug_info` is
+/// `Some`).
+///
+/// Per-container entries use the varint delta/absolute encoding §2.2
+/// decides (a deliberate, section-scoped departure from this format's
+/// fixed-width house style — see [`write_varint`]'s doc): `bytecode_offset`
+/// is delta-from-previous-entry (always ≥ 0, entries are sorted ascending
+/// by offset), `range_len` is delta-from-`range_start` (the range's
+/// length), everything else in the entry is an absolute varint except the
+/// fixed-width `kind_token: u32` and `flags: u8` (§2.2's table explains why
+/// those two stay fixed-width).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
+    write_u8(buf, DEBUG_INFO_SECTION_VERSION);
+
+    write_u32(buf, section.files.len() as u32);
+    for file in &section.files {
+        write_u8(buf, file.surface as u8);
+        write_str(buf, &file.path);
+    }
+
+    write_u32(buf, section.containers.len() as u32);
+    for table in &section.containers {
+        write_varint(buf, table.entries.len() as u64);
+        let mut prev_offset: u32 = 0;
+        for entry in &table.entries {
+            write_varint(buf, u64::from(entry.bytecode_offset - prev_offset));
+            prev_offset = entry.bytecode_offset;
+            write_varint(buf, u64::from(entry.file_idx));
+            write_varint(buf, u64::from(entry.range_start));
+            write_varint(buf, u64::from(entry.range_len));
+            write_u32(buf, entry.kind_token);
+            write_u8(buf, entry.flags);
+        }
+
+        write_varint(buf, table.locals.len() as u64);
+        for local in &table.locals {
+            write_u16(buf, local.slot);
+            write_str(buf, &local.name);
+            match local.declaring_range {
+                Some((file_idx, range_start, range_len)) => {
+                    write_u8(buf, 1);
+                    write_varint(buf, u64::from(file_idx));
+                    write_varint(buf, u64::from(range_start));
+                    write_varint(buf, u64::from(range_len));
+                }
+                None => write_u8(buf, 0),
+            }
         }
     }
 }

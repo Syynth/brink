@@ -88,6 +88,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut effect_rows = Vec::new();
     let mut frame_shapes = Vec::new();
     let mut struct_shapes = Vec::new();
+    let mut debug_info = None;
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -111,6 +112,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::alias_table => alias_table = defs::parse_alias_table(inner)?,
             Rule::effect_rows => effect_rows = defs::parse_effect_rows(inner)?,
             Rule::frame_shapes => frame_shapes = defs::parse_frame_shapes(inner)?,
+            Rule::debug_info => debug_info = Some(defs::parse_debug_info(inner)?),
             Rule::container => {
                 let (line, col) = inner.line_col();
                 let (container, lt) = lines::parse_container(inner)?;
@@ -154,6 +156,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         alias_table,
         effect_rows,
         frame_shapes,
+        debug_info,
         source_checksum,
     })
 }

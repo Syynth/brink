@@ -341,6 +341,11 @@ impl IdeSession {
             dialect,
             types,
             lints,
+            // D6 (`docs/debugger-spec.md` §1.2): a mount-time compile flag
+            // with no diagnostics-relevant effect on an IDE session — not
+            // one of the four fields this method change-detects, same
+            // posture as the three ignored fields above.
+            emit_debug_info: _,
             conventions,
         } = options.clone();
         let mut changed = false;
@@ -639,6 +644,12 @@ impl IdeSession {
             // the policy `set_lint_policy` resolved. Spelled out explicitly,
             // not `..Default::default()` — see that note for why.
             lints: self.lints.clone(),
+            // D6 (`docs/debugger-spec.md` §1.2): no `IdeSession` state
+            // tracks this — an editor/diagnostics session has no
+            // `--debug-info`-equivalent toggle of its own, so it stays off,
+            // matching the ship-policy default every mount without an
+            // explicit debug compile gets.
+            emit_debug_info: false,
             // `set_conventions` (issue #1880) — see the matching note on
             // `IdeSnapshot::analyze` above. This method's result is also
             // what `sync_db_options` writes into `ProjectDb`, so an
@@ -1487,6 +1498,7 @@ EXTERNAL add_state(who)
             dialect: Dialect::Brink,
             types: Some(TypePolicy::Gradual),
             lints,
+            emit_debug_info: false,
             conventions: Some("conventions.brink".to_owned()),
         };
 

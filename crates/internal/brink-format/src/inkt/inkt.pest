@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ debug_info? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -65,6 +65,21 @@ dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads 
 
 frame_shapes = { "(" ~ "frame_shapes" ~ frame_shape_entry* ~ ")" }
 frame_shape_entry = { "(" ~ "frame" ~ def_id ~ integer* ~ ")" }
+
+// ── DebugInfo (D6, docs/debugger-spec.md §2) ──────────────────────────────────
+// Emitted only when debug info was requested at compile time — omitted from
+// the story text entirely, not just empty, when the section is absent.
+
+debug_info = { "(" ~ "debug_info" ~ debug_files? ~ debug_container* ~ ")" }
+debug_files = { "(" ~ "files" ~ debug_file_entry* ~ ")" }
+debug_file_entry = { "(" ~ "file" ~ integer ~ debug_surface ~ string ~ ")" }
+debug_surface = { "synthetic" | "ink" | "native" }
+debug_container = { "(" ~ "dcontainer" ~ integer ~ debug_entry* ~ debug_locals? ~ ")" }
+// entry: bytecode_offset file_idx range_start range_len kind_token flags
+debug_entry = { "(" ~ "entry" ~ integer ~ integer ~ integer ~ integer ~ integer ~ integer ~ ")" }
+debug_locals = { "(" ~ "locals" ~ debug_local_entry* ~ ")" }
+debug_local_entry = { "(" ~ "local" ~ integer ~ string ~ debug_range? ~ ")" }
+debug_range = { "(" ~ "range" ~ integer ~ integer ~ integer ~ ")" }
 
 effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }
 effects_writes = { "(" ~ "writes" ~ def_id* ~ ")" }
