@@ -18,6 +18,19 @@ import type { StudioState } from "../index.js";
 import type { TabTarget } from "../types.js";
 
 export interface DocumentsSlice {
+  /**
+   * The open Settings section, or null when Settings is closed (#3174).
+   *
+   * Settings is a MODAL rather than an editor occupant (ruled 2026-08-27):
+   * it is consult-and-adjust, so taking over the editor area cost you the
+   * file you were looking at for something you leave in seconds.
+   *
+   * The section id lives here rather than inside the modal so every door
+   * into Settings can open it at the right place — the command palette, the
+   * Binder's `brink.toml` row, and the Problems panel's "Configure Exxx…"
+   * all want different sections.
+   */
+  settingsSection: string | null;
   /** docKey ("main.ink" / "main.ink::start") of the focused group's active
    *  ink document; "" when none. */
   activeDocKey: string;
@@ -51,6 +64,8 @@ export interface DocumentsSlice {
 
   /** Open an ink document (pinned, or as the group's preview tab). */
   openTarget(target: TabTarget, pinned: boolean): void;
+  /** Open Settings at `section` (default: the first one), or close it. */
+  setSettingsSection(section: string | null): void;
   /** Close every open tab for `path` (file + its symbol docs). Used by delete
    *  so the shell tears the views down before the file leaves the session. */
   closeDocsForPath(path: string): void;
@@ -83,12 +98,17 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   get,
 ) => ({
   activeDocKey: "",
+  settingsSection: null,
   navSeq: 0,
   dirtyFiles: 0,
   _openTarget: null,
   _closeDocsForPath: null,
   _renameDocPath: null,
   _renameSymbolDoc: null,
+
+  setSettingsSection(section) {
+    set({ settingsSection: section });
+  },
 
   openTarget(target, pinned) {
     set({ navSeq: get().navSeq + 1 });

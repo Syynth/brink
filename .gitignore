@@ -36,3 +36,6 @@ packages/ink-editor/dist/
 # 2026-08-24). Artifacts are per-machine measurements — the durable summary
 # lives in docs/desktop-perf-baseline.md.
 perf-runs/
+
+# brink-prose's wasm-pack output, same as brink-web's (built, never committed).
+crates/brink-prose/www/pkg/

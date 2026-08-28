@@ -257,8 +257,18 @@ function withWorkerMirror(
   }) as EditorSessionHandle;
 }
 
+/**
+ * The author's word list, project-relative.
+ *
+ * A dotfile so it sits beside `brink.toml` without appearing as a chapter in
+ * the Binder — it is project metadata, not manuscript.
+ */
+export const PROSE_DICTIONARY_FILE = ".brink-dictionary";
+
 export class ProjectSession {
   private provider: FileProvider;
+  /** @see getProseDictionary — `null` means "not computed since analysis moved". */
+  private proseDictionaryCache: string[] | null = null;
   /**
    * The host's constructor-time `entryFile` argument — the fallback for a
    * configless project, and the seed for `discoverProjectConfig`'s walk-up.
@@ -503,6 +513,105 @@ export class ProjectSession {
    */
   getDiagnosticRegistry(): unknown[] {
     return getDiagnosticRegistry();
+  }
+
+  /**
+   * The project's proper nouns for the prose dictionary (#3210).
+   *
+   * Cached per compile generation, not per call: the prose extension asks on
+   * every debounce, and this walks every file's symbols and line contexts.
+   * `deliverCompile` invalidates it — a name added in one file must reach the
+   * checker in another, so the cache key is the project's analysis, not a
+   * file's text.
+   */
+  getProseDictionary(): string[] {
+    if (this.proseDictionaryCache === null) {
+      try {
+        this.proseDictionaryCache = [
+          ...this.session.getProseDictionary(),
+          ...this.readAuthorDictionary(),
+        ];
+      } catch {
+        // No analysis yet (first paint). An empty dictionary means the
+        // checker flags invented names for one debounce, not that it breaks.
+        return [];
+      }
+    }
+    return this.proseDictionaryCache;
+  }
+
+  /**
+   * The author's own word list — everything the symbol table cannot know:
+   * place names, in-world jargon, a character who is never a cue.
+   *
+   * Its OWN file rather than a `brink.toml` key (ruled 2026-08-27): the list
+   * is machine-appended and unbounded, and a config file that is nine-tenths
+   * word list stops reading as configuration.
+   */
+  private readAuthorDictionary(): string[] {
+    const source = this.session.getFileSource(PROSE_DICTIONARY_FILE);
+    if (source === null) return [];
+    return source
+      .split("\n")
+      .map((line) => line.trim())
+      // `#` comments so an author can group the list; blank lines ignored.
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+  }
+
+  /**
+   * Add a word to the author dictionary, creating the file if needed.
+   *
+   * Sorted and deduplicated on write so the file does not churn version
+   * control by append order — two authors adding the same two words in
+   * different orders should produce the same file.
+   */
+  addProseDictionaryWord(word: string): boolean {
+    const trimmed = word.trim();
+    if (trimmed.length === 0) return false;
+
+    const existing = this.readAuthorDictionary();
+    if (existing.includes(trimmed)) return true;
+
+    const words = [...existing, trimmed].sort((a, b) => a.localeCompare(b));
+    const header =
+      "# Words this project spells on purpose. One per line; `#` starts a comment.\n" +
+      "# Knot, stitch and character-cue names are already known — they do not belong here.\n";
+    this.session.updateFile(PROSE_DICTIONARY_FILE, `${header}${words.join("\n")}\n`);
+    this.invalidateProseDictionary();
+    return true;
+  }
+
+  /** Drop the prose dictionary cache — called when analysis changes. */
+  invalidateProseDictionary(): void {
+    this.proseDictionaryCache = null;
+  }
+
+  /**
+   * `[prose] dialect` from `brink.toml`, or `"american"` when unset.
+   *
+   * The default lives here rather than in the checker so both roads agree:
+   * the session is what the editor asks, and the settings UI shows the same
+   * fallback.
+   */
+  getProseDialect(): string {
+    try {
+      return this.session.getConfiguredProseDialect() ?? "american";
+    } catch {
+      return "american";
+    }
+  }
+
+  /**
+   * Whether `[prose] enable` allows prose checking. Defaults to ON when the
+   * config says nothing — a project that has never heard of the setting
+   * should get the feature, not silently miss it.
+   */
+  isProseEnabled(): boolean {
+    try {
+      return this.session.getConfiguredProseEnable() ?? true;
+    } catch {
+      return true;
+    }
   }
 
   /** Load all files from provider and resolve INCLUDEs. */

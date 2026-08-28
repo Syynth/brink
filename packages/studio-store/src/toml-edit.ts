@@ -199,3 +199,36 @@ export function setTomlBool(
 ): string {
   return setTomlValue(source, table, key, value === null ? null : String(value));
 }
+
+/**
+ * Read `[table] key` as an integer, or null when absent or not a bare
+ * number.
+ *
+ * Separate from {@link getTomlString} for the reason {@link getTomlBool}
+ * is: `indent = 4` is not a TOML string, so reading it as one would make
+ * the key invisible to a form while it is plainly set in the file.
+ */
+export function getTomlInteger(source: string, table: string, key: string): number | null {
+  const lines = source.split("\n");
+  const range = tableRange(lines, table);
+  if (range === null) return null;
+  const re = keyLineRe(key);
+  for (const line of lines.slice(range.start, range.end)) {
+    const m = re.exec(line);
+    if (m) {
+      const raw = (m[1] ?? "").replace(/\s*#.*$/, "").trim();
+      return /^-?\d+$/.test(raw) ? Number(raw) : null;
+    }
+  }
+  return null;
+}
+
+/** Write `[table] key = <n>`, or remove it when `value` is null. */
+export function setTomlInteger(
+  source: string,
+  table: string,
+  key: string,
+  value: number | null,
+): string {
+  return setTomlValue(source, table, key, value === null ? null : String(Math.trunc(value)));
+}

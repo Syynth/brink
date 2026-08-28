@@ -186,12 +186,15 @@ test("the registered manifest drives diagnostics; the external-check flag suppre
   // Settings → external check "off" recompiles immediately: the
   // manifest-driven diagnostic is suppressed, badge gone.
   await page.keyboard.press("ControlOrMeta+,");
-  await expect(page.locator(".settings-doc")).toBeVisible();
-  // Scope to the Diagnostics section — the Editor section also has a select.
+  await expect(page.locator(".brink-settings-modal")).toBeVisible();
+  // Its own rail section under the App scope since #3174: the `[lints]` table
+  // is a PROJECT setting and this flag is an APP one, which the scope switch
+  // now states rather than a hint inside one mixed section.
+  await page.locator(".brink-settings-scope", { hasText: "App" }).click();
   await page
-    .locator(".settings-section", { hasText: "Diagnostics" })
-    .locator(".settings-select")
-    .selectOption("off");
+    .locator(".brink-settings-nav-item", { hasText: "External functions" })
+    .click();
+  await page.locator(".settings-select").first().selectOption("off");
   await expect(problemsBadge).toHaveCount(0, { timeout: 10000 });
 });
 

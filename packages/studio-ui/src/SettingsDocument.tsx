@@ -45,8 +45,16 @@ import {
   clampEditorFontSize,
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsStepper,
+  SettingsToggle,
+} from "./SettingsRow.js";
+import { DEFAULT_SETTINGS_SECTION } from "./settingsSectionIds.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { LintSettings } from "./LintSettings.js";
+import { ThemePicker } from "./ThemePicker.js";
 import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 
 /**
@@ -66,7 +74,7 @@ import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
  * "create one" affordance here, since the Binder already owns file
  * creation.
  */
-function ProjectSection({ groupId }: { groupId: string }) {
+export function ProjectSection({ groupId }: { groupId: string }) {
   const outline = useStudioStore((s) => s.outline);
   const configPath = useMemo(
     () => outline.find((f) => !f.mounted && isConfigPath(f.path))?.path ?? null,
@@ -75,7 +83,6 @@ function ProjectSection({ groupId }: { groupId: string }) {
   if (configPath === null) return null;
   return (
     <section className="settings-section settings-project">
-      <h2 className="settings-section-title">Project</h2>
       <p className="settings-section-hint">
         <code>{configPath}</code> — the form covers the common keys; the text below it is
         the escape hatch for everything else.
@@ -107,15 +114,19 @@ export function settingsRef(): DocumentRef {
  */
 export function registerSettingsCommand(
   commands: CommandRegistry,
-  layout: ShellLayoutStore,
+  openSettings: (section: string | null) => void,
 ): () => void {
   return commands.register({
     id: OPEN_SETTINGS_COMMAND_ID,
     title: "Settings: Open",
     keybinding: "Mod-,",
-    // Takes over the editor root area rather than opening a tab (decision
-    // log 2026-08-26): a tab is only reachable from the view that HAS tabs.
-    run: () => layout.getState().setTakeover(settingsRef()),
+    // A MODAL, not an editor occupant (ruled 2026-08-27, #3174). It was a
+    // takeover while Settings was small — right at the time, because a tab
+    // is unreachable from any view without tabs — but the brink.toml
+    // interface made it a surface you consult, and taking over the editor
+    // cost you the file you were reading for something you leave in
+    // seconds.
+    run: () => openSettings(DEFAULT_SETTINGS_SECTION),
   });
 }
 
@@ -252,7 +263,7 @@ export function saveEditorSettings(
  * each needs a sentence to explain what it is FOR, and a collapsed select
  * would hide exactly the part that helps you choose.
  */
-function EditorViewSection() {
+export function EditorViewSection() {
   const { layout } = useShell();
   const current = useShellLayout((s) => s.editorView);
   const views: { id: EditorViewId; label: string; hint: string }[] = [
@@ -274,64 +285,51 @@ function EditorViewSection() {
   ];
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Editor view</h2>
-      <p className="settings-section-hint">
-        What fills the editor area. Switching keeps the file you are on.
-      </p>
-      <div className="settings-radio-group" role="radiogroup" aria-label="Editor view">
-        {views.map((view) => (
-          <label key={view.id} className="settings-radio settings-radio-explained">
-            <input
-              type="radio"
-              name="brink-editor-view"
-              value={view.id}
-              checked={current === view.id}
-              onChange={() => layout.getState().setEditorView(view.id)}
-            />
-            <span className="settings-radio-text">
-              <span>{view.label}</span>
-              <span className="settings-radio-hint">{view.hint}</span>
-            </span>
-          </label>
-        ))}
-      </div>
+      <SettingsGroup title="View">
+        <div className="settings-radio-group" role="radiogroup" aria-label="Editor view">
+          {views.map((view) => (
+            <label key={view.id} className="settings-radio settings-radio-explained">
+              <input
+                type="radio"
+                name="brink-editor-view"
+                value={view.id}
+                checked={current === view.id}
+                onChange={() => layout.getState().setEditorView(view.id)}
+              />
+              <span className="settings-radio-text">
+                <span>{view.label}</span>
+                <span className="settings-radio-hint">{view.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </SettingsGroup>
     </section>
   );
 }
 
-function ThemeSection() {
+export function ThemeSection() {
   const { themes } = useShell();
   const current = useThemeId();
-  // Radio group name must be unique per mounted view (the singleton can
-  // still be split-duplicated): same-name radios across views would
-  // uncheck each other at the DOM level.
-  const groupName = useId();
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Theme</h2>
-      <p className="settings-section-hint">
-        Color theme for the whole studio. Applies immediately.
-      </p>
-      <div className="settings-radio-group" role="radiogroup" aria-label="Theme">
-        {themes.list().map((theme) => (
-          <label key={theme.id} className="settings-radio">
-            <input
-              type="radio"
-              name={groupName}
-              value={theme.id}
-              checked={current === theme.id}
-              onChange={() => void themes.select(theme.id)}
-            />
-            <span>{theme.label}</span>
-          </label>
-        ))}
-      </div>
+      <SettingsGroup title="Theme">
+        <p className="settings-group-hint">
+          Applies immediately. Each tile is the real theme &mdash; the same token
+          cascade the editor resolves.
+        </p>
+        <ThemePicker
+          themes={themes.list()}
+          current={current}
+          onSelect={(id) => void themes.select(id)}
+        />
+      </SettingsGroup>
     </section>
   );
 }
 
-function KeymapSection() {
+export function KeymapSection() {
   const { keymapOverrides } = useShell();
   const [text, setText] = useState(() =>
     JSON.stringify(keymapOverrides.current, null, 2),
@@ -350,7 +348,6 @@ function KeymapSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Keymap overrides</h2>
       <p className="settings-section-hint">
         JSON mapping a command id to a keybinding ({'"Mod-K"'}), an array of
         keybindings, or <code>null</code> to unbind. Overrides replace the
@@ -376,7 +373,7 @@ function KeymapSection() {
   );
 }
 
-function DiagnosticsSection() {
+export function DiagnosticsSection() {
   const externalCheck = useStudioStore((s) => s.externalCheck);
   const setExternalCheck = useStudioStore((s) => s.setExternalCheck);
   const selectId = useId();
@@ -388,15 +385,11 @@ function DiagnosticsSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">External functions</h2>
-      <p className="settings-section-hint">
-        Severity of external-function checks against a registered host manifest.
-        Recompiles on change. Unlike the diagnostics below, this is a studio
-        preference rather than a <code>brink.toml</code> setting &mdash; it stays
-        on this machine.
-      </p>
-      <div className="settings-field">
-        <label htmlFor={selectId}>External function checking</label>
+      <SettingsRow
+        htmlFor={selectId}
+        title="External function checking"
+        description="Severity of external-function checks against a registered host manifest. Recompiles on change."
+      >
         <select
           id={selectId}
           className="settings-select"
@@ -406,12 +399,12 @@ function DiagnosticsSection() {
           <option value="error">Error</option>
           <option value="off">Off</option>
         </select>
-      </div>
+      </SettingsRow>
     </section>
   );
 }
 
-function EditorSection() {
+export function EditorSection() {
   const formGlyph = useStudioStore((s) => s.formGlyph);
   const setFormGlyph = useStudioStore((s) => s.setFormGlyph);
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
@@ -483,86 +476,67 @@ function EditorSection() {
 
   return (
     <section className="settings-section">
-      <h2 className="settings-section-title">Editor</h2>
-      <p className="settings-section-hint">
-        The inline argument-form glyph (the clickable mark after a function name).
-        The hover card{"'"}s {'"'}edit arguments{'"'} action and the Mod-Shift-A
-        shortcut are always available regardless of this setting.
-      </p>
-      <div className="settings-field">
-        <label htmlFor={selectId}>Argument-form glyph</label>
-        <select
-          id={selectId}
-          className="settings-select"
-          value={formGlyph}
-          onChange={(event) => onGlyphChange(event.target.value as FormGlyphMode)}
+      <SettingsGroup title="Arguments">
+        <SettingsRow
+          htmlFor={selectId}
+          title="Argument-form glyph"
+          description="When the inline glyph appears. The hover card's “edit arguments” action and Mod-Shift-A work regardless."
         >
-          <option value="off">Off (card + shortcut only)</option>
-          <option value="hover">On line hover</option>
-          <option value="inline">Always visible</option>
-        </select>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={autoId}>
-          <input
-            id={autoId}
-            type="checkbox"
-            checked={autoOpenForm}
-            onChange={(event) => onAutoChange(event.target.checked)}
-            style={{ marginRight: 8 }}
-          />
-          Open the form when accepting a function completion
-        </label>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={guttersId}>
-          <input
-            id={guttersId}
-            type="checkbox"
-            checked={showGutters}
-            onChange={(event) => onGuttersChange(event.target.checked)}
-            style={{ marginRight: 8 }}
-          />
-          Show editor gutters (line numbers, structure rails, fold/play markers)
-        </label>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={fontSizeId}>
-          Editor font size
-          <input
-            id={fontSizeId}
-            type="number"
+          <select
+            id={selectId}
+            className="settings-select"
+            value={formGlyph}
+            onChange={(event) => onGlyphChange(event.target.value as FormGlyphMode)}
+          >
+            <option value="off">Off</option>
+            <option value="hover">On line hover</option>
+            <option value="inline">Always visible</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow
+          htmlFor={autoId}
+          title="Open the form on completion"
+          description="Accepting a function completion opens its argument form."
+        >
+          <SettingsToggle id={autoId} checked={autoOpenForm} onChange={onAutoChange} />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Appearance">
+        <SettingsRow
+          htmlFor={guttersId}
+          title="Show gutters"
+          description="Line numbers, structure rails, and the fold and play markers."
+        >
+          <SettingsToggle id={guttersId} checked={showGutters} onChange={onGuttersChange} />
+        </SettingsRow>
+        <SettingsRow
+          title="Editor font size"
+          description={`${MIN_EDITOR_FONT_SIZE}–${MAX_EDITOR_FONT_SIZE}px, default ${DEFAULT_EDITOR_FONT_SIZE}. Mod-= / Mod-- / Mod-0 while editing do the same.`}
+        >
+          <SettingsStepper
+            value={fontSize}
             min={MIN_EDITOR_FONT_SIZE}
             max={MAX_EDITOR_FONT_SIZE}
-            value={fontSize}
-            onChange={(event) => onFontSizeChange(Number(event.target.value))}
-            style={{ marginLeft: 8, width: 64 }}
+            label="editor font size"
+            suffix="px"
+            onChange={onFontSizeChange}
           />
-        </label>
-        <p className="settings-section-hint">
-          {MIN_EDITOR_FONT_SIZE}–{MAX_EDITOR_FONT_SIZE} px (default{" "}
-          {DEFAULT_EDITOR_FONT_SIZE}). Also Mod-= / Mod-- / Mod-0 while editing.
-        </p>
-      </div>
-      <div className="settings-field">
-        <label htmlFor={appFontSizeId}>
-          App font size
-          <input
-            id={appFontSizeId}
-            type="number"
+        </SettingsRow>
+        <SettingsRow
+          title="App font size"
+          description={`${MIN_APP_FONT_SIZE}–${MAX_APP_FONT_SIZE}px, default ${DEFAULT_APP_FONT_SIZE}. Sizes the studio's own chrome.`}
+        >
+          <SettingsStepper
+            value={appFontSize}
             min={MIN_APP_FONT_SIZE}
             max={MAX_APP_FONT_SIZE}
-            value={appFontSize}
-            onChange={(event) => onAppFontSizeChange(Number(event.target.value))}
-            style={{ marginLeft: 8, width: 64 }}
+            label="app font size"
+            suffix="px"
+            onChange={onAppFontSizeChange}
           />
-        </label>
-        <p className="settings-section-hint">
-          {MIN_APP_FONT_SIZE}–{MAX_APP_FONT_SIZE} px (default{" "}
-          {DEFAULT_APP_FONT_SIZE}). Scales panels, menus, and labels — the
-          whole type scale moves with it; the editor keeps its own size.
-        </p>
-      </div>
+        </SettingsRow>
+      </SettingsGroup>
     </section>
   );
 }

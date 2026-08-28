@@ -731,6 +731,17 @@ jobs:
       # step ever moves after "Install dependencies" below.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      # brink-prose's wasm is a SECOND `file:` link (packages/brink-studio
+      # -> crates/brink-prose/www/pkg), so the install below fails with
+      # ENOENT without it — the same #2479 shape brink-web has. Every
+      # registered package in scripts/check-wasm-pkg.mjs's WASM_PACKAGES
+      # must be built before any `pnpm install` in the same job;
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` reads
+      # that registry and fails this lane if one is missing.
+      - name: Build prose wasm package
+        run: wasm-pack build crates/brink-prose --target web --out-dir www/pkg
+
       # No `version:` input on purpose (#2604): with it omitted the action reads
       # root package.json's `packageManager` field, so corepack, this lane and
       # scripts/setup-dev.sh all resolve ONE exact pnpm version. Pinning only a
@@ -829,6 +840,17 @@ jobs:
       # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) covers this job too.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      # brink-prose's wasm is a SECOND `file:` link (packages/brink-studio
+      # -> crates/brink-prose/www/pkg), so the install below fails with
+      # ENOENT without it — the same #2479 shape brink-web has. Every
+      # registered package in scripts/check-wasm-pkg.mjs's WASM_PACKAGES
+      # must be built before any `pnpm install` in the same job;
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` reads
+      # that registry and fails this lane if one is missing.
+      - name: Build prose wasm package
+        run: wasm-pack build crates/brink-prose --target web --out-dir www/pkg
+
       # No `version:` input on purpose (#2604): with it omitted the action reads
       # root package.json's `packageManager` field, so corepack, this lane and
       # scripts/setup-dev.sh all resolve ONE exact pnpm version. Pinning only a

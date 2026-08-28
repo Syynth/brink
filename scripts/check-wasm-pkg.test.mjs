@@ -4,8 +4,10 @@
 // without adding a root-level test dependency.
 
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -15,14 +17,19 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
+
+/** The repo root, for the registry's under-coverage sweep. */
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 import assert from "node:assert/strict";
 
 import {
   checkWasmPkg,
   checkWasmPkgLink,
+  linkedFilesOf,
   REQUIRED_FILES,
   LINKED_FILES,
   BUILD_COMMAND,
+  WASM_PACKAGES,
 } from "./check-wasm-pkg.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -390,5 +397,87 @@ describe("checkWasmPkgLink", () => {
 
     assert.equal(pkgOk, true, "the wasm-pack output (cause) should be complete");
     assert.equal(linkOk, false, "the resolved pnpm link (effect) should still be reported as broken");
+  });
+});
+
+
+// ── The registry (#3208) ────────────────────────────────────────────
+//
+// The guard became a registry when `brink-prose` arrived as a second
+// `file:`-linked wasm output. These tests exist because the failure mode of
+// a registry is silent under-coverage: an entry that is malformed, or a new
+// wasm package that nobody adds, produces no error — just an unguarded
+// install path that breaks later and confusingly, which is exactly the
+// #2479/#2593 shape this whole file is about.
+
+describe("WASM_PACKAGES", () => {
+  it("describes every field the checks read, for every entry", () => {
+    assert.ok(WASM_PACKAGES.length >= 2, "the registry exists to hold more than one");
+    for (const pkg of WASM_PACKAGES) {
+      for (const field of ["id", "pkgDir", "linkDir", "consumer", "depName", "buildCommand"]) {
+        assert.equal(
+          typeof pkg[field],
+          "string",
+          `${pkg.id ?? "<unnamed>"}.${field} must be a string`,
+        );
+        assert.ok(pkg[field].length > 0, `${pkg.id}.${field} must not be empty`);
+      }
+      assert.ok(Array.isArray(pkg.files) && pkg.files.length > 0, `${pkg.id}.files`);
+    }
+  });
+
+  it("keeps brink-web first, since it is every check's default", () => {
+    // `checkWasmPkg()` / `checkWasmPkgLink()` with no argument must keep
+    // meaning brink-web — guarded-install and the existing tests call them
+    // that way.
+    assert.equal(WASM_PACKAGES[0].id, "brink-web");
+    assert.deepEqual(WASM_PACKAGES[0].files, REQUIRED_FILES);
+    assert.equal(WASM_PACKAGES[0].buildCommand, BUILD_COMMAND);
+    assert.deepEqual(linkedFilesOf(WASM_PACKAGES[0]), LINKED_FILES);
+  });
+
+  it("points each entry's linkDir inside the consumer that declares the dep", () => {
+    // A linkDir under the wrong package would resolve to nothing and the
+    // link check would fail permanently — or, worse, point at a path that
+    // happens to exist and pass while guarding nothing.
+    for (const pkg of WASM_PACKAGES) {
+      assert.equal(
+        pkg.linkDir,
+        `${pkg.consumer}/node_modules/${pkg.depName}`,
+        `${pkg.id}: linkDir must be <consumer>/node_modules/<depName>`,
+      );
+    }
+  });
+
+  it("names a build command that actually builds that entry's pkgDir", () => {
+    for (const pkg of WASM_PACKAGES) {
+      const crate = pkg.pkgDir.replace(/\/www\/pkg$/, "");
+      assert.ok(
+        pkg.buildCommand.includes(crate),
+        `${pkg.id}: buildCommand should name ${crate}; got "${pkg.buildCommand}"`,
+      );
+    }
+  });
+
+  it("has an entry for every crate that ships a wasm-pack output", () => {
+    // The under-coverage check: a new `crate-type = ["cdylib"]` crate with a
+    // wasm-pack output and a `file:` consumer must be registered here, or it
+    // inherits none of this guarding. Derived from the repo rather than
+    // restated, so adding a crate fails this until it is listed.
+    const cratesDir = join(repoRoot, "crates");
+    const wasmCrates = readdirSync(cratesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .filter((e) => {
+        const manifest = join(cratesDir, e.name, "Cargo.toml");
+        return existsSync(manifest) && readFileSync(manifest, "utf8").includes("cdylib");
+      })
+      .map((e) => `crates/${e.name}/www/pkg`);
+
+    for (const pkgDir of wasmCrates) {
+      assert.ok(
+        WASM_PACKAGES.some((p) => p.pkgDir === pkgDir),
+        `${pkgDir} builds a cdylib but is not in WASM_PACKAGES — it would inherit none of the #2479 guarding`,
+      );
+    }
   });
 });

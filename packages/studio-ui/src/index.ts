@@ -37,6 +37,25 @@ export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef, inkDocPath, isOutOfScope } from "./InkFileDocument.js";
 export { DocumentIcon, type DocumentIconProps } from "./DocumentIcon.js";
 export { LintSettings } from "./LintSettings.js";
+export { FormattingSettings } from "./FormattingSettings.js";
+export { ProseSettings } from "./ProseSettings.js";
+export { ThemePicker } from "./ThemePicker.js";
+export {
+  SettingsGroup,
+  SettingsRow,
+  SettingsStepper,
+  SettingsToggle,
+} from "./SettingsRow.js";
+export {
+  SettingsModal,
+  SETTINGS_ICONS,
+  type SettingsSection,
+} from "./SettingsModal.js";
+export { settingsSections } from "./settingsSections.js";
+export {
+  DEFAULT_SETTINGS_SECTION,
+  SETTINGS_SECTION_IDS,
+} from "./settingsSectionIds.js";
 export { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
 export {
   ProblemsContextMenu,

@@ -143,13 +143,14 @@
    Settings, because Continuous view has nowhere else to put it. Bounded
    height so the config does not push every other settings section off
    the page; the editor inside scrolls on its own. */
+/* The raw TOML editor keeps a bounded height — it is a text editor, so it
+   genuinely needs its own scroll — but loses the border: it already reads
+   as an editor. */
 .brink-studio .settings-project-doc {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: clamp(220px, 45vh, 560px);
-  border: 1px solid var(--bs-border);
-  border-radius: 4px;
+  height: clamp(200px, 38vh, 480px);
   overflow: hidden;
 }
 
@@ -224,12 +225,13 @@
   border-color: var(--bs-accent);
 }
 
+/* No inner scroller and no box: the modal's pane scrolls, and a list that
+   scrolled inside it would be two scrollbars for one list (maintainer,
+   2026-08-27). The group headings carry the structure the border was
+   standing in for. */
 .brink-studio .lint-list {
-  border: 1px solid var(--bs-border);
-  border-radius: 4px;
-  overflow: hidden;
-  max-height: 340px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .brink-studio .lint-group-head {
@@ -376,11 +378,9 @@
 
 .brink-studio .lint-empty {
   margin: 0;
-  padding: 10px;
+  padding: 8px 0;
   font-size: var(--bs-font-small);
   color: var(--bs-fg-muted);
-  border: 1px dashed var(--bs-border);
-  border-radius: 4px;
 }
 
 .brink-studio .lint-row.is-unknown .lint-code {
@@ -443,4 +443,523 @@
 }
 .brink-studio .md a {
   color: var(--bs-accent);
+}
+
+/* ── Settings modal (#3174) ──────────────────────────────────────────
+   Zed-shaped: a searchable rail, one section at a time. The previous
+   single scrolling page put the project's lint table and the theme
+   picker in one column, so finding anything meant scrolling past
+   everything else. */
+.brink-studio .brink-settings-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, #000 45%, transparent);
+}
+
+.brink-studio .brink-settings-modal {
+  display: flex;
+  /* Bounded on both axes: big enough for the lint table, never so big it
+     stops reading as a thing over the app. */
+  width: min(920px, calc(100vw - 64px));
+  height: min(640px, calc(100vh - 80px));
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+/* Two tones, and they carry the structure (maintainer, 2026-08-27): the
+   rail sits on the app's own ground and the pane is RAISED above it, so
+   the dialog reads as navigation-plus-content rather than one flat surface
+   split by a hairline. The border stays, but it is no longer doing the
+   work of separating them. */
+.brink-studio .brink-settings-rail {
+  width: 196px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 8px;
+  background: var(--ctp-base, #1e1e2e);
+  border-right: 1px solid var(--bs-border);
+  min-height: 0;
+}
+
+.brink-studio .brink-settings-search {
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .brink-settings-search:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+
+.brink-studio .brink-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.brink-studio .brink-settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-body);
+  text-align: left;
+  cursor: pointer;
+}
+.brink-studio .brink-settings-nav-item:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .brink-settings-nav-item.active {
+  /* Lifted toward the pane's tone rather than tinted with the accent: the
+     selected row is the one whose CONTENT is showing, so it should read as
+     continuous with the pane beside it. */
+  background: var(--bs-panel-bg, #2a2a3d);
+  color: var(--bs-fg);
+}
+.brink-studio .brink-settings-nav-item.active svg {
+  color: var(--bs-accent);
+}
+
+.brink-studio .brink-settings-nav-empty {
+  margin: 4px 8px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+
+.brink-studio .brink-settings-pane {
+  flex-grow: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bs-panel-bg, #2a2a3d);
+}
+
+.brink-studio .brink-settings-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--bs-border);
+  flex-shrink: 0;
+}
+.brink-studio .brink-settings-head h2 {
+  margin: 0;
+  flex-grow: 1;
+  font-size: var(--bs-font-medium);
+  font-weight: 600;
+  color: var(--bs-fg);
+}
+.brink-studio .brink-settings-close {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.brink-studio .brink-settings-close:hover {
+  color: var(--bs-fg);
+}
+
+.brink-studio .brink-settings-body {
+  flex-grow: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Scope switch (#3174) ────────────────────────────────────────────
+   Where a setting is WRITTEN, which changes what changing one means:
+   project settings are versioned and shared, app settings are yours on
+   this machine. */
+.brink-studio .brink-settings-scopes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bs-border) 30%, transparent);
+}
+.brink-studio .brink-settings-scope {
+  flex: 1;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .brink-settings-scope.active {
+  background: var(--bs-panel-bg, #2a2a3d);
+  color: var(--bs-fg);
+}
+
+/* A search result from the other scope says which one it is. */
+.brink-studio .brink-settings-nav-scope {
+  margin-left: auto;
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+}
+
+/* Group heading inside a section — the pane header owns the section title,
+   so these are the subordinate labels (Zed's "Buffer Font"). */
+.brink-studio .settings-group-title {
+  margin: 0;
+  font-size: var(--bs-font-small);
+  font-weight: 600;
+  color: var(--bs-fg);
+}
+
+/* The config form flattens inside Settings (maintainer, 2026-08-27): its
+   own background and bottom rule exist for the case where it sits ABOVE an
+   editor in a document tab, marking where the form ends and the text
+   begins. In the modal that boundary is already drawn by the group
+   headings, so the box is one nesting level too many. */
+.brink-studio .settings-section .brink-config-form {
+  background: transparent;
+  border-bottom: none;
+  padding: 0;
+}
+
+/* ── Settings rows (#3174) ───────────────────────────────────────────
+   Zed's row: title and description left, control right, a rule between.
+   It reads at a glance — the eye runs down the left edge for WHAT and
+   down the right for WHAT IT IS SET TO. The old `settings-field` put the
+   label and control adjacent with no room for a description, so every
+   explanation had to become a paragraph above the group instead of
+   belonging to the setting it explained. */
+.brink-studio .settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brink-studio .settings-group-label {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.05em;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.brink-studio .settings-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 11px 0;
+}
+.brink-studio .settings-row + .settings-row {
+  border-top: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+}
+/* A row whose meaning depends on the one above it (Zed indents Theme Name
+   under Theme Mode). Subordinate, not decorative. */
+.brink-studio .settings-row.indented {
+  padding-left: 22px;
+}
+
+.brink-studio .settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.brink-studio .settings-row-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--bs-font-body);
+  color: var(--bs-fg);
+}
+.brink-studio .settings-row-desc {
+  font-size: var(--bs-font-small);
+  line-height: 1.5;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-row-badge {
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--bs-warning);
+  border: 1px solid var(--bs-warning);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+.brink-studio .settings-row-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  /* Aligns with the TITLE's line, not the block's centre — a two-line
+     description would otherwise drag the control down away from the thing
+     it belongs to. */
+  min-height: 26px;
+}
+.brink-studio .settings-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.brink-studio .settings-stepper {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.brink-studio .settings-stepper button {
+  width: 26px;
+  height: 100%;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .settings-stepper button:hover:not(:disabled) {
+  color: var(--bs-fg);
+}
+.brink-studio .settings-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.brink-studio .settings-stepper-value {
+  min-width: 62px;
+  text-align: center;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+  border-left: 1px solid var(--bs-border);
+  border-right: 1px solid var(--bs-border);
+  padding: 0 6px;
+  line-height: 24px;
+}
+.brink-studio .settings-stepper-suffix {
+  color: var(--bs-fg-muted);
+}
+
+.brink-studio .settings-revert {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .settings-revert:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-border);
+}
+
+/* A control that exists but is not settable yet — drawn, not hidden, so an
+   open question has somewhere to live. */
+.brink-studio .settings-segmented {
+  display: flex;
+  height: 26px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .settings-segmented span {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-segmented span + span {
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .settings-segmented.is-disabled {
+  opacity: 0.45;
+}
+
+.brink-studio .settings-empty {
+  margin: 0;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+
+/* A boolean as a switch. The native checkbox is OS chrome that ignores every
+   token here — beside a 26px stepper it reads as an unstyled hole. The input
+   is still the real control (kept, not replaced): it carries the label
+   association, the focus ring and the keyboard behaviour. */
+.brink-studio .settings-toggle {
+  position: relative;
+  display: inline-flex;
+  width: 32px;
+  height: 18px;
+}
+.brink-studio .settings-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+.brink-studio .settings-toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: var(--ctp-base, #1e1e2e);
+  border: 1px solid var(--bs-border);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.brink-studio .settings-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bs-fg-muted);
+  transition: transform 120ms ease, background 120ms ease;
+}
+.brink-studio .settings-toggle input:checked + .settings-toggle-track {
+  background: var(--bs-accent);
+  border-color: var(--bs-accent);
+}
+.brink-studio .settings-toggle input:checked + .settings-toggle-track::after {
+  transform: translateX(14px);
+  background: var(--ctp-base, #1e1e2e);
+}
+.brink-studio .settings-toggle input:focus-visible + .settings-toggle-track {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 2px;
+}
+
+/* ── Theme tiles (#3174) ─────────────────────────────────────────────
+   A theme is chosen by looking, not by reading its name, so each tile
+   renders a snippet in the theme itself. The preview element carries the
+   `brink-studio` class AND the data-theme attribute because that pair IS
+   the theme cascade (mocha's bare-class base, then the overrides) — which
+   is why the tile needs the layout half of `.brink-studio` undone here. */
+.brink-studio .settings-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  gap: 12px;
+}
+
+.brink-studio .settings-theme-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+}
+.brink-studio .settings-theme-tile input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-theme-preview {
+  /* Custom properties INHERIT, and the theme sheets are OVERRIDE sheets —
+     they set only what they change, trusting mocha's bare-class base on the
+     same element to supply the rest. That holds for the app root; nested,
+     it leaves a hole: a token some OTHER theme defines and mocha's base
+     does not (the role tokens below) is inherited straight from the app
+     root, so a Mocha tile drew Manuscript's hot-red markers.
+
+     `initial` on a custom property is the guaranteed-invalid value, which
+     sends `var(--x, fallback)` to its fallback — exactly what an
+     un-nested Mocha does. Specificity keeps it honest: this selector is
+     (0,1,0) and `.brink-studio[data-theme=…]` is (0,2,0), so a theme that
+     DOES define one still wins here, whatever the source order.
+
+     The list is every token some theme sets that mocha's base does not:
+       comm -13 <(mocha tokens) <(all theme tokens)
+     Re-derive it when a theme adds a token; a new one leaks silently. */
+  --bs-syn-marker: initial;
+  --bs-syn-divert: initial;
+  --bs-syn-halt: initial;
+  --bs-cue: initial;
+  --bs-cue-weight: initial;
+}
+
+.brink-studio .settings-theme-preview {
+  /* Undo `.brink-studio`'s frame layout — the class is here for its tokens,
+     not for the shell box it normally paints. */
+  height: auto;
+  display: block;
+  overflow: hidden;
+
+  padding: 9px 10px;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 9px;
+  line-height: 1.55;
+  white-space: pre;
+  transition: border-color 120ms ease;
+}
+.brink-studio .settings-theme-line {
+  display: block;
+}
+
+.brink-studio .settings-theme-tile:hover .settings-theme-preview {
+  border-color: var(--bs-fg-muted);
+}
+/* The ring, not a fill: the tile's inside belongs to the theme it shows,
+   so selection has to be marked from outside it. */
+.brink-studio .settings-theme-tile.active .settings-theme-preview {
+  border-color: var(--bs-accent);
+  box-shadow: 0 0 0 1px var(--bs-accent);
+}
+.brink-studio .settings-theme-tile input:focus-visible ~ .settings-theme-preview {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 2px;
+}
+
+.brink-studio .settings-theme-name {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .settings-theme-tile.active .settings-theme-name {
+  color: var(--bs-fg);
+}
+
+.brink-studio .settings-group-hint {
+  margin: 0 0 2px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
 }

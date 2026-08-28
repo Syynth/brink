@@ -25,6 +25,7 @@ import { useContextMenuDismiss } from "./BinderContextMenu.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
 export interface ProblemsMenuTarget {
   x: number;
@@ -44,7 +45,7 @@ export function ProblemsContextMenu({
 
   const storeApi = useStudioStoreApi();
   const outline = useStudioStore((s) => s.outline);
-  const openTarget = useStudioStore((s) => s.openTarget);
+  const setSettingsSection = useStudioStore((s) => s.setSettingsSection);
 
   const code = target.diagnostic.code;
   const path = target.diagnostic.file;
@@ -104,10 +105,11 @@ export function ProblemsContextMenu({
 
   items.push({
     label: code === undefined ? "Open diagnostics settings" : `Configure ${code}…`,
-    run: () => {
-      if (configPath !== null) openTarget({ kind: "file", path: configPath }, false);
-    },
-    disabled: configPath === null,
+    // Names the DIAGNOSTICS section rather than opening `brink.toml`: the
+    // config file's own door lands on Project, which is the wrong place to
+    // arrive from "configure this diagnostic". Every door into Settings
+    // names the section it means.
+    run: () => setSettingsSection(SETTINGS_SECTION_IDS.diagnostics),
   });
 
   return (

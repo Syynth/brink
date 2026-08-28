@@ -109,7 +109,6 @@ import {
   TodosView,
   ProgramView,
   SEARCH_TOOL_WINDOW_ID,
-  SETTINGS_TYPE_ID,
   STORY_GRAPH_TYPE_ID,
   SearchView,
   SessionPicker,
@@ -136,7 +135,10 @@ import {
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
-  settingsRef,
+  SETTINGS_SECTION_IDS,
+  SETTINGS_TYPE_ID,
+  SettingsModal,
+  settingsSections,
   isConfigPath,
   registerStoryGraphCommand,
   type StudioApi,
@@ -146,6 +148,7 @@ import { registerDebugCommands } from "./debug-commands.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
+import { studioProseChecker } from "./prose-checker.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -475,6 +478,10 @@ function Root({
           <App>
             {/* Inside the .brink-studio root, or their fixed positioning
                 and tokens never apply (#3054 review — the eaten menu). */}
+            {/* Settings (#3174): a modal over the whole studio, inside the
+                .brink-studio root so tokens apply — the same placement the
+                other host surfaces need (#3054's eaten menu). */}
+            <SettingsModal sections={settingsSections("settings")} />
             <SymbolContextMenuHost />
             <EditorTextMenuHost />
             <SymbolRenamePrompt />
@@ -726,6 +733,10 @@ export async function mountStudio(
           // the manuscript at all. The Player is deliberately not in this
           // list: it is half of the default two-up, so restoring it is what
           // keeps a restored session looking like the one you left.
+          // Settings is a modal now (#3174) and no longer a document type
+          // at all — but a layout persisted before that change can still
+          // name one, and without this it would restore as a tab whose type
+          // is not registered. Kept deliberately, not left over.
           if (ref.typeId === SETTINGS_TYPE_ID) return false;
           if (ref.typeId === COMPILED_OUTPUT_TYPE_ID) return false;
           // Other non-ink documents (the player, the story graph) have no
@@ -766,16 +777,12 @@ export async function mountStudio(
   // its right/start strip slot.
   documentTypes.register({ id: PLAYER_TYPE_ID, component: PlayerPane });
   registerOpenPlayerCommand(commands, editorGroups);
-  // Settings (#93): static UI over shell services — not session-bound, not
-  // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
-  // Whole-window activities, not files: they occupy the editor root area
-  // rather than opening as tabs (decision log 2026-08-26).
-  documentTypes.register({
-    id: SETTINGS_TYPE_ID,
-    component: SettingsDocument,
-    takeover: true,
-  });
-  registerSettingsCommand(commands, shellLayout);
+  // Settings (#93) is a MODAL, not a document (#3174, ruled 2026-08-27) —
+  // consult-and-adjust, so it should not cost you the file you were
+  // reading. The document type is gone with the takeover it needed.
+  registerSettingsCommand(commands, (section) =>
+    store.getState().setSettingsSection(section),
+  );
 
   // Editor text size (beta feedback 2026-08-25). Mod-= / Mod-- / Mod-0 are
   // the universal zoom chords; here they size the EDITOR specifically, which
@@ -995,7 +1002,16 @@ export async function mountStudio(
     // view (`slotOptions`). Absent ⇒ AT_CUE_DIALECT there already, so leaving
     // this undefined when the host doesn't pass one preserves the
     // byte-identical default with no extra wiring needed here.
-  }, [], { theme: brinkTheme, dialect: options.dialect });
+    // Prose checking (#3209). The checker is registered here rather than
+    // depended on by the editor package: it lazily imports a 6.5 MB wasm
+    // module, so an embedder that never registers one pays nothing at all.
+    // The dictionary is NOT passed — it comes from the session, which is the
+    // only thing that knows the project's knot and cue names (#3210).
+  }, [], {
+    theme: brinkTheme,
+    dialect: options.dialect,
+    proseChecker: studioProseChecker,
+  });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
   // editor text to the session and deliver pending host change
@@ -1028,13 +1044,13 @@ export async function mountStudio(
     // nothing at all. Routing to Settings answers that once rather than
     // per-view, and puts project settings where app settings already live.
     //
-    // The Settings document carries the WHOLE config document — the form
-    // and the raw text under it — so nothing an editor tab could do is
+    // Settings' Project section carries the WHOLE config document — the
+    // form and the raw text under it — so nothing an editor tab could do is
     // lost. That matters: the form models four keys, and #3015 ruled the
     // text below it to be the escape hatch for everything else, which now
     // includes `drafts` and `indent`.
     if (target.kind === "file" && isConfigPath(target.path)) {
-      shellLayout.getState().setTakeover(settingsRef());
+      store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
         if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {

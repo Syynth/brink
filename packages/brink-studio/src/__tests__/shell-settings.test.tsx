@@ -31,6 +31,7 @@ import {
 } from "@brink/studio-shell";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
+  DEFAULT_SETTINGS_SECTION,
   DIAGNOSTICS_STORAGE_KEY,
   OPEN_SETTINGS_COMMAND_ID,
   SETTINGS_TYPE_ID,
@@ -58,55 +59,39 @@ function memoryStorage(initial: Record<string, string> = {}) {
 describe("settings.open", () => {
   it("registers palette-discoverable with the Mod-, binding", () => {
     const commands = new CommandRegistry();
-    registerSettingsCommand(commands, createShellLayoutStore());
+    registerSettingsCommand(commands, () => {});
     const command = commands.get(OPEN_SETTINGS_COMMAND_ID);
     expect(command?.title).toBe("Settings: Open");
     expect(command?.keybinding).toBe("Mod-,");
   });
 
-  it("takes over the editor root area rather than opening a tab", () => {
-    // Changed with the takeover ruling (decision log 2026-08-26): Settings
-    // used to open as a pinned tab, which is only reachable from a view that
-    // HAS tabs. Continuous view renders the project's files, so the tab
-    // never appeared there at all.
+  it("opens the modal rather than taking over the editor area", () => {
+    // Ruled 2026-08-27 (#3174). Settings was a takeover, which was right
+    // while it was small — a tab is unreachable from a view without tabs.
+    // The brink.toml interface made it a surface you consult, and taking
+    // over the editor cost you the file you were reading.
     const commands = new CommandRegistry();
-    const layout = createShellLayoutStore();
-    registerSettingsCommand(commands, layout);
+    const opened: (string | null)[] = [];
+    registerSettingsCommand(commands, (section) => opened.push(section));
 
     expect(commands.dispatch(OPEN_SETTINGS_COMMAND_ID)).toBe(true);
 
-    const takeover = layout.getState().takeover;
-    expect(takeover).not.toBeNull();
-    expect(takeover!.typeId).toBe(SETTINGS_TYPE_ID);
-    expect(takeover!.title).toBe("Settings");
+    // The command names a SECTION, never null — null is the closed state,
+    // so passing it would open Settings and immediately close it (which is
+    // exactly what the first version of this did). `DEFAULT_SETTINGS_SECTION`
+    // is where a door with no preference of its own lands.
+    expect(opened).toEqual([DEFAULT_SETTINGS_SECTION]);
   });
 
-  it("re-dispatch is idempotent — one occupant, still Settings", () => {
+  it("leaves the editor area alone", () => {
+    // The point of the change: whatever you were reading is still there
+    // behind the modal.
     const commands = new CommandRegistry();
     const layout = createShellLayoutStore();
-    registerSettingsCommand(commands, layout);
-
+    registerSettingsCommand(commands, () => {});
     commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
-    commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
-
-    expect(layout.getState().takeover?.typeId).toBe(SETTINGS_TYPE_ID);
-  });
-
-  it("choosing a view dismisses the takeover", () => {
-    const commands = new CommandRegistry();
-    const layout = createShellLayoutStore();
-    registerSettingsCommand(commands, layout);
-    commands.dispatch(OPEN_SETTINGS_COMMAND_ID);
-
-    layout.getState().setEditorView("continuous");
-
-    // Picking what fills the area also clears what had taken it over —
-    // otherwise switching view from inside Settings would appear to do
-    // nothing.
     expect(layout.getState().takeover).toBeNull();
-    expect(layout.getState().editorView).toBe("continuous");
   });
-
 });
 
 // ── Override JSON validation ────────────────────────────────────────
@@ -275,31 +260,57 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
 }
 
 describe("SettingsDocument — theme section", () => {
+  // Tiles, each rendering a snippet in its own theme (#3174) — a theme is
+  // chosen by looking, not by reading its name. The control underneath is
+  // still a real radio group, which is what these assert against.
+  const themeRadios = (): HTMLInputElement[] => [
+    ...container!.querySelectorAll<HTMLInputElement>(
+      "[aria-label='Theme'] .settings-theme-tile input",
+    ),
+  ];
+
   it("reflects the current theme and drives ThemeService.select", () => {
     const h = renderSettings();
-    const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(
-        "[aria-label='Theme'] .settings-radio input",
-      ),
-    ];
-    expect(radios.map((r) => r.value)).toEqual(["mocha", "latte", "manuscript", "inky", "inky-dark"]);
+    const radios = themeRadios();
+    expect(radios.map((r) => r.value)).toEqual([
+      "mocha",
+      "latte",
+      "manuscript",
+      "inky",
+      "inky-dark",
+    ]);
     expect(radios[0].checked).toBe(true);
 
     act(() => radios[1].click());
     expect(h.themes.current).toBe("latte");
-    expect(radios[1].checked).toBe(true);
-    expect(radios[0].checked).toBe(false);
+    expect(themeRadios()[1].checked).toBe(true);
+    expect(themeRadios()[0].checked).toBe(false);
   });
 
   it("reflects external changes (e.g. the palette theme command)", () => {
     const h = renderSettings();
     act(() => void h.themes.select("latte"));
-    const radios = [
-      ...container!.querySelectorAll<HTMLInputElement>(
-        "[aria-label='Theme'] .settings-radio input",
-      ),
+    expect(themeRadios()[1].checked).toBe(true);
+  });
+
+  // The preview element carries BOTH the class and the attribute on
+  // purpose: that pair IS the theme cascade (mocha's bare-class base, then
+  // this theme's overrides), which is what makes a tile the real theme
+  // rather than a palette copied into the component to drift.
+  it("previews each theme with the genuine token cascade, not a copy", () => {
+    renderSettings();
+    const previews = [
+      ...container!.querySelectorAll<HTMLElement>(".settings-theme-preview"),
     ];
-    expect(radios[1].checked).toBe(true);
+    expect(previews).toHaveLength(5);
+    for (const [i, preview] of previews.entries()) {
+      expect(preview.classList.contains("brink-studio")).toBe(true);
+      expect(preview.dataset.theme).toBe(themeRadios()[i].value);
+    }
+    // The editor's own token classes, so a tile shows what the editor shows
+    // — including the per-role fallbacks for a theme defining none of them.
+    expect(previews[0].querySelector(".tok-marker")).not.toBeNull();
+    expect(previews[0].querySelector(".tok-halt")).not.toBeNull();
   });
 });
 
@@ -354,14 +365,19 @@ describe("SettingsDocument — external functions section", () => {
     // renders a `.settings-select` (the argument-form glyph) and renders
     // first, so a bare `.settings-select` query would grab that one instead.
     //
-    // It was titled "Diagnostics" until #3148 added the [lints] section,
-    // which is what "Diagnostics" now means. This one is about
-    // external-function checking specifically, and unlike the lints it is a
-    // studio preference rather than a brink.toml setting.
-    const diagSection = [...container!.querySelectorAll(".settings-section")].find(
-      (s) => s.querySelector(".settings-section-title")?.textContent === "External functions",
+    // It was titled "Diagnostics" until #3148 added the [lints] section.
+    // #3174 then split them for real: the lints are a PROJECT setting
+    // (brink.toml, shared) and this is an APP one (this machine), which is
+    // what the scope switch now says — and the section carries NO heading of
+    // its own any more, since the modal's pane header owns the title. So the
+    // anchor is the row's own label, which is the durable thing: it is what
+    // an author reads to find this control.
+    const row = [...container!.querySelectorAll(".settings-row")].find(
+      (r) =>
+        r.querySelector(".settings-row-title")?.textContent ===
+        "External function checking",
     )!;
-    const select = diagSection.querySelector<HTMLSelectElement>(".settings-select")!;
+    const select = row.querySelector<HTMLSelectElement>(".settings-select")!;
     expect(select.value).toBe("error");
 
     act(() => {

@@ -60,6 +60,8 @@ import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
+import type { ProseChecker } from "./prose.js";
+import { refreshProseEffect } from "./prose.js";
 import { perfSpan, perfTime } from "./perf/probe.js";
 import { detachedGutters } from "./gutter-layout.js";
 
@@ -104,6 +106,12 @@ export interface DocumentSessionsOptions {
   indentGuides?: boolean;
   /** Indent width in spaces; see BrinkStudioOptions.indent (#3149). */
   indent?: number;
+  /** Prose checking (#3209): the host's checker, or absent for none.
+   *  Absent is the correct default — the engine is a separate 6.5 MB wasm
+   *  module and an embedder that never registers one pays nothing. */
+  proseChecker?: ProseChecker | null;
+  /** `american` | `british` | `canadian` | `australian`, from `[prose]`. */
+  proseDialect?: () => string;
 }
 
 export interface DocumentCallbacks {
@@ -1100,6 +1108,22 @@ export class DocumentSessions {
       getSemanticTokensFast: (_source) => slot.handle?.semanticTokens(true) ?? [],
       getHirProjection: () =>
         slot.handle?.hirProjection() ?? { spans: [], lines: [] },
+      // Prose checking (#3209). The dictionary comes from the SESSION, not
+      // the host: the project's own knot and cue names are what stop every
+      // invented character name reporting as a misspelling (#3210), and the
+      // session is the only thing that knows them.
+      // `[prose] enable = false` unregisters the checker rather than
+      // filtering its output: not doing the work is the point, and a
+      // disabled checker that still loads 6.5 MB and runs would be a toggle
+      // that only hides its results.
+      getProseChecker: () =>
+        this.project.isProseEnabled() ? (this.options.proseChecker ?? null) : null,
+      getProseDictionary: () => this.project.getProseDictionary(),
+      getProseDialect: () =>
+        this.options.proseDialect?.() ?? this.project.getProseDialect(),
+      onAddToDictionary: (word) => {
+        this.project.addProseDictionaryWord(word);
+      },
       getTokenTypeNames,
       handleSlot: slot,
       getActiveFile: () => slot.path,
@@ -1533,6 +1557,10 @@ export class DocumentSessions {
     // collapsed here.
     if (result === this.lastCompileDelivered) return;
     this.lastCompileDelivered = result;
+    // A name added in ONE file must reach the prose checker in another, so
+    // the dictionary's cache key is the project's analysis rather than any
+    // file's text (#3210).
+    this.project.invalidateProseDictionary();
     // A compile/analysis completing is not a CM transaction, so the HIR
     // overlay's StateField would keep its (possibly empty) seed until the
     // next doc change (#494). Re-read the projection in every mounted view —
@@ -1542,7 +1570,14 @@ export class DocumentSessions {
     // `lastCompileDelivered` set above is what tells a later mount that it
     // missed this loop.
     for (const slot of this.slots.values()) {
-      if (slot.view !== null) this.refreshOverlayPrepared(slot);
+      if (slot.view !== null) {
+        this.refreshOverlayPrepared(slot);
+        // Prose too, and for a reason the overlay's comment does not cover:
+        // a compile is also how a `brink.toml` edit lands, so `[prose]
+        // enable`/`dialect` changing has no other signal to re-check on. The
+        // dictionary (invalidated above) is the other input that moves here.
+        slot.view.dispatch({ effects: refreshProseEffect.of() });
+      }
     }
     this.callbacks.onCompileResult?.(result);
   }

@@ -87,20 +87,23 @@ test.describe("single file view", () => {
     await expect(page.locator(".shell-single-file-name")).toHaveText(before ?? "");
   });
 
-  test("Settings offers the view picker, and choosing dismisses Settings", async ({
+  test("Settings offers the view picker; the view changes under the modal", async ({
     page,
   }) => {
     await runPaletteCommand(page, "Settings: Open");
+    await page.locator(".brink-settings-scope", { hasText: "App" }).click();
+    await page.locator(".brink-settings-nav-item", { hasText: "Editor" }).click();
+
     const group = page.locator("[aria-label='Editor view']");
     await expect(group).toBeVisible();
+    await group.locator("input[value='single']").check();
 
-    await group.locator("input[value='single']").dispatchEvent("click");
-
-    // Settings takes over the editor area, and choosing a view is choosing
-    // what fills that area — so picking one puts Settings away rather than
-    // leaving it up over the view you just chose. You cannot pick twice from
-    // the same Settings for the same reason.
+    // Under the old takeover, choosing a view had to put Settings away —
+    // Settings WAS the area you were choosing what to fill, so you could only
+    // pick once per visit. As a modal (#3174) it stays up over the view you
+    // just chose, and you can pick again to compare.
     await expect(page.locator(singleFile)).toBeVisible();
+    await expect(page.locator(".brink-settings-modal")).toBeVisible();
     await expect(page.locator("[data-takeover]")).toHaveCount(0);
   });
 

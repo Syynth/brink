@@ -38,7 +38,7 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { guardedInstall, sanitizeInstallArgs } from "./guarded-install.mjs";
-import { LINKED_FILES, REQUIRED_FILES } from "./check-wasm-pkg.mjs";
+import { LINKED_FILES, REQUIRED_FILES, WASM_PACKAGES, linkedFilesOf } from "./check-wasm-pkg.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -255,10 +255,16 @@ function makeFixture({ withPkg }) {
   }
 
   if (withPkg) {
-    const pkgDir = join(root, "crates/brink-web/www/pkg");
-    mkdirSync(pkgDir, { recursive: true });
-    for (const file of REQUIRED_FILES) {
-      writeFileSync(join(pkgDir, file), "stub");
+    // EVERY registered package (#3208), driven from the registry rather than
+    // a hardcoded path — a fixture that builds only brink-web would make
+    // these tests fail the moment a second wasm package is added, which is
+    // the wrong signal: the guard working is not a fixture bug.
+    for (const pkg of WASM_PACKAGES) {
+      const pkgDir = join(root, pkg.pkgDir);
+      mkdirSync(pkgDir, { recursive: true });
+      for (const file of pkg.files) {
+        writeFileSync(join(pkgDir, file), "stub");
+      }
     }
   }
 
@@ -278,15 +284,21 @@ function makePnpmStub(root, { exitCode, writeTree }) {
   mkdirSync(binDir, { recursive: true });
 
   const markerPath = join(root, "pnpm-ran.marker");
-  const linkDir = join(root, "packages/wasm/node_modules/brink-web");
 
   const treeCommands = writeTree
     ? [
         `mkdir -p ${JSON.stringify(join(root, "node_modules"))}`,
-        `mkdir -p ${JSON.stringify(linkDir)}`,
-        ...LINKED_FILES.map(
-          (file) => `printf stub > ${JSON.stringify(join(linkDir, file))}`,
-        ),
+        // One resolved `file:` link per registered package — what a healthy
+        // pnpm leaves behind. Omitting it is exactly the #2593 no-op.
+        ...WASM_PACKAGES.flatMap((pkg) => {
+          const linkDir = join(root, pkg.linkDir);
+          return [
+            `mkdir -p ${JSON.stringify(linkDir)}`,
+            ...linkedFilesOf(pkg).map(
+              (file) => `printf stub > ${JSON.stringify(join(linkDir, file))}`,
+            ),
+          ];
+        }),
       ]
     : [];
 

@@ -82,7 +82,7 @@ function mount(diagnostic: Diagnostic, opts: { withConfig?: boolean } = {}) {
       }),
     );
   });
-  return { files, applied };
+  return { files, applied, store };
 }
 
 const diag = (over: Partial<Diagnostic> = {}): Diagnostic => ({
@@ -114,6 +114,14 @@ describe("which items appear", () => {
       "Suppress E035 in this project",
       "Configure E035…",
     ]);
+  });
+
+  it("Configure opens the Diagnostics section, not the config file", () => {
+    // It used to route through the `brink.toml` opener, which lands on
+    // Project — the wrong place to arrive from "configure this diagnostic".
+    const { store } = mount(diag());
+    click("Configure E035…");
+    expect(store.getState().settingsSection).toBe("diagnostics");
   });
 
   it("offers no suppression for an error-tier code", () => {

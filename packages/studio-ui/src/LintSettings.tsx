@@ -299,7 +299,6 @@ export function LintSettings() {
   if (configPath === null || source === null) {
     return (
       <section className="settings-section">
-        <h2 className="settings-section-title">Diagnostics</h2>
         <p className="settings-section-hint">
           This project has no <code>brink.toml</code>, so there is nothing to configure
           diagnostics in yet.
@@ -310,7 +309,6 @@ export function LintSettings() {
 
   return (
     <section className="settings-section lint-settings">
-      <h2 className="settings-section-title">Diagnostics</h2>
       <p className="settings-section-hint">
         Written to <code>[lints]</code> in <code>{configPath}</code>.
       </p>

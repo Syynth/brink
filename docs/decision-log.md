@@ -3590,6 +3590,98 @@
   them was a too-narrow predicate added alongside the settings surface,
   which hid them from the UI while the compiler would have honoured them.
 
+## Settings is a modal with a section rail, Zed-shaped
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Settings opens as a **modal** over the studio, laid out as a
+  searchable section rail on the left and ONE section at a time on the right.
+  It is no longer a document type and no longer takes over the editor area.
+  Sections are registered entries (id, title, keywords, icon, body), not a
+  hand-laid-out page.
+- **WHY:** Implements the 2026-08-27 modal ruling now that the `brink.toml`
+  interface is done. The single scrolling page put the project's lint table
+  and the theme picker in one column, so finding anything meant scrolling
+  past everything else — the rail is what makes it scale. Search matches a
+  section's KEYWORDS as well as its title, so "todo" reaches Diagnostics and
+  "theme" reaches Appearance, neither of which is in the section's name.
+  Registered sections keep the page from drifting behind what is actually
+  configurable, the standing failure of a hand-built settings screen.
+
+## Settings splits App and Project scope, and the pane header owns the title
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** The Settings modal carries an **App / Project** scope switch at
+  the top of the rail. Project sections write `brink.toml`; App sections
+  write this machine's storage. The `brink.toml` section is renamed
+  **General** (the scope is already called Project), the modal's pane header
+  is the only `<h2>` — section bodies use subordinate group headings — and
+  the inner boxes, dividers and scrollers inside sections are removed.
+- **WHY:** Where a setting is written changes what changing it means:
+  project settings are versioned and shared with everyone who opens the
+  project, app settings are yours and follow you between projects. That was
+  previously only a hint inside a mixed Diagnostics section holding both.
+  The heading cleanup is the same point — "Project" appeared three times in
+  one pane (scope, section, form legend), and one section at a time inside a
+  scrolling pane makes every inner box and scroller a nesting level the pane
+  already provides.
+
+## Prose checking uses Harper, in its own wasm module, not LanguageTool
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** architectural
+- **WHAT:** The editor gets spelling and light grammar checking backed by
+  **Harper** (`harper-core`, Apache-2.0), shipped as a **separate
+  `brink-prose` cdylib** loaded on demand behind a `ProseChecker` seam —
+  never compiled into `brink-web`. LanguageTool is ruled out entirely. A
+  sentence-rewrite feature, if ever wanted, is a *separate* seam invoked on
+  a selection, not a bigger checker.
+- **WHY:** LanguageTool has no offline Rust engine — `languagetool-rust` is
+  an HTTP client for the Java server, offline means bundling a JRE, its best
+  rules need a ~16GB n-gram set, and its sentence rewriting is a cloud AI
+  tier absent from the self-hosted build. Harper is offline and fast, and
+  the separate module is forced by measurement rather than taste: a probe
+  containing nothing but `harper-core` is **6.15 MB gzipped against
+  `brink-web`'s entire 2.61 MB**, and `wasm-opt -Os` moves it 2% because the
+  payload is data (an FST dictionary plus POS-tagger weights), not code.
+  "Ship it and shrink it later" is therefore not available — shrinking would
+  mean forking Harper. `harper.js` costs the same bytes, so the choice was
+  never size; it was when the bytes load and whether we can supply our own
+  parser. A real `impl Parser` over content spans wins over feeding Harper
+  blanked text, because blanking loses true positives on every line holding
+  an interpolation.
+
+## Prose checking is scoped by measurement: no per-element rules, dialect day one
+- **WHEN:** 2026-08-27
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Prose lints check **content spans only**, with **no
+  per-element-kind rule scoping** in v1 (the seam stays able to add it).
+  The dictionary is **seeded from the project symbol table, cue names
+  included**; an author word list lives in **its own file**, not
+  `brink.toml`. `[prose] dialect` ships day one. Prose lints ride the
+  diagnostics channel but are **editor-only** — never emitted by `brink
+  compile`, never reaching the oracle ratchet or the editor acceptance gate.
+- **WHY:** Each clause was measured against real brink-shaped prose rather
+  than assumed. The predicted failure — stylized dialogue drowning in
+  squiggles — does not occur: `"Not tonight."` and `"You shouldn't be here.
+  Not after dark. Not you."` both produce zero lints, as do cue lines and
+  scene headings, so per-element scoping would be budget spent on a problem
+  that is not there. The failure that *does* occur is `"Kaelen"` flagged as
+  a misspelling suggesting "Karen" — fatal for fiction, and uniquely
+  solvable here because a cue line is structural, so the manuscript naming
+  its own characters teaches the dictionary for free. `"colour"`/`"harbour"`
+  flagged under the American dialect makes dialect unusable-without, not a
+  refinement. The word list is separate because it is machine-appended and
+  unbounded, and a config file that is mostly word list stops reading as
+  configuration. Editor-only is a semantic claim: a misspelling is not a
+  compiler claim about the program.
+
 ## Debugger epic (#452): v1 DebugInfo contract + D1 design round
 - **WHEN:** 2026-08-28
 - **PROJECT:** brink
@@ -3704,3 +3796,30 @@
   — a human should still sign off on `DEFAULT_DEBUG_BUDGET`'s specific
   value and the never-touch-`Stats::steps` accounting rule the next time
   this area gets a design pass.
+
+## MPL-2.0 admitted for `colored`, reached through Harper
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** moderate
+- **WHAT:** `deny.toml`'s `[licenses] exceptions` table admits **MPL-2.0 for
+  `colored`**, the sixth per-crate exception. The blanket `allow` list stays
+  permissive-only — the licence is still not accepted graph-wide.
+- **WHY:** `colored` arrives through `harper-core`, the prose checker's
+  engine (#3207): `colored <- burn-tensor <- burn <- harper-pos-utils <-
+  harper-brill <- harper-core <- brink-prose`. It is a terminal-colouring
+  crate, `optional` in `burn-tensor` and enabled only by that crate's `std`
+  feature, so it is almost certainly dead code in the wasm artifact
+  `brink-prose` actually ships — and there is no feature flag on this side
+  that removes it without patching Harper's own dependency tree. The licence
+  reasoning is the 2026-08-15 Tauri ruling's, unchanged: MPL-2.0 is
+  file-level copyleft whose obligations attach to modifying and distributing
+  those files, which this project links rather than modifies.
+
+  Recorded as its OWN ruling rather than folded into the 2026-08-15 one
+  because the two differ in the part that matters: those five are
+  unavoidable through a framework the project was already committed to,
+  whereas this one came in with a dependency the project CHOSE and could
+  have declined by dropping Harper. Reading them as one precedent would
+  make "it was transitive" sound like the standard, when the standard is
+  the per-crate ruling itself.

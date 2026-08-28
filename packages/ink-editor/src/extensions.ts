@@ -33,6 +33,8 @@ import {
 import { playFromHereExtension } from "./play-from-here.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
+import { proseExtension } from "./prose.js";
+import type { ProseChecker } from "./prose.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 
 /**
@@ -67,6 +69,23 @@ export interface BrinkStudioOptions {
    *  with `data-*` identity, per-line rail attributes + the rails gutter, and
    *  identity-keyed occurrence highlighting. Omit for no overlay. */
   getHirProjection?: () => HirProjection;
+
+  /** Prose checking (#3209): the checker the host registers, or `null` for
+   *  none. Requires `getHirProjection` too — the projection is what says
+   *  which spans are prose, and guessing is the failure this feature exists
+   *  to avoid. Omit both for no prose checking at all, which is what a
+   *  runtime-only or headless embedder should get: the engine is a separate
+   *  6.5 MB wasm module, larger than the whole compiler. */
+  getProseChecker?: () => ProseChecker | null;
+  /** Project proper nouns for the prose dictionary — knot and cue names.
+   *  Without them every invented character name reports as a misspelling. */
+  getProseDictionary?: () => string[];
+  /** `american` | `british` | `canadian` | `australian`. */
+  getProseDialect?: () => string;
+  /** Add a word to the project's own dictionary (the "Add to dictionary"
+   *  quick-fix). Absent ⇒ the action is not offered at all, rather than
+   *  offered and inert. */
+  onAddToDictionary?: (word: string) => void;
 
   /** The editor's skin (#363 headless-ready). Defaults to `brinkTheme` (the
    *  `--bs-*`-token CM theme brink-studio uses). Pass `false` for a headless
@@ -542,6 +561,18 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       onCompile: options.onCompile,
       getActiveFile: options.getActiveFile,
     }),
+    // Prose checking (#3209). Absent unless the host registers a checker AND
+    // supplies the projection: no checker means no checking, which is the
+    // correct behaviour for a runtime-only or headless embedder.
+    options.getProseChecker && options.getHirProjection
+      ? proseExtension({
+          getChecker: options.getProseChecker,
+          getHirProjection: options.getHirProjection,
+          getDictionary: options.getProseDictionary,
+          getDialect: options.getProseDialect,
+          onAddToDictionary: options.onAddToDictionary,
+        })
+      : [],
     brinkKeymap(),
     ideCompartment.of(ideExtensions),
   ];

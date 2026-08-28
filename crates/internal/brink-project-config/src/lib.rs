@@ -222,6 +222,39 @@ use toml::Value;
 /// file (or in an ancestor directory — see [`find_config`]).
 pub const CONFIG_FILE_NAME: &str = "brink.toml";
 
+/// `[prose] dialect` — which English the spell checker judges by.
+///
+/// Not cosmetic and not deferrable: measured against Harper with the
+/// American dialect, `"The colour of the harbour at night."` reports BOTH
+/// words as misspellings. A British-English author with no way to say so
+/// gets their whole manuscript underlined, which is indistinguishable from
+/// the feature being broken.
+///
+/// The variants are Harper's (`harper_core::Dialect`). This crate stays
+/// dependency-free of the checker — same reason `lints` doesn't validate
+/// diagnostic codes (#1234) — so the mapping lives at the wasm boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProseDialect {
+    #[default]
+    American,
+    British,
+    Canadian,
+    Australian,
+}
+
+impl ProseDialect {
+    /// The spelling used in `brink.toml`, and the string the checker's
+    /// boundary takes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::American => "american",
+            Self::British => "british",
+            Self::Canadian => "canadian",
+            Self::Australian => "australian",
+        }
+    }
+}
+
 /// The `[project]`/`[lints]` tables' recognized keys, parsed out of
 /// `brink.toml`. `dialect`/`types` are `None` when the file doesn't set
 /// them — callers fall back to `AnalysisOptions::default()` (or an explicit
@@ -290,6 +323,19 @@ pub struct ProjectConfig {
     /// Empty (the default) means no file is ever a draft.
     pub drafts: Vec<String>,
 
+    /// `[prose] dialect`, if set. `None` means unset — callers apply
+    /// [`ProseDialect::default`].
+    pub prose_dialect: Option<ProseDialect>,
+
+    /// `[prose] enable`, if set: whether prose checking runs at all.
+    ///
+    /// Its own key rather than "unregister the checker", because those are
+    /// different decisions by different people: an embedder decides whether
+    /// the engine is available at all (it is a separate 6.5 MB module), and
+    /// this decides whether a project that *has* it wants its prose checked.
+    /// `None` means unset — callers apply their own default.
+    pub prose_enable: Option<bool>,
+
     /// `[project] conventions`, if set (docs/prose-dialect-spec.md §3.4's
     /// pointer mechanism): either a built-in preset name (`"screenplay"`)
     /// or a project-relative path to a `.brink` conventions module
@@ -344,6 +390,8 @@ impl ProjectConfig {
             && self.indent.is_none()
             && self.conventions.is_none()
             && self.entry.is_none()
+            && self.prose_dialect.is_none()
+            && self.prose_enable.is_none()
     }
 }
 
@@ -538,6 +586,18 @@ pub fn parse_str_at(
                 }
             };
             parse_project_table(&path, project, &mut config, &mut warnings)?;
+        } else if key == "prose" {
+            let prose = match value {
+                Value::Table(t) => t,
+                other => {
+                    return Err(ConfigError::NotATable {
+                        path,
+                        key: "prose".to_owned(),
+                        found: value_type_name(other),
+                    });
+                }
+            };
+            parse_prose_table(&path, prose, &mut config, &mut warnings)?;
         } else if key == "lints" {
             let lints = match value {
                 Value::Table(t) => t,
@@ -671,6 +731,55 @@ fn parse_project_table(
         }
     }
     config.conventions = resolve_conventions_key(conventions_value, elements_value, warnings);
+    Ok(())
+}
+
+/// Parse `[prose]`.
+///
+/// An unrecognized dialect is a WARNING that falls back to the default
+/// rather than an error, matching how `indent` treats an out-of-range width:
+/// a typo in one key must not fail the whole config and take the project's
+/// entry point down with it.
+fn parse_prose_table(
+    path: &str,
+    prose: &toml::map::Map<String, Value>,
+    config: &mut ProjectConfig,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<(), ConfigError> {
+    for (pkey, pvalue) in prose {
+        match pkey.as_str() {
+            "dialect" => {
+                let raw = pvalue.as_str().ok_or_else(|| ConfigError::WrongType {
+                    path: path.to_owned(),
+                    key: format!("prose.{pkey}"),
+                    found: value_type_name(pvalue),
+                })?;
+                match raw {
+                    "american" => config.prose_dialect = Some(ProseDialect::American),
+                    "british" => config.prose_dialect = Some(ProseDialect::British),
+                    "canadian" => config.prose_dialect = Some(ProseDialect::Canadian),
+                    "australian" => config.prose_dialect = Some(ProseDialect::Australian),
+                    other => warnings.push(ConfigWarning(format!(
+                        "`prose.dialect` in {CONFIG_FILE_NAME} is `{other}` — expected one of \
+                         `american`, `british`, `canadian`, `australian`; using \
+                         `{}`",
+                        ProseDialect::default().as_str()
+                    ))),
+                }
+            }
+            "enable" => {
+                config.prose_enable =
+                    Some(pvalue.as_bool().ok_or_else(|| ConfigError::WrongType {
+                        path: path.to_owned(),
+                        key: format!("prose.{pkey}"),
+                        found: value_type_name(pvalue),
+                    })?);
+            }
+            _ => warnings.push(ConfigWarning(format!(
+                "unknown key `prose.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
+            ))),
+        }
+    }
     Ok(())
 }
 
@@ -1304,6 +1413,75 @@ mod tests {
         assert_eq!(config.dialect, Some(Dialect::Brink));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].0.contains("project.future_key"));
+    }
+
+    // ── [prose] (issue #3211) ───────────────────────────────────────────
+
+    #[test]
+    fn parses_the_prose_table() {
+        let (config, warnings) =
+            parse_str("[prose]\ndialect = \"british\"\nenable = true\n").expect("valid");
+        assert_eq!(config.prose_dialect, Some(ProseDialect::British));
+        assert_eq!(config.prose_enable, Some(true));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn prose_keys_are_none_when_unset_so_callers_apply_their_own_defaults() {
+        let (config, _) = parse_str("[project]\nentry = \"story.ink\"\n").expect("valid");
+        assert_eq!(config.prose_dialect, None);
+        assert_eq!(config.prose_enable, None);
+    }
+
+    #[test]
+    fn every_dialect_spelling_round_trips() {
+        // The four strings are the wire contract with the checker; a rename
+        // on either side has to break something visible.
+        for (raw, expected) in [
+            ("american", ProseDialect::American),
+            ("british", ProseDialect::British),
+            ("canadian", ProseDialect::Canadian),
+            ("australian", ProseDialect::Australian),
+        ] {
+            let (config, warnings) =
+                parse_str(&format!("[prose]\ndialect = \"{raw}\"\n")).expect("valid");
+            assert_eq!(config.prose_dialect, Some(expected), "parsing {raw}");
+            assert_eq!(expected.as_str(), raw, "as_str for {raw}");
+            assert!(warnings.is_empty(), "{warnings:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_dialect_warns_and_falls_back_rather_than_failing_the_config() {
+        // A typo in one key must not take the project's entry point down with
+        // it — same treatment `indent` gives an out-of-range width.
+        let (config, warnings) =
+            parse_str("[project]\nentry = \"story.ink\"\n\n[prose]\ndialect = \"martian\"\n")
+                .expect("still valid");
+        assert_eq!(
+            config.prose_dialect, None,
+            "falls back to the caller default"
+        );
+        assert_eq!(
+            config.entry.as_deref(),
+            Some("story.ink"),
+            "the rest still parsed"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("martian"), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_unknown_prose_key_warns_and_is_ignored() {
+        let (config, warnings) = parse_str("[prose]\nvoice = \"formal\"\n").expect("valid");
+        assert!(config.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("prose.voice"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_prose_table_that_is_not_a_table_is_an_error() {
+        assert!(parse_str("prose = 3\n").is_err());
     }
 
     // ── indent (issue #3149) ────────────────────────────────────────────

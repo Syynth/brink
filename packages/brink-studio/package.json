@@ -79,6 +79,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
+    "brink-prose": "file:../../crates/brink-prose/www/pkg",
     "codemirror": "^6.0.1",
     "jsdom": "^29.0.0",
     "markdown-to-jsx": "^7.7.17",

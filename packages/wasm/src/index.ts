@@ -521,6 +521,23 @@ export class EditorSessionHandle {
   }
 
   /**
+   * `[prose] dialect` from the applied `brink.toml` (#3211), or `null` when
+   * the file set none — the host applies its own default.
+   */
+  getConfiguredProseDialect(): string | null {
+    return this.session.configured_prose_dialect() ?? null;
+  }
+
+  /**
+   * `[prose] enable` from the applied `brink.toml` (#3211), or `null` when
+   * the file set none — tri-state on purpose, so the host's default stays
+   * the host's rather than being baked in below it.
+   */
+  getConfiguredProseEnable(): boolean | null {
+    return this.session.configured_prose_enable() ?? null;
+  }
+
+  /**
    * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
@@ -963,6 +980,22 @@ export class EditorSessionHandle {
    */
   getDraftPaths(): string[] {
     const json = this.session.draft_paths();
+    return JSON.parse(json) as string[];
+  }
+
+  /**
+   * The project's own proper nouns, for the prose checker's dictionary
+   * (#3210) — declared names plus the cue names that say who the story's
+   * characters are, split into words and sorted.
+   *
+   * Computed on the Rust side, like {@link getDraftPaths}, and for the same
+   * reason: the cast lives in the dialect classification, which is analysis
+   * output. Reconstructing it here from the outline would miss every
+   * character whose name appears only in a cue line — the case the whole
+   * feature turns on.
+   */
+  getProseDictionary(): string[] {
+    const json = this.session.prose_dictionary();
     return JSON.parse(json) as string[];
   }
 

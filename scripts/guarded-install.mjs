@@ -71,7 +71,12 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { BUILD_COMMAND, checkWasmPkg, checkWasmPkgLink } from "./check-wasm-pkg.mjs";
+import {
+  BUILD_COMMAND,
+  WASM_PACKAGES,
+  checkWasmPkg,
+  checkWasmPkgLink,
+} from "./check-wasm-pkg.mjs";
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
 const defaultRepoRoot = resolve(here, "..");
@@ -161,8 +166,14 @@ export function guardedInstall({
   repoRoot = defaultRepoRoot,
   args = [],
   nodeModulesDir = join(repoRoot, "node_modules"),
-  checkPkg = () => checkWasmPkg({ repoRoot }),
-  checkLink = () => checkWasmPkgLink({ repoRoot }),
+  // EVERY registered wasm package, not just brink-web (#3208). `.every` with
+  // the call first would short-circuit and hide the second package's state;
+  // `.reduce` runs them all so one invocation reports the full picture, the
+  // same contract check-wasm-pkg's own main-guard keeps.
+  checkPkg = () =>
+    WASM_PACKAGES.reduce((ok, pkg) => checkWasmPkg({ repoRoot, pkg }) && ok, true),
+  checkLink = () =>
+    WASM_PACKAGES.reduce((ok, pkg) => checkWasmPkgLink({ repoRoot, pkg }) && ok, true),
   runInstall = (installArgs) => defaultRunInstall(installArgs, repoRoot),
   log = console.log,
   error = console.error,
