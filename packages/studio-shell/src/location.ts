@@ -131,12 +131,10 @@ export interface ProgramSourceLocation {
 export function parseProgramAddress(
   address: string,
 ): { containerIdx: number; offset: number } | null {
+  if (!/^\d+:\d+$/.test(address)) return null;
   const parts = address.split(":");
-  if (parts.length !== 2) return null;
-  const containerIdx = Number(parts[0]);
-  const offset = Number(parts[1]);
-  if (!Number.isInteger(containerIdx) || !Number.isInteger(offset)) return null;
-  if (containerIdx < 0 || offset < 0) return null;
+  const containerIdx = Number.parseInt(parts[0], 10);
+  const offset = Number.parseInt(parts[1], 10);
   return { containerIdx, offset };
 }
 

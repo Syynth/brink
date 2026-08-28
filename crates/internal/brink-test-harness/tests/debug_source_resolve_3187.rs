@@ -141,6 +141,63 @@ fn brink_native_position_resolves_to_the_assigning_source_text() {
     assert_eq!(loc.file.as_deref(), Some("main.brink"));
 }
 
+// ── Floor lookup: distinct offsets in the SAME container resolve distinctly ──
+//
+// The two tests above each only prove that *one* position resolves to the
+// text it names — they'd pass just as well against a stub that ignores
+// `offset` entirely and always returns `entries[0]` for the container. The
+// substance of `resolve_debug_position` is its `binary_search`/floor-lookup
+// (`Err(i) => i - 1`, program.rs) picking out the entry that actually
+// covers a given offset. This test proves that: two statements compiled
+// into the SAME container (the default flow) at two different bytecode
+// offsets must resolve to two distinct, correctly-named source ranges.
+
+#[test]
+fn distinct_offsets_in_the_same_container_resolve_to_distinct_source_ranges() {
+    let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+    let (program, line_tables, source) = compile_with_debug_info(&[("main.ink", src)], "main.ink");
+    let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), line_tables);
+
+    let mut assign: Option<(u32, brink_runtime::DebugSourceLocation, String)> = None;
+    let mut hello: Option<(u32, brink_runtime::DebugSourceLocation, String)> = None;
+    step_until(&mut story, 500, |s| {
+        if let Some(pos) = s.debug_snapshot().position
+            && let Some(loc) = s.program().resolve_debug_position(pos)
+        {
+            let start = loc.range_start as usize;
+            let end = start + loc.range_len as usize;
+            if let Some(slice) = source.get(start..end) {
+                if assign.is_none() && slice.contains("x = 5") {
+                    assign = Some((pos.container_idx, loc, slice.to_string()));
+                } else if hello.is_none() && slice.contains("hello") {
+                    hello = Some((pos.container_idx, loc, slice.to_string()));
+                }
+            }
+        }
+        assign.is_some() && hello.is_some()
+    });
+
+    let (assign_container, assign_loc, assign_slice) =
+        assign.expect("must resolve the `x = 5` assignment's own position");
+    let (hello_container, hello_loc, hello_slice) =
+        hello.expect("must resolve the `hello` line's own position");
+
+    assert_eq!(
+        assign_container, hello_container,
+        "fixture must exercise two entries within the SAME container to prove the floor \
+         lookup — two different containers wouldn't distinguish it from an implementation \
+         that always returns entries[0]"
+    );
+    assert_eq!(assign_slice, "x = 5");
+    assert_eq!(hello_slice.trim_end(), "hello");
+    assert_ne!(
+        assign_loc.range_start, hello_loc.range_start,
+        "two distinct offsets in the same container must resolve to two distinct source \
+         ranges — an implementation that ignores `offset` and always returns entries[0] \
+         would return the same range for both"
+    );
+}
+
 // ── Gating: no `DebugInfo` section means no resolution, not a panic ──
 
 #[test]

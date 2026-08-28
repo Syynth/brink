@@ -173,6 +173,15 @@ describe("program address encoding", () => {
     expect(parseProgramAddress("-1:17")).toBeNull();
     expect(parseProgramAddress("3:-1")).toBeNull();
     expect(parseProgramAddress("3.5:17")).toBeNull();
+    // Number()-based parsing previously accepted all of these silently:
+    // Number("") === 0 makes "3:" -> {containerIdx:3, offset:0} and ":5" ->
+    // {containerIdx:0, offset:5} instead of null, and Number() also accepts
+    // hex, exponent notation, and surrounding whitespace.
+    expect(parseProgramAddress("3:")).toBeNull();
+    expect(parseProgramAddress(":5")).toBeNull();
+    expect(parseProgramAddress("0x10:0")).toBeNull();
+    expect(parseProgramAddress("1e3:0")).toBeNull();
+    expect(parseProgramAddress(" 3:7")).toBeNull();
   });
 });
 

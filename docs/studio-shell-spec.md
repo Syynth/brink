@@ -341,6 +341,21 @@ type Location =
   nobody duplicates translation. MVP implements the source and symbol resolvers;
   program/session resolvers land with their consumers (Compiled Output links, State View
   stack frames).
+  - **Landed with D9 (#3187):** `ProgramPath` (the `program` Location's `address`)
+    encodes a runtime `(containerIdx, offset)` `DebugPosition` as the plain string
+    `"<containerIdx>:<offset>"` (`packages/studio-shell/src/location.ts`'s
+    `encodeProgramAddress`/`parseProgramAddress`). `makeProgramResolver` fills the
+    program → source slot, wrapping a caller-supplied `resolvePosition` call (the
+    wasm-backed `resolveDebugPosition` bridge, injected so this stays testable
+    without wasm) — it does not itself gate on program-identity/checksum; that's the
+    caller's job (`docs/live-inspector-spec.md` §5's degraded-mode check happens
+    before `resolvePosition` is ever invoked). `resolveSessionPositionRef` fills the
+    session → program slot: a session ref carrying a `position: { container_idx,
+    offset }` (a `DebugFrame`/`DebugState`'s own field) resolves to the `program`
+    Location the resolver above then continues toward source. A session ref with no
+    `position` (or one that isn't position-shaped) is not an error — the chain simply
+    doesn't continue there, and falls through to the `symbol` space instead via
+    `resolveQualifiedSymbol`, which a caller wires as the fallback.
 - **`editor.reveal(location)`** is the navigation verb: resolve to source, open the file,
   scroll, flash-highlight the span. Problems rows, graph nodes, quick-open hits, and
   State View frames all dispatch it. Routing through the command registry means host
