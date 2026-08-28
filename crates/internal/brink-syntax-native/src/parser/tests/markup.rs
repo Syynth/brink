@@ -346,7 +346,13 @@ fn an_escaped_closing_brace_does_not_terminate_the_enclosing_block() {
     let ancestry: Vec<String> = p
         .syntax()
         .descendants()
-        .filter(|n| n.text_range().contains(rowan::TextSize::from(done as u32)))
+        .filter(|n| {
+            // `u32::try_from` rather than `as`: the fixture is tiny, but a
+            // silent truncation here would move the probe point and quietly
+            // assert about the wrong node.
+            let at = u32::try_from(done).expect("fixture offset fits in u32");
+            n.text_range().contains(rowan::TextSize::from(at))
+        })
         .map(|n| format!("{:?}", n.kind()))
         .collect();
     assert!(
