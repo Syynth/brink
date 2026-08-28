@@ -691,6 +691,28 @@ impl StoryRunner {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The inverse of [`Self::resolve_debug_position`] (#3246) — parity
+    /// with `WebSession`'s copy; see it for the contract. `null` when the
+    /// span holds no executable code or the artifact carries no
+    /// `DebugInfo`.
+    pub fn resolve_source_range(
+        &self,
+        file: &str,
+        start: u32,
+        end: u32,
+    ) -> Result<String, JsError> {
+        let resolved = self
+            .program
+            .resolve_source_range(file, start, end)
+            .map(|p| {
+                serde_json::json!({
+                    "container_idx": p.container_idx,
+                    "offset": p.offset,
+                })
+            });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
     //
     // Parity with `WebSession`'s copy above — `LocalSessionProvider` drives

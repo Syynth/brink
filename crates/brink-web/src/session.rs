@@ -175,6 +175,36 @@ impl WebSession {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The inverse of [`Self::resolve_debug_position`] (#3246): the program
+    /// address to break on for a span of source text, or `null` when the
+    /// span holds no executable code (a comment, a blank line, a line whose
+    /// code folded away) — or when this artifact carries no `DebugInfo`.
+    ///
+    /// `start`/`end` are a half-open **byte** range in `file`. The runtime
+    /// stores byte ranges and has no line table, so line→byte conversion
+    /// belongs to the caller, where the source text already is.
+    ///
+    /// `null` is a real answer a gutter must render, not an error to
+    /// swallow: refusing to arm visibly beats arming a breakpoint that can
+    /// never hit.
+    pub fn resolve_source_range(
+        &self,
+        file: &str,
+        start: u32,
+        end: u32,
+    ) -> Result<String, JsError> {
+        let resolved = self
+            .program
+            .resolve_source_range(file, start, end)
+            .map(|p| {
+                serde_json::json!({
+                    "container_idx": p.container_idx,
+                    "offset": p.offset,
+                })
+            });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
     //
     // `debugRun`/`debugStep`/`debugBreakpoint*` bind `Story::debug_run`/
