@@ -1054,9 +1054,20 @@ impl<R: StoryRng> Story<R> {
 
     /// Build a debug snapshot from a specific flow instance + context. Backs
     /// both [`debug_snapshot`](Self::debug_snapshot) and the per-flow variant.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single-purpose snapshot builder assembling one flat struct \
+                  from several independent, already-small pieces (status, \
+                  location/position, globals, call stack, visit counts, \
+                  pending choices, rng) — splitting would scatter one \
+                  coherent read into several private helpers with no other \
+                  caller, per CLAUDE.md's `cargo fmt`/`clippy` convention \
+                  for this shape"
+    )]
     fn build_debug_snapshot(&self, instance: &FlowInstance, ctx: &World) -> crate::DebugSnapshot {
         use crate::debug::{
-            DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit, NameResolver,
+            DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot,
+            DebugVisit, NameResolver,
         };
 
         let flow = &instance.flow;
@@ -1080,8 +1091,20 @@ impl<R: StoryRng> Story<R> {
                 .find_map(|cp| resolver.container_path(cp.container_idx))
                 .map(str::to_owned)
         };
+        // Precise `(container_idx, offset)` for a frame: the top of its
+        // container stack — the next instruction that frame will execute
+        // (`vm::step` always advances/reads this exact slot; see
+        // `vm.rs`'s `frame.container_stack.last()`). `None` for a frame
+        // whose container stack is already empty.
+        let frame_position = |frame: &CallFrame| {
+            frame.container_stack.last().map(|cp| DebugPosition {
+                container_idx: cp.container_idx,
+                offset: cp.offset,
+            })
+        };
 
         let current_location = thread.call_stack.last().and_then(resolve_frame_location);
+        let position = thread.call_stack.last().and_then(frame_position);
 
         // Globals, skipping unnamed slots.
         let globals = ctx
@@ -1112,6 +1135,7 @@ impl<R: StoryRng> Story<R> {
                 call_stack.push(DebugFrame {
                     kind,
                     location: resolve_frame_location(frame),
+                    position: frame_position(frame),
                     temps: frame.temps.len(),
                 });
             }
@@ -1157,6 +1181,7 @@ impl<R: StoryRng> Story<R> {
         DebugSnapshot {
             status,
             current_location,
+            position,
             turn_index: ctx.turn_index,
             globals,
             call_stack,
