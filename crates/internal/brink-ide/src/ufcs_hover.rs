@@ -610,6 +610,7 @@ pub fn ufcs_hover(
     Some(HoverInfo {
         content,
         range: Some(call.method.range),
+        links: Vec::new(),
     })
 }
 

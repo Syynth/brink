@@ -408,6 +408,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       hoverExtension({
         getHover: options.getHover,
         getArgumentWidgets: options.getArgumentWidgets,
+        // The same hook goto-definition uses: a hover-card reference and a
+        // goto both mean "take me to the declaration", and routing them
+        // apart would let one work while the other silently did not.
+        onNavigate: options.onNavigateToFile,
       }),
     );
   }

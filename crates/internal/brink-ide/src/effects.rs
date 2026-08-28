@@ -120,19 +120,38 @@ impl EffectRowView {
     /// `pure, silent, total` (the strongest statement the row makes).
     #[must_use]
     pub fn display_line(&self) -> String {
+        self.display_line_with(|_clause, atom| atom.to_string())
+    }
+
+    /// [`Self::display_line`], with each atom passed through `decorate`
+    /// before it joins its clause.
+    ///
+    /// The hover card uses this to turn atoms that have a declaration into
+    /// markdown links while the plain-text callers (the `brink ide
+    /// effects-diff` CLI) keep the bare names. Sharing the assembly rather
+    /// than copying it is the point: clause order, separators and the
+    /// opaque/empty special cases are the part that must not drift between
+    /// two surfaces an author reads side by side.
+    ///
+    /// `decorate` receives the clause name (`reads`, `writes`, `calls`) as
+    /// well as the atom, because linkability differs by clause: a `calls`
+    /// atom is a raw external name with no symbol to point at.
+    #[must_use]
+    pub fn display_line_with(&self, mut decorate: impl FnMut(&str, &str) -> String) -> String {
         if self.is_empty_row() {
             return "pure, silent, total".to_string();
         }
         let mut clauses = Vec::new();
-        if !self.reads.is_empty() {
-            clauses.push(format!("reads: {}", self.reads.join(", ")));
-        }
-        if !self.writes.is_empty() {
-            clauses.push(format!("writes: {}", self.writes.join(", ")));
-        }
-        if !self.calls.is_empty() {
-            clauses.push(format!("calls: {}", self.calls.join(", ")));
-        }
+        let mut clause = |name: &str, atoms: &[String], out: &mut Vec<String>| {
+            if atoms.is_empty() {
+                return;
+            }
+            let rendered: Vec<String> = atoms.iter().map(|a| decorate(name, a)).collect();
+            out.push(format!("{name}: {}", rendered.join(", ")));
+        };
+        clause("reads", &self.reads, &mut clauses);
+        clause("writes", &self.writes, &mut clauses);
+        clause("calls", &self.calls, &mut clauses);
         if self.emits {
             clauses.push("emits".to_string());
         }

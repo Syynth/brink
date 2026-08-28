@@ -244,6 +244,10 @@ pub(crate) struct HoverInfoJs {
     pub(crate) start: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) end: Option<u32>,
+    /// Navigation targets for `[text](#N)` links in `content`, indexed by
+    /// `N`. Absent when the card has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) links: Vec<LocationJs>,
 }
 
 #[derive(Serialize)]

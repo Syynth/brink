@@ -797,6 +797,31 @@
      longest token when measuring. */
   overflow-wrap: anywhere;
 }
+/* Navigable references (#3255, decision 5): the cells an `effects` row
+   names, and the definition site. Underlined rather than only coloured —
+   the card already uses colour for its label column, so colour alone would
+   not read as "this is a target". */
+.brink-studio .brink-hover-link {
+  color: var(--bs-info);
+  text-decoration: underline;
+  text-decoration-color: rgb(var(--bs-info-rgb, 137 220 235) / 45%);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.brink-studio .brink-hover-link:hover {
+  text-decoration-color: currentColor;
+}
+.brink-studio .brink-hover-link:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 1px;
+}
+/* A link's own code chip must not fight the link colour. */
+.brink-studio .brink-hover-link code {
+  color: inherit;
+  background: var(--bs-surface-bg);
+}
+
 .brink-studio .brink-hover-tooltip strong {
   color: var(--bs-accent);
   font-weight: 600;

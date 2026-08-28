@@ -385,3 +385,4 @@ export {
   MAX_EDITOR_FONT_SIZE,
   clampEditorFontSize,
 } from "./theme.js";
+export { renderHoverContent } from "./hover.js";
