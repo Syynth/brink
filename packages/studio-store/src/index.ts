@@ -19,6 +19,7 @@ import type { SearchSlice } from "./slices/search.js";
 import type { ProblemsSlice } from "./slices/problems.js";
 import type { SymbolMenuSlice } from "./slices/symbol-menu.js";
 import type { ConflictSlice } from "./slices/conflict.js";
+import type { DebugSlice } from "./slices/debug.js";
 import type { DocumentSessions, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -31,6 +32,7 @@ import { createSearchSlice } from "./slices/search.js";
 import { createProblemsSlice } from "./slices/problems.js";
 import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
 import { createConflictSlice } from "./slices/conflict.js";
+import { createDebugSlice } from "./slices/debug.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -66,7 +68,8 @@ export interface StudioState
     SearchSlice,
     ProblemsSlice,
     SymbolMenuSlice,
-    ConflictSlice {
+    ConflictSlice,
+    DebugSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -138,6 +141,7 @@ export const createStudioStore = () =>
       ...createProblemsSlice(...args),
       ...createSymbolMenuSlice(...args),
       ...createConflictSlice(...args),
+      ...createDebugSlice(...args),
 
       // Non-reactive refs
       _documents: null,
@@ -193,6 +197,15 @@ export {
   type SessionEntry,
   type SessionId,
 } from "./slices/session.js";
+
+// Debug session slice (D8's breakpoint/pause/step bridged through wasm,
+// #3232): the `DebugSessionProvider` capability-extension guard plus its
+// type, re-exported here so a consumer never reaches into `session/types.js`
+// directly.
+export {
+  isDebugSessionProvider,
+  type DebugSessionProvider,
+} from "./slices/debug.js";
 
 // Problems ordering (canonical sort, unit-testable pure helper) + the
 // external-check severity level (Settings document, #93).

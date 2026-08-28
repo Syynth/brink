@@ -741,7 +741,7 @@ pub(crate) struct DebugStateJs {
 }
 
 #[derive(Serialize)]
-struct DebugPositionJs {
+pub(crate) struct DebugPositionJs {
     container_idx: u32,
     offset: usize,
 }
@@ -955,6 +955,98 @@ pub(crate) fn debug_source_location_to_js(
         file: loc.file,
         range_start: loc.range_start,
         range_len: loc.range_len,
+    }
+}
+
+// ── Debug control (D8, #3186) — the wasm control-half bridge (#3232) ──
+//
+// `debug_snapshot`/`resolve_debug_position` above are the read half (D4/D9);
+// these mirror the control half's wire shapes — breakpoints and the
+// `debugRun`/`debugStep` outcome — for `WebSession`/`StoryRunner`'s new
+// `debugRun`/`debugStep`/`debugBreakpoint*` bindings.
+
+/// Wasm mirror of `brink_runtime::Breakpoint` — the wire shape
+/// `debugBreakpoints()` returns.
+#[derive(Serialize)]
+pub(crate) struct BreakpointJs {
+    pub id: u32,
+    pub container_idx: u32,
+    pub offset: usize,
+    pub name: String,
+    pub enabled: bool,
+}
+
+pub(crate) fn breakpoint_to_js(b: &brink_runtime::Breakpoint) -> BreakpointJs {
+    BreakpointJs {
+        id: b.id,
+        container_idx: b.container_idx,
+        offset: b.offset,
+        name: b.name.clone(),
+        enabled: b.enabled,
+    }
+}
+
+/// Wasm mirror of `brink_runtime::DebugStopReason` — internally tagged on
+/// `type`, the same convention `DebugValueJs` above uses.
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub(crate) enum DebugStopReasonJs {
+    #[serde(rename = "breakpoint")]
+    Breakpoint { id: u32, name: String },
+    #[serde(rename = "watchpoint")]
+    Watchpoint { global_idx: u32 },
+    #[serde(rename = "choices")]
+    Choices,
+    #[serde(rename = "step")]
+    Step,
+    #[serde(rename = "terminal")]
+    Terminal,
+    #[serde(rename = "noStepOutTarget")]
+    NoStepOutTarget,
+}
+
+/// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
+/// `debugRun`/`debugStep`.
+#[derive(Serialize)]
+pub(crate) struct DebugRunOutcomeJs {
+    pub reason: DebugStopReasonJs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<DebugPositionJs>,
+    pub depth: usize,
+}
+
+pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> DebugRunOutcomeJs {
+    use brink_runtime::DebugStopReason;
+    DebugRunOutcomeJs {
+        reason: match o.reason {
+            DebugStopReason::Breakpoint { id, name } => DebugStopReasonJs::Breakpoint { id, name },
+            DebugStopReason::Watchpoint { global_idx } => {
+                DebugStopReasonJs::Watchpoint { global_idx }
+            }
+            DebugStopReason::Choices => DebugStopReasonJs::Choices,
+            DebugStopReason::Step => DebugStopReasonJs::Step,
+            DebugStopReason::Terminal => DebugStopReasonJs::Terminal,
+            DebugStopReason::NoStepOutTarget => DebugStopReasonJs::NoStepOutTarget,
+        },
+        position: o.position.map(|p| DebugPositionJs {
+            container_idx: p.container_idx,
+            offset: p.offset,
+        }),
+        depth: o.depth,
+    }
+}
+
+/// Parse a `debugStep` mode string ("into" | "over" | "out") into
+/// `brink_runtime::StepMode`. Any other string is a `JsError` — a bad mode
+/// name is a caller bug, not a runtime outcome.
+pub(crate) fn parse_step_mode(mode: &str) -> Result<brink_runtime::StepMode, JsError> {
+    match mode {
+        "into" => Ok(brink_runtime::StepMode::Into),
+        "over" => Ok(brink_runtime::StepMode::Over),
+        "out" => Ok(brink_runtime::StepMode::Out),
+        other => Err(JsError::new(&format!(
+            "unknown debug step mode: {other} (expected \"into\" | \"over\" | \"out\")"
+        ))),
     }
 }
 

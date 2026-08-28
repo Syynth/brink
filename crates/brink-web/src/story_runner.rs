@@ -65,6 +65,11 @@ pub struct StoryRunner {
     /// seed so a dev session stays a dev session. See `docs/modules-spec.md`
     /// §4 boundary rule 3.
     dev_visibility_override: Cell<bool>,
+    /// Debug-control breakpoints (D8, #3186) — see `WebSession`'s copy of
+    /// this field for the full doc; `StoryRunner`'s `debugRun`/`debugStep`/
+    /// `debugBreakpoint*` exist for parity, `WebSession` is what
+    /// `LocalSessionProvider` actually drives (#3232).
+    breakpoints: RefCell<brink_runtime::BreakpointSet>,
 }
 
 #[wasm_bindgen]
@@ -93,6 +98,7 @@ impl StoryRunner {
             recorder: RefCell::new(ReplayRecorder::new()),
             replaying: Cell::new(false),
             dev_visibility_override: Cell::new(false),
+            breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
         })
     }
 
@@ -685,6 +691,95 @@ impl StoryRunner {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
+    //
+    // Parity with `WebSession`'s copy above — `LocalSessionProvider` drives
+    // `WebSession`/`StorySessionHandle`, not this type, so this is the
+    // secondary binding, kept identical in shape. `self.story` is already a
+    // raw `Story` (no session journal to bypass, unlike `WebSession`).
+
+    /// Add an enabled breakpoint at `(container_idx, offset)`, returning its
+    /// id. See `WebSession::debug_breakpoint_add`'s doc.
+    #[wasm_bindgen(js_name = debugBreakpointAdd)]
+    pub fn debug_breakpoint_add(
+        &self,
+        container_idx: u32,
+        offset: u32,
+        name: Option<String>,
+    ) -> u32 {
+        self.breakpoints.borrow_mut().insert(
+            container_idx,
+            offset as usize,
+            name.unwrap_or_default(),
+        )
+    }
+
+    /// Remove a breakpoint by id. Returns `false` if no breakpoint with that
+    /// id exists.
+    #[wasm_bindgen(js_name = debugBreakpointRemove)]
+    pub fn debug_breakpoint_remove(&self, id: u32) -> bool {
+        self.breakpoints.borrow_mut().remove(id)
+    }
+
+    /// Enable/disable a breakpoint without removing it. Returns `false` if
+    /// no breakpoint with that id exists.
+    #[wasm_bindgen(js_name = debugBreakpointSetEnabled)]
+    pub fn debug_breakpoint_set_enabled(&self, id: u32, enabled: bool) -> bool {
+        self.breakpoints.borrow_mut().set_enabled(id, enabled)
+    }
+
+    /// Every breakpoint currently armed, in insertion order. Returns JSON
+    /// `Breakpoint[]`.
+    #[wasm_bindgen(js_name = debugBreakpoints)]
+    pub fn debug_breakpoints(&self) -> Result<String, JsError> {
+        let list: Vec<_> = self
+            .breakpoints
+            .borrow()
+            .iter()
+            .map(crate::value_marshal::breakpoint_to_js)
+            .collect();
+        serde_json::to_string(&list).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Run the default flow forward until an armed breakpoint, a choice
+    /// point, or a terminal outcome. See `WebSession::debug_run`'s doc.
+    /// Returns JSON `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugRun)]
+    pub fn debug_run(&self, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_run"))?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        let outcome = story
+            .debug_run(&breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
+    /// `"out"`. See `WebSession::debug_step`'s doc. Returns JSON
+    /// `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugStep)]
+    pub fn debug_step(&self, mode: &str, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_step"))?;
+        let step_mode = crate::value_marshal::parse_step_mode(mode)?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        let outcome = story
+            .debug_step(step_mode, &breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     // ── Shared flows (#200) ─────────────────────────────────────────
     // A "+ new flow" in the studio spawns a named flow that SHARES this
     // story's globals / visit counts / rng with the default flow, while
@@ -1044,5 +1139,93 @@ mod resolve_debug_position_tests {
             .resolve_debug_position(0, 0)
             .expect("resolve_debug_position serializes even without debug info");
         assert_eq!(resolved_json, "null");
+    }
+}
+
+// ── StoryRunner debug control tests (D8, #3186 — control-half bridge #3232) ──
+//
+// Parity coverage for `StoryRunner`'s copy of the debug bindings, host-target
+// for the same reason as `resolve_debug_position_tests` above.
+#[cfg(test)]
+mod debug_control_tests {
+    use super::StoryRunner;
+
+    fn debug_bytes(src: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), src.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    fn json(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).expect("valid JSON")
+    }
+
+    #[test]
+    fn breakpoint_add_remove_list_roundtrip() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let runner = StoryRunner::new(&debug_bytes(src)).expect("runner constructs");
+
+        let id = runner.debug_breakpoint_add(0, 0, Some("entry".to_owned()));
+        let list = json(&runner.debug_breakpoints().expect("debug_breakpoints"));
+        let entries = list.as_array().expect("array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["id"], serde_json::json!(id));
+        assert_eq!(entries[0]["name"], serde_json::json!("entry"));
+
+        assert!(runner.debug_breakpoint_set_enabled(id, false));
+        let list = json(&runner.debug_breakpoints().expect("debug_breakpoints"));
+        assert_eq!(
+            list.as_array().expect("array")[0]["enabled"],
+            serde_json::json!(false)
+        );
+
+        assert!(runner.debug_breakpoint_remove(id));
+        let list = json(&runner.debug_breakpoints().expect("debug_breakpoints"));
+        assert!(list.as_array().expect("array").is_empty());
+    }
+
+    #[test]
+    fn debug_run_stops_at_a_breakpoint_reached_after_the_first_step() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let scratch = StoryRunner::new(&debug_bytes(src)).expect("scratch runner constructs");
+        let stepped = json(
+            &scratch
+                .debug_step("into", None)
+                .expect("debug_step serializes"),
+        );
+        let pos = stepped["position"]
+            .as_object()
+            .expect("debug_step reports a position after one instruction");
+        let container_idx =
+            u32::try_from(pos["container_idx"].as_u64().expect("container_idx")).expect("fits u32");
+        let offset = u32::try_from(pos["offset"].as_u64().expect("offset")).expect("fits u32");
+
+        let runner = StoryRunner::new(&debug_bytes(src)).expect("runner constructs");
+        let id = runner.debug_breakpoint_add(container_idx, offset, None);
+        let outcome = json(&runner.debug_run(None).expect("debug_run serializes"));
+        assert_eq!(outcome["reason"]["type"], serde_json::json!("breakpoint"));
+        assert_eq!(outcome["reason"]["id"], serde_json::json!(id));
+    }
+
+    #[test]
+    fn debug_run_without_breakpoints_reaches_terminal() {
+        let src = "hello\n-> END\n";
+        let runner = StoryRunner::new(&debug_bytes(src)).expect("runner constructs");
+        let outcome = json(&runner.debug_run(None).expect("debug_run serializes"));
+        assert_eq!(outcome["reason"]["type"], serde_json::json!("terminal"));
     }
 }

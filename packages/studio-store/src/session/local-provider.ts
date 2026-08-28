@@ -70,7 +70,16 @@
  */
 
 import { StorySessionHandle, type ExternalValue } from "@brink-lang/web";
-import type { Choice, ReplayOutcome, SessionJournal, SessionLine } from "@brink/wasm-types";
+import type {
+  Breakpoint,
+  Choice,
+  DebugRunOutcome,
+  DebugSourceLocation,
+  ReplayOutcome,
+  SessionJournal,
+  SessionLine,
+  StepMode,
+} from "@brink/wasm-types";
 
 import { FlowSessionProvider } from "./flow-provider.js";
 
@@ -78,9 +87,9 @@ import {
   ALL_CAPABILITIES,
   sessionCanContinue,
   statusOfLine,
+  type DebugSessionProvider,
   type ProviderCallbacks,
   type SessionCapability,
-  type SessionProvider,
   type SessionSnapshot,
   type SessionStatus,
 } from "./types.js";
@@ -167,7 +176,7 @@ function choicesFromDebugState(
   }));
 }
 
-export class LocalSessionProvider implements SessionProvider {
+export class LocalSessionProvider implements DebugSessionProvider {
   readonly kind = "local" as const;
   readonly capabilities: ReadonlySet<SessionCapability> = ALL_CAPABILITIES;
 
@@ -492,6 +501,58 @@ export class LocalSessionProvider implements SessionProvider {
     this.programModel = null;
     this.programInkt = null;
     this.programChecksum = null;
+  }
+
+  // ── DebugSessionProvider (D8, #3186 — control-half bridge, #3232) ──
+  //
+  // Delegates straight onto `StorySessionHandle`'s own bindings — this
+  // provider is exactly the "the actual live-session consumer" `debugRun`'s
+  // wasm doc names. `debugRun`/`debugStep` additionally refresh + emit the
+  // mirrored snapshot afterward (same as `reveal()`), since a breakpoint/
+  // step lands the runtime at a new position the State View must reflect.
+
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
+    return this.session?.resolveDebugPosition(containerIdx, offset) ?? null;
+  }
+
+  debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {
+    // -1 is not a real id `BreakpointSet::insert` ever returns (ids start at
+    // 0) — an unmistakable "no live session to arm this on" sentinel rather
+    // than silently pretending to add one.
+    return this.session?.debugBreakpointAdd(containerIdx, offset, name) ?? -1;
+  }
+
+  debugBreakpointRemove(id: number): boolean {
+    return this.session?.debugBreakpointRemove(id) ?? false;
+  }
+
+  debugBreakpointSetEnabled(id: number, enabled: boolean): boolean {
+    return this.session?.debugBreakpointSetEnabled(id, enabled) ?? false;
+  }
+
+  debugBreakpoints(): Breakpoint[] {
+    return this.session?.debugBreakpoints() ?? [];
+  }
+
+  debugRun(budgetCeiling?: number): DebugRunOutcome {
+    const session = this.session;
+    // No live session: nothing to run — reported the same way `debug_run`
+    // itself reports "nothing left to do", so a caller need not special-case
+    // "no session" vs. "session already at its end."
+    if (!session) return { reason: { type: "terminal" }, depth: 0 };
+    const outcome = session.debugRun(budgetCeiling);
+    this.refreshDebug();
+    this.emit();
+    return outcome;
+  }
+
+  debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    const session = this.session;
+    if (!session) return { reason: { type: "terminal" }, depth: 0 };
+    const outcome = session.debugStep(mode, budgetCeiling);
+    this.refreshDebug();
+    this.emit();
+    return outcome;
   }
 
   // ── Internals ─────────────────────────────────────────────────────

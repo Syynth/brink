@@ -215,6 +215,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       capabilities: entry.provider.capabilities,
     });
     mirror(set, entry.provider.getSnapshot(), true);
+    // Debug session slice (#3232): a switch is a different provider, so its
+    // armed breakpoints/capability must be re-read, not carried over.
+    get()._refreshDebugCapability();
   };
 
   return {
@@ -341,6 +344,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
     stopSession() {
       get()._provider?.stop?.();
+      // The provider's underlying runner is gone — its breakpoints/last
+      // outcome went with it (#3232).
+      get()._refreshDebugCapability();
     },
 
     chooseOption(index) {
@@ -386,6 +392,8 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         // until a narrower provider binds.
         capabilities: ALL_CAPABILITIES,
       });
+      // No provider left to be debug-capable about (#3232).
+      get()._refreshDebugCapability();
     },
   };
 };
