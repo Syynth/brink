@@ -3889,3 +3889,26 @@
 - **NOTE (process):** The contradicting clause is the second time this log
   has carried an agent recommendation styled as a maintainer ruling. A
   clause in an entry is only a decision if the maintainer said it.
+
+## Prose checking: button up the ink surface first, native later
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** For prose checking, the **ink** surface is finished first and to
+  a "100% buttoned up" standard; the native surface follows later. Concretely
+  this parked #3252 (cue names are never harvested on the native surface,
+  because `@[convention]` claims populate no `LineContext.dialect`) and
+  admitted the two-part ink cue fix instead: seed cue names in title case,
+  and exclude character-cue lines from prose ranges.
+- **WHY:** The two surfaces fail for unrelated reasons and only one of them
+  was blocking use. The claiming pass does not run on ink at all —
+  `@[convention]` handlers live in a `.brink` conventions module and
+  `brink-syntax` has no notion of them — so the native defect could be
+  separated cleanly rather than held as a prerequisite. On ink the
+  classification already worked and the whole remaining gap was casing: the
+  cue teaches `GRISWOLD`, the prose writes `Griswold`, matching is literal.
+  Fixing that finished a surface rather than half-fixing two.
+- **NOTE:** This is a sequencing decision about prose checking, not a
+  reversal of "the project's center is the NATIVE surface". It stands
+  because the ink gap was small, measured, and in the way.
