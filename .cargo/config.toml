@@ -1,0 +1,10 @@
+# `getrandom` 0.3 hard-errors on wasm32-unknown-unknown unless told which
+# backend to use — the feature flag alone is explicitly documented as
+# insufficient. brink-prose (harper-core) is the crate that pulls it in.
+#
+# Set here rather than in a build script or a wrapper command so that every
+# route to a wasm build gets it: wasm-pack, a bare `cargo build --target
+# wasm32-unknown-unknown`, and CI alike. A RUSTFLAGS env var would be lost by
+# whichever route someone used next.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

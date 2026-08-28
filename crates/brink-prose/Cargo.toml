@@ -1,0 +1,38 @@
+[package]
+name = "brink-prose"
+description = "Prose checking (spelling + light grammar) over brink content spans — its OWN wasm artifact, never linked into brink-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# `rlib` alongside `cdylib` so the masker's unit tests build on the host.
+# brink-web gets away with cdylib alone; this crate's whole correctness claim
+# is about offsets, which deserves host-run tests rather than a wasm harness.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The engine. See docs/prose-checking.md for why this crate is separate:
+# harper-core is 6.15 MB gzipped as wasm, against brink-web's entire 2.61 MB,
+# and `wasm-opt -Os` moves it 2% because the weight is data (an FST dictionary
+# plus POS-tagger weights), not code.
+harper-core = "2.8"
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+
+# harper-core -> ... -> getrandom, which refuses to compile for
+# wasm32-unknown-unknown unless the `wasm_js` backend is BOTH a feature here
+# and a `--cfg` flag (.cargo/config.toml sets the flag for that target).
+# Declared unconditionally: it is inert off-wasm, and a target-gated
+# dependency that only appears on the wasm build is the kind of thing that
+# breaks in CI and nowhere else.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+insta.workspace = true
+
+[lints]
+workspace = true
