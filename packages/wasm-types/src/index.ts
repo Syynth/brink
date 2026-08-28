@@ -1265,7 +1265,9 @@ export interface DebugSourceLocation {
 // StepMode}` — the wire shapes `debugBreakpoints`/`debugRun`/`debugStep`
 // (`StoryRunnerHandle`/`StorySessionHandle`, `@brink-lang/web`) exchange.
 
-/** A `debugStep` unit — `docs/debugger-spec.md` §4's depth-delta semantics:
+/** A step's DIRECTION, orthogonal to its granularity (#3264): the same
+ *  three modes apply to instruction stepping (`debugStep`) and line
+ *  stepping alike. Depth-delta semantics per `docs/debugger-spec.md` §4:
  *  `"into"` executes exactly one instruction, descending into any newly
  *  entered frame; `"over"` runs through a call without stopping inside it;
  *  `"out"` runs until the current frame returns to its caller. */
@@ -1299,7 +1301,14 @@ export type DebugStopReason =
   /** `StepMode: "out"` was requested from the outermost frame (or a thread
    *  frame), which has no caller to return to — refused rather than running
    *  the story to its own end. */
-  | { type: "noStepOutTarget" };
+  | { type: "noStepOutTarget" }
+  /** A LINE-granular step was requested (#3264) on an artifact that cannot
+   *  say which line execution is on — no debug info, or a file compiled
+   *  without source text so it carries no line index. Reported rather than
+   *  quietly behaving like instruction stepping, which would turn a missing
+   *  line index into "why does step take four presses" instead of a legible
+   *  "this build has no line info". */
+  | { type: "noLineInfo" };
 
 /** The result of a `debugRun`/`debugStep` call: why it stopped, the
  *  resulting position (absent for a frame with an empty container stack,

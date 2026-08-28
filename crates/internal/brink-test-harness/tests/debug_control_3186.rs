@@ -712,3 +712,34 @@ fn ink_step_over_stops_at_a_breakpoint_armed_inside_the_call() {
         "the halt must be reported from inside the called function's own frame"
     );
 }
+
+// ── #3264: line-granular stepping, beside the instruction verb ──────────
+
+/// The degraded path, which is the one most likely to be got wrong: an
+/// artifact with no `DebugInfo` cannot say which line execution is on, so
+/// `debug_step_line` must SAY so rather than quietly behaving like
+/// `debug_step`. Silently degrading is how a missing line index becomes
+/// "why does step take four presses" instead of "this build has no line
+/// info".
+#[test]
+fn line_stepping_without_debug_info_reports_no_line_info_rather_than_degrading() {
+    let (program, line_tables) = compile_ink("VAR x = 0\n~ x = 5\nhello\n-> END\n");
+    let mut story = Story::<FastRng>::new(Arc::new(program), line_tables);
+
+    let outcome = story
+        .debug_step_line(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+        .expect("must not error");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::NoLineInfo,
+        "an artifact with no line index must report NoLineInfo, not step one instruction \
+         and pretend that was a line"
+    );
+
+    // And the instruction verb still works on the same artifact — the two
+    // are independent, which is the point of having both.
+    let stepped = story
+        .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+        .expect("instruction stepping needs no line index");
+    assert_eq!(stepped.reason, DebugStopReason::Step);
+}
