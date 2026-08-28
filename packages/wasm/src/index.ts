@@ -60,6 +60,7 @@ import type {
   StructuralResult,
   DirMoveResult,
   DebugState,
+  DebugSourceLocation,
   ProgramModel,
   LinesTable,
   SaveState,
@@ -1732,6 +1733,30 @@ export class StoryRunnerHandle {
     return this.runner.checksum();
   }
 
+  /**
+   * The program→source resolver (D9, issue #3187): resolves a
+   * `(containerIdx, offset)` bytecode position — exactly what
+   * {@link debugSnapshot}'s `position`/call-stack frame `position` fields
+   * report — to the source range it was compiled from, via the loaded
+   * program's `DebugInfo` section (D6, #3184).
+   *
+   * Returns `null`, not a throw, when the program carries no `DebugInfo`
+   * section (a compile without `--debug-info`) or the position doesn't
+   * resolve — this is the expected shape for most builds, not a fault.
+   *
+   * Callers MUST gate this on program identity before trusting the result
+   * for anything source-position-sensitive: this resolves against the
+   * program THIS runner is executing, which can be stale relative to the
+   * studio's latest compile. `docs/live-inspector-spec.md` §5's
+   * `sessionDegraded(programChecksum, compiledChecksum)` is the gate —
+   * compare {@link checksum} against the current compile's checksum first.
+   */
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
+    return JSON.parse(
+      this.runner.resolve_debug_position(containerIdx, offset),
+    ) as DebugSourceLocation | null;
+  }
+
   // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
   // counts / rng (true ink flow semantics), each with its own call stack
@@ -2597,6 +2622,29 @@ export class StorySessionHandle {
    * for the loaded program. */
   programModel(): ProgramModel {
     return JSON.parse(this.session.program_model()) as ProgramModel;
+  }
+
+  /**
+   * The program→source resolver (D9, issue #3187): resolves a
+   * `(containerIdx, offset)` bytecode position — exactly what
+   * {@link debugSnapshot}'s `position`/call-stack frame `position` fields
+   * report — to the source range it was compiled from, via the loaded
+   * program's `DebugInfo` section (D6, #3184). This is the resolver behind
+   * the studio's `program` Location space
+   * (`docs/studio-shell-spec.md` §6.1) — `LocalSessionProvider`
+   * (`packages/studio-store`) is the actual live-session consumer, since it
+   * drives the studio through `StorySessionHandle`, not
+   * `StoryRunnerHandle`.
+   *
+   * Returns `null`, not a throw, when the program carries no `DebugInfo`
+   * section or the position doesn't resolve. Callers MUST gate this on
+   * program identity before trusting the result — see
+   * `StoryRunnerHandle.resolveDebugPosition`'s doc for the full argument.
+   */
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
+    return JSON.parse(
+      this.session.resolve_debug_position(containerIdx, offset),
+    ) as DebugSourceLocation | null;
   }
 
   // ── Shared flows (#200) ────────────────────────────────────────

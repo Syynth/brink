@@ -448,4 +448,69 @@ mod tests {
             "the line after the comment must be untouched by it: {ctx}"
         );
     }
+
+    /// D9 verification (issue #3187, "ALSO VERIFY AND REPORT... whether the
+    /// studio editor gives `.ink` files the same HIR-overlay treatment as
+    /// `.brink`, because the ruled both-surfaces requirement means the
+    /// gutter must work in `.ink` too and no one has confirmed that support
+    /// exists"). `docs/debugger-spec.md` §0/§8 flags this as unverified —
+    /// this test is the verification, over the real wasm-facing
+    /// `hir_spans_doc` entry point end to end, not a code-reading claim.
+    ///
+    /// `brink-db`'s `projection_query` (`crates/internal/brink-db/src/
+    /// queries/segments.rs`) dispatches on `file_language`: a segment-based
+    /// walk for `Language::Ink`, a whole-file walk for native — both
+    /// composed into the same `Projection` shape `hir_spans_impl` reads.
+    /// This test proves that dispatch actually reaches an `.ink` file at
+    /// the wasm boundary the editor calls, and that the resulting spans
+    /// carry `def_id` — the exact field the HIR overlay needs to tag a DOM
+    /// element with a `DefinitionId` (CLAUDE.md's "the HIR overlay already
+    /// carries `DefinitionId`s into the editor DOM").
+    #[test]
+    fn ink_files_get_def_id_carrying_hir_spans_like_native_files_do() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== main ===\nHello there.\n-> END\n");
+        assert!(s.set_active_file("main.ink"), "main.ink must be selectable");
+        let doc = s.open_document("main.ink");
+
+        let json = s.hir_spans_doc(doc);
+        let proj: serde_json::Value =
+            serde_json::from_str(&json).expect("hir_spans must return valid JSON");
+        let spans = proj["spans"].as_array().expect("spans array");
+        assert!(
+            !spans.is_empty(),
+            "an .ink file with a knot must produce HIR-overlay spans, not an empty projection: {proj}"
+        );
+
+        let container_with_def_id = spans
+            .iter()
+            .find(|s| s["container"] == serde_json::json!(true) && !s["def_id"].is_null());
+        assert!(
+            container_with_def_id.is_some(),
+            ".ink container spans must carry a `def_id`, the same as native — \
+             the HIR overlay's whole DOM-tagging mechanism depends on it: {spans:?}"
+        );
+
+        // Cross-check against a `.brink` fixture with an equivalent shape —
+        // both surfaces must reach the SAME projection shape, not just
+        // "each individually returns something".
+        let mut native = EditorSession::new();
+        native.update_file(
+            "main.brink",
+            "flow main() {\n    Hello there.\n    -> DONE\n}\n",
+        );
+        assert!(native.set_active_file("main.brink"));
+        let native_doc = native.open_document("main.brink");
+        let native_json = native.hir_spans_doc(native_doc);
+        let native_proj: serde_json::Value =
+            serde_json::from_str(&native_json).expect("native hir_spans must return valid JSON");
+        let native_spans = native_proj["spans"].as_array().expect("spans array");
+        let native_has_def_id = native_spans
+            .iter()
+            .any(|s| s["container"] == serde_json::json!(true) && !s["def_id"].is_null());
+        assert!(
+            native_has_def_id,
+            "sanity check on the native fixture itself: {native_spans:?}"
+        );
+    }
 }

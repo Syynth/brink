@@ -1,8 +1,18 @@
 import { memo, useState } from "react";
 import type { KnotNode } from "@brink/wasm-types";
 import { useShell } from "@brink/studio-shell";
+import { sessionDegraded } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
+
+/** `(container_idx, offset)` — the shape both `DebugState.position` and a
+ *  `KnotNode.disasm` entry's own `offset` (paired with the node's
+ *  `container_idx`) are compared against for the current-instruction
+ *  highlight (D9, #3187). */
+interface RuntimePosition {
+  container_idx: number;
+  offset: number;
+}
 
 /**
  * Program Explorer — a structured, navigable view of the *compiled* program
@@ -12,10 +22,22 @@ import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
  * into for flags, path hash, and name-resolved bytecode. The raw `.inkt`
  * dump lives in the read-only Compiled Output editor document (issue #91,
  * spec §4) — the toolbar button opens it via `program.openCompiledOutput`.
+ *
+ * Session-overlaid (D9, #3187): while a story runs, the currently executing
+ * instruction is highlighted in its knot's disassembly, keyed by
+ * `(container_idx, offset)` — the same join `docs/live-inspector-spec.md`
+ * §5 already gates the Story Graph's current-location highlight on.
+ * `sessionDegraded` suppresses the highlight (never shows a stale one) the
+ * moment the running program's checksum diverges from the studio's latest
+ * compile — an edited-but-not-yet-restarted session, the normal case, not
+ * an error.
  */
 function ProgramViewInner() {
   const model = useStudioStore((s) => s.programModel);
   const { commands } = useShell();
+  const degraded = useStudioStore((s) => sessionDegraded(s.programChecksum, s.compiledChecksum));
+  const debugPosition = useStudioStore((s) => s.debugState?.position);
+  const currentPosition: RuntimePosition | null = degraded ? null : (debugPosition ?? null);
 
   if (!model) {
     return (
@@ -104,7 +126,9 @@ function ProgramViewInner() {
           {model.knots.length === 0 ? (
             <p className="sv-empty">none</p>
           ) : (
-            model.knots.map((k) => <KnotRow key={k.path} node={k} depth={0} />)
+            model.knots.map((k) => (
+              <KnotRow key={k.path} node={k} depth={0} currentPosition={currentPosition} />
+            ))
           )}
         </Section>
       </div>
@@ -114,14 +138,30 @@ function ProgramViewInner() {
 
 // ── Knot/stitch tree row ────────────────────────────────────────────
 
-function KnotRow({ node, depth }: { node: KnotNode; depth: number }) {
+function KnotRow({
+  node,
+  depth,
+  currentPosition,
+}: {
+  node: KnotNode;
+  depth: number;
+  currentPosition: RuntimePosition | null;
+}) {
   const [open, setOpen] = useState(false);
   const indent = 6 + depth * 12;
+  // `currentPosition` is already `null` while degraded (the caller
+  // computed that); a container_idx match alone is not enough — a knot
+  // with no backing container (`u32.MAX` sentinel, program_model.rs's
+  // synthesized-node case) must never match.
+  const isCurrentKnot =
+    currentPosition !== null &&
+    node.container_idx !== 0xffffffff &&
+    node.container_idx === currentPosition.container_idx;
   return (
     <div className="pv-knot">
       <button
         type="button"
-        className="pv-knot-header"
+        className={"pv-knot-header" + (isCurrentKnot ? " pv-current-knot" : "")}
         style={{ paddingLeft: indent }}
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -130,6 +170,11 @@ function KnotRow({ node, depth }: { node: KnotNode; depth: number }) {
         <span className={"pv-knot-name" + (node.kind === "stitch" ? " pv-stitch" : "")}>
           {node.name}
         </span>
+        {isCurrentKnot && (
+          <span className="pv-current-marker" title="currently executing">
+            ▶
+          </span>
+        )}
         {node.flags.length > 0 && <span className="pv-flags">{node.flags.join(" ")}</span>}
       </button>
       {open && (
@@ -145,10 +190,25 @@ function KnotRow({ node, depth }: { node: KnotNode; depth: number }) {
             )}
           </div>
           {node.disasm.length > 0 && (
-            <pre className="pv-disasm">{node.disasm.join("\n")}</pre>
+            <pre className="pv-disasm">
+              {node.disasm.map((line) => (
+                <div
+                  key={line.offset}
+                  className={
+                    "pv-disasm-line" +
+                    (isCurrentKnot && line.offset === currentPosition?.offset
+                      ? " pv-current-instruction"
+                      : "")
+                  }
+                >
+                  <span className="pv-disasm-offset">{line.offset}</span>
+                  <span className="pv-disasm-text">{line.text}</span>
+                </div>
+              ))}
+            </pre>
           )}
           {node.children.map((c) => (
-            <KnotRow key={c.path} node={c} depth={depth + 1} />
+            <KnotRow key={c.path} node={c} depth={depth + 1} currentPosition={currentPosition} />
           ))}
         </div>
       )}
