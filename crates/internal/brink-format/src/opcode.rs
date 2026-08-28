@@ -386,8 +386,10 @@ const RANGE_NON_EMPTY: u8 = 0xF6;
 // blocks above). ONE discriminant byte with a `u8` kind immediate —
 // deliberate opcode-space economy: after NS-A5 the free one-byte space is
 // down to 0xF7-0xFD + 0xFF (0xF0-0xF3 are lifecycle, 0xF4-0xF6 the range
-// ops, 0xFE debug), so the tower's thirteen operations share a single
-// `Tower(TowerOp)` opcode instead of eating most of what remains. Wire:
+// ops; 0xFE held the retired debug opcode, freed by #3180 — see the
+// retirement comment below `END_STRING_EVAL`), so the tower's thirteen
+// operations share a single `Tower(TowerOp)` opcode instead of eating
+// most of what remains. Wire:
 // `0xF7`, then the [`TowerOp`] kind byte (a `SequenceKind`-style closed
 // sub-enum; unknown kinds are a decode error, the same reserved-tag
 // discipline as everywhere else).
@@ -520,8 +522,20 @@ const NOP: u8 = 0xF2;
 const BEGIN_STRING_EVAL: u8 = 0xE0;
 const END_STRING_EVAL: u8 = 0xE1;
 
-// Debug
-const SOURCE_LOCATION: u8 = 0xFE;
+// `0xFE` — **RETIRED (issue #3180, ruled Q-R1 2026-07-19)**: this byte
+// held the lossy line:col `SourceLocation` opcode, evaluated as a no-op
+// (grouped with `Nop`) and never emitted by codegen. The ruling replaces
+// it with a strippable `SectionKind::DebugInfo` section (tag `0x11`,
+// carrying real `FileId`s) instead of interleaving debug instructions the
+// VM's step limit would count against — a binary opcode can't carry that
+// design at all, so there is no replacement opcode to reuse this byte
+// immediately (contrast the `Coalesce` → `CoalesceSome` retirement at
+// `0xFB` above, which reused its byte in the same PR that retired it).
+// `docs/format-v4-rfc.md` §5: approving the RFC froze the opcode
+// *inventory* (names/encodings/reservation status), not numeric byte
+// assignments — those are an implementation detail inside the reserved
+// block. `0xFE` is therefore genuinely free for a future opcode to claim;
+// nothing marks it reserved, following the same precedent.
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -1678,9 +1692,6 @@ pub enum Opcode {
     // ── String eval ─────────────────────────────────────────────────────
     BeginStringEval,
     EndStringEval,
-
-    // ── Debug ───────────────────────────────────────────────────────────
-    SourceLocation(u32, u32),
 }
 
 // ── Opcode encode / decode ──────────────────────────────────────────────────
@@ -2069,13 +2080,6 @@ impl Opcode {
             // String eval
             Self::BeginStringEval => write_u8(buf, BEGIN_STRING_EVAL),
             Self::EndStringEval => write_u8(buf, END_STRING_EVAL),
-
-            // Debug
-            Self::SourceLocation(line, col) => {
-                write_u8(buf, SOURCE_LOCATION);
-                write_u32(buf, line);
-                write_u32(buf, col);
-            }
         }
     }
 
@@ -2335,13 +2339,6 @@ impl Opcode {
             // String eval
             BEGIN_STRING_EVAL => Self::BeginStringEval,
             END_STRING_EVAL => Self::EndStringEval,
-
-            // Debug
-            SOURCE_LOCATION => {
-                let line = read_u32(buf, offset)?;
-                let col = read_u32(buf, offset)?;
-                Self::SourceLocation(line, col)
-            }
 
             _ => return Err(DecodeError::UnknownOpcode(disc)),
         };
@@ -2988,10 +2985,17 @@ mod tests {
         roundtrip(&Opcode::EndStringEval);
     }
 
+    /// `0xFE` held the retired `SourceLocation` opcode (issue #3180, Q-R1
+    /// 2026-07-19). Nothing claims the byte yet (see the retirement comment
+    /// at the end of the const block, below `END_STRING_EVAL`), so it must
+    /// decode as unknown — pinning that the byte is truly gone from the
+    /// decoder, not just unreachable from encode.
     #[test]
-    fn roundtrip_debug() {
-        roundtrip(&Opcode::SourceLocation(1, 0));
-        roundtrip(&Opcode::SourceLocation(u32::MAX, u32::MAX));
+    fn decode_retired_source_location_byte_is_unknown_opcode() {
+        let buf = [0xFE];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::UnknownOpcode(0xFE));
     }
 
     #[test]
