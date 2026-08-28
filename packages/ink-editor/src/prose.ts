@@ -67,6 +67,9 @@ export interface ProseOptions {
   getDictionary?: () => string[];
   /** `american` | `british` | `canadian` | `australian`. */
   getDialect?: () => string;
+  /** Add a word to the project's own dictionary. Absent ⇒ no such action
+   *  is offered, rather than one that silently does nothing. */
+  onAddToDictionary?: (word: string) => void;
   /** Debounce before checking, ms. */
   debounceMs?: number;
 }
@@ -231,15 +234,32 @@ export function proseExtension(options: ProseOptions): Extension {
             severity: "info" as const,
             source: `prose:${lint.kind}`,
             message: lint.message,
-            actions: lint.suggestions
-              .filter((s) => s.kind === "replace" || s.kind === "remove")
-              .slice(0, MAX_SUGGESTIONS)
-              .map((s) => ({
-                name: s.kind === "remove" ? "Remove" : s.text,
-                apply: (view: EditorView, from: number, to: number) => {
-                  view.dispatch({ changes: { from, to, insert: s.text } });
-                },
-              })),
+            actions: [
+              ...lint.suggestions
+                .filter((s) => s.kind === "replace" || s.kind === "remove")
+                .slice(0, MAX_SUGGESTIONS)
+                .map((s) => ({
+                  name: s.kind === "remove" ? "Remove" : s.text,
+                  apply: (view: EditorView, from: number, to: number) => {
+                    view.dispatch({ changes: { from, to, insert: s.text } });
+                  },
+                })),
+              // Only on spellings, and only when the host can actually store
+              // it. "Add to dictionary" on a repeated-word or capitalisation
+              // lint would be nonsense, and offering it with nowhere to write
+              // would be a control that silently does nothing.
+              ...(lint.kind === "Spelling" && options.onAddToDictionary !== undefined
+                ? [
+                    {
+                      name: "Add to dictionary",
+                      apply: (view: EditorView, from: number, to: number) => {
+                        options.onAddToDictionary?.(view.state.sliceDoc(from, to));
+                        view.dispatch({ effects: refreshProseEffect.of() });
+                      },
+                    },
+                  ]
+                : []),
+            ],
           })),
         );
       }

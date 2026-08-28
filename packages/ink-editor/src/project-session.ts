@@ -257,6 +257,14 @@ function withWorkerMirror(
   }) as EditorSessionHandle;
 }
 
+/**
+ * The author's word list, project-relative.
+ *
+ * A dotfile so it sits beside `brink.toml` without appearing as a chapter in
+ * the Binder — it is project metadata, not manuscript.
+ */
+export const PROSE_DICTIONARY_FILE = ".brink-dictionary";
+
 export class ProjectSession {
   private provider: FileProvider;
   /** @see getProseDictionary — `null` means "not computed since analysis moved". */
@@ -519,7 +527,10 @@ export class ProjectSession {
   getProseDictionary(): string[] {
     if (this.proseDictionaryCache === null) {
       try {
-        this.proseDictionaryCache = this.session.getProseDictionary();
+        this.proseDictionaryCache = [
+          ...this.session.getProseDictionary(),
+          ...this.readAuthorDictionary(),
+        ];
       } catch {
         // No analysis yet (first paint). An empty dictionary means the
         // checker flags invented names for one debounce, not that it breaks.
@@ -527,6 +538,47 @@ export class ProjectSession {
       }
     }
     return this.proseDictionaryCache;
+  }
+
+  /**
+   * The author's own word list — everything the symbol table cannot know:
+   * place names, in-world jargon, a character who is never a cue.
+   *
+   * Its OWN file rather than a `brink.toml` key (ruled 2026-08-27): the list
+   * is machine-appended and unbounded, and a config file that is nine-tenths
+   * word list stops reading as configuration.
+   */
+  private readAuthorDictionary(): string[] {
+    const source = this.session.getFileSource(PROSE_DICTIONARY_FILE);
+    if (source === null) return [];
+    return source
+      .split("\n")
+      .map((line) => line.trim())
+      // `#` comments so an author can group the list; blank lines ignored.
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+  }
+
+  /**
+   * Add a word to the author dictionary, creating the file if needed.
+   *
+   * Sorted and deduplicated on write so the file does not churn version
+   * control by append order — two authors adding the same two words in
+   * different orders should produce the same file.
+   */
+  addProseDictionaryWord(word: string): boolean {
+    const trimmed = word.trim();
+    if (trimmed.length === 0) return false;
+
+    const existing = this.readAuthorDictionary();
+    if (existing.includes(trimmed)) return true;
+
+    const words = [...existing, trimmed].sort((a, b) => a.localeCompare(b));
+    const header =
+      "# Words this project spells on purpose. One per line; `#` starts a comment.\n" +
+      "# Knot, stitch and character-cue names are already known — they do not belong here.\n";
+    this.session.updateFile(PROSE_DICTIONARY_FILE, `${header}${words.join("\n")}\n`);
+    this.invalidateProseDictionary();
+    return true;
   }
 
   /** Drop the prose dictionary cache — called when analysis changes. */

@@ -1121,6 +1121,9 @@ export class DocumentSessions {
       getProseDictionary: () => this.project.getProseDictionary(),
       getProseDialect: () =>
         this.options.proseDialect?.() ?? this.project.getProseDialect(),
+      onAddToDictionary: (word) => {
+        this.project.addProseDictionaryWord(word);
+      },
       getTokenTypeNames,
       handleSlot: slot,
       getActiveFile: () => slot.path,

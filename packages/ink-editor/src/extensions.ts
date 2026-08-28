@@ -82,6 +82,10 @@ export interface BrinkStudioOptions {
   getProseDictionary?: () => string[];
   /** `american` | `british` | `canadian` | `australian`. */
   getProseDialect?: () => string;
+  /** Add a word to the project's own dictionary (the "Add to dictionary"
+   *  quick-fix). Absent ⇒ the action is not offered at all, rather than
+   *  offered and inert. */
+  onAddToDictionary?: (word: string) => void;
 
   /** The editor's skin (#363 headless-ready). Defaults to `brinkTheme` (the
    *  `--bs-*`-token CM theme brink-studio uses). Pass `false` for a headless
@@ -566,6 +570,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
           getHirProjection: options.getHirProjection,
           getDictionary: options.getProseDictionary,
           getDialect: options.getProseDialect,
+          onAddToDictionary: options.onAddToDictionary,
         })
       : [],
     brinkKeymap(),

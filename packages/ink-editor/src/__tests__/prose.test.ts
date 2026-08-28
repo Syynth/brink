@@ -18,6 +18,7 @@ import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { proseRangesOf } from "../prose.js";
+import { PROSE_DICTIONARY_FILE } from "../project-session.js";
 import { diagnosticSources, publishDiagnostics, diagnosticsFrom } from "../diagnostic-sources.js";
 
 /** A non-container span, positioned by line and column. */
@@ -199,5 +200,15 @@ describe("diagnostic sources", () => {
     ]);
     expect(shown(bare)).toEqual(["compile"]);
     bare.destroy();
+  });
+});
+
+
+describe("the author dictionary file", () => {
+  it("is a dotfile beside brink.toml, not a manuscript chapter", () => {
+    // A visible file would appear in the Binder as though it were part of
+    // the story. It is project metadata.
+    expect(PROSE_DICTIONARY_FILE.startsWith(".")).toBe(true);
+    expect(PROSE_DICTIONARY_FILE).not.toMatch(/\.(ink|brink)$/);
   });
 });
