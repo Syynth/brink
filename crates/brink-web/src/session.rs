@@ -1047,6 +1047,28 @@ mod websession_wasm_tests {
         s.continue_single().expect("advance past the first line");
         let after = s.debug_snapshot().expect("debug_snapshot serializes again");
         assert_ne!(before, after, "position must move: {before} == {after}");
+
+        // #3182: the whole-string inequality above doesn't prove `position`
+        // itself crossed the wasm JSON boundary — it would pass just as
+        // happily if `debug_snapshot_to_js` dropped `position:` entirely and
+        // only `current_location`/`call_stack` moved. Parse both and assert
+        // directly on the `position` field.
+        let before_v: serde_json::Value = serde_json::from_str(&before).unwrap();
+        let after_v: serde_json::Value = serde_json::from_str(&after).unwrap();
+        let before_pos = &before_v["position"];
+        let after_pos = &after_v["position"];
+        assert!(
+            before_pos["container_idx"].is_u64() && before_pos["offset"].is_u64(),
+            "position.container_idx/offset must be present on the wire: {before}"
+        );
+        assert!(
+            after_pos["container_idx"].is_u64() && after_pos["offset"].is_u64(),
+            "position.container_idx/offset must be present on the wire: {after}"
+        );
+        assert_ne!(
+            before_pos, after_pos,
+            "position itself must change across continue_single: {before_pos} == {after_pos}"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1170,5 +1192,16 @@ mod websession_wasm_tests {
 
         let snap = s.flow_debug_snapshot("f").expect("flow_debug_snapshot");
         assert!(snap.contains("\"status\""), "{snap}");
+
+        // #3182: frame-level assertion — the innermost call frame for a
+        // flow that's mid-body (past its choice, inside "One.") must carry
+        // a real `(container_idx, offset)` position on the wire, not just
+        // the snapshot as a whole containing a `"status"` key.
+        let snap_v: serde_json::Value = serde_json::from_str(&snap).unwrap();
+        let frame = &snap_v["call_stack"][0];
+        assert!(
+            frame["position"]["container_idx"].is_u64() && frame["position"]["offset"].is_u64(),
+            "innermost call_stack frame must carry position.container_idx/offset: {snap}"
+        );
     }
 }

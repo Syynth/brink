@@ -1151,6 +1151,11 @@ export interface DebugFrame {
   kind: string;
   /** Nearest named knot/stitch for this frame, if resolvable. */
   location?: string;
+  /** Precise `(container_idx, offset)` this frame will resume at (#3182).
+   *  Absent for a frame whose container stack is empty — including every
+   *  `external` frame, which carries no bytecode position. Not yet
+   *  resolved to source (D6/D9). */
+  position?: { container_idx: number; offset: number };
   temps: number;
 }
 
@@ -1182,6 +1187,10 @@ export interface DebugState {
   /** active | waiting_for_choice | done | ended */
   status: string;
   current_location?: string;
+  /** Precise `(container_idx, offset)` for the active flow (#3182); mirrors
+   *  `call_stack[0].position` when the call stack is non-empty. Not yet
+   *  resolved to source (D6/D9). */
+  position?: { container_idx: number; offset: number };
   turn_index: number;
   globals: DebugGlobal[];
   call_stack: DebugFrame[];

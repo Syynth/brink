@@ -48,10 +48,19 @@ pub struct DebugSnapshot {
     /// Nearest named knot/stitch the cursor is currently in, if resolvable.
     pub current_location: Option<String>,
     /// Precise execution position for the active flow: the innermost call
-    /// frame's current `(container_idx, offset)`. `None` only when the call
+    /// frame's current `(container_idx, offset)`. `None` when the call
     /// stack has no frame with an open container (e.g. `Ended`/`Done` with
     /// nothing left to run) — mirrors `call_stack[0].position` when the
-    /// call stack is non-empty.
+    /// call stack is non-empty. Also `None` whenever the innermost frame is
+    /// a `CallFrameType::External` frame: those are pushed with an empty
+    /// `container_stack` (there is no bytecode position "inside" a
+    /// deferred external call), and an external frame stays the top frame
+    /// for as long as `has_pending_external()` is true — so a flow parked
+    /// on a deferred external (`StepOutcome::AwaitingExternal`, status
+    /// `active`, nothing exhausted) reports `position: None` here too. The
+    /// call site that invoked the external lives on that frame's own
+    /// `return_address`, or equivalently on the position of the caller
+    /// frame just below it.
     pub position: Option<DebugPosition>,
     /// Current turn index.
     pub turn_index: u32,
@@ -81,8 +90,14 @@ pub struct DebugFrame {
     pub location: Option<String>,
     /// This frame's current `(container_idx, offset)` — the next
     /// instruction that will execute if/when this frame becomes active
-    /// again. `None` only for a frame whose container stack is empty
-    /// (exhausted, nothing left to run in it).
+    /// again. `None` for a frame whose container stack is empty (exhausted,
+    /// nothing left to run in it) — which includes every
+    /// `CallFrameType::External` frame: those are pushed with an empty
+    /// `container_stack` (there is no bytecode position "inside" a
+    /// deferred external call), so a frame with `kind == "external"`
+    /// always carries `position: None`. The call site that invoked it
+    /// lives on this frame's own `return_address`, or equivalently on the
+    /// position of the caller frame just below it.
     pub position: Option<DebugPosition>,
     /// Number of temporary (local) variables in this frame.
     pub temps: usize,

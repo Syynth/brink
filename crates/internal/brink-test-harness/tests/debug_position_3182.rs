@@ -15,8 +15,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use brink_format::Opcode;
-use brink_runtime::{FastRng, Program, Story};
+use brink_format::{Opcode, Value};
+use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, Program, StepOutcome, Story};
 
 type LineTables = Vec<Vec<brink_format::LineEntry>>;
 
@@ -364,5 +364,86 @@ fn ink_frame_stack_shape_for_thread() {
     assert_eq!(
         pos.container_idx, expected.0,
         "thread frame's container must be the threaded knot's own container"
+    );
+}
+
+// ── 6. Frame-stack shape: deferred external (position: None case) ─────────
+
+/// A handler that always defers — used to park a flow on `AwaitingExternal`
+/// and keep it parked (never resolving), which is all this test needs.
+struct DeferForever;
+
+impl ExternalFnHandler for DeferForever {
+    fn call(&self, _name: &str, _args: &[Value]) -> ExternalResult {
+        ExternalResult::Pending
+    }
+}
+
+/// `CallFrameType::External` is pushed with an empty `container_stack`
+/// (`vm.rs`'s `Opcode::CallExternal` handler) and stays the top frame for as
+/// long as `has_pending_external()` is true. A flow parked on a deferred
+/// external — status `active`, `StepOutcome::AwaitingExternal`, nothing
+/// exhausted — must report `position: None` on both the innermost call
+/// frame and the snapshot-level mirror, per the doc comments on
+/// `DebugFrame::position` / `DebugSnapshot::position`. Pins the case those
+/// comments call out explicitly.
+#[test]
+fn external_frame_position_is_none_while_awaiting_external() {
+    let (program, tables) = compile_ink(
+        "EXTERNAL probe(x)\n\
+         Before.\n\
+         {probe(1)}\n\
+         After.\n\
+         -> DONE\n",
+    );
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+
+    let handler = DeferForever;
+    let mut steps = 0;
+    let mut parked = false;
+    let mut finished_early = false;
+    loop {
+        steps += 1;
+        assert!(steps < 1000, "runaway advance_with loop");
+        match story.advance_with(&handler).expect("advance_with") {
+            StepOutcome::AwaitingExternal => {
+                parked = true;
+                break;
+            }
+            StepOutcome::Step(step) if step.is_terminal() => {
+                finished_early = true;
+                break;
+            }
+            StepOutcome::Step(_) => {}
+        }
+    }
+    assert!(
+        !finished_early,
+        "story finished before ever calling the deferred external"
+    );
+    assert!(parked, "expected to observe StepOutcome::AwaitingExternal");
+    assert!(
+        story.has_pending_external(),
+        "story should be parked on the deferred external"
+    );
+
+    let snap = story.debug_snapshot();
+    assert_eq!(
+        snap.status, "active",
+        "a flow parked on a deferred external is still active, not exhausted"
+    );
+    assert_eq!(
+        snap.call_stack.first().map(|f| f.kind),
+        Some("external"),
+        "innermost frame while awaiting an external must be the External call frame"
+    );
+    assert_eq!(
+        snap.call_stack[0].position, None,
+        "External frames carry no bytecode position (pushed with an empty container_stack)"
+    );
+    assert_eq!(
+        snap.position, None,
+        "snapshot-level position mirrors the innermost (External) frame: also None"
     );
 }
