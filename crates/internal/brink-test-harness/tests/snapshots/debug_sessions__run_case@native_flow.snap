@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/debug_sessions.rs
+---
+break story.brink:3
+run -> breakpoint story.brink:3
+  at story.brink:3
+expect-line 3
+locals
+  count = 3
+expect-local count = 3
+run -> terminal
+  at story.brink:4

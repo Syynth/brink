@@ -5,6 +5,10 @@
 //! `Story` cloning and structural diffing of episodes.
 
 pub mod corpus;
+/// Scripted debug sessions (#3247) — needs the runtime's debug-hooks seam,
+/// so it only exists in a build that enables it.
+#[cfg(feature = "debug-hooks")]
+pub mod debug_script;
 pub mod diff;
 pub mod episode;
 pub mod explorer;

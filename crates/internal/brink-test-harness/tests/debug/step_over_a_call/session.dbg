@@ -1,0 +1,21 @@
+# KNOWN GAP, recorded deliberately (see #3264): `step` is VM-INSTRUCTION
+# granular, not line granular. Crossing a single source line takes several
+# `step over`s, and how many is unpredictable to an author. Every GDB-style
+# debugger means "advance one line" by this verb.
+#
+# This golden records the behaviour as it actually is rather than the
+# behaviour we want, so that fixing #3263 shows up here as an intentional
+# diff instead of being invisible. Do NOT "fix" this fixture by adding
+# steps until the count looks right — that would hide the gap it exists to
+# document.
+break story.ink:7
+run
+expect-line 7
+step over
+step over
+step over
+step over
+expect-line 8
+locals
+expect-local who = "vendor"
+stack

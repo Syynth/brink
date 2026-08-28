@@ -105,5 +105,9 @@ required-features = ["effect-trace"]
 name = "debug_control_3186"
 required-features = ["debug-hooks"]
 
+[[test]]
+name = "debug_sessions"
+required-features = ["debug-hooks"]
+
 [lints]
 workspace = true

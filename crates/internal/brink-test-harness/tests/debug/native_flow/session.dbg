@@ -1,0 +1,12 @@
+# The same verbs on the native surface — both surfaces are debuggable, so
+# a script that only ever ran on .ink would prove nothing here.
+#
+# Breaks on the line AFTER the declaration: a local is only live once its
+# declaring line has executed, so breaking on `let count = 3` itself would
+# correctly show nothing and make a weaker fixture.
+break story.brink:3
+run
+expect-line 3
+locals
+expect-local count = 3
+continue
