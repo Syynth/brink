@@ -522,6 +522,19 @@
 .brink-studio .cm-tooltip-lint .cm-diagnosticSource {
   flex: 1 0 100%;
 }
+/* Reordered so the FIXES are the bottom row, nearest the underlined word.
+   CodeMirror emits them in the middle (message, buttons, source); this is
+   about pointer travel, not tidiness.
+   
+   Measured: the tooltip renders 1px above the word, and CodeMirror closes
+   it on any mousemove that leaves the word's range without being inside the
+   tooltip's box (`tooltipMargin` is 4px). So the reliable path to a button
+   is straight up — and whatever sits at the tooltip's bottom edge is what
+   the pointer reaches first. The source tag is not a target; the buttons
+   are. */
+.brink-studio .cm-tooltip-lint .cm-diagnosticText { order: 0; }
+.brink-studio .cm-tooltip-lint .cm-diagnosticSource { order: 1; }
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction { order: 2; }
 
 /* Label + message. The label carries severity as a WORD as well as a
    colour: the rail alone fails a colourblind reader and fails a screenshot
