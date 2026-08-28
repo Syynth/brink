@@ -19,11 +19,12 @@
  * containing a variable name.
  */
 
-import { StateEffect, type Extension } from "@codemirror/state";
+import { StateEffect, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Diagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
+import { ElementType, elementTypeField } from "./element-type.js";
 
 /** A half-open range of the document, in CodeMirror positions. */
 export interface ProseRange {
@@ -116,10 +117,21 @@ export function proseRangesOf(
     else holes.push(range);
   }
 
+  return subtractRanges(content, holes);
+}
+
+/**
+ * `content` minus `holes` — the gaps left over, in order.
+ *
+ * Shared by the two subtraction passes: interpolations and machinery nested
+ * inside a content span, and whole lines that are not prose at all
+ * ({@link withoutCueLines}). One interval walk rather than two, because the
+ * second one written independently is the one that gets the boundary
+ * conditions wrong.
+ */
+function subtractRanges(content: ProseRange[], holes: ProseRange[]): ProseRange[] {
   const ranges: ProseRange[] = [];
   for (const range of content) {
-    // Walk the holes that overlap this content span, in order, emitting the
-    // gaps between them.
     const inside = holes
       .filter((h) => h.to > range.from && h.from < range.to)
       .sort((a, b) => a.from - b.from);
@@ -134,6 +146,37 @@ export function proseRangesOf(
   }
 
   return ranges.filter((r) => r.to > r.from);
+}
+
+/**
+ * `ranges` with every character-cue line removed.
+ *
+ * A cue is the speaker's NAME, not prose — the same category as the knot and
+ * stitch names prose checking has always excluded. It reads as prose to the
+ * HIR projection, though: an ink cue line is an ordinary content span, so
+ * without this pass the cue's own text is spell-checked.
+ *
+ * That matters more than it looks. The dictionary seeds a cue name in TITLE
+ * case (`Griswold`), because that is the spelling the prose uses and
+ * matching is literal. Harper's proper-noun metadata then reports the
+ * all-caps cue line itself — measured, not assumed. So excluding the cue
+ * line and title-casing the seed are two halves of one fix; neither works
+ * alone.
+ *
+ * Only `character` lines. A parenthetical (`(quietly)`) and a dialogue line
+ * ARE prose and stay checked.
+ */
+export function withoutCueLines(ranges: ProseRange[], state: EditorState): ProseRange[] {
+  const infos = state.field(elementTypeField, false);
+  if (infos === undefined) return ranges;
+
+  const holes: ProseRange[] = [];
+  for (const [i, info] of infos.entries()) {
+    if (info.type !== ElementType.Character) continue;
+    const line = state.doc.line(i + 1);
+    holes.push({ from: line.from, to: line.to });
+  }
+  return holes.length === 0 ? ranges : subtractRanges(ranges, holes);
 }
 
 /**
@@ -200,7 +243,10 @@ export function proseExtension(options: ProseOptions): Extension {
 
         let ranges: ProseRange[];
         try {
-          ranges = proseRangesOf(options.getHirProjection(), doc);
+          ranges = withoutCueLines(
+            proseRangesOf(options.getHirProjection(), doc),
+            this.view.state,
+          );
         } catch {
           // The projection pull can fail transiently (the session is mid-swap).
           // Leave the previous prose diagnostics standing rather than clearing

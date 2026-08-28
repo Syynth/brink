@@ -21,7 +21,7 @@ export type { HirOverlayOptions } from "./hir-overlay.js";
 
 // Prose checking (#3209). The seam only — the engine is a separate, lazily
 // loaded wasm module the HOST registers, so this package never depends on it.
-export { proseExtension, proseRangesOf, refreshProseEffect } from "./prose.js";
+export { proseExtension, proseRangesOf, withoutCueLines, refreshProseEffect } from "./prose.js";
 export type { ProseChecker, ProseLint, ProseOptions, ProseRange } from "./prose.js";
 export { diagnosticSources, publishDiagnostics, diagnosticsFrom } from "./diagnostic-sources.js";
 export type { DiagnosticSource } from "./diagnostic-sources.js";

@@ -91,13 +91,13 @@ impl EditorSession {
                 };
                 for (name, value) in &dialect.attrs {
                     if name == "speaker" {
-                        push_words(value, &mut words);
+                        push_cue_words(value, &mut words);
                     }
                 }
                 if dialect.kind == "character"
                     && let Some(line) = lines.get(idx)
                 {
-                    push_words(line, &mut words);
+                    push_cue_words(line, &mut words);
                 }
             }
         }
@@ -134,6 +134,49 @@ fn push_words(raw: &str, out: &mut Vec<String>) {
         }
     }
     take_word(&mut current, out);
+}
+
+/// Split `raw` like [`push_words`], but normalize each word to title case.
+///
+/// A cue is written in caps by convention (`GRISWOLD`) while the prose that
+/// mentions the same character is not (`Griswold`), and matching is literal
+/// — so seeding the cue's own spelling leaves every prose mention
+/// underlined, which is the whole reported bug.
+///
+/// Seeding BOTH spellings does not work, and this is measured rather than
+/// assumed: with `["GRISWOLD", "Griswold"]` in the dictionary, `GRISWOLD` is
+/// still reported ("Did you mean `Griswold`?"). Harper's proper-noun
+/// metadata drives a capitalization rule that fires on the all-caps use
+/// regardless of the all-caps entry being present. So title case is the one
+/// form to seed, and the cue LINE is excluded from prose checking on the
+/// editor side instead — the two halves only work together.
+fn push_cue_words(raw: &str, out: &mut Vec<String>) {
+    let mut words = Vec::new();
+    push_words(raw, &mut words);
+    out.extend(words.iter().map(|w| title_case(w)));
+}
+
+/// `GRISWOLD` → `Griswold`, `O'HARA` → `O'Hara`.
+///
+/// Capitalizes the first letter of each apostrophe-separated run, but only
+/// when that run is at least two characters — so `O'HARA` becomes `O'Hara`
+/// rather than `O'hara`, while a possessive `'s` stays lowercase.
+fn title_case(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    for (i, run) in word.split('\'').enumerate() {
+        if i > 0 {
+            out.push('\'');
+        }
+        let capitalize = i == 0 || run.chars().count() >= MIN_WORD_LEN;
+        for (j, ch) in run.chars().enumerate() {
+            if j == 0 && capitalize {
+                out.extend(ch.to_uppercase());
+            } else {
+                out.extend(ch.to_lowercase());
+            }
+        }
+    }
+    out
 }
 
 fn take_word(current: &mut String, out: &mut Vec<String>) {
@@ -232,6 +275,52 @@ mod tests {
             .apply_project_config("[prose]\ndialect = \"british\"\n")
             .expect("valid config");
         assert_eq!(session.configured_prose_dictionary(), "[]");
+    }
+
+    #[test]
+    fn a_cue_teaches_the_dictionary_its_title_case_spelling() {
+        // The reported bug end to end: the cue is written `@GRISWOLD:<>`,
+        // the prose says `Griswold`, and matching is literal — so the cue's
+        // own spelling is not what the dictionary needs to hold.
+        let mut s = EditorSession::new();
+        let dialect = serde_json::to_string(&brink_ir::DialogueDialect::default()).expect("ser");
+        s.set_dialect(&dialect).expect("valid dialect");
+        s.update_file(
+            "main.ink",
+            "=== intro ===\n@GRISWOLD:<>\nBuying or dying?\n-> END\n",
+        );
+        let _ = s.compile_project("main.ink");
+
+        let words = s.prose_dictionary_list();
+        assert!(words.contains(&"Griswold".to_owned()), "got {words:?}");
+        // And NOT the all-caps form: seeding both is measurably worse than
+        // seeding title case alone — Harper's capitalization rule then
+        // reports the all-caps use anyway.
+        assert!(!words.contains(&"GRISWOLD".to_owned()), "got {words:?}");
+    }
+
+    #[test]
+    fn declared_names_keep_their_own_case() {
+        // Only CUE names are normalized. A knot the author spelled a
+        // particular way is offered exactly as spelled.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== kaelenIntro ===\n-> END\n");
+        let _ = s.compile_project("main.ink");
+        assert!(
+            s.prose_dictionary_list()
+                .contains(&"kaelenIntro".to_owned()),
+            "{:?}",
+            s.prose_dictionary_list()
+        );
+    }
+
+    #[test]
+    fn title_case_handles_an_irish_style_name() {
+        assert_eq!(super::title_case("O'HARA"), "O'Hara");
+        assert_eq!(super::title_case("GRISWOLD"), "Griswold");
+        assert_eq!(super::title_case("Griswold"), "Griswold");
+        // A possessive stays lowercase — the run is one character.
+        assert_eq!(super::title_case("KAELEN'S"), "Kaelen's");
     }
 
     #[test]

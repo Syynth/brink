@@ -17,7 +17,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
-import { proseRangesOf } from "../prose.js";
+import { proseRangesOf, withoutCueLines } from "../prose.js";
+import { elementTypeField } from "../element-type.js";
 import { diagnosticSources, publishDiagnostics, diagnosticsFrom } from "../diagnostic-sources.js";
 
 /** A non-container span, positioned by line and column. */
@@ -202,3 +203,57 @@ describe("diagnostic sources", () => {
   });
 });
 
+/**
+ * Cue lines are not prose.
+ *
+ * A cue is the speaker's NAME — the same category as the knot and stitch
+ * names prose checking has always excluded — but to the HIR projection an
+ * ink cue line is an ordinary content span, so it arrives here looking like
+ * prose.
+ *
+ * This is one half of a two-half fix and fails on its own: the dictionary
+ * seeds a cue name in TITLE case (`Griswold`), because that is what the
+ * prose uses and matching is literal, and Harper's proper-noun metadata then
+ * reports the all-caps cue line itself. Excluding the line is what makes the
+ * title-case seed safe.
+ */
+describe("withoutCueLines", () => {
+  /** A state with the dialect classification the editor really uses. */
+  function stateOf(text: string) {
+    return EditorState.create({ doc: text, extensions: [elementTypeField] });
+  }
+
+  const SCRIPT = "@GRISWOLD:<>\nBuying or dying?\n";
+
+  it("drops the cue line, keeping the dialogue under it", () => {
+    const state = stateOf(SCRIPT);
+    const whole = [{ from: 0, to: state.doc.length }];
+    const kept = withoutCueLines(whole, state);
+    expect(textOf(state.doc, kept).join("").includes("GRISWOLD")).toBe(false);
+    expect(textOf(state.doc, kept).join("")).toContain("Buying or dying?");
+  });
+
+  it("leaves a document with no cues untouched", () => {
+    const state = stateOf("Just narrative here.\n");
+    const whole = [{ from: 0, to: state.doc.length }];
+    expect(withoutCueLines(whole, state)).toEqual(whole);
+  });
+
+  it("keeps parentheticals and dialogue, which ARE prose", () => {
+    // Only the name is excluded. A parenthetical is written prose and an
+    // author wants its typos found.
+    const state = stateOf("@GRISWOLD:<>\n(quietly)<>\nBuying or dying?\n");
+    const kept = textOf(state.doc, withoutCueLines([{ from: 0, to: state.doc.length }], state));
+    expect(kept.join("")).toContain("quietly");
+    expect(kept.join("")).toContain("Buying or dying?");
+  });
+
+  it("is a no-op when the field is absent, rather than throwing", () => {
+    // A headless composition may not install the classifier at all; prose
+    // checking should degrade to "checks a bit too much", never to an
+    // exception on the debounce path.
+    const bare = EditorState.create({ doc: SCRIPT });
+    const whole = [{ from: 0, to: bare.doc.length }];
+    expect(withoutCueLines(whole, bare)).toEqual(whole);
+  });
+});
