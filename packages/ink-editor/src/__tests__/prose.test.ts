@@ -309,6 +309,20 @@ describe("onLints", () => {
 
   const settle = () => new Promise((r) => setTimeout(r, 20));
 
+  it("labels a prose lint with the checker's rule name, not its severity", async () => {
+    // `spelling` says more than `info` would, and it is the same slot the
+    // compiler fills with `warning` — one anatomy, two producers.
+    const view = mount({ check: async () => [lint(0, 8)] }, () => {});
+    await settle();
+    let dom: HTMLElement | undefined;
+    forEachDiagnostic(view.state, (d) => {
+      dom ??= d.renderMessage?.(view);
+    });
+    expect(dom?.querySelector(".cm-diag-label")?.textContent).toBe("spelling");
+    expect(dom?.querySelector(".cm-diag-title")?.textContent).toContain("Griswold");
+    view.destroy();
+  });
+
   it("reports the findings of a check", async () => {
     const seen: (readonly ProseLint[])[] = [];
     const view = mount({ check: async () => [lint(0, 8)] }, (l) => seen.push(l));

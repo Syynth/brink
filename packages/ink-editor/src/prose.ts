@@ -25,6 +25,7 @@ import type { Diagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
 import { ElementType, elementTypeField } from "./element-type.js";
+import { renderDiagnosticMessage } from "./diagnostic-anatomy.js";
 
 /** A half-open range of the document, in CodeMirror positions. */
 export interface ProseRange {
@@ -290,12 +291,24 @@ export function proseExtension(options: ProseOptions): Extension {
             severity: "info" as const,
             source: `prose:${lint.kind}`,
             message: lint.message,
+            // The same anatomy the compiler's diagnostics use. The label
+            // here is the checker's own rule name (`spelling`), which says
+            // more than this lint's Info severity would — and it is the
+            // same slot the compiler fills with `warning`.
+            renderMessage: () => renderDiagnosticMessage(lint.kind, lint.message),
             actions: [
               ...lint.suggestions
                 .filter((s) => s.kind === "replace" || s.kind === "remove")
                 .slice(0, MAX_SUGGESTIONS)
-                .map((s) => ({
+                .map((s, i) => ({
                   name: s.kind === "remove" ? "Remove" : s.text,
+                  // Marked rather than styled by position: the checker ranks
+                  // its suggestions, and the top one is what an author takes
+                  // most of the time. `:first-of-type` would have inferred
+                  // that from DOM order, which is the same answer for the
+                  // wrong reason and breaks the moment an action is added
+                  // ahead of them.
+                  markClass: i === 0 ? "cm-prose-fix cm-prose-fix-primary" : "cm-prose-fix",
                   apply: (view: EditorView, from: number, to: number) => {
                     view.dispatch({ changes: { from, to, insert: s.text } });
                   },
@@ -308,6 +321,10 @@ export function proseExtension(options: ProseOptions): Extension {
                 ? [
                     {
                       name: "Add to dictionary",
+                      // Distinct from the replacements: it changes the
+                      // PROJECT rather than this line, so it should not look
+                      // like a fourth spelling to pick from.
+                      markClass: "cm-prose-dict",
                       apply: (view: EditorView, from: number, to: number) => {
                         options.onAddToDictionary?.(view.state.sliceDoc(from, to));
                         view.dispatch({ effects: refreshProseEffect.of() });
