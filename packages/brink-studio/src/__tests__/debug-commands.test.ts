@@ -208,3 +208,72 @@ describe("debugRun / debugStep and debugStatus", () => {
     expect(store.getState().debugStatus).toBe("none");
   });
 });
+
+// ── #3229: the per-session debug-info compile toggle ────────────────────
+//
+// The store half of the ruling. The Rust half — that the flag actually
+// changes what `EditorSession::compile_project` emits, and that the studio's
+// own bytes then resolve a position — is proven over the production road in
+// `crates/brink-web/src/editor/mod.rs`. What matters *here* is that the
+// store drives that session method and recompiles, because a toggle that
+// sets the flag without recompiling looks like it works and changes nothing:
+// the flag governs the NEXT compile, and the live session runs on the bytes
+// the last one produced.
+
+describe("setDebugInfoEnabled (#3229)", () => {
+  function storeWithProject() {
+    const store = createStudioStore();
+    const setDebugInfoEnabled = vi.fn();
+    const triggerCompile = vi.fn();
+    store.setState({
+      _project: {
+        getSession: () => ({ setDebugInfoEnabled }),
+      } as never,
+      _documents: { triggerCompile } as never,
+    });
+    return { store, setDebugInfoEnabled, triggerCompile };
+  }
+
+  it("is off by default — ordinary authoring must not pay the debug-compile cost", () => {
+    expect(createStudioStore().getState().debugInfoEnabled).toBe(false);
+  });
+
+  it("pushes the flag to the session AND recompiles", () => {
+    const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
+
+    store.getState().setDebugInfoEnabled(true);
+
+    expect(store.getState().debugInfoEnabled).toBe(true);
+    expect(setDebugInfoEnabled).toHaveBeenCalledWith(true);
+    // The recompile is the half that makes the toggle observable at all.
+    expect(triggerCompile).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns back off again — the flag is not a one-way door", () => {
+    const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
+
+    store.getState().setDebugInfoEnabled(true);
+    store.getState().setDebugInfoEnabled(false);
+
+    expect(store.getState().debugInfoEnabled).toBe(false);
+    expect(setDebugInfoEnabled).toHaveBeenLastCalledWith(false);
+    expect(triggerCompile).toHaveBeenCalledTimes(2);
+  });
+
+  it("no-ops when unchanged, so a toggle can be driven without churning compiles", () => {
+    const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
+
+    store.getState().setDebugInfoEnabled(true);
+    store.getState().setDebugInfoEnabled(true);
+    store.getState().setDebugInfoEnabled(true);
+
+    expect(setDebugInfoEnabled).toHaveBeenCalledTimes(1);
+    expect(triggerCompile).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the flag even with no project bound, so a later bind is not silently off", () => {
+    const store = createStudioStore();
+    store.getState().setDebugInfoEnabled(true);
+    expect(store.getState().debugInfoEnabled).toBe(true);
+  });
+});

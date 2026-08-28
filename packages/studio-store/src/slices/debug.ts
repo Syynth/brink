@@ -83,6 +83,29 @@ export interface DebugSlice {
   /** Step by one `StepMode` unit ("into" | "over" | "out"). Same
    * update/refresh contract as `debugRun`. */
   debugStep(mode: StepMode, budgetCeiling?: number): void;
+  /**
+   * Whether this editor session compiles with the D6 `DebugInfo` section
+   * (#3229). **Off by default**, and the reason matters: without it, every
+   * source-position feature the debugger has — the current-line highlight,
+   * breakpoint→source mapping, the locals panel — resolves to nothing,
+   * however correct its code is.
+   */
+  debugInfoEnabled: boolean;
+  /**
+   * Turn the debug-info compile on or off for this session and recompile
+   * (#3229, ruled 2026-08-28: per-session, not always-on and not a
+   * `brink.toml` key). Turn it on when entering a debugging context and off
+   * when leaving, so ordinary authoring never pays the extra compile size
+   * and time.
+   *
+   * The recompile is not optional bookkeeping — the flag governs what the
+   * NEXT compile emits, and the studio's live session runs on those bytes.
+   * It is cheap: only codegen re-runs, diagnostics stay memoized.
+   *
+   * No-ops when the value is unchanged, so callers may drive it from a
+   * toggle without churning compiles.
+   */
+  setDebugInfoEnabled(enabled: boolean): void;
   /** Refresh `debugCapable`/`debugBreakpoints` from the active provider —
    * called on session bind/switch/dispose (mirrors `_refreshDebugState`). */
   _refreshDebugCapability(): void;
@@ -104,6 +127,21 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
   debugBreakpoints: [],
   debugLastOutcome: null,
   debugStatus: "none",
+  debugInfoEnabled: false,
+
+  setDebugInfoEnabled(enabled) {
+    if (get().debugInfoEnabled === enabled) return;
+    set({ debugInfoEnabled: enabled });
+    const project = get()._project;
+    if (project !== null) {
+      project.getSession().setDebugInfoEnabled(enabled);
+      // Mirrors `setExternalCheck`: the session method changes what the
+      // next compile produces, it does not produce it. Toggling bumps the
+      // session generation, so this recompile is a real one rather than a
+      // cache hit.
+      get()._documents?.triggerCompile();
+    }
+  },
 
   debugBreakpointAdd(containerIdx, offset, name) {
     const provider = get()._provider;

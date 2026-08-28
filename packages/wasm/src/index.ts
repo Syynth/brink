@@ -341,6 +341,43 @@ export class EditorSessionHandle {
   }
 
   /**
+   * Turn the D6 `DebugInfo` section on or off for this session's compiles
+   * (`docs/debugger-spec.md` §1.2, issue #3229) — the toggle that makes the
+   * debugger reachable at all.
+   *
+   * The studio's live session runs on exactly the bytes this session's
+   * `compileProject` produces, so without the section the runtime position,
+   * locals table and program→source resolver all resolve to nothing.
+   *
+   * **Per-session by ruling (2026-08-28)**: turn it on for the session you
+   * are about to debug, off when that session ends. Ordinary authoring then
+   * never pays the size/time cost, and debuggability is not baked into the
+   * project.
+   *
+   * ⚠ **You must recompile for this to take effect.** It changes what the
+   * *next* `compileProject` emits, not the artifact you already hold. That
+   * recompile is codegen only — diagnostics are byte-identical either way
+   * and stay memoized — so it is cheap, but it is not automatic.
+   *
+   * No-ops when unchanged, so calling it on every debug-session start is
+   * safe. Deliberately does NOT bump the config epoch: no query OUTPUT the
+   * editor renders changes, so invalidating the identity-keyed slice caches
+   * would be pure waste.
+   */
+  setDebugInfoEnabled(enabled: boolean): void {
+    this.bump();
+    this.session.set_debug_info_enabled(enabled);
+  }
+
+  /**
+   * Whether this session's compiles emit the `DebugInfo` section (#3229).
+   * See {@link setDebugInfoEnabled}.
+   */
+  debugInfoEnabled(): boolean {
+    return this.session.debug_info_enabled();
+  }
+
+  /**
    * Push the host's current values for `host`-source semantic types (#174) —
    * a full snapshot keyed by semantic-type name that **replaces** the cache.
    * The attached host (e.g. RPG Maker MZ) calls this with its named switches /

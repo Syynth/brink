@@ -188,6 +188,14 @@ const WORKER_CONFIG_METHODS = new Set([
   "setDenyWarningsOverride",
   "clearDenyWarningsOverride",
   "setFoldRunsEnabled",
+  // #3229: MUST be mirrored. `compileProjectAsync` — the road the studio
+  // actually compiles on (`document-sessions.ts`) — routes through
+  // `projectQuery`, which runs on the WORKER replica whenever one is live.
+  // A debug toggle set only on the main session would leave the worker
+  // compiling without the `DebugInfo` section, so the flag would appear to
+  // work and change nothing in the real studio: the exact failure shape
+  // #3229 exists to fix, one layer over.
+  "setDebugInfoEnabled",
   "applyProjectConfig",
   "discoverProjectConfig",
 ]);
