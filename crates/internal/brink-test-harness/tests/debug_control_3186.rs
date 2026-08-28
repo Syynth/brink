@@ -594,12 +594,14 @@ fn debug_run_choice_boundary_allows_choose_then_continue_single() {
     let step = story
         .continue_single()
         .expect("continue_single must resume normally after a debug-run choice stop");
-    match step {
-        brink_runtime::Step::Line(line) => {
-            assert_eq!(line.text.trim(), "Chosen.");
-        }
-        other => panic!("expected a Line step after choosing, got {other:?}"),
-    }
+    assert!(
+        matches!(step, brink_runtime::Step::Line(_)),
+        "expected a Line step after choosing, got {step:?}"
+    );
+    let brink_runtime::Step::Line(line) = step else {
+        unreachable!("just asserted above")
+    };
+    assert_eq!(line.text.trim(), "Chosen.");
 }
 
 /// From inside a live `Thread` frame (caught live via a breakpoint, same
