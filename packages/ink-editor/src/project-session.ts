@@ -259,6 +259,8 @@ function withWorkerMirror(
 
 export class ProjectSession {
   private provider: FileProvider;
+  /** @see getProseDictionary — `null` means "not computed since analysis moved". */
+  private proseDictionaryCache: string[] | null = null;
   /**
    * The host's constructor-time `entryFile` argument — the fallback for a
    * configless project, and the seed for `discoverProjectConfig`'s walk-up.
@@ -503,6 +505,61 @@ export class ProjectSession {
    */
   getDiagnosticRegistry(): unknown[] {
     return getDiagnosticRegistry();
+  }
+
+  /**
+   * The project's proper nouns for the prose dictionary (#3210).
+   *
+   * Cached per compile generation, not per call: the prose extension asks on
+   * every debounce, and this walks every file's symbols and line contexts.
+   * `deliverCompile` invalidates it — a name added in one file must reach the
+   * checker in another, so the cache key is the project's analysis, not a
+   * file's text.
+   */
+  getProseDictionary(): string[] {
+    if (this.proseDictionaryCache === null) {
+      try {
+        this.proseDictionaryCache = this.session.getProseDictionary();
+      } catch {
+        // No analysis yet (first paint). An empty dictionary means the
+        // checker flags invented names for one debounce, not that it breaks.
+        return [];
+      }
+    }
+    return this.proseDictionaryCache;
+  }
+
+  /** Drop the prose dictionary cache — called when analysis changes. */
+  invalidateProseDictionary(): void {
+    this.proseDictionaryCache = null;
+  }
+
+  /**
+   * `[prose] dialect` from `brink.toml`, or `"american"` when unset.
+   *
+   * The default lives here rather than in the checker so both roads agree:
+   * the session is what the editor asks, and the settings UI shows the same
+   * fallback.
+   */
+  getProseDialect(): string {
+    try {
+      return this.session.getConfiguredProseDialect() ?? "american";
+    } catch {
+      return "american";
+    }
+  }
+
+  /**
+   * Whether `[prose] enable` allows prose checking. Defaults to ON when the
+   * config says nothing — a project that has never heard of the setting
+   * should get the feature, not silently miss it.
+   */
+  isProseEnabled(): boolean {
+    try {
+      return this.session.getConfiguredProseEnable() ?? true;
+    } catch {
+      return true;
+    }
   }
 
   /** Load all files from provider and resolve INCLUDEs. */

@@ -179,10 +179,19 @@ export function proseExtension(options: ProseOptions): Extension {
 
       private async run(): Promise<void> {
         if (this.destroyed) return;
-        const checker = options.getChecker();
-        if (checker === null) return;
-
         const generation = this.docGen;
+        const checker = options.getChecker();
+        if (checker === null) {
+          // CLEAR, don't return. "No checker" is a real answer — it is what
+          // `[prose] enable = false` produces — and leaving the last run's
+          // squiggles on screen would make the setting look broken. This is
+          // the one path where an empty publish is the point rather than a
+          // side effect.
+          this.publish(generation, []);
+          return;
+        }
+
+
         const doc = this.view.state.doc;
         const text = doc.toString();
 

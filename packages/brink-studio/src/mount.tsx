@@ -147,6 +147,7 @@ import { registerStoryCommands } from "./story-commands.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
+import { studioProseChecker } from "./prose-checker.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -993,7 +994,16 @@ export async function mountStudio(
     // view (`slotOptions`). Absent ⇒ AT_CUE_DIALECT there already, so leaving
     // this undefined when the host doesn't pass one preserves the
     // byte-identical default with no extra wiring needed here.
-  }, [], { theme: brinkTheme, dialect: options.dialect });
+    // Prose checking (#3209). The checker is registered here rather than
+    // depended on by the editor package: it lazily imports a 6.5 MB wasm
+    // module, so an embedder that never registers one pays nothing at all.
+    // The dictionary is NOT passed — it comes from the session, which is the
+    // only thing that knows the project's knot and cue names (#3210).
+  }, [], {
+    theme: brinkTheme,
+    dialect: options.dialect,
+    proseChecker: studioProseChecker,
+  });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
   // editor text to the session and deliver pending host change

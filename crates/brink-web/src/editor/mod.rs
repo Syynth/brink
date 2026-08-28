@@ -197,6 +197,17 @@ pub struct EditorSession {
     /// disagreement the ruling removed. `None` means the file set no
     /// `indent`, in which case the host applies the shared default.
     configured_indent: Option<u8>,
+    /// `[prose] dialect` from the applied `brink.toml` (#3211) — which
+    /// English the prose checker judges by. Same wholesale-replace and
+    /// clear-on-missing-config rules as [`Self::configured_indent`]: a stale
+    /// dialect would underline a British author's whole manuscript, which is
+    /// exactly the failure this key exists to prevent. `None` means the file
+    /// set no dialect, in which case the host applies the default.
+    configured_prose_dialect: Option<brink_project_config::ProseDialect>,
+    /// `[prose] enable` from the applied `brink.toml` (#3211). Same
+    /// wholesale-replace and clear-on-missing rules; `None` means the file
+    /// set none, in which case the host applies its own default (on).
+    configured_prose_enable: Option<bool>,
     /// The full warning-string set returned by the most recent
     /// `apply_project_config`/`discover_project_config` call (issue #2333)
     /// — read by [`Self::dedupe_config_warnings`], the shared filter both
@@ -276,6 +287,8 @@ impl EditorSession {
             configured_entry: None,
             draft_globs: Vec::new(),
             configured_indent: None,
+            configured_prose_dialect: None,
+            configured_prose_enable: None,
             last_config_warnings: BTreeSet::new(),
         }
     }
@@ -644,6 +657,8 @@ impl EditorSession {
             self.configured_entry = None;
             self.draft_globs.clear();
             self.configured_indent = None;
+            self.configured_prose_dialect = None;
+            self.configured_prose_enable = None;
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -696,6 +711,26 @@ impl EditorSession {
     #[must_use]
     pub fn configured_indent(&self) -> Option<u8> {
         self.configured_indent
+    }
+
+    /// `[prose] dialect` as written, or `None` when the file set none.
+    ///
+    /// A string rather than an enum across the wasm boundary, matching the
+    /// spelling `brink.toml` uses and the one the checker's own boundary
+    /// takes — one vocabulary end to end, so a rename has to break both.
+    #[must_use]
+    pub fn configured_prose_dialect(&self) -> Option<String> {
+        self.configured_prose_dialect.map(|d| d.as_str().to_owned())
+    }
+
+    /// `[prose] enable`, or `None` when the file set none.
+    ///
+    /// Deliberately tri-state rather than defaulted here: the host's default
+    /// belongs to the host, and collapsing "unset" into `true` at this layer
+    /// would make a future default change invisible to every consumer.
+    #[must_use]
+    pub fn configured_prose_enable(&self) -> Option<bool> {
+        self.configured_prose_enable
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1095,6 +1130,9 @@ impl EditorSession {
         self.draft_globs.clone_from(&config.drafts);
         // `[project] indent` (#3149): same wholesale-replace rule.
         self.configured_indent = config.indent;
+        // `[prose] dialect` (#3211): same wholesale-replace rule.
+        self.configured_prose_dialect = config.prose_dialect;
+        self.configured_prose_enable = config.prose_enable;
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload

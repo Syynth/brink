@@ -17,6 +17,7 @@ export const SETTINGS_SECTION_IDS = {
   general: "general",
   formatting: "formatting",
   diagnostics: "diagnostics",
+  prose: "prose",
   editor: "editor",
   appearance: "appearance",
   keymap: "keymap",

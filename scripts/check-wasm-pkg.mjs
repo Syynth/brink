@@ -115,6 +115,67 @@ export const REQUIRED_FILES = [
 export const BUILD_COMMAND =
   "wasm-pack build crates/brink-web --target web --out-dir www/pkg";
 
+/**
+ * Every `file:`-linked wasm-pack output in the repo.
+ *
+ * A REGISTRY rather than a second hardcoded copy of this check, for the same
+ * reason `check-scripts.mjs` keeps `KNOB_TABLES`: the failure this guards
+ * (#2479/#2514) is a property of the `file:` link pattern, not of any one
+ * package, so a new wasm package must inherit the guard by being listed —
+ * never by someone remembering to duplicate two functions. `brink-prose`
+ * (#3208) was the second entry, and adding it is what turned this from one
+ * hardcoded path into a list.
+ *
+ * `files` is what the wasm-pack output must contain; `linkedFiles` is the
+ * subset pnpm's `file:` packing actually links into node_modules — wasm-pack
+ * writes a package.json whose own `files` field omits the `*_bg.wasm.d.ts`,
+ * so asserting the full list against the resolved link fails on a healthy
+ * install (see the long note above `LINKED_FILES`).
+ */
+export const WASM_PACKAGES = [
+  {
+    id: "brink-web",
+    /** The wasm-pack output directory, repo-relative. */
+    pkgDir: "crates/brink-web/www/pkg",
+    /** Where the `file:` dependency resolves to, repo-relative. */
+    linkDir: "packages/wasm/node_modules/brink-web",
+    /** The consuming package and the dependency key inside it. */
+    consumer: "packages/wasm",
+    depName: "brink-web",
+    files: REQUIRED_FILES,
+    buildCommand: BUILD_COMMAND,
+  },
+  {
+    id: "brink-prose",
+    pkgDir: "crates/brink-prose/www/pkg",
+    // The studio is the only consumer: the checker is dynamically imported
+    // so it code-splits out of the main bundle, which is the whole point of
+    // it being a separate artifact (6.5 MB gzipped, larger than the
+    // compiler). See crates/brink-prose/src/lib.rs.
+    linkDir: "packages/brink-studio/node_modules/brink-prose",
+    consumer: "packages/brink-studio",
+    depName: "brink-prose",
+    files: [
+      "brink_prose.js",
+      "brink_prose.d.ts",
+      "brink_prose_bg.wasm",
+      "brink_prose_bg.wasm.d.ts",
+    ],
+    buildCommand:
+      "wasm-pack build crates/brink-prose --target web --out-dir www/pkg",
+  },
+];
+
+/** The registry entry for `id`, or the first one (brink-web) as default. */
+function packageById(id) {
+  return WASM_PACKAGES.find((p) => p.id === id) ?? WASM_PACKAGES[0];
+}
+
+/** `files` minus the entries pnpm's `file:` packing never links. */
+export function linkedFilesOf(pkg) {
+  return pkg.files.filter((file) => !file.endsWith("_bg.wasm.d.ts"));
+}
+
 // The subset of REQUIRED_FILES that a pnpm `file:` install actually links
 // into `packages/wasm/node_modules/brink-web` — NOT all of REQUIRED_FILES.
 // PROVISIONAL, empirically derived (no spec governs wasm-pack's own output
@@ -154,33 +215,38 @@ export const LINKED_FILES = REQUIRED_FILES.filter(
  */
 export function checkWasmPkg({
   repoRoot = defaultRepoRoot,
-  pkgDir = join(repoRoot, "crates/brink-web/www/pkg"),
-  requiredFiles = REQUIRED_FILES,
+  pkg = packageById("brink-web"),
+  pkgDir = join(repoRoot, pkg.pkgDir),
+  requiredFiles = pkg.files,
   log = console.log,
   error = console.error,
 } = {}) {
   const missing = requiredFiles.filter((file) => !existsSync(join(pkgDir, file)));
 
   if (missing.length === 0) {
-    log("[check-wasm-pkg] crates/brink-web/www/pkg is present");
+    log(`[check-wasm-pkg] ${pkg.pkgDir} is present`);
     return true;
   }
 
   error(
     [
-      "[check-wasm-pkg] crates/brink-web/www/pkg is missing or incomplete " +
+      `[check-wasm-pkg] ${pkg.pkgDir} is missing or incomplete ` +
         `(missing: ${missing.join(", ")}).`,
       "",
-      "packages/wasm (published as @brink-lang/web) declares a `file:`",
-      "devDependency named `brink-web` (see packages/wasm/package.json) on",
-      "that directory. `pnpm install --frozen-lockfile` can report success even",
+      // One line, not wrapped: `check-wasm-pkg.test.mjs` asserts the whole
+      // phrase "devDependency named `<key>`" contiguously, deliberately —
+      // a bare includes("brink-web") would also match the crate path in the
+      // build command and pass whether or not the key is actually named.
+      `${pkg.consumer} declares a \`file:\` devDependency named \`${pkg.depName}\``,
+      `(see ${pkg.consumer}/package.json) on that directory.`,
+      "`pnpm install --frozen-lockfile` can report success even",
       "when this link silently failed to resolve (#2479) — the real symptom",
       "shows up later and confusingly, e.g. as \"vitest: not found\" in an",
       "unrelated `pnpm --filter ... test` step.",
       "",
       "Build the wasm package, then reinstall:",
       "",
-      `    ${BUILD_COMMAND}`,
+      `    ${pkg.buildCommand}`,
       "    pnpm install:checked",
       "",
     ].join("\n"),
@@ -208,26 +274,27 @@ export function checkWasmPkg({
  */
 export function checkWasmPkgLink({
   repoRoot = defaultRepoRoot,
-  linkDir = join(repoRoot, "packages/wasm/node_modules/brink-web"),
-  requiredFiles = LINKED_FILES,
+  pkg = packageById("brink-web"),
+  linkDir = join(repoRoot, pkg.linkDir),
+  requiredFiles = linkedFilesOf(pkg),
   log = console.log,
   error = console.error,
 } = {}) {
   const missing = requiredFiles.filter((file) => !existsSync(join(linkDir, file)));
 
   if (missing.length === 0) {
-    log("[check-wasm-pkg] packages/wasm/node_modules/brink-web resolves to a complete wasm-pack output");
+    log(`[check-wasm-pkg] ${pkg.linkDir} resolves to a complete wasm-pack output`);
     return true;
   }
 
   error(
     [
-      "[check-wasm-pkg] packages/wasm/node_modules/brink-web is missing or " +
+      `[check-wasm-pkg] ${pkg.linkDir} is missing or ` +
         `incomplete (missing: ${missing.join(", ")}).`,
       "",
-      "That is the resolved LOCATION of packages/wasm's `file:` devDependency",
-      "on crates/brink-web/www/pkg (see packages/wasm/package.json's",
-      "`brink-web` key) — not the wasm-pack output itself. `pnpm install",
+      `That is the resolved LOCATION of ${pkg.consumer}'s \`file:\` devDependency`,
+      `on ${pkg.pkgDir} (see ${pkg.consumer}/package.json's`,
+      `\`${pkg.depName}\` key) — not the wasm-pack output itself. \`pnpm install`,
       "--frozen-lockfile` can report success even when this link silently",
       "failed to resolve, or resolved to an empty/incomplete directory",
       "(#2479, #2514) — the real symptom shows up later and confusingly,",
@@ -249,9 +316,15 @@ export function checkWasmPkgLink({
 // independently (not short-circuited on the first failure, per the header
 // comment) so a single invocation always reports the full picture.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const pkgOk = checkWasmPkg();
-  const linkOk = checkWasmPkgLink();
-  if (!pkgOk || !linkOk) {
+  // Every registered package, and both checks for each — not short-circuited,
+  // per the header comment, so one invocation always reports the full picture
+  // rather than the first thing that happens to be broken.
+  let ok = true;
+  for (const pkg of WASM_PACKAGES) {
+    ok = checkWasmPkg({ pkg }) && ok;
+    ok = checkWasmPkgLink({ pkg }) && ok;
+  }
+  if (!ok) {
     process.exitCode = 1;
   }
 }

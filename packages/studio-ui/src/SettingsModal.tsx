@@ -69,6 +69,7 @@ export const SETTINGS_ICONS = {
   project: icon("M12 3c1 2.5 3.5 5.5 5.5 8a7 7 0 1 1-11 0C8.5 8.5 11 5.5 12 3z"),
   diagnostics: icon("M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"),
   formatting: icon("M4 7h16M8 12h12M8 17h9"),
+  prose: icon("M4 6h16M4 11h13M4 16h9M17.5 15.5l2 2M19.5 13.5l2 2"),
   editor: icon("M4 7h16M4 12h10M4 17h13"),
   appearance: icon("M12 3a9 9 0 1 0 0 18 2 2 0 0 0 0-4 2 2 0 0 1 2-2h3a4 4 0 0 0 4-4 8 8 0 0 0-9-8z"),
   keymap: icon("M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"),

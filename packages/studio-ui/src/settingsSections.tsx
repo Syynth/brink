@@ -24,6 +24,7 @@ import {
 } from "./SettingsDocument.js";
 import { LintSettings } from "./LintSettings.js";
 import { FormattingSettings } from "./FormattingSettings.js";
+import { ProseSettings } from "./ProseSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
 /**
@@ -57,6 +58,14 @@ export function settingsSections(groupId: string): SettingsSection[] {
       keywords: "lints warnings errors todo suppress allow deny",
       icon: SETTINGS_ICONS.diagnostics,
       body: <LintSettings />,
+    },
+    {
+      id: SETTINGS_SECTION_IDS.prose,
+      scope: "project",
+      title: "Prose",
+      keywords: "spelling spellcheck grammar dictionary dialect british american typo",
+      icon: SETTINGS_ICONS.prose,
+      body: <ProseSettings />,
     },
     {
       id: SETTINGS_SECTION_IDS.editor,

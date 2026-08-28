@@ -38,6 +38,7 @@ export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef, inkDocPath, isOutOfScope
 export { DocumentIcon, type DocumentIconProps } from "./DocumentIcon.js";
 export { LintSettings } from "./LintSettings.js";
 export { FormattingSettings } from "./FormattingSettings.js";
+export { ProseSettings } from "./ProseSettings.js";
 export { ThemePicker } from "./ThemePicker.js";
 export {
   SettingsGroup,
