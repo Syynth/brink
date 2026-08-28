@@ -5,13 +5,13 @@ break story.ink:7
 run -> breakpoint story.ink:7
   at story.ink:7
 expect-line 7
-step over -> step
+stepi over -> step
   at story.ink:7
-step over -> step
+stepi over -> step
   at story.ink:7
-step over -> step
+stepi over -> step
   at story.ink:7
-step over -> step
+stepi over -> step
   at story.ink:8
 expect-line 8
 locals

@@ -92,6 +92,28 @@ fn native_flow() {
 // ── Script parsing is its own contract ──────────────────────────────────
 
 #[test]
+fn line_stepping_is_refused_with_a_pointer_not_an_unknown_verb_error() {
+    // `step` is a wanted feature that does not exist yet (#3264). It is
+    // deliberately NOT aliased to `stepi`: both granularities are
+    // first-class, and silently giving someone instruction stepping when
+    // they asked for line stepping is how four presses per line becomes a
+    // mystery instead of a known gap.
+    for verb in ["step into", "next"] {
+        let err = parse_script(verb).expect_err("line stepping must be refused");
+        assert!(
+            err.message.contains("3264"),
+            "the refusal must name the ticket so it does not read like a typo, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("stepi"),
+            "and must point at the verb that does exist today, got: {}",
+            err.message
+        );
+    }
+}
+
+#[test]
 fn an_unknown_verb_is_an_error_not_a_skip() {
     // A silently-ignored line is a script that appears to test something it
     // does not — the same "unearned coverage" failure a tautological test

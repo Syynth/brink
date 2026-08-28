@@ -1,20 +1,22 @@
-# KNOWN GAP, recorded deliberately (see #3264): `step` is VM-INSTRUCTION
-# granular, not line granular. Crossing a single source line takes several
-# `step over`s, and how many is unpredictable to an author. Every GDB-style
-# debugger means "advance one line" by this verb.
+# Two granularities are wanted, both first-class (ruled 2026-08-28): the
+# studio will show the .inkt disassembly beside the source, so an author
+# can watch a line and the instructions it became at the same time.
 #
-# This golden records the behaviour as it actually is rather than the
-# behaviour we want, so that fixing #3263 shows up here as an intentional
-# diff instead of being invisible. Do NOT "fix" this fixture by adding
-# steps until the count looks right — that would hide the gap it exists to
-# document.
+# `stepi` is what exists today — VM-instruction stepping with call-depth
+# awareness. Line stepping (`step`) is #3264 and is NOT implemented; the
+# parser refuses it with a pointer rather than aliasing it here.
+#
+# This golden therefore records instruction granularity as CORRECT
+# behaviour for `stepi`, not as a defect: four instructions happen to make
+# up line 7. What #3264 adds is a second verb, so this transcript should
+# stay as it is when that lands.
 break story.ink:7
 run
 expect-line 7
-step over
-step over
-step over
-step over
+stepi over
+stepi over
+stepi over
+stepi over
 expect-line 8
 locals
 expect-local who = "vendor"

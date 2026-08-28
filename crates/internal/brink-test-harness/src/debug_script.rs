@@ -16,6 +16,23 @@
 //! reading them, which is strictly worse than having no goldens because it
 //! launders real regressions through a habit.
 //!
+//! **Two granularities, both first-class** (RULED 2026-08-28). `stepi` is
+//! VM-instruction stepping; `step` is line stepping. Neither is a
+//! second-class wrapper over the other: the studio will present the
+//! `.inkt` disassembly and the source side by side, so an author can watch
+//! a line and the instructions it became at the same time. GDB's vocabulary
+//! is borrowed on purpose — `stepi`/`nexti` for instructions, `step`/`next`
+//! for lines — because it is the convention every debugger user already
+//! has.
+//!
+//! Line stepping is #3264 and does not exist yet. `step` is therefore
+//! *recognised and refused* rather than left as an unknown verb, so the
+//! error names the ticket instead of reading like a typo. Instruction
+//! stepping is spelled `stepi` from the start, so that when `step` lands no
+//! existing golden silently changes meaning — its transcript would change
+//! too, but a reviewer would have to notice that the same word now means
+//! something else.
+//!
 //! **Lines are 1-based in scripts.** A script is a thing a person writes,
 //! and `main.ink:2` means what every editor means by line 2. The engine is
 //! 0-based (`Program::resolve_source_line`); the conversion happens here,
@@ -123,12 +140,24 @@ pub fn parse_script(text: &str) -> Result<Vec<Command>, ScriptError> {
                 }
             }
             "run" | "continue" => Command::Run,
-            "step" => match rest {
+            "stepi" => match rest {
                 "into" => Command::Step(StepMode::Into),
                 "over" => Command::Step(StepMode::Over),
                 "out" => Command::Step(StepMode::Out),
-                other => return Err(err(format!("step takes into|over|out, got {other:?}"))),
+                other => return Err(err(format!("stepi takes into|over|out, got {other:?}"))),
             },
+            // Recognised and refused, not "unknown": line stepping is a
+            // wanted feature that does not exist yet, and an error naming
+            // the ticket is more use than one that reads like a typo.
+            "step" | "next" => {
+                return Err(err(
+                    "line-level stepping is not implemented yet (#3264). Use `stepi \
+                     into|over|out` for VM-instruction stepping, which is what exists \
+                     today — both granularities are wanted, so `step` is reserved rather \
+                     than aliased to `stepi`."
+                        .into(),
+                ));
+            }
             "locals" => Command::Locals,
             "stack" => Command::Stack,
             "expect-line" => Command::ExpectLine(
@@ -319,7 +348,7 @@ fn apply_action(session: &mut Session, cmd: &Command) -> Result<(), String> {
                 .map_err(|e| format!("{}\nstep failed: {e:?}", session.transcript))?;
             let _ = writeln!(
                 session.transcript,
-                "step {} -> {}",
+                "stepi {} -> {}",
                 match mode {
                     StepMode::Into => "into",
                     StepMode::Over => "over",
