@@ -41,7 +41,8 @@ until now. It is stated once, here, rather than repeated per ticket:
   where per-surface information has to be recorded explicitly, or resolution
   silently breaks. See §2.3 for why and how.
 - It forces D8 (#3186) to define frame semantics that cover **both**
-  vocabularies — ink's tunnels/threads and native's `await` — not just one
+  vocabularies — ink's tunnels/threads, and the suspension constructs
+  (`until` in the native code ground, `~ await` on the ink surface) — not just one
   (§4).
 - It forces D9 (#3187) to build the breakpoint gutter against `.ink` files
   too, not only the native studio fixture.
@@ -499,7 +500,8 @@ LocalEntry:
 Scoped per the issue: define step-over/step-out for each `CallFrameType`
 (`brink-runtime/src/story/call_stack.rs:37-50`: `Root`, `Function`,
 `Tunnel`, `Thread`, `External`, `FunctionEvalFromGame`), across **both**
-vocabularies — ink's tunnels/threads and native's `await` (§0) — and say
+vocabularies — ink's tunnels/threads, and the suspension constructs
+(`until` / `~ await`, §0) — and say
 explicitly where there is no honest analogue. This section answers with
 the vocabulary already established by the runtime's own types
 (`CallFrameType`, `FlowFrame`/`Step::Suspended`), not by inventing new
@@ -535,18 +537,48 @@ no-debug-info library. (Bridging into host Rust code via brink-desktop's
 own debugger, if the host binding happens to be debuggable that way, is out
 of scope for this document and for the ink-level stepping model entirely.)
 
-**`await` suspension (native surface) — the second explicit "no honest
-analogue," at the *statement* level rather than the frame-type level.**
-`await` is statement-only and tunnel-only (`docs/flow-suspension-spec.md`
-§3/§4: "Mid-expression `await` is permanently out"; awaiting composition
-happens through `Tunnel` frames, never `Function`). A park does not push or
+**Suspension parks — the second explicit "no honest analogue," at the
+*statement* level rather than the frame-type level.**
+
+⚠ **Surface vocabulary.** The park has a different spelling per ground, and
+both lower to the same `AwaitStmt` HIR node — so the IR name must not be
+read as the surface keyword:
+
+| ground | spelling |
+|---|---|
+| native code ground (`.brink`) | `until <pure-bool-expr>;` |
+| ink surface (brink extension) | `~ await <cond>`, `~ while await <cond> { … }` |
+
+`await` is **retired on the native surface** (`docs/decision-log.md`,
+2026-07-23, "Code-ground sitting", item 4): it "plants the wrong
+future-resolution mental model, whereas brink's construct is a
+**condition-park**." Author-facing debugger text must use the ground's own
+spelling and must not describe a park as awaiting a *value* — it parks on a
+*condition*, re-evaluated by the wake machinery. Whether the ink surface
+should be renamed to match is an open design question (#3195); this
+document describes what is true today and does not pre-empt it.
+
+Awaiting composition happens through `Tunnel` frames, never `Function`
+(`docs/flow-suspension-spec.md` §4).
+
+⚠ **Contested claim, do not rely on it here.** That spec's §3 also says
+"Mid-expression `await` is permanently out (statement only)", but the later
+block/effect-model ruling (`docs/decision-log.md`, 2026-07-20) ruled that
+"any operand-position suspension (await, choice, coroutine call — no
+carve-out) is legal at the surface and ANF-lowered to a statement
+boundary." The two disagree and the spec was never updated; a third gap
+between `effects-spec.md` §13.1 and `flow-suspension-spec.md` §3 is already
+flagged in the log as deferred "for a later pass". Tracked in #3194. The
+stepping model below holds either way — ANF lowering means a park is a
+statement boundary *by the time it reaches LIR*, which is the only level
+this document maps. A park does not push or
 pop a `CallFrameType` — it suspends the **entire flow** via the FlowFrame
 model (`docs/flow-suspension-spec.md` §2) and ends the VM turn with
 `Step::Suspended`, a terminal `Step` variant exactly like `Done`/`End`
 (`CLAUDE.md`'s "Runtime public API"). Two distinct moments matter for
 stepping:
 
-1. **Approaching the park**: executing up to (and including) the `await`
+1. **Approaching the park**: executing up to (and including) the park
    statement itself is ordinary statement stepping inside the enclosing
    `Tunnel` frame — no different from any other statement.
 2. **At the park**: there is no synchronous "next instruction" to step to.
@@ -555,7 +587,7 @@ stepping:
    that hit the park has moved on to something else. A "step" command
    issued exactly at a park boundary cannot honestly behave like a normal
    statement step (there is nothing to run to, deterministically, right
-   now). The honest behavior: a step command that reaches the `await`
+   now). The honest behavior: a step command that reaches the park
    statement completes normally (it did execute); a *further* step command
    issued while parked must be presented as "flow suspended — will resume
    when the host wakes it" (mirroring how `Step::Suspended` already reads
