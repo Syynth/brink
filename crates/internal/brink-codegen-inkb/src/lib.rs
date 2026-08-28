@@ -145,6 +145,19 @@ pub fn emit_with_options(
     // path is empty.
     walk_container(&program.root, "", "", program.root.id, &mut state);
 
+    // D6 (`docs/debugger-spec.md` §2, issue #3184): finished here, before
+    // the error check below, not folded into the final `Ok(StoryData {..})`
+    // the way it originally was — `DebugCollector::finish` can itself push
+    // a `CodegenError` (an interned `FileId` unresolvable in
+    // `program.file_paths`, #3219 review), and `state.errors` is only ever
+    // inspected at the single early-return point right after this. Folding
+    // it in later would let that error go unchecked, since nothing after
+    // this point looks at `state.errors` again.
+    let debug_info = state
+        .debug
+        .take()
+        .map(|d| d.finish(program, &mut state.errors));
+
     if let Some(first) = core::mem::take(&mut state.errors).into_iter().next() {
         return Err(first);
     }
@@ -207,8 +220,9 @@ pub fn emit_with_options(
         // D6 `DebugInfo` (`docs/debugger-spec.md` §2, tag 0x11): `None`
         // unless `options.emit_debug_info` was set — the section is
         // omitted entirely from `.inkb` in that case, so a release compile
-        // stays byte-identical (§1.2 ship policy).
-        debug_info: state.debug.map(|d| d.finish(program)),
+        // stays byte-identical (§1.2 ship policy). Computed above, before
+        // the error check — see that comment for why.
+        debug_info,
         source_checksum: 0,
     })
 }
@@ -313,6 +327,18 @@ struct ContainerEmitter<'a> {
     /// `bytecode`. Populated by [`Self::emit_push_string`]; drained into the
     /// container's [`ContainerChunk`] by `walk_container`.
     relocations: Vec<Relocation>,
+    /// D6 (`docs/debugger-spec.md` §2.2, issue #3184 review): `Some` for the
+    /// whole life of this emitter exactly when `state.debug` is `Some` —
+    /// `walk_container` seeds it (with the params-prologue entry, if any)
+    /// right after construction and takes it back out when this container's
+    /// bytecode is done. Recording happens at a single point,
+    /// [`Self::record_debug_entry`], called from every body-statement walk —
+    /// top-level *and* nested (`Conditional`/`Sequence`/`LogicWhile` branch
+    /// bodies) — so a statement inside a branch gets an entry the same way a
+    /// top-level one does (#3219 review: nested statements previously got
+    /// none). `None` on the default `emit()` path costs nothing beyond the
+    /// tag check itself.
+    debug_entries: Option<Vec<debug_info::RawDebugEntry>>,
 }
 
 /// Jump-patch bookkeeping for one open `LogicWhile` (innermost = top of
@@ -340,6 +366,7 @@ impl<'a> ContainerEmitter<'a> {
             loop_stack: Vec::new(),
             errors: &mut state.errors,
             relocations: Vec::new(),
+            debug_entries: None,
         }
     }
 
@@ -466,6 +493,34 @@ impl<'a> ContainerEmitter<'a> {
         let bytes = relative.to_le_bytes();
         self.bytecode[offset_pos..offset_pos + 4].copy_from_slice(&bytes);
     }
+
+    /// D6 (`docs/debugger-spec.md` §2.2, issue #3184 review — nested
+    /// statements previously got no debug entries): record one
+    /// [`debug_info::RawDebugEntry`] for `stmt` at this container's current
+    /// bytecode length, a no-op when `self.debug_entries` is `None` (the
+    /// default `emit()` path). Called from [`Self::emit_body`] for *every*
+    /// statement it walks — top-level and nested (`Conditional`/`Sequence`/
+    /// `LogicWhile` branch bodies all route back through `emit_body`) — so
+    /// entries come out already sorted ascending by construction: they are
+    /// pushed in emission order, and bytecode length only grows.
+    /// `prologue_end` is always `false` from this call site; only
+    /// `walk_container`'s dedicated top-level pass (`emit_body_top_level`)
+    /// ever sets it `true`, since the prologue-end marker (§2.4) is a
+    /// per-container concept, not a per-branch one.
+    fn record_debug_entry(&mut self, stmt: &lir::Stmt, prologue_end: bool) {
+        if self.debug_entries.is_none() {
+            return;
+        }
+        #[expect(clippy::cast_possible_truncation)]
+        let offset = self.bytecode.len() as u32;
+        if let Some(entries) = self.debug_entries.as_mut() {
+            entries.push(debug_info::RawDebugEntry {
+                offset,
+                provenance: stmt.provenance,
+                prologue_end,
+            });
+        }
+    }
 }
 
 // ─── Container tree walk ────────────────────────────────────────────
@@ -524,17 +579,19 @@ fn walk_container(
     // D6 (`docs/debugger-spec.md` §2.2/§2.4): read before `state` is
     // (re)borrowed by `ContainerEmitter::new` below — `emitter` holds a
     // mutable borrow of `*state` for its whole lifetime, so `state.debug`
-    // must be read here, not after. When debug info is on, the leading
-    // parameter-binding `DeclareTemp`s below are real prologue bytecode
-    // with no `lir::Stmt` of their own (they're emitted as bare opcodes,
-    // never through `emit_stmt`) — so if this container has params, that
-    // offset-0 span needs its own entry, recorded here before they're
-    // emitted, using the *container's* own provenance (there is no
-    // statement to point at). `raw_entries` stays empty (no allocation) on
-    // the default `emit()` path.
+    // must be read here, not after. `raw_entries` stays empty (no
+    // allocation) on the default `emit()` path.
     let debug_enabled = state.debug.is_some();
     let mut raw_entries: Vec<debug_info::RawDebugEntry> = Vec::new();
     if debug_enabled && !container.params.is_empty() {
+        // The leading parameter-binding `DeclareTemp`s below are real
+        // prologue bytecode with no `lir::Stmt` of their own (they're
+        // emitted as bare opcodes, never through `emit_stmt`), so that
+        // offset-0 span needs its own entry, recorded here before they're
+        // emitted, using the *container's* own provenance (there is no
+        // statement to point at). Never the prologue-end landing point
+        // itself (`prologue_end: false`) — `prologue_end_index` below picks
+        // that.
         raw_entries.push(debug_info::RawDebugEntry {
             offset: 0,
             provenance: container.provenance,
@@ -542,8 +599,33 @@ fn walk_container(
         });
     }
 
+    // §2.4: which statement in `container.body` (by position) is the
+    // landing point past this container's prologue bytecode — the leading
+    // param `DeclareTemp`s above, plus, for a choice-target body, its
+    // leading `ChoiceOutput` statement, which is *also* prologue bytecode:
+    // a breakpoint on a choice target must land past the choice's own
+    // output being emitted, not on it (#3219 review — the naive `i == 0`
+    // this replaced flagged the `ChoiceOutput` statement itself whenever it
+    // was `body[0]`, which it always is when present). `None` when there is
+    // no statement to flag: an empty body, or a choice-target body
+    // containing only the `ChoiceOutput` — `walk_container` pushes its own
+    // synthetic coverage entry for that case below, once the real offset
+    // past all prologue bytecode is known.
+    let leading_choice_output = matches!(
+        container.body.first().map(|stmt| &stmt.kind),
+        Some(lir::StmtKind::ChoiceOutput { .. })
+    );
+    let prologue_end_index = if leading_choice_output {
+        (container.body.len() > 1).then_some(1)
+    } else {
+        (!container.body.is_empty()).then_some(0)
+    };
+
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state, scope_id);
+    if debug_enabled {
+        emitter.debug_entries = Some(raw_entries);
+    }
 
     // Branch containers (conditional or sequence) suppress `Done` after
     // ChoiceSets. Choices inside branches form part of a larger logical
@@ -562,24 +644,36 @@ fn walk_container(
         emitter.emit(Opcode::DeclareTemp(param.slot));
     }
 
-    if debug_enabled {
-        let prologue_end_offset = emitter.bytecode.len();
-        emitter.emit_body_recording(&container.body, &mut raw_entries);
-        if container.body.is_empty() {
-            // Coverage guarantee (§2.4): even a container with no
-            // statements at all (params-only, or truly empty) must have an
-            // entry covering its post-prologue offset, so the floor-lookup
-            // binary search never runs off the end of the table.
+    // Unconditional: `emit_body_top_level` (and everything it recurses
+    // into) only *records* when `emitter.debug_entries` is `Some` — see
+    // `ContainerEmitter::record_debug_entry` — so this is exactly
+    // `emit_body`'s old plain behavior byte-for-byte on the default
+    // (`debug_enabled == false`) path, with no separate branch needed here.
+    emitter.emit_body_top_level(&container.body, prologue_end_index);
+
+    let raw_entries = if debug_enabled {
+        let mut entries = emitter.debug_entries.take().unwrap_or_default();
+        if prologue_end_index.is_none() {
+            // Coverage guarantee (§2.4): even when no statement was flagged
+            // above — an empty body, or a choice-target body containing
+            // only the `ChoiceOutput` — this container still needs an entry
+            // covering its post-prologue offset, so the floor-lookup binary
+            // search never runs off the end of the table.
+            // `emitter.bytecode.len()` here is exactly that offset:
+            // `emit_body_top_level` has already finished, so it's past the
+            // param `DeclareTemp`s and, if present, the `ChoiceOutput`'s own
+            // bytecode.
             #[expect(clippy::cast_possible_truncation)]
-            raw_entries.push(debug_info::RawDebugEntry {
-                offset: prologue_end_offset as u32,
+            entries.push(debug_info::RawDebugEntry {
+                offset: emitter.bytecode.len() as u32,
                 provenance: container.provenance,
                 prologue_end: true,
             });
         }
+        entries
     } else {
-        emitter.emit_body(&container.body);
-    }
+        Vec::new()
+    };
 
     let path_hash: i32 = path.chars().map(|c| c as i32).sum();
 

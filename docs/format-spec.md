@@ -530,7 +530,7 @@ Each offset table entry (8 bytes):
 | `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
 | `0x0F` | Alias table (M-3) | Section-local version byte, then per entry: old `DefinitionId` → new `DefinitionId`, sorted by old. Always present (possibly empty). See below. |
 | `0x10` | Frame shapes (FS-3) | Section-local version byte, then per `await` site: the site's stable `DefinitionId` (the synthesized continuation container) + its name-keyed crossing-local slots (`NameId`s), sorted by site. **Optional** — omitted when empty. See below. |
-| `0x11` | DebugInfo (D1/#3179) | reserved — see `docs/debugger-spec.md` §2. |
+| `0x11` | DebugInfo (D1/#3179, shipped D6/#3184) | Section-local version byte, section-local file table, then per `Containers` entry (lockstep by `container_idx`): an entry table (`bytecode_offset`, `file_idx`, `range_start`, `range_len`, `kind_token`, `flags`) plus a `LocalsTable`. **Optional** — omitted entirely for a release export. See below. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
@@ -608,21 +608,40 @@ targets, and are hidden from IDE navigation/completion (debug views such as
 the `.inkt` dump excepted). The flag rides the container's existing counting
 byte — no new field, no layout change.
 
-**`DebugInfo` section (`0x11`, D1/#452 debugger epic)** — reserved for the
-v1 debug-info encoding designed in `docs/debugger-spec.md` §2: a
+**`DebugInfo` section (`0x11`, D1/#452 debugger epic, shipped D6/#3184)** —
+the v1 debug-info encoding designed in `docs/debugger-spec.md` §2: a
 section-local version byte, a section-local file table, and one
 `(bytecode_offset_delta, file_idx, range_start, range_len, kind_token,
 flags)` entry table plus one `LocalsTable` per `Containers` entry, addressed
 by `container_idx` in lockstep with the `Containers` section. Like
 `Visibility`/`FrameShapes`, it is **optional** — omitted entirely for a
-release export (§1.2 of the debugger spec: dev/studio compiles only), so
-every release-shipped `.inkb` stays byte-identical and this reservation
-needs **no** `VERSION` bump. D6 (#3184) is the milestone that adds the real
-`SectionKind::DebugInfo` variant and flips
-`from_u8_rejects_unclaimed_section_tag`'s pin for `0x11`; until then the
-strict reader keeps rejecting it, the same reserved-then-materialized
-discipline `StructShapes`/`EffectRows` follow. `0x10` is taken by
-`FrameShapes`, so this takes the next free tag, `0x11`.
+release export (§1.2 of the debugger spec: dev/studio compiles only, gated
+on `EmitOptions::emit_debug_info`, default `false`), so every
+release-shipped `.inkb` stays byte-identical and this section needed **no**
+`VERSION` bump. D6 (#3184) added the real `SectionKind::DebugInfo` variant
+and flipped `from_u8_rejects_unclaimed_section_tag`'s pin from `0x11` to
+`0x12`, the same reserved-then-materialized discipline `StructShapes`/
+`EffectRows` follow. `0x10` is taken by `FrameShapes`, so this took the next
+free tag, `0x11`.
+
+**Encoding departure — unsigned LEB128 varint, scoped to this section
+only.** Every other `.inkb` section keeps the format's fixed-width house
+style (`write_u8`/`u16`/`u32`/`u64`); the `DebugInfo` entry table alone uses
+`write_varint`/`read_varint` (`brink-format/src/codec.rs`) for
+`bytecode_offset` (delta from the previous entry, always ≥ 0 since entries
+are sorted ascending), `file_idx`, `range_start`, and `range_len` — a
+deliberate, section-scoped ruling (`docs/debugger-spec.md` §2.2), not a
+format-wide encoding change, because this table's row count scales with
+statement count and most spans/deltas are small. `kind_token` (`u32`) and
+`flags` (`u8`) stay fixed-width. The reader is bounded against a crafted
+`.inkb`: a truncated or overlong (>10 bytes, `ceil(64/7)`) continuation run
+is `DecodeError::UnexpectedEof`, never an unbounded read loop.
+
+Each file table entry's surface tag (`Synthetic`/`Ink`/`Native`) decodes
+through `FileSurface`'s own `from_u8`; an out-of-range tag is
+`DecodeError::InvalidFileSurface(u8)` (`brink-format/src/opcode.rs`) — the
+same reject-the-whole-section-cleanly posture every other tagged-enum field
+in this format already takes, not a silent fallback.
 
 #### Value type tags in `.inkb`
 
