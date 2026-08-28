@@ -176,6 +176,15 @@ pub struct AnalysisOptions {
     /// [`AnalysisOptions::apply_project_config`] — read through
     /// [`effective_severity`], never this field directly.
     pub lints: LintPolicy,
+    /// D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): emit the
+    /// `SectionKind::DebugInfo` bytecode-offset → source-range section.
+    /// Mount-time/authoring-time input only, mirroring `dialect`/`types` —
+    /// **never embedded in `.inkb` when `false`** (the default): a
+    /// release-exported story never carries this flag's effect, per the
+    /// ship-policy ruling that keeps every release artifact byte-identical
+    /// regardless of this field. `true` for a dev/studio compile or the
+    /// CLI's explicit `brink compile --debug-info` flag.
+    pub emit_debug_info: bool,
     /// `brink.toml`'s `[project] conventions` pointer (docs/prose-dialect-spec.md
     /// §3.4), if set: a built-in preset name or a project-relative path to
     /// the project's conventions module. `None` means no conventions

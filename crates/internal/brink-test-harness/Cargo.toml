@@ -87,10 +87,23 @@ regex = { workspace = true }
 # `cargo test --workspace --all-features --exclude bevy-brink`, not a
 # dedicated job.
 effect-trace = ["brink-runtime/effect-trace"]
+# D8 debugger control seam (issue #3186): forwards to `brink-runtime`'s
+# `debug-hooks` feature. Same shape as `effect-trace` above — not part of
+# `default`, so `cargo test --workspace` never builds
+# `tests/debug_control_3186.rs`; CI's `Test (all features)` job
+# (`cargo test --workspace --all-features --exclude bevy-brink`) is what
+# exercises it, and the D8 build gate runs the workspace gate once per
+# feature state (off, then on) per the issue's own step-limit-ruling
+# requirement to prove the disabled build is unaffected.
+debug-hooks = ["brink-runtime/debug-hooks"]
 
 [[test]]
 name = "t2_ground_truth_effects"
 required-features = ["effect-trace"]
+
+[[test]]
+name = "debug_control_3186"
+required-features = ["debug-hooks"]
 
 [lints]
 workspace = true

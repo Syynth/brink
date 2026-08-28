@@ -1,5 +1,6 @@
 use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
+use crate::hir::FileId;
 use crate::lir::lower::CoalesceShape;
 use crate::provenance::Provenance;
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
@@ -58,6 +59,24 @@ pub struct Program {
     /// `brink_format::StoryData::alias_table`). Empty unless the source
     /// uses `#@was`.
     pub aliases: Vec<AliasEntry>,
+
+    /// D6 (`docs/debugger-spec.md` §2.3, issue #3184): every source file
+    /// `Container`/`Stmt` provenance in this program can point at, mapped
+    /// to its project-root-relative path — the same map every lowering
+    /// call already threads as a `file_paths: &LookupMap<FileId, String>`
+    /// parameter and previously discarded once lowering finished. Retained
+    /// here so codegen can build the `DebugInfo` section's own file table
+    /// (`docs/debugger-spec.md` §2.3) without re-deriving file identity.
+    ///
+    /// `BTreeMap`, not `HashMap`: `FileId`'s `Ord` exists specifically so a
+    /// `FileId`-keyed collection has a deterministic iteration order
+    /// (`FileId`'s own doc) — this crate's determinism rule (`CLAUDE.md`
+    /// "Determinism matters") forecloses a `HashMap` here even though
+    /// nothing today iterates this map's keys (codegen only `.get()`s by
+    /// `FileId`, building its own file table in first-referenced-entry
+    /// order); the type keeps that invariant true even if a future caller
+    /// does start iterating it.
+    pub file_paths: std::collections::BTreeMap<FileId, String>,
 }
 
 /// One declared `STRUCT` shape (TM-4c). Mirrors
@@ -684,10 +703,54 @@ pub enum ContentPart {
 
 // ─── Expressions ─────────────────────────────────────────────────────
 
-/// A resolved expression. All paths have been replaced with concrete
-/// targets (global `DefinitionId`, temp slot, visit count, etc.).
+/// A resolved expression, paired with the source provenance it was lowered
+/// from (issue #3183, `docs/sourcemap-epic-evaluation.md` §1 verdict table
+/// row 1, "LIR provenance (spans on `lir::Stmt`/`Expr`)").
+///
+/// Bare `Provenance`, never `Option` — the same "no Option" rationale as
+/// [`Container::provenance`]/[`Stmt::provenance`] (the retired `Return.ptr`-
+/// presence trap): every `Expr` is lowered from exactly one HIR expression,
+/// and HIR expressions are covered exhaustively by `docs/sourcemap-epic-
+/// evaluation.md`'s survey — the ~10 shapes that carry a real `.ptr` of
+/// their own (`Infix`, `ArrayLiteral`, `MapLiteral`, `Index`, `Range`,
+/// `StructLiteral`, `FieldAccess`, `FnLiteral`, `Lambda`, `RefArg`) get that
+/// exact range; every other shape (most of `hir::Expr` — see
+/// [`crate::hir::spans::expr_span`]'s own doc) inherits
+/// [`context::LowerCtx::current_stmt_provenance`], the same statement-level
+/// ambient fallback [`Stmt`] uses for its own synthesized siblings. There is
+/// no "we don't know" case to distinguish, so presence never carries meaning
+/// beyond identifying where this expression came from.
+///
+/// **Obligation for future LIR-to-LIR passes (#2336):** identical to
+/// [`Stmt`]'s — any pass that rewrites, folds, or eliminates an `Expr` node
+/// must propagate or merge its provenance, never silently drop it.
 #[derive(Clone)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub provenance: Provenance,
+}
+
+impl Expr {
+    #[must_use]
+    pub const fn new(kind: ExprKind, provenance: Provenance) -> Self {
+        Self { kind, provenance }
+    }
+
+    /// Returns true if this expression is a function call that may produce
+    /// localized text output (`Call`, `CallVariable`, `CallVariableTemp`, `CallExternal`).
+    /// Builtins (`TURNS_SINCE`, `LIST_COUNT`, etc.) are not included — they
+    /// produce numeric/list values, not localized text.
+    #[must_use]
+    pub fn is_function_call(&self) -> bool {
+        self.kind.is_function_call()
+    }
+}
+
+/// An expression's shape, independent of its provenance — see [`Expr`].
+/// All paths have been replaced with concrete targets (global
+/// `DefinitionId`, temp slot, visit count, etc.).
+#[derive(Clone)]
+pub enum ExprKind {
     // ── Literals ─────────────────────────────────────────────────
     Int(i32),
     Float(f32),
@@ -1016,7 +1079,7 @@ pub enum Expr {
     },
     /// `Opcode::SeqVerb(Filter)`: evaluates an array and a predicate
     /// function value (`fn(T): bool`), pushes the retained elements in
-    /// iteration order. Pure-required callback, as [`Expr::SeqMap`].
+    /// iteration order. Pure-required callback, as [`ExprKind::SeqMap`].
     SeqFilter {
         seq: Box<Expr>,
         pred: Box<Expr>,
@@ -1034,7 +1097,7 @@ pub enum Expr {
     /// `Opcode::SeqVerb(FilterMap)`: evaluates an array and an
     /// `Option`-mapper function value (`fn(T): Option[U]`), pushes the
     /// unwrapped `some(v)` results in iteration order (drops `none`).
-    /// Pure-required callback, as [`Expr::SeqMap`] — the Option ruling's
+    /// Pure-required callback, as [`ExprKind::SeqMap`] — the Option ruling's
     /// natural companion to `map` (`docs/stdlib-spec.md` §4).
     SeqFilterMap {
         seq: Box<Expr>,
@@ -1230,7 +1293,16 @@ pub enum Expr {
     Fragment(Vec<Stmt>),
 }
 
-impl Expr {
+impl ExprKind {
+    /// Pair this shape with its source `provenance`, producing the
+    /// constructed [`Expr`] — the terse form lowering call sites use so the
+    /// construction reads `lir::ExprKind::Foo(...).at(prov)` rather than the
+    /// more verbose `lir::Expr::new(lir::ExprKind::Foo(...), prov)`.
+    #[must_use]
+    pub const fn at(self, provenance: Provenance) -> Expr {
+        Expr::new(self, provenance)
+    }
+
     /// Returns true if this expression is a function call that may produce
     /// localized text output (`Call`, `CallVariable`, `CallVariableTemp`, `CallExternal`).
     /// Builtins (`TURNS_SINCE`, `LIST_COUNT`, etc.) are not included — they
@@ -1268,7 +1340,7 @@ pub enum StringPart {
 ///
 /// These are recognized by name during HIR → LIR lowering. The analyzer
 /// does not resolve them (they have no declaration) — LIR lowering
-/// intercepts `Expr::Call` nodes whose paths match known built-in names.
+/// intercepts `ExprKind::Call` nodes whose paths match known built-in names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinFn {
     // ── Intrinsics ──────────────────────────────────────────────

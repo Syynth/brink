@@ -105,3 +105,29 @@
   overflow-x: auto;
   tab-size: 2;
 }
+
+/* Current-instruction / current-knot overlay (D9, #3187). Reuses the same
+   "current location" token the Story Graph's live overlay already defines
+   (`docs/live-inspector-spec.md` §5) — one accent for "the running session
+   is here" across every view, not a per-view color. */
+.brink-studio .pv-knot-header.pv-current-knot {
+  background: var(--bs-graph-current-bg);
+}
+.brink-studio .pv-current-marker {
+  color: var(--bs-info);
+  font-size: var(--bs-font-tiny);
+}
+.brink-studio .pv-disasm-line {
+  display: flex;
+  gap: 8px;
+}
+.brink-studio .pv-disasm-line.pv-current-instruction {
+  background: var(--bs-graph-current-bg);
+}
+.brink-studio .pv-disasm-offset {
+  color: var(--bs-fg-muted);
+  min-width: 3.5em;
+  text-align: right;
+  flex-shrink: 0;
+  user-select: none;
+}

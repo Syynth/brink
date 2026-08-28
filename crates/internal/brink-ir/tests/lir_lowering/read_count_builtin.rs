@@ -19,12 +19,15 @@ VAR t = 0
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::CallBuiltin {
+                value,
+                ..
+            } if matches!(
+                &value.kind,
+                lir::ExprKind::CallBuiltin {
                     builtin: lir::BuiltinFn::ReadCount,
                     ..
-                },
-                ..
-            }
+                }
+            )
         )
     });
     assert!(
@@ -51,12 +54,15 @@ VAR t = 0
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::CallBuiltin {
+                value,
+                ..
+            } if matches!(
+                &value.kind,
+                lir::ExprKind::CallBuiltin {
                     builtin: lir::BuiltinFn::ReadCount,
                     ..
-                },
-                ..
-            }
+                }
+            )
         )
     });
     assert!(

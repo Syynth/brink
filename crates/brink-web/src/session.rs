@@ -68,6 +68,15 @@ pub struct WebSession {
     /// only return one value, so `restore`'s outcome is stashed here for
     /// `lastReplayOutcome` to read right after construction/reload.
     last_replay_outcome: RefCell<Option<String>>,
+    /// Debug-control breakpoints (D8, #3186) armed on this session — checked
+    /// by `debugRun`/`debugStep` (#3232). Caller-owned per
+    /// `BreakpointSet`'s own doc, kept here so a JS host doesn't need to
+    /// round-trip the whole set across the wasm boundary on every call.
+    /// Position-keyed against `self.program`; untouched by `restart` (same
+    /// program) — a `reload` onto a *different* compile can make a stale
+    /// breakpoint's position meaningless, same caveat
+    /// `resolve_debug_position`'s doc already carries for program identity.
+    breakpoints: RefCell<brink_runtime::BreakpointSet>,
 }
 
 #[wasm_bindgen]
@@ -106,6 +115,7 @@ impl WebSession {
             busy: Cell::new(false),
             last_replay_outcome: RefCell::new(None),
             dev_visibility_override: Cell::new(false),
+            breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
         })
     }
 
@@ -125,6 +135,146 @@ impl WebSession {
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let js = debug_snapshot_to_js(session.story().debug_snapshot());
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// The program→source resolver (D9, issue #3187) — the studio Location
+    /// protocol's `program` resolver (`docs/studio-shell-spec.md` §6.1)
+    /// resolves through this. Resolves a `(container_idx, offset)` bytecode
+    /// position — exactly what `debug_snapshot()`'s `position`/call-stack
+    /// frame `position` fields report (D4, #3182) — to the source range it
+    /// was compiled from, via the loaded program's `DebugInfo` section (D6,
+    /// #3184). Mirrors `StoryRunner::resolve_debug_position` — this is the
+    /// `WebSession` (journal/replay-session) counterpart, since
+    /// `LocalSessionProvider` (`packages/studio-store`) drives the studio's
+    /// live session through `StorySessionHandle`/`WebSession`, not
+    /// `StoryRunner`/`StoryRunnerHandle`.
+    ///
+    /// Returns JSON `null`, not an error, when the program carries no
+    /// `DebugInfo` section (a compile without `--debug-info`) or the
+    /// position doesn't resolve. Otherwise `{ "file": string | null,
+    /// "range_start": number, "range_len": number }`.
+    ///
+    /// Callers MUST gate this on program identity before trusting the
+    /// result for anything source-position-sensitive — see
+    /// `StoryRunner::resolve_debug_position`'s doc for the full argument;
+    /// `docs/live-inspector-spec.md` §5's `sessionDegraded` predicate is
+    /// the gate.
+    pub fn resolve_debug_position(
+        &self,
+        container_idx: u32,
+        offset: u32,
+    ) -> Result<String, JsError> {
+        let position = brink_runtime::DebugPosition {
+            container_idx,
+            offset: offset as usize,
+        };
+        let resolved = self
+            .program
+            .resolve_debug_position(position)
+            .map(crate::value_marshal::debug_source_location_to_js);
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
+    //
+    // `debugRun`/`debugStep`/`debugBreakpoint*` bind `Story::debug_run`/
+    // `debug_step`/`BreakpointSet` onto the session — the studio's actual
+    // drive path (`LocalSessionProvider` runs `WebSession`, not
+    // `StoryRunner`; see `StoryRunner`'s copy of these methods for parity).
+    // Reached through `StorySession::story_mut()`, the documented
+    // journal-bypass escape hatch `setDevVisibilityOverride` above already
+    // uses — debug stepping is not a turn the player took, so it must not be
+    // journaled (a resumed session must not replay debugger single-steps).
+
+    /// Add an enabled breakpoint at `(container_idx, offset)`, returning its
+    /// id — pass it to `debugBreakpointRemove`/`debugBreakpointSetEnabled`.
+    /// An empty/omitted `name` is replaced with a `container:offset` label
+    /// (`BreakpointSet::insert`'s own doc).
+    #[wasm_bindgen(js_name = debugBreakpointAdd)]
+    pub fn debug_breakpoint_add(
+        &self,
+        container_idx: u32,
+        offset: u32,
+        name: Option<String>,
+    ) -> u32 {
+        self.breakpoints.borrow_mut().insert(
+            container_idx,
+            offset as usize,
+            name.unwrap_or_default(),
+        )
+    }
+
+    /// Remove a breakpoint by id. Returns `false` if no breakpoint with that
+    /// id exists (already removed, or never added).
+    #[wasm_bindgen(js_name = debugBreakpointRemove)]
+    pub fn debug_breakpoint_remove(&self, id: u32) -> bool {
+        self.breakpoints.borrow_mut().remove(id)
+    }
+
+    /// Enable/disable a breakpoint without removing it. Returns `false` if
+    /// no breakpoint with that id exists.
+    #[wasm_bindgen(js_name = debugBreakpointSetEnabled)]
+    pub fn debug_breakpoint_set_enabled(&self, id: u32, enabled: bool) -> bool {
+        self.breakpoints.borrow_mut().set_enabled(id, enabled)
+    }
+
+    /// Every breakpoint currently armed on this session, in insertion order
+    /// (deterministic — `BreakpointSet` is a `Vec`, not a hash map). Returns
+    /// JSON `Breakpoint[]`.
+    #[wasm_bindgen(js_name = debugBreakpoints)]
+    pub fn debug_breakpoints(&self) -> Result<String, JsError> {
+        let list: Vec<_> = self
+            .breakpoints
+            .borrow()
+            .iter()
+            .map(crate::value_marshal::breakpoint_to_js)
+            .collect();
+        serde_json::to_string(&list).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Run the default flow forward until an armed breakpoint, a choice
+    /// point, or a terminal outcome (`Story::debug_run`'s own doc has the
+    /// full stop-condition/resume contract). `budget_ceiling` defaults to
+    /// `DEFAULT_DEBUG_BUDGET` when omitted — the debug-only step ceiling,
+    /// entirely separate from production's step limit. Returns JSON
+    /// `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugRun)]
+    pub fn debug_run(&self, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_run"))?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        let outcome = session
+            .story_mut()
+            .debug_run(&breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
+    /// `"out"` (`StepMode`'s own doc has the exact depth-delta semantics per
+    /// variant). Same budget default and journal-bypass contract as
+    /// `debugRun`. Returns JSON `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugStep)]
+    pub fn debug_step(&self, mode: &str, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_step"))?;
+        let step_mode = crate::value_marshal::parse_step_mode(mode)?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        let outcome = session
+            .story_mut()
+            .debug_step(step_mode, &breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// The compiled program rendered as `.inkt` text for the Program Explorer:
@@ -689,6 +839,7 @@ impl WebSession {
                 busy: Cell::new(false),
                 last_replay_outcome: RefCell::new(None),
                 dev_visibility_override: Cell::new(false),
+                breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
             },
             outcome,
         ))
@@ -767,6 +918,202 @@ fn step_outcome_to_js<R: brink_runtime::StoryRng>(
             deferred: true,
             name: session.story().pending_external_name().map(str::to_owned),
         },
+    }
+}
+
+// ── WebSession::resolve_debug_position tests (D9, #3187) ─────────────
+//
+// Host-target, unlike `websession_wasm_tests` below: `resolve_debug_position`
+// takes/returns only plain Rust types, never a `JsValue` parameter, so it is
+// exercised directly over a real `WebSession` — the actual session type
+// `LocalSessionProvider` (`packages/studio-store`) drives — on the host
+// target.
+#[cfg(test)]
+mod resolve_debug_position_tests {
+    use super::WebSession;
+
+    fn debug_bytes(src: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), src.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn resolves_the_active_flows_position_to_source() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let snap_json = session.debug_snapshot().expect("debug_snapshot");
+        let snap: serde_json::Value = serde_json::from_str(&snap_json).expect("valid JSON");
+        let pos = snap["position"]
+            .as_object()
+            .expect("position present at flow entry");
+        let container_idx =
+            u32::try_from(pos["container_idx"].as_u64().expect("container_idx")).expect("fits u32");
+        let offset = u32::try_from(pos["offset"].as_u64().expect("offset")).expect("fits u32");
+
+        let resolved_json = session
+            .resolve_debug_position(container_idx, offset)
+            .expect("resolve_debug_position serializes");
+        let resolved: serde_json::Value = serde_json::from_str(&resolved_json).expect("valid JSON");
+        assert_eq!(resolved["file"], serde_json::json!("main.ink"));
+    }
+
+    #[test]
+    fn returns_null_json_without_debug_info() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let session = WebSession::new(&bytes, None, None).expect("session constructs");
+
+        let resolved_json = session
+            .resolve_debug_position(0, 0)
+            .expect("resolve_debug_position serializes even without debug info");
+        assert_eq!(resolved_json, "null");
+    }
+}
+
+// ── WebSession debug control tests (D8, #3186 — control-half bridge #3232) ──
+//
+// Host-target for the same reason as `resolve_debug_position_tests` above:
+// `debugRun`/`debugStep`/`debugBreakpoint*` take/return only plain Rust
+// types, never `JsValue`, so this exercises the real `WebSession` API —
+// `LocalSessionProvider`'s actual backing — over the production entry
+// points, per CLAUDE.md's "Rust-level tests over a real consumer" rule.
+#[cfg(test)]
+mod debug_control_tests {
+    use super::WebSession;
+
+    /// Compile with `--debug-info` on, same fixture shape as
+    /// `resolve_debug_position_tests::debug_bytes`.
+    fn debug_bytes(src: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), src.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    fn json(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).expect("valid JSON")
+    }
+
+    #[test]
+    fn breakpoint_add_remove_list_roundtrip() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let id = session.debug_breakpoint_add(0, 0, Some("entry".to_owned()));
+        let list = json(&session.debug_breakpoints().expect("debug_breakpoints"));
+        let entries = list.as_array().expect("array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["id"], serde_json::json!(id));
+        assert_eq!(entries[0]["name"], serde_json::json!("entry"));
+        assert_eq!(entries[0]["enabled"], serde_json::json!(true));
+
+        assert!(session.debug_breakpoint_set_enabled(id, false));
+        let list = json(&session.debug_breakpoints().expect("debug_breakpoints"));
+        assert_eq!(
+            list.as_array().expect("array")[0]["enabled"],
+            serde_json::json!(false)
+        );
+
+        assert!(session.debug_breakpoint_remove(id));
+        let list = json(&session.debug_breakpoints().expect("debug_breakpoints"));
+        assert!(list.as_array().expect("array").is_empty());
+        // A second remove of the same (now-gone) id reports false, not an error.
+        assert!(!session.debug_breakpoint_remove(id));
+    }
+
+    #[test]
+    fn debug_step_into_reports_step_and_advances_depth_or_position() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let before = json(&session.debug_snapshot().expect("debug_snapshot"));
+        let outcome = json(
+            &session
+                .debug_step("into", None)
+                .expect("debug_step serializes"),
+        );
+        // A single opcode-level step at the very start of a short story can
+        // only be `Step` (nothing to break on yet, no choice reached, and
+        // `-> END` is several instructions away) — see `StepMode::Into`'s
+        // own doc ("execute exactly one instruction").
+        assert_eq!(outcome["reason"]["type"], serde_json::json!("step"));
+        let after = json(&session.debug_snapshot().expect("debug_snapshot"));
+        // Forward progress happened — position/turn state differs from entry,
+        // whichever the underlying instruction touched.
+        assert_ne!(before["position"], after["position"]);
+    }
+
+    #[test]
+    fn debug_run_stops_at_a_breakpoint_reached_after_the_first_step() {
+        let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
+        // Discover a real mid-flow position by stepping once on a scratch
+        // session, then arm a fresh session's breakpoint there and confirm
+        // `debugRun` halts on it before running to `-> END`.
+        let scratch =
+            WebSession::new(&debug_bytes(src), None, None).expect("scratch session constructs");
+        let stepped = json(
+            &scratch
+                .debug_step("into", None)
+                .expect("debug_step serializes"),
+        );
+        let pos = stepped["position"]
+            .as_object()
+            .expect("debug_step reports a position after one instruction");
+        let container_idx =
+            u32::try_from(pos["container_idx"].as_u64().expect("container_idx")).expect("fits u32");
+        let offset = u32::try_from(pos["offset"].as_u64().expect("offset")).expect("fits u32");
+
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let id = session.debug_breakpoint_add(container_idx, offset, None);
+        let outcome = json(&session.debug_run(None).expect("debug_run serializes"));
+        assert_eq!(outcome["reason"]["type"], serde_json::json!("breakpoint"));
+        assert_eq!(outcome["reason"]["id"], serde_json::json!(id));
+        let stopped_pos = outcome["position"].as_object().expect("position present");
+        assert_eq!(
+            stopped_pos["container_idx"],
+            serde_json::json!(container_idx)
+        );
+        assert_eq!(stopped_pos["offset"], serde_json::json!(offset));
+    }
+
+    #[test]
+    fn debug_run_without_breakpoints_reaches_terminal() {
+        let src = "hello\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let outcome = json(&session.debug_run(None).expect("debug_run serializes"));
+        assert_eq!(outcome["reason"]["type"], serde_json::json!("terminal"));
     }
 }
 

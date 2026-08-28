@@ -729,6 +729,10 @@ impl Project {
             dialect: _,
             types: _,
             lints: _,
+            // D6 (`docs/debugger-spec.md` §1.2): `apply_analysis_options`
+            // forwards this too, below — discarded here the same as
+            // `dialect`/`types`/`lints`/`conventions`.
+            emit_debug_info: _,
             conventions: _,
         } = db.analysis_options().clone();
         if let Some(manifest) = host_manifest {

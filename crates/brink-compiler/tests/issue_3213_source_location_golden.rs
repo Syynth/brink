@@ -74,6 +74,20 @@
 //! reverted from the working tree, every test in this file that touches the
 //! lifted-inline-conditional path or the choice-region composition goes
 //! RED; restoring the commit turns them GREEN again.
+//!
+//! # Why issue #3183's `lir::Expr` provenance is NOT extended here
+//!
+//! Issue #3183 (D5's remainder) landed a bare `Provenance` on `lir::Expr`,
+//! mirroring `lir::Stmt`'s split. That is a pure **in-memory IR** addition —
+//! deliberately no codegen change (D6/#3184's job) — so nothing in this
+//! file's `source_location` wire-format assertions could exercise it: this
+//! suite reads `SourceLocation` off `StoryData`/`LineEntry`, which
+//! `lir::Expr::provenance` is not (yet) threaded into. The byte-exact
+//! round-trip proof for `lir::Expr` provenance lives at the layer that
+//! actually carries it — `crates/internal/brink-ir/tests/
+//! issue_3183_lir_provenance.rs`'s "`lir::Expr` provenance" section —
+//! following that file's own established `Stmt`/`Container` round-trip
+//! discipline rather than duplicating it at the wrong granularity here.
 
 use std::path::Path;
 

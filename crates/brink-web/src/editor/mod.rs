@@ -1109,6 +1109,20 @@ impl EditorSession {
             host_manifest: None,
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
+            // D6 (`docs/debugger-spec.md` §1.2): the editor session has no
+            // debug-compile toggle of its own — hardcoded off, matching the
+            // ship-policy default. The studio's live session is built from
+            // exactly these bytes (studio-store `compile.ts`'s
+            // `setCompileResult(storyBytes)` -> `LocalSessionProvider`'s
+            // `new StorySessionHandle(bytes)`), so with this off,
+            // `WebSession::resolve_debug_position` returns `None` for
+            // every position in the real studio today — the D9 (#3187)
+            // program/session resolver chain is proven only in Rust tests
+            // that opt in via `OptionOverrides { debug_info: true }`.
+            // Flipping this is a real design call (compile size, editor
+            // acceptance-gate goldens) and is intentionally NOT done here;
+            // it stays open, undone, tracked against #3187.
+            emit_debug_info: false,
         };
         // Keep this session's own dialect cache (read by completion/
         // signature-help gating, see the field doc) in lockstep with what

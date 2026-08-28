@@ -98,7 +98,7 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                     // + body only, so the binding dies at the arm boundary
                     // exactly as in the statement form — and because the
                     // bind rides the condition expression itself
-                    // (`lir::Expr::OptionBind`), nothing has to be hoisted
+                    // (`lir::ExprKind::OptionBind`), nothing has to be hoisted
                     // out of the content line to make room for it.
                     ctx.push_block_scope();
                     let condition = match (b.condition.as_ref(), b.binding.as_ref()) {

@@ -33,6 +33,7 @@ fn empty_story() -> StoryData {
         alias_table: vec![],
         effect_rows: vec![],
         frame_shapes: Vec::new(),
+        debug_info: None,
         source_checksum: 0,
     }
 }

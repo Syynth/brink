@@ -144,6 +144,7 @@ import {
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
+import { registerDebugCommands } from "./debug-commands.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -671,6 +672,13 @@ export async function mountStudio(
   // choose / continue, gated by session status. Commands own the session —
   // views dispatch these instead of mutating it.
   registerStoryCommands(commands, store);
+
+  // Debug session control (D8's breakpoint/pause/step bridged through wasm,
+  // #3232): debug.run / stepInto / stepOver / stepOut / breakpointAdd /
+  // breakpointRemove / breakpointToggle, gated by the bound provider's
+  // "debug" capability. Real plumbing today, inert until a studio compile
+  // can carry debug info (#3229) — see `debug-commands.ts`'s own doc.
+  registerDebugCommands(commands, store);
 
   // Recompile on demand (the player's "Run" button). A successful compile
   // auto-starts the session via the compile-result handler below.

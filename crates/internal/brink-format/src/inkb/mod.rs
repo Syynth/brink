@@ -29,19 +29,19 @@ pub(crate) mod write;
 
 pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
-    read_section_alias_table, read_section_containers, read_section_effect_rows,
-    read_section_externals, read_section_frame_shapes, read_section_line_tables,
-    read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
-    read_section_variables, read_section_visibility,
+    read_section_alias_table, read_section_containers, read_section_debug_info,
+    read_section_effect_rows, read_section_externals, read_section_frame_shapes,
+    read_section_line_tables, read_section_list_defs, read_section_list_items,
+    read_section_list_literals, read_section_literal_pool, read_section_name_table,
+    read_section_struct_shapes, read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
-    write_section_alias_table, write_section_containers, write_section_effect_rows,
-    write_section_externals, write_section_frame_shapes, write_section_line_tables,
-    write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
-    write_section_variables, write_section_visibility,
+    write_section_alias_table, write_section_containers, write_section_debug_info,
+    write_section_effect_rows, write_section_externals, write_section_frame_shapes,
+    write_section_line_tables, write_section_list_defs, write_section_list_items,
+    write_section_list_literals, write_section_literal_pool, write_section_name_table,
+    write_section_struct_shapes, write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -306,11 +306,24 @@ pub enum SectionKind {
     /// and no `VERSION` bump is needed. `0x0F` was claimed by `AliasTable`, so
     /// this takes the next free tag.
     FrameShapes = 0x10,
+    /// D6 `DebugInfo` (`docs/debugger-spec.md` §2, issue #3184): the
+    /// bytecode-offset → source-range map, plus its section-local file
+    /// table. Section-locally versioned (one prefix byte) so the entry
+    /// encoding can grow (e.g. the reserved `NodeId` column, §1.3) without a
+    /// format-wide bump. **Omitted entirely when not requested** — the
+    /// ship-policy default (§1.2): a release-exported story never carries
+    /// this section, so every existing story stays byte-identical and no
+    /// `VERSION` bump is needed. `0x10` was claimed by `FrameShapes`, so
+    /// this takes the next free tag — the test this graduates,
+    /// `from_u8_rejects_unclaimed_section_tag`, is updated alongside this
+    /// variant (not deleted) to pin the *new* next-free tag (`0x12`).
+    DebugInfo = 0x11,
 }
 
 // All v4-reserved section kinds have now graduated: `LiteralPool` (0x0B),
 // `StructShapes` (0x0C), and `EffectRows` (0x0D, T2-3). `Visibility` (0x0E)
-// and `AliasTable` (0x0F) were later one-bump additions past the reserved gap.
+// and `AliasTable` (0x0F) were later one-bump additions past the reserved
+// gap; `DebugInfo` (0x11, D6) is the newest.
 
 impl SectionKind {
     pub(crate) fn from_u8(tag: u8) -> Result<Self, DecodeError> {
@@ -331,6 +344,7 @@ impl SectionKind {
             0x0E => Ok(Self::Visibility),
             0x0F => Ok(Self::AliasTable),
             0x10 => Ok(Self::FrameShapes),
+            0x11 => Ok(Self::DebugInfo),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -397,11 +411,13 @@ mod tests {
     /// Every v4-reserved section tag has now graduated to a real
     /// `SectionKind` variant — `LiteralPool` (0x0B, T1b-2 #570),
     /// `StructShapes` (0x0C, TM-4 #620), and `EffectRows` (0x0D, T2-3 #862).
-    /// `FrameShapes` (0x10, FS-3c) is the newest tag; the next unclaimed tag
-    /// (0x11) is still rejected.
+    /// `DebugInfo` (0x11, D6 #3184) is the newest tag; the next unclaimed
+    /// tag (0x12) is still rejected. This pin previously named `0x11` before
+    /// D6 claimed it — flipped here, not deleted, per
+    /// `docs/debugger-spec.md` §1.1's explicit instruction.
     #[test]
     fn from_u8_rejects_unclaimed_section_tag() {
-        let tag = 0x11u8;
+        let tag = 0x12u8;
         let err = SectionKind::from_u8(tag).unwrap_err();
         assert_eq!(err, DecodeError::InvalidSectionKind(tag));
     }
@@ -415,5 +431,6 @@ mod tests {
         assert!(SectionKind::from_u8(0x0E).is_ok(), "Visibility (M-2b)");
         assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
         assert!(SectionKind::from_u8(0x10).is_ok(), "FrameShapes (FS-3c)");
+        assert!(SectionKind::from_u8(0x11).is_ok(), "DebugInfo (D6 #3184)");
     }
 }

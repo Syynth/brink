@@ -11,7 +11,7 @@ use brink_ir::lir;
 // diagnostics, mirroring the E053-backstop discipline.
 
 /// A `RecordNew`'s decoded parts: `(shape_id, fields, prelude)` — see
-/// `lir::Expr::RecordNew`'s own doc for what `fields`/`prelude` mean.
+/// `lir::ExprKind::RecordNew`'s own doc for what `fields`/`prelude` mean.
 type RecordNewParts<'a> = (
     u32,
     &'a [lir::Expr],
@@ -19,8 +19,8 @@ type RecordNewParts<'a> = (
 );
 
 fn find_record_new(expr: &lir::Expr) -> Option<RecordNewParts<'_>> {
-    match expr {
-        lir::Expr::RecordNew {
+    match &expr.kind {
+        lir::ExprKind::RecordNew {
             shape_id,
             fields,
             prelude,
@@ -38,8 +38,8 @@ fn resolve_field<'a>(
     field: &'a lir::Expr,
     prelude: &'a [(u16, brink_format::NameId, lir::Expr)],
 ) -> &'a lir::Expr {
-    match field {
-        lir::Expr::GetTemp(slot, _) => prelude
+    match &field.kind {
+        lir::ExprKind::GetTemp(slot, _) => prelude
             .iter()
             .find(|(s, _, _)| s == slot)
             .map_or(field, |(_, _, e)| e),
@@ -85,18 +85,18 @@ fn struct_literal_lowers_to_record_new_in_shape_order() {
     // written y, x — each entry is a `GetTemp` read of a `prelude` slot,
     // resolved back to its staged value here.
     assert!(matches!(
-        resolve_field(&fields[0], prelude),
-        lir::Expr::Float(f) if *f == 1.0
+        &resolve_field(&fields[0], prelude).kind,
+        lir::ExprKind::Float(f) if *f == 1.0
     ));
     assert!(matches!(
-        resolve_field(&fields[1], prelude),
-        lir::Expr::Float(f) if *f == 2.0
+        &resolve_field(&fields[1], prelude).kind,
+        lir::ExprKind::Float(f) if *f == 2.0
     ));
     // `prelude` itself is staged in **source** order (#676): y (2.0) first,
     // then x (1.0) — the author's left-to-right order, not shape order.
     assert_eq!(prelude.len(), 2, "one staged slot per supplied initializer");
-    assert!(matches!(prelude[0].2, lir::Expr::Float(f) if f == 2.0));
-    assert!(matches!(prelude[1].2, lir::Expr::Float(f) if f == 1.0));
+    assert!(matches!(&prelude[0].2.kind, lir::ExprKind::Float(f) if *f == 2.0));
+    assert!(matches!(&prelude[1].2.kind, lir::ExprKind::Float(f) if *f == 1.0));
 }
 
 #[test]
@@ -141,8 +141,8 @@ fn duplicate_field_still_stages_every_initializer_no_silent_drop() {
     // The winning (last-wins) `x` initializer's value (2.0) is what
     // actually lands in the record at offset 0.
     assert!(matches!(
-        resolve_field(&fields[0], prelude),
-        lir::Expr::Float(f) if *f == 2.0
+        &resolve_field(&fields[0], prelude).kind,
+        lir::ExprKind::Float(f) if *f == 2.0
     ));
 }
 
@@ -163,7 +163,9 @@ fn field_access_on_construction_literal_lowers_to_record_get() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp v := Point#{...}.x should be a DeclareTemp");
-    assert!(matches!(value, lir::Expr::RecordGet { base, .. } if find_record_new(base).is_some()));
+    assert!(
+        matches!(&value.kind, lir::ExprKind::RecordGet { base, .. } if find_record_new(base).is_some())
+    );
 }
 
 #[test]
@@ -191,13 +193,13 @@ fn resolution_fallback_field_access_lowers_to_record_get_dyn() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp y := p.x should be a DeclareTemp");
-    match value {
-        lir::Expr::RecordGet {
+    match &value.kind {
+        lir::ExprKind::RecordGet {
             base,
             static_offset,
             ..
         } => {
-            assert!(matches!(**base, lir::Expr::GetGlobal(_)));
+            assert!(matches!(&base.kind, lir::ExprKind::GetGlobal(_)));
             assert_eq!(
                 *static_offset, None,
                 "gradual mode never emits static offsets"
@@ -238,7 +240,7 @@ fn ordinary_dotted_path_still_lowers_as_a_static_visit_count() {
         .find_map(declare_temp_value)
         .expect("temp x := knot.stitch should be a DeclareTemp");
     assert!(
-        matches!(value, lir::Expr::VisitCount(_)),
+        matches!(&value.kind, lir::ExprKind::VisitCount(_)),
         "a static dotted path must never become a RecordGet"
     );
 }
@@ -360,7 +362,7 @@ fn postfix_increment_field_projection_in_block_emits_e074() {
 fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
     // Issue #2894 — before the fix, `BlockStmt::ExprStmt` had no
     // postfix-to-`Assign` conversion at all, so `~ { x++ }` lowered to a
-    // discarded, pure `lir::Expr::Postfix` (`lir::StmtKind::ExprStmt(Postfix(..))`)
+    // discarded, pure `lir::ExprKind::Postfix` (`lir::StmtKind::ExprStmt(Postfix(..))`)
     // instead of a real `Assign`. This pins the correct LIR shape directly —
     // the runtime end-to-end proof lives in `brink-runtime`'s
     // `issue_2894_block_postfix.rs` (the issue's mandated real-pipeline RED
@@ -379,7 +381,10 @@ fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
             &s.kind,
             lir::StmtKind::Assign {
                 op: brink_ir::AssignOp::Add,
-                value: lir::Expr::Int(1),
+                value: lir::Expr {
+                    kind: lir::ExprKind::Int(1),
+                    ..
+                },
                 ..
             }
         )
@@ -392,14 +397,15 @@ fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
             .root
             .body
             .iter()
-            .map(std::mem::discriminant)
+            .map(|s| std::mem::discriminant(&s.kind))
             .collect::<Vec<_>>()
     );
-    let has_discarded_postfix = program
-        .root
-        .body
-        .iter()
-        .any(|s| matches!(&s.kind, lir::StmtKind::ExprStmt(lir::Expr::Postfix(..))));
+    let has_discarded_postfix = program.root.body.iter().any(|s| {
+        matches!(
+            &s.kind,
+            lir::StmtKind::ExprStmt(e) if matches!(&e.kind, lir::ExprKind::Postfix(..))
+        )
+    });
     assert!(
         !has_discarded_postfix,
         "`x++` inside a block must not lower to a discarded, pure `Postfix` expression \
@@ -424,7 +430,10 @@ fn postfix_decrement_bare_variable_in_block_lowers_to_real_assign() {
             &s.kind,
             lir::StmtKind::Assign {
                 op: brink_ir::AssignOp::Sub,
-                value: lir::Expr::Int(1),
+                value: lir::Expr {
+                    kind: lir::ExprKind::Int(1),
+                    ..
+                },
                 ..
             }
         )
@@ -437,7 +446,7 @@ fn postfix_decrement_bare_variable_in_block_lowers_to_real_assign() {
             .root
             .body
             .iter()
-            .map(std::mem::discriminant)
+            .map(|s| std::mem::discriminant(&s.kind))
             .collect::<Vec<_>>()
     );
 }
@@ -494,9 +503,10 @@ fn single_level_field_write_lowers_via_take_make_mut_write_back() {
     // RecordSet, whose result is written back into the p global.
     let has_take_then_record_set = program.root.body.iter().any(|s| {
         matches!(&s.kind, lir::StmtKind::Assign {
-                value: lir::Expr::RecordSet { base, .. },
+                value,
                 ..
-            } if matches!(**base, lir::Expr::TakeTemp(..) | lir::Expr::TakeGlobal(_))
+            } if matches!(&value.kind, lir::ExprKind::RecordSet { base, .. }
+                if matches!(&base.kind, lir::ExprKind::TakeTemp(..) | lir::ExprKind::TakeGlobal(_)))
         )
     });
     assert!(
@@ -585,8 +595,8 @@ fn strict_mode_known_shape_field_read_uses_static_offset() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp v := p.y should be a DeclareTemp");
-    match value {
-        lir::Expr::RecordGet { static_offset, .. } => {
+    match &value.kind {
+        lir::ExprKind::RecordGet { static_offset, .. } => {
             assert_eq!(*static_offset, Some(1), "y is field offset 1 in Point");
         }
         _ => panic!("expected RecordGet"),
@@ -619,8 +629,8 @@ fn gradual_mode_never_emits_static_offset_even_with_annotation() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp v := p.y should be a DeclareTemp");
-    match value {
-        lir::Expr::RecordGet { static_offset, .. } => {
+    match &value.kind {
+        lir::ExprKind::RecordGet { static_offset, .. } => {
             assert_eq!(*static_offset, None);
         }
         _ => panic!("expected RecordGet"),

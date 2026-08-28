@@ -47,12 +47,15 @@ until now. It is stated once, here, rather than repeated per ticket:
   `docs/flow-suspension-spec.md` §3) — not just one (§4).
 - It forces D9 (#3187) to build the breakpoint gutter against `.ink` files
   too, not only the native studio fixture.
-- **Unverified, flagged for D9 rather than assumed**: whether the studio
-  editor currently gives `.ink` files the same HIR-overlay treatment as
-  `.brink`. This document's research pass scoped to Rust crates and `docs/`;
-  `packages/ink-editor`, `packages/brink-studio`, and the studio store were
-  not read. D9 must check this before building the `.ink` gutter, not
-  assume parity.
+- **Verified by D9 (#3187), not just assumed**: the studio editor DOES give
+  `.ink` files the same HIR-overlay `def_id`-carrying treatment as `.brink`
+  — `brink-db`'s `projection_query` dispatches on `file_language` and both
+  surfaces produce container spans with a `def_id`, proven end to end
+  through `EditorSession::hir_spans_doc` for both surfaces in the same test
+  (`crates/brink-web/src/editor/spans.rs::ink_files_get_def_id_carrying_hir_spans_like_native_files_do`).
+  This document's own research pass had scoped to Rust crates and `docs/`
+  and left this unread, hence the earlier "unverified, flagged for D9"
+  wording — see §8 item 2 for the record of the check.
 
 ## 1. The four carrier/policy rulings (record only)
 
@@ -133,6 +136,26 @@ breakpoint-hit check, pause, resume, step-into/over/out — each with a
 release no-op stub compiled to nothing, keeping the production hot loop
 and step-limit accounting (`CLAUDE.md` "Guard against unbounded growth")
 completely untouched when the feature is off.
+
+**Debug budget — separate from the production step limit** (implemented
+D8, #3186; orchestrator decision-comment ruling, 2026-08-28, pending
+maintainer confirmation — recorded here per the "spec drift" review note
+on PR #3218 rather than left undocumented). `Story::debug_run`/
+`debug_step`/`debug_run_watching` bypass `FlowInstance::advance_with_limit`
+entirely (calling `vm::step` directly, per this section's own precedent
+above), so they never read or write `Stats::steps` — the counter
+`advance_with_limit`'s own `StepLimitExceeded` check reads. Instead each
+call counts VM steps in a loop-local variable against a caller-supplied
+`budget_ceiling`, defaulting to `DEFAULT_DEBUG_BUDGET = 200_000`
+(`brink-runtime::debug_control`) — generous enough that ordinary
+single-stepping never trips it, low enough that a `debug_run` that never
+reaches an armed breakpoint, or a `debug_step` step-over/out whose target
+frame never returns, reports back promptly instead of hanging a studio UI.
+Exceeding it is the new public `RuntimeError::DebugBudgetExceeded {
+breakpoint, ceiling }` — never `RuntimeError::StepLimitExceeded`, which would
+misattribute the debug-only budget as the production one. See
+`crates/brink-runtime/src/debug_control.rs`'s module doc for the full
+accounting argument.
 
 ## 2. The v1 `DebugInfo` entry encoding (DECIDED HERE)
 
@@ -822,13 +845,16 @@ neither invented an answer for here:
    document does not answer it, and D8 must get a ruling before
    implementing the step-control hooks it needs.
 2. **Whether the studio editor gives `.ink` files the same HIR-overlay
-   treatment as `.brink`** (§0) — flagged as unverified, not a design
-   question this document can answer without reading
-   `packages/ink-editor`/`packages/brink-studio`, which were out of this
-   research pass's scope. D9 (#3187) must verify this directly before
-   building the `.ink` breakpoint gutter; it is a fact to check, not a
-   ruling to seek, so it is not escalated to the issue as a blocking
-   question — just flagged so D9 doesn't skip the check.
+   treatment as `.brink`** (§0) — **verified, not just read, by D9
+   (#3187)**: `brink-db`'s `projection_query` dispatches on `file_language`
+   and both surfaces produce container spans with a `def_id`, proven end
+   to end through `EditorSession::hir_spans_doc` for both surfaces in the
+   same test
+   (`crates/brink-web/src/editor/spans.rs::ink_files_get_def_id_carrying_hir_spans_like_native_files_do`).
+   This was a fact to check, not a ruling to seek, so it was never
+   escalated to the issue as a blocking question — it is recorded here now
+   that D9 has answered it, so the "unverified" framing above and in §0
+   is no longer live.
 
 Everything else the issue asked this document to decide (§2 entry
 encoding, §2.3 file table + surface tagging, §2.5 sentinel wire meaning,

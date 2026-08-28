@@ -741,7 +741,7 @@ pub(crate) struct DebugStateJs {
 }
 
 #[derive(Serialize)]
-struct DebugPositionJs {
+pub(crate) struct DebugPositionJs {
     container_idx: u32,
     offset: usize,
 }
@@ -760,6 +760,95 @@ struct DebugFrameJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     position: Option<DebugPositionJs>,
     temps: usize,
+    /// D7 (`docs/debugger-spec.md` §3, #3185): this frame's named locals.
+    /// Additive alongside `temps` (D4's bare count, kept as-is). `None`
+    /// when the linked program carries no `DebugInfo` at all — see
+    /// `brink_runtime::debug::DebugFrame::locals`'s own doc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locals: Option<Vec<DebugLocalJs>>,
+}
+
+#[derive(Serialize)]
+struct DebugLocalJs {
+    slot: u16,
+    name: String,
+    value: DebugValueJs,
+}
+
+/// Structured mirror of `brink_runtime::debug::DebugValue`
+/// (`docs/debugger-spec.md` §3, D7/#3185) — internally tagged on `type` so
+/// a JS consumer can `switch` on it directly rather than probing for which
+/// field is present.
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum DebugValueJs {
+    #[serde(rename = "int")]
+    Int { value: i32 },
+    #[serde(rename = "float")]
+    Float { value: f32 },
+    #[serde(rename = "bool")]
+    Bool { value: bool },
+    #[serde(rename = "string")]
+    Str { value: String },
+    #[serde(rename = "null")]
+    Null,
+    #[serde(rename = "list")]
+    List { members: Vec<String> },
+    #[serde(rename = "divertTarget")]
+    DivertTarget {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    #[serde(rename = "struct")]
+    Struct {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        fields: Vec<DebugFieldJs>,
+    },
+    // `id` crosses as a decimal string, not a `number` — the same
+    // full-range-`u64`-as-`f64` precision hazard `value_to_js`'s own
+    // `Value::Handle` arm documents (this file, above): a token's whole
+    // point is exact equality, never arithmetic.
+    #[serde(rename = "handle")]
+    Handle { kind: String, id: String },
+    /// Every value kind not modeled above — see
+    /// `brink_runtime::debug::DebugValue::Other`'s own doc.
+    #[serde(rename = "other")]
+    Other { display: String },
+}
+
+#[derive(Serialize)]
+struct DebugFieldJs {
+    name: String,
+    value: DebugValueJs,
+}
+
+fn debug_value_to_js(v: brink_runtime::DebugValue) -> DebugValueJs {
+    use brink_runtime::DebugValue;
+    match v {
+        DebugValue::Int(i) => DebugValueJs::Int { value: i },
+        DebugValue::Float(f) => DebugValueJs::Float { value: f },
+        DebugValue::Bool(b) => DebugValueJs::Bool { value: b },
+        DebugValue::Str(s) => DebugValueJs::Str { value: s },
+        DebugValue::Null => DebugValueJs::Null,
+        DebugValue::List(members) => DebugValueJs::List { members },
+        DebugValue::DivertTarget(path) => DebugValueJs::DivertTarget { path },
+        DebugValue::Struct { name, fields } => DebugValueJs::Struct {
+            name,
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| DebugFieldJs {
+                    name,
+                    value: debug_value_to_js(value),
+                })
+                .collect(),
+        },
+        DebugValue::Handle { kind, id } => DebugValueJs::Handle {
+            kind,
+            id: id.to_string(),
+        },
+        DebugValue::Other(display) => DebugValueJs::Other { display },
+    }
 }
 
 #[derive(Serialize)]
@@ -810,6 +899,16 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
                     offset: p.offset,
                 }),
                 temps: f.temps,
+                locals: f.locals.map(|locals| {
+                    locals
+                        .into_iter()
+                        .map(|l| DebugLocalJs {
+                            slot: l.slot,
+                            name: l.name,
+                            value: debug_value_to_js(l.value),
+                        })
+                        .collect()
+                }),
             })
             .collect(),
         visit_counts: s
@@ -833,6 +932,121 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
             seed: s.rng.seed,
             previous: s.rng.previous,
         },
+    }
+}
+
+/// The wasm shape of [`brink_runtime::DebugSourceLocation`] — the
+/// program→source resolver's result (D9, #3187). `file` is `None` for the
+/// reserved synthetic sentinel (no author source); a caller building a
+/// `{ kind: "source" }` studio Location (`docs/studio-shell-spec.md` §6.1)
+/// treats `file: null` as "unresolvable to source" the same as the whole
+/// value being absent.
+#[derive(Serialize)]
+pub(crate) struct DebugSourceLocationJs {
+    pub file: Option<String>,
+    pub range_start: u32,
+    pub range_len: u32,
+}
+
+pub(crate) fn debug_source_location_to_js(
+    loc: brink_runtime::DebugSourceLocation,
+) -> DebugSourceLocationJs {
+    DebugSourceLocationJs {
+        file: loc.file,
+        range_start: loc.range_start,
+        range_len: loc.range_len,
+    }
+}
+
+// ── Debug control (D8, #3186) — the wasm control-half bridge (#3232) ──
+//
+// `debug_snapshot`/`resolve_debug_position` above are the read half (D4/D9);
+// these mirror the control half's wire shapes — breakpoints and the
+// `debugRun`/`debugStep` outcome — for `WebSession`/`StoryRunner`'s new
+// `debugRun`/`debugStep`/`debugBreakpoint*` bindings.
+
+/// Wasm mirror of `brink_runtime::Breakpoint` — the wire shape
+/// `debugBreakpoints()` returns.
+#[derive(Serialize)]
+pub(crate) struct BreakpointJs {
+    pub id: u32,
+    pub container_idx: u32,
+    pub offset: usize,
+    pub name: String,
+    pub enabled: bool,
+}
+
+pub(crate) fn breakpoint_to_js(b: &brink_runtime::Breakpoint) -> BreakpointJs {
+    BreakpointJs {
+        id: b.id,
+        container_idx: b.container_idx,
+        offset: b.offset,
+        name: b.name.clone(),
+        enabled: b.enabled,
+    }
+}
+
+/// Wasm mirror of `brink_runtime::DebugStopReason` — internally tagged on
+/// `type`, the same convention `DebugValueJs` above uses.
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub(crate) enum DebugStopReasonJs {
+    #[serde(rename = "breakpoint")]
+    Breakpoint { id: u32, name: String },
+    #[serde(rename = "watchpoint")]
+    Watchpoint { global_idx: u32 },
+    #[serde(rename = "choices")]
+    Choices,
+    #[serde(rename = "step")]
+    Step,
+    #[serde(rename = "terminal")]
+    Terminal,
+    #[serde(rename = "noStepOutTarget")]
+    NoStepOutTarget,
+}
+
+/// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
+/// `debugRun`/`debugStep`.
+#[derive(Serialize)]
+pub(crate) struct DebugRunOutcomeJs {
+    pub reason: DebugStopReasonJs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<DebugPositionJs>,
+    pub depth: usize,
+}
+
+pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> DebugRunOutcomeJs {
+    use brink_runtime::DebugStopReason;
+    DebugRunOutcomeJs {
+        reason: match o.reason {
+            DebugStopReason::Breakpoint { id, name } => DebugStopReasonJs::Breakpoint { id, name },
+            DebugStopReason::Watchpoint { global_idx } => {
+                DebugStopReasonJs::Watchpoint { global_idx }
+            }
+            DebugStopReason::Choices => DebugStopReasonJs::Choices,
+            DebugStopReason::Step => DebugStopReasonJs::Step,
+            DebugStopReason::Terminal => DebugStopReasonJs::Terminal,
+            DebugStopReason::NoStepOutTarget => DebugStopReasonJs::NoStepOutTarget,
+        },
+        position: o.position.map(|p| DebugPositionJs {
+            container_idx: p.container_idx,
+            offset: p.offset,
+        }),
+        depth: o.depth,
+    }
+}
+
+/// Parse a `debugStep` mode string ("into" | "over" | "out") into
+/// `brink_runtime::StepMode`. Any other string is a `JsError` — a bad mode
+/// name is a caller bug, not a runtime outcome.
+pub(crate) fn parse_step_mode(mode: &str) -> Result<brink_runtime::StepMode, JsError> {
+    match mode {
+        "into" => Ok(brink_runtime::StepMode::Into),
+        "over" => Ok(brink_runtime::StepMode::Over),
+        "out" => Ok(brink_runtime::StepMode::Out),
+        other => Err(JsError::new(&format!(
+            "unknown debug step mode: {other} (expected \"into\" | \"over\" | \"out\")"
+        ))),
     }
 }
 

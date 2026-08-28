@@ -1153,10 +1153,56 @@ export interface DebugFrame {
   location?: string;
   /** Precise `(container_idx, offset)` this frame will resume at (#3182).
    *  Absent for a frame whose container stack is empty — including every
-   *  `external` frame, which carries no bytecode position. Not yet
-   *  resolved to source (D6/D9). */
+   *  `external` frame, which carries no bytecode position. Resolve to
+   *  source with `StoryRunnerHandle.resolveDebugPosition` (D9, #3187). */
   position?: { container_idx: number; offset: number };
   temps: number;
+  /** D7 (`docs/debugger-spec.md` §3, #3185): this frame's named locals —
+   *  every declared parameter/`~ temp` slot currently in scope, bound to
+   *  its live value. Additive alongside `temps` (D4's bare count, kept
+   *  as-is). Absent when the linked program carries no `DebugInfo` at all
+   *  (a release-exported story, or one compiled before D6) — a frame with
+   *  `DebugInfo` but genuinely zero declared locals reports `[]`, not
+   *  absent, so a consumer can tell the two apart. */
+  locals?: DebugLocal[];
+}
+
+export interface DebugLocal {
+  /** The VM temp slot this local occupies — matches
+   *  `DeclareTemp`/`GetTemp`/`SetTemp`'s `u16` operand. */
+  slot: number;
+  name: string;
+  value: DebugValue;
+}
+
+/** A structured, read-only view of a runtime value for the debugger's
+ *  locals panel (`docs/debugger-spec.md` §3, D7/#3185). Deliberately more
+ *  structured than `DebugGlobal.value` (a display string, unchanged): a
+ *  locals panel needs to tell "a list with these members" from "a string
+ *  that reads like a list", expand a struct's fields, etc. Covers every
+ *  kind the runtime distinguishes that the issue calls out by name (int,
+ *  float, string, list, divert target, struct, handle) plus `bool`/`null`;
+ *  every other kind (closures, arrays, maps, weighted tables, fn refs,
+ *  pointers, vector/matrix/quaternion, ranges, options, projections) falls
+ *  back to `other`'s display string, the same form `DebugGlobal.value`
+ *  already uses. */
+export type DebugValue =
+  | { type: "int"; value: number }
+  | { type: "float"; value: number }
+  | { type: "bool"; value: boolean }
+  | { type: "string"; value: string }
+  | { type: "null" }
+  | { type: "list"; members: string[] }
+  | { type: "divertTarget"; path?: string }
+  | { type: "struct"; name?: string; fields: DebugField[] }
+  /** `id` is a decimal string, not `number` — a full-range host token id
+   *  would silently lose precision above 2^53 as a JS number. */
+  | { type: "handle"; kind: string; id: string }
+  | { type: "other"; display: string };
+
+export interface DebugField {
+  name: string;
+  value: DebugValue;
 }
 
 export interface DebugVisit {
@@ -1188,8 +1234,8 @@ export interface DebugState {
   status: string;
   current_location?: string;
   /** Precise `(container_idx, offset)` for the active flow (#3182); mirrors
-   *  `call_stack[0].position` when the call stack is non-empty. Not yet
-   *  resolved to source (D6/D9). */
+   *  `call_stack[0].position` when the call stack is non-empty. Resolve to
+   *  source with `StoryRunnerHandle.resolveDebugPosition` (D9, #3187). */
   position?: { container_idx: number; offset: number };
   turn_index: number;
   globals: DebugGlobal[];
@@ -1197,6 +1243,71 @@ export interface DebugState {
   visit_counts: DebugVisit[];
   pending_choices: DebugChoice[];
   rng: DebugRng;
+}
+
+/**
+ * The program→source resolver's result (D9, #3187) —
+ * `StoryRunnerHandle.resolveDebugPosition`'s return shape, mirroring
+ * `brink_runtime::DebugSourceLocation`. `file: null` marks the reserved
+ * synthetic sentinel (compiler-generated content with no author source),
+ * distinct from the whole value being `null` ("doesn't resolve at all" —
+ * no `DebugInfo` section, or an out-of-range position).
+ */
+export interface DebugSourceLocation {
+  file: string | null;
+  range_start: number;
+  range_len: number;
+}
+
+// ── Debug control (D8, #3186 — the wasm control-half bridge, #3232) ──
+//
+// Mirrors `brink_runtime::{Breakpoint, DebugRunOutcome, DebugStopReason,
+// StepMode}` — the wire shapes `debugBreakpoints`/`debugRun`/`debugStep`
+// (`StoryRunnerHandle`/`StorySessionHandle`, `@brink-lang/web`) exchange.
+
+/** A `debugStep` unit — `docs/debugger-spec.md` §4's depth-delta semantics:
+ *  `"into"` executes exactly one instruction, descending into any newly
+ *  entered frame; `"over"` runs through a call without stopping inside it;
+ *  `"out"` runs until the current frame returns to its caller. */
+export type StepMode = "into" | "over" | "out";
+
+/** One breakpoint: an unconditional halt at a `(container_idx, offset)`
+ *  bytecode position, checked before that instruction executes. `id`
+ *  addresses it for `debugBreakpointRemove`/`debugBreakpointSetEnabled`. */
+export interface Breakpoint {
+  id: number;
+  container_idx: number;
+  offset: number;
+  name: string;
+  enabled: boolean;
+}
+
+/** Why a `debugRun`/`debugStep` call stopped — internally tagged on `type`,
+ *  the same convention `DebugValue` above uses. */
+export type DebugStopReason =
+  | { type: "breakpoint"; id: number; name: string }
+  | { type: "watchpoint"; global_idx: number }
+  /** A choice point was reached — distinct from `"terminal"`: `choose()`
+   *  followed by `continueSingle`/`debugRun`/`debugStep` can resume from
+   *  here, unlike an actual `-> DONE`/`-> END`. */
+  | { type: "choices" }
+  /** The requested step (into/over/out) completed normally. */
+  | { type: "step" }
+  /** The flow reached a terminal VM outcome (`-> DONE`/`-> END`, or content
+   *  otherwise exhausted) before the requested stop condition was reached. */
+  | { type: "terminal" }
+  /** `StepMode: "out"` was requested from the outermost frame (or a thread
+   *  frame), which has no caller to return to — refused rather than running
+   *  the story to its own end. */
+  | { type: "noStepOutTarget" };
+
+/** The result of a `debugRun`/`debugStep` call: why it stopped, the
+ *  resulting position (absent for a frame with an empty container stack,
+ *  e.g. after a terminal step), and the resulting call-stack depth. */
+export interface DebugRunOutcome {
+  reason: DebugStopReason;
+  position?: { container_idx: number; offset: number };
+  depth: number;
 }
 
 // ── Program model (Program Explorer) ─────────────────────────────
@@ -1224,6 +1335,18 @@ export interface ProgramExternal {
   fallback?: string;
 }
 
+/**
+ * One decoded bytecode instruction, with the byte offset it decoded from
+ * (D9, #3187) — the key a live `DebugPosition`/`DebugFrame.position`
+ * (D4, #3182) is matched against for a "current instruction" highlight in
+ * the Program Explorer.
+ */
+export interface DisasmLine {
+  /** Byte offset within the owning container's own bytecode. */
+  offset: number;
+  text: string;
+}
+
 /** A knot or stitch in the compiled-program tree. */
 export interface KnotNode {
   path: string;
@@ -1233,8 +1356,15 @@ export interface KnotNode {
   /** Counting flags: "visits" | "turns" | "start_only" */
   flags: string[];
   path_hash: number;
-  /** Resolved bytecode disassembly, one mnemonic per entry. */
-  disasm: string[];
+  /**
+   * This container's index in the compiled program's container table — the
+   * same `container_idx` a runtime `DebugPosition` addresses. `0xffffffff`
+   * (`u32::MAX`) for a synthesized knot node with no backing container
+   * (rare — a knot with stitches but no own scope container).
+   */
+  container_idx: number;
+  /** Resolved bytecode disassembly, one instruction per entry. */
+  disasm: DisasmLine[];
   children: KnotNode[];
 }
 

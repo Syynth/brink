@@ -1,7 +1,7 @@
 //! Issue #2837: `lower_call`'s resolved-target match must refuse a
 //! non-callable symbol kind (`ListItem`, `Label`, `Stitch`, `Param`,
 //! `Temp`, `Struct`) with a diagnostic (`E183`) instead of silently
-//! emitting `lir::Expr::Call` against whatever id happens to be resolved
+//! emitting `lir::ExprKind::Call` against whatever id happens to be resolved
 //! there.
 //!
 //! `brink-analyzer::resolve::resolve_function` cannot legitimately produce
@@ -105,12 +105,15 @@ fn lower_call_refuses_a_resolution_pointed_at_a_non_callable_symbol() {
     // this whole-program entry point still returns `Some` (it has no such
     // gate of its own), so the real proof this is a *compile* error rather
     // than a silent miscompile is the diagnostic assertion above, not
-    // `program`'s shape. Lowering must not have emitted `lir::Expr::Call`
+    // `program`'s shape. Lowering must not have emitted `lir::ExprKind::Call`
     // against the list item's id either way.
     let program = program.expect("lower_to_program still returns a program alongside E183");
-    let has_bogus_call = program.root.body.iter().any(|stmt| {
-        matches!(&stmt.kind, lir::StmtKind::ExprStmt(lir::Expr::Call { target, .. }) if *target == list_item_id
-        )
+    let has_bogus_call = program.root.body.iter().any(|stmt| match &stmt.kind {
+        lir::StmtKind::ExprStmt(e) => matches!(
+            &e.kind,
+            lir::ExprKind::Call { target, .. } if *target == list_item_id
+        ),
+        _ => false,
     });
     assert!(
         !has_bogus_call,

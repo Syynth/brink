@@ -6,8 +6,48 @@ use brink_ir::lir;
 use crate::{CodegenError, ContainerEmitter, LoopCtx};
 
 impl ContainerEmitter<'_> {
+    /// Emit every statement in `stmts`, recording one
+    /// [`crate::debug_info::RawDebugEntry`] per statement first whenever
+    /// `self.debug_entries` is `Some` (a no-op otherwise — see
+    /// [`Self::record_debug_entry`]). Used for **every** body walk in this
+    /// container's bytecode — the container's own top-level body (via
+    /// [`Self::emit_body_top_level`], which additionally flags the
+    /// prologue-end entry) *and* every nested body (`Conditional`/
+    /// `Sequence` branch bodies, `LogicWhile` body/post) reached through
+    /// [`Self::emit_stmt`] below — so a statement inside a branch or loop
+    /// gets an entry the same way a top-level one does (#3219 review: this
+    /// used to be true only at the top level). `prologue_end` is always
+    /// `false` here; §2.4's prologue-end marker is a per-container concept,
+    /// decided once by [`Self::emit_body_top_level`], not re-derived per
+    /// nesting level.
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
         for stmt in stmts {
+            self.record_debug_entry(stmt, false);
+            self.emit_stmt(stmt);
+        }
+    }
+
+    /// D6 (`docs/debugger-spec.md` §2.2/§2.4): the container's own top-level
+    /// body walk — the only call site that may set `PROLOGUE_END` on a
+    /// recorded entry. `prologue_end_index` names which statement in
+    /// `stmts` (by position) is the landing point past this container's
+    /// prologue bytecode; `walk_container` computes it before calling this
+    /// (see its own doc): `Some(0)` in the common case (no leading
+    /// `ChoiceOutput`, so the first statement proper *is* the landing
+    /// point), `Some(1)` when `stmts[0]` is a choice-target body's leading
+    /// `ChoiceOutput` (itself prologue bytecode per §2.4 — the landing point
+    /// is the statement *after* it, not the `ChoiceOutput` itself), or
+    /// `None` when there is no statement to flag at all (empty body, or a
+    /// choice-target body containing only the `ChoiceOutput`) — in which
+    /// case `walk_container` pushes its own synthetic coverage entry after
+    /// this returns.
+    pub(super) fn emit_body_top_level(
+        &mut self,
+        stmts: &[lir::Stmt],
+        prologue_end_index: Option<usize>,
+    ) {
+        for (i, stmt) in stmts.iter().enumerate() {
+            self.record_debug_entry(stmt, Some(i) == prologue_end_index);
             self.emit_stmt(stmt);
         }
     }

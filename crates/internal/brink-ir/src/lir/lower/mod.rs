@@ -202,7 +202,7 @@ pub fn lower_to_program_with_type_mode(
         }
     }
 
-    let program = assemble_program(&prelude, ordered_chunks, root_temp_slots, index);
+    let program = assemble_program(&prelude, ordered_chunks, root_temp_slots, index, file_paths);
     (Some(program), lir_diagnostics)
 }
 
@@ -801,11 +801,16 @@ pub fn lower_root_content_for_prelude(
 /// then that file's knots), so the assembled name ids are byte-identical to
 /// the single shared-table walk.
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn assemble_program(
     prelude: &LirPrelude,
     chunks: Vec<chunk::ScopeChunk>,
     root_temp_slots: u16,
     _index: &SymbolIndex,
+    file_paths: &LookupMap<FileId, String>,
 ) -> lir::Program {
     let mut names = NameTable::from_entries(prelude.name_seed.clone());
     let (mut root_body, mut root_children) = chunk::assemble_scopes(chunks, &mut names);
@@ -875,6 +880,14 @@ pub fn assemble_program(
         struct_shapes,
         private_defs: prelude.private_defs.clone(),
         aliases: prelude.aliases.clone(),
+        // D6 (`docs/debugger-spec.md` §2.3): retained so codegen can build
+        // the `DebugInfo` file table without re-deriving file identity —
+        // see `lir::Program::file_paths`'s doc. `BTreeMap` for the same
+        // determinism reason that field's own doc gives; the source
+        // `LookupMap` (`HashMap`) is never iterated to produce this, only
+        // collected key-by-key, so the resulting order is `FileId`'s `Ord`,
+        // not insertion/hash order.
+        file_paths: file_paths.iter().map(|(k, v)| (*k, v.clone())).collect(),
     }
 }
 
@@ -2308,47 +2321,47 @@ fn collect_counting_refs_expr(
     visit_ids: &mut Vec<brink_format::DefinitionId>,
     turns_ids: &mut Vec<brink_format::DefinitionId>,
 ) {
-    match expr {
-        lir::Expr::VisitCount(id) => visit_ids.push(*id),
-        lir::Expr::DivertTarget(id) => {
+    match &expr.kind {
+        lir::ExprKind::VisitCount(id) => visit_ids.push(*id),
+        lir::ExprKind::DivertTarget(id) => {
             // Any container whose address is taken could be reached via
             // variable divert/tunnel — conservatively mark for visit tracking.
             visit_ids.push(*id);
             turns_ids.push(*id);
         }
-        lir::Expr::CallBuiltin {
+        lir::ExprKind::CallBuiltin {
             builtin: lir::BuiltinFn::TurnsSince,
             args,
         } => {
             for a in args {
-                if let lir::Expr::DivertTarget(id) = a {
+                if let lir::ExprKind::DivertTarget(id) = &a.kind {
                     turns_ids.push(*id);
                 }
                 collect_counting_refs_expr(a, visit_ids, turns_ids);
             }
         }
-        lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => {
+        lir::ExprKind::Prefix(_, inner) | lir::ExprKind::Postfix(inner, _) => {
             collect_counting_refs_expr(inner, visit_ids, turns_ids);
         }
         // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
         // `Infix` — but the walk is identical (both operands, `shape`
         // carries no reference), so it rides the same arm rather than a
         // duplicate one, matching `chunk::remap_expr`'s precedent.
-        lir::Expr::Infix(lhs, _, rhs) | lir::Expr::Coalesce { lhs, rhs, shape: _ } => {
+        lir::ExprKind::Infix(lhs, _, rhs) | lir::ExprKind::Coalesce { lhs, rhs, shape: _ } => {
             collect_counting_refs_expr(lhs, visit_ids, turns_ids);
             collect_counting_refs_expr(rhs, visit_ids, turns_ids);
         }
-        lir::Expr::Call { args, .. } | lir::Expr::CallExternal { args, .. } => {
+        lir::ExprKind::Call { args, .. } | lir::ExprKind::CallExternal { args, .. } => {
             for arg in args {
                 collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
             }
         }
-        lir::Expr::CallBuiltin { args, .. } => {
+        lir::ExprKind::CallBuiltin { args, .. } => {
             for a in args {
                 collect_counting_refs_expr(a, visit_ids, turns_ids);
             }
         }
-        lir::Expr::String(s) => {
+        lir::ExprKind::String(s) => {
             for p in &s.parts {
                 if let lir::StringPart::Interpolation(e) = p {
                     collect_counting_refs_expr(e, visit_ids, turns_ids);

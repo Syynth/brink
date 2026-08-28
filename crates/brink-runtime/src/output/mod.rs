@@ -1146,6 +1146,7 @@ fn test_dummy_program() -> Program {
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
         alias_table: Vec::new(),
+        debug_info: None,
     }
 }
 
@@ -1643,6 +1644,7 @@ mod tests {
                 param_count: 0,
                 params: Vec::new(),
                 scope_table_idx: 0,
+                scope_id: id,
             }],
             address_map: HashMap::new(),
             scope_ids: vec![id],
@@ -1662,6 +1664,7 @@ mod tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         };
 
         let line_tables = vec![vec![LineEntry {
@@ -1924,6 +1927,7 @@ mod tests {
                 param_count: 0,
                 params: Vec::new(),
                 scope_table_idx: 0,
+                scope_id: id,
             }],
             address_map: HashMap::new(),
             scope_ids: vec![id],
@@ -1943,6 +1947,7 @@ mod tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         };
         (program, vec![entries])
     }

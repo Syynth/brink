@@ -1373,6 +1373,66 @@ impl FlowInstance {
     }
 }
 
+/// Outcome of [`apply_done_bookkeeping`] — mirrors the branches
+/// [`FlowInstance::step_single_line`]'s own `vm::Stepped::Done` arm takes,
+/// minus the buffered-output handling the `debug-hooks` seam
+/// (`Story::debug_run`/`debug_step`/`debug_run_watching`) doesn't use.
+#[cfg(feature = "debug-hooks")]
+pub(crate) enum DoneBookkeeping {
+    /// All pending choices were invisible defaults and got auto-selected —
+    /// `status` is `Active` again; the caller should keep stepping, not
+    /// treat this as a stop.
+    AutoSelected,
+    /// Real choices are pending; `status` is now `WaitingForChoice`.
+    WaitingForChoice,
+    /// No choices pending; `status` is now `Done` (mirrors an explicit
+    /// `-> DONE` or the flow otherwise running out of content).
+    Terminal,
+}
+
+/// Apply the same bookkeeping `step_single_line`'s per-turn loop performs
+/// when `vm::step` returns `vm::Stepped::Done` (turn-index bump,
+/// invisible-default auto-select, `WaitingForChoice`/`Done` status) —
+/// shared with the `debug-hooks` seam so a choice/turn boundary reached
+/// via opcode-level debug stepping leaves the same `FlowInstance` state a
+/// production-path caller would see: `Story::choose()` and
+/// `Story::continue_single()` keep working after a debug session hands
+/// control back to the production API, and the turn index never diverges
+/// between the two (issue #3186 review).
+#[cfg(feature = "debug-hooks")]
+#[expect(
+    clippy::similar_names,
+    reason = "status/stats mirrors select_choice's identical pair"
+)]
+pub(crate) fn apply_done_bookkeeping(
+    flow: &mut Flow,
+    context: &mut (impl ContextAccess + ?Sized),
+    status: &mut StoryStatus,
+    stats: &mut Stats,
+) -> Result<DoneBookkeeping, RuntimeError> {
+    context.increment_turn_index();
+
+    if !flow.pending_choices.is_empty() {
+        let all_invisible = flow
+            .pending_choices
+            .iter()
+            .all(|pc| pc.flags.is_invisible_default);
+        if all_invisible {
+            select_choice(flow, context, status, stats, 0)?;
+            return Ok(DoneBookkeeping::AutoSelected);
+        }
+    }
+
+    if flow.pending_choices.is_empty() {
+        *status = StoryStatus::Done;
+        Ok(DoneBookkeeping::Terminal)
+    } else {
+        *status = StoryStatus::WaitingForChoice;
+        stats.choices_presented += 1;
+        Ok(DoneBookkeeping::WaitingForChoice)
+    }
+}
+
 /// Internal: set execution position to the given choice target, clear
 /// pending choices, and set status to Active. No status precondition.
 #[expect(clippy::similar_names)]

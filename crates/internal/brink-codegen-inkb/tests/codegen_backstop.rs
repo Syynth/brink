@@ -67,6 +67,7 @@ fn program_with_root_body(body: Vec<lir::Stmt>) -> lir::Program {
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
         aliases: Vec::new(),
+        file_paths: std::collections::BTreeMap::new(),
     }
 }
 
@@ -86,7 +87,7 @@ fn break_in_a_well_formed_loop_still_emits_successfully() {
     // still compiles — proves the backstop only fires on a genuinely empty
     // `loop_stack`, not on every `LogicBreak`.
     let program = program_with_root_body(vec![s(lir::StmtKind::LogicWhile(lir::LogicWhile {
-        condition: lir::Expr::Bool(true),
+        condition: lir::ExprKind::Bool(true).at(test_provenance()),
         body: vec![s(lir::StmtKind::LogicBreak)],
         post: Vec::new(),
     }))]);
@@ -125,7 +126,7 @@ fn out_of_loop_break_after_a_sibling_loop_still_errors() {
     // once the loop's own emission finishes, not leaking across siblings.
     let program = program_with_root_body(vec![
         s(lir::StmtKind::LogicWhile(lir::LogicWhile {
-            condition: lir::Expr::Bool(true),
+            condition: lir::ExprKind::Bool(true).at(test_provenance()),
             body: vec![s(lir::StmtKind::EndOfLine)],
             post: Vec::new(),
         })),

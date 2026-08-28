@@ -27,19 +27,19 @@ fn ref_dotted_field_projection_call_arg_lowers_to_ref_projection() {
         .body
         .iter()
         .find_map(|s| match &s.kind {
-            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            lir::StmtKind::ExprStmt(e) if matches!(&e.kind, lir::ExprKind::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(ref npc.hp) should lower to an ExprStmt(Call)");
-    match call {
-        lir::Expr::Call { args, .. } => {
+    match &call.kind {
+        lir::ExprKind::Call { args, .. } => {
             assert_eq!(args.len(), 1);
             match &args[0] {
                 lir::CallArg::RefProjection { root, segments } => {
                     assert_eq!(*root, npc_id);
                     assert_eq!(segments.len(), 1, "expected one dotted-field segment");
-                    match &segments[0] {
-                        lir::Expr::String(s) => {
+                    match &segments[0].kind {
+                        lir::ExprKind::String(s) => {
                             assert_eq!(s.parts.len(), 1);
                             match &s.parts[0] {
                                 lir::StringPart::Literal(text) => assert_eq!(text, "hp"),
@@ -74,12 +74,12 @@ fn ref_index_projection_call_arg_lowers_to_ref_projection() {
         .body
         .iter()
         .find_map(|s| match &s.kind {
-            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            lir::StmtKind::ExprStmt(e) if matches!(&e.kind, lir::ExprKind::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(ref inventory[idx]) should lower to an ExprStmt(Call)");
-    match call {
-        lir::Expr::Call { args, .. } => {
+    match &call.kind {
+        lir::ExprKind::Call { args, .. } => {
             assert_eq!(args.len(), 1);
             match &args[0] {
                 lir::CallArg::RefProjection { root, segments } => {
@@ -89,7 +89,7 @@ fn ref_index_projection_call_arg_lowers_to_ref_projection() {
                     // at creation, evaluated once here as an ordinary
                     // `GetTemp`.
                     assert!(
-                        matches!(&segments[0], lir::Expr::GetTemp(..)),
+                        matches!(&segments[0].kind, lir::ExprKind::GetTemp(..)),
                         "expected the index segment to lower `idx` via GetTemp"
                     );
                 }

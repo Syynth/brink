@@ -39,6 +39,8 @@ mod collection_ops;
 mod collections;
 mod conversion_ops;
 mod debug;
+#[cfg(feature = "debug-hooks")]
+pub mod debug_control;
 #[cfg(feature = "effect-trace")]
 pub mod effect_trace;
 mod error;
@@ -69,7 +71,13 @@ mod world;
 
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{
-    DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot, DebugVisit,
+    DebugChoice, DebugFrame, DebugGlobal, DebugLocal, DebugPosition, DebugRng, DebugSnapshot,
+    DebugSourceLocation, DebugValue, DebugVisit,
+};
+#[cfg(feature = "debug-hooks")]
+pub use debug_control::{
+    Breakpoint, BreakpointId, BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugRunOutcome,
+    DebugStopReason, StepMode, WatchHit, WatchpointObserver,
 };
 pub use error::{RanOutOfContentCause, RuntimeError};
 pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};

@@ -283,6 +283,9 @@ impl Default for BrinkDatabase {
                 // The `.lints` sibling projection (issue #1160) — see
                 // `lint_policy_query`'s doc comment.
                 .ingredient::<lint_policy_query>()
+                // The `.emit_debug_info` sibling projection (D6, issue
+                // #3184) — see `debug_info_policy_query`'s doc comment.
+                .ingredient::<debug_info_policy_query>()
                 // FG-4d (issue #830): per-knot LIR chunk memos + the
                 // cutoff-friendly struct-shape projection they read;
                 // `lir_lowering_query` is now the link phase assembling them.
@@ -2631,6 +2634,24 @@ pub(crate) fn lint_policy_query(
     project.analysis_options(db).lints.clone()
 }
 
+/// The project's D6 `emit_debug_info` flag (`docs/debugger-spec.md` §2,
+/// issue #3184) as its own narrow projection query —
+/// [`type_policy_query`]/[`lint_policy_query`]'s sibling, same cutoff
+/// argument: [`story_data_query`] needs `AnalysisOptions.emit_debug_info` to
+/// pick its `EmitOptions`, but reading it through `project.analysis_options(db)`
+/// directly would register a dependency on the *whole* `AnalysisOptions`
+/// input field, so any unrelated options edit (registering a host manifest,
+/// toggling `semantic_type_check`, even re-setting the identical value)
+/// would force codegen to fully re-execute and allocate a fresh
+/// `Arc<StoryData>`. `bool`'s derived `Eq` gives the same cheap-cutoff
+/// property `TypePolicy`/`LintPolicy` already have here: an options edit
+/// that leaves `.emit_debug_info` unchanged backdates this projection and
+/// leaves `story_data_query`'s `Arc<StoryData>` pointer-identical.
+#[salsa::tracked]
+pub(crate) fn debug_info_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    project.analysis_options(db).emit_debug_info
+}
+
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
 /// chunk into a `Program`. See the section comment above for the
 /// byte-identity and non-re-execution arguments.
@@ -2756,8 +2777,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         }
     }
 
-    let program =
-        brink_ir::lir::assemble_program(&prelude, ordered_chunks, root_temp_slots, &resolved.index);
+    let program = brink_ir::lir::assemble_program(
+        &prelude,
+        ordered_chunks,
+        root_temp_slots,
+        &resolved.index,
+        &paths,
+    );
 
     // LIR lowering itself is total (T1b-2: every construct lowers to a
     // program regardless of dialect). Error-severity lowering diagnostics
@@ -3092,7 +3118,23 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
             warnings: lir.warnings.clone(),
         };
     };
-    match brink_codegen_inkb::emit(program) {
+    // D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): the mount-time
+    // `emit_debug_info` flag (CLI `--debug-info`, or a studio compile that
+    // sets it) is the only thing that ever takes this off the exact
+    // `brink_codegen_inkb::emit` path every existing story compiled through
+    // — `false` (the default) hits the byte-identical `emit_with_options`
+    // fallback that reproduces `emit`'s own behavior, never a parallel
+    // code path. Read via `debug_info_policy_query`, not
+    // `project.analysis_options(db).emit_debug_info` directly — the same
+    // narrow-projection cutoff `type_policy_query`/`lint_policy_query` exist
+    // for (their own docs above): a raw field read here would register a
+    // dependency on the whole `AnalysisOptions` input, forcing this query to
+    // fully re-execute (and allocate a fresh `Arc<StoryData>`) on any
+    // unrelated options edit.
+    let debug_options = brink_codegen_inkb::EmitOptions {
+        emit_debug_info: debug_info_policy_query(db, project),
+    };
+    match brink_codegen_inkb::emit_with_options(program, debug_options) {
         Ok(mut story) => {
             // T2-3 (#862, `docs/effects-spec.md` §11): first real emission into
             // the `EffectRows` section. Codegen has no analyzer access, so the

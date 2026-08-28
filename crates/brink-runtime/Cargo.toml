@@ -55,6 +55,35 @@ bench-counters = []
 # `cargo build -p brink-runtime`) never compiles it in: no module, no
 # lock, no call-site branches. See `crates/brink-runtime/src/effect_trace.rs`.
 effect-trace = ["std"]
+# Debugger control seam (D8, issue #3186; wire encoding designed in
+# `docs/debugger-spec.md`, VM-seam ruling §1.4): breakpoints, pause/resume,
+# and step in/over/out, plus a `WatchpointObserver` built on the existing
+# `WriteObserver` seam (`state.rs`). Follows the `effect-trace`/
+# `bench-counters` precedent — a distinct flag, not a widening of
+# `testing` — and, unlike those two, adds ZERO code to the production hot
+# loop: `debug_control`'s stepping wraps the existing `pub(crate) vm::step`
+# in its OWN loop from outside `flow_instance.rs::advance_with_limit`
+# entirely, rather than adding a cfg-gated branch inside it. So the
+# production step loop and `vm::step_impl`'s dispatch body are byte-for-byte
+# identical whether this feature is on or off — see
+# `crates/brink-runtime/src/debug_control.rs`'s module doc for the argument
+# in full. Off by default.
+#
+# ONE released consumer enables it deliberately: `brink-web` (#3232), the
+# wasm bundle the studio ships, which binds the debug control surface onto
+# `WebSession`/`StoryRunner`. There is no separate "debug build" of that
+# package for the studio to opt into, so a mirrored feature the standard
+# `wasm-pack build crates/brink-web` never passes would leave the bridge
+# unreachable. Because the seam is additive (see above), the cost there is
+# compiled-in surface area and wasm bundle size, not hot-loop overhead.
+# Every OTHER consumer — `bevy-brink`, `brink-cli` — leaves it off, and new
+# ones should: enabling it is a deliberate exception, not the default.
+# NOTE: cargo's feature unification means a whole-workspace build
+# (`cargo build --workspace`) turns it on for every crate in that build,
+# `brink-cli` included. That is dead code rather than a behavior change,
+# per the byte-for-byte argument above, but a size-sensitive release should
+# build the binary on its own (`cargo build -p brink-cli --release`).
+debug-hooks = []
 
 [dev-dependencies]
 # `test-util` (issue #2168): tests and `benches/runtime.rs` compile

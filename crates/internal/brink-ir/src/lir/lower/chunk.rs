@@ -360,8 +360,8 @@ fn remap_content_parts(parts: &mut [lir::ContentPart], map: &[NameId]) {
     reason = "exhaustive per-variant Expr walk — one arm per variant is the point"
 )]
 fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
-    use lir::Expr;
-    match expr {
+    use lir::ExprKind as Expr;
+    match &mut expr.kind {
         Expr::GetTemp(_, name) | Expr::TakeTemp(_, name) => relocate(name, map),
         Expr::String(s) => remap_string(s, map),
         // Single-subexpression walks (incl. the NS-A1 one-arg Option verbs).
@@ -600,28 +600,32 @@ mod tests {
     fn remap_rewrites_nested_name_ids() {
         // Local names [greeting, field] -> assembled [7, 3].
         let map = vec![NameId(7), NameId(3)];
-        let mut expr = lir::Expr::Infix(
-            Box::new(lir::Expr::GetTemp(0, NameId(0))),
+        let mut expr = lir::ExprKind::Infix(
+            Box::new(lir::ExprKind::GetTemp(0, NameId(0)).at(test_provenance())),
             crate::InfixOp::Add,
-            Box::new(lir::Expr::RecordGet {
-                base: Box::new(lir::Expr::GetTemp(1, NameId(0))),
-                field: NameId(1),
-                static_offset: None,
-            }),
-        );
+            Box::new(
+                lir::ExprKind::RecordGet {
+                    base: Box::new(lir::ExprKind::GetTemp(1, NameId(0)).at(test_provenance())),
+                    field: NameId(1),
+                    static_offset: None,
+                }
+                .at(test_provenance()),
+            ),
+        )
+        .at(test_provenance());
         remap_expr(&mut expr, &map);
-        let (l, r) = match &expr {
-            lir::Expr::Infix(l, _, r) => Some((l, r)),
+        let (l, r) = match &expr.kind {
+            lir::ExprKind::Infix(l, _, r) => Some((l, r)),
             _ => None,
         }
         .expect("expected infix");
-        assert!(matches!(**l, lir::Expr::GetTemp(0, NameId(7))));
-        let (base, field) = match &**r {
-            lir::Expr::RecordGet { base, field, .. } => Some((base, field)),
+        assert!(matches!(l.kind, lir::ExprKind::GetTemp(0, NameId(7))));
+        let (base, field) = match &r.kind {
+            lir::ExprKind::RecordGet { base, field, .. } => Some((base, field)),
             _ => None,
         }
         .expect("expected record get");
-        assert!(matches!(**base, lir::Expr::GetTemp(1, NameId(7))));
+        assert!(matches!(base.kind, lir::ExprKind::GetTemp(1, NameId(7))));
         assert_eq!(*field, NameId(3));
     }
 
@@ -634,8 +638,8 @@ mod tests {
             vec![lir::Stmt::new(
                 lir::StmtKind::DeclareTemp {
                     slot: 0,
-                    name: NameId(1),                               // local -> "fresh"
-                    value: Some(lir::Expr::GetTemp(0, NameId(0))), // local -> "existing"
+                    name: NameId(1), // local -> "fresh"
+                    value: Some(lir::ExprKind::GetTemp(0, NameId(0)).at(test_provenance())), // local -> "existing"
                 },
                 test_provenance(),
             )],
@@ -657,6 +661,9 @@ mod tests {
         }
         .expect("expected declare temp");
         assert_eq!(name, NameId(1)); // "fresh"
-        assert!(matches!(value, Some(lir::Expr::GetTemp(0, NameId(0))))); // "existing"
+        assert!(matches!(
+            value.map(|v| v.kind),
+            Some(lir::ExprKind::GetTemp(0, NameId(0)))
+        )); // "existing"
     }
 }

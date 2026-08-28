@@ -60,6 +60,10 @@ import type {
   StructuralResult,
   DirMoveResult,
   DebugState,
+  DebugSourceLocation,
+  Breakpoint,
+  DebugRunOutcome,
+  StepMode,
   ProgramModel,
   LinesTable,
   SaveState,
@@ -1765,6 +1769,80 @@ export class StoryRunnerHandle {
     return this.runner.checksum();
   }
 
+  /**
+   * The program→source resolver (D9, issue #3187): resolves a
+   * `(containerIdx, offset)` bytecode position — exactly what
+   * {@link debugSnapshot}'s `position`/call-stack frame `position` fields
+   * report — to the source range it was compiled from, via the loaded
+   * program's `DebugInfo` section (D6, #3184).
+   *
+   * Returns `null`, not a throw, when the program carries no `DebugInfo`
+   * section (a compile without `--debug-info`) or the position doesn't
+   * resolve — this is the expected shape for most builds, not a fault.
+   *
+   * Callers MUST gate this on program identity before trusting the result
+   * for anything source-position-sensitive: this resolves against the
+   * program THIS runner is executing, which can be stale relative to the
+   * studio's latest compile. `docs/live-inspector-spec.md` §5's
+   * `sessionDegraded(programChecksum, compiledChecksum)` is the gate —
+   * compare {@link checksum} against the current compile's checksum first.
+   */
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
+    return JSON.parse(
+      this.runner.resolve_debug_position(containerIdx, offset),
+    ) as DebugSourceLocation | null;
+  }
+
+  // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
+  // Parity with `StorySessionHandle`'s copy below — `LocalSessionProvider`
+  // drives `StorySessionHandle`, not this type; see that copy's doc for the
+  // full contract these delegate to.
+
+  /** Add an enabled breakpoint at `(containerIdx, offset)`, returning its
+   * id — pass it to {@link debugBreakpointRemove}/
+   * {@link debugBreakpointSetEnabled}. An empty/omitted `name` is replaced
+   * with a `container:offset` label. */
+  debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {
+    return this.runner.debugBreakpointAdd(containerIdx, offset, name);
+  }
+
+  /** Remove a breakpoint by id. Returns `false` if no breakpoint with that
+   * id exists. */
+  debugBreakpointRemove(id: number): boolean {
+    return this.runner.debugBreakpointRemove(id);
+  }
+
+  /** Enable/disable a breakpoint without removing it. Returns `false` if no
+   * breakpoint with that id exists. */
+  debugBreakpointSetEnabled(id: number, enabled: boolean): boolean {
+    return this.runner.debugBreakpointSetEnabled(id, enabled);
+  }
+
+  /** Every breakpoint currently armed, in insertion order. */
+  debugBreakpoints(): Breakpoint[] {
+    return JSON.parse(this.runner.debugBreakpoints()) as Breakpoint[];
+  }
+
+  /**
+   * Run the default flow forward until an armed breakpoint, a choice point,
+   * or a terminal outcome (D8, #3186). `budgetCeiling` defaults to the
+   * runtime's `DEFAULT_DEBUG_BUDGET` when omitted — a debug-only step
+   * ceiling, entirely separate from production's step limit; exceeding it
+   * throws.
+   */
+  debugRun(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugRun(budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /**
+   * Step the default flow by one {@link StepMode} unit
+   * (`docs/debugger-spec.md` §4's depth-delta semantics). Same budget
+   * default as {@link debugRun}.
+   */
+  debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
   // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
   // counts / rng (true ink flow semantics), each with its own call stack
@@ -2630,6 +2708,82 @@ export class StorySessionHandle {
    * for the loaded program. */
   programModel(): ProgramModel {
     return JSON.parse(this.session.program_model()) as ProgramModel;
+  }
+
+  /**
+   * The program→source resolver (D9, issue #3187): resolves a
+   * `(containerIdx, offset)` bytecode position — exactly what
+   * {@link debugSnapshot}'s `position`/call-stack frame `position` fields
+   * report — to the source range it was compiled from, via the loaded
+   * program's `DebugInfo` section (D6, #3184). This is the resolver behind
+   * the studio's `program` Location space
+   * (`docs/studio-shell-spec.md` §6.1) — `LocalSessionProvider`
+   * (`packages/studio-store`) is the actual live-session consumer, since it
+   * drives the studio through `StorySessionHandle`, not
+   * `StoryRunnerHandle`.
+   *
+   * Returns `null`, not a throw, when the program carries no `DebugInfo`
+   * section or the position doesn't resolve. Callers MUST gate this on
+   * program identity before trusting the result — see
+   * `StoryRunnerHandle.resolveDebugPosition`'s doc for the full argument.
+   */
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
+    return JSON.parse(
+      this.session.resolve_debug_position(containerIdx, offset),
+    ) as DebugSourceLocation | null;
+  }
+
+  // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
+  //
+  // Binds `Story::debug_run`/`debug_step`/`BreakpointSet` onto the session
+  // — this is the studio's ACTUAL drive path: `LocalSessionProvider` runs
+  // `StorySessionHandle`, not `StoryRunnerHandle` (whose copy above exists
+  // for parity only). Bypasses the session journal — the same escape-hatch
+  // contract the Rust `debugRun`/`debugStep` bindings document: debug
+  // stepping is not a turn the player took, so a resumed session must not
+  // replay debugger single-steps.
+
+  /** Add an enabled breakpoint at `(containerIdx, offset)`, returning its
+   * id — pass it to {@link debugBreakpointRemove}/
+   * {@link debugBreakpointSetEnabled}. An empty/omitted `name` is replaced
+   * with a `container:offset` label. */
+  debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {
+    return this.session.debugBreakpointAdd(containerIdx, offset, name);
+  }
+
+  /** Remove a breakpoint by id. Returns `false` if no breakpoint with that
+   * id exists. */
+  debugBreakpointRemove(id: number): boolean {
+    return this.session.debugBreakpointRemove(id);
+  }
+
+  /** Enable/disable a breakpoint without removing it. Returns `false` if no
+   * breakpoint with that id exists. */
+  debugBreakpointSetEnabled(id: number, enabled: boolean): boolean {
+    return this.session.debugBreakpointSetEnabled(id, enabled);
+  }
+
+  /** Every breakpoint currently armed on this session, in insertion order. */
+  debugBreakpoints(): Breakpoint[] {
+    return JSON.parse(this.session.debugBreakpoints()) as Breakpoint[];
+  }
+
+  /**
+   * Run the default flow forward until an armed breakpoint, a choice point,
+   * or a terminal outcome (D8, #3186). `budgetCeiling` defaults to the
+   * runtime's `DEFAULT_DEBUG_BUDGET` when omitted; exceeding it throws.
+   */
+  debugRun(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugRun(budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /**
+   * Step the default flow by one {@link StepMode} unit
+   * (`docs/debugger-spec.md` §4's depth-delta semantics). Same budget
+   * default as {@link debugRun}.
+   */
+  debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
   // ── Shared flows (#200) ────────────────────────────────────────

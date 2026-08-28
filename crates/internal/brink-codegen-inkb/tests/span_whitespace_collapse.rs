@@ -64,6 +64,7 @@ fn program_with_template_line(parts: Vec<LinePart>) -> lir::Program {
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
         aliases: Vec::new(),
+        file_paths: std::collections::BTreeMap::new(),
     }
 }
 
