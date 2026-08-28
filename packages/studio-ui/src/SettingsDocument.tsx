@@ -54,6 +54,7 @@ import {
 import { DEFAULT_SETTINGS_SECTION } from "./settingsSectionIds.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { LintSettings } from "./LintSettings.js";
+import { ThemePicker } from "./ThemePicker.js";
 import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 
 /**
@@ -310,31 +311,20 @@ export function EditorViewSection() {
 export function ThemeSection() {
   const { themes } = useShell();
   const current = useThemeId();
-  // Radio group name must be unique per mounted view (the singleton can
-  // still be split-duplicated): same-name radios across views would
-  // uncheck each other at the DOM level.
-  const groupName = useId();
 
   return (
     <section className="settings-section">
-      <SettingsRow
-        htmlFor={groupName}
-        title="Theme"
-        description="Colour theme for the whole studio. Applies immediately."
-      >
-        <select
-          id={groupName}
-          className="settings-select"
-          value={current ?? ""}
-          onChange={(event) => void themes.select(event.target.value)}
-        >
-          {themes.list().map((theme) => (
-            <option key={theme.id} value={theme.id}>
-              {theme.label}
-            </option>
-          ))}
-        </select>
-      </SettingsRow>
+      <SettingsGroup title="Theme">
+        <p className="settings-group-hint">
+          Applies immediately. Each tile is the real theme &mdash; the same token
+          cascade the editor resolves.
+        </p>
+        <ThemePicker
+          themes={themes.list()}
+          current={current}
+          onSelect={(id) => void themes.select(id)}
+        />
+      </SettingsGroup>
     </section>
   );
 }

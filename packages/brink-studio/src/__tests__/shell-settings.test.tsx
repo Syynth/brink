@@ -260,39 +260,57 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
 }
 
 describe("SettingsDocument — theme section", () => {
-  // A select, not a stack of radios, since #3174's row pass: every theme is
-  // an equal alternative with no description to carry, so a radio per theme
-  // spent a whole pane on a list the row's control states in one line.
-  const themeSelect = (): HTMLSelectElement =>
-    [...container!.querySelectorAll<HTMLSelectElement>(".settings-select")].find(
-      (s) => s.closest(".settings-row")?.querySelector(".settings-row-title")
-        ?.textContent === "Theme",
-    )!;
+  // Tiles, each rendering a snippet in its own theme (#3174) — a theme is
+  // chosen by looking, not by reading its name. The control underneath is
+  // still a real radio group, which is what these assert against.
+  const themeRadios = (): HTMLInputElement[] => [
+    ...container!.querySelectorAll<HTMLInputElement>(
+      "[aria-label='Theme'] .settings-theme-tile input",
+    ),
+  ];
 
   it("reflects the current theme and drives ThemeService.select", () => {
     const h = renderSettings();
-    const select = themeSelect();
-    expect([...select.options].map((o) => o.value)).toEqual([
+    const radios = themeRadios();
+    expect(radios.map((r) => r.value)).toEqual([
       "mocha",
       "latte",
       "manuscript",
       "inky",
       "inky-dark",
     ]);
-    expect(select.value).toBe("mocha");
+    expect(radios[0].checked).toBe(true);
 
-    act(() => {
-      select.value = "latte";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    act(() => radios[1].click());
     expect(h.themes.current).toBe("latte");
-    expect(themeSelect().value).toBe("latte");
+    expect(themeRadios()[1].checked).toBe(true);
+    expect(themeRadios()[0].checked).toBe(false);
   });
 
   it("reflects external changes (e.g. the palette theme command)", () => {
     const h = renderSettings();
     act(() => void h.themes.select("latte"));
-    expect(themeSelect().value).toBe("latte");
+    expect(themeRadios()[1].checked).toBe(true);
+  });
+
+  // The preview element carries BOTH the class and the attribute on
+  // purpose: that pair IS the theme cascade (mocha's bare-class base, then
+  // this theme's overrides), which is what makes a tile the real theme
+  // rather than a palette copied into the component to drift.
+  it("previews each theme with the genuine token cascade, not a copy", () => {
+    renderSettings();
+    const previews = [
+      ...container!.querySelectorAll<HTMLElement>(".settings-theme-preview"),
+    ];
+    expect(previews).toHaveLength(5);
+    for (const [i, preview] of previews.entries()) {
+      expect(preview.classList.contains("brink-studio")).toBe(true);
+      expect(preview.dataset.theme).toBe(themeRadios()[i].value);
+    }
+    // The editor's own token classes, so a tile shows what the editor shows
+    // — including the per-role fallbacks for a theme defining none of them.
+    expect(previews[0].querySelector(".tok-marker")).not.toBeNull();
+    expect(previews[0].querySelector(".tok-halt")).not.toBeNull();
   });
 });
 
