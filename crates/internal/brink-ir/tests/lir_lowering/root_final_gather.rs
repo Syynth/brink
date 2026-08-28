@@ -16,16 +16,16 @@ use crate::support::*;
 /// Does this container's body end with `-> DONE`?
 fn ends_with_done(container: &lir::Container) -> bool {
     matches!(
-        container.body.last(),
-        Some(lir::Stmt::Divert(d)) if matches!(d.target, lir::DivertTarget::Done)
+        container.body.last().map(|s| &s.kind),
+        Some(lir::StmtKind::Divert(d)) if matches!(d.target, lir::DivertTarget::Done)
     )
 }
 
 /// Does this container's body end with a divert to `target`?
 fn ends_with_divert_to(container: &lir::Container, target: brink_format::DefinitionId) -> bool {
     matches!(
-        container.body.last(),
-        Some(lir::Stmt::Divert(d)) if matches!(d.target, lir::DivertTarget::Address(a) if a == target)
+        container.body.last().map(|s| &s.kind),
+        Some(lir::StmtKind::Divert(d)) if matches!(d.target, lir::DivertTarget::Address(a) if a == target)
     )
 }
 

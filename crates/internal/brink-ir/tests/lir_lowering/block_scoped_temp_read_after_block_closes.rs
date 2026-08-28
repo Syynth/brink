@@ -79,8 +79,8 @@ fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
         .root
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(gold) should lower to an ExprStmt(Call)");

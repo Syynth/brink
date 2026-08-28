@@ -161,8 +161,8 @@ fn main() {
     // `Box<Expr>`/container trees with no need for either outside this kind
     // of structural check), so this walks and matches by hand rather than
     // via `assert_eq!`.
-    let call_value = main_knot.body.iter().find_map(|stmt| match stmt {
-        lir::Stmt::DeclareTemp {
+    let call_value = main_knot.body.iter().find_map(|stmt| match &stmt.kind {
+        lir::StmtKind::DeclareTemp {
             value: Some(lir::Expr::CallValue { callee, args }),
             ..
         } => Some((callee.as_ref(), args)),

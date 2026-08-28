@@ -21,6 +21,6 @@ Background.
     let has_thread = knot
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::ThreadStart(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::ThreadStart(_)));
     assert!(has_thread, "should have a ThreadStart statement");
 }

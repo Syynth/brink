@@ -81,25 +81,54 @@ pub(super) fn lower_block_stmt_list(
     out
 }
 
+/// Best-known provenance for a T1b `~ { … }` block statement (issue #3183)
+/// — mirrors [`super::stmts::stmt_provenance`] for `hir::BlockStmt`. Every
+/// payload but `Return` (`Option<Provenance>`, synthesized-node caveat same
+/// as the classic-line `Return`) and `ExprStmt` (no `.ptr` of its own —
+/// [`crate::hir::expr_span`], ambient fallback) carries a real `Provenance`.
+fn block_stmt_provenance(stmt: &hir::BlockStmt, ctx: &LowerCtx<'_>) -> crate::Provenance {
+    match stmt {
+        hir::BlockStmt::TempDecl(decl) => decl.ptr,
+        hir::BlockStmt::Assignment(assign) => assign.ptr,
+        hir::BlockStmt::Return(ret) => ret.ptr.unwrap_or(ctx.current_stmt_provenance),
+        hir::BlockStmt::If(if_stmt) => if_stmt.ptr,
+        hir::BlockStmt::While(w) => w.ptr,
+        hir::BlockStmt::For(f) => f.ptr,
+        hir::BlockStmt::Break(ptr) | hir::BlockStmt::Continue(ptr) => *ptr,
+        hir::BlockStmt::ExprStmt(e) => crate::hir::expr_span(e)
+            .map_or(ctx.current_stmt_provenance, |r| {
+                ctx.provenance_at(r, crate::NodeClass::Expr)
+            }),
+        hir::BlockStmt::Await(a) => a.ptr,
+    }
+}
+
 fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::Stmt>) {
+    let provenance = ctx.enter_stmt(block_stmt_provenance(stmt, ctx));
     match stmt {
         hir::BlockStmt::TempDecl(decl) => lower_block_temp_decl(decl, ctx, out),
         hir::BlockStmt::Assignment(assign) => lower_block_assignment(assign, ctx, out),
         hir::BlockStmt::Return(ret) => {
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
-            out.push(lir::Stmt::Return {
-                value,
-                is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
-                args: Vec::new(),
-            });
+            out.push(lir::Stmt::new(
+                lir::StmtKind::Return {
+                    value,
+                    is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
+                    args: Vec::new(),
+                },
+                provenance,
+            ));
         }
         hir::BlockStmt::If(if_stmt) => {
             let mut branches = Vec::new();
             lower_if_branch(if_stmt, ctx, &mut branches);
-            out.push(lir::Stmt::Conditional(lir::Conditional {
-                kind: lir::CondKind::IfElse,
-                branches,
-            }));
+            out.push(lir::Stmt::new(
+                lir::StmtKind::Conditional(lir::Conditional {
+                    kind: lir::CondKind::IfElse,
+                    branches,
+                }),
+                provenance,
+            ));
         }
         hir::BlockStmt::While(w) => {
             // `while await cond { … }` (docs/flow-suspension-spec.md §3): the
@@ -124,25 +153,31 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             let body = lower_block_stmt_list(&w.body, ctx);
             ctx.loop_depth -= 1;
             ctx.pop_block_scope();
-            out.push(lir::Stmt::LogicWhile(lir::LogicWhile {
-                condition,
-                body,
-                post: Vec::new(),
-            }));
+            out.push(lir::Stmt::new(
+                lir::StmtKind::LogicWhile(lir::LogicWhile {
+                    condition,
+                    body,
+                    post: Vec::new(),
+                }),
+                provenance,
+            ));
         }
         hir::BlockStmt::For(f) => lower_for_stmt(f, ctx, out),
         hir::BlockStmt::Break(ptr) => {
-            lower_loop_control(ptr, "break", lir::Stmt::LogicBreak, ctx, out);
+            lower_loop_control(ptr, "break", lir::StmtKind::LogicBreak, ctx, out);
         }
         hir::BlockStmt::Continue(ptr) => {
-            lower_loop_control(ptr, "continue", lir::Stmt::LogicContinue, ctx, out);
+            lower_loop_control(ptr, "continue", lir::StmtKind::LogicContinue, ctx, out);
         }
         hir::BlockStmt::ExprStmt(expr) => {
             if !try_lower_postfix_stmt(expr, ctx, out)
                 && !try_lower_mutator_stmt(expr, ctx, out)
                 && !try_lower_frame_local_auto_ref_stmt(expr, ctx, out)
             {
-                out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
+                out.push(lir::Stmt::new(
+                    lir::StmtKind::ExprStmt(lower_expr(expr, ctx)),
+                    provenance,
+                ));
             }
         }
         // `await <cond>` inside a `~ { … }` block (docs/flow-suspension-spec.md
@@ -168,7 +203,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
 fn lower_loop_control(
     ptr: &crate::Provenance,
     keyword: &str,
-    stmt: lir::Stmt,
+    kind: lir::StmtKind,
     ctx: &mut LowerCtx<'_>,
     out: &mut Vec<lir::Stmt>,
 ) {
@@ -184,7 +219,7 @@ fn lower_loop_control(
         });
         return;
     }
-    out.push(stmt);
+    out.push(lir::Stmt::new(kind, *ptr));
 }
 
 fn lower_if_branch(
@@ -286,7 +321,10 @@ fn lower_block_temp_decl(decl: &hir::TempDecl, ctx: &mut LowerCtx<'_>, out: &mut
     let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
     let (slot, name) = declare_shadow_checked(&decl.name.text, decl.name.range, ctx);
     ctx.record_temp_annotation(slot, decl.annotation.as_ref());
-    out.push(lir::Stmt::DeclareTemp { slot, name, value });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::DeclareTemp { slot, name, value },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 fn lower_block_assignment(
@@ -306,11 +344,14 @@ fn lower_block_assignment(
     // this correctly resolves a block-scoped-shadowed name to its own slot.
     if let Some(target) = super::stmts::lower_assign_target(&assign.target, ctx) {
         let value = lower_expr(&assign.value, ctx);
-        out.push(lir::Stmt::Assign {
-            target,
-            op: assign.op,
-            value,
-        });
+        out.push(lir::Stmt::new(
+            lir::StmtKind::Assign {
+                target,
+                op: assign.op,
+                value,
+            },
+            ctx.current_stmt_provenance,
+        ));
     }
     // An unresolvable target (e.g. a genuinely undeclared name) silently
     // drops the statement — the same behavior classic `~ x = …` assignment
@@ -676,24 +717,30 @@ fn lower_single_level_field_write(
     //    nothing from here on can fault; the root is never left holding
     //    `Value::Null` on this path.
     let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(c_slot, c_name),
-        op: AssignOp::Set,
-        value: lir::Expr::RecordSet {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            field,
-            static_offset,
-            value: Box::new(rhs),
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(c_slot, c_name),
+            op: AssignOp::Set,
+            value: lir::Expr::RecordSet {
+                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+                field,
+                static_offset,
+                value: Box::new(rhs),
+            },
         },
-    });
+        ctx.current_stmt_provenance,
+    ));
 
     // 4. Write the mutated record back into the root — takes the (now
     //    dead) synthetic temp too, avoiding one final wasted `Arc` clone.
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(c_slot, c_name),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::TakeTemp(c_slot, c_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 /// Unwind a (possibly chained) `IndexExpr` into its root expression and the
@@ -738,11 +785,14 @@ fn declare_synthetic(
 ) -> (u16, brink_format::NameId) {
     let slot = ctx.alloc_block_slot();
     let name = ctx.names.intern(prefix);
-    out.push(lir::Stmt::DeclareTemp {
-        slot,
-        name,
-        value: Some(value),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::DeclareTemp {
+            slot,
+            name,
+            value: Some(value),
+        },
+        ctx.current_stmt_provenance,
+    ));
     (slot, name)
 }
 
@@ -907,23 +957,29 @@ fn lower_flat_indexed_assignment(
     //    runs, the only live reference to the container is the one this
     //    statement is about to consume — refcount 1 whenever nothing else
     //    aliases it.
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(c_slot, c_name),
-        op: AssignOp::Set,
-        value: lir::Expr::IndexSet {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
-            index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-            value: Box::new(rhs),
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(c_slot, c_name),
+            op: AssignOp::Set,
+            value: lir::Expr::IndexSet {
+                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+                index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+                value: Box::new(rhs),
+            },
         },
-    });
+        ctx.current_stmt_provenance,
+    ));
 
     // 6. Write the mutated container back into the root — takes the (now
     //    dead) synthetic temp too, avoiding one final wasted `Arc` clone.
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(c_slot, c_name),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::TakeTemp(c_slot, c_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 /// `n > 1` (chained, e.g. `grid[y][x] = v`) — the pre-#576 clone-based RMW,
@@ -995,15 +1051,18 @@ fn lower_chained_indexed_assignment(
         let (slot, name) = c_slots[n - 1];
         let base = lir::Expr::GetTemp(slot, name);
         let index = lir::Expr::GetTemp(idx_slots[n - 1].0, idx_slots[n - 1].1);
-        out.push(lir::Stmt::Assign {
-            target: lir::AssignTarget::Temp(slot, name),
-            op: AssignOp::Set,
-            value: lir::Expr::IndexSet {
-                base: Box::new(base),
-                index: Box::new(index),
-                value: Box::new(rhs),
+        out.push(lir::Stmt::new(
+            lir::StmtKind::Assign {
+                target: lir::AssignTarget::Temp(slot, name),
+                op: AssignOp::Set,
+                value: lir::Expr::IndexSet {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    value: Box::new(rhs),
+                },
             },
-        });
+            ctx.current_stmt_provenance,
+        ));
     }
 
     // 5. Cascade the write-back upward: c[k] = IndexSet(c[k], idx[k],
@@ -1013,24 +1072,30 @@ fn lower_chained_indexed_assignment(
         let base = lir::Expr::GetTemp(slot, name);
         let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
         let inner = lir::Expr::GetTemp(c_slots[k + 1].0, c_slots[k + 1].1);
-        out.push(lir::Stmt::Assign {
-            target: lir::AssignTarget::Temp(slot, name),
-            op: AssignOp::Set,
-            value: lir::Expr::IndexSet {
-                base: Box::new(base),
-                index: Box::new(index),
-                value: Box::new(inner),
+        out.push(lir::Stmt::new(
+            lir::StmtKind::Assign {
+                target: lir::AssignTarget::Temp(slot, name),
+                op: AssignOp::Set,
+                value: lir::Expr::IndexSet {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    value: Box::new(inner),
+                },
             },
-        });
+            ctx.current_stmt_provenance,
+        ));
     }
 
     // 6. Write the final root container back into the root variable.
     let (root_slot, root_name) = c_slots[0];
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::GetTemp(root_slot, root_name),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::GetTemp(root_slot, root_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 /// Lower `for x in arr { … }` / `for k in map { … }` — or, on the native
@@ -1087,41 +1152,53 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
 
     ctx.push_block_scope();
     let (var_slot, var_name) = declare_shadow_checked(&f.var_name.text, f.var_name.range, ctx);
-    let mut body = vec![lir::Stmt::DeclareTemp {
-        slot: var_slot,
-        name: var_name,
-        value: Some(lir::Expr::Index {
-            base: Box::new(lir::Expr::GetTemp(snap_slot, snap_name)),
-            index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-        }),
-    }];
+    let mut body = vec![lir::Stmt::new(
+        lir::StmtKind::DeclareTemp {
+            slot: var_slot,
+            name: var_name,
+            value: Some(lir::Expr::Index {
+                base: Box::new(lir::Expr::GetTemp(snap_slot, snap_name)),
+                index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+            }),
+        },
+        ctx.current_stmt_provenance,
+    )];
     if let Some(val_name) = &f.val_name {
         let (val_slot, val_name_id) = declare_shadow_checked(&val_name.text, val_name.range, ctx);
-        body.push(lir::Stmt::DeclareTemp {
-            slot: val_slot,
-            name: val_name_id,
-            value: Some(lir::Expr::Index {
-                base: Box::new(snapshot_source),
-                index: Box::new(lir::Expr::GetTemp(var_slot, var_name)),
-            }),
-        });
+        body.push(lir::Stmt::new(
+            lir::StmtKind::DeclareTemp {
+                slot: val_slot,
+                name: val_name_id,
+                value: Some(lir::Expr::Index {
+                    base: Box::new(snapshot_source),
+                    index: Box::new(lir::Expr::GetTemp(var_slot, var_name)),
+                }),
+            },
+            ctx.current_stmt_provenance,
+        ));
     }
     ctx.loop_depth += 1;
     body.extend(lower_block_stmt_list(&f.body, ctx));
     ctx.loop_depth -= 1;
     ctx.pop_block_scope();
 
-    let post = vec![lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(idx_slot, idx_name),
-        op: AssignOp::Add,
-        value: lir::Expr::Int(1),
-    }];
+    let post = vec![lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(idx_slot, idx_name),
+            op: AssignOp::Add,
+            value: lir::Expr::Int(1),
+        },
+        ctx.current_stmt_provenance,
+    )];
 
-    out.push(lir::Stmt::LogicWhile(lir::LogicWhile {
-        condition,
-        body,
-        post,
-    }));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::LogicWhile(lir::LogicWhile {
+            condition,
+            body,
+            post,
+        }),
+        ctx.current_stmt_provenance,
+    ));
 }
 
 // ─── T1b stdlib slice 1 mutators (§5) ──────────────────────────────────
@@ -1326,10 +1403,13 @@ fn try_lower_seed_stmt(
         return true;
     }
     let arg = lower_expr(&args[0], ctx);
-    out.push(lir::Stmt::ExprStmt(lir::Expr::CallBuiltin {
-        builtin: lir::BuiltinFn::SeedRandom,
-        args: vec![arg],
-    }));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::ExprStmt(lir::Expr::CallBuiltin {
+            builtin: lir::BuiltinFn::SeedRandom,
+            args: vec![arg],
+        }),
+        ctx.current_stmt_provenance,
+    ));
     true
 }
 
@@ -1421,11 +1501,14 @@ pub(super) fn try_lower_postfix_stmt(
     let Some(target) = super::stmts::lower_assign_target(inner, ctx) else {
         return false;
     };
-    out.push(lir::Stmt::Assign {
-        target,
-        op: assign_op,
-        value: lir::Expr::Int(1),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target,
+            op: assign_op,
+            value: lir::Expr::Int(1),
+        },
+        ctx.current_stmt_provenance,
+    ));
     true
 }
 
@@ -1627,7 +1710,10 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
             args: call_args,
         }
     };
-    out.push(lir::Stmt::ExprStmt(call_expr));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::ExprStmt(call_expr),
+        ctx.current_stmt_provenance,
+    ));
 
     // 3. Write the (possibly mutated) receiver back into the field. No
     //    fault pre-check is needed here — step 1's read already proved this
@@ -1639,11 +1725,14 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
         static_offset,
         value: Box::new(lir::Expr::GetTemp(recv_slot, recv_name)),
     };
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: write_back,
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: write_back,
+        },
+        ctx.current_stmt_provenance,
+    ));
 
     true
 }
@@ -1819,12 +1908,21 @@ fn lower_mutator_call(
         },
     };
 
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(last_slot, last_name),
-        op: AssignOp::Set,
-        value: new_container,
-    });
-    writeback_lvalue_container_chain(root_target, &idx_slots, &c_slots, out);
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(last_slot, last_name),
+            op: AssignOp::Set,
+            value: new_container,
+        },
+        ctx.current_stmt_provenance,
+    ));
+    writeback_lvalue_container_chain(
+        root_target,
+        &idx_slots,
+        &c_slots,
+        out,
+        ctx.current_stmt_provenance,
+    );
 }
 
 /// Fast path for a mutator (`push`/`insert`/`remove`/`remove_at`) whose
@@ -1936,16 +2034,22 @@ fn lower_bare_mutator(
         },
     };
 
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(c_slot, c_name),
-        op: AssignOp::Set,
-        value: new_container,
-    });
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(c_slot, c_name),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(c_slot, c_name),
+            op: AssignOp::Set,
+            value: new_container,
+        },
+        ctx.current_stmt_provenance,
+    ));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::TakeTemp(c_slot, c_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 /// Struct-field-projection sibling of [`lower_bare_mutator`] (issue #1495):
@@ -2119,21 +2223,27 @@ fn lower_field_mutator(
     //    function doc's step 3).
     let (dealias_slot, dealias_name) =
         declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(dealias_slot, dealias_name),
-        op: AssignOp::Set,
-        value: lir::Expr::RecordSet {
-            base: Box::new(lir::Expr::TakeTemp(dealias_slot, dealias_name)),
-            field,
-            static_offset,
-            value: Box::new(lir::Expr::Null),
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(dealias_slot, dealias_name),
+            op: AssignOp::Set,
+            value: lir::Expr::RecordSet {
+                base: Box::new(lir::Expr::TakeTemp(dealias_slot, dealias_name)),
+                field,
+                static_offset,
+                value: Box::new(lir::Expr::Null),
+            },
         },
-    });
-    out.push(lir::Stmt::Assign {
-        target: root_target.clone(),
-        op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(dealias_slot, dealias_name),
-    });
+        ctx.current_stmt_provenance,
+    ));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target.clone(),
+            op: AssignOp::Set,
+            value: lir::Expr::TakeTemp(dealias_slot, dealias_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 
     // The RMW's own mutating operand takes `current_slot` (issue #2123) —
     // `container()` above is a *cloning* `GetTemp`, deliberately kept for
@@ -2208,21 +2318,27 @@ fn lower_field_mutator(
     //    exists to close.
     let (writeback_slot, writeback_name) =
         declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
-    out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(writeback_slot, writeback_name),
-        op: AssignOp::Set,
-        value: lir::Expr::RecordSet {
-            base: Box::new(lir::Expr::TakeTemp(writeback_slot, writeback_name)),
-            field,
-            static_offset,
-            value: Box::new(lir::Expr::TakeTemp(new_slot, new_name)),
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: lir::AssignTarget::Temp(writeback_slot, writeback_name),
+            op: AssignOp::Set,
+            value: lir::Expr::RecordSet {
+                base: Box::new(lir::Expr::TakeTemp(writeback_slot, writeback_name)),
+                field,
+                static_offset,
+                value: Box::new(lir::Expr::TakeTemp(new_slot, new_name)),
+            },
         },
-    });
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(writeback_slot, writeback_name),
-    });
+        ctx.current_stmt_provenance,
+    ));
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::TakeTemp(writeback_slot, writeback_name),
+        },
+        ctx.current_stmt_provenance,
+    ));
 }
 
 /// Resolve an lvalue expression (§5 — "a variable, temp, or indexed path")
@@ -2313,6 +2429,7 @@ fn writeback_lvalue_container_chain(
     idx_slots: &[(u16, brink_format::NameId)],
     c_slots: &[(u16, brink_format::NameId)],
     out: &mut Vec<lir::Stmt>,
+    provenance: crate::Provenance,
 ) {
     for k in (0..idx_slots.len()).rev() {
         let Some(&(slot, name)) = c_slots.get(k) else {
@@ -2324,24 +2441,30 @@ fn writeback_lvalue_container_chain(
         let base = lir::Expr::GetTemp(slot, name);
         let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
         let inner = lir::Expr::GetTemp(next_slot, next_name);
-        out.push(lir::Stmt::Assign {
-            target: lir::AssignTarget::Temp(slot, name),
-            op: AssignOp::Set,
-            value: lir::Expr::IndexSet {
-                base: Box::new(base),
-                index: Box::new(index),
-                value: Box::new(inner),
+        out.push(lir::Stmt::new(
+            lir::StmtKind::Assign {
+                target: lir::AssignTarget::Temp(slot, name),
+                op: AssignOp::Set,
+                value: lir::Expr::IndexSet {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    value: Box::new(inner),
+                },
             },
-        });
+            provenance,
+        ));
     }
     let Some(&(root_slot, root_name)) = c_slots.first() else {
         return;
     };
-    out.push(lir::Stmt::Assign {
-        target: root_target,
-        op: AssignOp::Set,
-        value: lir::Expr::GetTemp(root_slot, root_name),
-    });
+    out.push(lir::Stmt::new(
+        lir::StmtKind::Assign {
+            target: root_target,
+            op: AssignOp::Set,
+            value: lir::Expr::GetTemp(root_slot, root_name),
+        },
+        provenance,
+    ));
 }
 
 #[cfg(test)]

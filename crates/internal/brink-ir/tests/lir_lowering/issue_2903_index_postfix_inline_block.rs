@@ -24,11 +24,12 @@ fn index_postfix_in_choice_text_inline_conditional_lowers_to_a_real_assign() {
     let program =
         program.expect("choice-text index postfix should lower to a real program, not drop");
 
-    let Some(lir::Stmt::ChoiceSet(cs)) = program
+    let Some(lir::StmtKind::ChoiceSet(cs)) = program
         .root
         .body
         .iter()
-        .find(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+        .find(|s| matches!(&s.kind, lir::StmtKind::ChoiceSet(_)))
+        .map(|s| &s.kind)
     else {
         panic!("expected a ChoiceSet in the root body");
     };
@@ -41,9 +42,11 @@ fn index_postfix_in_choice_text_inline_conditional_lowers_to_a_real_assign() {
         let lir::ContentPart::InlineConditional(cond) = p else {
             return false;
         };
-        cond.branches
-            .iter()
-            .any(|b| b.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. })))
+        cond.branches.iter().any(|b| {
+            b.body
+                .iter()
+                .any(|s| matches!(&s.kind, lir::StmtKind::Assign { .. }))
+        })
     });
     assert!(
         has_assign_in_branches,

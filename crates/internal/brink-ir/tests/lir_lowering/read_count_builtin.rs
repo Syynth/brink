@@ -17,8 +17,8 @@ VAR t = 0
     let knot = find_child(&p.root, "knot");
     let has_read_count = knot.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::CallBuiltin {
                     builtin: lir::BuiltinFn::ReadCount,
                     ..
@@ -49,8 +49,8 @@ VAR t = 0
     let knot = find_child(&p.root, "knot");
     let has_read_count = knot.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::CallBuiltin {
                     builtin: lir::BuiltinFn::ReadCount,
                     ..

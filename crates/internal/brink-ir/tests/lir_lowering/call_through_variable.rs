@@ -16,10 +16,12 @@ VAR s = -> knot
     );
 
     // The root body should contain an ExprStmt with CallVariable
-    let has_call_var = root(&prog)
-        .body
-        .iter()
-        .any(|stmt| matches!(stmt, lir::Stmt::ExprStmt(lir::Expr::CallVariable { .. })));
+    let has_call_var = root(&prog).body.iter().any(|stmt| {
+        matches!(
+            &stmt.kind,
+            lir::StmtKind::ExprStmt(lir::Expr::CallVariable { .. })
+        )
+    });
     assert!(
         has_call_var,
         "call through global variable should produce CallVariable"
@@ -42,8 +44,8 @@ fn call_through_temp_variable() {
     let run = find_by_path(&prog, "run");
     let has_call_var_temp = run.body.iter().any(|stmt| {
         matches!(
-            stmt,
-            lir::Stmt::Return {
+            &stmt.kind,
+            lir::StmtKind::Return {
                 value: Some(lir::Expr::CallVariableTemp { .. }),
                 ..
             }

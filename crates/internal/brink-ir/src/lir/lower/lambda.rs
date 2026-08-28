@@ -206,6 +206,12 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
             temp_shapes: crate::determinism::LookupMap::new(),
             tables: ctx.tables,
             lifted: ctx.lifted,
+            // Seed the lifted body's ambient with the lambda's own range —
+            // real provenance (`l.ptr`), not a synthetic placeholder, so a
+            // structural statement synthesized before any real HIR
+            // statement in the body dispatches still anchors somewhere in
+            // the lambda that produced it (issue #3183).
+            current_stmt_provenance: l.ptr,
         };
         let body = lower_body(&l.body, &mut lctx);
         (body, core::mem::take(&mut lctx.pending_children))
@@ -213,6 +219,10 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
 
     ctx.lifted.push(lir::Container {
         id,
+        // The lifted function's own header range is the `|…| …` expression
+        // that created it — the closest thing this synthesized container
+        // has to a "definition site" (issue #3183).
+        provenance: l.ptr,
         name: Some(path),
         kind: lir::ContainerKind::Knot,
         params,
@@ -267,14 +277,14 @@ fn lower_body(body: &hir::LambdaBody, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> 
     match body {
         hir::LambdaBody::Expr(e) => {
             let value = super::expr::lower_expr(e, ctx);
-            vec![value_return(value)]
+            vec![value_return(value, tail_provenance(e, ctx))]
         }
         hir::LambdaBody::Block { stmts, tail } => {
             ctx.push_block_scope();
             let mut out = super::blocks::lower_block_stmt_list(stmts, ctx);
             if let Some(t) = tail {
                 let value = super::expr::lower_expr(t, ctx);
-                out.push(value_return(value));
+                out.push(value_return(value, tail_provenance(t, ctx)));
             }
             ctx.pop_block_scope();
             out
@@ -282,12 +292,25 @@ fn lower_body(body: &hir::LambdaBody, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> 
     }
 }
 
-fn value_return(value: lir::Expr) -> lir::Stmt {
-    lir::Stmt::Return {
-        value: Some(value),
-        is_tunnel: false,
-        args: Vec::new(),
-    }
+/// Provenance for a synthesized terminal `Return` (issue #3183): the tail
+/// expression's own range where [`crate::hir::expr_span`] can find one
+/// (own-provenance-first, subtree-union fallback), else whatever was
+/// ambient after lowering it.
+fn tail_provenance(tail: &hir::Expr, ctx: &LowerCtx<'_>) -> crate::Provenance {
+    crate::hir::expr_span(tail).map_or(ctx.current_stmt_provenance, |r| {
+        ctx.provenance_at(r, crate::NodeClass::Expr)
+    })
+}
+
+fn value_return(value: lir::Expr, provenance: crate::Provenance) -> lir::Stmt {
+    lir::Stmt::new(
+        lir::StmtKind::Return {
+            value: Some(value),
+            is_tunnel: false,
+            args: Vec::new(),
+        },
+        provenance,
+    )
 }
 
 /// The lambda's **captures**: every free name its body reads (as a bare

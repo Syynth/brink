@@ -24,7 +24,7 @@ fn knot_divert_to_end() {
     let p = lower_ink("== greet ==\nHi.\n-> END\n");
     let knot = find_child(&p.root, "greet");
     assert!(ends_with_divert(&knot.body));
-    if let Some(lir::Stmt::Divert(d)) = knot.body.last() {
+    if let Some(lir::StmtKind::Divert(d)) = knot.body.last().map(|s| &s.kind) {
         assert!(matches!(d.target, lir::DivertTarget::End));
     }
 }
@@ -56,7 +56,7 @@ fn root_divert_to_knot_resolves() {
     let knot = find_child(&p.root, "greet");
 
     let has_divert_to_knot = r.body.iter().any(|stmt| {
-        if let lir::Stmt::Divert(d) = stmt {
+        if let lir::StmtKind::Divert(d) = &stmt.kind {
             matches!(d.target, lir::DivertTarget::Address(id) if id == knot.id)
         } else {
             false

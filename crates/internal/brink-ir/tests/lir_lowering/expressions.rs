@@ -9,7 +9,7 @@ fn interpolation_in_content() {
     let r = root(&p);
     // Interpolations are now recognized as templates (phase 3).
     let has_template = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         has_template,
@@ -23,8 +23,8 @@ fn infix_expression_in_assignment() {
     let r = root(&p);
     let has_infix = r.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::Infix(_, brink_ir::InfixOp::Add, _),
                 ..
             }
@@ -39,8 +39,8 @@ fn prefix_negate() {
     let r = root(&p);
     let has_prefix = r.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::Prefix(brink_ir::PrefixOp::Negate, _),
                 ..
             }
@@ -55,8 +55,8 @@ fn boolean_not() {
     let r = root(&p);
     let has_not = r.body.iter().any(|s| {
         matches!(
-            s,
-            lir::Stmt::Assign {
+            &s.kind,
+            lir::StmtKind::Assign {
                 value: lir::Expr::Prefix(brink_ir::PrefixOp::Not, _),
                 ..
             }

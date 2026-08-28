@@ -53,7 +53,7 @@ fn branch_bodies(program: &lir::Program) -> Vec<&[lir::Stmt]> {
 
 fn plain_text(stmts: &[lir::Stmt]) -> Option<&str> {
     stmts.iter().find_map(|s| {
-        if let lir::Stmt::EmitLine(e) = s
+        if let lir::StmtKind::EmitLine(e) = &s.kind
             && let lir::RecognizedLine::Plain(s) = &e.line
         {
             return Some(s.as_str());
@@ -63,7 +63,9 @@ fn plain_text(stmts: &[lir::Stmt]) -> Option<&str> {
 }
 
 fn has_emit_content(stmts: &[lir::Stmt]) -> bool {
-    stmts.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)))
+    stmts
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::EmitContent(_)))
 }
 
 #[test]
@@ -122,7 +124,7 @@ fn branch_with_interpolation_becomes_a_template_not_emit_content() {
     assert_eq!(bodies.len(), 2);
     let true_body = bodies[0];
     let has_template = true_body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         has_template,
@@ -146,7 +148,7 @@ fn each_branch_gets_a_distinct_source_hash() {
         .map(|b| {
             b.iter()
                 .find_map(|s| {
-                    if let lir::Stmt::EmitLine(e) = s {
+                    if let lir::StmtKind::EmitLine(e) = &s.kind {
                         Some(e.metadata.source_hash)
                     } else {
                         None

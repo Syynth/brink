@@ -15,6 +15,12 @@ fn root_id() -> DefinitionId {
     DefinitionId::new(DefinitionTag::Address, 1)
 }
 
+/// A placeholder provenance (issue #3183) — this fixture has no real
+/// source text behind it.
+fn test_provenance() -> brink_ir::Provenance {
+    brink_ir::Provenance::synthetic(brink_ir::NodeClass::Stmt, rowan::TextRange::empty(0.into()))
+}
+
 /// A minimal `Program` whose root body emits a single recognized template
 /// line built from `parts` — enough surface for `emit()` to walk without
 /// hitting any other (irrelevant) codegen path.
@@ -34,10 +40,14 @@ fn program_with_template_line(parts: Vec<LinePart>) -> lir::Program {
     lir::Program {
         root: lir::Container {
             id: root_id(),
+            provenance: test_provenance(),
             name: None,
             kind: lir::ContainerKind::Root,
             params: Vec::new(),
-            body: vec![lir::Stmt::EmitLine(emission), lir::Stmt::EndOfLine],
+            body: vec![
+                lir::Stmt::new(lir::StmtKind::EmitLine(emission), test_provenance()),
+                lir::Stmt::new(lir::StmtKind::EndOfLine, test_provenance()),
+            ],
             children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,

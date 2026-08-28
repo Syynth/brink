@@ -49,7 +49,7 @@ Stalls line the street.
     let r = root(&p);
     let town = find_child(&p.root, "town_square");
     let root_diverts = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == town.id))
+        matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == town.id))
     });
     assert!(root_diverts, "root should divert to town_square");
 
@@ -58,7 +58,7 @@ Stalls line the street.
     let has_assign = inn
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Assign { .. }));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Assign { .. }));
     assert!(has_assign, "inn should assign visited_inn = true");
 
     // Market has a block-level conditional (inline conditional was lifted by normalization)
@@ -66,7 +66,7 @@ Stalls line the street.
     let has_cond = market
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Conditional(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::Conditional(_)));
     assert!(
         has_cond,
         "market should have block-level conditional for visited_inn"
@@ -102,7 +102,7 @@ fn multiple_choice_sets_cascade_gathers() {
     let gathers = collect_kind(scene, lir::ContainerKind::Gather);
     let any_gather_has_end = gathers.iter().any(|g| {
         g.body.iter().any(
-            |s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
+            |s| matches!(&s.kind, lir::StmtKind::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
         )
     });
     assert!(
@@ -126,7 +126,7 @@ fn divert_with_arguments() {
     let p = lower_ink("-> greet(42)\n\n== greet(name) ==\nHello.\n-> END\n");
     let r = root(&p);
     let divert = r.body.iter().find_map(|s| {
-        if let lir::Stmt::Divert(d) = s
+        if let lir::StmtKind::Divert(d) = &s.kind
             && matches!(d.target, lir::DivertTarget::Address(_))
         {
             return Some(d);
@@ -149,7 +149,10 @@ EXTERNAL do_something()
 ",
     );
     let r = root(&p);
-    let has_expr_stmt = r.body.iter().any(|s| matches!(s, lir::Stmt::ExprStmt(_)));
+    let has_expr_stmt = r
+        .body
+        .iter()
+        .any(|s| matches!(&s.kind, lir::StmtKind::ExprStmt(_)));
     assert!(
         has_expr_stmt,
         "should have an ExprStmt for the function call"
@@ -178,7 +181,7 @@ fn choice_body_content_in_conditional_branch() {
         .expect("should have a choice target");
     // Choice target should have body content (not just the choice output)
     let has_end_divert = choice_target.body.iter().any(|s| {
-        if let lir::Stmt::Divert(d) = s {
+        if let lir::StmtKind::Divert(d) = &s.kind {
             matches!(d.target, lir::DivertTarget::End)
         } else {
             false

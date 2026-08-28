@@ -26,6 +26,19 @@ fn root_id() -> DefinitionId {
     DefinitionId::new(DefinitionTag::Address, 1)
 }
 
+/// A placeholder provenance (issue #3183) for these hand-assembled
+/// fixtures — none of them exist in any real source text, so there is
+/// nothing to point at; `s()` stamps every fixture statement with the same
+/// synthetic marker.
+fn test_provenance() -> brink_ir::Provenance {
+    brink_ir::Provenance::synthetic(brink_ir::NodeClass::Stmt, rowan::TextRange::empty(0.into()))
+}
+
+/// Wrap a bare `StmtKind` fixture with the placeholder provenance.
+fn s(kind: lir::StmtKind) -> lir::Stmt {
+    lir::Stmt::new(kind, test_provenance())
+}
+
 /// A minimal, otherwise-empty `Program` whose root container body is
 /// `body` — enough surface for `emit()` to walk without hitting any other
 /// (irrelevant) codegen path.
@@ -33,6 +46,7 @@ fn program_with_root_body(body: Vec<lir::Stmt>) -> lir::Program {
     lir::Program {
         root: lir::Container {
             id: root_id(),
+            provenance: test_provenance(),
             name: None,
             kind: lir::ContainerKind::Root,
             params: Vec::new(),
@@ -61,7 +75,7 @@ fn well_formed_program_still_emits_successfully() {
     // Control case: a `Program` with no loop-control statements at all
     // compiles fine — proves the backstop doesn't false-positive on
     // ordinary input.
-    let program = program_with_root_body(vec![lir::Stmt::EndOfLine]);
+    let program = program_with_root_body(vec![s(lir::StmtKind::EndOfLine)]);
     let story = brink_codegen_inkb::emit(&program);
     assert!(story.is_ok(), "expected Ok, got {story:?}");
 }
@@ -71,18 +85,18 @@ fn break_in_a_well_formed_loop_still_emits_successfully() {
     // Control case: a `break` that *does* have an enclosing `LogicWhile`
     // still compiles — proves the backstop only fires on a genuinely empty
     // `loop_stack`, not on every `LogicBreak`.
-    let program = program_with_root_body(vec![lir::Stmt::LogicWhile(lir::LogicWhile {
+    let program = program_with_root_body(vec![s(lir::StmtKind::LogicWhile(lir::LogicWhile {
         condition: lir::Expr::Bool(true),
-        body: vec![lir::Stmt::LogicBreak],
+        body: vec![s(lir::StmtKind::LogicBreak)],
         post: Vec::new(),
-    })]);
+    }))]);
     let story = brink_codegen_inkb::emit(&program);
     assert!(story.is_ok(), "expected Ok, got {story:?}");
 }
 
 #[test]
 fn out_of_loop_logic_break_is_a_hard_codegen_error() {
-    let program = program_with_root_body(vec![lir::Stmt::LogicBreak]);
+    let program = program_with_root_body(vec![s(lir::StmtKind::LogicBreak)]);
     let err = brink_codegen_inkb::emit(&program)
         .expect_err("an out-of-loop LogicBreak must not silently compile");
     let message = err.to_string();
@@ -94,7 +108,7 @@ fn out_of_loop_logic_break_is_a_hard_codegen_error() {
 
 #[test]
 fn out_of_loop_logic_continue_is_a_hard_codegen_error() {
-    let program = program_with_root_body(vec![lir::Stmt::LogicContinue]);
+    let program = program_with_root_body(vec![s(lir::StmtKind::LogicContinue)]);
     let err = brink_codegen_inkb::emit(&program)
         .expect_err("an out-of-loop LogicContinue must not silently compile");
     let message = err.to_string();
@@ -110,12 +124,12 @@ fn out_of_loop_break_after_a_sibling_loop_still_errors() {
     // nested) — proves the emitter's `loop_stack` is correctly empty again
     // once the loop's own emission finishes, not leaking across siblings.
     let program = program_with_root_body(vec![
-        lir::Stmt::LogicWhile(lir::LogicWhile {
+        s(lir::StmtKind::LogicWhile(lir::LogicWhile {
             condition: lir::Expr::Bool(true),
-            body: vec![lir::Stmt::EndOfLine],
+            body: vec![s(lir::StmtKind::EndOfLine)],
             post: Vec::new(),
-        }),
-        lir::Stmt::LogicBreak,
+        })),
+        s(lir::StmtKind::LogicBreak),
     ]);
     let err = brink_codegen_inkb::emit(&program)
         .expect_err("a break after (not inside) a loop must still error");

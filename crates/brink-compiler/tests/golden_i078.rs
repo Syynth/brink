@@ -226,10 +226,10 @@ fn i078_lir() {
     // Root body: ChoiceSet + Divert(Done)
     assert_eq!(root.body.len(), 2);
 
-    let lir::Stmt::ChoiceSet(cs) = &root.body[0] else {
+    let lir::StmtKind::ChoiceSet(cs) = &root.body[0].kind else {
         panic!("expected ChoiceSet as first stmt");
     };
-    let lir::Stmt::Divert(done_divert) = &root.body[1] else {
+    let lir::StmtKind::Divert(done_divert) = &root.body[1].kind else {
         panic!("expected Divert as second stmt");
     };
     assert!(matches!(done_divert.target, lir::DivertTarget::Done));
@@ -274,17 +274,17 @@ fn i078_lir() {
     // c-0 body: EndOfLine (choice line) + EmitContent("Text") + EndOfLine + Divert(Container(g-0))
     assert_eq!(c0.body.len(), 4);
 
-    assert!(matches!(&c0.body[0], lir::Stmt::EndOfLine));
+    assert!(matches!(&c0.body[0].kind, lir::StmtKind::EndOfLine));
 
-    let lir::Stmt::EmitLine(emission) = &c0.body[1] else {
+    let lir::StmtKind::EmitLine(emission) = &c0.body[1].kind else {
         panic!("expected EmitLine in c-0 body");
     };
     assert!(matches!(&emission.line, lir::RecognizedLine::Plain(t) if t == "Text"));
     assert!(emission.tags.is_empty());
 
-    assert!(matches!(&c0.body[2], lir::Stmt::EndOfLine));
+    assert!(matches!(&c0.body[2].kind, lir::StmtKind::EndOfLine));
 
-    let lir::Stmt::Divert(gather_divert) = &c0.body[3] else {
+    let lir::StmtKind::Divert(gather_divert) = &c0.body[3].kind else {
         panic!("expected Divert to gather in c-0 body");
     };
     let gather_id = cs.gather_target.unwrap();
@@ -300,7 +300,7 @@ fn i078_lir() {
 
     // g-0 body: Divert(Done)
     assert_eq!(g0.body.len(), 1);
-    let lir::Stmt::Divert(g0_done) = &g0.body[0] else {
+    let lir::StmtKind::Divert(g0_done) = &g0.body[0].kind else {
         panic!("expected Divert in g-0 body");
     };
     assert!(matches!(g0_done.target, lir::DivertTarget::Done));

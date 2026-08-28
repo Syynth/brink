@@ -123,7 +123,7 @@ fn multiple_slots_with_real_text_recognized_as_template() {
     let p = lower_ink("VAR x = 1\nVAR y = 2\n{x} and {y}\n");
     let r = root(&p);
     let has_template = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
+        matches!(&s.kind, lir::StmtKind::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
     assert!(
         has_template,

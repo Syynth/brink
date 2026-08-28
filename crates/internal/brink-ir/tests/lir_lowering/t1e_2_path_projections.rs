@@ -26,8 +26,8 @@ fn ref_dotted_field_projection_call_arg_lowers_to_ref_projection() {
         .root
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(ref npc.hp) should lower to an ExprStmt(Call)");
@@ -73,8 +73,8 @@ fn ref_index_projection_call_arg_lowers_to_ref_projection() {
         .root
         .body
         .iter()
-        .find_map(|s| match s {
-            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(ref inventory[idx]) should lower to an ExprStmt(Call)");

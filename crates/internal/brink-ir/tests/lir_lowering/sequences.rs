@@ -18,7 +18,7 @@ fn stopping_sequence() {
     let has_enter = r
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::EnterContainer(_)));
+        .any(|s| matches!(&s.kind, lir::StmtKind::EnterContainer(_)));
     assert!(has_enter, "root should have EnterContainer for sequence");
 
     let seq_child = r
@@ -32,7 +32,7 @@ fn stopping_sequence() {
     let seq_child = seq_child.unwrap();
 
     let has_seq = seq_child.body.iter().any(
-        |s| matches!(s, lir::Stmt::Sequence(seq) if seq.kind == brink_ir::SequenceType::STOPPING),
+        |s| matches!(&s.kind, lir::StmtKind::Sequence(seq) if seq.kind == brink_ir::SequenceType::STOPPING),
     );
     assert!(
         has_seq,
@@ -59,7 +59,7 @@ fn cycle_sequence() {
         .expect("root should have a Sequence child container");
 
     let seq = seq_child.body.iter().find_map(|s| {
-        if let lir::Stmt::Sequence(s) = s {
+        if let lir::StmtKind::Sequence(s) = &s.kind {
             Some(s)
         } else {
             None

@@ -67,9 +67,15 @@ use crate::hir::FileId;
 #[repr(u16)]
 pub enum NodeClass {
     // ── Reserved generic classes (0..=15) ───────────────────────────
-    /// Generic statement — reserved coarse fallback (not stamped by the
-    /// ink lowering; exists for projections/producers without a specific
-    /// class).
+    /// Generic statement — reserved coarse fallback for a producer with no
+    /// more specific class to stamp. As of issue #3183, the ink LIR
+    /// lowering itself uses it in a handful of best-effort-anchor cases
+    /// that have no dedicated HIR span to point at:
+    /// `lower::stmts::stmt_provenance`'s `ChoiceSet` and `LabeledBlock` arms
+    /// (anchored via the same range the `E059` diagnostic already
+    /// computes), and the synthetic root-terminus statement in
+    /// `lower::mod`. Otherwise reserved for projections/producers without a
+    /// specific class.
     Stmt = 0,
     /// Generic expression — reserved coarse fallback (see [`Self::Stmt`]).
     Expr = 1,

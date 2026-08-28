@@ -5,8 +5,10 @@ use brink_ir::lir;
 
 /// Helper: check if a statement list contains a Glue emission.
 fn has_glue(stmts: &[lir::Stmt]) -> bool {
-    stmts.iter().any(|s| match s {
-        lir::Stmt::EmitContent(c) => c.parts.iter().any(|p| matches!(p, lir::ContentPart::Glue)),
+    stmts.iter().any(|s| match &s.kind {
+        lir::StmtKind::EmitContent(c) => {
+            c.parts.iter().any(|p| matches!(p, lir::ContentPart::Glue))
+        }
         _ => false,
     })
 }
@@ -22,8 +24,8 @@ fn dump_container(container: &lir::Container, indent: usize) {
         container.children.len(),
     );
     for (i, stmt) in container.body.iter().enumerate() {
-        match stmt {
-            lir::Stmt::EmitContent(c) => {
+        match &stmt.kind {
+            lir::StmtKind::EmitContent(c) => {
                 let parts_desc: Vec<String> = c
                     .parts
                     .iter()
@@ -35,7 +37,7 @@ fn dump_container(container: &lir::Container, indent: usize) {
                     .collect();
                 eprintln!("{pad}  stmt[{i}]: EmitContent({parts_desc:?})");
             }
-            lir::Stmt::EmitLine(e) => match &e.line {
+            lir::StmtKind::EmitLine(e) => match &e.line {
                 lir::RecognizedLine::Plain(s) => {
                     eprintln!("{pad}  stmt[{i}]: EmitLine(Plain({s:?}))");
                 }
@@ -43,7 +45,7 @@ fn dump_container(container: &lir::Container, indent: usize) {
                     eprintln!("{pad}  stmt[{i}]: EmitLine(Template)");
                 }
             },
-            lir::Stmt::Divert(_) => eprintln!("{pad}  stmt[{i}]: Divert"),
+            lir::StmtKind::Divert(_) => eprintln!("{pad}  stmt[{i}]: Divert"),
             _ => eprintln!("{pad}  stmt[{i}]: <other>"),
         }
     }

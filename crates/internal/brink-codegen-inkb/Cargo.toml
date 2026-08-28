@@ -13,5 +13,8 @@ categories.workspace = true
 brink-ir = { workspace = true }
 brink-format = { workspace = true }
 
+[dev-dependencies]
+rowan = { workspace = true }
+
 [lints]
 workspace = true
