@@ -19,12 +19,40 @@ use crate::collections::Map as HashMap;
 use crate::program::Program;
 use crate::value_ops;
 
+/// Precise execution position: a container index plus the byte offset of
+/// the next instruction to execute inside that container's bytecode.
+///
+/// A public mirror of the runtime-internal
+/// `story::call_stack::ContainerPosition` — deliberately a distinct type
+/// (issue #3182) rather than that type made `pub`, so the VM's internal
+/// call-frame layout stays free to change without turning into a de facto
+/// compatibility surface. `container_idx` is stable within one linked
+/// [`Program`] (it indexes the same `Containers` table
+/// [`Program::container_bytecode`] reads and the table
+/// `docs/debugger-spec.md` §2.2's `DebugInfo` section addresses
+/// lockstep-by-index); `offset` is a byte offset into that container's
+/// bytecode, not a source location — resolving position to source is a
+/// later workstream (D6/D9, `docs/debugger-spec.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugPosition {
+    /// Index into the linked program's container table.
+    pub container_idx: u32,
+    /// Byte offset into that container's bytecode.
+    pub offset: usize,
+}
+
 /// A structured, read-only snapshot of the runtime's current state.
 pub struct DebugSnapshot {
     /// Execution status: `active` / `waiting_for_choice` / `done` / `ended`.
     pub status: &'static str,
     /// Nearest named knot/stitch the cursor is currently in, if resolvable.
     pub current_location: Option<String>,
+    /// Precise execution position for the active flow: the innermost call
+    /// frame's current `(container_idx, offset)`. `None` only when the call
+    /// stack has no frame with an open container (e.g. `Ended`/`Done` with
+    /// nothing left to run) — mirrors `call_stack[0].position` when the
+    /// call stack is non-empty.
+    pub position: Option<DebugPosition>,
     /// Current turn index.
     pub turn_index: u32,
     /// Global variables and their current values (display strings).
@@ -51,6 +79,11 @@ pub struct DebugFrame {
     pub kind: &'static str,
     /// Nearest named container for this frame, if resolvable.
     pub location: Option<String>,
+    /// This frame's current `(container_idx, offset)` — the next
+    /// instruction that will execute if/when this frame becomes active
+    /// again. `None` only for a frame whose container stack is empty
+    /// (exhausted, nothing left to run in it).
+    pub position: Option<DebugPosition>,
     /// Number of temporary (local) variables in this frame.
     pub temps: usize,
 }
