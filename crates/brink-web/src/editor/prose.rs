@@ -6,20 +6,27 @@
 //! fiction is switched off in the first session and never switched back on,
 //! so this is not a refinement of the feature — it is the feature.
 //!
-//! **The manuscript already says who its characters are.** A cue line is
-//! structural, not prose: `KAELEN` above a line of dialogue is a claimed
-//! convention the compiler resolves, and the dialect classification captures
-//! the speaker as a named attribute. So writing the story teaches the
-//! dictionary, with no author action, no settings page, and no word list to
-//! maintain. That is the part a general-purpose spell checker cannot do, and
-//! it is why this query lives next to the analysis rather than in the editor.
-//!
 //! Two sources, both project-wide:
 //!
 //! 1. **Declared names** — knots, stitches, externals, structs, variables,
 //!    lists. Whatever the author named, they meant.
-//! 2. **Dialect captures** — `speaker` attributes and character-cue content,
-//!    which is where the cast lives.
+//! 2. **Dialect captures** — `speaker` attributes and character-cue content.
+//!
+//! ⚠ **Source 2 does not fire on the native surface, and that is a known
+//! defect, not a design choice.** It reads `LineContext.dialect`, which is
+//! populated only by a host-registered `DialogueDialect` (#368) — the
+//! studio's default being the ink `@Name:<>` at-cue preset. A native
+//! project's cues are claimed by `@[convention(claims = "…")]` handlers
+//! instead, and that mechanism populates `LineContext.dialect` on no line
+//! at all. Measured: a project with a `cue` convention and a `GRISWOLD`
+//! cue line harvests `["Cue", "cue", "main"]` — the struct, the handler and
+//! the flow, but not the character.
+//!
+//! So for a `.brink` project every character name is currently underlined,
+//! and the author's own list in `[prose] dictionary` is the only remedy.
+//! Fixing it needs a record of which convention claimed a line, which
+//! nothing carries today. Do not restore the claim that the manuscript
+//! teaches the dictionary until that record exists.
 //!
 //! Mounted `std/` files are excluded: they are not the author's project, and
 //! their identifiers would put library vocabulary into a manuscript's

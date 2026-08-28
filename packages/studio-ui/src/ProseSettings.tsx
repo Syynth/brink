@@ -139,9 +139,9 @@ export function ProseSettings() {
 
       <SettingsGroup title="Dictionary">
         <p className="settings-group-hint">
-          Your project&rsquo;s own names — knots, stitches, and the character cues that
-          say who the story is about — are known words automatically. This list is for
-          everything else: place names, in-world jargon, a character who is never a cue.
+          Your project&rsquo;s own names — knots, stitches, structs and flows — are known
+          words automatically. This list is for everything else: place names, in-world
+          jargon, and character names the checker has not picked up.
         </p>
         <DictionaryList
           words={words}
