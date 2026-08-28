@@ -589,7 +589,44 @@ fn combine_choice_content(
             parts.extend(b_content.parts.clone());
             let mut tags = a_content.tags.clone();
             tags.extend(b_content.tags.clone());
-            Some(lir::Content { parts, tags })
+            // The cover of both regions' locations (review finding, #3202)
+            // — not `a`'s alone. `emit_content_parts` stamps this one
+            // location on *every* fragment it emits, including `b`'s
+            // fragments once combined here; "`a`'s location wins" made a
+            // `b`-only fragment (e.g. bracket/inner text with no `a`
+            // counterpart) carry a range that doesn't even contain its own
+            // text. The union is honest for both: it may be wider than a
+            // single fragment's own span, but it always contains it.
+            let source_location = union_source_location(
+                a_content.source_location.as_ref(),
+                b_content.source_location.as_ref(),
+            );
+            Some(lir::Content {
+                parts,
+                tags,
+                source_location,
+            })
         }
+    }
+}
+
+/// Cover two optional source locations — the smallest range containing
+/// both, when they name the same file. One-sided inputs pass through
+/// unchanged; differing files (should not arise for two regions of the same
+/// choice) fall back to whichever side is present, preferring `a`, since
+/// there is no single range that could honestly cover both.
+fn union_source_location(
+    a: Option<&brink_format::SourceLocation>,
+    b: Option<&brink_format::SourceLocation>,
+) -> Option<brink_format::SourceLocation> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(loc), None) | (None, Some(loc)) => Some(loc.clone()),
+        (Some(a), Some(b)) if a.file == b.file => Some(brink_format::SourceLocation {
+            file: a.file.clone(),
+            range_start: a.range_start.min(b.range_start),
+            range_end: a.range_end.max(b.range_end),
+        }),
+        (Some(a), Some(_)) => Some(a.clone()),
     }
 }

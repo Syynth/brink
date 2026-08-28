@@ -1434,6 +1434,12 @@ fn lower_block_with_children(
                             lir::StmtKind::EmitContent(lir::Content {
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
+                                // Pure structural glue marker synthesized here
+                                // (boundary-glue stripping around a recognized
+                                // line) — carries no text, so `add_line` never
+                                // runs on it; there is no line-table entry to
+                                // attribute a location to (issue #3181).
+                                source_location: None,
                             }),
                             stmt_prov,
                         ));
@@ -1444,6 +1450,12 @@ fn lower_block_with_children(
                             lir::StmtKind::EmitContent(lir::Content {
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
+                                // Pure structural glue marker synthesized here
+                                // (boundary-glue stripping around a recognized
+                                // line) — carries no text, so `add_line` never
+                                // runs on it; there is no line-table entry to
+                                // attribute a location to (issue #3181).
+                                source_location: None,
                             }),
                             stmt_prov,
                         ));
@@ -1675,6 +1687,30 @@ fn build_continuation_container(
     }
 }
 
+/// Cover two optional source locations — the smallest range containing
+/// both, when they name the same file (review finding, #3202). One-sided
+/// inputs pass through unchanged; differing files (should not arise for two
+/// regions of the same choice) fall back to whichever side is present,
+/// preferring `a`, since there is no single range that could honestly
+/// cover both. Mirrors `brink-codegen-inkb::container::union_source_location`
+/// — duplicated rather than shared because the two crates have no common
+/// dependency to host it in besides `brink_format` itself.
+fn union_source_location(
+    a: Option<&brink_format::SourceLocation>,
+    b: Option<&brink_format::SourceLocation>,
+) -> Option<brink_format::SourceLocation> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(loc), None) | (None, Some(loc)) => Some(loc.clone()),
+        (Some(a), Some(b)) if a.file == b.file => Some(brink_format::SourceLocation {
+            file: a.file.clone(),
+            range_start: a.range_start.min(b.range_start),
+            range_end: a.range_end.max(b.range_end),
+        }),
+        (Some(a), Some(_)) => Some(a.clone()),
+    }
+}
+
 #[expect(clippy::too_many_lines, reason = "choice lowering has many parts")]
 fn lower_choice_with_child(
     choice: &hir::Choice,
@@ -1802,13 +1838,26 @@ fn lower_choice_with_child(
     {
         let mut output_parts = Vec::new();
         let mut output_tags = Vec::new();
+        // The cover of start's and inner's locations (review finding,
+        // #3202) — not start's alone. `emit_content_parts`
+        // (`brink-codegen-inkb`) stamps this one location on every
+        // fragment it emits from `output_parts`, including inner's
+        // fragments once combined here; "start's location wins" made an
+        // inner-only fragment carry a range that doesn't even contain its
+        // own text. Mirrors `container.rs`'s `combine_choice_content` fix
+        // for the same start-then-bracket/inner join on the pre-selection
+        // display side.
+        let mut output_source_location = None;
         if let Some(ref sc) = start_content {
             output_parts.extend(sc.parts.clone());
             output_tags.extend(sc.tags.clone());
+            output_source_location.clone_from(&sc.source_location);
         }
         if let Some(ref ic) = inner_content {
             output_parts.extend(ic.parts.clone());
             output_tags.extend(ic.tags.clone());
+            output_source_location =
+                union_source_location(output_source_location.as_ref(), ic.source_location.as_ref());
         }
         if !output_parts.is_empty() || !output_tags.is_empty() {
             body.push(lir::Stmt::new(
@@ -1816,6 +1865,7 @@ fn lower_choice_with_child(
                     content: lir::Content {
                         parts: output_parts,
                         tags: output_tags,
+                        source_location: output_source_location,
                     },
                     emission: output_emission.clone(),
                 },

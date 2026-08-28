@@ -440,13 +440,13 @@ mod tests {
     fn a_span_in_a_real_choice_point_is_checked_in_every_display_region() {
         // A real `{? … }` choice point, not a bare bullet — native has no
         // bare knot-level `*`/`+` (`brink-syntax-native/src/parser/choice.rs`:
-        // "All choices live inside a point"). `lower_choice_region` builds
-        // all three of a choice's display regions (start/bracket/inner) with
-        // `Content { ptr: None, .. }` — there is no per-region syntax node,
-        // only the whole `text[bracket]inner` choice line — so this pins
-        // that a span in each of the three still gets diagnosed via its own
-        // `SpanPart::ptr` (issue #1782) rather than needing the enclosing
-        // `Content`'s (absent) provenance at all.
+        // "All choices live inside a point"). `lower_choice_region` now
+        // stamps a real per-region `Content::ptr` from each region's own
+        // syntax node (start/bracket/inner — issue #3181/#3202), so this no
+        // longer pins an *absent*-provenance case; it pins that a span in
+        // each of the three still gets diagnosed via its own `SpanPart::ptr`
+        // (issue #1782), independent of whichever provenance the enclosing
+        // `Content` itself now carries.
         let diags = run(
             "flow a() {\n  {?\n    * <glitch>start</glitch>[<shake>bracket</shake>]<wobble>inner</wobble>\n  }\n}\n",
             Some(&wave_manifest()),

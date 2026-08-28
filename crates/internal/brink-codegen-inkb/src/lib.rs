@@ -336,8 +336,23 @@ impl<'a> ContainerEmitter<'a> {
         op.encode(&mut self.bytecode);
     }
 
-    fn add_line(&mut self, text: &str) -> u16 {
-        self.add_line_with_hash(text, brink_format::content_hash(text), Vec::new(), None)
+    /// `source_location` is an explicit, required parameter — not a
+    /// convenience default of `None` — precisely because that default was
+    /// the issue #3181 bug: every caller must say what it knows (a real
+    /// location threaded from `hir::Content::ptr`, or `None` with a reason
+    /// at the call site) rather than one caller's ignorance silently
+    /// becoming every caller's answer.
+    fn add_line(
+        &mut self,
+        text: &str,
+        source_location: Option<brink_format::SourceLocation>,
+    ) -> u16 {
+        self.add_line_with_hash(
+            text,
+            brink_format::content_hash(text),
+            Vec::new(),
+            source_location,
+        )
     }
 
     #[expect(clippy::cast_possible_truncation)]
