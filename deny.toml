@@ -34,6 +34,20 @@ ignore = [
     # this ignore stays until that chain bumps past 0.41 too.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # ── Reached only through harper-core, the prose checker's engine (#3207).
+    # Neither is a vulnerability; both are `unmaintained` notices, the same
+    # class as ttf-parser above. Verified absent from origin/main's Cargo.lock,
+    # so `brink-prose` is exactly what introduced them.
+    #
+    # bincode 2.0.1 — development ceased permanently (the team considers the
+    # crate complete); the advisory itself states "No safe upgrade is
+    # available". Path: bincode <- burn-core <- burn <- harper-pos-utils <-
+    # harper-brill <- harper-core.
+    "RUSTSEC-2025-0141",
+    # paste 1.0.15 — a proc-macro, no longer maintained, no known
+    # vulnerability. Path: paste <- burn-ndarray <- harper-pos-utils, and
+    # directly under harper-core.
+    "RUSTSEC-2024-0436",
 ]
 
 [licenses]
