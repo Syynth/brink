@@ -41,9 +41,10 @@ until now. It is stated once, here, rather than repeated per ticket:
   where per-surface information has to be recorded explicitly, or resolution
   silently breaks. See §2.3 for why and how.
 - It forces D8 (#3186) to define frame semantics that cover **both**
-  vocabularies — ink's tunnels/threads, and the suspension constructs
-  (`until` in the native code ground, `~ await` on the ink surface) — not just one
-  (§4).
+  vocabularies — ink's tunnels/threads and the condition-park (`until` on
+  the native code ground, `~ await`/`~ while await` on the ink surface —
+  both spellings lower to the same `AwaitStmt` HIR node,
+  `docs/flow-suspension-spec.md` §3) — not just one (§4).
 - It forces D9 (#3187) to build the breakpoint gutter against `.ink` files
   too, not only the native studio fixture.
 - **Unverified, flagged for D9 rather than assumed**: whether the studio
@@ -186,11 +187,20 @@ per container. So:
   — every other section keeps the format's established fixed-width house
   style; this is a deliberate, ruled departure for one section, not a
   format-wide encoding change.
-- **File table and locals table** (§2.3, §3): reuse the existing
-  `codec::write_str`/`read_str` (fixed `u32` length prefix + UTF-8 bytes)
-  and fixed-width integer helpers already used throughout `brink-format`.
-  Row counts here don't benefit from variable-width encoding, and reusing
-  the established helpers is simpler than adding a second string encoding.
+- **File table** (§2.3): reuse the existing `codec::write_str`/`read_str`
+  (fixed `u32` length prefix + UTF-8 bytes) and a fixed `u32` file count.
+  Row count here scales with distinct files referenced, small and roughly
+  constant per artifact — it doesn't benefit from variable-width encoding,
+  and reusing the established helpers is simpler than adding a second
+  string encoding for it.
+- **Locals table** (§3): varint, same as the entry table above — not
+  fixed-width. `local_count` scales with authoring style (declared-temp
+  count per container) the same way `entry_count` scales with statement
+  count, and the locals table reuses the entry table's own
+  `(file_idx, range_start, range_len)` varint shape verbatim for its
+  optional declaring range (§3) rather than defining a second encoding for
+  the same three fields. `codec::write_str`/`read_str` still carries the
+  `name` field — varint applies to the count and index/range fields only.
 
 **Entry field encoding** (one entry, in this order):
 
@@ -202,6 +212,24 @@ per container. So:
 | `range_end` | varint, **delta from `range_start`** (i.e. the range's length) | `range_end >= range_start` always holds (`Provenance`'s own admission contract requires a non-empty, in-bounds range — `brink-ir/src/provenance.rs`), so this delta is always ≥ 0 and typically small (most spans are a few dozen bytes), which is exactly the varint-friendly case. |
 | `kind_token` | fixed `u32` | `KindToken::as_u32()` verbatim (class in the high 16 bits, raw in the low 16 — `brink-ir/src/provenance.rs`). Fixed-width, not varint: it's one field per entry, already bit-packed to its minimum useful width by the existing type, and varint-encoding an already-dense bitfield buys nothing. See §2.3 for how `raw` gets resolved despite being frontend-private. |
 | `flags` | fixed `u8` | Bit 0 = `IS_STMT`. Bit 1 = `PROLOGUE_END` (§2.4). Bits 2–7 reserved (zero in v1). A `u8` (not varint) because it's a small fixed bitfield, not a magnitude that benefits from variable width. |
+
+**Reserved-bit forward compatibility — DECIDED, departs from house
+strictness on purpose.** This format's default posture toward unknown wire
+values is strict rejection — `InvalidSectionKind`, `UnknownOpcode`,
+`InvalidLinePart` (`docs/format-spec.md`) all reject rather than tolerate.
+That posture does not apply here: **a `DebugInfo` reader MUST ignore any
+reserved `flags` bit it does not recognize, and MUST NOT reject an entry
+solely because a reserved bit is set — the same tolerance covers any
+per-entry trailing bytes a later version appends** — exactly the opposite
+of the section-tag/opcode rejection rule. This is what §2.1/§5's promise
+("expression rows arrive later... no reader change") actually requires:
+those later rows are unflagged `IS_STMT` entries today, but the promise
+only survives a *future* revision that also wants a new per-entry flag bit
+or field if today's reader already tolerates bits and bytes it doesn't
+know about — a strict reader would reject the first such artifact,
+breaking the additive-evolution property this section exists to have. A
+`version` bump (§2.2's opening framing) remains the escape hatch for a
+change too large to express this way.
 
 **Sorted-by-offset, per container.** Entries for one container are emitted
 in ascending `bytecode_offset` order and MUST cover the container's full
@@ -256,6 +284,13 @@ Entry:
   kind_token: u32
   flags: u8
 ```
+
+**`.inkt` dump parity.** Per house pattern — `FrameShapes` shipped as
+".inkb tag `0x10` + `.inkt` `(frame_shapes …)`" precisely because "atoms
+land with the reader" (`docs/flow-suspension-spec.md` §11.3) — D6 must add
+a `.inkt` textual-dump rendering for the `DebugInfo` section (file table,
+per-container entry table, and locals table) alongside the binary
+reader/writer, not ship a debug section with no inspection path.
 
 ### 2.3 The section-local file table
 
@@ -337,13 +372,33 @@ FileTableEntry:
 ### 2.4 The prologue-end marker (RULED, ships in v1)
 
 **RULED (maintainer, 2026-08-28):** a breakpoint set on a knot must land
-past the `EnterContainer` marker and any `ChoiceOutput` preamble, not at
-container byte 0 — that preamble structure exists in emitted containers
-today, so without a marker the studio has to reconstruct the right offset
-across the wasm boundary and will get it wrong. This ships for real in v1,
-not deferred like `NodeId`, because — unlike the `NodeId` case — the
-information needed to place it (the container's own `Provenance`, already
-delivered by #3183) exists today.
+past any per-container setup bytes, not at container byte 0 — that setup
+structure exists in emitted containers today, so without a marker the
+studio has to reconstruct the right offset across the wasm boundary and
+will get it wrong. This ships for real in v1, not deferred like `NodeId`,
+because — unlike the `NodeId` case — the information needed to place it
+(the container's own `Provenance`, already delivered by #3183) exists
+today.
+
+**What the setup bytes actually are.** Verified against
+`crates/internal/brink-codegen-inkb/src/container.rs` and `content.rs`:
+`Opcode::EnterContainer` is emitted from `lir::StmtKind::EnterContainer` /
+`lir::ContentPart::EnterSequence` in the **caller's** stream, when
+transferring control into a child container — it is not part of the
+entered container's own bytecode, so a container's own offset 0 never has
+an `EnterContainer` instruction to skip past. `ChoiceOutput` is a
+`lir::Stmt` variant (`brink-ir/src/lir/types.rs`), emitted through the same
+`emit_body`/`emit_stmt` path as any other statement in a choice-target body
+container — real leading bytecode of that container, not a preceding
+opcode preamble. The real per-container prologue is: (1) the leading
+param-binding `DeclareTemp`s a parameterized container's `Param count`
+byte promises (`docs/format-spec.md` Containers: "The prologue binds them
+with that many leading `DeclareTemp`s"), plus (2) for a choice-target body
+container specifically, its leading statement(s) lowered from
+`lir::StmtKind::ChoiceOutput`. `PROLOGUE_END` is defined against *that* —
+the container's own leading `DeclareTemp`/`ChoiceOutput` bytecode — not
+against an `EnterContainer` opcode that never lives inside the container at
+all.
 
 **DECIDED: `PROLOGUE_END` is a flag bit on the entry whose
 `bytecode_offset` *is* the landing point**, not a separate offset field —
@@ -355,18 +410,19 @@ entry's own* `bytecode_offset` directly. No second lookup table, no
 pointer field to keep in sync with the entry it describes.
 
 **Coverage guarantee.** Every container gets at least one entry, at
-`bytecode_offset` 0, covering the `EnterContainer`/`ChoiceOutput` preamble
-bytes for attribution purposes (this is what makes the "no gaps" binary-
-search invariant in §2.2 hold even for containers whose first *statement*
-starts partway in) — using the container's own `Container.provenance` as
-that entry's `(file_idx, range)`. Recommended emission for D6: if the
-preamble is zero bytes (execution begins immediately at the first
-statement, no `EnterContainer`/`ChoiceOutput` bytes to skip), the offset-0
-entry and the first statement's entry coincide and a single entry carries
-both `IS_STMT` and `PROLOGUE_END`. This is D6's emission strategy to get
-right, not a wire-format requirement beyond "offset 0 is always covered
-and the prologue-end flag is somewhere at or after it" — the format does
-not mandate the merge, only that both facts are representable, which the
+`bytecode_offset` 0, covering the leading `DeclareTemp`/`ChoiceOutput`
+prologue bytes described above for attribution purposes (this is what
+makes the "no gaps" binary-search invariant in §2.2 hold even for
+containers whose first *statement proper* starts partway in) — using the
+container's own `Container.provenance` as that entry's `(file_idx, range)`.
+Recommended emission for D6: if the container has no prologue bytes (no
+declared params, not a choice-target body — execution begins immediately
+at the first statement), the offset-0 entry and the first statement's
+entry coincide and a single entry carries both `IS_STMT` and
+`PROLOGUE_END`. This is D6's emission strategy to get right, not a
+wire-format requirement beyond "offset 0 is always covered and the
+prologue-end flag is somewhere at or after it" — the format does not
+mandate the merge, only that both facts are representable, which the
 flag-bit design already guarantees.
 
 ### 2.5 The `FileId(u32::MAX)` synthetic sentinel — wire meaning
@@ -413,6 +469,69 @@ rather than pointing at a source line) and for the coverage/floor-lookup
 invariant. This mirrors the existing resolver contract's own posture:
 `ProvenanceResolver::resolve` already treats synthetic provenance as a
 normal `None` case, not an error.
+
+### 2.6 Continuation containers — wire meaning (D1's call, per FS-3 §11.2's "may")
+
+`docs/flow-suspension-spec.md` §11.1 splits a container at every `await`/
+`until` site: everything after the park becomes a synthesized
+**continuation container**, marked `CountingFlags::INVISIBLE` (§11.2 —
+"hidden from IDE navigation/completion (debug views may show them)"). This
+is a real container in the `Containers` section with real bytecode, not a
+sidecar or a special case of `Containers` indexing — §2.2's
+`container_idx`-lockstep framing ("one table per container, in the same
+order and count as the `Containers` section") already covers it with no
+extra machinery needed at the wire level, but three things §11.2 leaves as
+"may" needed a decision to make the rest of this document's contract hold:
+
+**DECIDED: continuation containers get a `DebugInfo` table like any other
+container — no omission, no special casing beyond what follows.**
+`INVISIBLE` (§11.2) governs *story-structure* visibility — no visit
+counts, not a valid divert target, absent from IDE navigation/completion —
+it says nothing about *debug* visibility, and a continuation container has
+real bytecode that a parked-then-woken flow genuinely executes: a backtrace
+or step landing inside one with no `DebugInfo` table would violate this
+document's own "every container resolves" contract (§2.2's coverage
+guarantee, §2.5's sentinel reasoning) for exactly the containers where a
+debugger user is most likely to be looking — right after a wake. Omitting
+it would also break `container_idx` lockstep itself: the `DebugInfo`
+section's Nth table must describe `Containers[N]` for *every* N, so a
+continuation container occupying a slot in `Containers[]` needs a
+`DebugInfo` table in that same slot or the lockstep invariant is false for
+any project that has ever compiled an `await`/`until` site.
+
+**What the offset-0 entry anchors to.** A continuation container's
+`Container.provenance` is **not synthetic** — unlike the root container/
+`#root-terminus` case (§2.5), the source text a continuation container
+executes is real: the statements textually following the park point in the
+enclosing tunnel. §2.4's coverage guarantee therefore anchors a
+continuation container's offset-0 entry the same way as any ordinary
+container's — using `Container.provenance` — with one added property worth
+recording explicitly: this container's source range starts **after** the
+`await`/`until` statement's own range, not at the enclosing tunnel's start,
+so a source view following a resumed flow's position naturally lands past
+the park statement rather than back at the top of the tunnel. No new field
+or entry kind is needed; this falls directly out of using the codegen-
+assigned `Container.provenance` that already exists for it.
+
+**What the studio shows while parked (the D8/D9 question §11.2 leaves
+open).** While a flow sits parked (`Step::Suspended`, no VM turn active),
+there is no *currently executing* position to resolve at all — nothing is
+running. `FlowFrame` (`docs/flow-suspension-spec.md` §2) names the
+continuation container as where execution **will resume**, not where it
+currently is. The studio's call-stack/position display for a parked flow
+must therefore present that as a resume point, not a live position: resolve
+`(continuation container_idx, offset 0)` through this section exactly like
+any other lookup, but label the frame "parked — resumes here" rather than
+"currently at," and gray out step controls other than the condition-park-
+aware ones defined in §4. This is also the concrete reason a naive
+same-frame step model breaks at a wake boundary, which §4 names but does
+not derive: pre-park execution lived in one `container_idx` and post-wake
+execution lives in a **different** one (the continuation container), so a
+debugger frontend must always re-resolve position via `container_idx` on
+each `Step`/wake rather than assuming the active frame's container is
+stable across a park — exactly the same discipline any call/return already
+requires, not a new discipline this document has to invent, just one it is
+naming so D8/D9 don't miss it at a park boundary specifically.
 
 ## 3. The symbol/scope model for variable inspection
 
@@ -500,9 +619,9 @@ LocalEntry:
 Scoped per the issue: define step-over/step-out for each `CallFrameType`
 (`brink-runtime/src/story/call_stack.rs:37-50`: `Root`, `Function`,
 `Tunnel`, `Thread`, `External`, `FunctionEvalFromGame`), across **both**
-vocabularies — ink's tunnels/threads, and the suspension constructs
-(`until` / `~ await`, §0) — and say
-explicitly where there is no honest analogue. This section answers with
+vocabularies — ink's tunnels/threads and the condition-park (`until` on the
+native code ground, `~ await`/`~ while await` on the ink surface; §0) —
+and say explicitly where there is no honest analogue. This section answers with
 the vocabulary already established by the runtime's own types
 (`CallFrameType`, `FlowFrame`/`Step::Suspended`), not by inventing new
 narrative-VM semantics — the maintainer's instruction to stop and surface
@@ -537,62 +656,95 @@ no-debug-info library. (Bridging into host Rust code via brink-desktop's
 own debugger, if the host binding happens to be debuggable that way, is out
 of scope for this document and for the ink-level stepping model entirely.)
 
-**Suspension parks — the second explicit "no honest analogue," at the
-*statement* level rather than the frame-type level.**
+**Condition-park suspension — the second explicit "no honest analogue," at
+the *statement* level rather than the frame-type level.**
 
 ⚠ **Surface vocabulary.** The park has a different spelling per ground, and
-both lower to the same `AwaitStmt` HIR node — so the IR name must not be
-read as the surface keyword:
+both lower to the same `AwaitStmt` HIR node — so the IR/runtime name must
+never be read as the native surface keyword:
 
 | ground | spelling |
 |---|---|
-| native code ground (`.brink`) | `until <pure-bool-expr>;` |
-| ink surface (brink extension) | `~ await <cond>`, `~ while await <cond> { … }` |
+| native code ground (`.brink`) | `until <pure-bool-expr>;` (one-shot only) |
+| ink surface (brink extension) | `~ await <cond>` (one-shot), `~ while await <cond> { … }` (persistent, host-cancellable) |
 
-`await` is **retired on the native surface** (`docs/decision-log.md`,
-2026-07-23, "Code-ground sitting", item 4): it "plants the wrong
-future-resolution mental model, whereas brink's construct is a
-**condition-park**." Author-facing debugger text must use the ground's own
-spelling and must not describe a park as awaiting a *value* — it parks on a
-*condition*, re-evaluated by the wake machinery. Whether the ink surface
-should be renamed to match is an open design question (#3195); this
-document describes what is true today and does not pre-empt it.
+`await` is **retired on the native surface**
+(`crates/internal/brink-syntax-native/src/syntax_kind.rs`;
+`docs/decision-log.md`, 2026-07-23, "Code-ground sitting", item 4): it
+"plants the wrong future-resolution mental model, whereas brink's
+construct is a **condition-park**." Author-facing debugger text must use
+the ground's own spelling and must never describe a park as awaiting a
+*value* — it parks on a *condition*, re-evaluated by the wake machinery,
+per the 2026-07-23 retirement ruling. Whether the ink surface should be
+renamed to match is an open design question (#3195); this document
+describes what is true today and does not pre-empt it. Below, "await"
+names the runtime/HIR mechanism only, never the native surface keyword.
 
-Awaiting composition happens through `Tunnel` frames, never `Function`
+The construct is statement-only and tunnel-only: awaiting composition
+happens through `Tunnel` frames, never `Function`
 (`docs/flow-suspension-spec.md` §4).
 
-⚠ **Contested claim, do not rely on it here.** That spec's §3 also says
-"Mid-expression `await` is permanently out (statement only)", but the later
-block/effect-model ruling (`docs/decision-log.md`, 2026-07-20) ruled that
-"any operand-position suspension (await, choice, coroutine call — no
-carve-out) is legal at the surface and ANF-lowered to a statement
-boundary." The two disagree and the spec was never updated; a third gap
-between `effects-spec.md` §13.1 and `flow-suspension-spec.md` §3 is already
-flagged in the log as deferred "for a later pass". Tracked in #3194. The
-stepping model below holds either way — ANF lowering means a park is a
-statement boundary *by the time it reaches LIR*, which is the only level
-this document maps. A park does not push or
-pop a `CallFrameType` — it suspends the **entire flow** via the FlowFrame
-model (`docs/flow-suspension-spec.md` §2) and ends the VM turn with
-`Step::Suspended`, a terminal `Step` variant exactly like `Done`/`End`
-(`CLAUDE.md`'s "Runtime public API"). Two distinct moments matter for
+⚠ **Contested claim, do not rely on it here.** `docs/flow-suspension-spec.md`
+§3 also says "Mid-expression `await` is permanently out (statement only)",
+but the later block/effect-model ruling (`docs/decision-log.md`,
+2026-07-20) ruled that "any operand-position suspension (await, choice,
+coroutine call — no carve-out) is legal at the surface and ANF-lowered to
+a statement boundary." The two disagree and the spec was never updated; a
+third gap between `effects-spec.md` §13.1 and `flow-suspension-spec.md`
+§3 is already flagged in the log as deferred "for a later pass". Tracked
+in #3194. The stepping model below holds either way — ANF lowering means
+a park is a statement boundary *by the time it reaches LIR*, which is the
+only level this document maps.
+
+A park does not push or pop a `CallFrameType` — it suspends the **entire
+flow** via the FlowFrame model (`docs/flow-suspension-spec.md` §2) and
+ends the VM turn with `Step::Suspended`, a terminal `Step` variant exactly
+like `Done`/`End` (`CLAUDE.md`'s "Runtime public API"). This is a
+**condition park**, not a value-delivery wait: resume happens when
+`wakeCheck()` re-evaluates a **dirty** parked condition to true
+(`docs/flow-suspension-spec.md` §10.2), not when a host delivers a value
+at some future moment — the 2026-07-23 retirement ruling's whole point
+was that the future-resolution mental model is the wrong one to teach
+here, so this document uses condition-park / reactive-wake vocabulary
+throughout, not "waiting for" language. Three distinct moments matter for
 stepping:
 
-1. **Approaching the park**: executing up to (and including) the park
-   statement itself is ordinary statement stepping inside the enclosing
-   `Tunnel` frame — no different from any other statement.
+1. **Approaching the park**: executing up to (and including) the `until` /
+   `~ await` statement itself is ordinary statement stepping inside the
+   enclosing `Tunnel` frame — no different from any other statement.
 2. **At the park**: there is no synchronous "next instruction" to step to.
-   Resume happens only when the host calls `Story::wake_check` at some
-   future, VM-external time — potentially long after the debugging session
-   that hit the park has moved on to something else. A "step" command
-   issued exactly at a park boundary cannot honestly behave like a normal
-   statement step (there is nothing to run to, deterministically, right
-   now). The honest behavior: a step command that reaches the park
-   statement completes normally (it did execute); a *further* step command
-   issued while parked must be presented as "flow suspended — will resume
-   when the host wakes it" (mirroring how `Step::Suspended` already reads
-   at the runtime API level), never silently hang the debugger UI waiting
-   for a wake that might not come during the debugging session at all.
+   Resume happens only when `wakeCheck()` re-evaluates the parked
+   condition dirty-and-true — dirtiness comes from a write to something in
+   the condition's read-set (`docs/flow-suspension-spec.md` §10.2), which
+   may happen at some future, VM-external time, potentially long after the
+   debugging session that hit the park has moved on to something else. A
+   "step" command issued exactly at a park boundary cannot honestly behave
+   like a normal statement step (there is nothing to run to,
+   deterministically, right now). The honest behavior: a step command that
+   reaches the park statement completes normally (it did execute); a
+   *further* step command issued while parked must be presented as "flow
+   parked — resumes when its condition next re-evaluates true" (condition-
+   park terms, not a delivered-value framing — mirroring how
+   `Step::Suspended` already reads at the runtime API level), never
+   silently hang the debugger UI waiting for a wake that might not come
+   during the debugging session at all.
+3. **Step-out of a persistent `~ while await` park.** The one-shot case
+   above covers `~ await`/`until`, whose exit is the condition becoming
+   true. `~ while await cond { … }` is different: it is a *loop* whose body
+   re-parks after every iteration, and its exit is **host-driven** — the
+   host cancels the standing wake policy (the condition's false arm,
+   `docs/flow-suspension-spec.md` §3 "while await desugar"), not any
+   condition the debugged flow itself evaluates to true. There is no
+   synchronous "run until this loop exits" a step-out can honestly offer,
+   for the same reason as point 2: the exit event is not scheduled by the
+   VM at all. The debugger must not offer "step out" of a `~ while await`
+   loop as if it resolves during the session; the closest *nameable*
+   substitute, matching the `Thread` no-analogue's posture above, is "run
+   until this park's condition next re-evaluates" (i.e. behave like
+   ordinary step-over across one park/wake cycle of the loop body) —
+   presented as a distinct operation, not labeled "step out," since a
+   genuine step-out (the loop's host-driven cancellation) is not an event
+   the debugger can run to.
 
 ## 5. What D6 should emit once `lir::Expr` provenance exists
 
