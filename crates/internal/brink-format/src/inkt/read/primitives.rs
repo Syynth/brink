@@ -56,6 +56,18 @@ pub(super) fn parse_u16(pair: &P<'_>) -> Result<u16, InktParseError> {
     pair.as_str().parse().map_err(|_| err(pair, "invalid u16"))
 }
 
+/// D6 (`docs/debugger-spec.md` §2.2): the `DebugInfo` entry table's fields
+/// (`bytecode_offset`, `file_idx`, `range_start`, `range_len`, `slot`
+/// declaring ranges) are all `u32`-domain, wider than the existing
+/// [`parse_u16`].
+pub(super) fn parse_u32(pair: &P<'_>) -> Result<u32, InktParseError> {
+    pair.as_str().parse().map_err(|_| err(pair, "invalid u32"))
+}
+
+pub(super) fn parse_u8(pair: &P<'_>) -> Result<u8, InktParseError> {
+    pair.as_str().parse().map_err(|_| err(pair, "invalid u8"))
+}
+
 pub(super) fn unescape_string(s: &str) -> String {
     // Strip surrounding quotes
     let inner = &s[1..s.len() - 1];

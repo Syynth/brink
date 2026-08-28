@@ -202,7 +202,7 @@ pub fn lower_to_program_with_type_mode(
         }
     }
 
-    let program = assemble_program(&prelude, ordered_chunks, root_temp_slots, index);
+    let program = assemble_program(&prelude, ordered_chunks, root_temp_slots, index, file_paths);
     (Some(program), lir_diagnostics)
 }
 
@@ -806,6 +806,7 @@ pub fn assemble_program(
     chunks: Vec<chunk::ScopeChunk>,
     root_temp_slots: u16,
     _index: &SymbolIndex,
+    file_paths: &LookupMap<FileId, String>,
 ) -> lir::Program {
     let mut names = NameTable::from_entries(prelude.name_seed.clone());
     let (mut root_body, mut root_children) = chunk::assemble_scopes(chunks, &mut names);
@@ -875,6 +876,14 @@ pub fn assemble_program(
         struct_shapes,
         private_defs: prelude.private_defs.clone(),
         aliases: prelude.aliases.clone(),
+        // D6 (`docs/debugger-spec.md` §2.3): retained so codegen can build
+        // the `DebugInfo` file table without re-deriving file identity —
+        // see `lir::Program::file_paths`'s doc. `BTreeMap` for the same
+        // determinism reason that field's own doc gives; the source
+        // `LookupMap` (`HashMap`) is never iterated to produce this, only
+        // collected key-by-key, so the resulting order is `FileId`'s `Ord`,
+        // not insertion/hash order.
+        file_paths: file_paths.iter().map(|(k, v)| (*k, v.clone())).collect(),
     }
 }
 

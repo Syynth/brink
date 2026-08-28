@@ -12,9 +12,9 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DebugInfoSection,
+    DirectEffects, EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef,
+    LineEntry, ListDef, ListItemDef, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -44,6 +44,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_alias_table(w, &story.alias_table)?;
     write_effect_rows(w, &story.effect_rows)?;
     write_frame_shapes(w, &story.frame_shapes)?;
+    write_debug_info(w, story.debug_info.as_ref())?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -321,6 +322,74 @@ fn write_frame_shapes(w: &mut dyn fmt::Write, shapes: &[FrameShapeDef]) -> fmt::
         writeln!(w, ")")?;
     }
     writeln!(w, "  )")
+}
+
+/// D6 `DebugInfo` (`docs/debugger-spec.md` §2, issue #3184): the section-local
+/// file table plus one per-container entry/locals table, in `Containers`
+/// order. Written only when `Some` (debug info was requested at compile
+/// time) — distinct from every other optional section here, which key on
+/// emptiness rather than `Option`, matching [`crate::StoryData::debug_info`]'s
+/// own "presence tracks whether it was requested" semantics. The reader
+/// lands with the writer in this same PR (the #742 lesson).
+fn write_debug_info(w: &mut dyn fmt::Write, debug_info: Option<&DebugInfoSection>) -> fmt::Result {
+    let Some(debug_info) = debug_info else {
+        return Ok(());
+    };
+    writeln!(w)?;
+    writeln!(w, "  (debug_info")?;
+    if !debug_info.files.is_empty() {
+        writeln!(w, "    (files")?;
+        for (idx, file) in debug_info.files.iter().enumerate() {
+            writeln!(
+                w,
+                "      (file {idx} {} \"{}\")",
+                debug_file_surface_name(file.surface),
+                escape_string(&file.path)
+            )?;
+        }
+        writeln!(w, "    )")?;
+    }
+    for (container_idx, table) in debug_info.containers.iter().enumerate() {
+        writeln!(w, "    (dcontainer {container_idx}")?;
+        for entry in &table.entries {
+            writeln!(
+                w,
+                "      (entry {} {} {} {} {} {})",
+                entry.bytecode_offset,
+                entry.file_idx,
+                entry.range_start,
+                entry.range_len,
+                entry.kind_token,
+                entry.flags
+            )?;
+        }
+        if !table.locals.is_empty() {
+            writeln!(w, "      (locals")?;
+            for local in &table.locals {
+                write!(
+                    w,
+                    "        (local {} \"{}\"",
+                    local.slot,
+                    escape_string(&local.name)
+                )?;
+                if let Some((file_idx, range_start, range_len)) = local.declaring_range {
+                    write!(w, " (range {file_idx} {range_start} {range_len})")?;
+                }
+                writeln!(w, ")")?;
+            }
+            writeln!(w, "      )")?;
+        }
+        writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
+fn debug_file_surface_name(surface: FileSurface) -> &'static str {
+    match surface {
+        FileSurface::Synthetic => "synthetic",
+        FileSurface::Ink => "ink",
+        FileSurface::Native => "native",
+    }
 }
 
 /// Write a [`DirectEffects`] block (`(reads …) (writes …) (calls …) opaque?`)
@@ -1104,6 +1173,7 @@ mod tests {
             alias_table: vec![],
             effect_rows: vec![],
             frame_shapes: Vec::new(),
+            debug_info: None,
             source_checksum: 0,
         };
         let mut buf = String::new();

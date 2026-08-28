@@ -378,7 +378,8 @@ fn nested_decl_lambda_matches_across_stamped_and_unstamped_paths() {
         tables,
     );
     let prelude = brink_ir::lir::assemble_prelude(decls, vec![(file_id, raw)]);
-    let program = brink_ir::lir::assemble_program(&prelude, Vec::new(), 0, &result.index);
+    let program =
+        brink_ir::lir::assemble_program(&prelude, Vec::new(), 0, &result.index, &file_paths);
 
     let g = program
         .globals

@@ -120,6 +120,15 @@ enum Commands {
         /// overridability rules and precedence as `--deny`.
         #[arg(long = "allow", value_name = "CODE")]
         allow: Vec<String>,
+        /// D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): emit the
+        /// `SectionKind::DebugInfo` bytecode-offset → source-range section
+        /// (tag `0x11`) — the dev/studio-compile debug flag the ship-policy
+        /// ruling names. Off by default: a release compile omits the
+        /// section entirely and the `.inkb` stays byte-identical to a
+        /// pre-D6 compile. Mount-time only, no `brink.toml` spelling
+        /// (`docs/debugger-spec.md` §1.2).
+        #[arg(long = "debug-info")]
+        debug_info: bool,
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
@@ -279,6 +288,7 @@ fn run_command(command: Commands) -> ExitCode {
             deny,
             warn,
             allow,
+            debug_info,
         } => run_compile_command(
             &input,
             output.as_deref(),
@@ -287,6 +297,7 @@ fn run_command(command: Commands) -> ExitCode {
             &deny,
             &warn,
             &allow,
+            debug_info,
         ),
         Commands::Convert { input, output } => run_convert_command(&input, output.as_deref()),
         Commands::ExportXliff {
@@ -467,12 +478,14 @@ fn render_fatal_compile_error(err: brink_compiler::CompileError) -> Box<dyn std:
 /// producer, never treated as errors (forward compat / #1160).
 ///
 /// [`native_source_root`]: brink_driver::native_source_root
+#[expect(clippy::too_many_arguments, reason = "one param per CLI flag")]
 fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
     lints: std::collections::BTreeMap<String, brink_driver::LintLevel>,
     deny_warnings: Option<bool>,
+    debug_info: bool,
 ) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
     let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
     for warning in &warnings {
@@ -485,6 +498,7 @@ fn compile_entry(
         types,
         lints,
         deny_warnings,
+        debug_info,
     };
     let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
     brink_environment::compile(&env).map_err(render_fatal_compile_error)
@@ -494,6 +508,7 @@ fn compile_entry(
 /// the `Commands::Ide => return ide::run(&command)` shape already used
 /// there) — [`run_command`]'s `match` arms stay one-liners, keeping the
 /// function within `clippy::too_many_lines`.
+#[expect(clippy::too_many_arguments, reason = "one param per CLI flag")]
 fn run_compile_command(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
@@ -502,14 +517,16 @@ fn run_compile_command(
     deny: &[String],
     warn: &[String],
     allow: &[String],
+    debug_info: bool,
 ) -> ExitCode {
-    if let Err(e) = run_compile(input, output, dialect, types, deny, warn, allow) {
+    if let Err(e) = run_compile(input, output, dialect, types, deny, warn, allow, debug_info) {
         tracing::error!("{e}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
 
+#[expect(clippy::too_many_arguments, reason = "one param per CLI flag")]
 fn run_compile(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
@@ -518,9 +535,10 @@ fn run_compile(
     deny: &[String],
     warn: &[String],
     allow: &[String],
+    debug_info: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (lints, deny_warnings) = lint_overrides::resolve_lint_overrides(deny, warn, allow);
-    let output_result = compile_entry(input, dialect, types, lints, deny_warnings)?;
+    let output_result = compile_entry(input, dialect, types, lints, deny_warnings, debug_info)?;
     for w in &output_result.warnings {
         log_diagnostic(w);
     }
@@ -584,8 +602,14 @@ fn load_story_data(
         // the respell fixtures oracle-verify. `play`/`replay`/`convert`/
         // `export-xliff` on a `.brink` entry therefore get identical
         // project discovery to `compile`, not a standalone-file compile.
-        let output_result =
-            compile_entry(input, None, None, std::collections::BTreeMap::new(), None)?;
+        let output_result = compile_entry(
+            input,
+            None,
+            None,
+            std::collections::BTreeMap::new(),
+            None,
+            false,
+        )?;
         for w in &output_result.warnings {
             log_diagnostic(w);
         }

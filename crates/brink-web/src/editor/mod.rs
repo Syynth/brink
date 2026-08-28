@@ -1073,6 +1073,11 @@ impl EditorSession {
             host_manifest: None,
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
+            // D6 (`docs/debugger-spec.md` §1.2): the editor session has no
+            // debug-compile toggle of its own (D9, #3187, is what would add
+            // studio wiring for this) — off, matching the ship-policy
+            // default.
+            emit_debug_info: false,
         };
         // Keep this session's own dialect cache (read by completion/
         // signature-help gating, see the field doc) in lockstep with what

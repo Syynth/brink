@@ -1,5 +1,6 @@
 use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
+use crate::hir::FileId;
 use crate::lir::lower::CoalesceShape;
 use crate::provenance::Provenance;
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
@@ -58,6 +59,24 @@ pub struct Program {
     /// `brink_format::StoryData::alias_table`). Empty unless the source
     /// uses `#@was`.
     pub aliases: Vec<AliasEntry>,
+
+    /// D6 (`docs/debugger-spec.md` §2.3, issue #3184): every source file
+    /// `Container`/`Stmt` provenance in this program can point at, mapped
+    /// to its project-root-relative path — the same map every lowering
+    /// call already threads as a `file_paths: &LookupMap<FileId, String>`
+    /// parameter and previously discarded once lowering finished. Retained
+    /// here so codegen can build the `DebugInfo` section's own file table
+    /// (`docs/debugger-spec.md` §2.3) without re-deriving file identity.
+    ///
+    /// `BTreeMap`, not `HashMap`: `FileId`'s `Ord` exists specifically so a
+    /// `FileId`-keyed collection has a deterministic iteration order
+    /// (`FileId`'s own doc) — this crate's determinism rule (`CLAUDE.md`
+    /// "Determinism matters") forecloses a `HashMap` here even though
+    /// nothing today iterates this map's keys (codegen only `.get()`s by
+    /// `FileId`, building its own file table in first-referenced-entry
+    /// order); the type keeps that invariant true even if a future caller
+    /// does start iterating it.
+    pub file_paths: std::collections::BTreeMap<FileId, String>,
 }
 
 /// One declared `STRUCT` shape (TM-4c). Mirrors
