@@ -2321,47 +2321,47 @@ fn collect_counting_refs_expr(
     visit_ids: &mut Vec<brink_format::DefinitionId>,
     turns_ids: &mut Vec<brink_format::DefinitionId>,
 ) {
-    match expr {
-        lir::Expr::VisitCount(id) => visit_ids.push(*id),
-        lir::Expr::DivertTarget(id) => {
+    match &expr.kind {
+        lir::ExprKind::VisitCount(id) => visit_ids.push(*id),
+        lir::ExprKind::DivertTarget(id) => {
             // Any container whose address is taken could be reached via
             // variable divert/tunnel — conservatively mark for visit tracking.
             visit_ids.push(*id);
             turns_ids.push(*id);
         }
-        lir::Expr::CallBuiltin {
+        lir::ExprKind::CallBuiltin {
             builtin: lir::BuiltinFn::TurnsSince,
             args,
         } => {
             for a in args {
-                if let lir::Expr::DivertTarget(id) = a {
+                if let lir::ExprKind::DivertTarget(id) = &a.kind {
                     turns_ids.push(*id);
                 }
                 collect_counting_refs_expr(a, visit_ids, turns_ids);
             }
         }
-        lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => {
+        lir::ExprKind::Prefix(_, inner) | lir::ExprKind::Postfix(inner, _) => {
             collect_counting_refs_expr(inner, visit_ids, turns_ids);
         }
         // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
         // `Infix` — but the walk is identical (both operands, `shape`
         // carries no reference), so it rides the same arm rather than a
         // duplicate one, matching `chunk::remap_expr`'s precedent.
-        lir::Expr::Infix(lhs, _, rhs) | lir::Expr::Coalesce { lhs, rhs, shape: _ } => {
+        lir::ExprKind::Infix(lhs, _, rhs) | lir::ExprKind::Coalesce { lhs, rhs, shape: _ } => {
             collect_counting_refs_expr(lhs, visit_ids, turns_ids);
             collect_counting_refs_expr(rhs, visit_ids, turns_ids);
         }
-        lir::Expr::Call { args, .. } | lir::Expr::CallExternal { args, .. } => {
+        lir::ExprKind::Call { args, .. } | lir::ExprKind::CallExternal { args, .. } => {
             for arg in args {
                 collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
             }
         }
-        lir::Expr::CallBuiltin { args, .. } => {
+        lir::ExprKind::CallBuiltin { args, .. } => {
             for a in args {
                 collect_counting_refs_expr(a, visit_ids, turns_ids);
             }
         }
-        lir::Expr::String(s) => {
+        lir::ExprKind::String(s) => {
             for p in &s.parts {
                 if let lir::StringPart::Interpolation(e) = p {
                     collect_counting_refs_expr(e, visit_ids, turns_ids);

@@ -80,12 +80,12 @@ fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
         .body
         .iter()
         .find_map(|s| match &s.kind {
-            lir::StmtKind::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            lir::StmtKind::ExprStmt(e) if matches!(&e.kind, lir::ExprKind::Call { .. }) => Some(e),
             _ => None,
         })
         .expect("heal(gold) should lower to an ExprStmt(Call)");
-    match call {
-        lir::Expr::Call { target, args } => {
+    match &call.kind {
+        lir::ExprKind::Call { target, args } => {
             assert_eq!(*target, heal.id);
             assert_eq!(args.len(), 1);
             match &args[0] {

@@ -263,7 +263,7 @@ pub struct GlobalLambdaCtx<'a> {
 /// argument made mechanical rather than merely argued: the creation-site-
 /// capture rule exists to keep a captured `#@local` cell from leaking
 /// outside its home flow, and that can never be at stake here because
-/// there is no capture *at all* — [`lir::Expr::MakeFnValue`]'s `bound` row
+/// there is no capture *at all* — [`lir::ExprKind::MakeFnValue`]'s `bound` row
 /// is always empty for a file-scope lambda, by construction of the empty
 /// frame handed to it, not by a special case added here. Pinned by
 /// `decls::tests::file_scope_lambda_cannot_capture_flow_local` — if a
@@ -305,8 +305,8 @@ fn eval_const_lambda(
         lambda_ctx.tables,
         lambda_ctx.lifted,
     );
-    match lambda::lower_lambda(l, &mut ctx) {
-        lir::Expr::MakeFnValue { target, bound } if bound.is_empty() => {
+    match lambda::lower_lambda(l, &mut ctx).kind {
+        lir::ExprKind::MakeFnValue { target, bound } if bound.is_empty() => {
             lir::ConstValue::FnRef(target)
         }
         // Structurally unreachable at file scope today (see this fn's doc:

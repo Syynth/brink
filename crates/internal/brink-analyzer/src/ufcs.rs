@@ -233,7 +233,7 @@ pub enum UfcsVerdict {
         /// Issue #1918: this verdict's own arity fact. Unlike
         /// [`Self::FreeFnDesugar`]/[`Self::FreeFnAutoRef`], a field call has
         /// no receiver-prepending desugar — `npc.on_greet(3)` lowers
-        /// straight to `lir::Expr::CallValue { callee, args }` calling the
+        /// straight to `lir::ExprKind::CallValue { callee, args }` calling the
         /// field's own `fn(...)` value with the *written* arguments only
         /// (`brink_ir::lir::lower::expr::lower_ufcs_call`'s `FieldCall`
         /// arm), so a mismatch here is a plain expected/got pair, not a
@@ -1324,7 +1324,7 @@ impl UfcsVisitor<'_> {
     /// `0`. A field call has no such rewrite: `npc.on_greet(3)` calls the
     /// field's own `fn(...)` value directly with the *written* arguments
     /// only (`brink_ir::lir::lower::expr::lower_ufcs_call`'s `FieldCall`
-    /// arm lowers straight to `lir::Expr::CallValue { callee, args }`, no
+    /// arm lowers straight to `lir::ExprKind::CallValue { callee, args }`, no
     /// synthetic receiver argument) — the receiver's own type already did
     /// its only job selecting this field via `try_field_call`'s
     /// `Ty::Struct` match, so it is never checked as an argument here. Every

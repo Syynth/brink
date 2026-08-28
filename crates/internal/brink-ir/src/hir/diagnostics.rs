@@ -1779,7 +1779,7 @@ pub enum DiagnosticCode {
     /// is the one non-`External`/`List`/`Variable`/`Constant` kind that
     /// *is* callable — ink allows any knot as a function via tunnels, per
     /// `brink_analyzer::resolve::resolve_function`'s own comment — so it
-    /// keeps its own `lir::Expr::Call` arm.
+    /// keeps its own `lir::ExprKind::Call` arm.
     ///
     /// This *is* reachable from ordinary author source, not only from a
     /// hypothetical future resolution regression: `Temp`/`Param` reach this
@@ -1798,7 +1798,7 @@ pub enum DiagnosticCode {
     /// `#fn(target)` literal, which never reaches `lower_call` at all) —
     /// those four are the defensive-backstop part of this diagnostic.
     ///
-    /// Refused loudly rather than silently emitting `lir::Expr::Call`
+    /// Refused loudly rather than silently emitting `lir::ExprKind::Call`
     /// against the resolved id: that catch-all is exactly the mechanism
     /// that let PR #2836's first attempt compile a program clean — 7,941
     /// tests, the oracle ratchet, and clippy all green — while it then

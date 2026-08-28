@@ -1,6 +1,6 @@
 //! B3a UFCS `FieldCall` lowering (issue #1506): field access wins over a
 //! free function of the same name, and the call lowers as a call
-//! *through* the field's value (`lir::Expr::CallValue`) rather than the
+//! *through* the field's value (`lir::ExprKind::CallValue`) rather than the
 //! desugared free call `name(recv, args)` `FreeFnDesugar` produces.
 //!
 //! NG-E (issue #1505) widened `brink-syntax-native`'s `struct_field`
@@ -162,10 +162,10 @@ fn main() {
     // of structural check), so this walks and matches by hand rather than
     // via `assert_eq!`.
     let call_value = main_knot.body.iter().find_map(|stmt| match &stmt.kind {
-        lir::StmtKind::DeclareTemp {
-            value: Some(lir::Expr::CallValue { callee, args }),
-            ..
-        } => Some((callee.as_ref(), args)),
+        lir::StmtKind::DeclareTemp { value: Some(v), .. } => match &v.kind {
+            lir::ExprKind::CallValue { callee, args } => Some((callee.as_ref(), args)),
+            _ => None,
+        },
         _ => None,
     });
     let Some((callee, args)) = call_value else {
@@ -176,12 +176,12 @@ fn main() {
         );
     };
     assert!(
-        matches!(callee, lir::Expr::RecordGet { .. }),
+        matches!(&callee.kind, lir::ExprKind::RecordGet { .. }),
         "the callee must read the field's value through a RecordGet chain"
     );
     assert_eq!(args.len(), 1, "the one call argument (`3`)");
     assert!(
-        matches!(args[0], lir::Expr::Int(3)),
+        matches!(&args[0].kind, lir::ExprKind::Int(3)),
         "the sole call argument must be the literal `3`"
     );
 }

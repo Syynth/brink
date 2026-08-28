@@ -11,12 +11,15 @@ fn builtin_random_recognized() {
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::CallBuiltin {
+                value,
+                ..
+            } if matches!(
+                &value.kind,
+                lir::ExprKind::CallBuiltin {
                     builtin: lir::BuiltinFn::Random,
                     ..
-                },
-                ..
-            }
+                }
+            )
         )
     });
     assert!(has_builtin, "RANDOM should be recognized as builtin");
@@ -37,12 +40,15 @@ VAR t = 0
         matches!(
             &s.kind,
             lir::StmtKind::Assign {
-                value: lir::Expr::CallBuiltin {
+                value,
+                ..
+            } if matches!(
+                &value.kind,
+                lir::ExprKind::CallBuiltin {
                     builtin: lir::BuiltinFn::TurnsSince,
                     ..
-                },
-                ..
-            }
+                }
+            )
         )
     });
     assert!(has_turns, "TURNS_SINCE should be recognized as builtin");

@@ -16,12 +16,20 @@ use super::lir;
     clippy::cast_possible_truncation,
     reason = "f64→f32 is intentional per ink spec"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per hir::Expr variant — the point of this dispatch; \
+              issue #3183's provenance stamping pushed it just over the line \
+              budget, splitting would obscure the exhaustive dispatch"
+)]
 pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     match expr {
-        hir::Expr::Int(n) => lir::Expr::Int(*n),
-        hir::Expr::Float(bits) => lir::Expr::Float(bits.to_f64() as f32),
-        hir::Expr::Bool(b) => lir::Expr::Bool(*b),
-        hir::Expr::Null => lir::Expr::Null,
+        hir::Expr::Int(n) => lir::ExprKind::Int(*n).at(ctx.current_stmt_provenance),
+        hir::Expr::Float(bits) => {
+            lir::ExprKind::Float(bits.to_f64() as f32).at(ctx.current_stmt_provenance)
+        }
+        hir::Expr::Bool(b) => lir::ExprKind::Bool(*b).at(ctx.current_stmt_provenance),
+        hir::Expr::Null => lir::ExprKind::Null.at(ctx.current_stmt_provenance),
 
         hir::Expr::String(s) => {
             let parts = s
@@ -34,16 +42,16 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                     }
                 })
                 .collect();
-            lir::Expr::String(lir::StringExpr { parts })
+            lir::ExprKind::String(lir::StringExpr { parts }).at(ctx.current_stmt_provenance)
         }
 
         hir::Expr::Path(path) => lower_path(path, ctx),
 
         hir::Expr::DivertTarget(path) => {
             if let Some(id) = ctx.resolve_id(path.range) {
-                lir::Expr::DivertTarget(id)
+                lir::ExprKind::DivertTarget(id).at(ctx.current_stmt_provenance)
             } else {
-                lir::Expr::Null
+                lir::ExprKind::Null.at(ctx.current_stmt_provenance)
             }
         }
 
@@ -79,11 +87,14 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                     }
                 }
             }
-            lir::Expr::ListLiteral { items, origins }
+            lir::ExprKind::ListLiteral { items, origins }.at(ctx.current_stmt_provenance)
         }
 
         // PrefixOp, InfixOp, PostfixOp are shared types — pass through directly
-        hir::Expr::Prefix(op, inner) => lir::Expr::Prefix(*op, Box::new(lower_expr(inner, ctx))),
+        hir::Expr::Prefix(op, inner) => {
+            lir::ExprKind::Prefix(*op, Box::new(lower_expr(inner, ctx)))
+                .at(ctx.current_stmt_provenance)
+        }
 
         // B1 `or`-coalescing, short-circuited (issue #1471) — the one
         // `InfixOp` that does not fall through to the generic form below.
@@ -92,36 +103,42 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             lower_coalesce_chain(expr, ctx)
         }
 
-        hir::Expr::Infix(ie) => lir::Expr::Infix(
+        hir::Expr::Infix(ie) => lir::ExprKind::Infix(
             Box::new(lower_expr(&ie.lhs, ctx)),
             ie.op,
             Box::new(lower_expr(&ie.rhs, ctx)),
-        ),
+        )
+        .at(ie.ptr),
 
-        hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
+        hir::Expr::Postfix(inner, op) => {
+            lir::ExprKind::Postfix(Box::new(lower_expr(inner, ctx)), *op)
+                .at(ctx.current_stmt_provenance)
+        }
 
         hir::Expr::Call(path, args) => lower_call(path, args, ctx),
 
         // T1b sigil collection literals + postfix indexing
         // (docs/t1b-surface-spec.md §3-4). A literal lowers to the V4
-        // literal pool (`lir::Expr::ConstLiteral`, deduplicated at codegen)
+        // literal pool (`lir::ExprKind::ConstLiteral`, deduplicated at codegen)
         // when every element/entry is constant-foldable, else to the
         // runtime construction opcodes (`ArrayNew`/`MapNew`).
         hir::Expr::ArrayLiteral(arr) => lower_array_literal(arr, ctx),
         hir::Expr::MapLiteral(map) => lower_map_literal(map, ctx),
-        hir::Expr::Index(idx) => lir::Expr::Index {
+        hir::Expr::Index(idx) => lir::ExprKind::Index {
             base: Box::new(lower_expr(&idx.base, ctx)),
             index: Box::new(lower_expr(&idx.index, ctx)),
-        },
+        }
+        .at(idx.ptr),
 
         // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both bounds
         // evaluate left-to-right, then `RangeMake{Excl,Incl}` builds the
         // value. Bound-type faults live at the runtime op.
-        hir::Expr::Range(r) => lir::Expr::RangeMake {
+        hir::Expr::Range(r) => lir::ExprKind::RangeMake {
             start: Box::new(lower_expr(&r.start, ctx)),
             end: Box::new(lower_expr(&r.end, ctx)),
             inclusive: r.inclusive,
-        },
+        }
+        .at(r.ptr),
 
         // TM-4c structs (docs/typed-mode-spec.md §6): construction, field
         // reads, and (through the RMW helpers in `blocks`/`stmts`) field
@@ -171,7 +188,7 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 .iter()
                 .filter_map(|s| super::stmts::lower_stmt(s, ctx))
                 .collect();
-            lir::Expr::Fragment(lowered)
+            lir::ExprKind::Fragment(lowered).at(ctx.current_stmt_provenance)
         }
     }
 }
@@ -210,7 +227,7 @@ fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     // `spine` is outermost-first; walk it in reverse so the fold runs
     // innermost-first, the order `CoalesceChain::steps` is recorded in.
     let mut steps = spine.iter().rev();
-    let Some((innermost_lhs, innermost_rhs)) = steps.next().copied() else {
+    let Some(&(innermost_ptr, innermost_lhs, innermost_rhs)) = steps.next() else {
         // Structurally unreachable: the caller only dispatches here for an
         // `InfixOp::Coalesce` node, and `coalesce_chain_spine` always yields
         // at least one entry for such a node (its `while` loop matches the
@@ -223,36 +240,44 @@ fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // `brink_codegen_inkb::expr::infix_op_to_opcode`.
         unreachable!("InfixOp::Coalesce always has a non-empty chain spine")
     };
-    let mut fallbacks = vec![innermost_rhs];
-    fallbacks.extend(steps.map(|&(_, rhs)| rhs));
+    // Each fallback carries the provenance of the specific hir `Infix` node
+    // it came from — `Coalesce` is `Infix`'s dedicated lowering (see
+    // `ExprKind::Coalesce`'s own doc), so every folded `Coalesce` node gets
+    // the same "own real `.ptr`, not the statement ambient" treatment a
+    // generic `Infix` gets, one per step rather than one for the whole
+    // chain (issue #3183).
+    let mut fallbacks = vec![(innermost_ptr, innermost_rhs)];
+    fallbacks.extend(steps.map(|&(ptr, _, rhs)| (ptr, rhs)));
 
     let mut acc = lower_expr(innermost_lhs, ctx);
-    for (index, fallback) in fallbacks.into_iter().enumerate() {
+    for (index, (ptr, fallback)) in fallbacks.into_iter().enumerate() {
         let rhs = lower_expr(fallback, ctx);
-        acc = lir::Expr::Coalesce {
+        acc = lir::ExprKind::Coalesce {
             lhs: Box::new(acc),
             rhs: Box::new(rhs),
             shape: shapes
                 .and_then(|shapes| shapes.get(index))
                 .copied()
                 .unwrap_or_default(),
-        };
+        }
+        .at(ptr);
     }
     acc
 }
 
-/// The `(lhs, rhs)` operand pair of each step in the coalescing chain rooted
-/// at `root`, **outermost first** — `root` itself, then its left-hand
-/// operand for as long as that is a coalescing node too. Mirrors
-/// `brink_analyzer::coalesce::chain_spine` exactly, so producer and consumer
-/// agree on what one chain is.
-fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
+/// The `(ptr, lhs, rhs)` of each step in the coalescing chain rooted at
+/// `root`, **outermost first** — `root` itself, then its left-hand operand
+/// for as long as that is a coalescing node too. Mirrors
+/// `brink_analyzer::coalesce::chain_spine` exactly (modulo the `ptr` this
+/// module additionally threads through for per-step provenance, issue
+/// #3183), so producer and consumer agree on what one chain is.
+fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(crate::Provenance, &hir::Expr, &hir::Expr)> {
     let mut spine = Vec::new();
     let mut cursor = root;
     while let hir::Expr::Infix(ie) = cursor
         && ie.op == crate::InfixOp::Coalesce
     {
-        spine.push((ie.lhs.as_ref(), ie.rhs.as_ref()));
+        spine.push((ie.ptr, ie.lhs.as_ref(), ie.rhs.as_ref()));
         cursor = &ie.lhs;
     }
     spine
@@ -280,10 +305,10 @@ fn lower_ref_arg_fence(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir::Exp
         code: crate::DiagnosticCode::E099,
     });
     lower_expr(&ra.operand, ctx);
-    lir::Expr::Null
+    lir::ExprKind::Null.at(ra.ptr)
 }
 
-/// Lower `#fn(target, args…)` to a [`lir::Expr::MakeFnValue`] (T1c-2,
+/// Lower `#fn(target, args…)` to a [`lir::ExprKind::MakeFnValue`] (T1c-2,
 /// docs/t1c-spec.md §2). The target resolves to a function `DefinitionId`;
 /// the bound args reuse the ordinary call-argument lowering
 /// ([`lower_call_args`]), so a `ref`-position bound arg becomes a
@@ -300,12 +325,12 @@ fn lower_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     if let Some(info) = ctx.resolve_path(fl.target.range) {
         let target = info.id;
         let bound = lower_call_args(&fl.args, &info.params, ctx);
-        lir::Expr::MakeFnValue { target, bound }
+        lir::ExprKind::MakeFnValue { target, bound }.at(fl.ptr)
     } else {
         for arg in &fl.args {
             lower_expr(arg, ctx);
         }
-        lir::Expr::Null
+        lir::ExprKind::Null.at(fl.ptr)
     }
 }
 
@@ -374,7 +399,7 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         for (_name, val) in &sl.fields {
             lower_expr(val, ctx);
         }
-        return reject_unresolved_struct_shape(sl.ptr.text_range(), ctx);
+        return reject_unresolved_struct_shape(sl.ptr, ctx);
     };
 
     let mut placed: Vec<Option<u16>> = vec![None; shape.fields.len()];
@@ -403,11 +428,12 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
     let has_missing = placed.iter().any(Option::is_none);
 
     if has_extra || has_missing {
-        return lir::Expr::RecordNew {
+        return lir::ExprKind::RecordNew {
             shape_id: CONSTRUCTION_FAULT_SHAPE_ID,
             fields: source_order,
             prelude: Vec::new(),
-        };
+        }
+        .at(sl.ptr);
     }
 
     // `has_missing == false` just proved every slot is `Some` — `map_or`
@@ -415,18 +441,20 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
     // asserted, per the E053-backstop lesson): a future refactor that
     // weakens that proof degrades to a well-formed-but-wrong `Null` field
     // instead of a panic.
-    lir::Expr::RecordNew {
+    lir::ExprKind::RecordNew {
         shape_id: shape.id,
         fields: placed
             .into_iter()
             .map(|slot| {
-                slot.map_or(lir::Expr::Null, |s| {
-                    lir::Expr::GetTemp(s, ctx.names.intern("__field"))
+                slot.map_or(lir::ExprKind::Null.at(ctx.current_stmt_provenance), |s| {
+                    lir::ExprKind::GetTemp(s, ctx.names.intern("__field"))
+                        .at(ctx.current_stmt_provenance)
                 })
             })
             .collect(),
         prelude,
     }
+    .at(sl.ptr)
 }
 
 /// `base.field` (read) — TM-4c. Chainable: `o.inner.v` lowers as nested
@@ -437,11 +465,12 @@ fn lower_field_access(fa: &hir::FieldAccessExpr, ctx: &mut LowerCtx<'_>) -> lir:
     let static_offset = static_offset_for(&fa.base, &fa.field.text, ctx);
     let field = ctx.names.intern(&fa.field.text);
     let base = lower_expr(&fa.base, ctx);
-    lir::Expr::RecordGet {
+    lir::ExprKind::RecordGet {
         base: Box::new(base),
         field,
         static_offset,
     }
+    .at(fa.ptr)
 }
 
 /// TM-4c "compile-time known shape" — see `lower::structs`' module doc for
@@ -511,22 +540,25 @@ fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<DefinitionId> {
 /// analysis-phase suppression — reaching this from a normal compile means
 /// `brink-analyzer`'s `resolve::resolve_struct_ref` diagnostic (`E068`) was
 /// suppressed (`// brink-disable-all`), not a compiler bug on its own.
-fn reject_unresolved_struct_shape(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+fn reject_unresolved_struct_shape(
+    provenance: crate::Provenance,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
     ctx.diagnostics.push(crate::Diagnostic {
         file: ctx.file,
-        range,
+        range: provenance.text_range(),
         message: crate::DiagnosticCode::E073.title().to_string(),
         code: crate::DiagnosticCode::E073,
     });
-    lir::Expr::Null
+    lir::ExprKind::Null.at(provenance)
 }
 
 fn lower_array_literal(arr: &hir::ArrayLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let folded: Option<Vec<lir::ConstValue>> = arr.elements.iter().map(try_const_fold).collect();
     if let Some(items) = folded {
-        return lir::Expr::ConstLiteral(lir::ConstValue::Array(items));
+        return lir::ExprKind::ConstLiteral(lir::ConstValue::Array(items)).at(arr.ptr);
     }
-    lir::Expr::ArrayNew(arr.elements.iter().map(|e| lower_expr(e, ctx)).collect())
+    lir::ExprKind::ArrayNew(arr.elements.iter().map(|e| lower_expr(e, ctx)).collect()).at(arr.ptr)
 }
 
 fn lower_map_literal(map: &hir::MapLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
@@ -540,14 +572,15 @@ fn lower_map_literal(map: &hir::MapLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr
         })
         .collect();
     if let Some(entries) = folded {
-        return lir::Expr::ConstLiteral(lir::ConstValue::Map(entries));
+        return lir::ExprKind::ConstLiteral(lir::ConstValue::Map(entries)).at(map.ptr);
     }
-    lir::Expr::MapNew(
+    lir::ExprKind::MapNew(
         map.entries
             .iter()
             .map(|(k, v)| (lower_expr(k, ctx), lower_expr(v, ctx)))
             .collect(),
     )
+    .at(map.ptr)
 }
 
 /// Attempt to fold a HIR expression into a [`lir::ConstValue`] — the T1b
@@ -632,23 +665,26 @@ fn lower_ambiguous_dotted_path(
         // `path.segments.len() > 1`. Guarded, not asserted, per the
         // E053-backstop lesson: never let a future refactor turn this into
         // a silent corruption.
-        return lir::Expr::Null;
+        return lir::ExprKind::Null.at(ctx.current_stmt_provenance);
     };
 
     let (mut expr, mut current_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
-            lir::Expr::GetGlobal(head_info.id),
+            lir::ExprKind::GetGlobal(head_info.id).at(ctx.current_stmt_provenance),
             ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
-                return lir::Expr::Null;
+                return lir::ExprKind::Null.at(ctx.current_stmt_provenance);
             };
             let name_id = ctx.names.intern(&head_name);
-            (lir::Expr::GetTemp(slot, name_id), ctx.temp_shape(slot))
+            (
+                lir::ExprKind::GetTemp(slot, name_id).at(ctx.current_stmt_provenance),
+                ctx.temp_shape(slot),
+            )
         }
         // The caller only reaches here for these four kinds.
-        _ => return lir::Expr::Null,
+        _ => return lir::ExprKind::Null.at(ctx.current_stmt_provenance),
     };
 
     for seg in &path.segments[1..] {
@@ -664,11 +700,12 @@ fn lower_ambiguous_dotted_path(
             .and_then(|s| s.field(&seg.text))
             .and_then(|(_, nested)| nested);
         let field = ctx.names.intern(&seg.text);
-        expr = lir::Expr::RecordGet {
+        expr = lir::ExprKind::RecordGet {
             base: Box::new(expr),
             field,
             static_offset,
-        };
+        }
+        .at(ctx.current_stmt_provenance);
         current_shape = nested_shape;
     }
 
@@ -680,7 +717,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
         let name_id = ctx.names.intern(&name);
-        return lir::Expr::GetTemp(slot, name_id);
+        return lir::ExprKind::GetTemp(slot, name_id).at(ctx.current_stmt_provenance);
     }
 
     // Resolve via resolution map
@@ -717,17 +754,21 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // the same name still wins — `temp_slot` is consulted at the top of
         // this function, before any resolution.
         if ctx.native && info.is_function_definition() {
-            return lir::Expr::MakeFnValue {
+            return lir::ExprKind::MakeFnValue {
                 target: info.id,
                 bound: Vec::new(),
-            };
+            }
+            .at(ctx.current_stmt_provenance);
         }
         match info.kind {
-            SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
+            SymbolKind::Variable | SymbolKind::Constant => {
+                lir::ExprKind::GetGlobal(info.id).at(ctx.current_stmt_provenance)
+            }
             SymbolKind::List => {
                 // List symbols resolve to ListDef IDs ($03_), but the global
                 // variable uses the GlobalVar tag ($02_) with the same hash.
-                lir::Expr::GetGlobal(list_def_to_global_var(info.id))
+                lir::ExprKind::GetGlobal(list_def_to_global_var(info.id))
+                    .at(ctx.current_stmt_provenance)
             }
             SymbolKind::ListItem => {
                 // A bare list item reference (e.g. `drown`) produces a list
@@ -752,13 +793,14 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                     })
                     .into_iter()
                     .collect();
-                lir::Expr::ListLiteral {
+                lir::ExprKind::ListLiteral {
                     items: vec![info.id],
                     origins: origin,
                 }
+                .at(ctx.current_stmt_provenance)
             }
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
-                lir::Expr::VisitCount(info.id)
+                lir::ExprKind::VisitCount(info.id).at(ctx.current_stmt_provenance)
             }
             // Temps not caught by temp_slot above are either (a) a classic
             // (non-block) temp used before its declaring statement — a
@@ -786,7 +828,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                     ),
                     code: crate::DiagnosticCode::E082,
                 });
-                lir::Expr::Null
+                lir::ExprKind::Null.at(ctx.current_stmt_provenance)
             }
             SymbolKind::Temp => {
                 use brink_format::DefinitionTag;
@@ -795,7 +837,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 let mut hasher = DefaultHasher::new();
                 name.hash(&mut hasher);
                 let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
-                lir::Expr::GetGlobal(global_id)
+                lir::ExprKind::GetGlobal(global_id).at(ctx.current_stmt_provenance)
             }
             // Params should already be caught by temp_slot above; externals
             // used as values are meaningless; a bare `Expr::Path` never
@@ -804,7 +846,9 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             // (TM-4b), a disjoint resolution pass from the
             // `RefKind::Variable` one that reaches `lower_path` here (kept
             // only for match exhaustiveness). All three fall back to null.
-            SymbolKind::External | SymbolKind::Param | SymbolKind::Struct => lir::Expr::Null,
+            SymbolKind::External | SymbolKind::Param | SymbolKind::Struct => {
+                lir::ExprKind::Null.at(ctx.current_stmt_provenance)
+            }
         }
     } else if path.segments.len() == 1 && path.segments[0].text == "none" {
         // NS-A1 (`docs/stdlib-spec.md` §1.4): an *unresolved* bare `none`
@@ -816,12 +860,18 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // `VAR x = none` declaration is the analyzer's E107
         // (bare-`none`-needs-context) — this lowering is the
         // context-is-elsewhere case.
-        lir::Expr::OptionNone
+        lir::ExprKind::OptionNone.at(ctx.current_stmt_provenance)
     } else {
-        lir::Expr::Null
+        lir::ExprKind::Null.at(ctx.current_stmt_provenance)
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatch arm per call-target kind (builtin/ufcs/weighted/tower/…); \
+              issue #3183's provenance stamping pushed it just over the line \
+              budget, splitting would obscure the exhaustive dispatch"
+)]
 fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let name = path_to_string(path);
 
@@ -829,11 +879,12 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
     if let Some(slot) = ctx.temp_slot(&name) {
         let call_args = lower_call_args(args, &[], ctx);
         let name_id = ctx.names.intern(&name);
-        return lir::Expr::CallVariableTemp {
+        return lir::ExprKind::CallVariableTemp {
             slot,
             name: name_id,
             args: call_args,
-        };
+        }
+        .at(ctx.current_stmt_provenance);
     }
 
     // Resolve via resolution map. `path.range` here is a load-bearing key —
@@ -868,10 +919,11 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             SymbolKind::List => {
                 // list(n) → ListFromInt; list() → empty list with origin.
                 if args.is_empty() {
-                    lir::Expr::ListLiteral {
+                    lir::ExprKind::ListLiteral {
                         items: Vec::new(),
                         origins: vec![info.id],
                     }
+                    .at(ctx.current_stmt_provenance)
                 } else {
                     let list_name = info
                         .name
@@ -879,19 +931,21 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                         .next()
                         .unwrap_or(&info.name)
                         .to_string();
-                    let name_expr = lir::Expr::String(lir::StringExpr {
+                    let name_expr = lir::ExprKind::String(lir::StringExpr {
                         parts: vec![lir::StringPart::Literal(list_name)],
-                    });
+                    })
+                    .at(ctx.current_stmt_provenance);
                     let ordinal_expr = lower_expr(&args[0], ctx);
-                    lir::Expr::CallBuiltin {
+                    lir::ExprKind::CallBuiltin {
                         builtin: lir::BuiltinFn::ListFromInt,
                         args: vec![name_expr, ordinal_expr],
                     }
+                    .at(ctx.current_stmt_provenance)
                 }
             }
             SymbolKind::External => {
                 let call_args = lower_call_args(args, &info.params, ctx);
-                lir::Expr::CallExternal {
+                lir::ExprKind::CallExternal {
                     target: info.id,
                     args: call_args,
                     #[expect(
@@ -900,13 +954,15 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                     )]
                     arg_count: info.params.len() as u8,
                 }
+                .at(ctx.current_stmt_provenance)
             }
             SymbolKind::Variable | SymbolKind::Constant => {
                 let call_args = lower_call_args(args, &info.params, ctx);
-                lir::Expr::CallVariable {
+                lir::ExprKind::CallVariable {
                     target: info.id,
                     args: call_args,
                 }
+                .at(ctx.current_stmt_provenance)
             }
             // Ink allows any knot as a function via tunnels
             // (`brink-analyzer::resolve::resolve_function`'s own comment on
@@ -914,10 +970,11 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             // gate here, matching that resolution-side lookup exactly.
             SymbolKind::Knot => {
                 let call_args = lower_call_args(args, &info.params, ctx);
-                lir::Expr::Call {
+                lir::ExprKind::Call {
                     target: info.id,
                     args: call_args,
                 }
+                .at(ctx.current_stmt_provenance)
             }
             // Mirrors `lower_path`'s own `SymbolKind::Temp if
             // block_scoped_temp_names.contains(&name)` arm above (#680/E082):
@@ -939,7 +996,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             // before its declaring binding — lands here too, since
             // `ctx.temp_slot` has nothing open for it yet. Refuse with a
             // diagnostic naming the kind actually found, rather than
-            // emitting `lir::Expr::Call` against whatever id happens to be
+            // emitting `lir::ExprKind::Call` against whatever id happens to be
             // resolved there — that catch-all is exactly the mechanism that
             // let a resolution bug become a silent runtime fault instead of
             // a compile error.
@@ -970,10 +1027,11 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         // instead of the author's knot's (`-995`), with a clean compile
         // and no diagnostic.
         let lir_args: Vec<lir::Expr> = args.iter().map(|a| lower_expr(a, ctx)).collect();
-        lir::Expr::CallBuiltin {
+        lir::ExprKind::CallBuiltin {
             builtin,
             args: lir_args,
         }
+        .at(ctx.current_stmt_provenance)
     } else if let Some(expr) = lower_t1b_stdlib_call(&name, args, path.range, ctx) {
         expr
     } else {
@@ -982,7 +1040,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
              recognize_builtin()/lower_t1b_stdlib_call() both returned None and \
              resolution map has no entry"
         );
-        lir::Expr::Null
+        lir::ExprKind::Null.at(ctx.current_stmt_provenance)
     }
 }
 
@@ -1008,13 +1066,13 @@ fn push_block_scoped_temp_call_refusal(
         ),
         code: crate::DiagnosticCode::E082,
     });
-    lir::Expr::Null
+    lir::ExprKind::Null.at(ctx.current_stmt_provenance)
 }
 
 /// Issue #2837: `lower_call`'s resolved-target match found a symbol kind
 /// that is not callable — refuse with a diagnostic naming the kind actually
 /// found (`ListItem`, `Label`, `Stitch`, …) rather than emitting
-/// `lir::Expr::Call` against whatever id happens to be resolved there, which
+/// `lir::ExprKind::Call` against whatever id happens to be resolved there, which
 /// is exactly the mechanism that let PR #2836's first attempt compile a
 /// program clean and then fault at runtime with
 /// `UnresolvedDefinition(ListItem(..))`. See [`crate::DiagnosticCode::E183`]'s
@@ -1049,7 +1107,7 @@ fn push_non_callable_refusal(
         message,
         code: crate::DiagnosticCode::E183,
     });
-    lir::Expr::Null
+    lir::ExprKind::Null.at(ctx.current_stmt_provenance)
 }
 
 /// B3a UFCS lowering (issue #1506): consume `ctx.tables.ufcs`'s verdict (threaded
@@ -1105,7 +1163,7 @@ fn push_ufcs_lowering_refusal(
         ),
         code: crate::DiagnosticCode::E144,
     });
-    lir::Expr::Null
+    lir::ExprKind::Null.at(ctx.current_stmt_provenance)
 }
 
 fn lower_ufcs_call(
@@ -1128,10 +1186,11 @@ fn lower_ufcs_call(
         context::UfcsVerdict::FieldCall => {
             let callee = lower_expr(&hir::Expr::Path(path.clone()), ctx);
             let call_args = args.iter().map(|a| lower_expr(a, ctx)).collect();
-            lir::Expr::CallValue {
+            lir::ExprKind::CallValue {
                 callee: Box::new(callee),
                 args: call_args,
             }
+            .at(ctx.current_stmt_provenance)
         }
         // A free function in ordinary lexical scope (D4) — `target(recv,
         // args…)`. By value, or (D5 auto-ref, issue #1462) with the receiver
@@ -1226,7 +1285,7 @@ fn lower_ufcs_desugared_call(
         // Structurally unreachable — `target` came from the analyzer's own
         // `resolve::lookup_by_name` against this same project index. Guard
         // rather than panic, per the E053-backstop lesson.
-        return lir::Expr::Null;
+        return lir::ExprKind::Null.at(ctx.current_stmt_provenance);
     };
     let auto_ref = target_info.params.first().is_some_and(|p| p.is_ref);
     let mut desugared_args = Vec::with_capacity(args.len() + 1);
@@ -1235,7 +1294,7 @@ fn lower_ufcs_desugared_call(
     let call_args = lower_call_args(&desugared_args, &target_info.params, ctx);
 
     if target_info.kind == SymbolKind::External {
-        lir::Expr::CallExternal {
+        lir::ExprKind::CallExternal {
             target,
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1244,11 +1303,13 @@ fn lower_ufcs_desugared_call(
             arg_count: target_info.params.len() as u8,
             args: call_args,
         }
+        .at(ctx.current_stmt_provenance)
     } else {
-        lir::Expr::Call {
+        lir::ExprKind::Call {
             target,
             args: call_args,
         }
+        .at(ctx.current_stmt_provenance)
     }
 }
 
@@ -1269,10 +1330,11 @@ fn lower_ufcs_prelude_desugar(
     if let Some(builtin) = recognize_builtin(name) {
         let mut lowered = vec![lower_expr(&hir::Expr::Path(receiver_path), ctx)];
         lowered.extend(args.iter().map(|a| lower_expr(a, ctx)));
-        return lir::Expr::CallBuiltin {
+        return lir::ExprKind::CallBuiltin {
             builtin,
             args: lowered,
-        };
+        }
+        .at(ctx.current_stmt_provenance);
     }
 
     let mut desugared_args = Vec::with_capacity(args.len() + 1);
@@ -1347,36 +1409,42 @@ fn lower_t1b_stdlib_call(
     match name {
         "len" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::CollectionLen(Box::new(lower_expr(
-                &args[0], ctx,
-            ))))
+            Some(
+                lir::ExprKind::CollectionLen(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "keys" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::CollectionKeys(Box::new(lower_expr(
-                &args[0], ctx,
-            ))))
+            Some(
+                lir::ExprKind::CollectionKeys(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "values" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::CollectionValues(Box::new(lower_expr(
-                &args[0], ctx,
-            ))))
+            Some(
+                lir::ExprKind::CollectionValues(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "contains" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::CollectionContains {
-                container: Box::new(lower_expr(&args[0], ctx)),
-                needle: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::CollectionContains {
+                    container: Box::new(lower_expr(&args[0], ctx)),
+                    needle: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // `char_at(s, i)` (T1b stdlib slice 1 completion, issue #857): chars
         // indexing (Unicode scalar values, not bytes — author sanity, per the
@@ -1386,12 +1454,15 @@ fn lower_t1b_stdlib_call(
         // lowering just recognizes the call shape.
         "char_at" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::CharAt {
-                s: Box::new(lower_expr(&args[0], ctx)),
-                index: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::CharAt {
+                    s: Box::new(lower_expr(&args[0], ctx)),
+                    index: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // `clear` (NS-A1, `docs/stdlib-spec.md` §5) joins the statement-only
         // mutators: in-place, returns nothing, so expression position is the
@@ -1409,7 +1480,7 @@ fn lower_t1b_stdlib_call(
                 ),
                 code: crate::DiagnosticCode::E056,
             });
-            Some(lir::Expr::Null)
+            Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance))
         }
         // ── NS-A1 Option verbs (issue #1107, `docs/stdlib-spec.md` §§3-5,
         // §1.4). Pure query verbs lower like `contains`/`char_at` above;
@@ -1418,27 +1489,36 @@ fn lower_t1b_stdlib_call(
         // recognize the call shapes. ─────────────────────────────────────
         "some" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::OptionSome(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::OptionSome(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "find" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::StrFind {
-                s: Box::new(lower_expr(&args[0], ctx)),
-                sub: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::StrFind {
+                    s: Box::new(lower_expr(&args[0], ctx)),
+                    sub: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "index_of" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqIndexOf {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                needle: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqIndexOf {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    needle: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // `min`/`max` carry two call shapes since NS-A8: the one-arg NS-A1
         // array extremum (`min(a) → Option[T]`) and the two-arg tower
@@ -1452,18 +1532,24 @@ fn lower_t1b_stdlib_call(
                 return Some(lower_tower_call(brink_format::TowerOp::Min, args, ctx));
             }
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqMin(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::SeqMin(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "max" => {
             if args.len() == 2 {
                 return Some(lower_tower_call(brink_format::TowerOp::Max, args, ctx));
             }
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqMax(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::SeqMax(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // ── NS-A8 numeric tower (issue #1114, `docs/tower-mini-spec.md`).
         // Constructors take numeric lanes (matrices: column vectors, T3's
@@ -1472,99 +1558,111 @@ fn lower_t1b_stdlib_call(
         // lowerings just recognize the call shapes. ─────────────────────
         "vec2" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeVec2, args, ctx))
         }
         "vec3" => {
             if !arity_ok(ctx, 3) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeVec3, args, ctx))
         }
         "vec4" => {
             if !arity_ok(ctx, 4) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeVec4, args, ctx))
         }
         "quat" => {
             if !arity_ok(ctx, 4) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeQuat, args, ctx))
         }
         "mat2" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeMat2, args, ctx))
         }
         "mat3" => {
             if !arity_ok(ctx, 3) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeMat3, args, ctx))
         }
         "mat4" => {
             if !arity_ok(ctx, 4) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::MakeMat4, args, ctx))
         }
         "dot" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::Dot, args, ctx))
         }
         "cross" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::Cross, args, ctx))
         }
         "clamp" => {
             if !arity_ok(ctx, 3) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::Clamp, args, ctx))
         }
         "lerp" => {
             if !arity_ok(ctx, 3) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             Some(lower_tower_call(brink_format::TowerOp::Lerp, args, ctx))
         }
         "first" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqFirst(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::SeqFirst(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "last" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqLast(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::SeqLast(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "get" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::MapGetOpt {
-                map: Box::new(lower_expr(&args[0], ctx)),
-                key: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::MapGetOpt {
+                    map: Box::new(lower_expr(&args[0], ctx)),
+                    key: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "contains_value" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::MapContainsValue {
-                map: Box::new(lower_expr(&args[0], ctx)),
-                value: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::MapContainsValue {
+                    map: Box::new(lower_expr(&args[0], ctx)),
+                    value: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // `pop(a)` (§4): both mutator and expression — mutates its bare
         // lvalue receiver in place and produces `Option[T]`. The receiver
@@ -1575,7 +1673,7 @@ fn lower_t1b_stdlib_call(
         // "bind it to a variable first" compile error.
         "pop" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             // Issue #2185: `pop(a.items)` — `a.items` is one `hir::Path`
             // (never a `FieldAccess`, same TM-4b shape
@@ -1591,12 +1689,12 @@ fn lower_t1b_stdlib_call(
             // `E074` before ever calling `lower_assign_target`.
             if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
             {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             // `lower_assign_target` accepts exactly the bare-`Path` shape
             // (temp slot or resolvable global) — `None` for everything else.
             if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
-                return Some(lir::Expr::SeqPop { root });
+                return Some(lir::ExprKind::SeqPop { root }.at(ctx.current_stmt_provenance));
             }
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
@@ -1607,7 +1705,7 @@ fn lower_t1b_stdlib_call(
                 ),
                 code: crate::DiagnosticCode::E055,
             });
-            Some(lir::Expr::Null)
+            Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance))
         }
         // TM-3 completion (docs/typed-mode-spec.md §4, maintainer ruling
         // 2026-07-13, issue #659): `int(x)`/`float(x)`/`string(x)` pure
@@ -1616,9 +1714,12 @@ fn lower_t1b_stdlib_call(
         // lowering just recognizes the call shape.
         "int" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::ConvertInt(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::ConvertInt(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // `float` is two verbs disambiguated by arity (NS-A6, F4 resolved
         // in-wave per `docs/stdlib-sequencing.md` §2 A6): nullary
@@ -1627,8 +1728,11 @@ fn lower_t1b_stdlib_call(
         // `float(x)` stays the TM-3 pure conversion intrinsic. Any other
         // arity is E031 naming both forms.
         "float" => match args.len() {
-            0 => Some(lir::Expr::RandFloat),
-            1 => Some(lir::Expr::ConvertFloat(Box::new(lower_expr(&args[0], ctx)))),
+            0 => Some(lir::ExprKind::RandFloat.at(ctx.current_stmt_provenance)),
+            1 => Some(
+                lir::ExprKind::ConvertFloat(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            ),
             n => {
                 ctx.diagnostics.push(crate::Diagnostic {
                     file: ctx.file,
@@ -1640,16 +1744,17 @@ fn lower_t1b_stdlib_call(
                     ),
                     code: crate::DiagnosticCode::E031,
                 });
-                Some(lir::Expr::Null)
+                Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance))
             }
         },
         "string" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::ConvertString(Box::new(lower_expr(
-                &args[0], ctx,
-            ))))
+            Some(
+                lir::ExprKind::ConvertString(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md` §7).
         // Draw semantics (clamping, Option-on-empty, the pinned draw
@@ -1658,15 +1763,21 @@ fn lower_t1b_stdlib_call(
         // merged with the conversion intrinsic (F4 arity split). ─────────
         "chance" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::RandChance(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::RandChance(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "pick" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::RandPick(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::RandPick(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // ── NS-A5: `non_empty(r)` — the inhabited-range validator
         // (`docs/stdlib-spec.md` §7, S2). Pure; `Option[NonEmptyRange]`
@@ -1676,11 +1787,12 @@ fn lower_t1b_stdlib_call(
         // VM op dispatches on the operand.) ─────────────────────────────
         "non_empty" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::RangeNonEmpty(Box::new(lower_expr(
-                &args[0], ctx,
-            ))))
+            Some(
+                lir::ExprKind::RangeNonEmpty(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md` §8).
         // `weighted(…)` carries the compile-classifiable half of the
@@ -1694,32 +1806,38 @@ fn lower_t1b_stdlib_call(
         "weighted" => Some(lower_weighted_call(args, call_range, ctx)),
         "roll" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::RandRoll(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::RandRoll(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "heap_peek" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::HeapPeek(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::HeapPeek(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // `heap_pop(a)` (§8): both mutator and expression — the `pop`
         // shape exactly, same bare-receiver restriction (the A1 scope
         // fence) and the same E055 otherwise.
         "heap_pop" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             // Issue #2185: same field-projection misroute as `pop` above —
             // `heap_pop(a.items)` must not silently resolve to `a`'s root
             // symbol.
             if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
             {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
-                return Some(lir::Expr::HeapPop { root });
+                return Some(lir::ExprKind::HeapPop { root }.at(ctx.current_stmt_provenance));
             }
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
@@ -1730,7 +1848,7 @@ fn lower_t1b_stdlib_call(
                 ),
                 code: crate::DiagnosticCode::E055,
             });
-            Some(lir::Expr::Null)
+            Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance))
         }
 
         // ── NS-A4 ordering verbs (issue #1110, `docs/stdlib-spec.md`
@@ -1742,18 +1860,24 @@ fn lower_t1b_stdlib_call(
         // live entirely at the runtime ops. ─────────────────────────────
         "sorted" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqSorted(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::SeqSorted(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         "sorted_by" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqSortedBy {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                cmp: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqSortedBy {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    cmp: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
 
         // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue
@@ -1766,31 +1890,40 @@ fn lower_t1b_stdlib_call(
         // carry the dispatch faults. ────────────────────────────────────
         "map" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqMap {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                f: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqMap {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    f: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "filter" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqFilter {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                pred: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqFilter {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    pred: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "fold" => {
             if !arity_ok(ctx, 3) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqFold {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                init: Box::new(lower_expr(&args[1], ctx)),
-                f: Box::new(lower_expr(&args[2], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqFold {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    init: Box::new(lower_expr(&args[1], ctx)),
+                    f: Box::new(lower_expr(&args[2], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // The fn-value verb layer, slice 2 (`docs/stdlib-spec.md` §4, issue
         // #1679): `filter_map` stays pure-required (the Option-mapper
@@ -1800,39 +1933,51 @@ fn lower_t1b_stdlib_call(
         // naming law doesn't apply here either). ─────────────────────────
         "filter_map" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqFilterMap {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                f: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqFilterMap {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    f: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "each" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqEach {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                f: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqEach {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    f: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         "map_each" => {
             if !arity_ok(ctx, 2) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::SeqMapEach {
-                seq: Box::new(lower_expr(&args[0], ctx)),
-                f: Box::new(lower_expr(&args[1], ctx)),
-            })
+            Some(
+                lir::ExprKind::SeqMapEach {
+                    seq: Box::new(lower_expr(&args[0], ctx)),
+                    f: Box::new(lower_expr(&args[1], ctx)),
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
         "shuffled" => {
             if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
-            Some(lir::Expr::RandShuffle(Box::new(lower_expr(&args[0], ctx))))
+            Some(
+                lir::ExprKind::RandShuffle(Box::new(lower_expr(&args[0], ctx)))
+                    .at(ctx.current_stmt_provenance),
+            )
         }
         // `shuffle(a)` (in-place) and `seed(n)` (writes the RNG cell) are
         // statement-only — recognized and fully lowered by
@@ -1850,7 +1995,7 @@ fn lower_t1b_stdlib_call(
                 ),
                 code: crate::DiagnosticCode::E056,
             });
-            Some(lir::Expr::Null)
+            Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance))
         }
         // T1c (docs/t1c-spec.md §3): the explicit call form `call(f, args…)` —
         // dispatch through a function value where the callee is itself an
@@ -1875,14 +2020,17 @@ fn lower_t1b_stdlib_call(
                     ),
                     code: crate::DiagnosticCode::E031,
                 });
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             let callee = lower_expr(&args[0], ctx);
             let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
-            Some(lir::Expr::CallValue {
-                callee: Box::new(callee),
-                args: supplied,
-            })
+            Some(
+                lir::ExprKind::CallValue {
+                    callee: Box::new(callee),
+                    args: supplied,
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
         // over an existing function value. `f` is the callee; the remaining
@@ -1910,14 +2058,17 @@ fn lower_t1b_stdlib_call(
                     ),
                     code: crate::DiagnosticCode::E031,
                 });
-                return Some(lir::Expr::Null);
+                return Some(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
             }
             let callee = lower_expr(&args[0], ctx);
             let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
-            Some(lir::Expr::BindValue {
-                callee: Box::new(callee),
-                args: supplied,
-            })
+            Some(
+                lir::ExprKind::BindValue {
+                    callee: Box::new(callee),
+                    args: supplied,
+                }
+                .at(ctx.current_stmt_provenance),
+            )
         }
         _ => None,
     }
@@ -1947,7 +2098,7 @@ fn lower_weighted_call(
             message: format!("{}: {detail}", crate::DiagnosticCode::E120.title()),
             code: crate::DiagnosticCode::E120,
         });
-        lir::Expr::Null
+        lir::ExprKind::Null.at(ctx.current_stmt_provenance)
     };
     if args.is_empty() {
         return refuse(
@@ -2001,7 +2152,7 @@ fn lower_weighted_call(
         .chunks_exact(2)
         .map(|pair| (lower_expr(&pair[0], ctx), lower_expr(&pair[1], ctx)))
         .collect();
-    lir::Expr::WeightedNew { pairs }
+    lir::ExprKind::WeightedNew { pairs }.at(ctx.current_stmt_provenance)
 }
 
 /// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5)
@@ -2124,17 +2275,18 @@ pub fn is_t1b_stdlib_name(name: &str) -> bool {
     )
 }
 
-/// Lower a tower call's args in order into a `lir::Expr::Tower` (NS-A8 —
+/// Lower a tower call's args in order into a `lir::ExprKind::Tower` (NS-A8 —
 /// the caller has already checked arity).
 fn lower_tower_call(
     op: brink_format::TowerOp,
     args: &[hir::Expr],
     ctx: &mut LowerCtx<'_>,
 ) -> lir::Expr {
-    lir::Expr::Tower {
+    lir::ExprKind::Tower {
         op,
         args: args.iter().map(|a| lower_expr(a, ctx)).collect(),
     }
+    .at(ctx.current_stmt_provenance)
 }
 
 /// The pre-T1e ref-argument binding for a bare (single-segment) path —
@@ -2169,7 +2321,7 @@ fn lower_ref_path_call_arg(
     // it rejects the shape and the message points authors at the explicit
     // `ref` spelling.
     if reject_field_projection_path(path, ctx, Some(FIELD_PROJECTION_IMPLICIT_REF_ARG)) {
-        return lir::CallArg::Value(lir::Expr::Null);
+        return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
     }
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
@@ -2192,7 +2344,7 @@ fn lower_ref_path_call_arg(
                 ),
                 code: crate::DiagnosticCode::E148,
             });
-            return lir::CallArg::Value(lir::Expr::Null);
+            return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
         }
         let name_id = ctx.names.intern(&name);
         return lir::CallArg::RefTemp(slot, name_id);
@@ -2216,7 +2368,7 @@ fn lower_ref_path_call_arg(
                 ),
                 code: crate::DiagnosticCode::E082,
             });
-            return lir::CallArg::Value(lir::Expr::Null);
+            return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
         }
         // Issue #2201: `ref`-argument passing hands the callee a raw
         // pointer to the storage cell, bypassing `lower_assign_target`
@@ -2225,7 +2377,7 @@ fn lower_ref_path_call_arg(
         // above. See `stmts::reject_const_write`'s doc for the full
         // choke-point enumeration.
         if super::stmts::reject_const_write(info, path.range, ctx) {
-            return lir::CallArg::Value(lir::Expr::Null);
+            return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
         }
         let id = if info.kind == SymbolKind::List {
             list_def_to_global_var(info.id)
@@ -2350,7 +2502,7 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
             ),
             code: crate::DiagnosticCode::E148,
         });
-        return lir::CallArg::Value(lir::Expr::Null);
+        return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
     }
     let Some(info) = ctx.resolve_path(root.range) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
@@ -2384,7 +2536,7 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
             ),
             code: crate::DiagnosticCode::E143,
         });
-        return lir::CallArg::Value(lir::Expr::Null);
+        return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
     }
     // Issue #2201: `ref n.field` where `n`'s root is a `CONST` struct —
     // the projection's write-through would mutate the constant's storage
@@ -2392,7 +2544,7 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     // one). See `stmts::reject_const_write`'s doc for the full choke-point
     // enumeration.
     if super::stmts::reject_const_write(info, root.range, ctx) {
-        return lir::CallArg::Value(lir::Expr::Null);
+        return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
     }
     let root_id = if info.kind == SymbolKind::List {
         list_def_to_global_var(info.id)
@@ -2402,9 +2554,10 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     let segments = src_segments
         .into_iter()
         .map(|seg| match seg {
-            ProjSegmentSrc::Field(name) => lir::Expr::String(lir::StringExpr {
+            ProjSegmentSrc::Field(name) => lir::ExprKind::String(lir::StringExpr {
                 parts: vec![lir::StringPart::Literal(name.text.clone())],
-            }),
+            })
+            .at(ctx.current_stmt_provenance),
             ProjSegmentSrc::Index(index_expr) => lower_expr(index_expr, ctx),
         })
         .collect();
@@ -2536,11 +2689,12 @@ mod tests {
         );
         let spine = coalesce_chain_spine(&chain);
         assert_eq!(spine.len(), 2, "two steps: `1 or 2`, then `… or 3`");
-        // Outermost first: its fallback is the trailing `3`.
-        assert!(matches!(spine[0].1, hir::Expr::Int(3)));
+        // Outermost first (each entry is `(ptr, lhs, rhs)`): its fallback
+        // is the trailing `3`.
+        assert!(matches!(spine[0].2, hir::Expr::Int(3)));
         // Then the innermost step: `1 or 2`.
-        assert!(matches!(spine[1].0, hir::Expr::Int(1)));
-        assert!(matches!(spine[1].1, hir::Expr::Int(2)));
+        assert!(matches!(spine[1].1, hir::Expr::Int(1)));
+        assert!(matches!(spine[1].2, hir::Expr::Int(2)));
 
         // A coalescing node in `rhs` position is *not* part of this spine
         // — it is its own chain root, keyed and recorded separately.

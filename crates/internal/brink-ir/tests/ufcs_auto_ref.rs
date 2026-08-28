@@ -142,7 +142,10 @@ fn lower_call_args(src: &str) -> Vec<lir::CallArg> {
         .body
         .iter()
         .find_map(|stmt| match &stmt.kind {
-            lir::StmtKind::ExprStmt(lir::Expr::Call { args, .. }) => Some(args.clone()),
+            lir::StmtKind::ExprStmt(e) => match &e.kind {
+                lir::ExprKind::Call { args, .. } => Some(args.clone()),
+                _ => None,
+            },
             _ => None,
         })
         .expect("a call statement in `main`'s body")
@@ -171,7 +174,7 @@ fn main() {
         "the receiver must be passed by reference, not by value"
     );
     assert!(
-        matches!(args[1], lir::CallArg::Value(lir::Expr::Int(5))),
+        matches!(&args[1], lir::CallArg::Value(v) if matches!(&v.kind, lir::ExprKind::Int(5))),
         "the written argument is unaffected by auto-ref"
     );
 }
@@ -199,7 +202,7 @@ fn main() {
         panic!("the receiver must lower as a T1e ref projection");
     };
     assert_eq!(segments.len(), 1, "one field segment (`leader`)");
-    let lir::Expr::String(spelled) = &segments[0] else {
+    let lir::ExprKind::String(spelled) = &segments[0].kind else {
         panic!("a field segment lowers to a literal string expression");
     };
     assert!(
@@ -249,7 +252,7 @@ fn main() {
         std::mem::discriminant(&args[0])
     );
     assert!(
-        matches!(args[1], lir::CallArg::Value(lir::Expr::Int(5))),
+        matches!(&args[1], lir::CallArg::Value(v) if matches!(&v.kind, lir::ExprKind::Int(5))),
         "the written argument is unaffected by auto-ref"
     );
 }
