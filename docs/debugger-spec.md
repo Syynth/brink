@@ -363,6 +363,42 @@ appear, so the table stays small even in a large multi-file project; D6
 builds a fresh mapping (`FileId -> file_idx`) when it emits the section,
 independent of whatever numbering `brink-db` assigned during compilation.
 
+**Each entry also carries `source_hash` and a line index (#3261, RULED
+2026-08-28).** The file table row is
+`(surface, path, source_hash: u64, line_starts: varint-delta list)`.
+
+`source_hash` is [`content_hash`] of that file's text **exactly as the
+compiler consumed it** — no normalisation of line endings, whitespace or
+encoding on either side, since a reader that normalises differently sees a
+permanent false mismatch. It exists because both resolvers otherwise answer
+questions about source they were never built from: the author types, the
+recompile is still debounced, and a gutter click asks about the *current*
+buffer against the *previous* program, getting a confidently wrong address
+rather than an error. This is a hazard for byte ranges every bit as much as
+for line numbers — offsets shift on every inserted character. Per-file
+deliberately, so one dirty file degrades debugging in that file alone where
+a whole-program checksum degrades everything. It is a change **detector,
+not a proof**: `content_hash` is FNV-1a, not collision resistant.
+
+`line_starts` records the byte offset of every line start, ascending,
+beginning with `0`, delta-encoded on the wire (line lengths are small, so
+each costs about one varint byte). A trailing newline does **not** open a
+final empty line: `"a\n"` is one line, matching how every editor numbers
+it. Carrying it means a reader answers `file:line` **without being handed
+source text at all** — the shape a remote frontend needs (DAP's
+`setBreakpoints` is file + line, and an adapter may hold no source), and
+the reason line↔byte conversion has one implementation rather than one per
+consumer. Line indices are **0-based** here; a UI showing 1-based numbers
+converts at its own edge.
+
+Both degrade rather than fail. A compile that supplies no source text
+(`EmitOptions::debug_sources = None`) emits `source_hash: 0` and an empty
+index: positions still resolve, only staleness detection and `file:line`
+lookup are unavailable. `source_hash: 0` reads as "cannot tell", which is
+deliberately distinct from "stale" — collapsing them would make every
+hash-less artifact look permanently dirty. The reserved synthetic sentinel
+at index 0 names no real file and carries both empty.
+
 **Paths are project-root-relative, not process-cwd-relative or absolute.**
 Verified on `origin/main`: a *registered* file key is spelled relative to
 the process's cwd at compile time (`brink-db/src/modules.rs:132`,

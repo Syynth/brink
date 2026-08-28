@@ -116,7 +116,7 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
 /// and attaches them as `StoryData::debug_info`.
 pub fn emit_with_options(
     program: &lir::Program,
-    options: EmitOptions,
+    options: EmitOptions<'_>,
 ) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
         chunks: Vec::new(),
@@ -156,7 +156,7 @@ pub fn emit_with_options(
     let debug_info = state
         .debug
         .take()
-        .map(|d| d.finish(program, &mut state.errors));
+        .map(|d| d.finish(program, options.debug_sources, &mut state.errors));
 
     if let Some(first) = core::mem::take(&mut state.errors).into_iter().next() {
         return Err(first);

@@ -94,6 +94,7 @@ fn emit_with_debug_info(program: &lir::Program) -> StoryData {
         program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit_with_options(debug_info: true) succeeds")

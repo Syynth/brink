@@ -501,6 +501,38 @@ impl FileSurface {
 pub struct DebugFileEntry {
     pub surface: FileSurface,
     pub path: String,
+    /// [`content_hash`] of this file's text **exactly as the compiler
+    /// consumed it** (#3261) — no normalisation of line endings,
+    /// whitespace or encoding on either side. A reader that hashes
+    /// differently-normalised text will see a spurious mismatch, so the
+    /// contract is the raw bytes that were compiled.
+    ///
+    /// Lets a consumer detect that the source it is measuring against is
+    /// not the source this program was built from, and answer
+    /// `StaleSource` instead of a confidently wrong address. That failure
+    /// applies to byte ranges every bit as much as to line numbers —
+    /// offsets shift on every inserted character.
+    ///
+    /// Per-file, deliberately: one dirty file then degrades debugging in
+    /// that file alone, where a whole-program checksum degrades
+    /// everything.
+    ///
+    /// `0` for the reserved synthetic sentinel at index 0, which names no
+    /// real file.
+    pub source_hash: u64,
+    /// Byte offset of the start of each line in this file, ascending, with
+    /// `line_starts[0] == 0` (#3261). Length is the file's line count.
+    ///
+    /// Carrying this means the engine can answer `file:line` **without
+    /// being handed source text at all** — which is what a remote debugger
+    /// frontend (DAP's `setBreakpoints` is file + line) needs, and what
+    /// keeps line↔byte conversion to one implementation instead of one per
+    /// consumer. Line indexing is 0-based here; a UI showing 1-based line
+    /// numbers converts at its own edge.
+    ///
+    /// Empty for the synthetic sentinel, and legitimately empty for an
+    /// empty file.
+    pub line_starts: Vec<u32>,
 }
 
 /// One row in a container's `DebugInfo` entry table

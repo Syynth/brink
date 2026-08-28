@@ -3131,8 +3131,24 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
     // dependency on the whole `AnalysisOptions` input, forcing this query to
     // fully re-execute (and allocate a fresh `Arc<StoryData>`) on any
     // unrelated options edit.
+    let emit_debug_info = debug_info_policy_query(db, project);
+    // #3261: the file table's `source_hash` and line index need each file's
+    // text. Gathered ONLY when debug info was asked for — a release compile
+    // walks none of this. Keyed by the `FileId`s the program actually
+    // references, so an unrelated file loaded in the same session costs
+    // nothing.
+    let debug_sources: Option<std::collections::BTreeMap<FileId, String>> =
+        emit_debug_info.then(|| {
+            project
+                .files(db)
+                .iter()
+                .filter(|f| program.file_paths.contains_key(&f.file_id(db)))
+                .map(|f| (f.file_id(db), f.text(db).to_owned()))
+                .collect()
+        });
     let debug_options = brink_codegen_inkb::EmitOptions {
-        emit_debug_info: debug_info_policy_query(db, project),
+        emit_debug_info,
+        debug_sources: debug_sources.as_ref(),
     };
     match brink_codegen_inkb::emit_with_options(program, debug_options) {
         Ok(mut story) => {

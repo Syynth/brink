@@ -464,9 +464,32 @@ fn parse_debug_file_entry(pair: P<'_>) -> Result<DebugFileEntry, InktParseError>
         line: 0,
         col: 0,
     })?;
+    let path = unescape_string(path_pair.as_str());
+    // #3261. Both are optional on the read side so a hand-written `.inkt`
+    // (the fuzz seeds are hand-maintained) stays parseable without them —
+    // absent means "unknown", the same degraded-but-valid state a compile
+    // with no source text produces.
+    let source_hash = match inner.peek() {
+        Some(p) if p.as_rule() == Rule::integer => {
+            let p = next_rule(&mut inner, Rule::integer, "debug file entry")?;
+            p.as_str().parse::<u64>().unwrap_or(0)
+        }
+        _ => 0,
+    };
+    let mut line_starts = Vec::new();
+    if let Some(p) = inner.peek()
+        && p.as_rule() == Rule::debug_file_lines
+    {
+        let lines = next_rule(&mut inner, Rule::debug_file_lines, "debug file entry")?;
+        for n in lines.into_inner() {
+            line_starts.push(n.as_str().parse::<u32>().unwrap_or(0));
+        }
+    }
     Ok(DebugFileEntry {
         surface,
-        path: unescape_string(path_pair.as_str()),
+        path,
+        source_hash,
+        line_starts,
     })
 }
 

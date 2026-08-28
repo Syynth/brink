@@ -1614,14 +1614,28 @@ fn sample_debug_info() -> brink_format::DebugInfoSection {
             DebugFileEntry {
                 surface: FileSurface::Synthetic,
                 path: String::new(),
+                // #3261: the sentinel names no real file — zero hash, no
+                // line index. Pinned so a writer that "helpfully" hashed
+                // the empty string here would fail rather than pass.
+                source_hash: 0,
+                line_starts: Vec::new(),
             },
             DebugFileEntry {
                 surface: FileSurface::Ink,
                 path: "story.ink".to_string(),
+                source_hash: 0x0123_4567_89ab_cdef,
+                // Deliberately irregular gaps: a delta encoder that assumed
+                // a fixed stride, or dropped the leading 0, round-trips
+                // wrong here rather than accidentally right.
+                line_starts: vec![0, 11, 12, 47, 130],
             },
             DebugFileEntry {
                 surface: FileSurface::Native,
                 path: "scene.brink".to_string(),
+                // A distinct hash from the entry above, so a round trip
+                // that collapsed both files onto one value fails.
+                source_hash: 0xfedc_ba98_7654_3210,
+                line_starts: vec![0, 5],
             },
         ],
         containers: vec![
