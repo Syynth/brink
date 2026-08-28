@@ -28,6 +28,7 @@ export interface LayoutSnapshot {
   dockSizes: { left: number; right: number; bottom: number };
   maximized: string | null;
   editorView: EditorViewId;
+  singleFileCompanionOpen: boolean;
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -40,6 +41,7 @@ export function snapshotLayout(state: ShellLayoutState): LayoutSnapshot {
     dockSizes: state.dockSizes,
     maximized: state.maximized,
     editorView: state.editorView,
+    singleFileCompanionOpen: state.singleFileCompanionOpen,
   };
 }
 
@@ -86,12 +88,19 @@ export function loadLayoutSnapshot(storage: Pick<Storage, "getItem">): LayoutSna
     parsed.editorView === "single" || parsed.editorView === "continuous"
       ? parsed.editorView
       : "code";
+  // Same lenient shape as `editorView` above and for the same reason: a
+  // payload written before #3165 has no such key, and an older studio
+  // reading a newer payload should not lose its dock layout over one
+  // boolean. Anything that is not exactly `false` means open, which is also
+  // the default.
+  const singleFileCompanionOpen = parsed.singleFileCompanionOpen !== false;
   return {
     placements,
     open,
     dockSizes,
     maximized: typeof maximized === "string" ? maximized : null,
     editorView,
+    singleFileCompanionOpen,
   };
 }
 

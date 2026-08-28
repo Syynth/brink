@@ -59,6 +59,21 @@ export interface ShellLayoutState {
   editorView: EditorViewId;
 
   /**
+   * Whether Single File view shows its companion split (the player).
+   *
+   * Global and persisted, on exactly the reasoning `editorView` above
+   * states: "do I want the player visible" is a preference about how you
+   * WRITE, not a fact about a story, so it follows you between projects
+   * rather than being remembered per-project (#3165).
+   *
+   * It was component-local `useState(true)` until #3165, which meant every
+   * mount reopened it — a reload, and also switching to Code view and back.
+   * The cost fell entirely on authors who had made a deliberate choice:
+   * anyone happy with it open never noticed.
+   */
+  singleFileCompanionOpen: boolean;
+
+  /**
    * A document occupying the whole editor root area, over whichever view is
    * chosen — null when the view itself is showing. Deliberately NOT
    * persisted: consulting the graph or changing a setting is an
@@ -87,6 +102,8 @@ export interface ShellLayoutState {
   toggleToolWindow(id: string): void;
   /** Choose the editor root area's occupant. */
   setEditorView(view: EditorViewId): void;
+  /** @see singleFileCompanionOpen */
+  setSingleFileCompanionOpen(open: boolean): void;
   /** Show a document over the whole editor area, or `null` to go back. */
   setTakeover(ref: DocumentRef | null): void;
   /** Re-dock a tool window; if it was open, it opens in the new section. */
@@ -166,6 +183,9 @@ export function createShellLayoutStore(): ShellLayoutStore {
     dockSizes: { left: 220, right: 300, bottom: 180 },
     maximized: null,
     editorView: "code",
+    // Open by default: the companion split is the reason Single File view
+    // exists as something other than "Code view without tabs".
+    singleFileCompanionOpen: true,
     takeover: null,
     drawers: { left: false, right: false },
     narrowView: null,
@@ -218,6 +238,10 @@ export function createShellLayoutStore(): ShellLayoutStore {
       // Choosing a view is choosing what fills the area, so it also
       // dismisses anything that had taken the area over.
       set({ editorView: view, takeover: null });
+    },
+
+    setSingleFileCompanionOpen(open) {
+      set({ singleFileCompanionOpen: open });
     },
 
     setTakeover(ref) {

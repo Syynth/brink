@@ -24,7 +24,12 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { useDocumentTypes, useEditorGroups, useShell } from "./shell-context.js";
+import {
+  useDocumentTypes,
+  useEditorGroups,
+  useShell,
+  useShellLayout,
+} from "./shell-context.js";
 import { documentKey, type DocumentRef } from "./document.js";
 import { focusedGroup, focusedTab } from "./editor-groups.js";
 
@@ -43,12 +48,19 @@ export interface SingleFileViewProps {
 }
 
 export function SingleFileView({ companion }: SingleFileViewProps) {
-  const { editorGroups, documentIcon: DocumentIcon } = useShell();
+  const { editorGroups, documentIcon: DocumentIcon, layout } = useShell();
   const descriptors = useDocumentTypes();
   const types = useMemo(() => new Map(descriptors.map((d) => [d.id, d])), [descriptors]);
   const tab = useEditorGroups(focusedTab);
   const groupId = useEditorGroups((s) => focusedGroup(s).id);
-  const [companionOpen, setCompanionOpen] = useState(true);
+  // Persisted globally (#3165) rather than component-local: this used to be
+  // `useState(true)`, so every mount reopened the split — a reload, and also
+  // switching to Code view and back. See `singleFileCompanionOpen` in the
+  // layout store for why it is global rather than per-project.
+  const companionOpen = useShellLayout((s) => s.singleFileCompanionOpen);
+  const setCompanionOpen = (open: boolean): void => {
+    layout.getState().setSingleFileCompanionOpen(open);
+  };
   const [companionSize, setCompanionSize] = useState<number>(320);
 
   const primary = renderDocument(tab?.ref, PRIMARY_GROUP);
@@ -91,7 +103,7 @@ export function SingleFileView({ companion }: SingleFileViewProps) {
                   type="button"
                   className="shell-single-file-companion-toggle"
                   aria-pressed={companionOpen}
-                  onClick={() => setCompanionOpen((open) => !open)}
+                  onClick={() => setCompanionOpen(!companionOpen)}
                 >
                   {companionOpen ? "Hide player" : "Show player"}
                 </button>
