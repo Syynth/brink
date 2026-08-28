@@ -67,7 +67,22 @@ effect-trace = ["std"]
 # production step loop and `vm::step_impl`'s dispatch body are byte-for-byte
 # identical whether this feature is on or off — see
 # `crates/brink-runtime/src/debug_control.rs`'s module doc for the argument
-# in full. Off by default; no released consumer should enable it.
+# in full. Off by default.
+#
+# ONE released consumer enables it deliberately: `brink-web` (#3232), the
+# wasm bundle the studio ships, which binds the debug control surface onto
+# `WebSession`/`StoryRunner`. There is no separate "debug build" of that
+# package for the studio to opt into, so a mirrored feature the standard
+# `wasm-pack build crates/brink-web` never passes would leave the bridge
+# unreachable. Because the seam is additive (see above), the cost there is
+# compiled-in surface area and wasm bundle size, not hot-loop overhead.
+# Every OTHER consumer — `bevy-brink`, `brink-cli` — leaves it off, and new
+# ones should: enabling it is a deliberate exception, not the default.
+# NOTE: cargo's feature unification means a whole-workspace build
+# (`cargo build --workspace`) turns it on for every crate in that build,
+# `brink-cli` included. That is dead code rather than a behavior change,
+# per the byte-for-byte argument above, but a size-sensitive release should
+# build the binary on its own (`cargo build -p brink-cli --release`).
 debug-hooks = []
 
 [dev-dependencies]
