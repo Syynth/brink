@@ -666,7 +666,23 @@ impl ContainerEmitter<'_> {
         for part in &s.parts {
             match part {
                 lir::StringPart::Literal(text) => {
-                    let idx = self.add_line(text);
+                    // No location here, and genuinely not yet threadable
+                    // (issue #3181): unlike `hir::Content::ptr` (the
+                    // `content.rs:172` fix), `hir::StringPart::Literal`
+                    // carries no span at all today — `hir::expr_span`'s own
+                    // `Expr::String` arm unions only interpolation
+                    // sub-expression spans, treating literal text as a
+                    // "nothing to cover" leaf by design (`hir/spans.rs`).
+                    // The raw token range *is* available one layer up, in
+                    // `lower_string_lit` (each literal piece is walked off
+                    // a real rowan token with its own `text_range()`), so
+                    // this is a real, fixable gap — but fixing it means
+                    // adding a provenance field to `StringExpr`/`StringPart`
+                    // at both the HIR and LIR levels (mirroring the
+                    // `Container`/`Stmt` work issue #3183 did), not a
+                    // one-line thread-through here. Tracked as follow-up
+                    // scope rather than folded into this fix.
+                    let idx = self.add_line(text, None);
                     self.emit(Opcode::EmitLine(idx, 0));
                 }
                 lir::StringPart::Interpolation(expr) => {

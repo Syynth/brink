@@ -2,6 +2,7 @@
 
 use brink_syntax::ast::{self, AstNode};
 
+use crate::provenance::NodeClass;
 use crate::{Block, Content, Stmt};
 
 use super::super::content::{lower_content_node_children, lower_tags};
@@ -27,11 +28,21 @@ pub fn wrap_content_as_block(
 
     let mut stmts = Vec::new();
     if !parts.is_empty() || !tags.is_empty() {
-        stmts.push(Stmt::Content(Content {
-            ptr: None,
-            parts,
-            tags,
-        }));
+        // `ptr: Some(...)`, not `None` (issue #3181) — `node`'s own range
+        // (an inline conditional/sequence branch's content) was available
+        // right here all along; same fix shape as `hir::lower::choice`'s
+        // choice-region `ptr`. Guarded against an empty range the same way
+        // (review finding, #3181): `parts`/`tags` non-empty here already
+        // implies `node`'s range is non-empty (its children carry the
+        // range), but stay defensive rather than relying on that
+        // invariant — B0.3 admission's E124 rejects an empty range
+        // unconditionally, and `None` is the honest fallback.
+        let ptr = if node.text_range().is_empty() {
+            None
+        } else {
+            Some(scope.prov(NodeClass::Content, node))
+        };
+        stmts.push(Stmt::Content(Content { ptr, parts, tags }));
     }
     if let Some(d) = divert_stmt {
         stmts.push(d);

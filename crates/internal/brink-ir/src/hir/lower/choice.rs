@@ -22,6 +22,21 @@ pub trait LowerChoice {
     fn lower_choice(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Choice>;
 }
 
+/// Provenance for a choice content region's own node — `None` when the
+/// node's range is empty (issue #3181 review finding). A region node the
+/// parser hands back can be zero-width (a choice with no start text before
+/// its `[bracket]`), and B0.3 admission's E124 rejects an empty range
+/// unconditionally (`docs/hir-admission-contract.md` §1.3) — stamping one
+/// anyway would turn a harmless `None` into an admission failure on
+/// perfectly valid source. `None` here is the honest answer: a zero-width
+/// node has no real span to point at.
+fn content_region_ptr(scope: &LowerScope, node: &brink_syntax::SyntaxNode) -> Option<Provenance> {
+    if node.text_range().is_empty() {
+        return None;
+    }
+    Some(scope.prov(NodeClass::Content, node))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "choice lowering has many CST regions"
@@ -62,11 +77,33 @@ impl LowerChoice for ast::Choice {
             })
             .map(|(_, e)| e);
 
+        // `ptr: Some(...)`, not `None` (issue #3181): each region's own CST
+        // node (`sc`/`bc`/`ic`) carries a real range right here — same as
+        // `content_line.rs`'s top-level `ContentLineOutput::Content` stamps
+        // `NodeClass::Content` from `self.syntax()`. Before this fix these
+        // three were the one HIR-level case (of the sites the issue's
+        // codegen investigation traced back) where the location was
+        // genuinely available and simply never captured, not a threading
+        // gap downstream — every `lir::Content::source_location` computed
+        // from a choice region was `None` purely because of this, no
+        // matter how far codegen's own fix threaded it.
+        //
+        // `content_region_ptr` guards the one real trap here (review
+        // finding, #3181): a choice with no visible start text before a
+        // `[bracket]` (e.g. `* [The wager.] -> …`) still gets a
+        // `CHOICE_START_CONTENT` node from the parser — zero-width, for
+        // grammar uniformity — and B0.3 admission's E124 loudly rejects an
+        // *empty* provenance range (`docs/hir-admission-contract.md` §1.3),
+        // exactly the failure `fogg_passage_exhibit_lowers_and_is_admission
+        // _clean` caught. `None` for a zero-width region is the honest
+        // answer (there is no real span to point at), not a regression of
+        // this fix.
         let mut start_content = self.start_content().map(|sc| {
+            let ptr = content_region_ptr(scope, sc.syntax());
             let mut parts = lower_content_node_children(sc.syntax(), scope, sink);
             replace_trailing_ws_with_spring(&mut parts);
             Content {
-                ptr: None,
+                ptr,
                 parts,
                 tags: Vec::new(),
             }
@@ -80,14 +117,14 @@ impl LowerChoice for ast::Choice {
                 .flat_map(|t| lower_tags(Some(t), scope, sink))
                 .collect();
             Content {
-                ptr: None,
+                ptr: content_region_ptr(scope, bc.syntax()),
                 parts: lower_content_node_children(bc.syntax(), scope, sink),
                 tags: bracket_tags,
             }
         });
 
         let mut inner_content = self.inner_content().map(|ic| Content {
-            ptr: None,
+            ptr: content_region_ptr(scope, ic.syntax()),
             parts: lower_content_node_children(ic.syntax(), scope, sink),
             tags: Vec::new(),
         });

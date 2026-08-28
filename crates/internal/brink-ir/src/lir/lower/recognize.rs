@@ -248,8 +248,15 @@ pub fn try_recognize_with_glue(
     Some((has_leading, emission, has_trailing))
 }
 
-/// Build a `SourceLocation` from the content's syntax pointer and the file path map.
-fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<SourceLocation> {
+/// Build a `SourceLocation` from the content's syntax pointer and the file
+/// path map. `pub(super)` — also used by `lir::lower::content::lower_content`
+/// (issue #3181) so the `EmitContent`/`ChoiceOutput` fallback path resolves
+/// a real location the same way the recognized-line path does, from the
+/// same `hir::Content::ptr`.
+pub(super) fn build_source_location(
+    content: &hir::Content,
+    ctx: &LowerCtx<'_>,
+) -> Option<SourceLocation> {
     let ptr = content.ptr.as_ref()?;
     let range = ptr.text_range();
     let file = ctx.file_paths.get(&ctx.file)?;

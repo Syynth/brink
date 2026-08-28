@@ -589,7 +589,18 @@ fn combine_choice_content(
             parts.extend(b_content.parts.clone());
             let mut tags = a_content.tags.clone();
             tags.extend(b_content.tags.clone());
-            Some(lir::Content { parts, tags })
+            // `a`'s location wins over `b`'s (issue #3181) — same
+            // start-then-bracket precedence `lir::lower::mod`'s
+            // `ChoiceOutput` composition uses for start-then-inner.
+            let source_location = a_content
+                .source_location
+                .clone()
+                .or_else(|| b_content.source_location.clone());
+            Some(lir::Content {
+                parts,
+                tags,
+                source_location,
+            })
         }
     }
 }

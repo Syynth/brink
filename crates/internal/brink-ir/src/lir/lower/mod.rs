@@ -1434,6 +1434,12 @@ fn lower_block_with_children(
                             lir::StmtKind::EmitContent(lir::Content {
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
+                                // Pure structural glue marker synthesized here
+                                // (boundary-glue stripping around a recognized
+                                // line) — carries no text, so `add_line` never
+                                // runs on it; there is no line-table entry to
+                                // attribute a location to (issue #3181).
+                                source_location: None,
                             }),
                             stmt_prov,
                         ));
@@ -1444,6 +1450,12 @@ fn lower_block_with_children(
                             lir::StmtKind::EmitContent(lir::Content {
                                 parts: vec![lir::ContentPart::Glue],
                                 tags: vec![],
+                                // Pure structural glue marker synthesized here
+                                // (boundary-glue stripping around a recognized
+                                // line) — carries no text, so `add_line` never
+                                // runs on it; there is no line-table entry to
+                                // attribute a location to (issue #3181).
+                                source_location: None,
                             }),
                             stmt_prov,
                         ));
@@ -1802,13 +1814,21 @@ fn lower_choice_with_child(
     {
         let mut output_parts = Vec::new();
         let mut output_tags = Vec::new();
+        // Start's location wins over inner's (issue #3181) — mirrors
+        // `compose_hir_content`'s own "uses the first content's ptr"
+        // convention for the same start-then-inner join, so the recognized
+        // (`output_emission`) and fallback (`content`) answers for this
+        // same composed line agree on which half anchors it.
+        let mut output_source_location = None;
         if let Some(ref sc) = start_content {
             output_parts.extend(sc.parts.clone());
             output_tags.extend(sc.tags.clone());
+            output_source_location.clone_from(&sc.source_location);
         }
         if let Some(ref ic) = inner_content {
             output_parts.extend(ic.parts.clone());
             output_tags.extend(ic.tags.clone());
+            output_source_location = output_source_location.or_else(|| ic.source_location.clone());
         }
         if !output_parts.is_empty() || !output_tags.is_empty() {
             body.push(lir::Stmt::new(
@@ -1816,6 +1836,7 @@ fn lower_choice_with_child(
                     content: lir::Content {
                         parts: output_parts,
                         tags: output_tags,
+                        source_location: output_source_location,
                     },
                     emission: output_emission.clone(),
                 },

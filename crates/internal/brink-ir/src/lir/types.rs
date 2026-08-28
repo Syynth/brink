@@ -647,6 +647,20 @@ pub struct ContentEmission {
 pub struct Content {
     pub parts: Vec<ContentPart>,
     pub tags: Vec<Vec<ContentPart>>,
+    /// Resolved source location covering the whole content line (issue
+    /// #3181): the `EmitContent`/`ChoiceOutput` fallback path's answer to
+    /// [`LineMetadata::source_location`], which only the recognized-line
+    /// path (`recognize::try_recognize`) used to populate — this drops
+    /// exactly one layer earlier than codegen sees it, in
+    /// `lir::lower::content::lower_content`, from the same `hir::Content
+    /// ::ptr` the recognized path reads, resolved against the file-path
+    /// map at LIR-lowering time (codegen's `Program` carries no
+    /// `FileId → path` map to resolve one later). `None` when the source
+    /// `hir::Content::ptr` itself is `None` — a handful of documented
+    /// synthetic-content sites (`hir::lower::content::accumulator`'s
+    /// trailing-tag-only/no-range flushes) that genuinely have no single
+    /// span to point at, not a threading gap.
+    pub source_location: Option<brink_format::SourceLocation>,
 }
 
 /// A fragment within a content line.
