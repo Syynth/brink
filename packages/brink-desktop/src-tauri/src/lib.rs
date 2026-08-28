@@ -3529,6 +3529,39 @@ on:
         );
     }
 
+    /// Every wasm-pack build command named in `scripts/check-wasm-pkg.mjs`.
+    ///
+    /// Parsed rather than duplicated so the workflow guard and the install
+    /// guard cannot disagree about which wasm outputs exist. Matched on the
+    /// COMMAND TEXT rather than the `buildCommand:` key: the registry spells
+    /// one entry as a shared `BUILD_COMMAND` constant and wraps another
+    /// across lines, so a key-based parse silently returned nothing — caught
+    /// only because the call site asserts a minimum count. Scanning for the
+    /// literal is invariant to how any future entry is formatted.
+    fn registered_wasm_build_commands() -> Vec<String> {
+        // The OPENING QUOTE is part of the needle. Without it this also
+        // matched the same command written in the file's own header prose,
+        // and swept up the paragraph after it as a "command".
+        const NEEDLE: &str = "\"wasm-pack build crates/";
+        let registry = std::fs::read_to_string(repo_root().join("scripts/check-wasm-pkg.mjs"))
+            .expect("scripts/check-wasm-pkg.mjs should be readable from the repo root");
+
+        let mut commands: Vec<String> = Vec::new();
+        let mut rest = registry.as_str();
+        while let Some(at) = rest.find(NEEDLE) {
+            let from = &rest[at + 1..];
+            // The literal ends at its closing quote; a command never contains one.
+            if let Some(end) = from.find('"') {
+                let command = from[..end].trim().to_owned();
+                if !commands.contains(&command) {
+                    commands.push(command);
+                }
+            }
+            rest = &from[NEEDLE.len()..];
+        }
+        commands
+    }
+
     /// #2504 (follow-up to #2479/#2492): nothing made the
     /// wasm-build-before-install ordering self-enforcing. All four `pnpm
     /// install --frozen-lockfile` lanes (`ci.yml`'s `frontend` and `e2e`
@@ -3581,7 +3614,24 @@ on:
     #[test]
     fn every_pnpm_install_lane_builds_wasm_first_in_the_same_job() {
         const PNPM_INSTALL_PREFIX: &str = "pnpm install";
-        const WASM_BUILD_PREFIX: &str = "wasm-pack build crates/brink-web";
+
+        // READ from scripts/check-wasm-pkg.mjs's WASM_PACKAGES rather than
+        // restated here (#3208). There are two `file:`-linked wasm outputs
+        // now, and the failure is per-LINK, not per-package: a lane missing
+        // any one of them dies with `ENOENT ... scandir` on install, which is
+        // exactly how brink-prose broke every frontend and e2e shard the
+        // first time it shipped. A hardcoded prefix would have to be updated
+        // by whoever adds the third — parsing the registry means they cannot
+        // forget, because this test starts requiring the new build step the
+        // moment it is registered.
+        let wasm_build_prefixes = registered_wasm_build_commands();
+        assert!(
+            wasm_build_prefixes.len() >= 2,
+            "expected to parse at least two build commands out of \
+             scripts/check-wasm-pkg.mjs's WASM_PACKAGES; got {wasm_build_prefixes:?} — \
+             if that registry moved or changed shape, this guard is silently checking \
+             less than it claims"
+        );
 
         let mut checked_jobs: Vec<String> = Vec::new();
         let mut pnpm_install_lanes: Vec<String> = Vec::new();
@@ -3601,17 +3651,17 @@ on:
                 };
                 pnpm_install_lanes.push(lane.clone());
 
-                let wasm_pos = commands
-                    .iter()
-                    .position(|c| c.starts_with(WASM_BUILD_PREFIX));
-                assert!(
-                    wasm_pos.is_some_and(|w| w < install_pos),
-                    "{lane}'s job runs a `{PNPM_INSTALL_PREFIX}` command without a preceding \
-                     `{WASM_BUILD_PREFIX}` step in the SAME job — this re-opens #2479 (`pnpm \
-                     install --frozen-lockfile` exits 0 even when the file: link to \
-                     crates/brink-web/www/pkg silently failed to resolve); commands seen in \
-                     order: {commands:?}"
-                );
+                for prefix in &wasm_build_prefixes {
+                    let wasm_pos = commands.iter().position(|c| c.starts_with(prefix));
+                    assert!(
+                        wasm_pos.is_some_and(|w| w < install_pos),
+                        "{lane}'s job runs a `{PNPM_INSTALL_PREFIX}` command without a \
+                         preceding `{prefix}` step in the SAME job — this re-opens #2479 \
+                         (the install fails, or worse exits 0, when a file: link to a \
+                         wasm-pack output silently failed to resolve); commands seen in \
+                         order: {commands:?}"
+                    );
+                }
             }
         }
 

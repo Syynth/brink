@@ -184,6 +184,16 @@ jobs:
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
+      # brink-prose's wasm is a SECOND `file:` link (packages/brink-studio
+      # -> crates/brink-prose/www/pkg), so the install below fails with
+      # ENOENT without it — the same #2479 shape brink-web has. Every
+      # registered package in scripts/check-wasm-pkg.mjs's WASM_PACKAGES
+      # must be built before any `pnpm install` in the same job;
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` reads
+      # that registry and fails this lane if one is missing.
+      - name: Build prose wasm package
+        run: wasm-pack build crates/brink-prose --target web --out-dir www/pkg
+
       # No `version:` input (#2604): the action reads root package.json's
       # `packageManager` field, matching every other pnpm lane.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
