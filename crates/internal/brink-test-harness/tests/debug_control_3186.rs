@@ -119,7 +119,7 @@ fn ink_breakpoint_halts_before_matching_instruction() {
     let expected_next_offset = decode_off;
 
     let step = story
-        .debug_step(StepMode::Into, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step into");
     assert_eq!(step.reason, DebugStopReason::Step);
     let after = step.position.expect("position after a single Into step");
@@ -178,7 +178,7 @@ fn intos_until_depth_increases(story: &mut Story<FastRng>, start_depth: usize) -
     let mut result = None;
     for n in 1..=200 {
         let outcome = story
-            .debug_step(StepMode::Into, DEFAULT_DEBUG_BUDGET)
+            .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
             .expect("debug_step into");
         assert_ne!(
             outcome.reason,
@@ -228,7 +228,7 @@ fn ink_step_into_over_out_across_knot_into_function_call() {
     );
 
     let out = story_a
-        .debug_step(StepMode::Out, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Out, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step out");
     assert_eq!(out.reason, DebugStopReason::Step);
     assert_eq!(
@@ -242,7 +242,7 @@ fn ink_step_into_over_out_across_knot_into_function_call() {
     let mut story_b = Story::<FastRng>::new(Arc::new(program_b), tables_b);
     for i in 0..n - 1 {
         let step = story_b
-            .debug_step(StepMode::Into, DEFAULT_DEBUG_BUDGET)
+            .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
             .expect("debug_step into (replay)");
         assert_eq!(
             step.depth, 1,
@@ -256,7 +256,7 @@ fn ink_step_into_over_out_across_knot_into_function_call() {
     );
 
     let over = story_b
-        .debug_step(StepMode::Over, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Over, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step over");
     assert_eq!(over.reason, DebugStopReason::Step);
     assert_eq!(
@@ -284,7 +284,7 @@ fn brink_native_step_into_over_out_across_knot_into_function_call() {
     assert_eq!(story_a.debug_call_stack_depth(), 2);
 
     let out = story_a
-        .debug_step(StepMode::Out, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Out, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step out");
     assert_eq!(out.depth, 1);
     assert_eq!(out.reason, DebugStopReason::Step);
@@ -293,12 +293,12 @@ fn brink_native_step_into_over_out_across_knot_into_function_call() {
     let mut story_b = Story::<FastRng>::new(Arc::new(program_b), tables_b);
     for _ in 0..n - 1 {
         let step = story_b
-            .debug_step(StepMode::Into, DEFAULT_DEBUG_BUDGET)
+            .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
             .expect("debug_step into (replay)");
         assert_eq!(step.depth, 1);
     }
     let over = story_b
-        .debug_step(StepMode::Over, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Over, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step over");
     assert_eq!(over.depth, 1);
     assert_eq!(over.reason, DebugStopReason::Step);
@@ -396,7 +396,7 @@ fn ink_step_out_from_root_frame_is_refused_without_stepping() {
     let before = story.debug_position();
 
     let outcome = story
-        .debug_step(StepMode::Out, DEFAULT_DEBUG_BUDGET)
+        .debug_step(StepMode::Out, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
         .expect("debug_step out");
     assert_eq!(outcome.reason, DebugStopReason::NoStepOutTarget);
     assert_eq!(
@@ -483,4 +483,230 @@ fn debug_run_watching_stops_on_the_watched_global_write() {
         .find(|g| g.name == "x")
         .expect("x must be in the snapshot's globals");
     assert_eq!(x.value, "5");
+}
+
+// ── 7. Review fixes (issue #3186 review) ──────────────────────────────────
+
+/// Resuming a `debug_run` right after a previous call stopped exactly on
+/// an armed breakpoint must make forward progress — not immediately
+/// re-report the same breakpoint with zero steps executed, forever. The
+/// breakpoint is armed at a loop knot's own entry, so a global counter
+/// bumped once per lap proves each `debug_run` call actually ran another
+/// full iteration rather than reporting the same halt twice.
+#[test]
+fn debug_run_resumes_past_a_breakpoint_it_is_already_stopped_at() {
+    let (program, tables) = compile_ink(
+        "VAR i = 0\n\
+         -> loop\n\
+         === loop ===\n\
+         ~ i = i + 1\n\
+         -> loop\n",
+    );
+    let def_id = program
+        .definition_id_for_path("loop")
+        .expect("loop should resolve");
+    let (container_idx, offset) = program.resolve_address(def_id).expect("resolve_address");
+
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+
+    let mut breakpoints = BreakpointSet::new();
+    let bp_id = breakpoints.insert(container_idx, offset, "loop-entry");
+
+    let read_i = |story: &Story<FastRng>| -> String {
+        story
+            .debug_snapshot()
+            .globals
+            .iter()
+            .find(|g| g.name == "i")
+            .expect("i must be in the snapshot's globals")
+            .value
+            .clone()
+    };
+
+    let first = story
+        .debug_run(&breakpoints, DEFAULT_DEBUG_BUDGET)
+        .expect("first debug_run");
+    assert_eq!(
+        first.reason,
+        DebugStopReason::Breakpoint {
+            id: bp_id,
+            name: "loop-entry".to_owned(),
+        }
+    );
+    assert_eq!(
+        read_i(&story),
+        "0",
+        "the breakpoint halts BEFORE the matching instruction executes, so the very \
+         first stop lands before any increment has run"
+    );
+
+    let second = story
+        .debug_run(&breakpoints, DEFAULT_DEBUG_BUDGET)
+        .expect("second debug_run (resume from the same breakpoint)");
+    assert_eq!(
+        second.reason,
+        DebugStopReason::Breakpoint {
+            id: bp_id,
+            name: "loop-entry".to_owned(),
+        }
+    );
+    assert_eq!(
+        read_i(&story),
+        "1",
+        "resuming past the same breakpoint must execute a full lap (the increment), not \
+         report the same halt again with zero forward progress"
+    );
+}
+
+/// A choice point reached via `debug_run` must be its own
+/// `DebugStopReason::Choices`, not `Terminal` — and the flow left in a
+/// state where `Story::choose()` followed by `Story::continue_single()`
+/// resumes normally, exactly as it would after a production-path
+/// `Step::Choices`.
+#[test]
+fn debug_run_choice_boundary_allows_choose_then_continue_single() {
+    let (program, tables) = compile_ink(
+        "-> choices\n\
+         === choices ===\n\
+         * [one] -> end\n\
+         * [two] -> end\n\
+         = end\n\
+         Chosen.\n\
+         -> DONE\n",
+    );
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+
+    let breakpoints = BreakpointSet::new();
+    let outcome = story
+        .debug_run(&breakpoints, DEFAULT_DEBUG_BUDGET)
+        .expect("debug_run to the choice point");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::Choices,
+        "a choice point must be its own stop reason, not Terminal"
+    );
+
+    story
+        .choose(0)
+        .expect("choose() must accept the selection after a debug_run choice stop");
+    let step = story
+        .continue_single()
+        .expect("continue_single must resume normally after a debug-run choice stop");
+    match step {
+        brink_runtime::Step::Line(line) => {
+            assert_eq!(line.text.trim(), "Chosen.");
+        }
+        other => panic!("expected a Line step after choosing, got {other:?}"),
+    }
+}
+
+/// From inside a live `Thread` frame (caught live via a breakpoint, same
+/// fixture and technique as `ink_breakpoint_catches_a_live_thread_frame`),
+/// `debug_step(Out)` must refuse — a thread is not a frame you can return
+/// from (`docs/debugger-spec.md` §4's ruled `Thread` row; decision-log D1
+/// entry item 11) — rather than reporting a `Step` for what is actually
+/// just the thread popping when it exhausts.
+#[test]
+fn ink_step_out_from_a_live_thread_frame_is_refused() {
+    let (program, tables) = compile_ink(
+        "<- choices\n\
+         { CHOICE_COUNT() }\n\
+         = end\n\
+         -> END\n\
+         = choices\n\
+         * one -> end\n\
+         * two -> end\n",
+    );
+    let def_id = program
+        .definition_id_for_path("choices")
+        .expect("choices should resolve");
+    let (container_idx, offset) = program.resolve_address(def_id).expect("resolve_address");
+
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+
+    let mut breakpoints = BreakpointSet::new();
+    breakpoints.insert(container_idx, offset, "choices-entry");
+
+    story
+        .debug_run(&breakpoints, DEFAULT_DEBUG_BUDGET)
+        .expect("debug_run");
+
+    let snap = story.debug_snapshot();
+    assert_eq!(
+        snap.call_stack.first().map(|f| f.kind),
+        Some("thread"),
+        "must be stopped inside the live thread frame before testing step-out from it"
+    );
+    let before = story.debug_position();
+
+    let outcome = story
+        .debug_step(StepMode::Out, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+        .expect("debug_step out");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::NoStepOutTarget,
+        "step-out from inside a Thread frame must be refused, not treated as a return"
+    );
+    assert_eq!(
+        story.debug_position(),
+        before,
+        "refusing step-out from a Thread frame must not execute any VM step"
+    );
+}
+
+/// `StepMode::Over` must stop at an armed breakpoint reached inside the
+/// call it steps through, rather than blowing past it — standard
+/// debugger behavior.
+#[test]
+fn ink_step_over_stops_at_a_breakpoint_armed_inside_the_call() {
+    let (probe_program, probe_tables) = compile_ink(KNOT_INTO_FUNCTION_INK);
+    let mut probe = Story::<FastRng>::new(Arc::new(probe_program), probe_tables);
+    let n = intos_until_depth_increases(&mut probe, 1);
+
+    let (program, tables) = compile_ink(KNOT_INTO_FUNCTION_INK);
+    let def_id = program
+        .definition_id_for_path("double")
+        .expect("double should resolve");
+    let (bp_container_idx, bp_offset) = program
+        .resolve_address(def_id)
+        .expect("resolve_address for double's entry");
+
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+    for i in 0..n - 1 {
+        let step = story
+            .debug_step(StepMode::Into, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+            .expect("debug_step into (positioning replay)");
+        assert_eq!(
+            step.depth, 1,
+            "step {i} of the replay must still be at the caller's depth"
+        );
+    }
+    assert_eq!(
+        story.debug_call_stack_depth(),
+        1,
+        "positioned right before the call instruction, still at the caller's depth"
+    );
+
+    let mut breakpoints = BreakpointSet::new();
+    let bp_id = breakpoints.insert(bp_container_idx, bp_offset, "double-entry");
+
+    let outcome = story
+        .debug_step(StepMode::Over, &breakpoints, DEFAULT_DEBUG_BUDGET)
+        .expect("debug_step over");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::Breakpoint {
+            id: bp_id,
+            name: "double-entry".to_owned(),
+        },
+        "an armed breakpoint inside the called function must halt the Over step, not be skipped over"
+    );
+    assert_eq!(
+        outcome.depth, 2,
+        "the halt must be reported from inside the called function's own frame"
+    );
 }

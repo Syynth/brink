@@ -230,6 +230,17 @@ pub enum DebugStopReason {
     Breakpoint { id: BreakpointId, name: String },
     /// A watched global was written (`debug_run_watching` only).
     Watchpoint { global_idx: u32 },
+    /// A choice point was reached (`vm::Stepped::Done` with non-empty
+    /// pending choices) — the flow is now `WaitingForChoice`, distinct
+    /// from [`DebugStopReason::Terminal`]: unlike an actual `-> DONE`/
+    /// `-> END`, [`Story::choose`](crate::Story::choose) followed by
+    /// [`Story::continue_single`](crate::Story::continue_single) can
+    /// resume the story from here. Turn-index bump and invisible-default
+    /// auto-select have already been applied (the same bookkeeping
+    /// `advance_with_limit` performs on this outcome), so a caller that
+    /// hands control back to the production API sees consistent state
+    /// (issue #3186 review).
+    Choices,
     /// The requested step (into/over/out) completed normally.
     Step,
     /// The flow reached a terminal VM outcome (`-> DONE`/`-> END`, or
@@ -310,6 +321,25 @@ impl WatchpointObserver {
         } else {
             Some(self.pending.remove(0))
         }
+    }
+
+    /// Drain every hit recorded since the last `take_hits`/`clear` call, in
+    /// the order they were recorded. The public counterpart to `take_hit`
+    /// — for a consumer that composes this observer with
+    /// `Story::continue_single_observed`/`continue_maximally_observed`
+    /// (non-pausing logging, per this module's doc), `take_hit`'s
+    /// `pub(crate)` FIFO pop is not reachable from outside the crate, so
+    /// without this method `pending` would accumulate for the observer's
+    /// entire lifetime with no way for a consumer to clear it — the
+    /// unbounded-growth guard this method (and `clear`) close.
+    pub fn take_hits(&mut self) -> Vec<WatchHit> {
+        core::mem::take(&mut self.pending)
+    }
+
+    /// Discard every pending hit without returning them — the other half
+    /// of the unbounded-growth guard `take_hits` provides.
+    pub fn clear(&mut self) {
+        self.pending.clear();
     }
 }
 

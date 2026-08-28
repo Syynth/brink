@@ -134,6 +134,26 @@ release no-op stub compiled to nothing, keeping the production hot loop
 and step-limit accounting (`CLAUDE.md` "Guard against unbounded growth")
 completely untouched when the feature is off.
 
+**Debug budget — separate from the production step limit** (implemented
+D8, #3186; orchestrator decision-comment ruling, 2026-08-28, pending
+maintainer confirmation — recorded here per the "spec drift" review note
+on PR #3218 rather than left undocumented). `Story::debug_run`/
+`debug_step`/`debug_run_watching` bypass `FlowInstance::advance_with_limit`
+entirely (calling `vm::step` directly, per this section's own precedent
+above), so they never read or write `Stats::steps` — the counter
+`advance_with_limit`'s own `StepLimitExceeded` check reads. Instead each
+call counts VM steps in a loop-local variable against a caller-supplied
+`budget_ceiling`, defaulting to `DEFAULT_DEBUG_BUDGET = 200_000`
+(`brink-runtime::debug_control`) — generous enough that ordinary
+single-stepping never trips it, low enough that a `debug_run` that never
+reaches an armed breakpoint, or a `debug_step` step-over/out whose target
+frame never returns, reports back promptly instead of hanging a studio UI.
+Exceeding it is the new public `RuntimeError::DebugBudgetExceeded {
+breakpoint, ceiling }` — never `RuntimeError::StepLimitExceeded`, which would
+misattribute the debug-only budget as the production one. See
+`crates/brink-runtime/src/debug_control.rs`'s module doc for the full
+accounting argument.
+
 ## 2. The v1 `DebugInfo` entry encoding (DECIDED HERE)
 
 ### 2.1 Granularity — RULED, not re-litigated
