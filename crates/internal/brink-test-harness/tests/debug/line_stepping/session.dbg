@@ -1,0 +1,15 @@
+# The point of #3264, against the SAME fixture `step_over_a_call` uses
+# with `stepi`. Read the two transcripts side by side: four `stepi over`s
+# to cross line 7, one `step over`. That contrast is the whole feature,
+# and keeping both goldens on one story is what makes it legible.
+break story.ink:7
+run
+expect-line 7
+step over
+expect-line 8
+locals
+expect-local who = "vendor"
+# `next` is GDB's spelling of `step over` — same verb, and the transcript
+# shows it resolving to the same thing rather than a second mechanism.
+next
+expect-line 9

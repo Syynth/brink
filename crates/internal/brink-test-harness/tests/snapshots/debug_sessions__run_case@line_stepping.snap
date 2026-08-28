@@ -1,0 +1,16 @@
+---
+source: crates/internal/brink-test-harness/tests/debug_sessions.rs
+---
+break story.ink:7
+run -> breakpoint story.ink:7
+  at story.ink:7
+expect-line 7
+step over -> step
+  at story.ink:8
+expect-line 8
+locals
+  who = "vendor"
+expect-local who = "vendor"
+step over -> step
+  at story.ink:9
+expect-line 9

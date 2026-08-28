@@ -25,13 +25,11 @@
 //! for lines — because it is the convention every debugger user already
 //! has.
 //!
-//! Line stepping is #3264 and does not exist yet. `step` is therefore
-//! *recognised and refused* rather than left as an unknown verb, so the
-//! error names the ticket instead of reading like a typo. Instruction
-//! stepping is spelled `stepi` from the start, so that when `step` lands no
-//! existing golden silently changes meaning — its transcript would change
-//! too, but a reviewer would have to notice that the same word now means
-//! something else.
+//! Both verbs exist as of #3264: `stepi into|over|out` for instructions,
+//! `step into|over|out` (and `next`, GDB's spelling of `step over`) for
+//! lines. Instruction stepping was spelled `stepi` from the start
+//! precisely so that adding `step` could not silently change what an
+//! existing golden meant.
 //!
 //! **Lines are 1-based in scripts.** A script is a thing a person writes,
 //! and `main.ink:2` means what every editor means by line 2. The engine is
@@ -64,8 +62,10 @@ pub enum Command {
     /// `run` / `continue` — advance to the next breakpoint, choice point,
     /// or terminal outcome.
     Run,
-    /// `step into|over|out`.
-    Step(StepMode),
+    /// `stepi into|over|out` — one VM instruction.
+    StepInstruction(StepMode),
+    /// `step into|over|out` / `next` — one source line (#3264).
+    StepLine(StepMode),
     /// `locals` / `stack` — record the current frame's state in the
     /// transcript without asserting anything.
     Locals,
@@ -141,23 +141,21 @@ pub fn parse_script(text: &str) -> Result<Vec<Command>, ScriptError> {
             }
             "run" | "continue" => Command::Run,
             "stepi" => match rest {
-                "into" => Command::Step(StepMode::Into),
-                "over" => Command::Step(StepMode::Over),
-                "out" => Command::Step(StepMode::Out),
+                "into" => Command::StepInstruction(StepMode::Into),
+                "over" => Command::StepInstruction(StepMode::Over),
+                "out" => Command::StepInstruction(StepMode::Out),
                 other => return Err(err(format!("stepi takes into|over|out, got {other:?}"))),
             },
-            // Recognised and refused, not "unknown": line stepping is a
-            // wanted feature that does not exist yet, and an error naming
-            // the ticket is more use than one that reads like a typo.
-            "step" | "next" => {
-                return Err(err(
-                    "line-level stepping is not implemented yet (#3264). Use `stepi \
-                     into|over|out` for VM-instruction stepping, which is what exists \
-                     today — both granularities are wanted, so `step` is reserved rather \
-                     than aliased to `stepi`."
-                        .into(),
-                ));
-            }
+            // Line granularity (#3264). `next` is GDB's spelling of
+            // `step over`, accepted as the alias every debugger user
+            // already types.
+            "step" => match rest {
+                "into" => Command::StepLine(StepMode::Into),
+                "over" => Command::StepLine(StepMode::Over),
+                "out" => Command::StepLine(StepMode::Out),
+                other => return Err(err(format!("step takes into|over|out, got {other:?}"))),
+            },
+            "next" => Command::StepLine(StepMode::Over),
             "locals" => Command::Locals,
             "stack" => Command::Stack,
             "expect-line" => Command::ExpectLine(
@@ -295,7 +293,8 @@ pub fn run_script(session: &mut Session, script: &[Command]) -> Result<String, S
         match cmd {
             Command::Break { .. }
             | Command::Run
-            | Command::Step(_)
+            | Command::StepInstruction(_)
+            | Command::StepLine(_)
             | Command::Locals
             | Command::Stack => apply_action(session, cmd)?,
             Command::ExpectLine(_)
@@ -341,14 +340,32 @@ fn apply_action(session: &mut Session, cmd: &Command) -> Result<(), String> {
             session.last_reason = Some(outcome.reason);
             session.note_position();
         }
-        Command::Step(mode) => {
+        Command::StepInstruction(mode) => {
             let outcome = session
                 .story
                 .debug_step(*mode, &session.breakpoints, DEFAULT_DEBUG_BUDGET)
-                .map_err(|e| format!("{}\nstep failed: {e:?}", session.transcript))?;
+                .map_err(|e| format!("{}\nstepi failed: {e:?}", session.transcript))?;
             let _ = writeln!(
                 session.transcript,
                 "stepi {} -> {}",
+                match mode {
+                    StepMode::Into => "into",
+                    StepMode::Over => "over",
+                    StepMode::Out => "out",
+                },
+                describe(&outcome.reason)
+            );
+            session.last_reason = Some(outcome.reason);
+            session.note_position();
+        }
+        Command::StepLine(mode) => {
+            let outcome = session
+                .story
+                .debug_step_line(*mode, &session.breakpoints, DEFAULT_DEBUG_BUDGET)
+                .map_err(|e| format!("{}\nstep failed: {e:?}", session.transcript))?;
+            let _ = writeln!(
+                session.transcript,
+                "step {} -> {}",
                 match mode {
                     StepMode::Into => "into",
                     StepMode::Over => "over",

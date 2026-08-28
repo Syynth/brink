@@ -268,18 +268,8 @@ impl Program {
         &self,
         position: crate::debug::DebugPosition,
     ) -> Option<crate::debug::DebugSourceLocation> {
+        let entry = self.debug_entry_at(position)?;
         let debug_info = self.debug_info.as_ref()?;
-        let table = debug_info.containers.get(position.container_idx as usize)?;
-        let target = u32::try_from(position.offset).ok()?;
-        let idx = match table
-            .entries
-            .binary_search_by_key(&target, |e| e.bytecode_offset)
-        {
-            Ok(i) => i,
-            Err(0) => return None,
-            Err(i) => i - 1,
-        };
-        let entry = table.entries.get(idx)?;
         let file = debug_info.files.get(entry.file_idx as usize)?;
         let path = match file.surface {
             brink_format::FileSurface::Synthetic => None,
@@ -292,6 +282,84 @@ impl Program {
             range_start: entry.range_start,
             range_len: entry.range_len,
         })
+    }
+
+    /// The `DebugInfo` entry covering `position` — the floor lookup both
+    /// [`Self::resolve_debug_position`] and [`Self::debug_line_key`] share.
+    fn debug_entry_at(
+        &self,
+        position: crate::debug::DebugPosition,
+    ) -> Option<&brink_format::DebugEntry> {
+        let debug_info = self.debug_info.as_ref()?;
+        let table = debug_info.containers.get(position.container_idx as usize)?;
+        let target = u32::try_from(position.offset).ok()?;
+        let idx = match table
+            .entries
+            .binary_search_by_key(&target, |e| e.bytecode_offset)
+        {
+            Ok(i) => i,
+            Err(0) => return None,
+            Err(i) => i - 1,
+        };
+        table.entries.get(idx)
+    }
+
+    /// A cheap identity for "which source line is this position on":
+    /// `(file_idx, line_idx)`, both section-local and 0-based (#3264).
+    ///
+    /// Deliberately not `(String, u32)`: line stepping compares this once
+    /// per VM instruction, and cloning a path per instruction to answer
+    /// "same line?" would make the verb's cost scale with path length for
+    /// no benefit. The indices are only ever compared to each other, never
+    /// shown, so they never need resolving to text.
+    ///
+    /// `None` when the artifact carries no `DebugInfo`, the position has no
+    /// covering entry, or that file carries no line index (compiled without
+    /// source text — see `DebugFileEntry::line_starts`).
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) fn debug_line_key(
+        &self,
+        position: crate::debug::DebugPosition,
+    ) -> Option<(u32, u32)> {
+        let entry = self.debug_entry_at(position)?;
+        let file = self
+            .debug_info
+            .as_ref()?
+            .files
+            .get(entry.file_idx as usize)?;
+        let line = Self::line_index_in(file, entry.range_start)?;
+        Some((entry.file_idx, line))
+    }
+
+    /// 0-based line containing `byte` within `file`'s line index, or `None`
+    /// when that file carries no index or the offset precedes its first
+    /// line start (which a well-formed index makes impossible, since it
+    /// always begins at 0).
+    fn line_index_in(file: &brink_format::DebugFileEntry, byte: u32) -> Option<u32> {
+        if file.line_starts.is_empty() {
+            return None;
+        }
+        // `partition_point` gives the count of starts at or before `byte`;
+        // the line is one less. Never underflows for a well-formed index,
+        // whose first start is 0 — but a malformed artifact must degrade to
+        // `None` rather than wrap.
+        let count = file.line_starts.partition_point(|&s| s <= byte);
+        u32::try_from(count.checked_sub(1)?).ok()
+    }
+
+    /// 0-based line containing `byte` in `file` (#3264) — the public form
+    /// of the lookup [`Self::debug_line_key`] uses internally. `None` when
+    /// the file is unknown or carries no line index.
+    #[must_use]
+    pub fn line_at(&self, file: &str, byte: u32) -> Option<u32> {
+        let debug_info = self.debug_info.as_ref()?;
+        let entry = debug_info.files.iter().find(|f| {
+            matches!(
+                f.surface,
+                brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+            ) && f.path == file
+        })?;
+        Self::line_index_in(entry, byte)
     }
 
     /// The inverse of [`Self::resolve_debug_position`] (D9/#3187): the

@@ -89,28 +89,37 @@ fn native_flow() {
     run_case("native_flow");
 }
 
+/// The #3264 pair: line stepping over the same story `step_over_a_call`
+/// walks with `stepi`. Four instruction steps to cross line 7 there, one
+/// line step here — read the two transcripts together.
+#[test]
+fn line_stepping() {
+    run_case("line_stepping");
+}
+
 // ── Script parsing is its own contract ──────────────────────────────────
 
 #[test]
-fn line_stepping_is_refused_with_a_pointer_not_an_unknown_verb_error() {
-    // `step` is a wanted feature that does not exist yet (#3264). It is
-    // deliberately NOT aliased to `stepi`: both granularities are
-    // first-class, and silently giving someone instruction stepping when
-    // they asked for line stepping is how four presses per line becomes a
-    // mystery instead of a known gap.
-    for verb in ["step into", "next"] {
-        let err = parse_script(verb).expect_err("line stepping must be refused");
-        assert!(
-            err.message.contains("3264"),
-            "the refusal must name the ticket so it does not read like a typo, got: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("stepi"),
-            "and must point at the verb that does exist today, got: {}",
-            err.message
-        );
-    }
+fn step_and_next_parse_as_line_granularity_and_stepi_as_instruction() {
+    use brink_runtime::StepMode;
+    use brink_test_harness::debug_script::Command;
+
+    // The two granularities must stay distinguishable at the parser, not
+    // just at the executor: aliasing `step` onto `stepi` is precisely how
+    // "four presses per line" would become a mystery again.
+    assert_eq!(
+        parse_script("step over").expect("parses"),
+        vec![Command::StepLine(StepMode::Over)]
+    );
+    assert_eq!(
+        parse_script("stepi over").expect("parses"),
+        vec![Command::StepInstruction(StepMode::Over)]
+    );
+    // `next` is GDB's spelling of `step over`, not a third thing.
+    assert_eq!(
+        parse_script("next").expect("parses"),
+        parse_script("step over").expect("parses")
+    );
 }
 
 #[test]

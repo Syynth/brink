@@ -1003,6 +1003,10 @@ pub(crate) enum DebugStopReasonJs {
     Terminal,
     #[serde(rename = "noStepOutTarget")]
     NoStepOutTarget,
+    /// #3264: a line-granular step was asked for on an artifact that
+    /// cannot say which line execution is on.
+    #[serde(rename = "noLineInfo")]
+    NoLineInfo,
 }
 
 /// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
@@ -1027,6 +1031,7 @@ pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> Debu
             DebugStopReason::Step => DebugStopReasonJs::Step,
             DebugStopReason::Terminal => DebugStopReasonJs::Terminal,
             DebugStopReason::NoStepOutTarget => DebugStopReasonJs::NoStepOutTarget,
+            DebugStopReason::NoLineInfo => DebugStopReasonJs::NoLineInfo,
         },
         position: o.position.map(|p| DebugPositionJs {
             container_idx: p.container_idx,
