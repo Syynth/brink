@@ -145,12 +145,52 @@ describe("attachLayoutPersistence", () => {
     // `editorView` joined the durable set with Single File view (decision
     // log 2026-08-26): which view you write in is a preference that should
     // outlive a reload, like the dock layout around it.
+    //
+    // `singleFileCompanionOpen` joined it for the same reason (#3165) —
+    // whether you keep the player visible is a working-style preference,
+    // not a property of a story, so it is global rather than per-project.
     expect(Object.keys(snap).sort()).toEqual([
       "dockSizes",
       "editorView",
       "maximized",
       "open",
       "placements",
+      "singleFileCompanionOpen",
     ]);
+  });
+
+  it("round-trips the Single File companion toggle, and defaults it OPEN", () => {
+    // The bug (#3165): this was component-local `useState(true)`, so every
+    // mount reopened the split — a reload, and also switching to Code view
+    // and back. The cost fell entirely on authors who had deliberately
+    // hidden it; anyone happy with it open never noticed.
+    const storage = memoryStorage();
+
+    const store = createShellLayoutStore();
+    expect(store.getState().singleFileCompanionOpen).toBe(true);
+    store.getState().setSingleFileCompanionOpen(false);
+    storage.setItem(
+      LAYOUT_STORAGE_KEY,
+      // `version` is stamped by the writer, not by `snapshotLayout` — a
+      // hand-built payload without it is rejected wholesale.
+      JSON.stringify({ version: 1, ...snapshotLayout(store.getState()) }),
+    );
+
+    expect(loadLayoutSnapshot(storage)?.singleFileCompanionOpen).toBe(false);
+  });
+
+  it("treats a payload written before the toggle existed as open", () => {
+    // Lenient on purpose, like `editorView`: an older payload has no such
+    // key, and losing a whole dock layout over one missing boolean would be
+    // the worse trade.
+    // `validPayload()` IS a pre-#3165 payload — it predates the key, which
+    // is exactly the case under test. Building a minimal object by hand
+    // instead would test the other field validators rather than this one.
+    const storage = memoryStorage({
+      [LAYOUT_STORAGE_KEY]: JSON.stringify(validPayload()),
+    });
+    expect("singleFileCompanionOpen" in validPayload()).toBe(false);
+
+    expect(loadLayoutSnapshot(storage)?.singleFileCompanionOpen).toBe(true);
   });
 });

@@ -142,3 +142,32 @@
   font-size: var(--bs-font-tiny);
   color: var(--bs-fg-dim, #6c7086);
 }
+
+/* Dismiss (#3144). Session-scoped — the banner returns on reload, because
+   what it states can stop being true. Styled as the quietest thing in the
+   row: the banner is informational, so its close control should not compete
+   with the "Add INCLUDE" action that actually resolves the situation. */
+.brink-studio .scope-banner-dismiss {
+  flex-shrink: 0;
+  margin-left: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-medium);
+  line-height: 1;
+  cursor: pointer;
+}
+.brink-studio .scope-banner-dismiss:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .scope-banner-dismiss:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: -2px;
+}

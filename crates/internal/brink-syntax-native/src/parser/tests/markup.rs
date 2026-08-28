@@ -313,14 +313,74 @@ fn a_span_never_crosses_a_newline_it_is_line_scoped() {
 // ── Escape set — final (§8d.6) ────────────────────────────────────────
 
 #[test]
-fn all_four_escapes_produce_literals_with_no_errors() {
-    let src = "flow f() {\n  \\< \\{ \\# \\\\\n}\n";
+fn all_five_escapes_produce_literals_with_no_errors() {
+    // `\}` joined the set on 2026-08-28 (#3156) — see `is_escapable`.
+    let src = "flow f() {\n  \\< \\{ \\# \\\\ \\}\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
-    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 4);
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 5);
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPAN));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::TAG));
+}
+
+// ── `\}` (#3156) ─────────────────────────────────────────────────────
+//
+// The bug this closes was structural, not cosmetic: `}` in a content line
+// terminates the enclosing block, and before `R_BRACE` joined the escape
+// set there was NO spelling that put a literal `}` in native prose. An
+// author who wrote `\}` got a silently truncated flow — everything after it
+// fell OUTSIDE the flow, and the resulting diagnostics described the
+// wreckage rather than the typo.
+
+#[test]
+fn an_escaped_closing_brace_does_not_terminate_the_enclosing_block() {
+    let src = "flow f() {\n  A literal \\{brace\\} here.\n  -> DONE\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    // The claim that matters is STRUCTURAL, so assert the nesting rather
+    // than the absence of errors: the pre-fix parse also produced a tree,
+    // just one where the divert had fallen out of the flow.
+    let done = src.find("-> DONE").expect("fixture contains the divert");
+    let ancestry: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| {
+            // `u32::try_from` rather than `as`: the fixture is tiny, but a
+            // silent truncation here would move the probe point and quietly
+            // assert about the wrong node.
+            let at = u32::try_from(done).expect("fixture offset fits in u32");
+            n.text_range().contains(rowan::TextSize::from(at))
+        })
+        .map(|n| format!("{:?}", n.kind()))
+        .collect();
+    assert!(
+        ancestry.iter().any(|k| k == "FLOW_DECL"),
+        "the divert after an escaped `}}` must still be INSIDE the flow; ancestry: {ancestry:?}"
+    );
+}
+
+#[test]
+fn an_escaped_closing_brace_alone_is_a_literal() {
+    let src = "flow f() {\n  A literal \\} here.\n  -> DONE\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+}
+
+#[test]
+fn a_bare_closing_brace_in_content_still_terminates_the_block() {
+    // NOT a gap left open by accident — ruled 2026-08-28 alongside adding
+    // `\}` to the set. `}` keeps its structural role; the escape is what
+    // gives an author a way to opt out of it. Pinned so that a later change
+    // making a bare `}` literal has to be a deliberate one.
+    let src = "flow f() {\n  A literal } here.\n  -> DONE\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "a bare `}}` still closes the block, so the trailing source is stray"
+    );
 }
 
 #[test]

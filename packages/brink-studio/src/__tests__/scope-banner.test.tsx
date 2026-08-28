@@ -99,6 +99,56 @@ describe("InkFileDocument scope banner", () => {
     ).toBe("Add INCLUDE to main.ink");
   });
 
+  // ── Dismissal (#3144, ruled 2026-08-28: per file, this session) ─────
+
+  it("dismissing hides the banner for THAT file only", () => {
+    const store = seedStore();
+    const { project } = fakeProject("Hello.\n");
+    store.setState({ _project: project as never });
+    mount(store, inkDoc("offcuts.ink"));
+
+    act(() => {
+      container!.querySelector<HTMLButtonElement>(".scope-banner-dismiss")!.click();
+    });
+    expect(container!.querySelector(".brink-scope-banner")).toBeNull();
+
+    // A DIFFERENT out-of-scope file still says so — the dismissal is keyed
+    // by path, not a single global "quiet" flag.
+    mount(store, inkDoc("other-offcut.ink"));
+    expect(container!.querySelector(".brink-scope-banner")).not.toBeNull();
+  });
+
+  it("dismissal survives a remount, which a tab switch performs", () => {
+    // The failure this design avoids: component-local state would forget on
+    // every tab switch, which is the complaint that opened #3144.
+    const store = seedStore();
+    const { project } = fakeProject("Hello.\n");
+    store.setState({ _project: project as never });
+    mount(store, inkDoc("offcuts.ink"));
+    act(() => {
+      container!.querySelector<HTMLButtonElement>(".scope-banner-dismiss")!.click();
+    });
+
+    mount(store, inkDoc("offcuts.ink"));
+    expect(container!.querySelector(".brink-scope-banner")).toBeNull();
+  });
+
+  it("dismissing does not change what the studio believes about the file", () => {
+    // The banner is a NOTICE. Putting it away must gate only the notice —
+    // `isOutOfScope` is read by other surfaces, and a dismissal that
+    // changed it would quietly rewrite the project model.
+    const store = seedStore();
+    const { project } = fakeProject("Hello.\n");
+    store.setState({ _project: project as never });
+    mount(store, inkDoc("offcuts.ink"));
+    act(() => {
+      container!.querySelector<HTMLButtonElement>(".scope-banner-dismiss")!.click();
+    });
+
+    const { closureFiles, outline } = store.getState();
+    expect(isOutOfScope("offcuts.ink", closureFiles, outline)).toBe(true);
+  });
+
   it("shows no banner for a file in the closure", () => {
     const store = seedStore();
     mount(store, inkDoc("main.ink"));

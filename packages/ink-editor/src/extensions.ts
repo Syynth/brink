@@ -1,6 +1,24 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
-import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
+import type {
+  CompileResult,
+  SemanticToken,
+  HirProjection,
+  CompletionItem,
+  HoverInfo,
+  Location,
+  InlayHint,
+  CallWidgetSite,
+  SignatureInfo,
+  FoldRange,
+  CodeAction,
+  StructuralResult,
+  AutoImportResult,
+  DialogueDialect,
+} from "@brink/wasm-types";
+import {
+  documentHandleFacet,
+  type DocumentHandleSlot,
+} from "./document-handle.js";
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 import { hangingIndent } from "./hanging-indent.js";
 import { EditorView } from "@codemirror/view";
@@ -8,7 +26,11 @@ import { indentUnit } from "@codemirror/language";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
-import { dialectFacet, reclassifyEffect, elementTypeField } from "./element-type.js";
+import {
+  dialectFacet,
+  reclassifyEffect,
+  elementTypeField,
+} from "./element-type.js";
 import { highlightExtension } from "./highlight.js";
 import { diagnosticsExtension } from "./diagnostics.js";
 import { brinkKeymap } from "./keybindings.js";
@@ -17,7 +39,10 @@ import { hoverExtension } from "./hover.js";
 import { gotoDefinitionExtension } from "./goto-definition.js";
 import { foldingExtension } from "./folding.js";
 import { inlayHintsExtension } from "./inlay-hints.js";
-import { argumentWidgetsExtension, type FormGlyphMode } from "./argument-widgets.js";
+import {
+  argumentWidgetsExtension,
+  type FormGlyphMode,
+} from "./argument-widgets.js";
 import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension, type BreakageContext } from "./rename.js";
@@ -147,23 +172,38 @@ export interface BrinkStudioOptions {
 
   // IDE features (all optional — features are enabled when provided)
   /** Sync or async (W2c) — see `CompletionsOptions.getCompletions`. */
-  getCompletions?: (source: string, offset: number) => CompletionItem[] | Promise<CompletionItem[]>;
+  getCompletions?: (
+    source: string,
+    offset: number,
+  ) => CompletionItem[] | Promise<CompletionItem[]>;
   /** Auto-import (#312 F): on accepting an out-of-scope completion, ensure the
    *  current file `INCLUDE`s the symbol's source file. Only consulted when
    *  `getCompletions` is also provided. */
   autoImport?: (target: string) => AutoImportResult;
   /** Sync or async (W2c) — see `HoverOptions.getHover`. */
-  getHover?: (source: string, offset: number) => HoverInfo | null | Promise<HoverInfo | null>;
+  getHover?: (
+    source: string,
+    offset: number,
+  ) => HoverInfo | null | Promise<HoverInfo | null>;
   /** Sync or async (#3110). */
-  gotoDefinition?: (source: string, offset: number) => Location | null | Promise<Location | null>;
+  gotoDefinition?: (
+    source: string,
+    offset: number,
+  ) => Location | null | Promise<Location | null>;
   /** Called when goto-definition targets a different file. */
   onNavigateToFile?: (location: Location) => void;
   /** Returns the current active file path (for cross-file navigation detection). */
   getActiveFile?: () => string;
   /** Sync or async (#3110). */
-  findReferences?: (source: string, offset: number) => Location[] | Promise<Location[]>;
+  findReferences?: (
+    source: string,
+    offset: number,
+  ) => Location[] | Promise<Location[]>;
   /** Sync or async (#3110). */
-  prepareRename?: (source: string, offset: number) => Location | null | Promise<Location | null>;
+  prepareRename?: (
+    source: string,
+    offset: number,
+  ) => Location | null | Promise<Location | null>;
   /** Live (debounced) safe-rename query for the inline-rename badge (#323/#324):
    *  computes the new sources + breakage report without applying anything.
    *  `offset` is in view coords; the host folds in any fragment-view origin. */
@@ -175,12 +215,22 @@ export interface BrinkStudioOptions {
   /** Commit an inline rename — apply the (already-computed) edits across files.
    *  Called on a safe Enter or an explicit "Rename anyway". `currentName` is the
    *  symbol's original name (for re-keying open symbol tabs). */
-  commitRename?: (result: StructuralResult, newName: string, currentName: string) => void;
+  commitRename?: (
+    result: StructuralResult,
+    newName: string,
+    currentName: string,
+  ) => void;
   /** Optional host override for the inline breakage surface (#324). Return
    *  `true` to suppress the default inline report and render your own. */
-  onRenameBreakage?: (result: StructuralResult, ctx: BreakageContext) => boolean;
+  onRenameBreakage?: (
+    result: StructuralResult,
+    ctx: BreakageContext,
+  ) => boolean;
   /** Sync or async (W2c) — see `CodeActionsOptions.getCodeActions`. */
-  getCodeActions?: (source: string, offset: number) => CodeAction[] | Promise<CodeAction[]>;
+  getCodeActions?: (
+    source: string,
+    offset: number,
+  ) => CodeAction[] | Promise<CodeAction[]>;
   /**
    * Resolve + apply a (non-extract) code action chosen from the menu (#321
    * studio side): compute its `StructuralResult` via `resolveCodeAction` and
@@ -203,9 +253,17 @@ export interface BrinkStudioOptions {
   ) => StructuralResult | null;
   /** Apply an already-computed extract result — the host's apply seam
    *  (toast + Undo). Called on a safe Enter or an explicit "Extract anyway". */
-  applyExtract?: (kind: ExtractKind, result: StructuralResult, name: string) => void;
+  applyExtract?: (
+    kind: ExtractKind,
+    result: StructuralResult,
+    name: string,
+  ) => void;
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
-  getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
+  getArgumentWidgets?: (
+    source: string,
+    start: number,
+    end: number,
+  ) => CallWidgetSite[];
   /** How the inline call-level argument-form glyph is shown. Default `off`. */
   argumentFormGlyph?: FormGlyphMode;
   /** Accepting a function completion inserts `()` + opens the Form. Default false. */
@@ -221,11 +279,17 @@ export interface BrinkStudioOptions {
    *  declarations (#186). */
   onPlayFrom?: (inkPath: string, label?: string) => void;
   /** Right-click a knot/stitch declaration → the shared symbol context menu. */
-  onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
+  onSymbolContextMenu?: (
+    info: { knot: string; stitch?: string },
+    x: number,
+    y: number,
+  ) => void;
   /** Right-click anywhere that isn't a symbol header: the editor-owned text
    *  menu (docs/editor-context-menu-spec.md). When provided, the native
    *  context menu never appears inside the editor. */
-  onTextContextMenu?: (request: import("./play-from-here.js").TextMenuRequest) => void;
+  onTextContextMenu?: (
+    request: import("./play-from-here.js").TextMenuRequest,
+  ) => void;
   /** Host references surface: Find References (menu + Shift-Alt-F) routes
    *  its results here (the Search panel) instead of the in-view highlight.
    *  `declaration` (when goto-definition resolves one) anchors the host's
@@ -243,7 +307,11 @@ export interface BrinkStudioOptions {
    * Recomputed on document changes; dispatch `refreshGutterMarkersEffect` (or
    * call `refreshGutterMarkers(view)`) when the marker set changes externally.
    */
-  getGutterMarkers?: (source: string, fromLine: number, toLine: number) => HostGutterMarker[];
+  getGutterMarkers?: (
+    source: string,
+    fromLine: number,
+    toLine: number,
+  ) => HostGutterMarker[];
   /** Shared click handler for host gutter markers — fires after the marker's
    *  own `onClick`. Only consulted when `getGutterMarkers` is provided. */
   onGutterMarkerClick?: (marker: HostGutterMarker, line: number) => void;
@@ -305,10 +373,14 @@ function resolveDialectOption(
  * dialect spec — its dialect-specific branches self-guard on element kinds
  * that simply never appear when no dialect is active.
  */
-export function setDialect(view: EditorView, dialect: DialogueDialect | null): void {
+export function setDialect(
+  view: EditorView,
+  dialect: DialogueDialect | null,
+): void {
   const handleSlot = view.state.facet(documentHandleFacet);
   const resolved = resolveDialectOption(dialect, handleSlot ?? undefined);
-  const screenplayLayer: Extension = dialect === null ? [] : screenplayDecorations();
+  const screenplayLayer: Extension =
+    dialect === null ? [] : screenplayDecorations();
   view.dispatch({
     effects: [
       dialectCompartment.reconfigure(dialectFacet.of(resolved)),
@@ -338,15 +410,17 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     );
   }
   if (options.gotoDefinition) {
-    ideExtensions.push(gotoDefinitionExtension({
-      gotoDefinition: options.gotoDefinition,
-      onNavigateToFile: options.onNavigateToFile,
-      getActiveFile: options.getActiveFile,
-      // Cmd-click on the definition itself runs Find References instead
-      // of a no-op self-navigation (ruled 2026-08-24).
-      findReferences: options.findReferences,
-      onShowReferences: options.onShowReferences,
-    }));
+    ideExtensions.push(
+      gotoDefinitionExtension({
+        gotoDefinition: options.gotoDefinition,
+        onNavigateToFile: options.onNavigateToFile,
+        getActiveFile: options.getActiveFile,
+        // Cmd-click on the definition itself runs Find References instead
+        // of a no-op self-navigation (ruled 2026-08-24).
+        findReferences: options.findReferences,
+        onShowReferences: options.onShowReferences,
+      }),
+    );
   }
   if (options.getFoldingRanges) {
     ideExtensions.push(
@@ -375,7 +449,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     );
   }
   if (options.getSignatureHelp) {
-    ideExtensions.push(signatureHelpExtension({ getSignatureHelp: options.getSignatureHelp }));
+    ideExtensions.push(
+      signatureHelpExtension({ getSignatureHelp: options.getSignatureHelp }),
+    );
   }
   if (options.findReferences) {
     ideExtensions.push(
@@ -398,7 +474,8 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   }
   if (options.getCodeActions) {
     const { computeExtract, applyExtract, applyCodeAction } = options;
-    const extractEnabled = computeExtract !== undefined && applyExtract !== undefined;
+    const extractEnabled =
+      computeExtract !== undefined && applyExtract !== undefined;
     ideExtensions.push(
       codeActionsExtension({
         getCodeActions: options.getCodeActions,
@@ -412,7 +489,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
           if (isExtractAction(action)) {
             if (!extractEnabled) return;
             const kind: ExtractKind =
-              action.data.action === EXTRACT_TO_KNOT_ACTION ? "knot" : "function";
+              action.data.action === EXTRACT_TO_KNOT_ACTION
+                ? "knot"
+                : "function";
             const sel = view.state.selection.main;
             // Snap to whole lines so the prompt anchor + wasm op agree.
             const start = view.state.doc.lineAt(sel.from).from;
@@ -425,7 +504,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       }),
     );
     if (computeExtract !== undefined && applyExtract !== undefined) {
-      ideExtensions.push(extractActionsExtension({ computeExtract, applyExtract }));
+      ideExtensions.push(
+        extractActionsExtension({ computeExtract, applyExtract }),
+      );
     }
   }
   if (options.onPlayFrom) {
@@ -442,7 +523,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         getActiveFile: options.getActiveFile,
         onNavigateToFile: options.onNavigateToFile,
         renameEnabled: Boolean(
-          options.prepareRename && options.renameSymbolAt && options.commitRename,
+          options.prepareRename &&
+          options.renameSymbolAt &&
+          options.commitRename,
         ),
         prepareRename: options.prepareRename,
       }),
@@ -461,7 +544,8 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
 
   // Theme opt-out (#363): `false` ⇒ headless (host CSS owns the skin);
   // an Extension ⇒ the host's own theme; absent ⇒ the studio brinkTheme.
-  const theme: Extension = options.theme === false ? [] : (options.theme ?? brinkTheme);
+  const theme: Extension =
+    options.theme === false ? [] : (options.theme ?? brinkTheme);
 
   // Dialect (#368): `dialect: null` tears down the screenplay-specific layer
   // (decorations/keybindings); absent ⇒ the at-cue preset (byte-identical
@@ -480,7 +564,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   // on element kinds that never appear when no dialect is active. Only the
   // screenplay decorations/atomic-ranges/edit-guard are gated by
   // `screenplayCompartment`.
-  const resolvedDialect = resolveDialectOption(options.dialect, options.handleSlot);
+  const resolvedDialect = resolveDialectOption(
+    options.dialect,
+    options.handleSlot,
+  );
   const screenplayLayer: Extension =
     options.dialect === null ? [] : screenplayDecorations();
 
@@ -511,33 +598,96 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       ? []
       : [
           indentationMarkers({
-          hideFirstIndent: true,
-          // OFF and load-bearing (maintainer perf report, 2026-08-23):
-          // the active-block highlight regenerates every visible guide on
-          // EVERY cursor move, and its block scan walks lazily-computed
-          // indentation from the cursor toward BOTH ends of the whole
-          // document — O(doc) per keystroke, catastrophic on a
-          // real-project file. The static guides never pay that cost.
-          highlightActiveBlock: false,
-          thickness: 1,
-          colors: {
-            light: "var(--bs-border)",
-            dark: "var(--bs-border)",
-            activeLight: "var(--bs-border-strong, var(--bs-fg-muted))",
-            activeDark: "var(--bs-border-strong, var(--bs-fg-muted))",
-          },
+            hideFirstIndent: true,
+            // OFF and load-bearing (maintainer perf report, 2026-08-23):
+            // the active-block highlight regenerates every visible guide on
+            // EVERY cursor move, and its block scan walks lazily-computed
+            // indentation from the cursor toward BOTH ends of the whole
+            // document — O(doc) per keystroke, catastrophic on a
+            // real-project file. The static guides never pay that cost.
+            highlightActiveBlock: false,
+            thickness: 1,
+            colors: {
+              light: "var(--bs-border)",
+              dark: "var(--bs-border)",
+              activeLight: "var(--bs-border-strong, var(--bs-fg-muted))",
+              activeDark: "var(--bs-border-strong, var(--bs-fg-muted))",
+            },
           }),
-          // Guide breaks at wraps (maintainer, 2026-08-23): the package
-          // paints one full-height pseudo per LINE, so a wrapped line's
-          // guides ran alongside every continuation row. Capping the
-          // pseudo to one text row (`1lh` — exact for any line-height)
-          // leaves a visible break under each wrapped continuation. The
-          // old Chromium 88 floor would not know `lh`; the maintainer
-          // ruled that floor out of scope (2026-08-23).
           EditorView.baseTheme({
-            ".cm-lineWrapping .cm-indent-markers::before": {
+            // ── Column alignment (#3141) ──────────────────────────────
+            //
+            // The package paints its guides HALF A CHARACTER right of the
+            // column they mark. Not a rounding artefact — it is literal in
+            // the upstream gradient, which builds its background-position
+            // as `${startOffset * indentWidth}.5ch`, appending a `.5` to
+            // every stop. So a caret sitting at that indent level lands
+            // half a character LEFT of its own guide, which reads as if
+            // one more space were needed to line up.
+            //
+            // Constant, not compounding: the `.5` is added once per stop
+            // rather than accumulated, so depth 1 and depth 6 are equally
+            // wrong. That is why this is a fixed shift rather than a
+            // character-width correction.
+            //
+            // Shifting the pseudo LEFT beats overriding
+            // `background-position`, which is where the offset actually
+            // lives: that property also carries `startOffset * indentWidth`
+            // — the first visible column, which matters for a horizontally
+            // scrolled line — and rewriting it here would have to
+            // reconstruct that from state this rule cannot see. `2px` is
+            // the package's own value, mirroring `.cm-line`'s padding.
+            //
+            // `ch` rather than a pixel nudge because the editor font size
+            // is user-settable (Mod-= / Mod--): a fixed 3.6px is only
+            // correct at one size, and wrong at both extremes of the range.
+            // `.cm-line` is redundant for MATCHING — the marker class only
+            // ever lands on a line — but not for WINNING. The package sets
+            // `left: 2px` at the same specificity as a bare
+            // `.cm-indent-markers::before`, and CodeMirror injects its base
+            // theme after ours, so an equal-specificity rule silently loses
+            // on order. Measured in the browser: the height override (which
+            // the package does not set) applied while the left override did
+            // not. One extra class makes it (0,3,1) against (0,2,1) and the
+            // order stops mattering.
+            ".cm-line.cm-indent-markers::before": {
+              left: "calc(2px - 0.5ch)",
+
+              // ── Row gap (#3143, maintainer 2026-08-27) ──────────────
+              //
+              // Inky draws each row's guide slightly shorter than the row,
+              // so consecutive rows show a small break rather than one
+              // unbroken rule. The package paints a full-height pseudo, so
+              // the gap has to come from the height.
+              //
+              // `1lh` is one text row exactly, at any line-height — the
+              // same unit the wrapped-line rule below already relies on,
+              // and the reason a percentage is wrong here (the pseudo is
+              // not guaranteed to be exactly one row on a wrapped line).
+              // The 2px comes off the BOTTOM, leaving the break under each
+              // row where Inky puts it.
+              //
+              // `bottom: auto` is required, not decorative: the package
+              // sets `top: 0` AND `bottom: 0`, which pins both edges and
+              // makes `height` inert. Releasing the bottom is what lets the
+              // height apply.
+              //
+              // This ALSO subsumes the wrapped-line fix (maintainer,
+              // 2026-08-23): the package paints one full-height pseudo per
+              // LINE, so on a wrapped line its guide ran alongside every
+              // continuation row. Capping to one text row fixes that too.
+              //
+              // That earlier fix used to live in its own
+              // `.cm-lineWrapping …` rule, which was DELETED here rather
+              // than kept — keeping it broke the gap. Line wrapping is on
+              // for every line in this editor, so that selector was
+              // strictly more specific (0,4,1 vs 0,3,1) and quietly won,
+              // putting `height: 1lh` back and cancelling the 2px. Two
+              // rules stating the same invariant at different specificities
+              // is how you get a fix that measures as applied and renders
+              // as absent.
               bottom: "auto",
-              height: "1lh",
+              height: "calc(1lh - 2px)",
             },
           }),
         ],

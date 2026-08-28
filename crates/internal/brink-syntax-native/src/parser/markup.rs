@@ -109,8 +109,8 @@
 //! unrecognized backslash.
 
 use crate::SyntaxKind::{
-    AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, MINUS, QUOTE, SLASH, SPAN,
-    SPAN_ATTR, SPAN_ATTR_VALUE, SPAN_NAME, STRING_ESCAPE, STRING_TEXT,
+    AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, MINUS, QUOTE, R_BRACE, SLASH,
+    SPAN, SPAN_ATTR, SPAN_ATTR_VALUE, SPAN_NAME, STRING_ESCAPE, STRING_TEXT,
 };
 
 use super::Parser;
@@ -319,11 +319,26 @@ pub(crate) fn consume_stray_close(p: &mut Parser<'_, '_>) {
 
 // ── Escapes (§8d.6, the set is final) ────────────────────────────────
 
-/// True when `k` is one of the four escapable tokens `\<` `\{` `\#` `\\`
-/// produce literals from. **Do not extend this** — §8d.6 rules the set
-/// final.
+/// True when `k` is one of the escapable tokens `\<` `\{` `\#` `\\` `\}`
+/// produce literals from.
+///
+/// **Do not extend this without a ruling** — §8d.6 rules the set closed,
+/// and a closed set that quietly accepts members outside it is not closed
+/// in any way an author can rely on.
+///
+/// `R_BRACE` joined the original four on 2026-08-28, REVISING the
+/// 2026-08-2x ruling that declined it (decision log, §4.7b: "`\}` does NOT
+/// gain `\{`'s backslash-parity carve-out"). What changed is the evidence:
+/// measured, a `}` anywhere in a content line closes the enclosing block,
+/// so before this there was NO spelling — escaped or bare — that put a
+/// literal `}` in native prose. The old ruling reasoned from `}` not being
+/// in the set; it did not weigh that the set therefore left an
+/// unwritable character.
+///
+/// The asymmetry mattered too: `\{` worked, so an author had every reason
+/// to expect `\}` to, and got a silently truncated flow instead.
 fn is_escapable(k: crate::SyntaxKind) -> bool {
-    matches!(k, LT | L_BRACE | HASH | BACKSLASH)
+    matches!(k, LT | L_BRACE | HASH | BACKSLASH | R_BRACE)
 }
 
 /// `BACKSLASH` plus exactly one of `< { # \`, immediately adjacent (no

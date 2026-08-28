@@ -96,6 +96,12 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
   // the story. The DraftMark beside the file's name is what remains, so
   // the state is still visible — it is stated once, quietly, instead of
   // being announced on every open.
+  // Dismissal (#3144) is per-file and lasts the session (ruled
+  // 2026-08-28). It gates only the BANNER — never `isOutOfScope` itself,
+  // which other surfaces read — so putting the notice away cannot change
+  // what the studio believes about the file.
+  const dismissed = useStudioStore((s) => s.dismissedScopeBanners).has(path);
+  const dismissScopeBanner = useStudioStore((s) => s.dismissScopeBanner);
   const outOfScope = useMemo(
     () => isOutOfScope(path, closure, outline) && !draftFiles.includes(path),
     [path, closure, outline, draftFiles],
@@ -125,7 +131,7 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
   return (
     <div className="brink-ink-document-frame">
       {isConfigPath(path) && <ConfigFormPanel path={path} />}
-      {outOfScope && (
+      {outOfScope && !dismissed && (
         <div className="brink-scope-banner" role="note">
           <span className="scope-banner-icon">{INFO_ICON}</span>
           <span className="scope-banner-msg">
@@ -141,6 +147,14 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
               Add INCLUDE to {entryBase}
             </button>
           )}
+          <button
+            className="scope-banner-dismiss"
+            onClick={() => dismissScopeBanner(path)}
+            aria-label="Dismiss this notice"
+            title="Dismiss for this session"
+          >
+            ×
+          </button>
         </div>
       )}
       <div ref={containerRef} className="brink-ink-document" />

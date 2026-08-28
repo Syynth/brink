@@ -668,6 +668,26 @@ fn a_tag_with_an_escaped_open_brace_lowers_with_the_backslash_stripped() {
 }
 
 #[test]
+fn an_escaped_closing_brace_lowers_to_a_literal_brace() {
+    // #3156. The CST test proves `\}` no longer terminates the block; this
+    // proves the literal actually reaches the story. Before `R_BRACE`
+    // joined the escape set there was no spelling that got a `}` into
+    // native prose at all — an author's `\}` truncated the flow instead.
+    let (hir, _m, diags) = lower_src("flow a() {\n  A literal \\{brace\\} here.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    assert!(
+        matches!(&c.parts[0], ContentPart::Text(t) if t == "A literal {brace} here."),
+        "both braces should survive as literals with their backslashes \
+         stripped, got {:?}",
+        c.parts
+    );
+}
+
+#[test]
 fn a_standalone_at_prefixed_tag_line_emits_e172() {
     // A whole-line tag — the `TAG_LINE` arm of `lower_one_item`.
     let (hir, _m, diags) = lower_src("flow a() {\n  #@private\n}\n");

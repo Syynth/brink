@@ -31,6 +31,22 @@ export interface DocumentsSlice {
    * all want different sections.
    */
   settingsSection: string | null;
+
+  /**
+   * Out-of-scope banners the author has put away, by path.
+   *
+   * SESSION-SCOPED and deliberately not persisted (ruled 2026-08-28): the
+   * banner states something true about the project right now, so a
+   * dismissal that outlived the session would keep quiet about a file the
+   * author later un-INCLUDEs on purpose. Coming back on reload is the
+   * accepted cost of never going stale.
+   *
+   * A Set rather than a per-document flag because the banner is rendered by
+   * whichever view holds the file, and a tab switch remounts that view —
+   * component-local state would forget on every switch, which is the same
+   * complaint that opened #3144.
+   */
+  dismissedScopeBanners: ReadonlySet<string>;
   /** docKey ("main.ink" / "main.ink::start") of the focused group's active
    *  ink document; "" when none. */
   activeDocKey: string;
@@ -66,6 +82,8 @@ export interface DocumentsSlice {
   openTarget(target: TabTarget, pinned: boolean): void;
   /** Open Settings at `section` (default: the first one), or close it. */
   setSettingsSection(section: string | null): void;
+  /** @see dismissedScopeBanners */
+  dismissScopeBanner(path: string): void;
   /** Close every open tab for `path` (file + its symbol docs). Used by delete
    *  so the shell tears the views down before the file leaves the session. */
   closeDocsForPath(path: string): void;
@@ -99,12 +117,19 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 ) => ({
   activeDocKey: "",
   settingsSection: null,
+  dismissedScopeBanners: new Set<string>(),
   navSeq: 0,
   dirtyFiles: 0,
   _openTarget: null,
   _closeDocsForPath: null,
   _renameDocPath: null,
   _renameSymbolDoc: null,
+
+  dismissScopeBanner(path) {
+    const next = new Set(get().dismissedScopeBanners);
+    next.add(path);
+    set({ dismissedScopeBanners: next });
+  },
 
   setSettingsSection(section) {
     set({ settingsSection: section });
