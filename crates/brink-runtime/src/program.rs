@@ -294,6 +294,187 @@ impl Program {
         })
     }
 
+    /// The inverse of [`Self::resolve_debug_position`] (D9/#3187): the
+    /// program address to break on for a span of **source** text — issue
+    /// #3246, the half a breakpoint gutter needs. `BreakpointSet` is keyed
+    /// by `(container_idx, offset)`; an editor speaks in source. This maps
+    /// the latter to the former.
+    ///
+    /// # Why a byte range and not a line number
+    ///
+    /// The `DebugInfo` section records **byte ranges**, and a `Program`
+    /// holds neither source text nor a line table — so it physically
+    /// cannot turn "line 7" into bytes. That conversion belongs where the
+    /// source already lives (the editor, the CLI's own file read), which
+    /// also keeps the UTF-8/UTF-16 question out of the runtime entirely.
+    /// The caller passes the half-open byte range `[start, end)` it
+    /// considers "the line" (or a selection, or any span), and this answers
+    /// where to break within it.
+    ///
+    /// # Which candidate wins
+    ///
+    /// Every entry in every container whose file is `file` and whose
+    /// `range_start` lies in `[start, end)` is a candidate. The winner is
+    /// the minimum by `(range_start, container_idx, bytecode_offset)`:
+    ///
+    /// - **`range_start` first** — the textually earliest construct in the
+    ///   span, which is what "break on this line" means to a person. Note
+    ///   this is deliberately *not* "lowest `container_idx`": containers
+    ///   are independent bytecode streams with no execution order between
+    ///   them, so ordering by container index would be arbitrary dressed
+    ///   up as a rule.
+    /// - **then `container_idx`, then `bytecode_offset`** — pure
+    ///   tie-breaking, so a given span always yields the same address
+    ///   rather than whichever entry iteration happened to reach first
+    ///   (`CLAUDE.md`: determinism matters).
+    ///
+    /// # `None` is a real answer, not a failure
+    ///
+    /// Returns `None` when the span contains no executable code at all — a
+    /// comment, a blank line, a line whose code folded away — and when the
+    /// artifact carries no `DebugInfo` or names no such file. Callers
+    /// **must** surface that: a gutter has to refuse to arm visibly,
+    /// because a breakpoint that silently never hits is worse than no
+    /// breakpoint.
+    ///
+    /// Entries whose file is the reserved synthetic sentinel (§2.5) never
+    /// match, since no author-facing path names it.
+    #[must_use]
+    pub fn resolve_source_range(
+        &self,
+        file: &str,
+        start: u32,
+        end: u32,
+    ) -> Option<crate::debug::DebugPosition> {
+        let debug_info = self.debug_info.as_ref()?;
+
+        // Path -> file table index. Synthetic entries carry no
+        // author-facing path and must never match one.
+        let file_idx = u32::try_from(debug_info.files.iter().position(|f| {
+            matches!(
+                f.surface,
+                brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+            ) && f.path == file
+        })?)
+        .ok()?;
+
+        let mut best: Option<(u32, u32, u32)> = None;
+        for (container_idx, table) in debug_info.containers.iter().enumerate() {
+            let Ok(container_idx) = u32::try_from(container_idx) else {
+                continue;
+            };
+            for entry in &table.entries {
+                if entry.file_idx != file_idx
+                    || entry.range_start < start
+                    || entry.range_start >= end
+                {
+                    continue;
+                }
+                let candidate = (entry.range_start, container_idx, entry.bytecode_offset);
+                if best.is_none_or(|current| candidate < current) {
+                    best = Some(candidate);
+                }
+            }
+        }
+
+        let (_, container_idx, bytecode_offset) = best?;
+        Some(crate::debug::DebugPosition {
+            container_idx,
+            offset: bytecode_offset as usize,
+        })
+    }
+
+    /// The program address to break on for a **line** of source, with no
+    /// source text required (#3261) — the `DebugInfo` file table carries a
+    /// per-file line index, so the engine can answer `file:line` directly.
+    ///
+    /// `line` is **0-based**. Every UI that shows 1-based line numbers
+    /// converts at its own edge; keeping the engine 0-based means the
+    /// fencepost lives in exactly one place per consumer instead of being
+    /// re-decided here.
+    ///
+    /// This is the shape a remote debugger frontend needs — DAP's
+    /// `setBreakpoints` is file + line, and an adapter may hold no source
+    /// at all. It is a thin wrapper over
+    /// [`Self::resolve_source_range`]: the line index turns the line into
+    /// its half-open byte span, and the same "textually earliest construct
+    /// wins" rule picks the address.
+    ///
+    /// `None` when the file is unknown, carries no line index (compiled
+    /// before this data existed, or with no source text supplied), the line
+    /// is past the end of the file, or the line holds no executable code —
+    /// a comment, a blank, a line whose code folded away. Callers must
+    /// surface that: a gutter has to refuse to arm visibly, because a
+    /// breakpoint that silently never hits is worse than no breakpoint.
+    #[must_use]
+    pub fn resolve_source_line(
+        &self,
+        file: &str,
+        line: u32,
+    ) -> Option<crate::debug::DebugPosition> {
+        let (start, end) = self.line_span(file, line)?;
+        self.resolve_source_range(file, start, end)
+    }
+
+    /// The half-open byte span `[start, end)` of a 0-based `line` in `file`,
+    /// from the `DebugInfo` file table's line index (#3261). `None` when the
+    /// file is unknown, has no line index, or the line is past its end.
+    ///
+    /// The last line runs to the end of the file, which the index does not
+    /// record — so it is represented as `u32::MAX`, an end bound no real
+    /// `range_start` can reach. That is deliberate rather than clamping to
+    /// a length the section does not carry.
+    #[must_use]
+    pub fn line_span(&self, file: &str, line: u32) -> Option<(u32, u32)> {
+        let debug_info = self.debug_info.as_ref()?;
+        let entry = debug_info.files.iter().find(|f| {
+            matches!(
+                f.surface,
+                brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+            ) && f.path == file
+        })?;
+        let idx = line as usize;
+        let start = *entry.line_starts.get(idx)?;
+        let end = entry.line_starts.get(idx + 1).copied().unwrap_or(u32::MAX);
+        Some((start, end))
+    }
+
+    /// Whether `text` is byte-identical to the source `file` was compiled
+    /// from, by the `DebugInfo` file table's `source_hash` (#3261).
+    ///
+    /// The problem this exists for: both debug resolvers happily answer
+    /// questions about source they were never built from. Author types, the
+    /// recompile is still debounced, the gutter asks about the *current*
+    /// buffer against the *previous* program — and gets a confidently wrong
+    /// address rather than an error. That applies to byte ranges every bit
+    /// as much as to line numbers; offsets shift on every inserted
+    /// character.
+    ///
+    /// Per-file on purpose: one dirty file degrades debugging in that file
+    /// alone, where a whole-program checksum degrades everything.
+    ///
+    /// `None` — "cannot tell" — when the artifact carries no `DebugInfo`,
+    /// names no such file, or recorded no hash (compiled without source
+    /// text). Deliberately tri-state rather than defaulting to `false`:
+    /// "unknown" and "stale" call for different handling, and collapsing
+    /// them would make every hash-less artifact look permanently stale.
+    ///
+    /// A change **detector**, not a proof — see [`brink_format::content_hash`].
+    #[must_use]
+    pub fn source_matches(&self, file: &str, text: &str) -> Option<bool> {
+        let debug_info = self.debug_info.as_ref()?;
+        let entry = debug_info.files.iter().find(|f| {
+            matches!(
+                f.surface,
+                brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+            ) && f.path == file
+        })?;
+        if entry.source_hash == 0 {
+            return None;
+        }
+        Some(entry.source_hash == brink_format::content_hash(text))
+    }
+
     /// Get a container by its index.
     pub(crate) fn container(&self, idx: u32) -> &LinkedContainer {
         &self.containers[idx as usize]

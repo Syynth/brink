@@ -759,6 +759,20 @@ pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
     for file in &section.files {
         write_u8(buf, file.surface as u8);
         write_str(buf, &file.path);
+        // #3261: the staleness detector, and the line index that lets a
+        // reader answer `file:line` without being handed source text.
+        write_u64(buf, file.source_hash);
+        write_varint(buf, file.line_starts.len() as u64);
+        // Delta-encoded: line lengths are small, so each start costs ~1
+        // varint byte rather than 4. `line_starts` is contracted ascending
+        // with a leading 0, so these are exact deltas; `saturating_sub`
+        // keeps a contract-violating caller from wrapping to a huge varint,
+        // matching the entry table's own tolerance above.
+        let mut prev: u32 = 0;
+        for start in &file.line_starts {
+            write_varint(buf, u64::from(start.saturating_sub(prev)));
+            prev = *start;
+        }
     }
 
     write_u32(buf, section.containers.len() as u32);

@@ -84,11 +84,15 @@ the user, not something to default into silently.
   by the intl pipeline — stay `std`-oriented (`pest` is a std-only parser
   generator) and are independent of the `std` feature. Not part of the
   no_std surface; not touched here.
-- **`content_hash`** (`brink-format::definition`) keeps its exact
-  `std::collections::hash_map::DefaultHasher` output under `std` (nothing
-  anywhere compares hashes across a `std` and a `no_std` build, so this
-  was a free, zero-risk choice) and falls back to a small FNV-1a
-  implementation under `no_std`.
+- **`content_hash`** (`brink-format::definition`) is **FNV-1a 64-bit on
+  every path** and no longer varies by feature (#3261). It previously kept
+  `std::collections::hash_map::DefaultHasher` under `std` and fell back to
+  FNV-1a under `no_std` — justified at the time by "nothing anywhere
+  compares hashes across a `std` and a `no_std` build", which stopped being
+  true once hashes were recorded in artifacts and compared later by
+  whatever binary reads them. It is now part of the wire contract
+  (`docs/format-spec.md`), so the algorithm is specified and identical
+  regardless of features.
 - **Downstream crates** (`brink-compiler`, `brink-analyzer`,
   `brink-codegen-inkb`, `brink-ir`, `brink-converter`, `bevy-brink`, …)
   were not touched and are not `no_std`. Only the two crates named in the

@@ -20,12 +20,28 @@ use brink_ir::{FileId, Provenance, lir};
 /// (e.g. a D7 "populate locals" toggle) doesn't need another `emit_with_*`
 /// overload.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EmitOptions {
+pub struct EmitOptions<'a> {
     /// Emit the `SectionKind::DebugInfo` section (`docs/debugger-spec.md`
     /// §2). `false` (the `Default`) reproduces today's `emit()` behavior
     /// byte-for-byte — this is what the ship-policy ruling (§1.2) and the
     /// oracle-safety guarantee both depend on.
     pub emit_debug_info: bool,
+    /// Source text per file, for the `DebugInfo` file table's `source_hash`
+    /// and `line_starts` (#3261). Only read when `emit_debug_info` is set,
+    /// so a release compile never pays for gathering it.
+    ///
+    /// The text must be **exactly what the compiler consumed** — the hash
+    /// is a staleness detector and any normalisation applied here but not
+    /// by a later reader (or vice versa) turns it into a permanent false
+    /// alarm.
+    ///
+    /// `None` (or a file missing from the map) means that file's entry gets
+    /// `source_hash: 0` and no line index: the section is still valid and
+    /// positions still resolve, but staleness cannot be detected and
+    /// `file:line` lookups for that file are unavailable. Degrading rather
+    /// than failing is deliberate — a debug artifact without the extras
+    /// beats no debug artifact.
+    pub debug_sources: Option<&'a std::collections::BTreeMap<brink_ir::FileId, String>>,
 }
 
 /// One recorded `(bytecode_offset, provenance)` pair for a single
@@ -113,9 +129,10 @@ impl DebugCollector {
     pub(crate) fn finish(
         self,
         program: &lir::Program,
+        sources: Option<&std::collections::BTreeMap<FileId, String>>,
         errors: &mut Vec<crate::CodegenError>,
     ) -> DebugInfoSection {
-        let files = self.files.to_entries(program, errors);
+        let files = self.files.to_entries(program, sources, errors);
         let index_of = |file: FileId| -> u32 { self.files.index_of(file) };
         // Resolve a `NameId` against the program's name table — falls back
         // to an empty name (never panics, per `CLAUDE.md`'s deny-`unwrap`/
@@ -233,6 +250,7 @@ impl FileTableBuilder {
     fn to_entries(
         &self,
         program: &lir::Program,
+        sources: Option<&std::collections::BTreeMap<FileId, String>>,
         errors: &mut Vec<crate::CodegenError>,
     ) -> Vec<DebugFileEntry> {
         self.order
@@ -242,12 +260,25 @@ impl FileTableBuilder {
                     return DebugFileEntry {
                         surface: FileSurface::Synthetic,
                         path: String::new(),
+                        source_hash: 0,
+                        line_starts: Vec::new(),
                     };
                 }
                 if let Some(path) = program.file_paths.get(file) {
+                    // #3261: hash and line index, when the caller supplied
+                    // this file's text. Absent text degrades to
+                    // `source_hash: 0` + no index rather than failing —
+                    // positions still resolve, only staleness detection and
+                    // `file:line` lookup are unavailable.
+                    let (source_hash, line_starts) = sources.and_then(|m| m.get(file)).map_or_else(
+                        || (0, Vec::new()),
+                        |text| (brink_format::content_hash(text), line_starts_of(text)),
+                    );
                     DebugFileEntry {
                         surface: surface_from_path(path),
                         path: path.clone(),
+                        source_hash,
+                        line_starts,
                     }
                 } else {
                     errors.push(crate::CodegenError::new(format!(
@@ -258,11 +289,41 @@ impl FileTableBuilder {
                     DebugFileEntry {
                         surface: FileSurface::Synthetic,
                         path: String::new(),
+                        source_hash: 0,
+                        line_starts: Vec::new(),
                     }
                 }
             })
             .collect()
     }
+}
+
+/// Byte offset of the start of every line in `text` (#3261), ascending,
+/// always beginning with 0.
+///
+/// Lines are split on `\n`; a `\r\n` file simply carries the `\r` as the
+/// last byte of the preceding line, which is correct for offset purposes
+/// and is why nothing here normalises. Normalising would silently break the
+/// `source_hash` contract next to it, which is the raw bytes the compiler
+/// consumed.
+///
+/// A trailing newline does NOT produce a final empty line entry: `"a\n"` is
+/// one line, matching how every editor numbers it.
+fn line_starts_of(text: &str) -> Vec<u32> {
+    let mut starts = vec![0_u32];
+    for (i, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            let next = i + 1;
+            // A trailing newline does not open a new line: `"a\n"` is one
+            // line, matching how every editor numbers it.
+            if next < text.len()
+                && let Ok(next) = u32::try_from(next)
+            {
+                starts.push(next);
+            }
+        }
+    }
+    starts
 }
 
 /// Classify a source file's frontend from its path — the same pure,

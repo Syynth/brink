@@ -72,7 +72,9 @@ frame_shape_entry = { "(" ~ "frame" ~ def_id ~ integer* ~ ")" }
 
 debug_info = { "(" ~ "debug_info" ~ debug_files? ~ debug_container* ~ ")" }
 debug_files = { "(" ~ "files" ~ debug_file_entry* ~ ")" }
-debug_file_entry = { "(" ~ "file" ~ integer ~ debug_surface ~ string ~ ")" }
+// file: idx surface "path" source_hash (lines start*)?   [#3261]
+debug_file_entry = { "(" ~ "file" ~ integer ~ debug_surface ~ string ~ integer ~ debug_file_lines? ~ ")" }
+debug_file_lines = { "(" ~ "lines" ~ integer* ~ ")" }
 debug_surface = { "synthetic" | "ink" | "native" }
 debug_container = { "(" ~ "dcontainer" ~ integer ~ debug_entry* ~ debug_locals? ~ ")" }
 // entry: bytecode_offset file_idx range_start range_len kind_token flags

@@ -161,6 +161,7 @@ fn byte_identical_when_debug_info_off_ink() {
         &program,
         EmitOptions {
             emit_debug_info: false,
+            debug_sources: None,
         },
     )
     .expect("emit_with_options(off) succeeds");
@@ -287,6 +288,7 @@ fn debug_info_entry_resolves_to_the_correct_source_text_ink() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -337,6 +339,7 @@ fn debug_info_entry_resolves_to_the_correct_source_text_native() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -412,6 +415,7 @@ fn debug_info_structural_invariants_hold_ink() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -445,6 +449,7 @@ fn debug_info_structural_invariants_hold_native() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -503,6 +508,7 @@ fn debug_info_covers_a_statement_inside_an_if_branch() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -552,6 +558,7 @@ fn debug_info_covers_a_statement_inside_a_while_loop_body() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -607,6 +614,7 @@ fn debug_info_prologue_end_lands_after_a_leading_choice_output_not_on_it() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
@@ -670,6 +678,7 @@ fn debug_info_survives_inkt_round_trip() {
         &program,
         EmitOptions {
             emit_debug_info: true,
+            debug_sources: None,
         },
     )
     .expect("emit succeeds");
