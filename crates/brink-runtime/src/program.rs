@@ -4,7 +4,9 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{AliasEntry, CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
+use brink_format::{
+    AliasEntry, CountingFlags, DebugInfoSection, DefinitionId, ListValue, NameId, ShapeId, Value,
+};
 
 use crate::collections::Map as HashMap;
 
@@ -69,16 +71,21 @@ pub struct Program {
     /// sorted by `old` — [`Program::resolve_alias`] binary-searches it.
     /// Empty for every story that uses no `#@was`.
     pub(crate) alias_table: Vec<AliasEntry>,
-    /// D6's `DebugInfo` section (`docs/debugger-spec.md` §2), carried
-    /// through unchanged from `StoryData::debug_info` — `None` for a
-    /// release-exported / non-debug compile (§1.2 ship policy). The one
-    /// consumer is [`crate::debug::resolve_debug_position`] (D9, issue
-    /// #3187): a running `(container_idx, offset)` position resolves to a
-    /// source range with a direct index into `containers[container_idx]`,
-    /// lockstep with the `Containers` table this `Program` already links —
-    /// no `DefinitionId` lookup on the read path, per the section's own
-    /// design.
-    pub(crate) debug_info: Option<brink_format::DebugInfoSection>,
+    /// D6's `DebugInfo` section (`docs/debugger-spec.md` §2, `.inkb` tag
+    /// `0x11`), carried through unchanged from `StoryData::debug_info` —
+    /// `None` for a release-exported / non-debug compile (§1.2's ship
+    /// policy, never requested) or any story compiled before D6. Two
+    /// consumers, both reading it lockstep with the `Containers` table
+    /// this `Program` already links (no `DefinitionId` lookup on either
+    /// read path, per the section's own design):
+    ///
+    /// - [`Program::resolve_debug_position`] (D9, #3187) — a running
+    ///   `(container_idx, offset)` position resolves to a source range by
+    ///   direct index into `containers[container_idx]`.
+    /// - [`Program::scope_debug_locals`] (D7, #3185), behind
+    ///   [`crate::debug::DebugFrame::locals`] — §3's per-container
+    ///   `LocalsTable` names a call frame's live temp slots.
+    pub(crate) debug_info: Option<DebugInfoSection>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -105,6 +112,18 @@ pub(crate) struct LinkedContainer {
     pub params: Vec<brink_format::ParamMeta>,
     /// Index into `Program.line_tables` for this container's scope line table.
     pub scope_table_idx: u32,
+    /// The lexical scope this container belongs to (`ContainerDef::
+    /// scope_id`'s own doc: `scope_id == id` for a scope container itself —
+    /// root/knot/stitch — and the enclosing scope's `id` for a child
+    /// container — gather, choice target, sequence branch, etc.). D7
+    /// (`docs/debugger-spec.md` §3, #3185): the key
+    /// [`Program::scope_debug_locals`] groups by, since a call frame's
+    /// `container_stack` can legitimately drop back to a single entry
+    /// mid-frame (`vm::goto_target`'s "target not already on the stack"
+    /// branch clears and replaces it — verified on `origin/main`) while the
+    /// frame's declared locals stay live in its `temps` regardless of which
+    /// child container the current leaf position sits in.
+    pub scope_id: DefinitionId,
 }
 
 pub(crate) struct GlobalSlot {
@@ -581,6 +600,55 @@ impl Program {
     /// Variable name for a global slot index.
     pub(crate) fn global_slot_name(&self, idx: usize) -> Option<&str> {
         self.globals.get(idx).map(|slot| self.name(slot.name))
+    }
+
+    /// D7 (`docs/debugger-spec.md` §3, #3185): every `LocalsTable` row
+    /// declared anywhere in the same lexical **scope** (`ContainerDef::
+    /// scope_id`) as the container at `leaf_container_idx` — not just that
+    /// one container's own table.
+    ///
+    /// This is deliberately scope-wide, not container-local: a call frame's
+    /// `container_stack` can legitimately shrink back to a single entry
+    /// mid-frame (`vm::goto_target`'s "target not already on the stack"
+    /// branch `clear()`s and replaces it wholesale — e.g. entering a
+    /// `{? … }` choice-target body from its enclosing knot is exactly this
+    /// case), which would silently drop an enclosing container's locals
+    /// (its own parameters/`~ temp`s) from view the moment the leaf
+    /// position moves into a *sibling* child container — even though the
+    /// call frame's `temps` are completely unaffected (they are declared
+    /// once per **scope root**, `docs/debugger-spec.md` §3: "VM temp slots
+    /// ... are allocated per active call frame, not lexically nested").
+    /// Grouping by `scope_id` instead of by whatever happens to be on
+    /// `container_stack` right now is what keeps a parameter/`~ temp`
+    /// visible for the frame's entire lifetime, matching the runtime's own
+    /// slot-allocation model rather than the transient shape of one
+    /// in-frame navigation stack.
+    ///
+    /// Empty when this artifact carries no `DebugInfo` at all (a
+    /// release-exported story, or one compiled before D6), when
+    /// `leaf_container_idx` is out of range (malformed/adversarial
+    /// `.inkb`, not a panic case), or when the scope genuinely declares no
+    /// locals.
+    pub(crate) fn scope_debug_locals(
+        &self,
+        leaf_container_idx: u32,
+    ) -> Vec<&brink_format::DebugLocalEntry> {
+        let Some(debug_info) = self.debug_info.as_ref() else {
+            return Vec::new();
+        };
+        let Some(scope_id) = self
+            .containers
+            .get(leaf_container_idx as usize)
+            .map(|c| c.scope_id)
+        else {
+            return Vec::new();
+        };
+        self.containers
+            .iter()
+            .zip(debug_info.containers.iter())
+            .filter(|(c, _)| c.scope_id == scope_id)
+            .flat_map(|(_, table)| table.locals.iter())
+            .collect()
     }
 
     /// Compiled `DefinitionId` for a global slot index — the identity

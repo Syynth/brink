@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use brink_format::{
     DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DebugContainerTable, DebugEntry, DebugFileEntry,
-    DebugInfoSection, FileSurface,
+    DebugInfoSection, DebugLocalEntry, FileSurface, NameId,
 };
 use brink_ir::{FileId, Provenance, lir};
 
@@ -40,6 +40,21 @@ pub(crate) struct RawDebugEntry {
     pub prologue_end: bool,
 }
 
+/// One recorded temp-slot declaration for a single container's `LocalsTable`
+/// (`docs/debugger-spec.md` §3, D7/#3185). Produced from
+/// [`brink_ir::lir::Param`] (function/knot/stitch parameters — bound by a
+/// bare `DeclareTemp` opcode the caller emits directly, with no `lir::Stmt`
+/// of its own, so no source-level declaring range exists at this layer) and
+/// from [`brink_ir::lir::StmtKind::DeclareTemp`] (`~ temp` declarations,
+/// which do carry a real declaring [`Provenance`] via `Stmt::provenance`).
+pub(crate) struct RawLocal {
+    pub slot: u16,
+    pub name: NameId,
+    /// `None` for parameters (no per-param source range in LIR — see
+    /// above); `Some(stmt.provenance)` for a `~ temp` declaration.
+    pub declaring_range: Option<Provenance>,
+}
+
 /// Per-`emit()`-call debug-info recording state, held alongside
 /// [`crate::EmitState`] and threaded the same way. A dedicated struct
 /// (rather than loose `Option` fields on `EmitState`) keeps the container
@@ -51,6 +66,9 @@ pub(crate) struct DebugCollector {
     /// `EmitState::chunks` — i.e. lockstep with the eventual
     /// `StoryData::containers`, matching §2.2's `container_idx` contract.
     containers: Vec<Vec<RawDebugEntry>>,
+    /// One `Vec<RawLocal>` per container, parallel to `containers` above
+    /// (same push order, same lockstep contract).
+    locals: Vec<Vec<RawLocal>>,
     files: FileTableBuilder,
 }
 
@@ -58,19 +76,27 @@ impl DebugCollector {
     pub(crate) fn new() -> Self {
         Self {
             containers: Vec::new(),
+            locals: Vec::new(),
             files: FileTableBuilder::new(),
         }
     }
 
     /// Push one container's raw entries (already offset-ordered by
     /// construction — the container walk records them in emission order,
-    /// which is offset order) and intern every entry's file into the
-    /// section-local file table, first-reference order (§2.3).
-    pub(crate) fn push_container(&mut self, raw: Vec<RawDebugEntry>) {
+    /// which is offset order) plus its raw locals, and intern every
+    /// referenced file (from entries and from any local's declaring range)
+    /// into the section-local file table, first-reference order (§2.3).
+    pub(crate) fn push_container(&mut self, raw: Vec<RawDebugEntry>, locals: Vec<RawLocal>) {
         for entry in &raw {
             self.files.intern(entry.provenance.file);
         }
+        for local in &locals {
+            if let Some(range) = local.declaring_range {
+                self.files.intern(range.file);
+            }
+        }
         self.containers.push(raw);
+        self.locals.push(locals);
     }
 
     /// Finish collecting and produce the wire-shaped section. `program`
@@ -91,10 +117,23 @@ impl DebugCollector {
     ) -> DebugInfoSection {
         let files = self.files.to_entries(program, errors);
         let index_of = |file: FileId| -> u32 { self.files.index_of(file) };
+        // Resolve a `NameId` against the program's name table — falls back
+        // to an empty name (never panics, per `CLAUDE.md`'s deny-`unwrap`/
+        // `expect`/`panic` posture) on an out-of-range id, which should not
+        // happen: every `NameId` on a `Param`/`DeclareTemp` is interned into
+        // this same table during LIR lowering.
+        let name_of = |id: NameId| -> String {
+            program
+                .name_table
+                .get(id.0 as usize)
+                .cloned()
+                .unwrap_or_default()
+        };
         let containers = self
             .containers
             .into_iter()
-            .map(|raw| {
+            .zip(self.locals)
+            .map(|(raw, raw_locals)| {
                 let entries = raw
                     .into_iter()
                     .map(|e| {
@@ -113,12 +152,28 @@ impl DebugCollector {
                         }
                     })
                     .collect();
-                DebugContainerTable {
-                    entries,
-                    // D7's payload (docs/debugger-spec.md §3, issue #3185) —
-                    // D6 ships the structural framing only.
-                    locals: Vec::new(),
-                }
+                // D7's payload (docs/debugger-spec.md §3, issue #3185):
+                // slot -> name (+ optional declaring range) for every
+                // parameter and `~ temp` declared directly in this
+                // container's own body (nested child containers — branch
+                // bodies, gathers, choice targets — get their own table
+                // when they're walked in turn, per §2.2's per-container
+                // lockstep framing).
+                let locals = raw_locals
+                    .into_iter()
+                    .map(|l| DebugLocalEntry {
+                        slot: l.slot,
+                        name: name_of(l.name),
+                        declaring_range: l.declaring_range.map(|p| {
+                            (
+                                index_of(p.file),
+                                u32::from(p.range.start()),
+                                u32::from(p.range.len()),
+                            )
+                        }),
+                    })
+                    .collect();
+                DebugContainerTable { entries, locals }
             })
             .collect();
         DebugInfoSection { files, containers }

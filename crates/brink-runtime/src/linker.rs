@@ -64,6 +64,7 @@ pub fn link(
             param_count: cdef.param_count,
             params: cdef.params.clone(),
             scope_table_idx,
+            scope_id: cdef.scope_id,
         });
     }
 

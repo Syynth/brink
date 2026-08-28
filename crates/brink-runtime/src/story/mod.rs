@@ -1065,9 +1065,11 @@ impl<R: StoryRng> Story<R> {
                   for this shape"
     )]
     fn build_debug_snapshot(&self, instance: &FlowInstance, ctx: &World) -> crate::DebugSnapshot {
+        use alloc::collections::BTreeMap;
+
         use crate::debug::{
-            DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot,
-            DebugVisit, NameResolver,
+            DebugChoice, DebugFrame, DebugGlobal, DebugLocal, DebugPosition, DebugRng,
+            DebugSnapshot, DebugVisit, NameResolver,
         };
 
         let flow = &instance.flow;
@@ -1106,6 +1108,40 @@ impl<R: StoryRng> Story<R> {
         let current_location = thread.call_stack.last().and_then(resolve_frame_location);
         let position = thread.call_stack.last().and_then(frame_position);
 
+        // D7 (`docs/debugger-spec.md` §3, #3185): this frame's named
+        // locals, resolved via `Program::scope_debug_locals` against the
+        // frame's *current leaf* container — deliberately NOT by unioning
+        // `frame.container_stack` (see that method's own doc for why a
+        // per-container_stack union silently drops an enclosing
+        // container's locals the moment the leaf moves into a sibling
+        // child container, even though the call frame's `temps` haven't
+        // changed at all). `BTreeMap` (not `HashMap`) keeps the merge
+        // deterministic (`CLAUDE.md` "Determinism matters"), keyed by slot
+        // so the only known collision case (a future codegen slot reuse —
+        // see `DebugFrame::locals`'s own doc) resolves to *some* entry
+        // rather than panicking or reordering nondeterministically. `None`
+        // when this program carries no `DebugInfo` at all (release-
+        // exported, or pre-D6) or the frame's container stack is empty
+        // (nothing left to run in it — no leaf to resolve a scope from).
+        let resolve_frame_locals = |frame: &CallFrame| -> Option<Vec<DebugLocal>> {
+            self.program.debug_info.as_ref()?;
+            let leaf = frame.container_stack.last()?;
+            let mut by_slot: BTreeMap<u16, DebugLocal> = BTreeMap::new();
+            for local in self.program.scope_debug_locals(leaf.container_idx) {
+                if let Some(value) = frame.temps.get(local.slot as usize) {
+                    by_slot.insert(
+                        local.slot,
+                        DebugLocal {
+                            slot: local.slot,
+                            name: local.name.clone(),
+                            value: resolver.debug_value(value),
+                        },
+                    );
+                }
+            }
+            Some(by_slot.into_values().collect())
+        };
+
         // Globals, skipping unnamed slots.
         let globals = ctx
             .globals
@@ -1137,6 +1173,7 @@ impl<R: StoryRng> Story<R> {
                     location: resolve_frame_location(frame),
                     position: frame_position(frame),
                     temps: frame.temps.len(),
+                    locals: resolve_frame_locals(frame),
                 });
             }
         }

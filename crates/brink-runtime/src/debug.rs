@@ -119,6 +119,104 @@ pub struct DebugFrame {
     pub position: Option<DebugPosition>,
     /// Number of temporary (local) variables in this frame.
     pub temps: usize,
+    /// D7 (`docs/debugger-spec.md` §3, #3185): this frame's named locals —
+    /// every declared parameter/`~ temp` slot in the frame's own scope,
+    /// bound to its live value. Additive alongside `temps` (D4's bare
+    /// count stays, unchanged, for any existing consumer). `None` when
+    /// this artifact carries no `DebugInfo` (a release-exported story, or
+    /// one compiled before D6) **or** the frame's container stack is
+    /// empty (nothing left to run in it — e.g. every `external` frame, or
+    /// an exhausted frame — so there is no current position to resolve a
+    /// scope from). A frame with a `DebugInfo`-backed program, a live
+    /// position, but genuinely zero declared locals reports `Some(vec![])`,
+    /// not `None`, so a consumer can tell "no debug info available" (or
+    /// "nothing to resolve from") apart from "this frame really has no
+    /// locals."
+    ///
+    /// Resolved via [`crate::program::Program::scope_debug_locals`] against
+    /// the frame's *current leaf* container, grouping by lexical **scope**
+    /// (`ContainerDef::scope_id`) rather than by whatever containers
+    /// currently happen to be on `container_stack` — deliberately: a call
+    /// frame's `container_stack` can legitimately shrink back to a single
+    /// entry mid-frame (`vm::goto_target`'s "target not already on the
+    /// stack" branch clears and replaces it wholesale, e.g. entering a
+    /// `{? … }` choice-target body from its enclosing knot), which would
+    /// silently drop an enclosing container's own parameters/`~ temp`s
+    /// from view the instant the leaf position moved into a *sibling*
+    /// child container — even though the call frame's `temps` are
+    /// completely unaffected by that navigation (`docs/debugger-spec.md`
+    /// §3: VM temp slots "are allocated per active call frame, not
+    /// lexically nested"). On a slot collision (only possible if a future
+    /// codegen change reuses a slot number across sibling scopes — not
+    /// confirmed to happen today, same spec section) the entry from
+    /// whichever sibling container was iterated last wins; see
+    /// `scope_debug_locals`'s own doc for the full reasoning.
+    pub locals: Option<Vec<DebugLocal>>,
+}
+
+/// One named local variable and its current value (`docs/debugger-spec.md`
+/// §3, D7/#3185).
+#[derive(Debug, Clone)]
+pub struct DebugLocal {
+    /// The VM temp slot this local occupies in the call frame — matches
+    /// `DeclareTemp`/`GetTemp`/`SetTemp`'s `u16` operand.
+    pub slot: u16,
+    pub name: String,
+    pub value: DebugValue,
+}
+
+/// A structured, read-only view of a runtime [`Value`] for the debugger's
+/// locals panel (`docs/debugger-spec.md` §3, D7/#3185).
+///
+/// **Why structured, not another display string.** [`DebugGlobal::value`]
+/// is a display string (`String`) — that shape predates this ticket and
+/// stays as-is (globals are out of D7's scope, and changing an existing
+/// public field is not "additive"). For locals, a display string is the
+/// wrong shape to repeat: the issue's own bar is that a debugger which can
+/// only show `"[list]"` for a list value is not the target, and a plain
+/// string can't do better than that — a studio locals panel needs to tell
+/// "this is a list with these members" from "this is a string that reads
+/// like a list" to render either one correctly (or let a user expand a
+/// struct's fields, or distinguish a null from an empty string). So D7
+/// exposes the value's *kind* structurally for every kind the runtime
+/// distinguishes that the issue calls out by name (int, float, string,
+/// list, divert target, struct, handle), plus the common `bool`/`null`
+/// cases that cost nothing extra to model — and falls back to the existing
+/// [`NameResolver::format_value`] display string ([`DebugValue::Other`])
+/// for the long tail of kinds this ticket has no author-facing UI need to
+/// special-case yet (closures, arrays, maps, weighted tables, function
+/// refs, variable/temp pointers, fragment refs, vector/matrix/quaternion,
+/// ranges, options, projections). `Other` is not a cop-out for the kinds
+/// the issue named — those all get real variants below.
+#[derive(Debug, Clone)]
+pub enum DebugValue {
+    Int(i32),
+    Float(f32),
+    Bool(bool),
+    Str(String),
+    Null,
+    /// A list value's member names, in list order (unresolvable items are
+    /// skipped, matching `NameResolver::format_value`'s existing behavior).
+    List(Vec<String>),
+    /// A divert-target value, resolved to its author-facing knot/stitch
+    /// path where possible. `None` when the target isn't resolvable to a
+    /// named scope (matches `format_value`'s `"-> ?"` case).
+    DivertTarget(Option<String>),
+    /// A struct (`Value::Record`) value: its declared shape name (if
+    /// resolvable) and its fields, named and recursively structured.
+    Struct {
+        name: Option<String>,
+        fields: Vec<(String, DebugValue)>,
+    },
+    /// A handle value (T1d): its manifest-declared kind name and the
+    /// host-allocated token id.
+    Handle {
+        kind: String,
+        id: u64,
+    },
+    /// Every other value kind's existing display-string form
+    /// ([`NameResolver::format_value`]) — see this enum's own doc for why.
+    Other(String),
 }
 
 /// A visit count for a named knot/stitch.
@@ -187,6 +285,58 @@ impl<'p> NameResolver<'p> {
     pub(crate) fn def_path(&self, id: DefinitionId) -> Option<&str> {
         let (idx, _) = self.program.resolve_target(id)?;
         self.container_path(idx)
+    }
+
+    /// Structured value view for the debugger's locals panel
+    /// (`docs/debugger-spec.md` §3, D7/#3185) — see [`DebugValue`]'s own
+    /// doc for why this exists alongside `format_value` rather than
+    /// replacing it.
+    pub(crate) fn debug_value(&self, value: &Value) -> DebugValue {
+        match value {
+            Value::Int(i) => DebugValue::Int(*i),
+            Value::Float(f) => DebugValue::Float(*f),
+            Value::Bool(b) => DebugValue::Bool(*b),
+            Value::String(s) => DebugValue::Str(s.to_string()),
+            Value::Null => DebugValue::Null,
+            Value::List(list) => DebugValue::List(
+                list.items
+                    .iter()
+                    .filter_map(|id| self.program.list_item_name(*id))
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            Value::DivertTarget(id) => {
+                DebugValue::DivertTarget(self.def_path(*id).map(str::to_owned))
+            }
+            Value::Record { shape, fields } => {
+                let shape_entry = self.program.struct_shape(*shape);
+                let name = shape_entry
+                    .and_then(|s| self.program.name_checked(s.name))
+                    .map(str::to_owned);
+                let field_names: Vec<&str> = shape_entry.map_or_else(Vec::new, |s| {
+                    s.fields
+                        .iter()
+                        .map(|&n| self.program.name_checked(n).unwrap_or("?"))
+                        .collect()
+                });
+                let fields = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let field_name = field_names
+                            .get(i)
+                            .map_or_else(|| format!("_{i}"), |n| (*n).to_owned());
+                        (field_name, self.debug_value(v))
+                    })
+                    .collect();
+                DebugValue::Struct { name, fields }
+            }
+            Value::Handle { kind, id } => DebugValue::Handle {
+                kind: self.program.name_checked(*kind).unwrap_or("?").to_owned(),
+                id: *id,
+            },
+            other => DebugValue::Other(self.format_value(other)),
+        }
     }
 
     /// Format a runtime value for display, resolving names where possible.
