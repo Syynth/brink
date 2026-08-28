@@ -349,6 +349,9 @@ export type {
 } from "./slices/problems.js";
 export {
   PROBLEMS_STORAGE_KEY,
+  PROSE_CODE_PREFIX,
+  isProseDiagnostic,
+  toProseDiagnostics,
   loadProblemsPrefs,
   saveProblemsPrefs,
 } from "./slices/problems.js";

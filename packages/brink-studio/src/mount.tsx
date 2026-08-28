@@ -54,6 +54,7 @@ import {
   createStudioStore,
   parseBinderOrder,
   withDictionaryWord,
+  toProseDiagnostics,
   type StudioStore,
 } from "@brink/studio-store";
 import {
@@ -945,6 +946,13 @@ export async function mountStudio(
     onCursorChange: (line, col) => store.getState().setCursor(line, col),
     onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
     onCompileResult: handleCompileResult,
+    // Prose findings into the Problems panel (#3256). Mapped to the
+    // `Diagnostic` shape the panel renders, and marked with the
+    // `prose:` code prefix that puts them in their own filter bucket —
+    // off by default, so they never bury a compile error.
+    onProseLints: (path, lints) => {
+      store.getState().setProseDiagnostics(path, toProseDiagnostics(path, lints));
+    },
     onDocEdited: (docKey, groupId) =>
       editorGroups
         .getState()

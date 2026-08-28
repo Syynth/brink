@@ -71,6 +71,16 @@ export interface ProseOptions {
   /** Add a word to the project's own dictionary. Absent ⇒ no such action
    *  is offered, rather than one that silently does nothing. */
   onAddToDictionary?: (word: string) => void;
+  /**
+   * The findings of the most recent check, reported to the host.
+   *
+   * The squiggles are published into CodeMirror directly; this is the
+   * second consumer — a host that lists prose findings alongside compile
+   * diagnostics (the Problems panel). Called with `[]` whenever the set
+   * clears, including when checking is switched off, so a host list never
+   * keeps rows the editor has already stopped showing.
+   */
+  onLints?: (lints: readonly ProseLint[]) => void;
   /** Debounce before checking, ms. */
   debounceMs?: number;
 }
@@ -307,15 +317,24 @@ export function proseExtension(options: ProseOptions): Extension {
                 : []),
             ],
           })),
+          lints,
         );
       }
 
-      private publish(generation: number, diagnostics: Diagnostic[]): void {
+      private publish(
+        generation: number,
+        diagnostics: Diagnostic[],
+        lints: readonly ProseLint[] = [],
+      ): void {
         // The document moved while the check was in flight, so these offsets
         // describe text that is no longer there. A newer run is already
         // scheduled.
         if (this.destroyed || generation !== this.docGen) return;
         publishDiagnostics(this.view, "prose", diagnostics);
+        // Reported from the same guarded point as the squiggles, so the two
+        // views of one result can never disagree — a host list showing rows
+        // the editor has cleared is the failure this placement rules out.
+        options.onLints?.(lints);
       }
     },
     ),

@@ -59,7 +59,7 @@ import { playFromHereExtension } from "./play-from-here.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
 import { proseExtension } from "./prose.js";
-import type { ProseChecker } from "./prose.js";
+import type { ProseChecker, ProseLint } from "./prose.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 
 /**
@@ -111,6 +111,8 @@ export interface BrinkStudioOptions {
    *  quick-fix). Absent ⇒ the action is not offered at all, rather than
    *  offered and inert. */
   onAddToDictionary?: (word: string) => void;
+  /** Prose findings for the host's own list (Problems panel). */
+  onProseLints?: (lints: readonly ProseLint[]) => void;
 
   /** The editor's skin (#363 headless-ready). Defaults to `brinkTheme` (the
    *  `--bs-*`-token CM theme brink-studio uses). Pass `false` for a headless
@@ -721,6 +723,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
           getDictionary: options.getProseDictionary,
           getDialect: options.getProseDialect,
           onAddToDictionary: options.onAddToDictionary,
+          onLints: options.onProseLints,
         })
       : [],
     brinkKeymap(),

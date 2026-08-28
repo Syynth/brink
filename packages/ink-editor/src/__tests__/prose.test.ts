@@ -17,7 +17,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
-import { proseRangesOf, withoutCueLines } from "../prose.js";
+import { proseExtension, proseRangesOf, withoutCueLines, type ProseLint } from "../prose.js";
 import { elementTypeField } from "../element-type.js";
 import { diagnosticSources, publishDiagnostics, diagnosticsFrom } from "../diagnostic-sources.js";
 
@@ -255,5 +255,85 @@ describe("withoutCueLines", () => {
     const bare = EditorState.create({ doc: SCRIPT });
     const whole = [{ from: 0, to: bare.doc.length }];
     expect(withoutCueLines(whole, bare)).toEqual(whole);
+  });
+});
+
+/**
+ * Reporting findings out to the host (#3256).
+ *
+ * The squiggles go into CodeMirror; the Problems panel needs the same
+ * findings as data. Reported from the same guarded point as the squiggles
+ * so the two can never disagree — a host list holding rows the editor has
+ * already cleared is the failure that placement rules out.
+ */
+describe("onLints", () => {
+  const lint = (start: number, end: number): ProseLint => ({
+    start,
+    end,
+    kind: "Spelling",
+    message: "Did you mean to spell `Griswold` this way?",
+    suggestions: [],
+  });
+
+  /** A projection whose whole doc is one content span. */
+  const wholeDocProjection = (length: number) => ({
+    spans: [
+      {
+        kind: "content",
+        container: false,
+        start_line: 0,
+        start_char: 0,
+        end_line: 0,
+        end_char: length,
+      } as HirSpan,
+    ],
+    lines: [],
+  }) as unknown as HirProjection;
+
+  function mount(checker: unknown, onLints: (l: readonly ProseLint[]) => void) {
+    const doc = "Griswold waits.";
+    return new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          proseExtension({
+            getChecker: () => checker as never,
+            getHirProjection: () => wholeDocProjection(doc.length),
+            onLints,
+            debounceMs: 0,
+          }),
+        ],
+      }),
+    });
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it("reports the findings of a check", async () => {
+    const seen: (readonly ProseLint[])[] = [];
+    const view = mount({ check: async () => [lint(0, 8)] }, (l) => seen.push(l));
+    await settle();
+    expect(seen.at(-1)).toHaveLength(1);
+    expect(seen.at(-1)?.[0]?.message).toContain("Griswold");
+    view.destroy();
+  });
+
+  it("reports an empty set when checking is switched off", async () => {
+    // `[prose] enable = false` unregisters the checker. A host list that
+    // kept its rows would show findings the editor no longer shows — the
+    // setting would look broken from the panel.
+    const seen: (readonly ProseLint[])[] = [];
+    const view = mount(null, (l) => seen.push(l));
+    await settle();
+    expect(seen.at(-1)).toEqual([]);
+    view.destroy();
+  });
+
+  it("reports an empty set when the check finds nothing", async () => {
+    const seen: (readonly ProseLint[])[] = [];
+    const view = mount({ check: async () => [] }, (l) => seen.push(l));
+    await settle();
+    expect(seen.at(-1)).toEqual([]);
+    view.destroy();
   });
 });

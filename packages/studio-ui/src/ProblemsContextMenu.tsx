@@ -23,6 +23,7 @@ import type { Diagnostic } from "@brink/wasm-types";
 import { setTomlString } from "@brink/studio-store";
 import { useContextMenuDismiss } from "./BinderContextMenu.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
+import { isProseDiagnostic } from "@brink/studio-store";
 import { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
@@ -103,14 +104,24 @@ export function ProblemsContextMenu({
     });
   }
 
-  items.push({
-    label: code === undefined ? "Open diagnostics settings" : `Configure ${code}…`,
-    // Names the DIAGNOSTICS section rather than opening `brink.toml`: the
-    // config file's own door lands on Project, which is the wrong place to
-    // arrive from "configure this diagnostic". Every door into Settings
-    // names the section it means.
-    run: () => setSettingsSection(SETTINGS_SECTION_IDS.diagnostics),
-  });
+  // A prose finding has no compiler code and nothing in `[lints]` to
+  // configure — "Configure prose:Spelling…" would open the Diagnostics
+  // section and offer nothing about it. Its settings live under Prose.
+  if (isProseDiagnostic(target.diagnostic)) {
+    items.push({
+      label: "Prose settings…",
+      run: () => setSettingsSection(SETTINGS_SECTION_IDS.prose),
+    });
+  } else {
+    items.push({
+      label: code === undefined ? "Open diagnostics settings" : `Configure ${code}…`,
+      // Names the DIAGNOSTICS section rather than opening `brink.toml`: the
+      // config file's own door lands on Project, which is the wrong place to
+      // arrive from "configure this diagnostic". Every door into Settings
+      // names the section it means.
+      run: () => setSettingsSection(SETTINGS_SECTION_IDS.diagnostics),
+    });
+  }
 
   return (
     <div
