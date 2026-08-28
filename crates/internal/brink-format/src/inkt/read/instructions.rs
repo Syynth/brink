@@ -388,31 +388,6 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "seq_sorted" => Ok(Opcode::SeqSorted),
         "seq_sorted_by" => Ok(Opcode::SeqSortedBy),
 
-        // Debug
-        "source_location" => {
-            // Written as "source_location LINE:COL" — parsed as source_loc operand
-            let s = operand_str(&operands, 0, mnemonic)?;
-            let parts: Vec<&str> = s.split(':').collect();
-            if parts.len() != 2 {
-                return Err(InktParseError {
-                    message: format!("invalid source_location: {s}"),
-                    line: 0,
-                    col: 0,
-                });
-            }
-            let line: u32 = parts[0].parse().map_err(|_| InktParseError {
-                message: "invalid line".into(),
-                line: 0,
-                col: 0,
-            })?;
-            let col: u32 = parts[1].parse().map_err(|_| InktParseError {
-                message: "invalid col".into(),
-                line: 0,
-                col: 0,
-            })?;
-            Ok(Opcode::SourceLocation(line, col))
-        }
-
         // NS-A8 numeric tower: the TowerOp mnemonic IS the instruction word
         // (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
         // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.

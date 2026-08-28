@@ -463,12 +463,6 @@ contiguous block, numbered when its own milestone lands.
 | `End` | Permanent finish — story is over |
 | `Nop` | No operation (used for alignment/padding) |
 
-#### Debug (`0xFE`)
-
-| Opcode | Operand | Description |
-|--------|---------|-------------|
-| `SourceLocation` | `u32` line + `u32` col | Source location mapping (strippable) |
-
 ## Format contents
 
 `brink-format` provides:

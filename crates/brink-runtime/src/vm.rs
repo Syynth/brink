@@ -233,7 +233,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::EndChoice => {
             flow.skipping_choice = false;
         }
-        Opcode::Nop | Opcode::SourceLocation(_, _) | Opcode::ThreadStart | Opcode::ThreadDone => {}
+        Opcode::Nop | Opcode::ThreadStart | Opcode::ThreadDone => {}
 
         // ── Lifecycle ────────────────────────────────────────────────
         Opcode::Done => {

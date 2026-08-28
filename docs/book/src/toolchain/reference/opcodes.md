@@ -226,12 +226,6 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 | `End` | Permanent end — the story is finished |
 | `Nop` | No operation |
 
-### Debug
-
-| Opcode | Operands | Description |
-|--------|----------|-------------|
-| `SourceLocation` | `u32` (line), `u32` (col) | Record source location for debugging |
-
 ## Execution model
 
 The step function executes opcodes in a loop until reaching a yield point: `Done`, `End`, or choice presentation. Each yield produces a `Step` (`Line`/`Done`/`Choices`/`End`) — only `Line` carries a payload (the output text accumulated since the last yield); the terminal variants carry none — `continue_single` returns one, `continue_maximally` returns a `Vec<Step>` ending in a terminal variant.
