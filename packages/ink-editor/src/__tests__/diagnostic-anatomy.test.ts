@@ -22,6 +22,16 @@ import type { CompileResult } from "@brink/wasm-types";
 import { renderDiagnosticMessage } from "../diagnostic-anatomy.js";
 import { diagnosticsExtension } from "../diagnostics.js";
 
+/**
+ * CodeMirror types `renderMessage` as returning a bare `Node`; the anatomy
+ * always builds an element, and these tests query into it. Narrowed rather
+ * than cast, so a provider that stopped returning an element fails the
+ * assertion instead of throwing at the query.
+ */
+function asElement(node: Node | undefined): HTMLElement | null {
+  return node instanceof HTMLElement ? node : null;
+}
+
 describe("renderDiagnosticMessage", () => {
   it("emits a label and a title as separate elements", () => {
     const el = renderDiagnosticMessage("warning", "`roll` shadows a built-in function.");
@@ -134,7 +144,7 @@ describe("compile diagnostics carry the anatomy", () => {
       ]),
     );
     await vi.advanceTimersByTimeAsync(500);
-    const dom = first(v)?.renderMessage?.(v);
+    const dom = asElement(first(v)?.renderMessage?.(v));
     expect(dom?.querySelector(".cm-diag-label")?.textContent).toBe("warning");
     expect(dom?.querySelector(".cm-diag-title")?.textContent).toBe("boom");
   });
@@ -142,7 +152,7 @@ describe("compile diagnostics carry the anatomy", () => {
   it("gives a whole-compile error the anatomy too", async () => {
     const v = mount({ ok: false, warnings: [], error: "could not parse" } as CompileResult);
     await vi.advanceTimersByTimeAsync(500);
-    const dom = first(v)?.renderMessage?.(v);
+    const dom = asElement(first(v)?.renderMessage?.(v));
     expect(dom?.querySelector(".cm-diag-label")?.textContent).toBe("error");
     expect(dom?.querySelector(".cm-diag-title")?.textContent).toBe("could not parse");
   });

@@ -314,10 +314,15 @@ describe("onLints", () => {
     // compiler fills with `warning` — one anatomy, two producers.
     const view = mount({ check: async () => [lint(0, 8)] }, () => {});
     await settle();
-    let dom: HTMLElement | undefined;
+    // `renderMessage` is typed as returning a bare `Node`; the anatomy
+    // always builds an element. Collected rather than assigned inside the
+    // callback, which narrows to `never` after the loop.
+    const rendered: (Node | undefined)[] = [];
     forEachDiagnostic(view.state, (d) => {
-      dom ??= d.renderMessage?.(view);
+      rendered.push(d.renderMessage?.(view));
     });
+    const first = rendered[0];
+    const dom = first instanceof HTMLElement ? first : null;
     expect(dom?.querySelector(".cm-diag-label")?.textContent).toBe("spelling");
     expect(dom?.querySelector(".cm-diag-title")?.textContent).toContain("Griswold");
     view.destroy();
