@@ -3823,3 +3823,34 @@
   have declined by dropping Harper. Reading them as one precedent would
   make "it was transitive" sound like the standard, when the standard is
   the per-crate ruling itself.
+
+## `\}` joins the inline escape set, revising the ruling that declined it
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** prose dialect — the escape set (#3156, §8d.6)
+- **SCOPE:** moderate
+- **WHAT:** `R_BRACE` joins `is_escapable`, making the inline set
+  `\< \{ \# \\ \}` — five, not four. A **bare** `}` in content still
+  terminates the enclosing block; the escape is what lets an author opt out
+  of that role. The raw-text scanners (`tag()`/`cue_name()`) are
+  deliberately NOT changed in the same breath, so `#tag \{a\}` still
+  truncates; closing that is its own ruling.
+- **WHY:** This REVISES the earlier confirmation that `\}` should not be an
+  escape (§4.7b, issue #1883 item 2). That ruling reasoned "`}` is not a
+  member of the set, so there is no `\}` is a literal close-brace ruling to
+  protect" — which is self-referential, and did not weigh what the set's
+  closure actually cost. Measured while fixing #3156: a `}` ANYWHERE in a
+  content line terminates the enclosing block, so with `\}` rejected there
+  was no spelling — escaped or bare — that put a literal `}` into native
+  prose. The character was unwritable.
+
+  The failure mode was the expensive kind. `\{` works, so an author has
+  every reason to believe `\}` does; instead the flow was silently
+  truncated, the divert after it fell outside the flow, and the only
+  diagnostic pointed at the file's REAL closing brace ("unexpected token at
+  top level") rather than at the typo. A wrong program, not a wrong colour.
+
+  The scanners are excluded from this ruling rather than swept along
+  because their exclusion, though reasoned from the same now-false premise,
+  was confirmed deliberately and twice — reversing that deserves its own
+  decision rather than arriving as a side effect of this one.

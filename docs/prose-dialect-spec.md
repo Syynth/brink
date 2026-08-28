@@ -1986,7 +1986,32 @@ a sanctioned exception to §1's superset doctrine (§8d.6 explicitly sanctions
 it).
 
 **What changed:** The **inline** escape set is now **strictly finite**:
-`\<` `\{` `\#` `\\` are the only valid inline escape sequences. A backslash
+`\<` `\{` `\#` `\\` `\}` are the only valid inline escape sequences.
+
+> **AMENDED 2026-08-28 (#3156): `\}` joined the set**, which had been the
+> four `\< \{ \# \\`. This REVISES the earlier ruling that declined it
+> (§4.7b, confirmed under issue #1883 item 2). The premise that ruling
+> reasoned from — "`}` is not a member of the set, so there is no `\}` is a
+> literal close-brace ruling to protect" — was self-referential, and it did
+> not weigh the consequence: measured, a `}` anywhere in a content line
+> terminates the enclosing block, so with `\}` rejected there was **no
+> spelling, escaped or bare, that put a literal `}` into native prose**. The
+> asymmetry made it worse — `\{` worked, so an author had every reason to
+> expect `\}` to, and got a silently truncated flow instead: everything
+> after the brace fell outside the flow, and the diagnostics described the
+> wreckage rather than the typo.
+>
+> A **bare** `}` in content still terminates the block. That is deliberate —
+> `}` keeps its structural role, and the escape is what lets an author opt
+> out of it. Pinned by
+> `a_bare_closing_brace_in_content_still_terminates_the_block`.
+>
+> **Not yet extended to the raw-text scanners.** `tag()`/`cue_name()` carry
+> their own backslash-parity carve-out for `\{` and still end at a `\}`
+> (§4.7b), so `#tag \{a\}` continues to truncate. That exclusion was
+> reasoned from the same now-false premise, but it was confirmed
+> deliberately and twice, so closing it is its own ruling rather than a
+> consequence of this one. A backslash
 before any other character in inline position — including spaces,
 punctuation, emoticons, path separators — is now a compile error. §8d.6 also
 rules `\!` and `\@` as **line-start** escapes — a disjoint set, legal as the
