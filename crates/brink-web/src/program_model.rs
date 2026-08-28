@@ -59,8 +59,30 @@ struct KnotNodeJs {
     kind: &'static str,
     flags: Vec<&'static str>,
     path_hash: i32,
-    disasm: Vec<String>,
+    /// This container's index in `StoryData::containers` — the same
+    /// `container_idx` a runtime `DebugPosition`/`DebugFrame::position`
+    /// addresses (D4, #3182) and the `DebugInfo` section's per-container
+    /// table indexes lockstep with (D6, #3184). Keyed alongside `disasm`'s
+    /// own per-instruction offsets so the studio can highlight "the
+    /// currently executing instruction" in the Program Explorer (D9,
+    /// #3187) — before this field, a disassembly line had nothing to key a
+    /// running position against.
+    container_idx: u32,
+    disasm: Vec<DisasmLineJs>,
     children: Vec<KnotNodeJs>,
+}
+
+/// One decoded bytecode instruction, keeping the byte offset it decoded
+/// from — the D9 (#3187) fix for the join named in the issue: disassembly
+/// used to decode with a running offset and emit only the formatted
+/// mnemonic string, so a "current instruction" highlight had no offset to
+/// match a live `DebugPosition` against.
+#[derive(Serialize)]
+struct DisasmLineJs {
+    /// Byte offset of this instruction within the container's own
+    /// bytecode — matches `DebugPosition::offset` / `DebugEntry::bytecode_offset`.
+    offset: u32,
+    text: String,
 }
 
 /// Resolves ids to author-facing names for a single program.
@@ -318,7 +340,7 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
     // Group named scope containers by top-level knot name. BTreeMap keeps the
     // output deterministic.
     let mut groups: BTreeMap<String, KnotGroup> = BTreeMap::new();
-    for c in &data.containers {
+    for (container_idx, c) in data.containers.iter().enumerate() {
         // Only named scope containers (knots / stitches), skip the root scope
         // and anonymous child containers.
         let Some(name_id) = c.name else { continue };
@@ -347,6 +369,7 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
             kind: if leaf { "knot" } else { "stitch" },
             flags,
             path_hash: c.path_hash,
+            container_idx: u32::try_from(container_idx).unwrap_or(u32::MAX),
             disasm,
             children: Vec::new(),
         };
@@ -366,12 +389,15 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
                 node
             }
             // A knot with stitches but no own scope container (rare): synthesize.
+            // `container_idx: u32::MAX` — no real container backs this node, so
+            // there is no bytecode position it could ever match.
             None => KnotNodeJs {
                 path: kname.clone(),
                 name: kname,
                 kind: "knot",
                 flags: Vec::new(),
                 path_hash: 0,
+                container_idx: u32::MAX,
                 disasm: Vec::new(),
                 children: group.stitches,
             },
@@ -403,15 +429,24 @@ fn counting_flags(flags: CountingFlags) -> Vec<&'static str> {
     out
 }
 
-/// Decode a container's bytecode into resolved, one-per-line mnemonics.
-fn disassemble(bytecode: &[u8], r: &Resolver) -> Vec<String> {
+/// Decode a container's bytecode into resolved, one-per-line mnemonics —
+/// each tagged with the byte offset it decoded from (D9, #3187), so a
+/// caller can key a live `DebugPosition` against a specific line.
+fn disassemble(bytecode: &[u8], r: &Resolver) -> Vec<DisasmLineJs> {
     let mut out = Vec::new();
     let mut offset = 0;
     while offset < bytecode.len() {
+        let start = offset;
         match Opcode::decode(bytecode, &mut offset) {
-            Ok(op) => out.push(format_opcode(&op, r)),
+            Ok(op) => out.push(DisasmLineJs {
+                offset: u32::try_from(start).unwrap_or(u32::MAX),
+                text: format_opcode(&op, r),
+            }),
             Err(e) => {
-                out.push(format!("<decode error: {e}>"));
+                out.push(DisasmLineJs {
+                    offset: u32::try_from(start).unwrap_or(u32::MAX),
+                    text: format!("<decode error: {e}>"),
+                });
                 break;
             }
         }
@@ -698,5 +733,66 @@ fn sequence_kind(kind: SequenceKind) -> &'static str {
         SequenceKind::Stopping => "stopping",
         SequenceKind::OnceOnly => "once_only",
         SequenceKind::Shuffle => "shuffle",
+    }
+}
+
+// ── container_idx / disasm-offset tests (D9, #3187) ───────────────────
+
+#[cfg(test)]
+mod container_idx_tests {
+    use super::{Resolver, build, disassemble};
+
+    /// Compile a small two-knot `.ink` story and confirm each knot's
+    /// `container_idx` in the DTO actually names its own row in
+    /// `StoryData::containers` — the join the D9 issue named as missing
+    /// ("a current-instruction highlight in the Program Explorer has
+    /// nothing to key on"). Also confirms `disasm` offsets are strictly
+    /// increasing and the first instruction of a container starts at
+    /// offset 0.
+    #[test]
+    fn container_idx_names_its_own_row_and_disasm_offsets_are_ordered() {
+        let src = "=== one ===\nFirst.\n-> two\n=== two ===\nSecond.\n-> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+            .expect("test source compiles");
+
+        let model = build(&out.data);
+        assert!(!model.knots.is_empty(), "fixture must produce knots");
+
+        for knot in &model.knots {
+            assert_ne!(
+                knot.container_idx,
+                u32::MAX,
+                "a real knot from source must carry a real container_idx"
+            );
+            let container = out
+                .data
+                .containers
+                .get(knot.container_idx as usize)
+                .expect("container_idx must be a valid index");
+            // Cross-check: this container's own disassembly must be exactly
+            // as long as its own bytecode decodes to (never off-by-one
+            // against a NEIGHBORING container's row — the failure shape a
+            // wrong index would produce).
+            let redecoded = disassemble(&container.bytecode, &Resolver::new(&out.data));
+            assert_eq!(redecoded.len(), knot.disasm.len());
+
+            if let Some(first) = knot.disasm.first() {
+                assert_eq!(
+                    first.offset, 0,
+                    "the first disassembled instruction always starts at offset 0"
+                );
+            }
+            let mut prev = None;
+            for line in &knot.disasm {
+                if let Some(p) = prev {
+                    assert!(
+                        line.offset > p,
+                        "disasm offsets must strictly increase: {p} then {}",
+                        line.offset
+                    );
+                }
+                prev = Some(line.offset);
+            }
+        }
     }
 }

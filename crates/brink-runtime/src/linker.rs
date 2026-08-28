@@ -269,6 +269,7 @@ pub fn link(
         struct_shapes,
         private_defs,
         alias_table,
+        debug_info: data.debug_info.clone(),
     };
     Ok((program, line_tables))
 }

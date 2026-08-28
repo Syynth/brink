@@ -1146,6 +1146,7 @@ fn test_dummy_program() -> Program {
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
         alias_table: Vec::new(),
+        debug_info: None,
     }
 }
 
@@ -1662,6 +1663,7 @@ mod tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         };
 
         let line_tables = vec![vec![LineEntry {
@@ -1943,6 +1945,7 @@ mod tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         };
         (program, vec![entries])
     }

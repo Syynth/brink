@@ -1409,6 +1409,7 @@ mod tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 
@@ -2717,6 +2718,7 @@ mod tower_tests {
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
             alias_table: Vec::new(),
+            debug_info: None,
         }
     }
 

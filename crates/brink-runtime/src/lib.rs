@@ -71,7 +71,8 @@ mod world;
 
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{
-    DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot, DebugVisit,
+    DebugChoice, DebugFrame, DebugGlobal, DebugPosition, DebugRng, DebugSnapshot,
+    DebugSourceLocation, DebugVisit,
 };
 #[cfg(feature = "debug-hooks")]
 pub use debug_control::{
