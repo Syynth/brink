@@ -801,6 +801,10 @@ pub fn lower_root_content_for_prelude(
 /// then that file's knots), so the assembled name ids are byte-identical to
 /// the single shared-table walk.
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn assemble_program(
     prelude: &LirPrelude,
     chunks: Vec<chunk::ScopeChunk>,

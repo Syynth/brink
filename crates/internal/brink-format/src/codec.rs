@@ -229,7 +229,7 @@ mod tests {
             0x80,   // first two-byte value
             0x3FFF, // last two-byte value
             0x4000, // first three-byte value
-            u32::MAX as u64,
+            u64::from(u32::MAX),
             u64::MAX,
         ] {
             let mut buf = Vec::new();

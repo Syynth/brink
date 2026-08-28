@@ -31,7 +31,7 @@ use super::{
 // ── Tier 1: Full story write ────────────────────────────────────────────────
 
 /// Encode a [`StoryData`] into the `.inkb` binary format with sectioned header.
-#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     let base = buf.len();
 

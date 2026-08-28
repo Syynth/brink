@@ -22,7 +22,7 @@
 //! 4. **Structural invariants** that hold regardless of construct shape:
 //!    every entry sets `IS_STMT`; exactly one entry per container sets
 //!    `PROLOGUE_END`; entries are sorted ascending by `bytecode_offset`;
-//!    file_idx 0 is always the reserved synthetic sentinel.
+//!    `file_idx` 0 is always the reserved synthetic sentinel.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
@@ -190,10 +190,10 @@ fn byte_identical_when_debug_info_off_native() {
 /// `debug_info`'s own output. `files` is `debug_info.files` (for resolving
 /// `file_idx` back to a path/surface) and `expect_path`/`expect_surface`
 /// are asserted on the *match*, not assumed.
-fn find_matching_entry<'a>(
-    story: &'a StoryData,
+fn find_matching_entry(
+    story: &StoryData,
     provenance: brink_ir::Provenance,
-) -> Option<(usize, usize, &'a brink_format::DebugEntry)> {
+) -> Option<(usize, usize, &brink_format::DebugEntry)> {
     let debug_info = story.debug_info.as_ref()?;
     let want_range_start = u32::from(provenance.range.start());
     let want_range_len = u32::from(provenance.range.len());

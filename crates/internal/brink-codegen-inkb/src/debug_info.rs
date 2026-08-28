@@ -77,7 +77,7 @@ impl DebugCollector {
     /// resolves each interned `FileId` to its project-root-relative path
     /// and lets each file be classified by surface (§2.3).
     pub(crate) fn finish(self, program: &lir::Program) -> DebugInfoSection {
-        let files = self.files.into_entries(program);
+        let files = self.files.to_entries(program);
         let index_of = |file: FileId| -> u32 { self.files.index_of(file) };
         let containers = self
             .containers
@@ -154,7 +154,7 @@ impl FileTableBuilder {
         self.index.get(&file).copied().unwrap_or(0)
     }
 
-    fn into_entries(&self, program: &lir::Program) -> Vec<DebugFileEntry> {
+    fn to_entries(&self, program: &lir::Program) -> Vec<DebugFileEntry> {
         self.order
             .iter()
             .map(|file| {

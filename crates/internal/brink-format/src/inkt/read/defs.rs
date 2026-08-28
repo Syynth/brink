@@ -481,7 +481,6 @@ fn parse_debug_container(pair: P<'_>) -> Result<DebugContainerTable, InktParseEr
     let mut locals = Vec::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::integer => {}
             Rule::debug_entry => entries.push(parse_debug_entry(inner)?),
             Rule::debug_locals => {
                 for local in inner.into_inner() {

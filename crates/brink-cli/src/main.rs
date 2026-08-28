@@ -478,7 +478,6 @@ fn render_fatal_compile_error(err: brink_compiler::CompileError) -> Box<dyn std:
 /// producer, never treated as errors (forward compat / #1160).
 ///
 /// [`native_source_root`]: brink_driver::native_source_root
-#[expect(clippy::too_many_arguments, reason = "one param per CLI flag")]
 fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,

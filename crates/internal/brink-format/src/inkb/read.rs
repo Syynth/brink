@@ -892,7 +892,11 @@ pub fn read_section_debug_info(
     // varint(1) = 2 bytes (both tables may legitimately be empty).
     let mut containers = Vec::with_capacity(safe_capacity(container_count, buf.len(), off, 2));
     for _ in 0..container_count {
-        let entry_count = read_varint(buf, &mut off)? as usize;
+        // A count that cannot fit in `usize` cannot be satisfied by any
+        // buffer we could be holding — treat it as malformed input rather
+        // than truncating it into a plausible-looking small number.
+        let entry_count =
+            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
         // Minimum per-entry footprint: 4 varints of at least 1 byte each +
         // kind_token u32(4) + flags u8(1) = 9 bytes.
         let mut entries = Vec::with_capacity(safe_capacity(entry_count, buf.len(), off, 9));
@@ -925,7 +929,8 @@ pub fn read_section_debug_info(
             });
         }
 
-        let local_count = read_varint(buf, &mut off)? as usize;
+        let local_count =
+            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
         // Minimum per-local footprint: slot u16(2) + name length prefix
         // u32(4) + has_range u8(1) = 7 bytes.
         let mut locals = Vec::with_capacity(safe_capacity(local_count, buf.len(), off, 7));
