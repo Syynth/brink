@@ -148,7 +148,7 @@ describe("State View frame locals", () => {
     // An `external` frame carries no bytecode position by construction, so
     // `locals` is absent for a structural reason rather than a build one.
     // Announcing "no debug info" on every one of them would be noise.
-    const store = withFrames([frame({ kind: "external", location: null, temps: 0, locals: undefined })]);
+    const store = withFrames([frame({ kind: "external", location: undefined, temps: 0, locals: undefined })]);
     mount(store);
 
     expect(container!.querySelector(".sv-locals-none")).toBeNull();
