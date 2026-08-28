@@ -340,12 +340,24 @@ fn write_debug_info(w: &mut dyn fmt::Write, debug_info: Option<&DebugInfoSection
     if !debug_info.files.is_empty() {
         writeln!(w, "    (files")?;
         for (idx, file) in debug_info.files.iter().enumerate() {
-            writeln!(
+            // #3261: `source_hash` and the line index ride along, so an
+            // `.inkt` dump stays a lossless view of the section rather than
+            // a lossy one — the round-trip proptest depends on it.
+            write!(
                 w,
-                "      (file {idx} {} \"{}\")",
+                "      (file {idx} {} \"{}\" {}",
                 debug_file_surface_name(file.surface),
-                escape_string(&file.path)
+                escape_string(&file.path),
+                file.source_hash
             )?;
+            if !file.line_starts.is_empty() {
+                write!(w, " (lines")?;
+                for start in &file.line_starts {
+                    write!(w, " {start}")?;
+                }
+                write!(w, ")")?;
+            }
+            writeln!(w, ")")?;
         }
         writeln!(w, "    )")?;
     }

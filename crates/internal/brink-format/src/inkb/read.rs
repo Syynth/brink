@@ -879,12 +879,34 @@ pub fn read_section_debug_info(
     }
 
     let file_count = read_u32(buf, &mut off)? as usize;
-    // Minimum per-entry footprint: surface(1) + path length prefix(4) = 5 bytes.
-    let mut files = Vec::with_capacity(safe_capacity(file_count, buf.len(), off, 5));
+    // Minimum per-entry footprint (#3261): surface(1) + path length
+    // prefix(4) + source_hash(8) + line-count varint(1) = 14 bytes.
+    let mut files = Vec::with_capacity(safe_capacity(file_count, buf.len(), off, 14));
     for _ in 0..file_count {
         let surface = FileSurface::from_u8(read_u8(buf, &mut off)?)?;
         let path = read_str(buf, &mut off)?;
-        files.push(DebugFileEntry { surface, path });
+        let source_hash = read_u64(buf, &mut off)?;
+        // A count that cannot fit in `usize` cannot be satisfied by any
+        // buffer we could be holding — malformed input, not a truncation.
+        let line_count =
+            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
+        // Minimum per-line footprint: one varint byte.
+        let mut line_starts = Vec::with_capacity(safe_capacity(line_count, buf.len(), off, 1));
+        let mut prev: u32 = 0;
+        for _ in 0..line_count {
+            let delta = u32::try_from(read_varint(buf, &mut off)?)
+                .map_err(|_| DecodeError::UnexpectedEof)?;
+            // `wrapping_add` mirrors the entry table's decode tolerance: a
+            // malformed artifact yields nonsense offsets, never a panic.
+            prev = prev.wrapping_add(delta);
+            line_starts.push(prev);
+        }
+        files.push(DebugFileEntry {
+            surface,
+            path,
+            source_hash,
+            line_starts,
+        });
     }
 
     let container_count = read_u32(buf, &mut off)? as usize;

@@ -19,7 +19,7 @@ expression: buf
   (container $01_406ea523c53def
     (name 0)
     (lines
-      0 "Hello, world!" @626e7681b4e2e7bc (source "story.ink" 0..14)
+      0 "Hello, world!" @38d1334144987bf4 (source "story.ink" 0..14)
     )
     (code
       emit_line 0 0

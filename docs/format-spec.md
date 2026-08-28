@@ -690,7 +690,7 @@ Each line entry in a scope's line table:
 ```
 LineEntry {
     content: LineContent,                  // Plain(String) or Template(LineTemplate)
-    source_hash: u64,                      // hash of original ink source text
+    source_hash: u64,                      // content_hash of original source text (see below)
     audio_ref: Option<String>,             // audio asset identifier, if any
     slot_info: Vec<SlotInfo>,              // metadata per slot index (empty for Plain)
     source_location: Option<SourceLocation>,  // where in the .ink source this line came from
@@ -732,6 +732,15 @@ enum LinePart {
     // other spans, or (structurally, though the compiler never emits it —
     // §4.4/§4.5) a select. Empty `children` is the self-closing /
     // point-marker shape (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    // `content_hash` is FNV-1a 64-bit over the UTF-8 bytes, and is part of
+    // the WIRE CONTRACT (#3261): hashes are written into artifacts and
+    // compared later, potentially by a different binary, toolchain, or a
+    // `no_std` build, so the algorithm is specified here and identical on
+    // every path. It must not change without treating it as a format
+    // change. It is a change DETECTOR, not a proof — not collision
+    // resistant, not a security primitive. (It was `std`'s `DefaultHasher`,
+    // whose algorithm Rust documents as unspecified between releases, with
+    // a non-bit-identical FNV fallback under `no_std`.)
     // Hash-transparent: `name`/`attrs` never contribute to `source_hash`,
     // only `children`'s own text/slots do, recursively.
     Span {
