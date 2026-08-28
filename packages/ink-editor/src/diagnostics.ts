@@ -1,6 +1,7 @@
 import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
+import type { Diagnostic } from "@codemirror/lint";
+import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
 import type { CompileResult } from "@brink/wasm-types";
 import { perfSpan, perfTime } from "./perf/probe.js";
 
@@ -34,7 +35,11 @@ export interface DiagnosticsOptions {
  * view and splicing a stale tab's source into the now-active file's session.
  */
 export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
-  return ViewPlugin.fromClass(
+  return [
+    // Carried WITH the producer, never wired separately — see
+    // diagnostic-sources.ts.
+    diagnosticSources,
+    ViewPlugin.fromClass(
     class {
       private timeout: ReturnType<typeof setTimeout> | null = null;
       /** Bumped on every doc change — an async compile landing only
@@ -149,8 +154,12 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
           });
         }
 
+        // Published rather than `setDiagnostics`-ed: the prose checker is a
+        // second producer into the same set, and `setDiagnostics` REPLACES —
+        // whichever landed last would erase the other's squiggles, silently
+        // and intermittently. See diagnostic-sources.ts.
         perfTime("cm.diagnostics.setDiagnostics", () =>
-          this.view.dispatch(setDiagnostics(this.view.state, diags)),
+          publishDiagnostics(this.view, "compile", diags),
         );
         // The studio's compile fan-out (outline, story graph, player reload,
         // store sweeps) all runs inside this callback — the span separates
@@ -159,5 +168,6 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
         endCycle();
       }
     },
-  );
+    ),
+  ];
 }
