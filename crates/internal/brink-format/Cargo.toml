@@ -14,9 +14,10 @@ all-features = true
 
 [features]
 default = ["std"]
-# `std` gates the handful of spots that need the standard library: the
-# `DefaultHasher`-backed fast path of `content_hash`, and pulling in
-# `serde/std`. Without it the crate is `no_std` + `alloc` (see
+# `std` gates the handful of spots that need the standard library —
+# pulling in `serde/std`. (It used to also gate a `DefaultHasher`-backed
+# path in `content_hash`; since #3261 that function is FNV-1a on every
+# path and feature-independent, because its output is a wire contract.) Without it the crate is `no_std` + `alloc` (see
 # `docs/no-std-portability.md`). `inkt`/`inkt-write` are NOT part of the
 # no_std surface — `pest` is std-oriented — so they're independent of `std`.
 std = ["serde/std"]
