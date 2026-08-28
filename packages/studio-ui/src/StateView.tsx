@@ -1,6 +1,8 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { useShell } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
+import { DebugValueView } from "./DebugValueView.js";
+import type { DebugFrame } from "@brink/wasm-types";
 
 /**
  * State View — a read-only runtime debugger.
@@ -12,6 +14,57 @@ import { useStudioStore } from "./StoreContext.js";
  * (diffed against `prevDebugState`). With no session, a placeholder with a
  * `story.start` affordance is shown instead.
  */
+/**
+ * One frame's named locals (#3140).
+ *
+ * Rendered INSIDE the frame rather than as its own top-level section: a
+ * local is scoped to the call frame that owns it, and two frames can hold
+ * different `gold`s at once. A flat "Locals" section would have to invent a
+ * disambiguation the data does not have.
+ *
+ * The `locals` field is deliberately tri-state on the wire, and all three
+ * states say something different to an author:
+ *
+ * - `undefined` — the program carries no `DebugInfo` (release-exported, or
+ *   compiled before D6), or the frame has no live position to resolve a
+ *   scope from. NOT the same as "no locals", so it says so.
+ * - `[]` — debug info is present and this frame genuinely declares none.
+ * - non-empty — the names, with live values.
+ *
+ * Collapsing the first two into a blank space is the one thing this must
+ * not do: an author looking at an empty panel would read "this function has
+ * no locals" when the truth is "this build cannot tell you".
+ */
+function FrameLocals({ frame }: { frame: DebugFrame }) {
+  if (frame.locals === undefined) {
+    // Only worth saying when the frame plausibly HAS locals — an exhausted
+    // or external frame carries no position by construction, and noting
+    // that on every one of them is noise.
+    return frame.temps > 0 ? (
+      <p className="sv-locals-none sv-dim">no debug info for this frame</p>
+    ) : null;
+  }
+  if (frame.locals.length === 0) return null;
+
+  return (
+    <table className="sv-locals">
+      <tbody>
+        {frame.locals.map((l) => (
+          // Keyed by SLOT, not name: the slot is the frame-unique
+          // identity, and a future codegen that reused a name across
+          // sibling scopes would otherwise collide.
+          <tr key={l.slot}>
+            <td className="sv-key">{l.name}</td>
+            <td className="sv-val sv-mono">
+              <DebugValueView value={l.value} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function StateViewInner() {
   const sessionStatus = useStudioStore((s) => s.sessionStatus);
   const debugState = useStudioStore((s) => s.debugState);
@@ -119,9 +172,19 @@ function StateViewInner() {
           <ol className="sv-stack">
             {debugState.call_stack.map((f, i) => (
               <li key={i} className="sv-frame">
-                <span className={"sv-badge sv-frame-" + f.kind}>{f.kind}</span>
-                <span className="sv-path">{f.location ?? "—"}</span>
-                {f.temps > 0 && <span className="sv-dim">{f.temps} temp{f.temps > 1 ? "s" : ""}</span>}
+                <div className="sv-frame-head">
+                  <span className={"sv-badge sv-frame-" + f.kind}>{f.kind}</span>
+                  <span className="sv-path">{f.location ?? "—"}</span>
+                  {/* The bare count stays: it is the one number that is
+                      right even with no debug info, and D7 added `locals`
+                      ALONGSIDE it rather than replacing it. */}
+                  {f.temps > 0 && (
+                    <span className="sv-dim">
+                      {f.temps} temp{f.temps > 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+                <FrameLocals frame={f} />
               </li>
             ))}
           </ol>
