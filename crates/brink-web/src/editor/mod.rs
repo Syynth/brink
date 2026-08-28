@@ -16,6 +16,7 @@ mod hints;
 mod hover;
 mod navigation;
 mod outline;
+mod prose;
 mod refactor;
 mod spans;
 mod story_graph;
