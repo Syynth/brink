@@ -219,11 +219,20 @@ export {
   getTomlBool,
   getTomlInteger,
   getTomlString,
+  getTomlStringArray,
   setTomlBool,
   setTomlInteger,
   setTomlString,
+  setTomlStringArray,
   tomlTableKeys,
 } from "./toml-edit.js";
+// The author's prose dictionary in `[prose] dictionary` — shared by the
+// editor's "Add to dictionary" action and the Prose settings list.
+export {
+  dictionaryWords,
+  withDictionaryWord,
+  withoutDictionaryWord,
+} from "./prose-dictionary.js";
 // The .binder.json order sidecar's pure model (#3038).
 export {
   BINDER_SIDECAR_PATH,

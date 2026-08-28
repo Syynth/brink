@@ -208,6 +208,11 @@ pub struct EditorSession {
     /// wholesale-replace and clear-on-missing rules; `None` means the file
     /// set none, in which case the host applies its own default (on).
     configured_prose_enable: Option<bool>,
+    /// `[prose] dictionary` from the applied `brink.toml` — the author's own
+    /// word list. Same wholesale-replace and clear-on-missing rules: a word
+    /// removed from the file must stop being a known word, or "remove from
+    /// dictionary" would appear to do nothing until a reload.
+    configured_prose_dictionary: Vec<String>,
     /// The full warning-string set returned by the most recent
     /// `apply_project_config`/`discover_project_config` call (issue #2333)
     /// — read by [`Self::dedupe_config_warnings`], the shared filter both
@@ -288,6 +293,7 @@ impl EditorSession {
             draft_globs: Vec::new(),
             configured_indent: None,
             configured_prose_dialect: None,
+            configured_prose_dictionary: Vec::new(),
             configured_prose_enable: None,
             last_config_warnings: BTreeSet::new(),
         }
@@ -693,6 +699,7 @@ impl EditorSession {
             self.configured_indent = None;
             self.configured_prose_dialect = None;
             self.configured_prose_enable = None;
+            self.configured_prose_dictionary.clear();
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -765,6 +772,17 @@ impl EditorSession {
     #[must_use]
     pub fn configured_prose_enable(&self) -> Option<bool> {
         self.configured_prose_enable
+    }
+
+    /// `[prose] dictionary` — the author's own word list, as a JSON string
+    /// array in the order the file writes it.
+    ///
+    /// File order rather than sorted: this is the author's list, and the
+    /// settings view shows it back to them. Sorting here would silently
+    /// disagree with their file every time they hand-grouped it.
+    #[must_use]
+    pub fn configured_prose_dictionary(&self) -> String {
+        serde_json::to_string(&self.configured_prose_dictionary).unwrap_or_else(|_| "[]".to_owned())
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1175,6 +1193,8 @@ impl EditorSession {
         // `[prose] dialect` (#3211): same wholesale-replace rule.
         self.configured_prose_dialect = config.prose_dialect;
         self.configured_prose_enable = config.prose_enable;
+        self.configured_prose_dictionary
+            .clone_from(&config.prose_dictionary);
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload

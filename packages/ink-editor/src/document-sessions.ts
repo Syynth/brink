@@ -112,6 +112,17 @@ export interface DocumentSessionsOptions {
   proseChecker?: ProseChecker | null;
   /** `american` | `british` | `canadian` | `australian`, from `[prose]`. */
   proseDialect?: () => string;
+  /**
+   * Store a word in the project's dictionary — the "Add to dictionary"
+   * action's implementation.
+   *
+   * The HOST's, not the session's: the list lives in `brink.toml`
+   * (decision log, "Prose dictionary lives in `brink.toml`"), and editing
+   * that file is a comment-preserving structured write the embedder owns.
+   * Absent means the embedder has nowhere to put it, and the action is then
+   * not offered at all rather than offered and silently inert.
+   */
+  onAddToDictionary?: (word: string) => void;
 }
 
 export interface DocumentCallbacks {
@@ -1121,9 +1132,11 @@ export class DocumentSessions {
       getProseDictionary: () => this.project.getProseDictionary(),
       getProseDialect: () =>
         this.options.proseDialect?.() ?? this.project.getProseDialect(),
-      onAddToDictionary: (word) => {
-        this.project.addProseDictionaryWord(word);
-      },
+      // Passed straight through, INCLUDING when absent: `proseExtension`
+      // offers the action only when this is defined, so forwarding an
+      // always-present wrapper would put a control in the tooltip that does
+      // nothing for an embedder that cannot store a word.
+      onAddToDictionary: this.options.onAddToDictionary,
       getTokenTypeNames,
       handleSlot: slot,
       getActiveFile: () => slot.path,

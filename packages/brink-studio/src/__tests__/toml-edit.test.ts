@@ -8,8 +8,10 @@ import { describe, expect, it } from "vitest";
 import {
   getTomlBool,
   getTomlString,
+  getTomlStringArray,
   setTomlBool,
   setTomlString,
+  setTomlStringArray,
   tomlTableKeys,
 } from "@brink/studio-store";
 
@@ -126,5 +128,129 @@ E033 = "allow"
     const next = setTomlString(CONFIG, "lints", "E014", null);
     expect(tomlTableKeys(next, "lints")).toEqual(["deny-warnings", "E033"]);
     expect(next).toContain('E033 = "allow"');
+  });
+});
+
+/**
+ * String arrays — the prose dictionary's storage.
+ *
+ * The scalar editors above model a key as one line. A dictionary outgrows
+ * that: it is author-visible, hand-editable, and only ever gets longer, so
+ * it is written one entry per line and must be readable back across them.
+ */
+describe("string arrays", () => {
+  const WITH_DICT = `[prose]
+dialect = "british"
+dictionary = [
+  "Griswold",
+  "Kaelen",
+]
+
+[lints]
+E063 = "allow"
+`;
+
+  it("reads a multi-line array", () => {
+    expect(getTomlStringArray(WITH_DICT, "prose", "dictionary")).toEqual([
+      "Griswold",
+      "Kaelen",
+    ]);
+  });
+
+  it("reads a single-line array, which a hand-edited file may well hold", () => {
+    const src = `[prose]\ndictionary = ["Ada", "Bo"]\n`;
+    expect(getTomlStringArray(src, "prose", "dictionary")).toEqual(["Ada", "Bo"]);
+  });
+
+  it("tells an absent key from an empty array", () => {
+    // Different answers to different questions: null is "this project has
+    // never had a dictionary", [] is "it has one and it is empty". The
+    // settings view says something different for each.
+    expect(getTomlStringArray(`[prose]\ndialect = "american"\n`, "prose", "dictionary")).toBeNull();
+    expect(getTomlStringArray(`[prose]\ndictionary = []\n`, "prose", "dictionary")).toEqual([]);
+  });
+
+  it("does not mistake a comma inside a word for a separator", () => {
+    const src = `[prose]\ndictionary = ["Smith, Jr.", "Bo"]\n`;
+    expect(getTomlStringArray(src, "prose", "dictionary")).toEqual(["Smith, Jr.", "Bo"]);
+  });
+
+  it("ignores comments inside the array", () => {
+    const src = `[prose]\ndictionary = [\n  "Ada", # the cook\n  # a note on its own line\n  "Bo",\n]\n`;
+    expect(getTomlStringArray(src, "prose", "dictionary")).toEqual(["Ada", "Bo"]);
+  });
+
+  it("reads a bracket inside a string as content, not as the array's end", () => {
+    const src = `[prose]\ndictionary = [\n  "a]b",\n  "Bo",\n]\n`;
+    expect(getTomlStringArray(src, "prose", "dictionary")).toEqual(["a]b", "Bo"]);
+  });
+
+  it("reports an unterminated array as absent rather than guessing its end", () => {
+    // Guessing would let a later write truncate the file at a boundary we
+    // cannot see — the one thing a config writer must never do.
+    const src = `[prose]\ndictionary = [\n  "Ada",\n`;
+    expect(getTomlStringArray(src, "prose", "dictionary")).toBeNull();
+  });
+
+  it("replaces a multi-line array in place, leaving neighbours alone", () => {
+    const next = setTomlStringArray(WITH_DICT, "prose", "dictionary", ["Ada", "Bo", "Cy"]);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(["Ada", "Bo", "Cy"]);
+    expect(getTomlString(next, "prose", "dialect")).toBe("british");
+    expect(tomlTableKeys(next, "lints")).toEqual(["E063"]);
+  });
+
+  it("shrinking the array does not leave the old entries behind", () => {
+    // The failure mode of a range-replace that measures the range wrong.
+    const next = setTomlStringArray(WITH_DICT, "prose", "dictionary", ["Ada"]);
+    expect(next).not.toContain("Kaelen");
+    expect(next).not.toContain("Griswold");
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(["Ada"]);
+  });
+
+  it("creates the table when it is missing", () => {
+    const next = setTomlStringArray(`[project]\nentry = "main.ink"\n`, "prose", "dictionary", ["Ada"]);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(["Ada"]);
+    expect(getTomlString(next, "project", "entry")).toBe("main.ink");
+  });
+
+  it("adds the key to an existing table without disturbing its comments", () => {
+    const src = `# project config\n[prose]\n# which English\ndialect = "british"\n`;
+    const next = setTomlStringArray(src, "prose", "dictionary", ["Ada"]);
+    expect(next).toContain("# project config");
+    expect(next).toContain("# which English");
+    expect(getTomlString(next, "prose", "dialect")).toBe("british");
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(["Ada"]);
+  });
+
+  it("round-trips a word containing a quote", () => {
+    const next = setTomlStringArray(`[prose]\n`, "prose", "dictionary", ['O"Hara', "Bo"]);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(['O"Hara', "Bo"]);
+  });
+
+  it("removes the key when given null", () => {
+    const next = setTomlStringArray(WITH_DICT, "prose", "dictionary", null);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toBeNull();
+    expect(getTomlString(next, "prose", "dialect")).toBe("british");
+  });
+
+  it("writes an empty array rather than removing the key", () => {
+    // Emptying the dictionary is a decision the author made; dropping the
+    // key would present it back to them as "never configured".
+    const next = setTomlStringArray(WITH_DICT, "prose", "dictionary", []);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual([]);
+  });
+
+  it("overwrites a scalar sitting under the same key", () => {
+    const src = `[prose]\ndictionary = "oops"\n`;
+    const next = setTomlStringArray(src, "prose", "dictionary", ["Ada"]);
+    expect(getTomlStringArray(next, "prose", "dictionary")).toEqual(["Ada"]);
+    expect(next).not.toContain("oops");
+  });
+
+  it("stays one-entry-per-line at every size, so adding a word is a one-line diff", () => {
+    const one = setTomlStringArray(`[prose]\n`, "prose", "dictionary", ["Ada"]);
+    const two = setTomlStringArray(one, "prose", "dictionary", ["Ada", "Bo"]);
+    const added = two.split("\n").filter((l) => !one.split("\n").includes(l));
+    expect(added).toEqual(['  "Bo",']);
   });
 });

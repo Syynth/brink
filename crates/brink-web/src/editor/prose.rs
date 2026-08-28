@@ -184,6 +184,50 @@ mod tests {
     }
 
     #[test]
+    fn the_configured_dictionary_comes_from_the_prose_table() {
+        // The author's own word list — everything the symbol table cannot
+        // know. It lives in `brink.toml` rather than a sidecar so it is
+        // shared by collaborators and survives a fresh clone (decision log,
+        // "Prose dictionary lives in `brink.toml`").
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Griswold\", \"Ashfen\"]\n")
+            .expect("valid config");
+        let words: Vec<String> =
+            serde_json::from_str(&session.configured_prose_dictionary()).expect("json");
+        assert_eq!(words, vec!["Griswold", "Ashfen"]);
+    }
+
+    #[test]
+    fn the_configured_dictionary_is_in_file_order_not_sorted() {
+        // It is the author's list, shown back to them in the settings panel.
+        // Sorting here would disagree with their file whenever they grouped
+        // it by hand.
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Zeb\", \"Ada\"]\n")
+            .expect("valid config");
+        let words: Vec<String> =
+            serde_json::from_str(&session.configured_prose_dictionary()).expect("json");
+        assert_eq!(words, vec!["Zeb", "Ada"]);
+    }
+
+    #[test]
+    fn a_config_without_a_dictionary_clears_the_previous_one() {
+        // Wholesale-replace, like every other configured_* field: a word
+        // removed from the file must stop being a known word, or "remove
+        // from dictionary" appears to do nothing until a reload.
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Griswold\"]\n")
+            .expect("valid config");
+        session
+            .apply_project_config("[prose]\ndialect = \"british\"\n")
+            .expect("valid config");
+        assert_eq!(session.configured_prose_dictionary(), "[]");
+    }
+
+    #[test]
     fn is_sorted_and_deduplicated() {
         // Determinism matters: this feeds a request the editor caches on, and
         // an unstable order would make an unchanged project look changed.
