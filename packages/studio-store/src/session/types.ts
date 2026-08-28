@@ -14,7 +14,15 @@
  * fields; views are unchanged and never touch the provider.
  */
 
-import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
+import type {
+  Breakpoint,
+  Choice,
+  DebugRunOutcome,
+  DebugSourceLocation,
+  DebugState,
+  ProgramModel,
+  StepMode,
+} from "@brink/wasm-types";
 import type { StoreNotification } from "../index.js";
 import type { OutputSource } from "../slices/output.js";
 
@@ -140,7 +148,11 @@ export type SessionCapability =
   // Can switch between one-line and run-to-pause reveals (#3011). A provider
   // that only ever advances one line does NOT advertise this — the Player
   // hides the toggle rather than offering a control that does nothing.
-  | "auto";
+  | "auto"
+  // D8's debug control bridged through wasm (#3232): pause/step/breakpoints
+  // *and* program→source position resolution, bundled as ONE capability —
+  // see `DebugSessionProvider` below for why the two aren't split.
+  | "debug";
 
 /** The full capability set — what the local (wasm) provider advertises. */
 export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
@@ -150,6 +162,7 @@ export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
   "choose",
   "continue",
   "auto",
+  "debug",
 ]);
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -186,6 +199,54 @@ export interface SessionProvider {
   setAuto?(auto: boolean): void;
 
   dispose(): void;
+}
+
+/**
+ * The debug-control capability extension (#3232): D8's breakpoints/pause/
+ * step (`Story::debug_run`/`debug_step`/`BreakpointSet`, issue #3186) bound
+ * onto a session, plus the program→source position resolver D9 (#3187)
+ * landed without a `SessionProvider` capability of its own — "hardcoded
+ * around it" against a raw wasm handle rather than gated through this
+ * interface. The issue folds both into ONE extension rather than adding
+ * position-resolution and pause/step/breakpoints as two separate ad-hoc
+ * capabilities: a provider that can step a session is exactly the provider
+ * whose positions are worth resolving (there is no useful "can resolve
+ * positions but can't pause" or "can pause but can't resolve positions"
+ * split for a debugger), so a single `"debug"` capability flag and a single
+ * interface cover both.
+ *
+ * Only the local (wasm) provider implements this today; a future remote
+ * provider (a game's own VM) may not — `isDebugSessionProvider` is the
+ * narrowing guard callers use before touching any method here.
+ */
+export interface DebugSessionProvider extends SessionProvider {
+  /** See `StorySessionHandle.resolveDebugPosition`'s doc (`@brink-lang/web`,
+   * D9 #3187) for the full program-identity-gating contract. */
+  resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null;
+  /** See `StorySessionHandle.debugBreakpointAdd`'s doc. */
+  debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number;
+  /** See `StorySessionHandle.debugBreakpointRemove`'s doc. */
+  debugBreakpointRemove(id: number): boolean;
+  /** See `StorySessionHandle.debugBreakpointSetEnabled`'s doc. */
+  debugBreakpointSetEnabled(id: number, enabled: boolean): boolean;
+  /** See `StorySessionHandle.debugBreakpoints`'s doc. */
+  debugBreakpoints(): Breakpoint[];
+  /** See `StorySessionHandle.debugRun`'s doc. */
+  debugRun(budgetCeiling?: number): DebugRunOutcome;
+  /** See `StorySessionHandle.debugStep`'s doc. */
+  debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+}
+
+/** Narrow a bound `SessionProvider` to `DebugSessionProvider` — checks the
+ * `"debug"` capability flag, which the local provider always advertises
+ * alongside implementing every method above (kept as two facts — a
+ * capability flag the command layer's `when` predicates gate on, and the
+ * methods themselves — rather than one, so a provider can be probed for the
+ * capability without a `Symbol`/`instanceof` check on an interface). */
+export function isDebugSessionProvider(
+  provider: SessionProvider,
+): provider is DebugSessionProvider {
+  return provider.capabilities.has("debug");
 }
 
 /**

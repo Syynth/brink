@@ -1259,6 +1259,57 @@ export interface DebugSourceLocation {
   range_len: number;
 }
 
+// ── Debug control (D8, #3186 — the wasm control-half bridge, #3232) ──
+//
+// Mirrors `brink_runtime::{Breakpoint, DebugRunOutcome, DebugStopReason,
+// StepMode}` — the wire shapes `debugBreakpoints`/`debugRun`/`debugStep`
+// (`StoryRunnerHandle`/`StorySessionHandle`, `@brink-lang/web`) exchange.
+
+/** A `debugStep` unit — `docs/debugger-spec.md` §4's depth-delta semantics:
+ *  `"into"` executes exactly one instruction, descending into any newly
+ *  entered frame; `"over"` runs through a call without stopping inside it;
+ *  `"out"` runs until the current frame returns to its caller. */
+export type StepMode = "into" | "over" | "out";
+
+/** One breakpoint: an unconditional halt at a `(container_idx, offset)`
+ *  bytecode position, checked before that instruction executes. `id`
+ *  addresses it for `debugBreakpointRemove`/`debugBreakpointSetEnabled`. */
+export interface Breakpoint {
+  id: number;
+  container_idx: number;
+  offset: number;
+  name: string;
+  enabled: boolean;
+}
+
+/** Why a `debugRun`/`debugStep` call stopped — internally tagged on `type`,
+ *  the same convention `DebugValue` above uses. */
+export type DebugStopReason =
+  | { type: "breakpoint"; id: number; name: string }
+  | { type: "watchpoint"; global_idx: number }
+  /** A choice point was reached — distinct from `"terminal"`: `choose()`
+   *  followed by `continueSingle`/`debugRun`/`debugStep` can resume from
+   *  here, unlike an actual `-> DONE`/`-> END`. */
+  | { type: "choices" }
+  /** The requested step (into/over/out) completed normally. */
+  | { type: "step" }
+  /** The flow reached a terminal VM outcome (`-> DONE`/`-> END`, or content
+   *  otherwise exhausted) before the requested stop condition was reached. */
+  | { type: "terminal" }
+  /** `StepMode: "out"` was requested from the outermost frame (or a thread
+   *  frame), which has no caller to return to — refused rather than running
+   *  the story to its own end. */
+  | { type: "noStepOutTarget" };
+
+/** The result of a `debugRun`/`debugStep` call: why it stopped, the
+ *  resulting position (absent for a frame with an empty container stack,
+ *  e.g. after a terminal step), and the resulting call-stack depth. */
+export interface DebugRunOutcome {
+  reason: DebugStopReason;
+  position?: { container_idx: number; offset: number };
+  depth: number;
+}
+
 // ── Program model (Program Explorer) ─────────────────────────────
 
 export interface ProgramGlobal {
