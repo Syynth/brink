@@ -198,6 +198,19 @@ pub enum JoinKey {
     Decl(TextRange),
     /// Look up in the reference-target map (`analysis.resolutions`).
     Ref(TextRange),
+    /// Look up in the anonymous-container identity map (#3234): the
+    /// stamped `container_id` of an ANONYMOUS container (a choice target,
+    /// a gather continuation, a conditional/sequence branch, an inline
+    /// sequence's wrapper), keyed by the range recorded here — the node's
+    /// own source range, which [`anonymous_container_ids`] derives
+    /// identically from a stamped-but-NOT-normalized clone of the same
+    /// pristine HIR. Joined at assembly, like the other keys, so
+    /// per-segment structural memos stay id-free and backdatable. The ids
+    /// are codegen's real ids by construction: the map is built by the
+    /// same `stamp_container_ids` call the codegen road runs before
+    /// normalization, and the lift inherits ids rather than re-minting
+    /// them (#3275).
+    Anon(TextRange),
 }
 
 /// A projection fragment (#3064 B2): spans + aligned join keys +
@@ -224,7 +237,7 @@ pub struct ProjectionParts {
 pub fn project_walk_parts(hir: &HirFile, source: &str) -> ProjectionParts {
     let empty_decls = BTreeMap::new();
     let empty_refs = BTreeMap::new();
-    let mut v = new_visitor(source, &empty_decls, &empty_refs);
+    let mut v = new_visitor(source, &empty_decls, &empty_refs, &empty_decls);
     crate::hir::visit::visit(hir, &mut v);
     ProjectionParts {
         spans: v.spans,
@@ -243,7 +256,7 @@ pub fn project_walk_parts(hir: &HirFile, source: &str) -> ProjectionParts {
 pub fn project_file_decl_parts(hir: &HirFile, source: &str) -> ProjectionParts {
     let empty_decls = BTreeMap::new();
     let empty_refs = BTreeMap::new();
-    let mut v = new_visitor(source, &empty_decls, &empty_refs);
+    let mut v = new_visitor(source, &empty_decls, &empty_refs, &empty_decls);
     emit_file_decl_spans(&mut v, hir);
     ProjectionParts {
         spans: v.spans,
@@ -259,18 +272,26 @@ pub fn project_file_decl_parts(hir: &HirFile, source: &str) -> ProjectionParts {
 /// cross-file identity, and must not require an `AnalysisResult`.
 #[must_use]
 pub fn project_hir_structural(hir: &HirFile, source: &str) -> Projection {
-    project_with_maps(hir, source, &BTreeMap::new(), &BTreeMap::new())
+    project_with_maps(
+        hir,
+        source,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
 }
 
 fn new_visitor<'a>(
     source: &'a str,
     decl_ids: &'a BTreeMap<(u32, u32), DefinitionId>,
     ref_targets: &'a BTreeMap<(u32, u32), DefinitionId>,
+    anon_ids: &'a BTreeMap<(u32, u32), DefinitionId>,
 ) -> ProjectionVisitor<'a> {
     ProjectionVisitor {
         source,
         decl_ids,
         ref_targets,
+        anon_ids,
         spans: Vec::new(),
         join_keys: Vec::new(),
         depth: 0,
@@ -314,8 +335,9 @@ pub fn project_with_maps(
     source: &str,
     decl_ids: &BTreeMap<(u32, u32), DefinitionId>,
     ref_targets: &BTreeMap<(u32, u32), DefinitionId>,
+    anon_ids: &BTreeMap<(u32, u32), DefinitionId>,
 ) -> Projection {
-    let mut v = new_visitor(source, decl_ids, ref_targets);
+    let mut v = new_visitor(source, decl_ids, ref_targets, anon_ids);
     emit_file_decl_spans(&mut v, hir);
     crate::hir::visit::visit(hir, &mut v);
 
@@ -333,6 +355,11 @@ struct ProjectionVisitor<'a> {
     source: &'a str,
     decl_ids: &'a BTreeMap<(u32, u32), DefinitionId>,
     ref_targets: &'a BTreeMap<(u32, u32), DefinitionId>,
+    /// Anonymous-container identity (#3234) — filled by whole-file
+    /// callers holding a stamped clone ([`anonymous_container_ids`]);
+    /// empty in structural walks and per-segment memos, whose `Anon`
+    /// join replays at assembly instead.
+    anon_ids: &'a BTreeMap<(u32, u32), DefinitionId>,
     spans: Vec<ProjectedSpan>,
     /// Aligned with `spans`: the identity-join key each span used (or
     /// would use, in a structural walk) — see [`JoinKey`].
@@ -423,9 +450,11 @@ impl ProjectionVisitor<'_> {
         });
     }
 
-    /// Emit a container span over `range`, joining `def_id` if named.
-    fn push_container(&mut self, range: TextRange, kind: SpanKind, join_range: Option<TextRange>) {
-        let _ = self.push_container_full(range, kind, join_range, None, None);
+    /// Emit a container span over `range`, joining `def_id` if the key is
+    /// a `Decl` (named containers); `Anon` keys are recorded for the
+    /// assembly-time join (#3234) and fill nothing here.
+    fn push_container(&mut self, range: TextRange, kind: SpanKind, join: Option<JoinKey>) {
+        let _ = self.push_container_full(range, kind, join, None, None);
     }
 
     /// Emit a weave container (Choice/Gather) carrying stickiness and the
@@ -434,22 +463,27 @@ impl ProjectionVisitor<'_> {
         &mut self,
         range: TextRange,
         kind: SpanKind,
+        join: Option<JoinKey>,
         sticky: Option<bool>,
         weave_depth: u32,
     ) -> u32 {
-        self.push_container_full(range, kind, None, sticky, Some(weave_depth))
+        self.push_container_full(range, kind, join, sticky, Some(weave_depth))
     }
 
     fn push_container_full(
         &mut self,
         range: TextRange,
         kind: SpanKind,
-        join_range: Option<TextRange>,
+        join: Option<JoinKey>,
         sticky: Option<bool>,
         weave_depth: Option<u32>,
     ) -> u32 {
-        let def_id = join_range.and_then(|r| self.decl_ids.get(&range_key(r)).copied());
-        self.join_keys.push(join_range.map(JoinKey::Decl));
+        let def_id = match join {
+            Some(JoinKey::Decl(r)) => self.decl_ids.get(&range_key(r)).copied(),
+            Some(JoinKey::Anon(r)) => self.anon_ids.get(&range_key(r)).copied(),
+            _ => None,
+        };
+        self.join_keys.push(join);
         let handle = self.next_handle;
         self.next_handle += 1;
         self.spans.push(ProjectedSpan {
@@ -476,7 +510,11 @@ impl ProjectionVisitor<'_> {
     fn push_cond_branches(&mut self, cond: &Conditional) {
         for branch in &cond.branches {
             if let Some(ext) = block_extent(&branch.body) {
-                self.push_container(ext, SpanKind::ConditionalBranch, None);
+                self.push_container(
+                    ext,
+                    SpanKind::ConditionalBranch,
+                    Some(JoinKey::Anon(branch.ptr.text_range())),
+                );
             }
         }
     }
@@ -485,7 +523,11 @@ impl ProjectionVisitor<'_> {
     fn push_seq_branches(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
             if let Some(ext) = block_extent(&branch.body) {
-                self.push_container(ext, SpanKind::SequenceBranch, None);
+                self.push_container(
+                    ext,
+                    SpanKind::SequenceBranch,
+                    Some(JoinKey::Anon(branch.ptr.text_range())),
+                );
             }
         }
     }
@@ -530,6 +572,11 @@ impl ProjectionVisitor<'_> {
                 } else {
                     self.slot_construct_ranges.push(cond.ptr.text_range());
                 }
+                // No Anon key: an inline conditional construct has no
+                // single container id — its branches carry the ids, and
+                // this span deliberately covers the whole construct (see
+                // this fn's doc). A future per-branch inline projection
+                // would key each `branch.ptr` like `push_cond_branches`.
                 self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
             }
             ContentPart::InlineSequence(seq) => {
@@ -538,7 +585,14 @@ impl ProjectionVisitor<'_> {
                 } else {
                     self.slot_construct_ranges.push(seq.ptr.text_range());
                 }
-                self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
+                // The wrapper container IS the construct's identity (its
+                // visit count drives selection), so the whole-construct
+                // span joins it (#3234).
+                self.push_container(
+                    seq.ptr.text_range(),
+                    SpanKind::SequenceBranch,
+                    Some(JoinKey::Anon(seq.ptr.text_range())),
+                );
             }
             ContentPart::Span(span) => {
                 for child in &span.children {
@@ -584,7 +638,11 @@ impl HirVisitor for ProjectionVisitor<'_> {
     }
 
     fn enter_knot(&mut self, knot: &Knot) {
-        self.push_container(knot.ptr.text_range(), SpanKind::Knot, Some(knot.name.range));
+        self.push_container(
+            knot.ptr.text_range(),
+            SpanKind::Knot,
+            Some(JoinKey::Decl(knot.name.range)),
+        );
         // The knot's own name identifier as a decl span too (for go-to-def).
         self.push_decl(knot.name.range, SpanKind::Knot);
         for param in &knot.params {
@@ -601,7 +659,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
         self.push_container(
             stitch.ptr.text_range(),
             SpanKind::Stitch,
-            Some(stitch.name.range),
+            Some(JoinKey::Decl(stitch.name.range)),
         );
         self.push_decl(stitch.name.range, SpanKind::Stitch);
         for param in &stitch.params {
@@ -631,6 +689,12 @@ impl HirVisitor for ProjectionVisitor<'_> {
         let handle = self.push_weave_container(
             extent,
             SpanKind::Choice,
+            // #3234: anonymous identity, keyed by the choice's own line
+            // range — the stamped clone keys `choice.container_id` the
+            // same way. A LABELED choice's stamped id IS the label id
+            // (`lookup_label_id` resolves it at stamp time), so one join
+            // path serves both.
+            Some(JoinKey::Anon(choice.ptr.text_range())),
             Some(choice.is_sticky),
             weave_depth,
         );
@@ -733,7 +797,13 @@ impl HirVisitor for ProjectionVisitor<'_> {
                         .insert(range_key(label.range), weave_depth);
                 }
                 if let Some(ext) = block_extent(&cs.continuation) {
-                    self.push_weave_container(ext, SpanKind::Gather, None, weave_depth);
+                    self.push_weave_container(
+                        ext,
+                        SpanKind::Gather,
+                        Some(JoinKey::Anon(ext)),
+                        None,
+                        weave_depth,
+                    );
                 }
                 self.cs_depths.push(weave_depth);
                 self.cs_child_counters.push(0);
@@ -917,4 +987,85 @@ pub fn build_line_stacks(spans: &[ProjectedSpan], source: &str) -> Vec<LineStack
         stack.containers.sort_by_key(|c| c.depth);
     }
     lines
+}
+
+// ─── Anonymous-container identity (#3234) ───────────────────────────
+
+/// Collect every anonymous container's stamped `DefinitionId`, keyed by
+/// the same range each projection push site records as its
+/// [`JoinKey::Anon`]:
+///
+/// * a choice → its `ptr` range (the choice's own line);
+/// * a gather continuation → its [`block_extent`];
+/// * a block-level conditional/sequence branch → the branch's `ptr`;
+/// * an inline sequence → its construct `ptr` (the wrapper container's
+///   visit count is the construct's identity).
+///
+/// The input must be a **stamped, NOT normalized** `HirFile` — the
+/// pristine tree `stamp_container_ids` runs on, where authored nodes are
+/// 1:1 with compiled containers (#3275). A normalized tree would carry
+/// lift-cloned branches whose duplicated `ptr` ranges collide as keys.
+/// Nodes the stamp walk deliberately leaves unstamped (constructs in
+/// choice slot text, tags, span children) simply contribute no entry, so
+/// their spans stay identity-free rather than guessing.
+#[must_use]
+pub fn anonymous_container_ids(hir: &HirFile) -> BTreeMap<(u32, u32), DefinitionId> {
+    struct Collector {
+        ids: BTreeMap<(u32, u32), DefinitionId>,
+    }
+    impl Collector {
+        fn insert(&mut self, range: TextRange, id: Option<DefinitionId>) {
+            if let Some(id) = id {
+                self.ids.insert(range_key(range), id);
+            }
+        }
+        fn collect_part(&mut self, part: &ContentPart) {
+            match part {
+                ContentPart::InlineSequence(seq) => {
+                    self.insert(seq.ptr.text_range(), seq.container_id);
+                }
+                ContentPart::Span(span) => {
+                    for child in &span.children {
+                        self.collect_part(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    impl HirVisitor for Collector {
+        fn enter_choice(&mut self, choice: &Choice) {
+            self.insert(choice.ptr.text_range(), choice.container_id);
+        }
+        fn enter_stmt(&mut self, stmt: &Stmt) {
+            match stmt {
+                Stmt::ChoiceSet(cs) => {
+                    if let Some(ext) = block_extent(&cs.continuation) {
+                        self.insert(ext, cs.gather_id);
+                    }
+                }
+                Stmt::Conditional(cond) => {
+                    for branch in &cond.branches {
+                        self.insert(branch.ptr.text_range(), branch.container_id);
+                    }
+                }
+                Stmt::Sequence(seq) => {
+                    for branch in &seq.branches {
+                        self.insert(branch.ptr.text_range(), branch.body.container_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn enter_content(&mut self, content: &Content, _ctx: crate::hir::ContentContext) {
+            for part in &content.parts {
+                self.collect_part(part);
+            }
+        }
+    }
+    let mut c = Collector {
+        ids: BTreeMap::new(),
+    };
+    crate::hir::visit::visit(hir, &mut c);
+    c.ids
 }
