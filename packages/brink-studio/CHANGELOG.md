@@ -1,5 +1,505 @@
 # @brink-lang/studio
 
+## 0.17.0
+
+### Minor Changes
+
+- d7092db: Clicking `brink.toml` in the Binder now opens the **Settings** takeover, in
+  every editor view. Settings gains a "Project" section carrying the whole
+  config document — the structured form and the raw text beneath it.
+
+  Continuous view renders the project's manuscript and deliberately excludes
+  `brink.toml` from it, so the config file was simply unreachable there
+  (#3166). Routing to Settings answers that once for every view rather than
+  per-view.
+
+- e9cabaa: Documents now carry a file icon before their name in every view that names
+  one — the Code view's tab, the Single File header, the Continuous section
+  heading, the takeover header.
+
+  Draft status (#3145) moves into that icon: a draft is the same ink-file
+  drop drawn provisionally, dashed and orange, replacing the "DRAFT" text
+  badge. A badge was a second element competing with the filename for the
+  same row; the icon is already beside the name, so it carries the status
+  for free and cannot drift away from what it describes.
+
+  The shell prop `documentMark` is now `documentIcon`, and renders before the
+  name rather than after.
+
+- cf2d5a4: `[project] drafts` in `brink.toml`: path globs naming work the author has
+  deliberately not wired into the story. A file matching one that is also
+  unreachable from the entry is a **draft** — it shows no "not included"
+  banner, and is marked as a draft wherever the studio names it (the Binder
+  row, the Continuous section heading, the Single File header, the Code
+  view's tab).
+
+  Reachability wins: a marked file the entry still `INCLUDE`s is not a draft
+  at all, so draft status can never exclude a file the story reaches.
+
+  New: `EditorSessionHandle.getDraftPaths()`, and a `documentMark` slot on
+  `ShellProvider` for any host that wants a status beside a document's name.
+
+- 7f29f7e: Settings gains a **Diagnostics** section for `[lints]`: two lists, where
+  which list a code is in _is_ whether it is in `brink.toml`. "Configure"
+  moves a code up — writing the key at its current default, so the first
+  click changes nothing about the build — and the down arrow moves it back
+  out, removing the key.
+
+  Both lists group by category, rows carry the Problems panel's own severity
+  glyphs showing each code's _effective_ level, and a written explanation
+  expands in place.
+
+  What is listed comes from the compiler, not from the studio: only
+  overridable codes appear (30 of 189), and a project is only offered codes
+  its own source surfaces can produce — so a `.ink`-only project sees no
+  settings for `.brink` markup spans.
+
+  The previous "Diagnostics" section is now titled **External functions**,
+  which is what it configures. Unlike the lints, it is a studio preference
+  rather than a `brink.toml` setting.
+
+- 37b9a5d: The Problems panel gains header controls: per-severity toggles (errors,
+  warnings, info/hints — each showing its count and muting that severity
+  when off), a funnel button that reveals a text filter over messages and
+  locations, and a group-by-file toggle with collapsible per-file sections
+  and per-file counts. The controls live in the panel's chrome header via
+  the new tool-window `actions` slot. Defaults reproduce the previous
+  panel exactly — every severity shown, ungrouped, no filter — so nothing
+  changes until a control is used.
+- 545cd2b: Right-click a row in the Problems panel to silence that diagnostic, at
+  three scopes — this line, this file, or this project. Each writes a
+  directive the compiler already understands: `// brink-disable Exxx` above
+  the line, `// brink-disable-file` at the top, or `[lints] Exxx = "allow"`
+  in `brink.toml`.
+
+  A code the compiler will not let you suppress — anything error-tier — gets
+  no suppression items, since every channel would refuse it.
+
+- ca23b71: Settings is now a modal with a searchable section rail — Project,
+  Diagnostics, Editor, Appearance, Keymap — showing one section at a time,
+  rather than a takeover of the editor area with everything in one scrolling
+  column.
+
+  Whatever you were reading stays on screen behind it. Search matches what a
+  section is about as well as its name, so "todo" finds Diagnostics.
+
+  `registerSettingsCommand` now takes an open-callback rather than the shell
+  layout store, and the `settings` document type is gone.
+
+- 4c9914a: Tool windows can contribute controls to their chrome header:
+  `ToolWindowDescriptor.actions` takes a component, rendered between the
+  panel title and the close button. It follows the existing `badge`
+  contract — the registering app supplies the component, so it subscribes to
+  that app's own store and stays reactive without the shell depending on any
+  app store. The header's uppercase, letter-spaced title styling is reset
+  inside the slot so action components render with ordinary control
+  typography.
+- 5b33c88: Adjustable text size, on both knobs. The **editor** has its own size
+  (Mod-= / Mod-- / Mod-0, the palette, or Settings), and the **app** has one
+  that scales the whole UI. Behind the app knob, 179 hardcoded font sizes
+  across 24 stylesheets were replaced by a nine-step type scale derived from
+  a single `--bs-font-base`, so components now reach for a named step
+  instead of inventing a number. The sweep is pixel-identical at the default
+  size apart from twelve declarations that snapped 0.5px to the nearest
+  step. Also defines `--bs-font-mono`, which every use site referenced but
+  nothing declared.
+
+### Patch Changes
+
+- b5397c6: Interpolated bindings read differently from prose: `--bs-syn-variable` (and the previously unstyled `tok-property` for dotted field segments) map to Catppuccin maroon in both themes instead of the plain text color — an interpolated `{binding}` no longer renders in the same color as the dialogue around it (author feedback; interim tweak ahead of the writing-first color design pass).
+- 7603a3e: The editor's prose no longer slides sideways when a file opens. The
+  structure-rails gutter was sized by its content, and that content only
+  exists once the HIR projection arrives a few hundred milliseconds later, so
+  the column grew from nothing and the compensating content padding — which is
+  the text's offset — was rewritten by the same delta. The column is now a
+  fixed one-lane width that does not depend on the open file's nesting depth
+  or on when the projection lands, so there is no growth to compensate for.
+  Deeper stacks paint their extra lanes over the neighbouring play gutter,
+  which is empty except on the hovered line; the bars live in an
+  absolutely-positioned layer and still render every lane at full size. Also
+  reclaims 10px of permanently blank gutter on every file.
+- af7e80c: Settings and the Story Graph now take over the editor area instead of opening
+  as tabs, so they are reachable from every view. Previously they were tabs,
+  which only works in a view that has tabs — in Continuous view, opening
+  Settings put it behind the manuscript where it never appeared. A document
+  type opts into this with `takeover` on its descriptor. The takeover has a
+  header with a close button, choosing any view dismisses it, and it is not
+  restored on reload: consulting the graph is an interruption, not a place.
+  The view commands are also renamed to "View mode: Code" / "View mode: Single
+  File" / "View mode: Continuous", and they update the same setting the
+  Settings picker shows.
+- 97f7ca0: A hover card and a diagnostic on the same symbol now read as one panel
+  rather than a block bolted underneath.
+
+  They were already one tooltip with two sections, and both sections were
+  transparent — what made the diagnostic read as a different window was a 3px
+  severity rail no other row had, and a different padding to accommodate it.
+  The rail is gone and the padding matches the card's rows exactly, so
+  `warning` sits in the same column as `knot` and `effects`.
+
+  Severity is carried by the label word instead, which is what it was added
+  for: it survives a colourblind reader and a screenshot pasted into an issue,
+  which a rail never did. The lint panel keeps its rails — there is no label
+  there, and rows are scanned as a list.
+
+- 0b07df5: Debugger D8's control half (issue #3186) bridged through wasm to the studio
+  (#3232) — D9 (#3187) bridged only the read half (program → source position
+  resolution). `StoryRunnerHandle` and `StorySessionHandle` (`@brink-lang/web`)
+  gain `debugRun`/`debugStep`/`debugBreakpointAdd`/`debugBreakpointRemove`/
+  `debugBreakpointSetEnabled`/`debugBreakpoints`, wrapping the runtime's
+  `Story::debug_run`/`debug_step`/`BreakpointSet` (feature `debug-hooks`, now
+  built unconditionally into the `brink-web` wasm package rather than a
+  build-time toggle nothing in the studio's pipeline passes). `@brink/wasm-types`
+  gains the `Breakpoint`/`DebugRunOutcome`/`DebugStopReason`/`StepMode` wire
+  shapes.
+
+  `@brink/studio-store` gains a `DebugSessionProvider` capability extension on
+  `SessionProvider` (one extension covering both pause/step/breakpoints and
+  D9's previously-uncaptured position-resolution capability, per the issue),
+  implemented by `LocalSessionProvider`, plus a new debug slice
+  (`debugCapable`/`debugBreakpoints`/`debugLastOutcome`/`debugStatus`) and the
+  `debug.run`/`debug.stepInto`/`debug.stepOver`/`debug.stepOut`/`debug.
+breakpointAdd`/`debug.breakpointRemove`/`debug.breakpointToggle` commands,
+  registered alongside `story.*` at the app boundary.
+
+  **Scope honesty**: this is real, working plumbing (proven over a real
+  `WebSession` in `crates/brink-web/src/session.rs`'s `debug_control_tests`,
+  plus a vitest suite over the store slice) — but the studio still cannot
+  compile a project WITH debug info at all (#3229, a separate, un-made
+  maintainer ruling on the toggle mechanism), so an end user will not see any
+  of this working yet. No UI consumes the new slice either — the editor
+  gutter / current-line highlight is a separate, later ticket. This PR lands
+  the bridge ahead of #3229 because the plumbing is independent of which
+  toggle mechanism wins.
+
+- 76bbdeb: Add a per-session debug-info compile toggle (#3229).
+
+  `EditorSessionHandle.setDebugInfoEnabled(enabled)` / `debugInfoEnabled()`
+  control whether this session's compiles emit the D6 `DebugInfo` section.
+  Off by default, matching the ship policy; a host turns it on for the
+  session it is about to debug and off when that session ends.
+
+  This is what makes the debugger reachable at all: without the section, the
+  runtime position, locals table and program→source resolver landed by
+  D4/D6/D7/D9 resolve to nothing, because the studio's live session runs on
+  exactly the bytes the editor session compiles.
+
+  The caller must recompile for the flag to take effect — it governs what the
+  next compile emits. Toggling bumps the session generation, so the next
+  compile is a real one. The studio store exposes it as `setDebugInfoEnabled`,
+  which recompiles for you.
+
+- 5079c84: Debugger D9 (issue #3187): the wasm bridge for D4's runtime position (#3182)
+  and D6's `DebugInfo` section (#3184) — the program→source resolver the
+  studio Location protocol's `program` space names as landing "with its
+  consumer" (`docs/studio-shell-spec.md` §6.1).
+
+  `@brink-lang/web`:
+
+  - `StoryRunnerHandle.resolveDebugPosition(containerIdx, offset)` and
+    `StorySessionHandle.resolveDebugPosition(containerIdx, offset)` resolve a
+    runtime `(containerIdx, offset)` position — exactly what `debugSnapshot()`'s
+    `position`/call-stack frame `position` fields report — to the source range
+    it was compiled from, via the loaded program's `DebugInfo` section. Returns
+    `null`, not a throw, when the program carries no `DebugInfo` section (a
+    compile without `--debug-info`) or the position doesn't resolve; callers
+    must gate on program-identity checksum before trusting a non-null result
+    (`docs/live-inspector-spec.md` §5's `sessionDegraded`).
+  - `ProgramModel`'s `KnotNode` gains `container_idx` (the container's index in
+    the compiled program, matching a runtime `DebugPosition`) and its `disasm`
+    changes shape from `string[]` to `{ offset, text }[]` — each decoded
+    instruction now keeps the byte offset it decoded from, so a "current
+    instruction" highlight in the Program Explorer has something to key on.
+    This is a breaking shape change to `disasm`, gated behind the same
+    `--debug-info`-independent Program Explorer feature that already ships —
+    every consumer in this repo is updated in this same PR.
+
+  `@brink-lang/studio` (bundles `studio-shell`/`studio-ui`):
+
+  - `@brink/studio-shell` implements the `program` Location resolver
+    (`makeProgramResolver`) and the `session → program` half of the chain
+    (`resolveSessionPositionRef`), plus the `programIdx:offset` address
+    encoding (`encodeProgramAddress`/`parseProgramAddress`).
+  - The Program Explorer (`ProgramView`) highlights the currently executing
+    knot and instruction, gated on `sessionDegraded` — suppressed, not stale,
+    the moment the running program's checksum diverges from the studio's
+    latest compile.
+
+- df3e5b4: The playground's default demo project now ships a `brink.toml`, so it looks
+  like a real project rather than relying on the host's constructor-time entry
+  argument — and the Settings view has something to show.
+
+  It declares `drafts = ["scratch/**"]`, and the demo gains
+  `scratch/cut-scene.ink`: deliberately not `INCLUDE`d, so the draft treatment
+  (#3145) is visible in the demo — Binder badge, draft mark beside the name,
+  and no "not included in the project" banner.
+
+- 19d913a: Diagnostic tooltips get a fixed anatomy and a width cap.
+
+  Both producers — the compiler and the prose checker — now render through one
+  shape: a severity/kind label, the message, the fix buttons on their own row,
+  and the diagnostic's code as a source tag.
+
+  - **Width is capped**, at the same 460px the hover card has always used, now
+    shared through one token so the two floating explainers cannot drift apart.
+    The lint tooltip previously had no cap at all, so a long message ran to a
+    200-character measure and pushed the fixes out of reach.
+  - **Fixes sit on their own row** with 26px targets, hover, active and
+    focus-visible states. Inline, a long message pushed them toward the far
+    edge, so reaching one meant crossing the whole message without leaving the
+    tooltip.
+  - **The label carries severity as a word as well as a colour** — the rail
+    alone fails a colourblind reader and fails a screenshot pasted into an
+    issue, which is how most of these get reported. Prose lints label with the
+    checker's rule name (`spelling`), which says more than `info` would.
+  - **The diagnostic code is shown.** It was computed and then dropped, so
+    there was no way to look a diagnostic up from the tooltip.
+  - `info` severity was never themed, so every prose lint inherited the error
+    rail and announced a spelling suggestion in the colour reserved for "this
+    will not compile".
+  - Hover-card rows wrap rather than widening the card, so an `effects` row
+    listing several variables no longer fights the cap.
+
+- 0fed188: The `\` of an escape now carries its own `escape` semantic token, so the
+  editor dims it while the character it protects reads as ordinary prose. An
+  escape exists to say "this character is text"; the mark that says so should
+  be legible when looked for and invisible when reading.
+
+  Also fixes the same mis-highlight #3154 fixed for `.ink` on the NATIVE
+  surface: an escaped `{` in a `.brink` prose line was painted as
+  interpolation syntax, because the native prose carve-out
+  (`is_prose_run_container`) listed `TEXT`/`CUE_NAME`/`TAG`/`SCENE_TITLE` but
+  not `ESCAPE`.
+
+  `escape` is appended to the token legend as index 18; existing indices are
+  unchanged.
+
+- b0f5ccf: Editor gutter visibility toggle: a Settings checkbox and an editor context-menu item ("Hide Gutters" / "Show Gutters") hide all editor gutters (line numbers, structure rails, fold/play markers), persisted with the other editor settings. Besides the visual preference, hiding gutters removes a WebKit per-gutter-element layout cost (#3119), roughly halving felt keystroke latency again on large projects in the desktop app — the interim escape hatch until the structural fix lands.
+- fae5eb5: References in the hover card are now navigable. The cells an `effects` row
+  names, and the file in _Defined in_, are links to their declarations —
+  clicking one reveals it, the same route goto-definition already used.
+
+  The card named things without letting you reach them, which made it a
+  readout rather than a way to move.
+
+  - `HoverInfo` gains `links`, and content refers to them as `[text](#N)`. An
+    index rather than a path inside the link target, deliberately: a path in
+    markdown has to survive `)` and `:` inside it, and that escaping is a
+    silent-corruption bug waiting on the first bracket in a filename.
+  - Atoms with nowhere to go stay plain text — `calls` atoms are raw external
+    names with no symbol to point at, and the compiler-owned `rng` cell has no
+    declaration. A link that navigates nowhere is worse than plain text.
+  - An embedder that passes no navigate hook gets plain text too, the same
+    rule "Add to dictionary" follows.
+  - Effect atoms are now individually code-styled rather than the whole row
+    being one code span, and clause labels and status words (`pure, silent,
+total`) read as prose.
+
+- 67dd310: Indent guides line up with the column they mark, and break between rows.
+
+  The guides were painted half a character right of their column — literal in
+  the upstream package, which appends `.5` to every gradient stop — so a caret
+  at that indent sat left of its own guide and read as needing one more space.
+  The shift is `0.5ch`, font-relative, because the editor font size is
+  user-settable.
+
+  Each row's guide is now slightly shorter than its row, leaving the small
+  vertical break between rows that Inky shows.
+
+  Two smaller fixes: Single File view remembers whether you hid the player
+  (it reopened on every reload and every switch back from Code view), and the
+  "not included in the project" banner can be dismissed — per file, for the
+  session, since what it states can stop being true.
+
+- 0d32184: `[project] indent` is now the single source for indentation width, and the
+  default when it is unset is **4** (ruled 2026-08-27).
+
+  - `brink-fmt` no longer keeps a default of its own — it defaulted to two
+    spaces while the editor indented by four, which is exactly the
+    disagreement this setting exists to prevent.
+  - `brink fmt` discovers the `brink.toml` for each file it formats.
+  - The language server reads the project's width and ignores the client's
+    `tabSize`, which would otherwise be a silent second source.
+  - The editor's `indentUnit` reads the configured width instead of
+    hardcoding four spaces; the indent guides follow it automatically.
+
+  New: `EditorSessionHandle.getConfiguredIndent()`, and `DEFAULT_INDENT` from
+  `@brink-lang/editor`.
+
+  Also: the status bar no longer says "— file not analyzed" for a draft
+  (#3145), matching the out-of-scope banner it accompanies.
+
+- 641e278: Three new selectable themes: **Manuscript** — the writing-first colorway (brightest-on-screen prose, hot-red structure markers and halt words, one tight cool machinery band ordered by conceptual distance, yellow tags, cues rendered as plain prose) — plus faithful **Inky** and **Inky Dark** ports of Inky's editor colors. Supporting hooks: `.tok-marker`/`.tok-divert`/`.tok-halt` rules with fallbacks that keep existing themes byte-identical, and theme-tunable cue styling (`--bs-cue`, `--bs-cue-weight`).
+- 2c2903a: Remember the editor across a reload: open tabs and their order, pin/preview
+  state, the active tab per group, the split structure and its sizes, and each
+  open document's cursor and scroll. State is scoped per project — the host
+  names the scope (`mountStudio`'s `sessionScope`; the desktop passes the
+  project root) — so two projects keep their own layouts instead of
+  overwriting one another, with a least-recently-used cap on how many are
+  remembered. A project with nothing remembered still opens as the default
+  two-up, and tabs naming files that no longer exist are dropped on restore.
+- c5a4d5c: Navigation works in Continuous view: it scrolls. Clicking a file in the
+  Binder, a search result, a Problem, or a go-to-definition now moves the
+  manuscript to the target line, clear of the sticky heading, instead of doing
+  nothing visible. Clicking a knot or stitch in the Binder's structure mode
+  works too — those name a symbol, which this view resolves to a position
+  inside the file's section rather than to a separate document it does not
+  render. Re-navigating to somewhere in the file you are already in scrolls as
+  well.
+- 7a6560a: Performance instrumentation ships in all builds (prod-perf ruling 2026-08-25): the probe, browser observers, `__brinkPerf` harvesting global, and the Performance tool window are no longer dev-only — `mountStudio` enables them by default and `perf: false` (or the playground's `?perf=0`) strips the whole surface. The session worker now runs its own probe and wasm counters, reported through new host-level queries (`hostPerfReport` / `hostPerfReset` / `hostPerfSetEnabled` — answered by the hosting realm, never the session facade), and the HUD grows worker-plane and wasm-counter sections plus a combined JSON export; since W5 the analysis cost lives in the worker, so a main-thread-only panel could not see it. The probe's User Timing mirror now periodically clears its own entries (only its own — an embedding page's timeline is untouched), bounding an always-on session's growth. Perf payloads remain structurally content-free: static span/counter names and numbers only, nothing from the author's project.
+- 029dae2: Prose checking: spelling and light grammar over a manuscript's prose.
+
+  The engine is Harper, in its own lazily-loaded wasm module — 6.5 MB gzipped,
+  larger than the entire compiler, so it is never in the main bundle and an
+  embedder that registers no checker pays nothing.
+
+  What makes it usable on fiction rather than hostile to it: the checker only
+  ever sees `content` spans with interpolations subtracted (never diverts,
+  tags, or logic), and its dictionary is seeded from the project's own names —
+  including the character cues, so writing the manuscript teaches it. Without
+  that, every invented name reports as a misspelling.
+
+  `@brink-lang/web` gains `getProseDictionary`, `getConfiguredProseDialect`
+  and `getConfiguredProseEnable`. `@brink-lang/editor` gains the `ProseChecker`
+  seam and a shared diagnostic-source registry, so the compile and the prose
+  check no longer overwrite each other's squiggles. `@brink-lang/studio` gains
+  the Prose settings section and registers the checker.
+
+- c3ebae8: The author's prose dictionary now lives in `brink.toml`, under `[prose]
+dictionary`, and is visible and editable in Project → Prose.
+
+  It previously went to a `.brink-dictionary` sidecar with no UI anywhere, so
+  "Add to dictionary" wrote a file nothing displayed — the word stayed
+  underlined until the next compile and there was no way to see the list or
+  undo an entry. The settings panel now shows the words, adds and removes
+  them, and the editor action writes to the same place.
+
+  Matching is literal: `Griswold` and `GRISWOLD` are two separate entries.
+
+  Package-level notes:
+
+  - `@brink-lang/web` gains `EditorSession.getConfiguredProseDictionary()`,
+    reading `[prose] dictionary` from the applied config. Like the other
+    `configured*` readers it is wholesale-replaced on every apply, so a word
+    removed from the file stops being a known word.
+  - `@brink-lang/editor` gains a `onAddToDictionary` document-session option
+    and no longer owns dictionary storage: the list is the embedder's
+    `brink.toml`, so the editor package no longer writes it. The
+    `PROSE_DICTIONARY_FILE` export is removed. An embedder that does not pass
+    `onAddToDictionary` no longer sees the "Add to dictionary" action at all,
+    rather than seeing one that silently does nothing.
+
+- ab5efa5: Spelling and grammar findings now appear in the Problems panel, behind a
+  filter toggle that is **off by default**.
+
+  This completes behaviour that was specified when prose checking was first
+  scoped — results "render as squiggles and are listable, but the Problems
+  panel filters them out by default; the author opts in to seeing them in the
+  list". Only the squiggles half had shipped, so a typo was visible in the
+  buffer and findable nowhere else.
+
+  - A fourth filter bucket, `prose`, sits beside error/warning/info. It is a
+    SOURCE rather than a severity, which is what lets it default off while
+    every severity defaults on — folding spelling into `info` would bury the
+    E189 TODO notes an author actually reads.
+  - Prose findings are stored separately from compile diagnostics and joined
+    for display. The two producers have different lifetimes — a compile
+    replaces its whole set at once, prose lints arrive per view on their own
+    debounce — so one list would mean each erasing the other's rows.
+  - A prose row's context menu offers **Prose settings…** rather than
+    "Configure <code>…", which would have opened the Diagnostics section and
+    offered nothing about it.
+
+  An existing author's stored preferences have no `prose` key, and it reads as
+  off: the severity rule ("only an explicit false hides it") is deliberately
+  inverted for this bucket, so upgrading never switches spelling rows on.
+
+  `@brink-lang/editor` gains an `onProseLints` document-session callback
+  reporting findings per file, fired from the same guarded point as the
+  squiggles so a host list can never hold rows the editor has cleared.
+
+- 3cb34b7: Quick open (⌘P) no longer lists symbols from mounted `std/` library files or
+  from `brink.toml` — the same set the Binder tree and Continuous view show,
+  since those aren't places you navigate to while writing. Symbol entries are
+  also keyed by span, so two knots declaring the same stitch name can't collide
+  on one React key (which silently dropped or duplicated rows).
+- fee52b2: Revealing a location now opens the file as the editor group's **preview**
+  tab instead of a pinned one. `editor.reveal` is the shared destination of
+  every navigation surface — search results, Problems, TODOs, Find
+  References, cross-file go-to-definition — so each jump used to mint a
+  permanent tab and a few minutes of browsing buried the tab strip. The next
+  reveal now replaces the preview in place; editing it (or double-clicking
+  the tab) pins it, and revealing into a file that is already pinned leaves
+  it pinned.
+- fe9ab69: Scrollbars are styled to blend with the theme instead of using the loud
+  platform default: no track, a thin rounded thumb tinted from the theme's
+  muted foreground (so all five themes, light and dark, get a correct thumb),
+  darkening on hover and drag. Applies to every scrollable surface under the
+  studio root — the editor, tool windows, the binder, the search results —
+  and is overridable per theme via `--bs-scrollbar-thumb`,
+  `--bs-scrollbar-thumb-hover`, and `--bs-scrollbar-thumb-active`.
+- f96e4a8: Add Single File view, the first of the three editor views. The editor root
+  area now holds one occupant: Code view (today's tabs and splits) or Single
+  File view, which shows one file with the player beside it and no tab strip at
+  all. Navigating — from the Binder, search, Problems, go-to-definition —
+  replaces what is on screen instead of accumulating tabs, and the player split
+  belongs to the view rather than being a document that happens to be open, so
+  it collapses and returns but never closes into an empty pane. The two views
+  share the active file, so switching keeps the document you were working on,
+  and the chosen view persists with the rest of the layout. Switch with the
+  "View: Single File" and "View: Code" commands.
+- e82a275: The State View shows each call frame's local variables.
+
+  Function parameters and `~ temp`s now appear under the frame that owns
+  them, with their live values — so a function that computes with locals is
+  no longer opaque exactly while it is the thing running.
+
+  Values render structurally rather than as display strings: a list shows its
+  members, a struct shows its fields, and an empty list is distinguishable
+  from a null. A frame from a story built without debug info says so, rather
+  than showing an empty panel that would read as "this function has no
+  locals".
+
+- 6edcf72: Add Continuous view, the third editor view: every file in the project stacked
+  in binder order as one manuscript, with a heading between each and a single
+  scroller carrying you across file boundaries. Files are stacked as separate
+  editors rather than concatenated into one document, so each keeps its own
+  wasm document handle and diagnostics, tokens and completion stay per-file and
+  correct. Order comes from the same `.binder.json` sidecar the Binder tree
+  uses, so the manuscript reads in exactly the order the Binder shows.
+  Selectable from Settings or the "View: Continuous" command.
+- 31303b5: Desktop update offers arrive as an actionable toast instead of a blocking
+  modal dialog: a sticky notification with "Install and Restart" and "Later",
+  which amends itself in place while downloading and reports a failure with a
+  "Try Again" action. The landing screen — which has no studio surface yet —
+  keeps the native dialog.
+- b0f5ccf: Rails-gutter WebKit layout fix: the percent-height inline-flex rail marker made every forced layout cost ~1 ms per visible marker in WebKit (~110 ms per keystroke-burst refresh on a real project — the dominant slice of desktop typing latency; Chromium was unaffected). Markers now use an in-flow fixed-width spacer plus an absolutely-positioned bar layer — same visuals, measured 120 ms → 36 ms full-layout and ~3x lower felt keystroke latency under WebKit. Also: `cm.dispatch`/`cm.dispatch.state`/`cm.dispatch.view` perf spans on the main editor view, `__brinkPerf.report(worstCount)`, and the playground's `?fixtureUrl=` loader for measuring real-project shapes without baking content into the repo.
+- Updated dependencies [40e941a]
+- Updated dependencies [0b07df5]
+- Updated dependencies [b43ebbc]
+- Updated dependencies [e4a20b3]
+- Updated dependencies [132a3a4]
+- Updated dependencies [76bbdeb]
+- Updated dependencies [5079c84]
+- Updated dependencies [b0f5ccf]
+- Updated dependencies [953daff]
+- Updated dependencies [0fed188]
+- Updated dependencies [cf2d5a4]
+- Updated dependencies [237fd39]
+- Updated dependencies [42efdf1]
+- Updated dependencies [87521b2]
+- Updated dependencies [fae5eb5]
+- Updated dependencies [0d32184]
+- Updated dependencies [cfa5738]
+- Updated dependencies [a260c8c]
+- Updated dependencies [736061f]
+- Updated dependencies [029dae2]
+- Updated dependencies [c3ebae8]
+- Updated dependencies [b6d2af7]
+- Updated dependencies [ef99ec9]
+- Updated dependencies [641e278]
+  - @brink-lang/web@0.17.0
+
 ## 0.16.0
 
 ### Minor Changes

@@ -1,7 +1,7 @@
 {
   "name": "@brink-lang/studio",
-  "version": "0.16.0",
-  "description": "Embeddable brink studio \u2014 a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
+  "version": "0.17.0",
+  "description": "Embeddable brink studio — a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Syynth/brink",

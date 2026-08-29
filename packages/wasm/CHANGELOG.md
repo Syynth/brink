@@ -1,5 +1,400 @@
 # @brink-lang/web
 
+## 0.17.0
+
+### Minor Changes
+
+- 953daff: `getDiagnosticRegistry()` — every diagnostic code the compiler knows, with
+  its title, default severity, whether `[lints]` can override it, its written
+  explanation when one exists, and an author-facing category for the codes a
+  project can actually configure.
+
+  Read this rather than keeping a code list in TypeScript: a hand-maintained
+  copy is wrong the moment a code is added, and wrong silently.
+
+  The `overridable` flag matters more than it looks: only 30 of the 189 codes
+  can be overridden at all — the analyzer refuses every code whose default
+  severity is not `warning`. A UI that ignores it offers a level picker for a
+  code the analyzer then discards.
+
+  Each row also names the source surfaces the code can arise on, so a
+  `strict-ink` project is not offered settings for `.brink`-only diagnostics
+  it can never produce.
+
+### Patch Changes
+
+- 40e941a: `[lints] Exxx = "allow"` now suppresses the diagnostic. It previously did
+  nothing at all — `effective_severity` returned the code's default severity
+  for `allow`, and every consumer reported it — so a project had no way to
+  turn a diagnostic off.
+
+  Any diagnostic whose default severity is not `Error` can be overridden,
+  including the advisory tier: `E189`, the ink `TODO:` note, is configurable.
+
+- 0b07df5: Debugger D8's control half (issue #3186) bridged through wasm to the studio
+  (#3232) — D9 (#3187) bridged only the read half (program → source position
+  resolution). `StoryRunnerHandle` and `StorySessionHandle` (`@brink-lang/web`)
+  gain `debugRun`/`debugStep`/`debugBreakpointAdd`/`debugBreakpointRemove`/
+  `debugBreakpointSetEnabled`/`debugBreakpoints`, wrapping the runtime's
+  `Story::debug_run`/`debug_step`/`BreakpointSet` (feature `debug-hooks`, now
+  built unconditionally into the `brink-web` wasm package rather than a
+  build-time toggle nothing in the studio's pipeline passes). `@brink/wasm-types`
+  gains the `Breakpoint`/`DebugRunOutcome`/`DebugStopReason`/`StepMode` wire
+  shapes.
+
+  `@brink/studio-store` gains a `DebugSessionProvider` capability extension on
+  `SessionProvider` (one extension covering both pause/step/breakpoints and
+  D9's previously-uncaptured position-resolution capability, per the issue),
+  implemented by `LocalSessionProvider`, plus a new debug slice
+  (`debugCapable`/`debugBreakpoints`/`debugLastOutcome`/`debugStatus`) and the
+  `debug.run`/`debug.stepInto`/`debug.stepOver`/`debug.stepOut`/`debug.
+breakpointAdd`/`debug.breakpointRemove`/`debug.breakpointToggle` commands,
+  registered alongside `story.*` at the app boundary.
+
+  **Scope honesty**: this is real, working plumbing (proven over a real
+  `WebSession` in `crates/brink-web/src/session.rs`'s `debug_control_tests`,
+  plus a vitest suite over the store slice) — but the studio still cannot
+  compile a project WITH debug info at all (#3229, a separate, un-made
+  maintainer ruling on the toggle mechanism), so an end user will not see any
+  of this working yet. No UI consumes the new slice either — the editor
+  gutter / current-line highlight is a separate, later ticket. This PR lands
+  the bridge ahead of #3229 because the plumbing is independent of which
+  toggle mechanism wins.
+
+- b43ebbc: The debug info section's file table now carries each file's `source_hash`
+  and line index (#3261).
+
+  `source_hash` lets a consumer detect that the source it is measuring against
+  is not the source the program was compiled from — the debounced-recompile
+  window, or an edited file on disk — and answer "stale" instead of a
+  confidently wrong address. Per-file, so one dirty file no longer degrades
+  debugging everywhere.
+
+  The line index lets `file:line` resolve with no source text supplied at all,
+  which is what a remote debugger frontend needs and what keeps line-to-byte
+  conversion in one place instead of one per consumer.
+
+  Also makes `content_hash` a specified stable hash (FNV-1a 64) rather than
+  `std`'s `DefaultHasher`, whose algorithm Rust documents as unspecified
+  between releases. Hashes are now written into artifacts and compared later,
+  so the algorithm is part of the wire contract.
+
+- e4a20b3: Debugger D7 (issue #3185): the runtime can now name a call frame's live
+  temps/parameters, not just count them. `DebugFrame` (`brink-runtime`) gains
+  an additive `locals: Option<Vec<DebugLocal>>` — `slot`/`name`/`value` per
+  declared `~ temp` or parameter currently in scope, resolved from D6's
+  `DebugInfo` `LocalsTable` (populated here — D6 shipped only the structural
+  framing) against the call frame's own `temps`. `None` when the linked
+  program carries no `DebugInfo`; `Some(vec![])` when it does but the frame
+  genuinely has no locals, so a consumer can tell the two cases apart. The
+  existing `temps: usize` count is unchanged.
+
+  Values are exposed structurally, not as another display string like
+  `DebugGlobal.value`: the new `DebugValue` enum models every kind the debug
+  surface can currently distinguish by name (int, float, bool, string, null,
+  list — member names, divert target — resolved path, struct — shape name
+  plus named fields, recursively, and handle — kind plus id), falling back to
+  the existing display-string form only for the long tail of kinds with no
+  dedicated variant yet.
+
+  `DebugState`'s JSON (`debug_snapshot()`/`flow_debug_snapshot()` on
+  `EditorSession`/`StoryRunner`) carries this same `locals` field on each
+  call-stack frame, and `@brink/wasm-types` gains the matching `DebugLocal`/
+  `DebugValue`/`DebugField` mirror types (a `type`-tagged union for
+  `DebugValue`, so a JS consumer can `switch` on it). This is a wire-
+  observable addition (new optional key plus new exported types), so it
+  needs this changeset. Nothing renders it yet: the State View locals panel
+  (#3140) is separate follow-up UI work that consumes this surface, not part
+  of this PR.
+
+- 132a3a4: Debugger D4 (issue #3182): the runtime can now report exactly where
+  execution is, not just which knot/stitch it's nearest to. `DebugFrame` and
+  `DebugSnapshot` (`brink-runtime`) gain an additive `position: Option<{
+container_idx, offset }>` — a public mirror of the VM's internal call-frame
+  position, cross-checked against the already-public `Program::resolve_address`
+  in the new proof tests. The existing `location`/`current_location` strings
+  are unchanged.
+
+  `DebugState`'s JSON (`debug_snapshot()`/`flow_debug_snapshot()` on
+  `EditorSession`/`StoryRunner`) now additionally carries this same
+  `position` field on the snapshot and on each call-stack frame — the exact
+  JSON the studio's State View already parses on every refresh. This is a
+  wire-observable addition (new optional key), so it needs this changeset,
+  but nothing renders it yet: resolving `(container_idx, offset)` to a source
+  location and wiring it into the State View UI is separate follow-up work
+  (D6 `#3184` / D9 `#3187`, `docs/debugger-spec.md` §6), not part of this PR.
+
+- 76bbdeb: Add a per-session debug-info compile toggle (#3229).
+
+  `EditorSessionHandle.setDebugInfoEnabled(enabled)` / `debugInfoEnabled()`
+  control whether this session's compiles emit the D6 `DebugInfo` section.
+  Off by default, matching the ship policy; a host turns it on for the
+  session it is about to debug and off when that session ends.
+
+  This is what makes the debugger reachable at all: without the section, the
+  runtime position, locals table and program→source resolver landed by
+  D4/D6/D7/D9 resolve to nothing, because the studio's live session runs on
+  exactly the bytes the editor session compiles.
+
+  The caller must recompile for the flag to take effect — it governs what the
+  next compile emits. Toggling bumps the session generation, so the next
+  compile is a real one. The studio store exposes it as `setDebugInfoEnabled`,
+  which recompiles for you.
+
+- 5079c84: Debugger D9 (issue #3187): the wasm bridge for D4's runtime position (#3182)
+  and D6's `DebugInfo` section (#3184) — the program→source resolver the
+  studio Location protocol's `program` space names as landing "with its
+  consumer" (`docs/studio-shell-spec.md` §6.1).
+
+  `@brink-lang/web`:
+
+  - `StoryRunnerHandle.resolveDebugPosition(containerIdx, offset)` and
+    `StorySessionHandle.resolveDebugPosition(containerIdx, offset)` resolve a
+    runtime `(containerIdx, offset)` position — exactly what `debugSnapshot()`'s
+    `position`/call-stack frame `position` fields report — to the source range
+    it was compiled from, via the loaded program's `DebugInfo` section. Returns
+    `null`, not a throw, when the program carries no `DebugInfo` section (a
+    compile without `--debug-info`) or the position doesn't resolve; callers
+    must gate on program-identity checksum before trusting a non-null result
+    (`docs/live-inspector-spec.md` §5's `sessionDegraded`).
+  - `ProgramModel`'s `KnotNode` gains `container_idx` (the container's index in
+    the compiled program, matching a runtime `DebugPosition`) and its `disasm`
+    changes shape from `string[]` to `{ offset, text }[]` — each decoded
+    instruction now keeps the byte offset it decoded from, so a "current
+    instruction" highlight in the Program Explorer has something to key on.
+    This is a breaking shape change to `disasm`, gated behind the same
+    `--debug-info`-independent Program Explorer feature that already ships —
+    every consumer in this repo is updated in this same PR.
+
+  `@brink-lang/studio` (bundles `studio-shell`/`studio-ui`):
+
+  - `@brink/studio-shell` implements the `program` Location resolver
+    (`makeProgramResolver`) and the `session → program` half of the chain
+    (`resolveSessionPositionRef`), plus the `programIdx:offset` address
+    encoding (`encodeProgramAddress`/`parseProgramAddress`).
+  - The Program Explorer (`ProgramView`) highlights the currently executing
+    knot and instruction, gated on `sessionDegraded` — suppressed, not stale,
+    the moment the running program's checksum diverges from the studio's
+    latest compile.
+
+- b0f5ccf: Content-logic delimiters classify as operators: the `{`/`}` around inline alternatives, conditionals, and interpolations — and the `|` between alternative branches — now carry an operator semantic token instead of no token at all, so they render in the code color rather than blending into the surrounding dialogue/action prose (author feedback). Prose-absorbed and escaped braces/pipes stay uncolored, in both the ink and native classifiers.
+- 0fed188: The `\` of an escape now carries its own `escape` semantic token, so the
+  editor dims it while the character it protects reads as ordinary prose. An
+  escape exists to say "this character is text"; the mark that says so should
+  be legible when looked for and invisible when reading.
+
+  Also fixes the same mis-highlight #3154 fixed for `.ink` on the NATIVE
+  surface: an escaped `{` in a `.brink` prose line was painted as
+  interpolation syntax, because the native prose carve-out
+  (`is_prose_run_container`) listed `TEXT`/`CUE_NAME`/`TAG`/`SCENE_TITLE` but
+  not `ESCAPE`.
+
+  `escape` is appended to the token legend as index 18; existing indices are
+  unchanged.
+
+- cf2d5a4: `[project] drafts` in `brink.toml`: path globs naming work the author has
+  deliberately not wired into the story. A file matching one that is also
+  unreachable from the entry is a **draft** — it shows no "not included"
+  banner, and is marked as a draft wherever the studio names it (the Binder
+  row, the Continuous section heading, the Single File header, the Code
+  view's tab).
+
+  Reachability wins: a marked file the entry still `INCLUDE`s is not a draft
+  at all, so draft status can never exclude a file the story reaches.
+
+  New: `EditorSessionHandle.getDraftPaths()`, and a `documentMark` slot on
+  `ShellProvider` for any host that wants a status beside a document's name.
+
+- 237fd39: Escaped characters no longer receive semantic tokens. `\*`, `\[`, `\{` and
+  friends are prose by definition, but the escaped sigil's parent is an `ESCAPE`
+  node rather than `TEXT`, so it slipped past the classifier's prose carve-out and
+  `\*Party` painted its asterisk as an operator in the middle of a line of dialogue.
+- 42efdf1: Fixed a silent data drop in codegen (issue #3181): a content line that took
+  the `EmitContent`/`ChoiceOutput` _flattening_ path (recognized-line
+  recognition declined it — e.g. text mixed with an inline
+  conditional/alternation) always shipped with `LineEntry.source_location:
+None`, even when a real location was available from `hir::Content::ptr`.
+  Only the recognized-line path populated it before.
+
+  `lir::Content` now carries a `source_location` resolved the same way the
+  recognized path already does, threaded through to every `add_line` call in
+  the flattening path. This changes compiled output — `LineEntry
+.source_location` (reachable through `EditorSession`/`StoryRunner`'s
+  `program_inkt()`, the Program Explorer's `.inkt` text dump) is now populated
+  for flattened-path lines that previously had none — and also fixes
+  `brink-intl`'s `lines.json`/XLIFF export for the same lines, which copies
+  `source_location` verbatim for the translation toolchain.
+
+  A content line inside a string-literal interpolation
+  (`lir::StringPart::Literal`) still has no location — that gap is deeper
+  than this fix reaches (HIR string literals carry no span at all today,
+  tracked separately, not folded into this PR) — and a tag's own line-table
+  entry (`ContentPart` inside `lir::Content::tags`) still has none either,
+  since `hir::Tag::ptr` is discarded when tags are lowered and reusing the
+  enclosing content's range would misattribute a tag's own byte span.
+
+- 87521b2: Hover content delivered to consumers that cannot resolve link targets — the
+  language server and `brink ide hover` — has its `[text](#N)` references
+  flattened back to plain labels.
+
+  `#N` indexes `HoverInfo.links`, which only a renderer holding that list can
+  resolve. Without this the LSP would hand an editor a live markdown link
+  pointing at a fragment that does not exist.
+
+- fae5eb5: References in the hover card are now navigable. The cells an `effects` row
+  names, and the file in _Defined in_, are links to their declarations —
+  clicking one reveals it, the same route goto-definition already used.
+
+  The card named things without letting you reach them, which made it a
+  readout rather than a way to move.
+
+  - `HoverInfo` gains `links`, and content refers to them as `[text](#N)`. An
+    index rather than a path inside the link target, deliberately: a path in
+    markdown has to survive `)` and `:` inside it, and that escaping is a
+    silent-corruption bug waiting on the first bracket in a filename.
+  - Atoms with nowhere to go stay plain text — `calls` atoms are raw external
+    names with no symbol to point at, and the compiler-owned `rng` cell has no
+    declaration. A link that navigates nowhere is worse than plain text.
+  - An embedder that passes no navigate hook gets plain text too, the same
+    rule "Add to dictionary" follows.
+  - Effect atoms are now individually code-styled rather than the whole row
+    being one code span, and clause labels and status words (`pure, silent,
+total`) read as prose.
+
+- 0d32184: `[project] indent` is now the single source for indentation width, and the
+  default when it is unset is **4** (ruled 2026-08-27).
+
+  - `brink-fmt` no longer keeps a default of its own — it defaulted to two
+    spaces while the editor indented by four, which is exactly the
+    disagreement this setting exists to prevent.
+  - `brink fmt` discovers the `brink.toml` for each file it formats.
+  - The language server reads the project's width and ignores the client's
+    `tabSize`, which would otherwise be a silent second source.
+  - The editor's `indentUnit` reads the configured width instead of
+    hardcoding four spaces; the indent guides follow it automatically.
+
+  New: `EditorSessionHandle.getConfiguredIndent()`, and `DEFAULT_INDENT` from
+  `@brink-lang/editor`.
+
+  Also: the status bar no longer says "— file not analyzed" for a draft
+  (#3145), matching the out-of-scope banner it accompanies.
+
+- cfa5738: A character cue now teaches the prose dictionary the spelling the prose
+  actually uses, and the cue line itself is no longer spell-checked.
+
+  An ink cue is written in caps (`@GRISWOLD:<>`) while the prose that mentions
+  the same character is not (`Griswold`), and dictionary matching is literal —
+  so seeding the cue's own spelling left every prose mention of the character
+  underlined.
+
+  Two halves, and neither works alone:
+
+  - Cue names are seeded in title case rather than as written. Seeding _both_
+    spellings does not work: with `["GRISWOLD", "Griswold"]` in the dictionary
+    the all-caps use is still reported, because Harper's proper-noun metadata
+    drives a capitalization rule that fires regardless.
+  - Character-cue lines are excluded from prose ranges. A cue is the speaker's
+    name, not prose — the same category as the knot and stitch names prose
+    checking already excluded — but an ink cue line is an ordinary content span
+    to the HIR projection, so it was being checked. With title-case seeding it
+    would now be reported.
+
+  `griswold` in prose is still flagged, which is the point: it is a real
+  misspelling of a proper noun. Parentheticals and dialogue lines are still
+  checked — those are written prose.
+
+  `@brink-lang/editor` exports `withoutCueLines`, the second half, for hosts
+  composing prose ranges themselves.
+
+- a260c8c: Add the inverse debug resolver (#3246): `resolveSourceRange(file, start, end)`
+  on both `StorySessionHandle` and `StoryRunnerHandle`.
+
+  D9 mapped a running program address to source. This is the other direction —
+  the span of source text to the program address to break on — which is what a
+  breakpoint gutter needs, since the runtime keys breakpoints by
+  `(containerIdx, offset)` while an editor speaks in source.
+
+  Takes a half-open **byte** range rather than a line number: the runtime holds
+  no source text and no line table, so line-to-byte conversion belongs with the
+  caller, where the source already is.
+
+  Returns `null` when the span holds no executable code — a comment, a blank
+  line, a line whose code folded away — or when the artifact carries no debug
+  info. That `null` is a real answer callers must render, not an error to
+  swallow: refusing to arm a breakpoint visibly is better than arming one that
+  can never hit.
+
+- 736061f: Line-granular stepping (#3264), alongside the existing instruction stepping.
+
+  `Story::debug_step_line(mode, …)` advances to the next **source line** — the
+  granularity every GDB-style debugger means by `step`/`next`/`finish`. The
+  existing `debug_step` remains and is unchanged: both granularities are
+  first-class, because the studio presents the `.inkt` disassembly beside the
+  source and drives each directly.
+
+  `DebugStopReason` gains `noLineInfo`, reported when a line-granular step is
+  asked for on an artifact that cannot say which line execution is on — no
+  debug info, or a file compiled without source text. It is reported rather
+  than quietly behaving like instruction stepping, which would turn a missing
+  line index into "why does step take four presses" instead of a legible
+  "this build has no line info".
+
+- 029dae2: Prose checking: spelling and light grammar over a manuscript's prose.
+
+  The engine is Harper, in its own lazily-loaded wasm module — 6.5 MB gzipped,
+  larger than the entire compiler, so it is never in the main bundle and an
+  embedder that registers no checker pays nothing.
+
+  What makes it usable on fiction rather than hostile to it: the checker only
+  ever sees `content` spans with interpolations subtracted (never diverts,
+  tags, or logic), and its dictionary is seeded from the project's own names —
+  including the character cues, so writing the manuscript teaches it. Without
+  that, every invented name reports as a misspelling.
+
+  `@brink-lang/web` gains `getProseDictionary`, `getConfiguredProseDialect`
+  and `getConfiguredProseEnable`. `@brink-lang/editor` gains the `ProseChecker`
+  seam and a shared diagnostic-source registry, so the compile and the prose
+  check no longer overwrite each other's squiggles. `@brink-lang/studio` gains
+  the Prose settings section and registers the checker.
+
+- c3ebae8: The author's prose dictionary now lives in `brink.toml`, under `[prose]
+dictionary`, and is visible and editable in Project → Prose.
+
+  It previously went to a `.brink-dictionary` sidecar with no UI anywhere, so
+  "Add to dictionary" wrote a file nothing displayed — the word stayed
+  underlined until the next compile and there was no way to see the list or
+  undo an entry. The settings panel now shows the words, adds and removes
+  them, and the editor action writes to the same place.
+
+  Matching is literal: `Griswold` and `GRISWOLD` are two separate entries.
+
+  Package-level notes:
+
+  - `@brink-lang/web` gains `EditorSession.getConfiguredProseDictionary()`,
+    reading `[prose] dictionary` from the applied config. Like the other
+    `configured*` readers it is wholesale-replaced on every apply, so a word
+    removed from the file stops being a known word.
+  - `@brink-lang/editor` gains a `onAddToDictionary` document-session option
+    and no longer owns dictionary storage: the list is the embedder's
+    `brink.toml`, so the editor package no longer writes it. The
+    `PROSE_DICTIONARY_FILE` export is removed. An embedder that does not pass
+    `onAddToDictionary` no longer sees the "Add to dictionary" action at all,
+    rather than seeing one that silently does nothing.
+
+- b6d2af7: Retired the dormant `Opcode::SourceLocation` (ruled 2026-07-19, Q-R1): the lossy `line:col` debug carrier the brink compiler never emitted. The Program Explorer's disassembly (`program_model()`) no longer recognizes byte `0xFE` as `source_location LINE:COL` — a bytecode blob carrying that byte now disassembles as a decode error at that offset instead. No compiled program is affected (codegen never emitted this opcode), but the disassembler's behavior for arbitrary/malformed bytecode changed, so this ships as a changeset per house rule. Debug info's real replacement is a new strippable `SectionKind::DebugInfo` section (tag `0x11`), tracked separately under epic #452.
+- ef99ec9: Hovering a function that calls `RANDOM` no longer shows a raw internal
+  handle. The effects row printed `writes: GlobalVar(0x5eed0000d1ce)`; it now
+  reads `writes: rng`.
+
+  The compiler-owned RNG state cell has no symbol-index entry, so the hover
+  row's name lookup fell through to the id's debug form. Naming now goes
+  through one shared authority (`brink_analyzer::effect_atom_name`) used by
+  both surfaces that print effect atoms — the hover row and the `E103`
+  exceedance message — so an author reads the same name in both, and the same
+  one they would write in `@[effects(writes rng)]`.
+
+- 641e278: Three new semantic token types, split out of the operator/keyword buckets so themes can color marks by what they do (theme ruling 2026-08-25): `marker` (choice bullets, gather dashes, weave brackets — position-checked, so expression-position `*`/`+`/`-` stay operators), `divert` (`->`, `->->`, `<-`, glue), and `halt` (`END`/`DONE`). Header equals-runs now classify with their definition (namespace/function) instead of as operators, so a knot header reads as one mark.
+
 ## 0.16.0
 
 ### Minor Changes
