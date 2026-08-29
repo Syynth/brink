@@ -106,13 +106,34 @@ fn conditional_without_else_synthesizes_a_plain_empty_case() {
 }
 
 #[test]
-fn sequence_branches_recognize_as_independent_plain_lines() {
+fn sequence_variants_recognize_as_independent_plain_lines() {
+    // #3274 (stage-2 flip): a textual stateful alternative now routes
+    // through the variant model — one `EmitLineVariants` over a shared
+    // alternative container — instead of per-branch containers. The
+    // invariant this test has always guarded is UNCHANGED: each rendering
+    // is its own complete Plain line entry (a distinct translation unit),
+    // never assembled from fragments. Only the carrier moved.
     let program = lower_ink("Roll {&one|two|three}!\n");
-    let bodies = branch_bodies(&program);
-    assert_eq!(bodies.len(), 3, "cycle sequence should have 3 branches");
-    let texts: Vec<&str> = bodies
+    assert!(
+        branch_bodies(&program).is_empty(),
+        "no per-branch containers for a variant-claimed line"
+    );
+    let variants = root(&program)
+        .body
         .iter()
-        .map(|b| plain_text(b).expect("sequence branch should recognize as Plain"))
+        .find_map(|s| match &s.kind {
+            lir::StmtKind::EmitLineVariants(v) => Some(v),
+            _ => None,
+        })
+        .expect("variant-claimed line lowers to EmitLineVariants");
+    assert_eq!(variants.dims, vec![3], "one cycle alternative, three dims");
+    let texts: Vec<&str> = variants
+        .variants
+        .iter()
+        .map(|e| match &e.line {
+            lir::RecognizedLine::Plain(t) => t.as_str(),
+            lir::RecognizedLine::Template { .. } => panic!("expected Plain variants"),
+        })
         .collect();
     assert_eq!(texts, vec!["Roll one!", "Roll two!", "Roll three!"]);
 }

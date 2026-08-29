@@ -451,6 +451,29 @@ fn stamp_stmt(
         // logic block's statements are exactly where a `let f = |x| …;`
         // most commonly lives, so `LogicBlock` gets the fullest walk below.
         hir::Stmt::Content(content) => {
+            // #3274 (stage-2 flip): a variant-claimed line keeps its
+            // `InlineSequence` parts through normalization (they are the
+            // SHARED alternative containers the enumerated line switches
+            // on), so their container IDs are stamped here — one `s-{n}`
+            // segment per alternative, consuming the same per-scope
+            // sequence counter a lifted `Stmt::Sequence` would have, which
+            // keeps every stamped path identical to what LIR lowering's
+            // own `next_seq_index()` walk derives (the two counters MUST
+            // stay in lockstep; see the `Stmt::Sequence` arm above).
+            if crate::lir::lower::recognize::claims_variant_line(content) {
+                for part in &mut content.parts {
+                    if let hir::ContentPart::InlineSequence(seq) = part {
+                        let seq_idx = *seq_counter;
+                        *seq_counter += 1;
+                        let path = if scope_path.is_empty() {
+                            format!("s-{seq_idx}")
+                        } else {
+                            format!("{scope_path}.s-{seq_idx}")
+                        };
+                        seq.container_id = Some(alloc_address(&path));
+                    }
+                }
+            }
             stamp_lambdas_in_content(content, file, scope_path, label_scope, index);
         }
         hir::Stmt::Divert(d) => {

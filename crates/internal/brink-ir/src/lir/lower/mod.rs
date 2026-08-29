@@ -1073,6 +1073,129 @@ fn lower_stitch(
     }
 }
 
+/// #3274 (stage-2 flip): lower a variant-claimed content line to
+/// [`lir::StmtKind::EmitLineVariants`] plus its shared alternative stub
+/// containers (one per authored construct — visit-state carriers, never
+/// entered).
+///
+/// Returns `None` when the line is not claimed (the caller keeps its
+/// existing recognition paths), when a [`recognize::VARIANT_CAP`] breach
+/// was just diagnosed (E191 — the fallback lowering below is
+/// error-recovery shape only, the compile already fails), or on
+/// claim/stamp drift (a missing stamped id, a variant recognition
+/// refuses) — where the `EmitContent` fallback's inline lowering still
+/// carries correct shared-state semantics and only the line-table shape
+/// degrades to fragments.
+fn try_lower_variant_line(
+    content: &hir::Content,
+    ctx: &mut LowerCtx<'_>,
+    stmt_prov: Provenance,
+) -> Option<(lir::StmtKind, Vec<lir::Container>)> {
+    let en = match recognize::enumerate_variant_contents(content) {
+        Ok(Some(en)) => en,
+        Ok(None) => return None,
+        Err(breach) => {
+            // Stamping consumed one sequence index per alternative on this
+            // (claimed) line; consume the same count so every SIBLING
+            // container downstream keeps the name its stamped id was
+            // hashed from, even in this failing compile.
+            for part in &content.parts {
+                if matches!(part, hir::ContentPart::InlineSequence(_)) {
+                    let _ = ctx.ids.next_seq_index();
+                }
+            }
+            let range = content
+                .ptr
+                .map_or_else(|| stmt_prov.text_range(), |p| p.text_range());
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range,
+                message: format!(
+                    "{}: this line's alternatives enumerate to {} whole-line variants, over \
+                     the {} cap — each variant is a real line-table entry, a translation \
+                     unit, and a VO slot, so the product is bounded; split the line or move \
+                     an alternative onto its own line",
+                    crate::DiagnosticCode::E191.title(),
+                    breach.product,
+                    breach.cap,
+                ),
+                code: crate::DiagnosticCode::E191,
+            });
+            return None;
+        }
+    };
+
+    // Stamped ids — present iff `claims_variant_line` held during
+    // normalization/stamping. A missing one means this line reached here
+    // without being claimed (drift): fall back rather than invent an id
+    // nothing else agrees on.
+    let mut alt_ids = Vec::with_capacity(en.alts.len());
+    for alt in &en.alts {
+        let hir::ContentPart::InlineSequence(seq) = &content.parts[alt.part_idx] else {
+            return None;
+        };
+        alt_ids.push((seq.container_id?, seq.ptr));
+    }
+
+    // Recognize every variant BEFORE consuming sequence indices, so a
+    // refusal leaves the allocator untouched. `claims_variant_line`
+    // guarantees static recognizability, so a refusal here is drift
+    // between that mirror and the recognizer itself.
+    let mut variants = Vec::with_capacity(en.variants.len());
+    for v in &en.variants {
+        let Some(emission) = recognize::try_recognize(v, ctx) else {
+            debug_assert!(
+                false,
+                "claims_variant_line admitted a variant try_recognize refuses: {v:?}"
+            );
+            return None;
+        };
+        variants.push(emission);
+    }
+
+    let mut alts = Vec::with_capacity(en.alts.len());
+    let mut stubs = Vec::with_capacity(en.alts.len());
+    for (alt, (id, ptr)) in en.alts.iter().zip(alt_ids) {
+        // One sequence index per alternative — the same count stamping
+        // consumed, so the `s-{n}` name here matches the path the stamped
+        // id was hashed from. For a SHUFFLE alternative that name is
+        // load-bearing beyond debugging: the stub's path_hash seeds its
+        // permutation (`ShuffleIndexOf`), and this path is byte-identical
+        // to the path the pre-#3274 lifted wrapper had, so existing
+        // stories keep their shuffle orders.
+        let seq_idx = ctx.ids.next_seq_index();
+        stubs.push(lir::Container {
+            id,
+            provenance: ptr,
+            name: Some(format!("s-{seq_idx}")),
+            kind: lir::ContainerKind::Sequence,
+            params: Vec::new(),
+            body: Vec::new(),
+            children: Vec::new(),
+            counting_flags: CountingFlags::VISITS,
+            temp_slot_count: 0,
+            labeled: false,
+            inline: false,
+            is_function: false,
+            local: false,
+        });
+        alts.push(lir::VariantAltEmission {
+            container_id: id,
+            kind: alt.kind,
+            branch_count: alt.branch_count,
+        });
+    }
+
+    Some((
+        lir::StmtKind::EmitLineVariants(lir::VariantLineEmission {
+            alts,
+            dims: en.dims,
+            variants,
+        }),
+        stubs,
+    ))
+}
+
 /// Lower a block, returning both statements and any child containers
 /// (choice targets, gathers) produced by choice sets within the block.
 ///
@@ -1434,8 +1557,15 @@ fn lower_block_with_children(
                 pos += 1;
             }
             hir::Stmt::Content(content) => {
-                // Try direct recognition first.
-                if let Some(emission) = recognize::try_recognize(content, ctx) {
+                // #3274 (stage-2 flip): a variant-claimed line — left whole
+                // by normalization — lowers to one EmitLineVariants over
+                // shared alternative stub containers.
+                if let Some((kind, mut stubs)) = try_lower_variant_line(content, ctx, stmt_prov) {
+                    stmts.push(lir::Stmt::new(kind, stmt_prov));
+                    children.append(&mut stubs);
+                }
+                // Try direct recognition.
+                else if let Some(emission) = recognize::try_recognize(content, ctx) {
                     stmts.push(lir::Stmt::new(lir::StmtKind::EmitLine(emission), stmt_prov));
                 }
                 // Try with boundary glue stripping.
