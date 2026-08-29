@@ -327,3 +327,24 @@ fn collect_family_roundtrips() {
     ));
     assert_roundtrips(&story);
 }
+
+/// #3273: the two line-variant-group opcodes round-trip through `.inkt`
+/// text (`touch_visit` / `shuffle_index_of`) alongside the target push
+/// they always follow in real emission.
+#[test]
+fn variant_group_ops_roundtrip() {
+    let mut story = empty_story();
+    push_container_with_bytecode(
+        &mut story,
+        1,
+        &[
+            Opcode::PushDivertTarget(DefinitionId::new(DefinitionTag::Address, 9)),
+            Opcode::TouchVisit,
+            Opcode::PushInt(0),
+            Opcode::PushInt(4),
+            Opcode::PushDivertTarget(DefinitionId::new(DefinitionTag::Address, 9)),
+            Opcode::ShuffleIndexOf,
+        ],
+    );
+    assert_roundtrips(&story);
+}

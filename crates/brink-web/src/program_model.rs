@@ -622,6 +622,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
 
         // Visit
         Opcode::CurrentVisitCount => "current_visit_count".to_owned(),
+        Opcode::TouchVisit => "touch_visit".to_owned(),
+        Opcode::ShuffleIndexOf => "shuffle_index_of".to_owned(),
 
         // Records (TM-4)
         Opcode::RecordNew(shape_id) => format!("record_new {shape_id}"),

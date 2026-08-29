@@ -171,7 +171,10 @@ instruction = { opcode_mnemonic ~ operand* }
 opcode_mnemonic = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 operand = { choice_flags | kv_operand | def_id | float | integer | seq_kind | bool_lit }
 kv_operand = @{ ASCII_ALPHA+ ~ "=" ~ (ASCII_ALPHANUMERIC | "_" | "-")+ }
-seq_kind = { "cycle" | "stopping" | "once_only" | "shuffle" }
+// Atomic with a trailing word-boundary guard (#3273): a bare `"shuffle"`
+// literal would otherwise prefix-match the `shuffle_index_of` MNEMONIC on
+// the next line as a trailing operand of the previous instruction.
+seq_kind = @{ ("cycle" | "stopping" | "once_only" | "shuffle") ~ !(ASCII_ALPHANUMERIC | "_") }
 bool_lit = { "true" | "false" }
 choice_flags = @{ ("cond" | "start" | "choice_only" | "once" | "invis_default" | "none") ~ ("+" ~ ("cond" | "start" | "choice_only" | "once" | "invis_default"))* }
 

@@ -528,6 +528,8 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::SequenceBranch(_)
         | Opcode::VisitCount
         | Opcode::CurrentVisitCount
+        | Opcode::TouchVisit
+        | Opcode::ShuffleIndexOf
         | Opcode::TurnsSince
         | Opcode::TurnIndex
         | Opcode::ChoiceCount

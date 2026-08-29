@@ -826,6 +826,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Visit
         Opcode::CurrentVisitCount => write!(w, "current_visit_count"),
+        Opcode::TouchVisit => write!(w, "touch_visit"),
+        Opcode::ShuffleIndexOf => write!(w, "shuffle_index_of"),
 
         // Records (TM-4)
         Opcode::RecordNew(shape_id) => write!(w, "record_new {shape_id}"),
