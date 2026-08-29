@@ -1,0 +1,14 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1360, "h": 860, "title": "Paused at a breakpoint — full studio" },
+    { "file": "Player.dc.html", "x": 0, "y": 1030, "w": 560, "h": 680, "title": "Rebuilt Player — playing" },
+    { "file": "DebuggerPanel.dc.html", "x": 660, "y": 1030, "w": 340, "h": 780, "title": "Debugger panel (StateView replacement)" },
+    { "file": "GutterStates.dc.html", "x": 1100, "y": 1030, "w": 680, "h": 620, "title": "Gutter + execution states" },
+    { "file": "Transport.dc.html", "x": 1880, "y": 1030, "w": 760, "h": 640, "title": "Transport states + keys" }
+  ],
+  "annotations": [
+    { "id": "scenario-note", "x": 1420, "y": 40, "w": 300, "text": "One scenario across every artboard: paused at a breakpoint on `~ gold -= cost` inside function pour(n), called from tavern.order.\n\nSpec: docs/debugger-ui-spec.md\nRulings: decision-log 2026-08-29\nTheme: Catppuccin Mocha tokens, real --bs-* values." },
+    { "id": "open-ruling-note", "x": 2220, "y": 40, "w": 300, "text": "Parked state (Transport + GutterStates) is blocked on the #3225 debug_position ruling — the visuals here assume the resume-point-tagged answer proposed in spec §F11." }
+  ],
+  "launch": { "view": "canvas" }
+}

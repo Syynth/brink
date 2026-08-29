@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    a { color: #89b4fa; } a:hover { color: #b4befe; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #252536; border: 1px solid #45475a; border-radius: 4px; }
+    .tbtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+      background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; }
+    .tbtn.off { opacity: 0.35; }
+    .sep { width: 1px; height: 16px; background: #45475a; margin: 0 2px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; border: 1px solid; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .lbl { font-size: 12px; font-weight: 600; color: #cdd6f4; margin: 0 0 4px; }
+    .desc { font-size: 11px; color: #6c7086; line-height: 1.5; margin: 3px 0 0; }
+    .kbd { font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 1px 5px; background: #2a2a3d; border: 1px solid #45475a; border-radius: 3px; color: #cdd6f4; }
+  </style>
+</helmet>
+<div style="width: 760px; height: 640px; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; overflow: hidden">
+  <div>
+    <div style="font-size: 14px; font-weight: 600">Transport states</div>
+    <div style="font-size: 11px; color: #6c7086">Cluster renders only when the provider has the debug capability; disabled-not-hidden otherwise noted.</div>
+  </div>
+
+  <!-- PLAYING -->
+  <div>
+    <p class="lbl">Playing</p>
+    <div class="bar">
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="sep"></span>
+      <span class="tbtn"><svg width="11" height="11" viewBox="0 0 12 12"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="#cdd6f4"></path></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="flex: 1"></span>
+      <span class="chip" style="color: #a6e3a1; border-color: #a6e3a1"><span class="dot" style="background: #a6e3a1"></span>Playing</span>
+    </div>
+    <p class="desc">Pause armed; steps disabled. Hitting an armed breakpoint moves to Paused without any mode switch.</p>
+  </div>
+
+  <!-- PAUSED -->
+  <div>
+    <p class="lbl">Paused (breakpoint, step boundary, or F6)</p>
+    <div class="bar">
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="sep"></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M1.5 2h1.6v8H1.5z" fill="#f9e2af"></path><path d="M5 1.5l6 4.5-6 4.5z" fill="#f9e2af"></path></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="flex: 1"></span>
+      <span class="chip" style="color: #f9e2af; border-color: #f9e2af"><span class="dot" style="background: #f9e2af"></span>Paused — tavern.ink:5</span>
+    </div>
+    <p class="desc">Pause becomes Continue. Step out disables in the Root frame; on a Thread frame it relabels "Finish thread" (never "step out").</p>
+  </div>
+
+  <!-- PARKED -->
+  <div>
+    <p class="lbl">Parked (condition-park)</p>
+    <div class="bar">
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="sep"></span>
+      <span class="tbtn off"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M1.5 2h1.6v8H1.5z" fill="#f9e2af"></path><path d="M5 1.5l6 4.5-6 4.5z" fill="#f9e2af"></path></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="flex: 1"></span>
+      <span class="chip" style="color: #89dceb; border-color: #89dceb"><span class="dot" style="background: #89dceb; border-radius: 1px"></span>Parked — resumes when its condition re-evaluates true</span>
+    </div>
+    <p class="desc">Nothing is running: stepping disables rather than pretending there is a next instruction. Condition-park wording, never "waiting for a value".</p>
+  </div>
+
+  <!-- OUT OF SYNC -->
+  <div>
+    <p class="lbl">Out of sync (source edited past the running program)</p>
+    <div class="bar">
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="sep"></span>
+      <span class="tbtn"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M1.5 2h1.6v8H1.5z" fill="#f9e2af"></path><path d="M5 1.5l6 4.5-6 4.5z" fill="#f9e2af"></path></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="flex: 1"></span>
+      <span class="chip" style="color: #f38ba8; border-color: #f38ba8"><span class="dot" style="background: #f38ba8"></span>Paused — source out of sync · Restart</span>
+    </div>
+    <p class="desc">Transport stays usable (the story still runs); only source mapping is suppressed — highlights vanish, gutter dots go hollow. Restart re-syncs.</p>
+  </div>
+
+  <!-- keybinding legend -->
+  <div style="margin-top: 2px; padding: 10px 12px; background: #252536; border: 1px solid #45475a; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 11px; color: #6c7086; align-items: center">
+    <span><span class="kbd">F5</span> continue</span>
+    <span><span class="kbd">F6</span> pause</span>
+    <span><span class="kbd">F9</span> toggle breakpoint</span>
+    <span><span class="kbd">F10</span> step over</span>
+    <span><span class="kbd">F11</span> step into</span>
+    <span><span class="kbd">⇧F11</span> step out</span>
+    <span><span class="kbd">⇧F5</span> restart</span>
+    <span style="font-style: italic">declared on command descriptors; user-remappable via the keymap overrides</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

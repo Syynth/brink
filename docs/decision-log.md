@@ -3978,3 +3978,78 @@
   numbering — post-#3283 it feeds container display names only, so
   stamped id paths and display names can drift apart in dumps. Accepted;
   deriving names from stamped ids is a possible future cleanup.
+
+## Debugger UI: debug info on by default for studio compiles; pause is a first-class verb
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor pipeline (debugger epic #452 / D9, #3249, #3230)
+- **SCOPE:** architectural
+- **WHAT:** (1) **All studio compiles emit the `DebugInfo` section by
+  default.** The per-session mechanism #3229 built (`setDebugInfoEnabled`,
+  the salsa cutoff, recompile-on-toggle) stays exactly as built, but its
+  default flips to **on**; an App-settings toggle is the opt-out for
+  projects where the emission cost is noticed. Release export still omits
+  the section — the ship-policy ruling does not move. This SUPERSEDES the
+  #3229 consequence "not on by default" (the mechanism ruling stands; the
+  default does not). (2) Because the running story's bytes therefore
+  always carry debug info, **there is no "debug mode"**: #3249's
+  enter/leave lifecycle (recompile + consented restart) is moot. A gutter
+  click mid-play binds a breakpoint immediately; stepping can begin from
+  wherever the story is, with no artifact switch and no restart. (3)
+  **Pause/resume is a first-class Player verb**: a pause control and
+  breakpoints hit during normal play suspend the story into the debugger;
+  Continue resumes normal play. The interleaved play↔debug path
+  (transcript/choice coherence when mixing the production advance loop
+  with `debug_run`/`debug_step`) is REQUIRED proof for the drive-loop
+  work, not an optional scenario.
+- **WHY:** The maintainer's framing: the Player should compile with debug
+  info by default "so we can quickly/easily start debugging without
+  interrupting the play experience." The #3229 default-off ruling was
+  motivated by an asserted (never measured) per-keystroke cost; emission
+  is one linear LIR walk writing varints, compiles are debounced and on
+  the worker, and the first PR flipping the default must measure it in
+  the perf HUD. What default-on buys is structural: #3249's hard problem
+  ("enabling debug mid-playthrough produces a different artifact, so it
+  must restart") disappears, and "debug from here" — explicitly deferred
+  as too large — becomes free, because there is no artifact switch and
+  therefore no container-identity remapping. One-time cost: the editor
+  acceptance gate re-baselines in lockstep (#3230 names this).
+
+## Debugger UI: session-only debug state; breakpoints persist per project
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger epic #452 / D9, #3249)
+- **SCOPE:** moderate
+- **WHAT:** No debugger state beyond breakpoints survives a studio
+  reload: paused-ness, frame selection, and the run/step transcript are
+  session-ephemeral. **Breakpoints persist per project** (they are cheap,
+  inert markers), alongside the other per-project layout state. The
+  App-settings debug-emission opt-out persists as a setting, like any
+  other setting.
+- **WHY:** Answers #3249's second maintainer question. With debug info on
+  by default there is no mode to persist; breakpoints are the only state
+  an author would miss the next morning, and persisting them matches
+  every IDE convention while costing nothing when no session is running.
+
+## Debugger UI round = the Player half of #3199; StateView is replaced, not extended
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger epic #452 / D9, #3199)
+- **SCOPE:** architectural
+- **WHAT:** (1) This design round **folds the Player rebuild in**: the
+  Player is redesigned with debugging as its organizing feature, rather
+  than designing the debugger against today's Player and rebuilding it
+  again later. The Story Graph half of #3199 stays a separate, later
+  round — answering #3199's own "one round or two" question as two. (2)
+  The **State View is a redesign/replacement**, not a minor modification:
+  it is rebuilt as the debugger's inspection surface (interactive call
+  stack with frame selection, locals-first variables, a breakpoints
+  section), and the Player toolbar is rebuilt to carry the transport
+  (pause/resume/step) controls.
+- **WHY:** #3199 itself warns that a Player rebuild designed without
+  reference to the debugger "would likely be redesigned again
+  afterwards"; the maintainer chose to take that head-on rather than
+  design twice. The StateView call reflects that the existing component,
+  while already rendering call stack + locals (#3140), was built as a
+  passive inspector — frame selection, breakpoint management, and
+  stop-reason presentation are structural additions, not decorations.
