@@ -62,6 +62,7 @@ import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
 import type { ProseChecker, ProseLint } from "./prose.js";
 import { refreshProseEffect } from "./prose.js";
+import { refreshDiagnosticsEffect } from "./diagnostics.js";
 import { perfSpan, perfTime } from "./perf/probe.js";
 import { detachedGutters } from "./gutter-layout.js";
 
@@ -1599,7 +1600,17 @@ export class DocumentSessions {
         // a compile is also how a `brink.toml` edit lands, so `[prose]
         // enable`/`dialect` changing has no other signal to re-check on. The
         // dictionary (invalidated above) is the other input that moves here.
-        slot.view.dispatch({ effects: refreshProseEffect.of() });
+        // Compile squiggles need the same wake-up, and for the same reason
+        // (#3260): they are published by the diagnostics ViewPlugin on
+        // `docChanged`, and a `brink.toml` edit is a compile with no
+        // document change in THIS view. Suppressing a code project-wide and
+        // watching the squiggle stay is what that gap looked like.
+        //
+        // Safe against recursion: the re-compile returns the project cache's
+        // reference-equal result, which `lastCompileDelivered` above drops.
+        slot.view.dispatch({
+          effects: [refreshProseEffect.of(), refreshDiagnosticsEffect.of()],
+        });
       }
     }
     this.callbacks.onCompileResult?.(result);
