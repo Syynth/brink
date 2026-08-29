@@ -1007,6 +1007,10 @@ pub(crate) enum DebugStopReasonJs {
     /// cannot say which line execution is on.
     #[serde(rename = "noLineInfo")]
     NoLineInfo,
+    /// #3224: a bound external's handler deferred — the `External` frame
+    /// is intact; resolve out-of-band, then resume with any debug verb.
+    #[serde(rename = "awaitingExternal")]
+    AwaitingExternal,
 }
 
 /// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
@@ -1032,6 +1036,7 @@ pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> Debu
             DebugStopReason::Terminal => DebugStopReasonJs::Terminal,
             DebugStopReason::NoStepOutTarget => DebugStopReasonJs::NoStepOutTarget,
             DebugStopReason::NoLineInfo => DebugStopReasonJs::NoLineInfo,
+            DebugStopReason::AwaitingExternal => DebugStopReasonJs::AwaitingExternal,
         },
         position: o.position.map(|p| DebugPositionJs {
             container_idx: p.container_idx,

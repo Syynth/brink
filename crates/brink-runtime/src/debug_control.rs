@@ -243,6 +243,18 @@ pub enum DebugStopReason {
     Choices,
     /// The requested step (into/over/out) completed normally.
     Step,
+    /// Execution reached a bound external whose handler deferred
+    /// ([`ExternalResult::Pending`](crate::ExternalResult::Pending)) —
+    /// the `External` frame is left intact, exactly as
+    /// [`FlowInstance::advance`](crate::FlowInstance::advance) surfaces
+    /// `StepOutcome::AwaitingExternal` (#3224). The host resolves it
+    /// out-of-band ([`Story::resolve_external`](crate::Story::resolve_external),
+    /// or [`resolve_external_flow`](crate::Story::resolve_external_flow)
+    /// for a named flow), then resumes with any debug verb. Synchronously
+    /// resolved externals and in-story fallbacks never surface this —
+    /// the debug loops run them through
+    /// exactly as production `advance()` does.
+    AwaitingExternal,
     /// The flow reached a terminal VM outcome (`-> DONE`/`-> END`, or
     /// content otherwise exhausted) before the requested stop condition —
     /// breakpoint, watchpoint, or step target — was reached.
