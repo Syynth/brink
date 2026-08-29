@@ -154,6 +154,7 @@ export {
   type ProblemRow,
 } from "./ProblemsView.js";
 export {
+  TodosActions,
   TodosView,
   TodosBadge,
   TODO_DIAGNOSTIC_CODE,
@@ -166,6 +167,9 @@ export {
   type TodoItem,
   type TodoContainerGroup,
   type TodoFileGroup,
+  splitTodoTag,
+  todoTags,
+  filterTodosByTag,
 } from "./TodosView.js";
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
 export { PerfView } from "./PerfView.js";
