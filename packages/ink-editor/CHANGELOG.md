@@ -1,5 +1,249 @@
 # @brink-lang/editor
 
+## 0.17.0
+
+### Minor Changes
+
+- 0d32184: `[project] indent` is now the single source for indentation width, and the
+  default when it is unset is **4** (ruled 2026-08-27).
+
+  - `brink-fmt` no longer keeps a default of its own — it defaulted to two
+    spaces while the editor indented by four, which is exactly the
+    disagreement this setting exists to prevent.
+  - `brink fmt` discovers the `brink.toml` for each file it formats.
+  - The language server reads the project's width and ignores the client's
+    `tabSize`, which would otherwise be a silent second source.
+  - The editor's `indentUnit` reads the configured width instead of
+    hardcoding four spaces; the indent guides follow it automatically.
+
+  New: `EditorSessionHandle.getConfiguredIndent()`, and `DEFAULT_INDENT` from
+  `@brink-lang/editor`.
+
+  Also: the status bar no longer says "— file not analyzed" for a draft
+  (#3145), matching the out-of-scope banner it accompanies.
+
+### Patch Changes
+
+- 7603a3e: The editor's prose no longer slides sideways when a file opens. The
+  structure-rails gutter was sized by its content, and that content only
+  exists once the HIR projection arrives a few hundred milliseconds later, so
+  the column grew from nothing and the compensating content padding — which is
+  the text's offset — was rewritten by the same delta. The column is now a
+  fixed one-lane width that does not depend on the open file's nesting depth
+  or on when the projection lands, so there is no growth to compensate for.
+  Deeper stacks paint their extra lanes over the neighbouring play gutter,
+  which is empty except on the hovered line; the bars live in an
+  absolutely-positioned layer and still render every lane at full size. Also
+  reclaims 10px of permanently blank gutter on every file.
+- b0f5ccf: New `cm.dispatch` perf span times the whole synchronous CodeMirror transaction cycle (state update + extensions + DOM sync) on the main editor view, with the transaction count as meta — added to decompose per-keystroke handler time that no existing `cm.*` span accounted for.
+- 8953403: Detached gutters (#3119): in wrapping views the editor's gutters leave CodeMirror's scroller flex/sticky flow, with the horizontal space they vacate paid back as content padding. CodeMirror makes the gutter container a sticky flex child stretched to the full document height, which costs WebKit roughly 5x on every editor layout — a cost paid synchronously on each keystroke and once per frame while scrolling (Chromium is unaffected). Measured on a real ~1,100-line project under WebKit: forced layout 36-40ms → 17ms, felt keystroke latency 48ms → 24ms, long frames 55ms → 35ms. Self-gating: a non-wrapping view keeps CodeMirror's stock layout, since sticky gutters exist to survive horizontal scrolling.
+- 19d913a: Diagnostic tooltips get a fixed anatomy and a width cap.
+
+  Both producers — the compiler and the prose checker — now render through one
+  shape: a severity/kind label, the message, the fix buttons on their own row,
+  and the diagnostic's code as a source tag.
+
+  - **Width is capped**, at the same 460px the hover card has always used, now
+    shared through one token so the two floating explainers cannot drift apart.
+    The lint tooltip previously had no cap at all, so a long message ran to a
+    200-character measure and pushed the fixes out of reach.
+  - **Fixes sit on their own row** with 26px targets, hover, active and
+    focus-visible states. Inline, a long message pushed them toward the far
+    edge, so reaching one meant crossing the whole message without leaving the
+    tooltip.
+  - **The label carries severity as a word as well as a colour** — the rail
+    alone fails a colourblind reader and fails a screenshot pasted into an
+    issue, which is how most of these get reported. Prose lints label with the
+    checker's rule name (`spelling`), which says more than `info` would.
+  - **The diagnostic code is shown.** It was computed and then dropped, so
+    there was no way to look a diagnostic up from the tooltip.
+  - `info` severity was never themed, so every prose lint inherited the error
+    rail and announced a spelling suggestion in the colour reserved for "this
+    will not compile".
+  - Hover-card rows wrap rather than widening the card, so an `effects` row
+    listing several variables no longer fights the cap.
+
+- 8ca39af: Fix gutter clicks below the fold after the detached-gutters change (#3119): the container was pinned `bottom: 0`, capping its box at one viewport height while CodeMirror keeps positioning markers from the document top — so every gutter marker below the fold fell outside its own container's box and silently refused clicks (the ▶ play affordance, fold arrows, host gutter markers) while still painting normally. The box now grows to contain its markers.
+- fae5eb5: References in the hover card are now navigable. The cells an `effects` row
+  names, and the file in _Defined in_, are links to their declarations —
+  clicking one reveals it, the same route goto-definition already used.
+
+  The card named things without letting you reach them, which made it a
+  readout rather than a way to move.
+
+  - `HoverInfo` gains `links`, and content refers to them as `[text](#N)`. An
+    index rather than a path inside the link target, deliberately: a path in
+    markdown has to survive `)` and `:` inside it, and that escaping is a
+    silent-corruption bug waiting on the first bracket in a filename.
+  - Atoms with nowhere to go stay plain text — `calls` atoms are raw external
+    names with no symbol to point at, and the compiler-owned `rng` cell has no
+    declaration. A link that navigates nowhere is worse than plain text.
+  - An embedder that passes no navigate hook gets plain text too, the same
+    rule "Add to dictionary" follows.
+  - Effect atoms are now individually code-styled rather than the whole row
+    being one code span, and clause labels and status words (`pure, silent,
+total`) read as prose.
+
+- 67dd310: Indent guides line up with the column they mark, and break between rows.
+
+  The guides were painted half a character right of their column — literal in
+  the upstream package, which appends `.5` to every gradient stop — so a caret
+  at that indent sat left of its own guide and read as needing one more space.
+  The shift is `0.5ch`, font-relative, because the editor font size is
+  user-settable.
+
+  Each row's guide is now slightly shorter than its row, leaving the small
+  vertical break between rows that Inky shows.
+
+  Two smaller fixes: Single File view remembers whether you hid the player
+  (it reopened on every reload and every switch back from Code view), and the
+  "not included in the project" banner can be dismissed — per file, for the
+  session, since what it states can stop being true.
+
+- cfa5738: A character cue now teaches the prose dictionary the spelling the prose
+  actually uses, and the cue line itself is no longer spell-checked.
+
+  An ink cue is written in caps (`@GRISWOLD:<>`) while the prose that mentions
+  the same character is not (`Griswold`), and dictionary matching is literal —
+  so seeding the cue's own spelling left every prose mention of the character
+  underlined.
+
+  Two halves, and neither works alone:
+
+  - Cue names are seeded in title case rather than as written. Seeding _both_
+    spellings does not work: with `["GRISWOLD", "Griswold"]` in the dictionary
+    the all-caps use is still reported, because Harper's proper-noun metadata
+    drives a capitalization rule that fires regardless.
+  - Character-cue lines are excluded from prose ranges. A cue is the speaker's
+    name, not prose — the same category as the knot and stitch names prose
+    checking already excluded — but an ink cue line is an ordinary content span
+    to the HIR projection, so it was being checked. With title-case seeding it
+    would now be reported.
+
+  `griswold` in prose is still flagged, which is the point: it is a real
+  misspelling of a proper noun. Parentheticals and dialogue lines are still
+  checked — those are written prose.
+
+  `@brink-lang/editor` exports `withoutCueLines`, the second half, for hosts
+  composing prose ranges themselves.
+
+- 95d3f82: Fix the editor text sliding sideways on the first click after load. The
+  detached-gutters layout marked its view with a class added directly to the
+  editor element, which CodeMirror owns and rewrites wholesale whenever it
+  rebuilds that element's attributes — as gaining focus does. The marker was
+  erased on the first click, the gutters fell back from absolute to their
+  inline sticky positioning and rejoined the layout flow, and because the
+  compensating content padding stayed applied the text jumped right by the
+  full gutter width. The marker is now published through CodeMirror's own
+  `editorAttributes` facet, so it is reapplied every time the attributes are
+  rebuilt.
+- 2c2903a: Remember the editor across a reload: open tabs and their order, pin/preview
+  state, the active tab per group, the split structure and its sizes, and each
+  open document's cursor and scroll. State is scoped per project — the host
+  names the scope (`mountStudio`'s `sessionScope`; the desktop passes the
+  project root) — so two projects keep their own layouts instead of
+  overwriting one another, with a least-recently-used cap on how many are
+  remembered. A project with nothing remembered still opens as the default
+  two-up, and tabs naming files that no longer exist are dropped on restore.
+- 7a6560a: Performance instrumentation ships in all builds (prod-perf ruling 2026-08-25): the probe, browser observers, `__brinkPerf` harvesting global, and the Performance tool window are no longer dev-only — `mountStudio` enables them by default and `perf: false` (or the playground's `?perf=0`) strips the whole surface. The session worker now runs its own probe and wasm counters, reported through new host-level queries (`hostPerfReport` / `hostPerfReset` / `hostPerfSetEnabled` — answered by the hosting realm, never the session facade), and the HUD grows worker-plane and wasm-counter sections plus a combined JSON export; since W5 the analysis cost lives in the worker, so a main-thread-only panel could not see it. The probe's User Timing mirror now periodically clears its own entries (only its own — an embedding page's timeline is untouched), bounding an always-on session's growth. Perf payloads remain structurally content-free: static span/counter names and numbers only, nothing from the author's project.
+- 029dae2: Prose checking: spelling and light grammar over a manuscript's prose.
+
+  The engine is Harper, in its own lazily-loaded wasm module — 6.5 MB gzipped,
+  larger than the entire compiler, so it is never in the main bundle and an
+  embedder that registers no checker pays nothing.
+
+  What makes it usable on fiction rather than hostile to it: the checker only
+  ever sees `content` spans with interpolations subtracted (never diverts,
+  tags, or logic), and its dictionary is seeded from the project's own names —
+  including the character cues, so writing the manuscript teaches it. Without
+  that, every invented name reports as a misspelling.
+
+  `@brink-lang/web` gains `getProseDictionary`, `getConfiguredProseDialect`
+  and `getConfiguredProseEnable`. `@brink-lang/editor` gains the `ProseChecker`
+  seam and a shared diagnostic-source registry, so the compile and the prose
+  check no longer overwrite each other's squiggles. `@brink-lang/studio` gains
+  the Prose settings section and registers the checker.
+
+- c3ebae8: The author's prose dictionary now lives in `brink.toml`, under `[prose]
+dictionary`, and is visible and editable in Project → Prose.
+
+  It previously went to a `.brink-dictionary` sidecar with no UI anywhere, so
+  "Add to dictionary" wrote a file nothing displayed — the word stayed
+  underlined until the next compile and there was no way to see the list or
+  undo an entry. The settings panel now shows the words, adds and removes
+  them, and the editor action writes to the same place.
+
+  Matching is literal: `Griswold` and `GRISWOLD` are two separate entries.
+
+  Package-level notes:
+
+  - `@brink-lang/web` gains `EditorSession.getConfiguredProseDictionary()`,
+    reading `[prose] dictionary` from the applied config. Like the other
+    `configured*` readers it is wholesale-replaced on every apply, so a word
+    removed from the file stops being a known word.
+  - `@brink-lang/editor` gains a `onAddToDictionary` document-session option
+    and no longer owns dictionary storage: the list is the embedder's
+    `brink.toml`, so the editor package no longer writes it. The
+    `PROSE_DICTIONARY_FILE` export is removed. An embedder that does not pass
+    `onAddToDictionary` no longer sees the "Add to dictionary" action at all,
+    rather than seeing one that silently does nothing.
+
+- ab5efa5: Spelling and grammar findings now appear in the Problems panel, behind a
+  filter toggle that is **off by default**.
+
+  This completes behaviour that was specified when prose checking was first
+  scoped — results "render as squiggles and are listable, but the Problems
+  panel filters them out by default; the author opts in to seeing them in the
+  list". Only the squiggles half had shipped, so a typo was visible in the
+  buffer and findable nowhere else.
+
+  - A fourth filter bucket, `prose`, sits beside error/warning/info. It is a
+    SOURCE rather than a severity, which is what lets it default off while
+    every severity defaults on — folding spelling into `info` would bury the
+    E189 TODO notes an author actually reads.
+  - Prose findings are stored separately from compile diagnostics and joined
+    for display. The two producers have different lifetimes — a compile
+    replaces its whole set at once, prose lints arrive per view on their own
+    debounce — so one list would mean each erasing the other's rows.
+  - A prose row's context menu offers **Prose settings…** rather than
+    "Configure <code>…", which would have opened the Diagnostics section and
+    offered nothing about it.
+
+  An existing author's stored preferences have no `prose` key, and it reads as
+  off: the severity rule ("only an explicit false hides it") is deliberately
+  inverted for this bucket, so upgrading never switches spelling rows on.
+
+  `@brink-lang/editor` gains an `onProseLints` document-session callback
+  reporting findings per file, fired from the same guarded point as the
+  squiggles so a host list can never hold rows the editor has cleared.
+
+- b0f5ccf: Rails-gutter WebKit layout fix: the percent-height inline-flex rail marker made every forced layout cost ~1 ms per visible marker in WebKit (~110 ms per keystroke-burst refresh on a real project — the dominant slice of desktop typing latency; Chromium was unaffected). Markers now use an in-flow fixed-width spacer plus an absolutely-positioned bar layer — same visuals, measured 120 ms → 36 ms full-layout and ~3x lower felt keystroke latency under WebKit. Also: `cm.dispatch`/`cm.dispatch.state`/`cm.dispatch.view` perf spans on the main editor view, `__brinkPerf.report(worstCount)`, and the playground's `?fixtureUrl=` loader for measuring real-project shapes without baking content into the repo.
+- Updated dependencies [40e941a]
+- Updated dependencies [0b07df5]
+- Updated dependencies [b43ebbc]
+- Updated dependencies [e4a20b3]
+- Updated dependencies [132a3a4]
+- Updated dependencies [76bbdeb]
+- Updated dependencies [5079c84]
+- Updated dependencies [b0f5ccf]
+- Updated dependencies [953daff]
+- Updated dependencies [0fed188]
+- Updated dependencies [cf2d5a4]
+- Updated dependencies [237fd39]
+- Updated dependencies [42efdf1]
+- Updated dependencies [87521b2]
+- Updated dependencies [fae5eb5]
+- Updated dependencies [0d32184]
+- Updated dependencies [cfa5738]
+- Updated dependencies [a260c8c]
+- Updated dependencies [736061f]
+- Updated dependencies [029dae2]
+- Updated dependencies [c3ebae8]
+- Updated dependencies [b6d2af7]
+- Updated dependencies [ef99ec9]
+- Updated dependencies [641e278]
+  - @brink-lang/web@0.17.0
+
 ## 0.16.0
 
 ### Minor Changes
