@@ -29,4 +29,8 @@ pub use hir::*;
 pub use host_manifest::*;
 pub use line_index::{LineIndex, doc_extended_start};
 pub use provenance::{KindToken, NodeClass, Provenance, ProvenanceResolver};
+/// Re-exported so a consumer can construct the [`Provenance`] ranges this
+/// crate's own pub APIs take as parameters without naming `rowan` itself
+/// (#3273: `brink-test-harness` builds synthetic `lir::Program`s).
+pub use rowan::TextRange;
 pub use symbols::*;

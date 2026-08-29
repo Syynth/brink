@@ -24,7 +24,7 @@ use crate::value::{
 
 use super::write::{
     ALIAS_TABLE_SECTION_VERSION, DEBUG_INFO_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION,
-    FRAME_SHAPES_SECTION_VERSION,
+    FRAME_SHAPES_SECTION_VERSION, LINE_VARIANT_GROUPS_SECTION_VERSION,
 };
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
@@ -70,6 +70,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let effect_rows = read_section_effect_rows(buf, &index)?;
     let frame_shapes = read_section_frame_shapes(buf, &index)?;
     let debug_info = read_section_debug_info(buf, &index)?;
+    let line_variant_groups = read_section_line_variant_groups(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -89,6 +90,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         effect_rows,
         frame_shapes,
         debug_info,
+        line_variant_groups,
         source_checksum: index.checksum,
     })
 }
@@ -853,6 +855,45 @@ pub fn read_section_frame_shapes(
 /// complete `.inkb` file using its index. Absent section (every story
 /// compiled without the debug flag) decodes as `None`, distinct from the
 /// other optional sections above, which decode absence as an empty `Vec` —
+/// Decode the `LineVariantGroups` section (#3273). Absent section decodes
+/// as an empty vec — the section is omitted-when-empty by contract, so
+/// absence and emptiness are the same statement.
+pub fn read_section_line_variant_groups(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<crate::definition::LineVariantGroup>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::LineVariantGroups) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != LINE_VARIANT_GROUPS_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::LineVariantGroups as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-group footprint: scope_id(8) + base(4) + dim-count(1)
+    // + one dim(2) = 15 bytes.
+    let mut groups = Vec::with_capacity(safe_capacity(count, buf.len(), off, 15));
+    for _ in 0..count {
+        let scope_id = read_def_id(buf, &mut off)?;
+        let base = read_u32(buf, &mut off)?;
+        let dim_count = read_u8(buf, &mut off)? as usize;
+        let mut dims = Vec::with_capacity(safe_capacity(dim_count, buf.len(), off, 2));
+        for _ in 0..dim_count {
+            dims.push(read_u16(buf, &mut off)?);
+        }
+        groups.push(crate::definition::LineVariantGroup {
+            scope_id,
+            base,
+            dims,
+        });
+    }
+    Ok(groups)
+}
+
 /// see [`crate::StoryData::debug_info`]'s doc for why presence itself is
 /// meaningful here.
 ///

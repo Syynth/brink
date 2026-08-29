@@ -1137,6 +1137,34 @@ fn step_impl<R: crate::rng::StoryRng>(
             let zero_based = count.saturating_sub(1);
             flow.value_stack.push(Value::Int(zero_based.cast_signed()));
         }
+        Opcode::TouchVisit => {
+            // #3273: record a view of the named container without entering
+            // it, and hand back the 0-based view index the branch math
+            // needs. Pre-increment is deliberate: EnterContainer's
+            // increment-then-subtract-1 dance (CurrentVisitCount above)
+            // lands on the same 0-on-first-view number.
+            let val = flow.pop_value()?;
+            if let Value::DivertTarget(id) = val {
+                let count = context.visit_count(id);
+                context.increment_visit(id);
+                flow.value_stack.push(Value::Int(count.cast_signed()));
+            } else {
+                // Mirror VisitCount's malformed-input tolerance — push 0,
+                // record nothing.
+                flow.value_stack.push(Value::Int(0));
+            }
+        }
+        Opcode::ShuffleIndexOf => {
+            let val = flow.pop_value()?;
+            let path_hash = if let Value::DivertTarget(id) = val {
+                program.resolve_target(id).map_or(0, |(container_idx, _)| {
+                    program.container(container_idx).path_hash
+                })
+            } else {
+                0
+            };
+            handle_shuffle_with_hash::<R>(flow, context, path_hash)?;
+        }
         Opcode::TurnsSince => {
             let val = flow.pop_value()?;
             let result = if let Value::DivertTarget(id) = val {
@@ -3215,11 +3243,26 @@ fn handle_sequence<R: crate::rng::StoryRng>(
 ///
 /// Pops `numElements` (Int) and `seqCount` (Int) from the value stack.
 /// Uses a partial Fisher-Yates shuffle seeded with `path_hash + loopIndex + story_seed`.
-#[expect(clippy::cast_sign_loss)]
 fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
     context: &mut (impl ContextAccess + ?Sized),
+) -> Result<(), RuntimeError> {
+    // Get path_hash from the current container.
+    let pos = current_position(flow)?;
+    let path_hash = program.container(pos.container_idx).path_hash;
+    handle_shuffle_with_hash::<R>(flow, context, path_hash)
+}
+
+/// The shuffle-selection core, parameterized by the seeding `path_hash` —
+/// the current container's for [`Opcode::Sequence`]`(Shuffle)`, the named
+/// container's for [`Opcode::ShuffleIndexOf`] (#3273). One implementation,
+/// so the two spellings cannot drift.
+#[expect(clippy::cast_sign_loss)]
+fn handle_shuffle_with_hash<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    context: &mut (impl ContextAccess + ?Sized),
+    path_hash: i32,
 ) -> Result<(), RuntimeError> {
     let num_elements = match flow.pop_value()? {
         Value::Int(n) => n,
@@ -3245,10 +3288,6 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
 
     let loop_index = seq_count / num_elements;
     let iteration_index = seq_count % num_elements;
-
-    // Get path_hash from the current container.
-    let pos = current_position(flow)?;
-    let path_hash = program.container(pos.container_idx).path_hash;
 
     // Seed RNG with path_hash + loopIndex + story_seed (matching reference).
     let seed = path_hash

@@ -254,3 +254,158 @@ impl ContainerEmitter<'_> {
         }
     }
 }
+
+impl ContainerEmitter<'_> {
+    /// #3273 (stage 1): emit an enumerated variant-group line.
+    ///
+    /// Three phases, matching `StmtKind::EmitLineVariants`'s contract:
+    ///
+    /// 1. **Advance + index** per alternative: `TouchVisit` records the
+    ///    view on the SHARED container and hands back the pre-increment
+    ///    count; the kind arithmetic is byte-for-byte `emit_sequence`'s
+    ///    (`cycle` = modulo, `stopping` = min N-1, `once` = min N — where
+    ///    index N selects the exhausted empty variant the enumeration laid
+    ///    out at dim position N), except shuffles, which route through
+    ///    `ShuffleIndexOf` so the seed is the alternative's own
+    ///    `path_hash`, not the line's container.
+    /// 2. **Fold** the indices row-major (first alternative slowest):
+    ///    `acc = ((i0 * d1) + i1) * d2 + i2 …`.
+    /// 3. **Switch** on the combo: `Duplicate / PushInt(c) / Equal /
+    ///    JumpIfFalse(next)` per variant, each leaf a `Pop` (discard the
+    ///    combo), the variant's slot expressions, and a STATIC
+    ///    `EmitLine` — the line table stays whole-line-per-variant, which
+    ///    is what keeps every variant a translation unit and a VO slot.
+    ///
+    /// Registers the `LineVariantGroup` record for the run of entries it
+    /// appends, keyed by this emitter's scope.
+    pub(super) fn emit_line_variants(&mut self, v: &lir::VariantLineEmission) {
+        debug_assert_eq!(
+            v.variants.len(),
+            v.dims.iter().map(|&d| usize::from(d)).product::<usize>(),
+            "variants must fill the dims product (enumeration contract)"
+        );
+        debug_assert_eq!(v.alts.len(), v.dims.len());
+        if v.variants.is_empty() || v.alts.is_empty() {
+            return;
+        }
+
+        // Phase 1 + 2: per-alt index with running row-major fold.
+        for (pos, alt) in v.alts.iter().enumerate() {
+            if pos > 0 {
+                // acc *= dims[pos] BEFORE this alt's index lands.
+                self.emit(Opcode::PushInt(i32::from(v.dims[pos])));
+                self.emit(Opcode::Multiply);
+            }
+            let n = i32::from(alt.branch_count);
+            self.emit(Opcode::PushDivertTarget(alt.container_id));
+            self.emit(Opcode::TouchVisit);
+            if alt.kind == brink_ir::SequenceType::SHUFFLE {
+                // seq_count is on the stack; ShuffleIndexOf pops target,
+                // then num_elements, then seq_count.
+                self.emit(Opcode::PushInt(n));
+                self.emit(Opcode::PushDivertTarget(alt.container_id));
+                self.emit(Opcode::ShuffleIndexOf);
+            } else if alt.kind == brink_ir::SequenceType::CYCLE {
+                self.emit(Opcode::PushInt(n));
+                self.emit(Opcode::Modulo);
+            } else if alt.kind == brink_ir::SequenceType::ONCE {
+                // min(count, N): index N IS meaningful — the exhausted
+                // variant at dim position N.
+                self.emit(Opcode::PushInt(n));
+                self.emit(Opcode::Min);
+            } else {
+                // stopping (the admission default): min(count, N-1).
+                self.emit(Opcode::PushInt(n - 1));
+                self.emit(Opcode::Min);
+            }
+            if pos > 0 {
+                self.emit(Opcode::Add);
+            }
+        }
+
+        // Register the line-table run + its group record.
+        #[expect(clippy::cast_possible_truncation)]
+        let base = self.scope_line_table.len() as u16;
+        self.line_variant_groups
+            .push(brink_format::LineVariantGroup {
+                scope_id: self.scope_id,
+                base: u32::from(base),
+                dims: v.dims.clone(),
+            });
+
+        // Phase 3: the switch. Leaves emit in variant order; every leaf
+        // but the last tests the combo, the last is unconditional (the
+        // fold can only produce in-range values, so falling through to it
+        // is correct, not lenient).
+        let mut end_jumps = Vec::with_capacity(v.variants.len().saturating_sub(1));
+        for (combo, emission) in v.variants.iter().enumerate() {
+            let is_last = combo + 1 == v.variants.len();
+            let next_jump = if is_last {
+                None
+            } else {
+                self.emit(Opcode::Duplicate);
+                #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                self.emit(Opcode::PushInt(combo as i32));
+                self.emit(Opcode::Equal);
+                Some(self.emit_jump_placeholder(Opcode::JumpIfFalse(0)))
+            };
+
+            // The combo value is spent.
+            self.emit(Opcode::Pop);
+            self.emit_variant_leaf(emission);
+
+            if let Some(site) = next_jump {
+                end_jumps.push(self.emit_jump_placeholder(Opcode::Jump(0)));
+                self.patch_jump(site);
+            }
+        }
+        for site in end_jumps {
+            self.patch_jump(site);
+        }
+
+        // Tags once, from the first variant — one authored line, one tag
+        // set (`VariantLineEmission::variants`' doc).
+        if let Some(first) = v.variants.first() {
+            for tag in &first.tags {
+                self.emit(Opcode::BeginTag);
+                self.emit_content_parts(tag, None);
+                self.emit(Opcode::EndTag);
+            }
+        }
+    }
+
+    /// One switch leaf: the variant's slot expressions, then its static
+    /// `EmitLine` — `emit_recognized_line` minus the tag loop (tags are
+    /// the GROUP's, emitted once after the switch).
+    fn emit_variant_leaf(&mut self, emission: &lir::ContentEmission) {
+        let slot_info = emission.metadata.slot_info.clone();
+        let source_location = emission.metadata.source_location.clone();
+        match &emission.line {
+            lir::RecognizedLine::Plain(text) => {
+                let idx = self.add_line_with_hash(
+                    text,
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                self.emit(Opcode::EmitLine(idx, 0));
+            }
+            lir::RecognizedLine::Template {
+                parts: template_parts,
+                slot_exprs,
+            } => {
+                for expr in slot_exprs {
+                    self.emit_slot_expr(expr);
+                }
+                let idx = self.add_template_line(
+                    template_parts.clone(),
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                #[expect(clippy::cast_possible_truncation)]
+                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+            }
+        }
+    }
+}

@@ -361,6 +361,16 @@ pub enum StmtKind {
     /// Used for choice display text that has been promoted to a line table entry.
     EvalLine(ContentEmission),
 
+    /// #3273 (stage 1): emit ONE of an enumerated variant group's
+    /// whole-line entries, selected by the shared alternatives' visit
+    /// states. Codegen advances each alternative's container
+    /// (`TouchVisit`/`ShuffleIndexOf`), folds the branch indices into a
+    /// combo index (row-major, first alternative slowest — the
+    /// `brink_format::LineVariantGroup` layout contract), and switches to
+    /// a static `EmitLine` per variant. No lowering path constructs this
+    /// until the stage-2 flip (#3274).
+    EmitLineVariants(VariantLineEmission),
+
     /// Emit choice output content (start + inner) at the top of a choice
     /// target container. Emits content parts only — no newline or divert.
     /// The divert and newline are handled by the body stmts that follow.
@@ -645,6 +655,38 @@ pub enum RecognizedLine {
         parts: Vec<brink_format::LinePart>,
         slot_exprs: Vec<Expr>,
     },
+}
+
+/// One shared alternative inside a [`StmtKind::EmitLineVariants`] (#3273).
+#[derive(Clone)]
+pub struct VariantAltEmission {
+    /// The alternative's shared container — visit-state carrier and (for
+    /// shuffles) the `path_hash` seed. A stub: never entered, no body.
+    pub container_id: brink_format::DefinitionId,
+    /// Plain kind only (`cycle`/`stopping`/`once`/`shuffle`) —
+    /// [`crate::lir::enumerate_variant_contents`]'s admission contract.
+    pub kind: crate::hir::SequenceType,
+    /// Authored branch count. A `once` alternative's DIM is
+    /// `branch_count + 1` (the exhausted empty variant); the dim lives in
+    /// [`VariantLineEmission::dims`], this stays authored.
+    pub branch_count: u16,
+}
+
+/// An enumerated variant-group line (#3273): the codegen-facing pairing
+/// of [`crate::lir::VariantEnumeration`]'s variants (already recognized,
+/// one [`ContentEmission`] each) with the shared containers that drive
+/// selection.
+#[derive(Clone)]
+pub struct VariantLineEmission {
+    /// The alternatives, in source order — one per dim.
+    pub alts: Vec<VariantAltEmission>,
+    /// Line-table layout dims (`once` = `branch_count + 1`). The product is
+    /// `variants.len()`.
+    pub dims: Vec<u16>,
+    /// Row-major variant lines, first alternative varying slowest. Tags
+    /// are identical across variants (they are one authored line's tags);
+    /// codegen emits them once, from the first variant.
+    pub variants: Vec<ContentEmission>,
 }
 
 /// Result of pattern recognition on a content line.

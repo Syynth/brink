@@ -45,6 +45,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_effect_rows(w, &story.effect_rows)?;
     write_frame_shapes(w, &story.frame_shapes)?;
     write_debug_info(w, story.debug_info.as_ref())?;
+    write_line_variant_groups(w, &story.line_variant_groups)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -328,6 +329,30 @@ fn write_frame_shapes(w: &mut dyn fmt::Write, shapes: &[FrameShapeDef]) -> fmt::
 /// file table plus one per-container entry/locals table, in `Containers`
 /// order. Written only when `Some` (debug info was requested at compile
 /// time) — distinct from every other optional section here, which key on
+/// #3273: render `(line_variant_groups (group $id base (dims d0 d1 ...)) ...)`.
+/// Skipped entirely when empty, mirroring the `.inkb` section's
+/// omitted-when-empty contract, so stories without variant groups render
+/// byte-identically to before the section existed.
+fn write_line_variant_groups(
+    w: &mut dyn fmt::Write,
+    groups: &[crate::LineVariantGroup],
+) -> fmt::Result {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (line_variant_groups")?;
+    for group in groups {
+        write!(w, "    (group {} {} (dims", group.scope_id, group.base)?;
+        for dim in &group.dims {
+            write!(w, " {dim}")?;
+        }
+        writeln!(w, "))")?;
+    }
+    writeln!(w, "  )")?;
+    Ok(())
+}
+
 /// emptiness rather than `Option`, matching [`crate::StoryData::debug_info`]'s
 /// own "presence tracks whether it was requested" semantics. The reader
 /// lands with the writer in this same PR (the #742 lesson).
@@ -801,6 +826,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Visit
         Opcode::CurrentVisitCount => write!(w, "current_visit_count"),
+        Opcode::TouchVisit => write!(w, "touch_visit"),
+        Opcode::ShuffleIndexOf => write!(w, "shuffle_index_of"),
 
         // Records (TM-4)
         Opcode::RecordNew(shape_id) => write!(w, "record_new {shape_id}"),
@@ -1186,6 +1213,7 @@ mod tests {
             effect_rows: vec![],
             frame_shapes: Vec::new(),
             debug_info: None,
+            line_variant_groups: Vec::new(),
             source_checksum: 0,
         };
         let mut buf = String::new();

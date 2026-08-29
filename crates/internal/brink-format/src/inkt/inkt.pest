@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ debug_info? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ debug_info? ~ line_variant_groups? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -64,6 +64,12 @@ dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads 
 // continuation container id) followed by its name-keyed crossing-local slots.
 
 frame_shapes = { "(" ~ "frame_shapes" ~ frame_shape_entry* ~ ")" }
+
+// Stage 1 of the shared-alternatives track (#3273): variant-group records
+// tying runs of line-table entries back to one authored line.
+// group: scope_id base (dims d0 d1 ...)
+line_variant_groups = { "(" ~ "line_variant_groups" ~ line_variant_group_entry* ~ ")" }
+line_variant_group_entry = { "(" ~ "group" ~ def_id ~ integer ~ "(" ~ "dims" ~ integer+ ~ ")" ~ ")" }
 frame_shape_entry = { "(" ~ "frame" ~ def_id ~ integer* ~ ")" }
 
 // ── DebugInfo (D6, docs/debugger-spec.md §2) ──────────────────────────────────
@@ -165,7 +171,10 @@ instruction = { opcode_mnemonic ~ operand* }
 opcode_mnemonic = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 operand = { choice_flags | kv_operand | def_id | float | integer | seq_kind | bool_lit }
 kv_operand = @{ ASCII_ALPHA+ ~ "=" ~ (ASCII_ALPHANUMERIC | "_" | "-")+ }
-seq_kind = { "cycle" | "stopping" | "once_only" | "shuffle" }
+// Atomic with a trailing word-boundary guard (#3273): a bare `"shuffle"`
+// literal would otherwise prefix-match the `shuffle_index_of` MNEMONIC on
+// the next line as a trailing operand of the previous instruction.
+seq_kind = @{ ("cycle" | "stopping" | "once_only" | "shuffle") ~ !(ASCII_ALPHANUMERIC | "_") }
 bool_lit = { "true" | "false" }
 choice_flags = @{ ("cond" | "start" | "choice_only" | "once" | "invis_default" | "none") ~ ("+" ~ ("cond" | "start" | "choice_only" | "once" | "invis_default"))* }
 
