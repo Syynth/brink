@@ -1,0 +1,9 @@
+# Break on the assignment, confirm we land there, and that the temp
+# declared on the line above is in scope with the value it was given.
+break story.ink:3
+run
+expect-line 3
+locals
+expect-local bonus = 5
+continue
+expect-terminal

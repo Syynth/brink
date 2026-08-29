@@ -117,6 +117,16 @@ pub struct StorySnapshot<R: StoryRng = FastRng> {
     _rng: PhantomData<R>,
 }
 
+/// Which unit a `debug_step*` call advances by (#3264). Both are
+/// first-class verbs, not a primitive and a wrapper — the studio shows the
+/// disassembly beside the source and drives each directly.
+#[cfg(feature = "debug-hooks")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepGranularity {
+    Instruction,
+    Line,
+}
+
 impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program and its line tables.
     pub fn new(program: Arc<Program>, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
@@ -1847,24 +1857,72 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        self.debug_step_impl(
+            mode,
+            StepGranularity::Instruction,
+            breakpoints,
+            budget_ceiling,
+        )
+    }
+
+    /// Advance to the next **source line** (#3264), the granularity every
+    /// GDB-style debugger means by `step`/`next`/`finish`.
+    ///
+    /// Both granularities are first-class (RULED 2026-08-28): the studio
+    /// presents the `.inkt` disassembly beside the source, so an author can
+    /// watch a line and the instructions it became at the same time. This
+    /// is not a replacement for [`Self::debug_step`] — it is the other verb.
+    ///
+    /// Implemented as the *same* loop with one more stop condition, not as
+    /// a loop calling `debug_step`. That matters for the budget: nesting
+    /// would let each inner step spend the full ceiling, so the real
+    /// worst-case cost would be the ceiling squared. Here one budget
+    /// governs the whole line step, and exceeding it reports
+    /// `DebugBudgetExceeded` exactly as instruction stepping does — a line
+    /// that never changes (a tight loop) cannot hang.
+    ///
+    /// Per mode:
+    /// - **Into** stops at the first instruction on a different line,
+    ///   whatever the depth — descending into a call lands on the callee's
+    ///   first line, which is what "step into" means.
+    /// - **Over** additionally requires the depth to be back at or below
+    ///   where it started, so a call runs to completion instead of stopping
+    ///   inside it.
+    /// - **Out** is identical to its instruction form and deliberately does
+    ///   NOT wait for a line change: returning lands mid-line at the call
+    ///   site, which is exactly where GDB's `finish` stops. Requiring a
+    ///   line change here would overshoot into the following line.
+    ///
+    /// Returns [`DebugStopReason::NoLineInfo`] when the artifact cannot say
+    /// which line execution is on, rather than quietly behaving like
+    /// [`Self::debug_step`].
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_step_line(
+        &mut self,
+        mode: crate::debug_control::StepMode,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        self.debug_step_impl(mode, StepGranularity::Line, breakpoints, budget_ceiling)
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn debug_step_impl(
+        &mut self,
+        mode: crate::debug_control::StepMode,
+        granularity: StepGranularity,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::{DebugStopReason, StepMode};
 
         let depth_before = Self::depth_of(&self.default.flow);
-        if mode == StepMode::Out {
-            let innermost_is_thread = self
-                .default
-                .flow
-                .current_thread()
-                .call_stack
-                .last()
-                .is_some_and(|frame| frame.frame_type == CallFrameType::Thread);
-            if depth_before <= 1 || innermost_is_thread {
-                return Ok(crate::DebugRunOutcome {
-                    reason: DebugStopReason::NoStepOutTarget,
-                    position: Self::position_of(&self.default.flow),
-                    depth: depth_before,
-                });
-            }
+        let line_before = match self.line_before(granularity, depth_before) {
+            Ok(l) => l,
+            Err(outcome) => return Ok(outcome),
+        };
+        if let Some(outcome) = self.no_step_out_target(mode, depth_before) {
+            return Ok(outcome);
         }
 
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
@@ -1938,11 +1996,19 @@ impl<R: StoryRng> Story<R> {
             }
 
             let depth_after = Self::depth_of(&self.default.flow);
-            let stop = match mode {
+            let depth_ok = match mode {
                 StepMode::Into => true,
                 StepMode::Over => depth_after <= depth_before,
                 StepMode::Out => depth_after < depth_before,
             };
+            // `Out` is the same verb at both granularities: returning lands
+            // mid-line at the call site, which is where `finish` stops.
+            let line_ok = match (granularity, mode) {
+                (StepGranularity::Instruction, _) | (StepGranularity::Line, StepMode::Out) => true,
+                (StepGranularity::Line, _) => Self::line_key_of(&self.default.flow, &self.program)
+                    .is_some_and(|now| Some(now) != line_before),
+            };
+            let stop = depth_ok && line_ok;
             if stop {
                 return Ok(crate::DebugRunOutcome {
                     reason: DebugStopReason::Step,
@@ -1951,6 +2017,72 @@ impl<R: StoryRng> Story<R> {
                 });
             }
         }
+    }
+
+    /// `(file_idx, line_idx)` for wherever the default flow is stopped, or
+    /// `None` when there is no position or the artifact carries no line
+    /// index (#3264). Compared against itself to decide "still on the same
+    /// line?", never shown, so it never resolves to text.
+    #[cfg(feature = "debug-hooks")]
+    /// The `NoStepOutTarget` outcome when `Out` has nowhere to go — the
+    /// outermost frame, or a `Thread` frame, which is not returnable-from
+    /// (`docs/debugger-spec.md` names threads as a genuine non-analogue to
+    /// GDB's frames). `None` for every other mode, and for any frame that
+    /// can actually return.
+    #[cfg(feature = "debug-hooks")]
+    fn no_step_out_target(
+        &self,
+        mode: crate::debug_control::StepMode,
+        depth_before: usize,
+    ) -> Option<crate::DebugRunOutcome> {
+        use crate::debug_control::{DebugStopReason, StepMode};
+        if mode != StepMode::Out {
+            return None;
+        }
+        let innermost_is_thread = self
+            .default
+            .flow
+            .current_thread()
+            .call_stack
+            .last()
+            .is_some_and(|frame| frame.frame_type == CallFrameType::Thread);
+        (depth_before <= 1 || innermost_is_thread).then(|| crate::DebugRunOutcome {
+            reason: DebugStopReason::NoStepOutTarget,
+            position: Self::position_of(&self.default.flow),
+            depth: depth_before,
+        })
+    }
+
+    /// The line a `Line`-granular step starts from, captured BEFORE any
+    /// stepping so "a different line" is measured from where the user was
+    /// rather than from wherever the first instruction landed.
+    ///
+    /// `Err` carries the `NoLineInfo` outcome for an artifact that cannot
+    /// say which line execution is on — returned rather than silently
+    /// degrading to instruction stepping, which would turn a missing line
+    /// index into "why does step take four presses" instead of "this build
+    /// has no line info".
+    #[cfg(feature = "debug-hooks")]
+    fn line_before(
+        &self,
+        granularity: StepGranularity,
+        depth_before: usize,
+    ) -> Result<Option<(u32, u32)>, crate::DebugRunOutcome> {
+        match granularity {
+            StepGranularity::Instruction => Ok(None),
+            StepGranularity::Line => Self::line_key_of(&self.default.flow, &self.program)
+                .map(Some)
+                .ok_or_else(|| crate::DebugRunOutcome {
+                    reason: crate::debug_control::DebugStopReason::NoLineInfo,
+                    position: Self::position_of(&self.default.flow),
+                    depth: depth_before,
+                }),
+        }
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn line_key_of(flow: &Flow, program: &crate::Program) -> Option<(u32, u32)> {
+        Self::position_of(flow).and_then(|pos| program.debug_line_key(pos))
     }
 
     /// The default flow's current `(container_idx, offset)`, or `None`

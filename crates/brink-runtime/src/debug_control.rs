@@ -254,6 +254,17 @@ pub enum DebugStopReason {
     /// story to its own natural end, which would be a misleading way to
     /// answer "step out of a frame with no caller."
     NoStepOutTarget,
+    /// A line-granular step was requested but the artifact cannot say which
+    /// line execution is on — no `DebugInfo`, or a file compiled without
+    /// source text so it carries no line index (#3264, #3261).
+    ///
+    /// Reported rather than silently degrading to instruction stepping:
+    /// handing someone four-presses-per-line when they asked to advance one
+    /// line is how a missing line index becomes a mystery instead of a
+    /// legible "this build has no line info". Mirrors
+    /// [`Self::NoStepOutTarget`]'s posture — a verb that has nothing to do
+    /// here says so.
+    NoLineInfo,
 }
 
 /// The result of a `debug_run`/`debug_step*` call: why it stopped, the
