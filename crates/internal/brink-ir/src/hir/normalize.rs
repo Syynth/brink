@@ -39,6 +39,20 @@ fn normalize_block(block: &mut Block) {
     while let Some(stmt) = iter.next() {
         match stmt {
             Stmt::Content(content) => {
+                // #3274 (stage-2 flip): a line the variant model claims —
+                // all inline alternatives textual and plain-kinded, every
+                // enumerated variant recognizable — is NOT lifted. It
+                // passes through whole so LIR lowering can enumerate it
+                // into one variant group over SHARED alternative
+                // containers, which is what makes two stateful
+                // alternatives on one line advance together (ink's
+                // documented semantics, #3271) instead of the cartesian
+                // clone giving each spliced copy its own visit count.
+                if crate::lir::lower::recognize::claims_variant_line(&content) {
+                    new_stmts.push(Stmt::Content(content));
+                    continue;
+                }
+
                 // Check if the next stmt is EndOfLine — we absorb it into branches.
                 let trailing_eol = matches!(iter.peek(), Some(Stmt::EndOfLine));
 
@@ -113,13 +127,35 @@ fn normalize_block(block: &mut Block) {
 /// Returns `Ok(stmts)` with the replacement statements, or `Err(content)`
 /// if no inline construct was found (caller passes through unchanged).
 fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Content> {
-    // Find the first inline construct.
-    let inline_idx = content.parts.iter().position(|p| {
-        matches!(
-            p,
-            ContentPart::InlineSequence(_) | ContentPart::InlineConditional(_)
-        )
-    });
+    // Lift a label-bearing InlineConditional FIRST when one exists (#3272):
+    // whichever construct lifts first is the one that is NOT cloned — every
+    // other construct on the line gets spliced into each of its branches.
+    // Cloning a labeled construct (a `(dup)` choice inside an `{if …}`)
+    // stamps one label's DefinitionId onto two containers, which codegen's
+    // #1673 uniqueness guard correctly refuses as E060 — an internal-error
+    // wording for legal-looking source. Lifting the label carrier first
+    // keeps the label on exactly one container; the constructs cloned into
+    // its branches are then handled by the recursive normalize pass (a
+    // textual alternative becomes a per-branch variant line — an accepted
+    // per-branch state split on these mixed lines, #3274's item 3).
+    // Otherwise: the first inline construct, the long-standing order.
+    let inline_idx = content
+        .parts
+        .iter()
+        .position(|p| match p {
+            ContentPart::InlineConditional(cond) => {
+                cond.branches.iter().any(|b| block_contains_label(&b.body))
+            }
+            _ => false,
+        })
+        .or_else(|| {
+            content.parts.iter().position(|p| {
+                matches!(
+                    p,
+                    ContentPart::InlineSequence(_) | ContentPart::InlineConditional(_)
+                )
+            })
+        });
 
     let Some(idx) = inline_idx else {
         return Err(content);
@@ -241,6 +277,51 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
             })])
         }
         _ => unreachable!("position() matched only InlineSequence/InlineConditional"),
+    }
+}
+
+// ─── Label detection (#3272) ────────────────────────────────────────
+
+/// Whether a block contains any labeled construct — a labeled choice, a
+/// labeled gather/continuation, or a labeled block — at any depth.
+///
+/// Used by [`try_lift_inline`] to decide lift order: a construct carrying
+/// a label must never be CLONED by the lift (one authored label must name
+/// exactly one container), so the inline construct containing it lifts
+/// first. Inline constructs nested in content parts recurse too — a label
+/// can hide inside a branch's own inline conditional.
+fn block_contains_label(block: &Block) -> bool {
+    block.label.is_some() || block.stmts.iter().any(stmt_contains_label)
+}
+
+fn stmt_contains_label(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::ChoiceSet(cs) => {
+            cs.continuation.label.is_some()
+                || cs
+                    .choices
+                    .iter()
+                    .any(|c| c.label.is_some() || block_contains_label(&c.body))
+                || block_contains_label(&cs.continuation)
+        }
+        Stmt::LabeledBlock(b) => block_contains_label(b),
+        Stmt::Conditional(cond) => cond.branches.iter().any(|b| block_contains_label(&b.body)),
+        Stmt::Sequence(seq) => seq.branches.iter().any(|b| block_contains_label(&b.body)),
+        Stmt::Content(c) => c.parts.iter().any(content_part_contains_label),
+        _ => false,
+    }
+}
+
+fn content_part_contains_label(part: &ContentPart) -> bool {
+    match part {
+        ContentPart::InlineConditional(cond) => {
+            cond.branches.iter().any(|b| block_contains_label(&b.body))
+        }
+        ContentPart::InlineSequence(seq) => {
+            seq.branches.iter().any(|b| block_contains_label(&b.body))
+        }
+        ContentPart::Span(span) => span.children.iter().any(content_part_contains_label),
+        _ => false,
     }
 }
 
@@ -626,7 +707,10 @@ mod tests {
 
     #[test]
     fn simple_sequence_lift() {
-        // "It's " + {stopping: "a fine", "a good"} + " day."
+        // "It's " + {stopping: "a fine", "a good"} + " day." — plus a
+        // trailing Glue: an all-textual stateful line is claimed by the
+        // #3274 variant path and no longer lifts, and Glue is one of the
+        // shapes the claim refuses, so this keeps exercising the lift.
         let content = mk_content(vec![
             text("It's "),
             mk_inline_seq(
@@ -634,6 +718,7 @@ mod tests {
                 vec![vec![text("a fine")], vec![text("a good")]],
             ),
             text(" day."),
+            ContentPart::Glue,
         ]);
         let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
         normalize_file(&mut hir);
@@ -696,6 +781,9 @@ mod tests {
 
     #[test]
     fn tag_propagation() {
+        // Trailing Glue keeps this off the #3274 variant path (see
+        // simple_sequence_lift) so tag propagation through the lift stays
+        // covered.
         let content = mk_content_with_tags(
             vec![
                 text("Hello "),
@@ -703,6 +791,7 @@ mod tests {
                     SequenceType::CYCLE,
                     vec![vec![text("world")], vec![text("there")]],
                 ),
+                ContentPart::Glue,
             ],
             vec![mk_tag("greeting")],
         );
@@ -728,6 +817,8 @@ mod tests {
     #[test]
     fn eol_absorption() {
         // Without trailing EOL — no EndOfLine in branches.
+        // Trailing Glue keeps this off the #3274 variant path (see
+        // simple_sequence_lift).
         let content = mk_content(vec![
             text("a "),
             mk_inline_seq(
@@ -735,6 +826,7 @@ mod tests {
                 vec![vec![text("x")], vec![text("y")]],
             ),
             text(" b"),
+            ContentPart::Glue,
         ]);
         let mut hir = mk_hir(vec![Stmt::Content(content)]);
         normalize_file(&mut hir);
@@ -748,11 +840,15 @@ mod tests {
 
     #[test]
     fn empty_branch_gets_prefix_suffix() {
-        // "It's " + {stopping: "a", "", "c"} + " fine"
+        // "It's " + {shuffle|once: "a", "", "c"} + " fine" — a combo kind:
+        // stage 1's admission routes combos to the lift (their exhaustion
+        // logic lives there), so this keeps exercising the splice; the
+        // plain-stopping spelling of this line is #3274 variant-claimed
+        // and no longer lifts.
         let content = mk_content(vec![
             text("It's "),
             mk_inline_seq(
-                SequenceType::STOPPING,
+                SequenceType::SHUFFLE | SequenceType::ONCE,
                 vec![vec![text("a")], vec![], vec![text("c")]],
             ),
             text(" fine"),
@@ -800,13 +896,15 @@ mod tests {
 
     #[test]
     fn recursion_into_choice_body() {
-        // A choice with an inline sequence in its body.
+        // A choice with an inline conditional in its body (a conditional:
+        // inline sequences of this shape are #3274 variant-claimed and no
+        // longer lift, and this test is about recursion into the body).
         let body_content = mk_content(vec![
             text("It's "),
-            mk_inline_seq(
-                SequenceType::STOPPING,
-                vec![vec![text("a")], vec![text("b")]],
-            ),
+            mk_inline_cond(vec![
+                (Some(Expr::Bool(true)), vec![text("a")]),
+                (None, vec![text("b")]),
+            ]),
         ]);
         let choice = Choice {
             ptr: dummy_choice_ptr(),
@@ -837,14 +935,19 @@ mod tests {
             panic!("expected ChoiceSet");
         };
         assert_eq!(cs.choices[0].body.stmts.len(), 1);
-        assert!(matches!(cs.choices[0].body.stmts[0], Stmt::Sequence(_)));
+        assert!(matches!(cs.choices[0].body.stmts[0], Stmt::Conditional(_)));
     }
 
     #[test]
     fn recursion_into_conditional_branches() {
+        // Inner inline conditional, not a sequence — see
+        // recursion_into_choice_body for why.
         let body_content = mk_content(vec![
             text("Hello "),
-            mk_inline_seq(SequenceType::CYCLE, vec![vec![text("x")], vec![text("y")]]),
+            mk_inline_cond(vec![
+                (Some(Expr::Bool(true)), vec![text("x")]),
+                (None, vec![text("y")]),
+            ]),
         ]);
         let cond = Conditional {
             ptr: dummy_ptr(),
@@ -863,9 +966,159 @@ mod tests {
         let Stmt::Conditional(ref c) = hir.root_content.stmts[0] else {
             panic!("expected Conditional");
         };
-        // The branch body should have been normalized — Sequence instead of Content+EOL.
+        // The branch body should have been normalized — a lifted
+        // Conditional instead of Content+EOL.
         assert_eq!(c.branches[0].body.stmts.len(), 1);
-        assert!(matches!(c.branches[0].body.stmts[0], Stmt::Sequence(_)));
+        assert!(matches!(c.branches[0].body.stmts[0], Stmt::Conditional(_)));
+    }
+
+    /// #3274 (stage-2 flip): a line the variant model claims — every
+    /// inline alternative plain-kinded and textual — is NOT lifted. The
+    /// cartesian lift is exactly what gave each spliced clone of the
+    /// second alternative its own visit count (#3271); the un-lifted line
+    /// reaches LIR whole, where enumeration compiles it over SHARED
+    /// alternative containers.
+    #[test]
+    fn variant_claimed_line_is_not_lifted() {
+        let content = mk_content(vec![
+            text("Line: "),
+            mk_inline_seq(
+                SequenceType::STOPPING,
+                vec![vec![text("a")], vec![text("b")]],
+            ),
+            text(" "),
+            mk_inline_seq(
+                SequenceType::STOPPING,
+                vec![vec![text("x")], vec![text("y")]],
+            ),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        assert_eq!(
+            hir.root_content.stmts.len(),
+            2,
+            "claimed line passes through whole: {:?}",
+            hir.root_content.stmts
+        );
+        assert!(matches!(hir.root_content.stmts[0], Stmt::Content(_)));
+        assert!(matches!(hir.root_content.stmts[1], Stmt::EndOfLine));
+    }
+
+    /// A `shuffle|once` combination is NOT claimed (stage 1's admission
+    /// routes combos to the fallback where their exhaustion logic lives) —
+    /// the lift must still run for it.
+    #[test]
+    fn combo_kind_line_still_lifts() {
+        let content = mk_content(vec![
+            text("Line: "),
+            mk_inline_seq(
+                SequenceType::SHUFFLE | SequenceType::ONCE,
+                vec![vec![text("a")], vec![text("b")]],
+            ),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+        assert!(
+            matches!(hir.root_content.stmts[0], Stmt::Sequence(_)),
+            "combo kinds keep the lift: {:?}",
+            hir.root_content.stmts[0]
+        );
+    }
+
+    /// #3272: an inline conditional whose branch carries a LABELED choice
+    /// lifts FIRST, whatever its position on the line — whichever
+    /// construct lifts first is the one that is not cloned, and cloning a
+    /// labeled construct stamps one label onto two containers (the E060
+    /// internal error on legal-looking source).
+    #[test]
+    fn label_bearing_conditional_lifts_first() {
+        let labeled_choice = Choice {
+            ptr: dummy_choice_ptr(),
+            is_sticky: false,
+            is_fallback: false,
+            label: Some(Name {
+                text: "dup".to_string(),
+                range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(3)),
+            }),
+            condition: None,
+            binding: None,
+            start_content: Some(mk_content(vec![text("Pick me")])),
+            bracket_content: None,
+            inner_content: None,
+            tags: Vec::new(),
+            body: mk_block(vec![]),
+            container_id: None,
+        };
+        let cs = ChoiceSet {
+            choices: vec![labeled_choice],
+            continuation: mk_block(vec![]),
+            context: ChoiceSetContext::Weave,
+            depth: 1,
+            gather_id: None,
+        };
+        let cond_body = mk_block(vec![Stmt::ChoiceSet(Box::new(cs))]);
+        let tail = crate::tail_from_stmts(&cond_body.stmts);
+        let inline_cond = ContentPart::InlineConditional(Conditional {
+            ptr: dummy_ptr(),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                ptr: dummy_ptr(),
+                condition: Some(Expr::Bool(true)),
+                binding: None,
+                body: Block {
+                    label: None,
+                    stmts: cond_body.stmts,
+                    container_id: None,
+                    tail,
+                },
+                container_id: None,
+            }],
+        });
+        // The shuffle alternative comes FIRST in part order — the old
+        // first-construct rule would lift it and clone the labeled
+        // conditional into both branches.
+        let content = mk_content(vec![
+            text("Pre "),
+            mk_inline_seq(
+                SequenceType::SHUFFLE,
+                vec![vec![text("one")], vec![text("two")]],
+            ),
+            text(" mid "),
+            inline_cond,
+            text(" post."),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let Stmt::Conditional(cond) = &hir.root_content.stmts[0] else {
+            panic!(
+                "label-bearing conditional must lift first, got {:?}",
+                hir.root_content.stmts[0]
+            );
+        };
+        // The labeled choice exists exactly once across the whole tree.
+        fn count_labeled(block: &Block) -> usize {
+            block
+                .stmts
+                .iter()
+                .map(|s| match s {
+                    Stmt::ChoiceSet(cs) => {
+                        cs.choices
+                            .iter()
+                            .map(|c| usize::from(c.label.is_some()) + count_labeled(&c.body))
+                            .sum::<usize>()
+                            + count_labeled(&cs.continuation)
+                    }
+                    Stmt::LabeledBlock(b) => count_labeled(b),
+                    Stmt::Conditional(c) => c.branches.iter().map(|b| count_labeled(&b.body)).sum(),
+                    Stmt::Sequence(sq) => sq.branches.iter().map(|b| count_labeled(&b.body)).sum(),
+                    _ => 0,
+                })
+                .sum()
+        }
+        let total: usize = cond.branches.iter().map(|b| count_labeled(&b.body)).sum();
+        assert_eq!(total, 1, "the labeled choice must not be cloned");
     }
 
     /// Regression (review finding, #3202): the enclosing line's own `ptr`
