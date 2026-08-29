@@ -139,9 +139,16 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
     match &content.parts[idx] {
         ContentPart::InlineSequence(seq) => {
             let mut branches = Vec::with_capacity(seq.branches.len() + 1);
-            for branch in &seq.branches {
+            for (branch_idx, branch) in seq.branches.iter().enumerate() {
                 let mut b = branch.body.clone();
-                splice_around(&mut b, &prefix, &suffix, tags, ptr);
+                // #3275 (stage 3a): ids are stamped BEFORE this lift, so
+                // the prefix/suffix spliced into each branch can carry
+                // stamped container/lambda ids — clones after the first
+                // re-derive them, except a cloned stateful alternative,
+                // which keeps its id in every clone (shared visit-count
+                // state, the ruled ink semantics).
+                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, branch_idx as u64);
+                splice_around(&mut b, &p, &s, &t, ptr);
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
                 }
@@ -168,7 +175,9 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind.contains(SequenceType::ONCE) && !seq.kind.contains(SequenceType::SHUFFLE);
             let kind = if is_plain_once && (!prefix.is_empty() || !suffix.is_empty()) {
                 let mut exhausted = Block::default();
-                splice_around(&mut exhausted, &prefix, &suffix, tags, ptr);
+                let (p, s, t) =
+                    salted_splice_sources(&prefix, &suffix, tags, seq.branches.len() as u64);
+                splice_around(&mut exhausted, &p, &s, &t, ptr);
                 if trailing_eol {
                     exhausted.stmts.push(Stmt::EndOfLine);
                 }
@@ -176,7 +185,13 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 // Synthesized branch, not sourced from a real arm — the
                 // whole sequence's own span is the narrowest available
                 // fallback (matches the "no dedicated source node" posture
-                // documented on `SequenceBranch`).
+                // documented on `SequenceBranch`). Its container id is
+                // derived from the wrapper's (#3275): no pristine node
+                // exists to have been stamped, and the stamp walk cannot
+                // predict this synthesis (it depends on prefix/suffix).
+                exhausted.container_id = seq
+                    .container_id
+                    .map(|id| super::stamp::derive_id(id, "exhausted", 0));
                 branches.push(SequenceBranch {
                     ptr: seq.ptr,
                     body: exhausted,
@@ -187,18 +202,23 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind
             };
 
+            revoke_sharing_if_unclaimed(&prefix, &suffix, branches.iter_mut().map(|b| &mut b.body));
+
             Ok(vec![Stmt::Sequence(Sequence {
                 ptr: seq.ptr,
                 kind,
                 branches,
-                container_id: None,
+                // Inherited from the pristine stamp (#3275) — the lift
+                // never re-mints ids.
+                container_id: seq.container_id,
             })])
         }
         ContentPart::InlineConditional(cond) => {
             let mut branches = Vec::with_capacity(cond.branches.len() + 1);
-            for branch in &cond.branches {
+            for (branch_idx, branch) in cond.branches.iter().enumerate() {
                 let mut body = branch.body.clone();
-                splice_around(&mut body, &prefix, &suffix, tags, ptr);
+                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, branch_idx as u64);
+                splice_around(&mut body, &p, &s, &t, ptr);
                 if trailing_eol {
                     body.stmts.push(Stmt::EndOfLine);
                 }
@@ -212,7 +232,8 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                     condition: branch.condition.clone(),
                     binding: branch.binding.clone(),
                     body,
-                    container_id: None,
+                    // Inherited from the pristine stamp (#3275).
+                    container_id: branch.container_id,
                 });
             }
 
@@ -222,23 +243,17 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
             // "A " in `A {cond:B}` would be lost when `cond` is false.
             let has_else = branches.iter().any(|b| b.condition.is_none());
             if !has_else && (!prefix.is_empty() || !suffix.is_empty()) {
-                let mut else_body = Block::default();
-                splice_around(&mut else_body, &prefix, &suffix, tags, ptr);
-                if trailing_eol {
-                    else_body.stmts.push(Stmt::EndOfLine);
-                }
-                else_body.recompute_tail();
-                // Synthesized branch, not sourced from a real arm — falls
-                // back to the whole conditional's own span (see
-                // `SequenceBranch`'s doc for the same posture).
-                branches.push(CondBranch {
-                    ptr: cond.ptr,
-                    condition: None,
-                    binding: None,
-                    body: else_body,
-                    container_id: None,
-                });
+                branches.push(synthesized_else_branch(
+                    cond,
+                    &prefix,
+                    &suffix,
+                    tags,
+                    ptr,
+                    trailing_eol,
+                ));
             }
+
+            revoke_sharing_if_unclaimed(&prefix, &suffix, branches.iter_mut().map(|b| &mut b.body));
 
             Ok(vec![Stmt::Conditional(Conditional {
                 ptr: cond.ptr,
@@ -361,6 +376,105 @@ fn extend_merging_text(parts: &mut Vec<ContentPart>, extra: &[ContentPart]) {
             parts.push(part.clone());
         }
     }
+}
+
+/// The synthesized else branch a no-else lifted conditional gets when
+/// prefix/suffix text must still emit on the all-false path. Not sourced
+/// from a real arm — falls back to the whole conditional's own span (see
+/// `SequenceBranch`'s doc for the same posture). Its id is derived from
+/// the last authored branch's (#3275): a `hir::Conditional` has no
+/// wrapper id to derive from, and the stamp walk cannot predict this
+/// synthesis (it depends on prefix/suffix).
+fn synthesized_else_branch(
+    cond: &Conditional,
+    prefix: &[ContentPart],
+    suffix: &[ContentPart],
+    tags: &[Tag],
+    ptr: Option<crate::Provenance>,
+    trailing_eol: bool,
+) -> CondBranch {
+    let mut else_body = Block::default();
+    let (p, s, t) = salted_splice_sources(prefix, suffix, tags, cond.branches.len() as u64);
+    splice_around(&mut else_body, &p, &s, &t, ptr);
+    if trailing_eol {
+        else_body.stmts.push(Stmt::EndOfLine);
+    }
+    else_body.recompute_tail();
+    CondBranch {
+        ptr: cond.ptr,
+        condition: None,
+        binding: None,
+        body: else_body,
+        container_id: cond
+            .branches
+            .last()
+            .and_then(|b| b.container_id)
+            .map(|id| super::stamp::derive_id(id, "synth-else", 0)),
+    }
+}
+
+/// A cloned stateful alternative keeps its stamped id in every branch
+/// (shared visit-count state, ruled 2026-08-29 on #3275) — but that is
+/// only sound while every branch's assembled line claims as a variant
+/// line, because the variant model emits the shared container as one
+/// empty stub (deduped at emission), while an unclaimed line's inline
+/// lowering builds a BODIED container per site: one id cannot name both.
+/// So the sharing is per-lift-level: if any branch fails to claim
+/// immediately, branches 1.. re-derive EVERY id ([`rederive_block_all`]),
+/// stateful included — a per-branch state split in this structural-mixed
+/// corner, the documented pre-#3275 behavior. The recursive normalize
+/// pass then applies the same rule at each deeper lift.
+fn revoke_sharing_if_unclaimed<'a>(
+    prefix: &[ContentPart],
+    suffix: &[ContentPart],
+    branches: impl Iterator<Item = &'a mut Block>,
+) {
+    let has_stateful_clone = prefix
+        .iter()
+        .chain(suffix.iter())
+        .any(|p| matches!(p, ContentPart::InlineSequence(_)));
+    if !has_stateful_clone {
+        return;
+    }
+    let mut branches: Vec<&mut Block> = branches.collect();
+    let all_claim = branches.iter().all(|b| {
+        let ([Stmt::Content(c)] | [Stmt::Content(c), Stmt::EndOfLine]) = b.stmts.as_slice() else {
+            return false;
+        };
+        crate::lir::lower::recognize::claims_variant_line(c)
+    });
+    if all_claim {
+        return;
+    }
+    for (k, b) in branches.iter_mut().enumerate().skip(1) {
+        super::stamp::rederive_block_all(b, k as u64);
+    }
+}
+
+/// Clone the spliced prefix/suffix/tags for the branch at `salt`,
+/// re-deriving cloned container/lambda ids (#3275 stage 3a — see
+/// `stamp.rs`'s clone-id section). `salt == 0` keeps the stamped ids: the
+/// first branch's clone is the one container each stamped id stays live
+/// on. A cloned stateful alternative keeps its id at EVERY salt (shared
+/// visit-count state, ruled 2026-08-29); LIR emits that shared container
+/// once. Un-stamped parts (in-crate tests that normalize without
+/// stamping) pass through unchanged — derivation only rewrites ids that
+/// exist.
+fn salted_splice_sources(
+    prefix: &[ContentPart],
+    suffix: &[ContentPart],
+    tags: &[Tag],
+    salt: u64,
+) -> (Vec<ContentPart>, Vec<ContentPart>, Vec<Tag>) {
+    let mut p = prefix.to_vec();
+    let mut s = suffix.to_vec();
+    let mut t = tags.to_vec();
+    super::stamp::rederive_cloned_parts(&mut p, salt);
+    super::stamp::rederive_cloned_parts(&mut s, salt);
+    for tag in &mut t {
+        super::stamp::rederive_cloned_parts(&mut tag.parts, salt);
+    }
+    (p, s, t)
 }
 
 /// Splice prefix/suffix text around a branch block's content.
