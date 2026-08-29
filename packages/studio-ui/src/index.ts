@@ -56,7 +56,12 @@ export {
   DEFAULT_SETTINGS_SECTION,
   SETTINGS_SECTION_IDS,
 } from "./settingsSectionIds.js";
-export { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
+export {
+  isSuppressible,
+  suppressAllInFile,
+  suppressInFile,
+  suppressOnLine,
+} from "./suppressDiagnostic.js";
 export {
   ProblemsContextMenu,
   type ProblemsMenuTarget,

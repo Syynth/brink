@@ -5,7 +5,8 @@
  * reach for them — and each is a directive the compiler already has:
  *
  * - **this line** — `// brink-disable Exxx` above it
- * - **this file** — `// brink-disable-file` at the top
+ * - **this file** — `// brink-disable-file <code>` at the top, or
+ *   `// brink-disable-file-all` for the blanket gesture
  * - **this project** — `[lints] Exxx = "allow"` in `brink.toml`
  *
  * Plus "Configure…", which opens Settings rather than deciding for you —
@@ -24,7 +25,12 @@ import { setTomlString } from "@brink/studio-store";
 import { useContextMenuDismiss } from "./BinderContextMenu.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { isProseDiagnostic } from "@brink/studio-store";
-import { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
+import {
+  isSuppressible,
+  suppressAllInFile,
+  suppressInFile,
+  suppressOnLine,
+} from "./suppressDiagnostic.js";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
@@ -89,7 +95,14 @@ export function ProblemsContextMenu({
     });
     items.push({
       label: `Suppress ${code} in this file`,
-      run: () => edit(path, suppressInFile),
+      run: () => edit(path, (src) => suppressInFile(src, code)),
+    });
+    items.push({
+      // Offered separately, and worded for what it does. One item that
+      // claimed to suppress a code while silencing the file (#3259) is the
+      // reason this is two gestures rather than one.
+      label: "Suppress all diagnostics in this file",
+      run: () => edit(path, suppressAllInFile),
     });
     items.push({
       label: `Suppress ${code} in this project`,

@@ -7,7 +7,12 @@
  * thing an implementation can get backwards and still look right.
  */
 import { describe, expect, it } from "vitest";
-import { isSuppressible, suppressInFile, suppressOnLine } from "@brink/studio-ui";
+import {
+  isSuppressible,
+  suppressAllInFile,
+  suppressInFile,
+  suppressOnLine,
+} from "@brink/studio-ui";
 
 const SRC = `=== intro ===
 VAR roll = 0
@@ -64,8 +69,11 @@ Hello.
 });
 
 describe("suppressInFile", () => {
-  it("puts the directive at the very top", () => {
-    expect(suppressInFile(SRC)).toBe(`// brink-disable-file\n${SRC}`);
+  it("names the code, rather than silencing the whole file", () => {
+    // #3259: this used to write a bare `// brink-disable-file` while the
+    // menu item read "Suppress E157 in this file" — one click silenced
+    // everything and the label said otherwise.
+    expect(suppressInFile(SRC, "E035")).toBe(`// brink-disable-file E035\n${SRC}`);
   });
 
   it("goes above an existing header comment rather than under it", () => {
@@ -73,13 +81,38 @@ describe("suppressInFile", () => {
     // and buried under a header it is easy to miss when wondering why a
     // file reports nothing.
     const src = "// A scene.\n=== intro ===\n";
-    expect(suppressInFile(src)).toBe(`// brink-disable-file\n${src}`);
+    expect(suppressInFile(src, "E035")).toBe(`// brink-disable-file E035\n${src}`);
   });
 
-  it("is idempotent, and defers to an existing disable-all", () => {
-    expect(suppressInFile(suppressInFile(SRC))).toBe(suppressInFile(SRC));
+  it("extends an existing file directive instead of adding a second", () => {
+    const once = suppressInFile(SRC, "E035");
+    expect(suppressInFile(once, "E027")).toBe(`// brink-disable-file E035 E027\n${SRC}`);
+  });
+
+  it("is idempotent for a code already named", () => {
+    const once = suppressInFile(SRC, "E035");
+    expect(suppressInFile(once, "E035")).toBe(once);
+  });
+
+  it("defers to a blanket directive, which already covers the code", () => {
     const all = "// brink-disable-all\n=== intro ===\n";
-    expect(suppressInFile(all)).toBe(all);
+    expect(suppressInFile(all, "E035")).toBe(all);
+    const fileAll = "// brink-disable-file-all\n=== intro ===\n";
+    expect(suppressInFile(fileAll, "E035")).toBe(fileAll);
+  });
+});
+
+describe("suppressAllInFile", () => {
+  it("writes the -all spelling, not the bare form", () => {
+    // The bare `// brink-disable-file` is now reported as E192: it names no
+    // codes and is not the blanket spelling.
+    expect(suppressAllInFile(SRC)).toBe(`// brink-disable-file-all\n${SRC}`);
+  });
+
+  it("is idempotent, and defers to a project-wide disable-all", () => {
+    expect(suppressAllInFile(suppressAllInFile(SRC))).toBe(suppressAllInFile(SRC));
+    const all = "// brink-disable-all\n=== intro ===\n";
+    expect(suppressAllInFile(all)).toBe(all);
   });
 });
 
