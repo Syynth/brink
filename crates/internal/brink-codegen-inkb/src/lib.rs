@@ -124,6 +124,7 @@ pub fn emit_with_options(
         definition_id_first_seen: HashMap::new(),
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
+        line_variant_groups: Vec::new(),
         list_literals: Vec::new(),
         literal_pool: Vec::new(),
         name_table: program.name_table.clone(),
@@ -170,6 +171,10 @@ pub fn emit_with_options(
     let struct_shapes = build_struct_shapes(&program.struct_shapes);
 
     // Convert scope line tables to a sorted Vec<ScopeLineTable>.
+    // #3273: deterministic group order, mirroring the line-table sort.
+    let mut line_variant_groups = state.line_variant_groups;
+    line_variant_groups.sort_by_key(|g| (g.scope_id.to_raw(), g.base));
+
     let mut line_tables: Vec<ScopeLineTable> = state
         .scope_line_tables
         .into_iter()
@@ -223,11 +228,7 @@ pub fn emit_with_options(
         // stays byte-identical (§1.2 ship policy). Computed above, before
         // the error check — see that comment for why.
         debug_info,
-        // #3273 stage 1: no lowering path produces variant groups until the
-        // stage-2 flip (#3274) routes multi-alternative lines through the
-        // enumeration — until then codegen always emits the empty (omitted)
-        // section.
-        line_variant_groups: Vec::new(),
+        line_variant_groups,
         source_checksum: 0,
     })
 }
@@ -268,6 +269,10 @@ struct EmitState {
     address_paths: Vec<AddressPath>,
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
     scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>>,
+    /// #3273: variant-group records accumulated as `EmitLineVariants`
+    /// statements register their line-table runs. Sorted before assembly
+    /// for deterministic output.
+    line_variant_groups: Vec<brink_format::LineVariantGroup>,
     list_literals: Vec<ListValue>,
     /// The T1b `LiteralPool` (`docs/format-v4-rfc.md` §2), built up as
     /// `PushLiteral` sites are emitted. Content-hash-dedup isn't needed for
@@ -317,6 +322,11 @@ fn intern_into(
 struct ContainerEmitter<'a> {
     bytecode: Vec<u8>,
     scope_line_table: &'a mut Vec<LineEntry>,
+    /// The scope whose line table this emitter appends to — the
+    /// `scope_id` a variant-group record (#3273) is keyed by.
+    scope_id: DefinitionId,
+    /// #3273: shared with [`EmitState::line_variant_groups`].
+    line_variant_groups: &'a mut Vec<brink_format::LineVariantGroup>,
     list_literals: &'a mut Vec<ListValue>,
     literal_pool: &'a mut Vec<Value>,
     state_name_table: &'a mut Vec<String>,
@@ -363,6 +373,8 @@ impl<'a> ContainerEmitter<'a> {
         Self {
             bytecode: Vec::new(),
             scope_line_table,
+            scope_id,
+            line_variant_groups: &mut state.line_variant_groups,
             list_literals: &mut state.list_literals,
             literal_pool: &mut state.literal_pool,
             state_name_table: &mut state.name_table,

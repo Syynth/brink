@@ -60,6 +60,7 @@ impl ContainerEmitter<'_> {
         match &stmt.kind {
             lir::StmtKind::EmitContent(content) => self.emit_content(content),
             lir::StmtKind::EmitLine(emission) => self.emit_recognized_line(emission),
+            lir::StmtKind::EmitLineVariants(v) => self.emit_line_variants(v),
             lir::StmtKind::EvalLine(emission) => self.emit_eval_line(emission),
             lir::StmtKind::ChoiceOutput {
                 content, emission, ..
