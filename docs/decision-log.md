@@ -3663,8 +3663,9 @@
 - **WHAT:** Prose lints check **content spans only**, with **no
   per-element-kind rule scoping** in v1 (the seam stays able to add it).
   The dictionary is **seeded from the project symbol table, cue names
-  included**; an author word list lives in **its own file**, not
-  `brink.toml`. `[prose] dialect` ships day one. Prose lints ride the
+  included**; ~~an author word list lives in **its own file**, not
+  `brink.toml`~~ — **REVISED, see "Prose dictionary lives in `brink.toml`"
+  below**. `[prose] dialect` ships day one. Prose lints ride the
   diagnostics channel but are **editor-only** — never emitted by `brink
   compile`, never reaching the oracle ratchet or the editor acceptance gate.
 - **WHY:** Each clause was measured against real brink-shaped prose rather
@@ -3677,9 +3678,13 @@
   solvable here because a cue line is structural, so the manuscript naming
   its own characters teaches the dictionary for free. `"colour"`/`"harbour"`
   flagged under the American dialect makes dialect unusable-without, not a
-  refinement. The word list is separate because it is machine-appended and
+  refinement. ~~The word list is separate because it is machine-appended and
   unbounded, and a config file that is mostly word list stops reading as
-  configuration. Editor-only is a semantic claim: a misspelling is not a
+  configuration.~~ **That clause was never ruled — it was an agent
+  recommendation recorded as a maintainer decision, and it contradicted the
+  standing ruling above it ("Spellcheck: prose only, squiggles always,
+  dictionary in brink.toml"). See the correction entry below.** Editor-only
+  is a semantic claim: a misspelling is not a
   compiler claim about the program.
 
 ## Debugger epic (#452): v1 DebugInfo contract + D1 design round
@@ -3854,3 +3859,56 @@
   because their exclusion, though reasoned from the same now-false premise,
   was confirmed deliberately and twice — reversing that deserves its own
   decision rather than arriving as a side effect of this one.
+
+## Prose dictionary lives in `brink.toml`; casing stays literal for now
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** The author's custom prose dictionary lives in `brink.toml`, not
+  a dotfile — **reaffirming** the original ruling in "Spellcheck: prose
+  only, squiggles always, dictionary in brink.toml" and **revoking** the
+  contradicting clause in "Prose checking is scoped by measurement". The
+  implemented `.brink-dictionary` file is to be replaced by a `[prose]
+  dictionary` key. Separately: dictionary matching **stays literal**
+  (exact-case) for now, to be revisited after real use rather than designed
+  up front.
+- **WHY:** On the storage question the rationale was already recorded and
+  was never displaced: the dictionary is a fact about the manuscript, so it
+  belongs with the project, shared by collaborators and surviving a fresh
+  clone. The "machine-appended and unbounded" counter-argument was an agent
+  invention, and the concrete cost of the dotfile was immediate — "Add to
+  dictionary" appeared to do nothing, because it wrote somewhere with no UI
+  surface and no presence in the config the author reads.
+  On casing, the maintainer declined to decide from the measured matrix
+  (title case would give correct proper-noun behaviour via Harper's
+  `is_proper` metadata; lowercase silently disables capitalisation checks)
+  on the grounds that the right expansion is easier to see after living with
+  the literal behaviour than before. Literal is the honest default: it does
+  exactly what the author typed and claims nothing further.
+- **NOTE (process):** The contradicting clause is the second time this log
+  has carried an agent recommendation styled as a maintainer ruling. A
+  clause in an entry is only a decision if the maintainer said it.
+
+## Prose checking: button up the ink surface first, native later
+- **WHEN:** 2026-08-28
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** For prose checking, the **ink** surface is finished first and to
+  a "100% buttoned up" standard; the native surface follows later. Concretely
+  this parked #3252 (cue names are never harvested on the native surface,
+  because `@[convention]` claims populate no `LineContext.dialect`) and
+  admitted the two-part ink cue fix instead: seed cue names in title case,
+  and exclude character-cue lines from prose ranges.
+- **WHY:** The two surfaces fail for unrelated reasons and only one of them
+  was blocking use. The claiming pass does not run on ink at all —
+  `@[convention]` handlers live in a `.brink` conventions module and
+  `brink-syntax` has no notion of them — so the native defect could be
+  separated cleanly rather than held as a prerequisite. On ink the
+  classification already worked and the whole remaining gap was casing: the
+  cue teaches `GRISWOLD`, the prose writes `Griswold`, matching is literal.
+  Fixing that finished a surface rather than half-fixing two.
+- **NOTE:** This is a sequencing decision about prose checking, not a
+  reversal of "the project's center is the NATIVE surface". It stands
+  because the ink gap was small, measured, and in the way.

@@ -489,6 +489,20 @@ export interface HoverInfo {
   content: string;
   start?: number;
   end?: number;
+  /**
+   * Navigation targets for `[text](#N)` links in {@link content}, where `N`
+   * indexes this array.
+   *
+   * An index rather than a path inside the link target: a file path in
+   * markdown would have to survive `)` and `:` inside it, and that escaping
+   * is a silent-corruption bug waiting on the first bracket in a filename.
+   *
+   * An entry with an empty `file` is a target the compiler could not
+   * resolve to a project file — rendered as plain text, never as a link
+   * that goes nowhere. Entries are never dropped, because the indices in
+   * the content refer to positions in this array.
+   */
+  links?: Location[];
 }
 
 export interface Location {

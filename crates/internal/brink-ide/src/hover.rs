@@ -7,6 +7,8 @@ use rowan::{TextRange, TextSize};
 
 use crate::inferred_types::enclosing_callable;
 use crate::navigation::find_def_at_offset;
+use std::cell::RefCell;
+
 use crate::{builtin_hover_text, stdlib_hover_text, word_at_offset, word_range_at_offset};
 
 /// Hover information for a symbol.
@@ -15,6 +17,66 @@ pub struct HoverInfo {
     pub content: String,
     /// The range of the hovered symbol.
     pub range: Option<TextRange>,
+    /// Navigation targets referenced from [`Self::content`] as `[text](#N)`,
+    /// where `N` indexes this list.
+    ///
+    /// An INDEX rather than a path in the link target, deliberately: a file
+    /// path in markdown would have to survive `)` and `:` inside it, and the
+    /// escaping that needs is a silent-corruption bug waiting on the first
+    /// author who puts a bracket in a filename. The renderer looks the
+    /// target up instead.
+    pub links: Vec<HoverLink>,
+}
+
+/// [`HoverInfo::content`] with its `[text](#N)` link references flattened
+/// back to their labels.
+///
+/// **For every consumer that is not the studio.** The `#N` reference is an
+/// index into [`HoverInfo::links`], which only a renderer holding that list
+/// can resolve — the LSP delivers `content` straight to an editor as
+/// `MarkupKind::Markdown`, and the `brink ide hover` CLI prints it, so both
+/// would show a live markdown link pointing at a fragment that does not
+/// exist. Flattening is not a downgrade for them: it restores exactly what
+/// they rendered before links existed.
+///
+/// A consumer that CAN resolve targets should use `links` and build its own
+/// URIs rather than calling this.
+#[must_use]
+pub fn strip_link_refs(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(open) = rest.find('[') {
+        // A `[` that does not begin a well-formed `[label](#digits)` is
+        // ordinary text — `*[function]*` in a signature line, or an author's
+        // own bracket inside a message.
+        let Some(close) = rest[open..].find("](#") else {
+            out.push_str(&rest[..=open]);
+            rest = &rest[open + 1..];
+            continue;
+        };
+        let close = open + close;
+        let after = &rest[close + 3..];
+        let digits = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        if digits == 0 || !after[digits..].starts_with(')') {
+            out.push_str(&rest[..=open]);
+            rest = &rest[open + 1..];
+            continue;
+        }
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..close]);
+        rest = &after[digits + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One navigable target behind a `[text](#N)` link in hover content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverLink {
+    /// The file the target is declared in.
+    pub file: FileId,
+    /// The declaration's source range.
+    pub range: TextRange,
 }
 
 /// Compute hover info for the symbol at `offset`.
@@ -48,6 +110,7 @@ pub fn hover(
         return Some(info);
     }
 
+    let mut links: Vec<HoverLink> = Vec::new();
     let content = if let Some(info) = find_def_at_offset(analysis, file_id, offset) {
         let ctx = SectionCtx {
             analysis,
@@ -55,6 +118,7 @@ pub fn hover(
             file_id,
             info,
             meta: analysis.symbol_meta.get(&info.id),
+            links: RefCell::new(Vec::new()),
         };
         let mut blocks = vec![head_line(&ctx)];
         for section in HOVER_SECTIONS {
@@ -62,9 +126,10 @@ pub fn hover(
                 blocks.push(block);
             }
         }
-        if let Some(note) = defined_in_section(info, project_files) {
+        if let Some(note) = defined_in_section(&ctx, project_files) {
             blocks.push(note);
         }
+        links = ctx.links.into_inner();
         blocks.join("\n\n")
     } else {
         let word = word_at_offset(source, offset)?;
@@ -78,7 +143,11 @@ pub fn hover(
         .map(|r| r.range)
         .or_else(|| word_range_at_offset(source, offset));
 
-    Some(HoverInfo { content, range })
+    Some(HoverInfo {
+        content,
+        range,
+        links,
+    })
 }
 
 /// Honest hover display for a resolved semantic type (#1027 — closes the
@@ -248,6 +317,30 @@ struct SectionCtx<'a> {
     file_id: FileId,
     info: &'a brink_ir::SymbolInfo,
     meta: Option<&'a brink_analyzer::SymbolMeta>,
+    /// Targets accumulated by sections that emit `[text](#N)` links.
+    ///
+    /// Interior mutability rather than a `&mut` parameter: every section
+    /// shares one `fn(&SectionCtx) -> Option<String>` signature, and
+    /// widening it for the two providers that make links would touch every
+    /// provider that does not.
+    links: RefCell<Vec<HoverLink>>,
+}
+
+impl SectionCtx<'_> {
+    /// Record a navigation target and return its markdown link reference.
+    ///
+    /// Deduplicated: a cell that is both read and written is one
+    /// destination, and emitting it twice would put two entries in the wire
+    /// payload for the same place.
+    fn link_to(&self, file: FileId, range: TextRange) -> String {
+        let mut links = self.links.borrow_mut();
+        let want = HoverLink { file, range };
+        let idx = links.iter().position(|l| *l == want).unwrap_or_else(|| {
+            links.push(want);
+            links.len() - 1
+        });
+        format!("#{idx}")
+    }
 }
 
 /// Ordered section providers. Each returns one Markdown block or `None`.
@@ -338,8 +431,35 @@ fn effect_row_section(ctx: &SectionCtx) -> Option<String> {
     .then(|| ctx.db.effects(ctx.info.id))
     .flatten()
     .map(|row| {
-        let view = crate::effects::EffectRowView::from_row(&row, &ctx.analysis.index);
-        format!("**effects** `{}`", view.display_line())
+        let index = &ctx.analysis.index;
+        let view = crate::effects::EffectRowView::from_row(&row, index);
+        // Map each atom's display name back to where it is declared. Built
+        // from the row's ids rather than by looking names up in the index:
+        // the name is already the canonical one, and a second by-name
+        // lookup could land on a different symbol that happens to share it.
+        let mut targets: std::collections::BTreeMap<String, (FileId, TextRange)> =
+            std::collections::BTreeMap::new();
+        for id in row.reads.iter().chain(row.writes.iter()) {
+            if let Some(sym) = index.symbols.get(id) {
+                targets.insert(
+                    brink_analyzer::effect_atom_name(*id, index),
+                    (sym.file, sym.range),
+                );
+            }
+        }
+        // `calls` atoms are raw external names with no symbol to point at,
+        // and the compiler-owned `rng` cell has no declaration at all — both
+        // stay plain text rather than becoming links that go nowhere.
+        let line = view.display_line_with(|clause, atom| {
+            if clause == "calls" {
+                return format!("`{atom}`");
+            }
+            targets.get(atom).map_or_else(
+                || format!("`{atom}`"),
+                |(file, range)| format!("[`{atom}`]({})", ctx.link_to(*file, *range)),
+            )
+        });
+        format!("**effects** {line}")
     })
 }
 
@@ -354,13 +474,19 @@ fn style_section(ctx: &SectionCtx) -> Option<String> {
 /// The trailing *Defined in `path`* note — placed last, outside the table
 /// (it needs `project_files`, which sections don't).
 fn defined_in_section(
-    info: &brink_ir::SymbolInfo,
+    ctx: &SectionCtx,
     project_files: &[(FileId, String, String)],
 ) -> Option<String> {
+    let info = ctx.info;
     project_files
         .iter()
         .find(|(fid, _, _)| *fid == info.file)
-        .map(|(_, p, _)| format!("*Defined in `{p}`*"))
+        .map(|(_, p, _)| {
+            // Links to the declaration itself, which is the one target a
+            // reader of this line always wants.
+            let target = ctx.link_to(info.file, info.range);
+            format!("*Defined in* [`{p}`]({target})")
+        })
 }
 
 /// The member-set block for a LIST or list-item hover; empty for every
@@ -789,17 +915,137 @@ Spent.
         let content = hover_at(src, "spend ===");
         assert!(content.contains("**knot**"), "{content}");
         assert!(content.contains("**effects**"), "{content}");
-        assert!(content.contains("reads: gold"), "{content}");
-        assert!(content.contains("writes: gold"), "{content}");
-        assert!(content.contains("calls: PlaySound"), "{content}");
+        // Identifiers are code-styled and linkable; clause labels stay
+        // prose. `PlaySound` is a `calls` atom — a raw external name with no
+        // symbol to point at — so it is code but not a link.
+        assert!(content.contains("reads: [`gold`]"), "{content}");
+        assert!(content.contains("writes: [`gold`]"), "{content}");
+        assert!(content.contains("calls: `PlaySound`"), "{content}");
+    }
+
+    /// The link side-channel: `[text](#N)` in the content, `N` indexing
+    /// `HoverInfo::links`.
+    fn hover_info_at(src: &str, needle: &str) -> super::HoverInfo {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+        hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[(file_id, "test.ink".to_string(), src.to_string())],
+        )
+        .expect("hover")
+    }
+
+    #[test]
+    fn link_refs_flatten_for_consumers_that_cannot_resolve_them() {
+        // The LSP hands `content` to an editor as markdown and the CLI
+        // prints it; neither carries `links`, so a live `[torch](#0)` would
+        // be a link to a fragment that does not exist.
+        use super::strip_link_refs;
+        assert_eq!(strip_link_refs("writes: [`torch`](#0)"), "writes: `torch`");
+        assert_eq!(
+            strip_link_refs("*Defined in* [`a/b.ink`](#12)"),
+            "*Defined in* `a/b.ink`"
+        );
+        assert_eq!(
+            strip_link_refs("reads: [`a`](#0), [`b`](#1)"),
+            "reads: `a`, `b`"
+        );
+    }
+
+    #[test]
+    fn flattening_leaves_ordinary_brackets_alone() {
+        // A signature line's `*[function]*`, and an author's own brackets
+        // inside a message, are not links.
+        use super::strip_link_refs;
+        assert_eq!(
+            strip_link_refs("**knot** `f` *[function]*"),
+            "**knot** `f` *[function]*"
+        );
+        assert_eq!(
+            strip_link_refs("choice [The dark] is unnamed"),
+            "choice [The dark] is unnamed"
+        );
+        // Link-shaped but not a link reference: no digits, or no closing paren.
+        assert_eq!(strip_link_refs("[x](#)"), "[x](#)");
+        assert_eq!(strip_link_refs("[x](#1"), "[x](#1");
+    }
+
+    #[test]
+    fn effect_atoms_carry_navigable_targets() {
+        // The whole point of Decision 5: an effects row names cells, and
+        // naming them without letting an author reach them makes the card a
+        // readout rather than a way to move.
+        let src = "VAR gold = 0\n\n=== spend ===\n~ gold = gold - 1\nSpent.\n-> END\n";
+        let info = hover_info_at(src, "spend ===");
+        assert!(info.content.contains("[`gold`](#"), "{}", info.content);
+        assert!(!info.links.is_empty(), "no link targets recorded");
+        // The target is the DECLARATION, not the use site inside the knot.
+        let decl = src.find("gold").expect("decl");
+        let first = &info.links[0];
+        assert_eq!(u32::from(first.range.start()), u32::try_from(decl).unwrap());
+    }
+
+    #[test]
+    fn a_cell_that_is_read_and_written_is_one_target() {
+        // `gold` appears in both clauses; two entries for one destination
+        // would be wire noise.
+        let src = "VAR gold = 0\n\n=== spend ===\n~ gold = gold - 1\nSpent.\n-> END\n";
+        let info = hover_info_at(src, "spend ===");
+        // Both clauses must point at the SAME entry. (The card also links
+        // its own "Defined in" note, so the total is not 1.)
+        let read_ref = info
+            .content
+            .split("reads: [`gold`](")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .expect("read link");
+        let write_ref = info
+            .content
+            .split("writes: [`gold`](")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .expect("write link");
+        assert_eq!(read_ref, write_ref, "{}", info.content);
+    }
+
+    #[test]
+    fn atoms_with_nowhere_to_go_are_not_links() {
+        // `calls` atoms are raw external names, and the compiler-owned `rng`
+        // cell has no declaration at all. A link that navigates nowhere is
+        // worse than plain text.
+        let rng = hover_info_at(
+            "=== function roll(lo, hi) ===\n~ return RANDOM(lo, hi)\n",
+            "roll",
+        );
+        assert!(rng.content.contains("writes: `rng`"), "{}", rng.content);
+        assert!(!rng.content.contains("[`rng`]"), "{}", rng.content);
+    }
+
+    #[test]
+    fn defined_in_links_to_the_declaration() {
+        let src = "VAR gold = 0\n\n=== spend ===\nSpent.\n-> END\n";
+        let info = hover_info_at(src, "spend ===");
+        assert!(
+            info.content.contains("*Defined in* [`test.ink`](#"),
+            "{}",
+            info.content
+        );
     }
 
     #[test]
     fn hover_shows_pure_for_an_effectless_knot() {
         let src = "=== function double(n) ===\n~ return n + n\n";
         let content = hover_at(src, "double(n)");
+        // Status words are prose, not code: only identifiers get the
+        // monospace treatment now that atoms are individually addressable.
         assert!(
-            content.contains("**effects** `pure, silent, total`"),
+            content.contains("**effects** pure, silent, total"),
             "{content}"
         );
     }
@@ -811,6 +1057,28 @@ Spent.
         let src = "VAR health = 100\n-> END\n";
         let content = hover_at(src, "health = 100");
         assert!(!content.contains("**effects**"), "{content}");
+    }
+
+    #[test]
+    fn the_rng_cell_is_named_rng_not_a_raw_handle() {
+        // Shipped bug: hovering any function that calls `RANDOM` showed
+        // `writes: GlobalVar(0x5eed0000d1ce)` — the compiler-owned RNG cell
+        // has no symbol-index entry, so the name lookup fell through to the
+        // id's debug form and put a raw internal handle in author-facing UI.
+        //
+        // `rng` is the spelling the assertion surface uses
+        // (`@[effects(writes rng)]`), so the name an author reads here is
+        // the name they would write.
+        let content = hover_at(
+            "=== function roll(lo, hi) ===\n~ return RANDOM(lo, hi)\n",
+            "roll",
+        );
+        assert!(content.contains("writes: `rng`"), "{content}");
+        assert!(
+            !content.contains("GlobalVar("),
+            "raw handle leaked: {content}"
+        );
+        assert!(!content.contains("0x"), "raw handle leaked: {content}");
     }
 
     #[test]

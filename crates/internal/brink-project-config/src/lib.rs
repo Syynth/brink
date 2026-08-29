@@ -336,6 +336,19 @@ pub struct ProjectConfig {
     /// `None` means unset — callers apply their own default.
     pub prose_enable: Option<bool>,
 
+    /// `[prose] dictionary` — the author's own word list: place names,
+    /// in-world jargon, a character who is never a cue.
+    ///
+    /// In `brink.toml` rather than a sidecar because a character's name is a
+    /// fact about the manuscript, not about one machine — so it is shared by
+    /// collaborators and survives a fresh clone (decision log, "Spellcheck:
+    /// prose only, squiggles always, dictionary in brink.toml").
+    ///
+    /// Empty and absent are the same thing here, unlike the two options
+    /// above: there is no behaviour a project could want from "declared but
+    /// empty" that it does not get from "absent".
+    pub prose_dictionary: Vec<String>,
+
     /// `[project] conventions`, if set (docs/prose-dialect-spec.md §3.4's
     /// pointer mechanism): either a built-in preset name (`"screenplay"`)
     /// or a project-relative path to a `.brink` conventions module
@@ -392,6 +405,7 @@ impl ProjectConfig {
             && self.entry.is_none()
             && self.prose_dialect.is_none()
             && self.prose_enable.is_none()
+            && self.prose_dictionary.is_empty()
     }
 }
 
@@ -658,7 +672,7 @@ fn parse_project_table(
                 config.indent = Some(parse_indent(path, pkey, pvalue, warnings)?);
             }
             "drafts" => {
-                let globs = parse_string_list(path, pkey, pvalue)?;
+                let globs = parse_string_list(path, &format!("project.{pkey}"), pvalue)?;
                 for glob in &globs {
                     if glob.is_empty() {
                         warnings.push(ConfigWarning(format!(
@@ -774,6 +788,10 @@ fn parse_prose_table(
                         key: format!("prose.{pkey}"),
                         found: value_type_name(pvalue),
                     })?);
+            }
+            "dictionary" => {
+                config.prose_dictionary =
+                    parse_string_list(path, &format!("prose.{pkey}"), pvalue)?;
             }
             _ => warnings.push(ConfigWarning(format!(
                 "unknown key `prose.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
@@ -960,10 +978,16 @@ fn parse_indent(
     Ok(u8::try_from(raw).unwrap_or(DEFAULT_INDENT))
 }
 
+/// Parse an array-of-strings value.
+///
+/// `key` is the FULLY QUALIFIED key (`project.drafts`, `prose.dictionary`),
+/// not a bare name: this is reached from more than one table now, and a
+/// hardcoded `project.` prefix would report the wrong path to an author
+/// trying to find the line they mistyped.
 fn parse_string_list(path: &str, key: &str, value: &Value) -> Result<Vec<String>, ConfigError> {
     let arr = value.as_array().ok_or_else(|| ConfigError::WrongType {
         path: path.to_owned(),
-        key: format!("project.{key}"),
+        key: key.to_owned(),
         found: value_type_name(value),
     })?;
     arr.iter()
@@ -972,7 +996,7 @@ fn parse_string_list(path: &str, key: &str, value: &Value) -> Result<Vec<String>
                 .map(str::to_owned)
                 .ok_or_else(|| ConfigError::WrongType {
                     path: path.to_owned(),
-                    key: format!("project.{key}"),
+                    key: key.to_owned(),
                     found: value_type_name(item),
                 })
         })
@@ -1424,6 +1448,39 @@ mod tests {
         assert_eq!(config.prose_dialect, Some(ProseDialect::British));
         assert_eq!(config.prose_enable, Some(true));
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn parses_the_prose_dictionary() {
+        let (config, warnings) =
+            parse_str("[prose]\ndictionary = [\n  \"Griswold\",\n  \"Kaelen\",\n]\n")
+                .expect("valid");
+        assert_eq!(config.prose_dictionary, vec!["Griswold", "Kaelen"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_absent_prose_dictionary_is_empty_rather_than_an_error() {
+        let (config, _) = parse_str("[prose]\ndialect = \"british\"\n").expect("valid");
+        assert!(config.prose_dictionary.is_empty());
+    }
+
+    #[test]
+    fn a_prose_dictionary_that_is_not_a_list_of_strings_reports_its_own_key() {
+        // Not `project.dictionary` — `parse_string_list` used to hardcode the
+        // `project.` prefix, which would send an author looking in the wrong
+        // table for the line they mistyped.
+        let err = parse_str("[prose]\ndictionary = [1, 2]\n").expect_err("not strings");
+        let text = err.to_string();
+        assert!(text.contains("prose.dictionary"), "{text}");
+    }
+
+    #[test]
+    fn a_dictionary_makes_the_config_non_empty() {
+        // `is_empty` gates whether a discovered config is applied at all; a
+        // file whose only content is a dictionary must still count.
+        let (config, _) = parse_str("[prose]\ndictionary = [\"Ada\"]\n").expect("valid");
+        assert!(!config.is_empty());
     }
 
     #[test]

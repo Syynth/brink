@@ -13,8 +13,15 @@
  * checked. Those are different decisions by different people.
  */
 
-import { useMemo, useReducer } from "react";
-import { getTomlBool, setTomlBool, setTomlString } from "@brink/studio-store";
+import { useMemo, useReducer, useState } from "react";
+import {
+  dictionaryWords,
+  getTomlBool,
+  setTomlBool,
+  setTomlString,
+  withDictionaryWord,
+  withoutDictionaryWord,
+} from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { SettingsGroup, SettingsRow, SettingsToggle } from "./SettingsRow.js";
@@ -82,6 +89,7 @@ export function ProseSettings() {
 
   const dialect = readDialect(source);
   const enabled = getTomlBool(source, "prose", "enable") ?? true;
+  const words = dictionaryWords(source);
 
   const write = (next: string): void => {
     const project = storeApi.getState()._project;
@@ -129,11 +137,103 @@ export function ProseSettings() {
         </SettingsRow>
       </SettingsGroup>
 
-      <p className="settings-group-hint">
-        Your project&rsquo;s own names — knots, stitches, and the character cues that say
-        who the story is about — are known words automatically. Nothing to configure:
-        writing the manuscript teaches the dictionary.
-      </p>
+      <SettingsGroup title="Dictionary">
+        <p className="settings-group-hint">
+          Your project&rsquo;s own names — knots, stitches, structs and flows — are known
+          words automatically. This list is for everything else: place names, in-world
+          jargon, and character names the checker has not picked up.
+        </p>
+        <DictionaryList
+          words={words}
+          onAdd={(word) => {
+            const next = withDictionaryWord(source, word);
+            if (next !== null) write(next);
+          }}
+          onRemove={(word) => {
+            const next = withoutDictionaryWord(source, word);
+            if (next !== null) write(next);
+          }}
+        />
+      </SettingsGroup>
     </>
+  );
+}
+
+/**
+ * The author's word list, with add and remove.
+ *
+ * Visible at all is the point: the same list previously lived in a sidecar
+ * dotfile with no UI, so "Add to dictionary" in the editor appeared to do
+ * nothing and there was no way to undo a word added by mistake.
+ *
+ * Matching is literal for now (decision log, 2026-08-28), so `Griswold` and
+ * `GRISWOLD` are two separate entries — shown as written rather than folded
+ * together, because folding them in the view would misrepresent what the
+ * checker actually accepts.
+ */
+function DictionaryList({
+  words,
+  onAdd,
+  onRemove,
+}: {
+  words: string[];
+  onAdd: (word: string) => void;
+  onRemove: (word: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const submit = (): void => {
+    const trimmed = draft.trim();
+    if (trimmed === "") return;
+    onAdd(trimmed);
+    setDraft("");
+  };
+
+  return (
+    <div className="prose-dict">
+      <div className="prose-dict-add">
+        <input
+          className="prose-dict-input"
+          type="text"
+          value={draft}
+          placeholder="Add a word…"
+          aria-label="Add a word to the dictionary"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <button type="button" className="settings-apply" onClick={submit} disabled={draft.trim() === ""}>
+          Add
+        </button>
+      </div>
+
+      {words.length === 0 ? (
+        <p className="prose-dict-empty">
+          No words yet. Add one here, or choose <em>Add to dictionary</em> on a spelling
+          suggestion in the editor.
+        </p>
+      ) : (
+        <ul className="prose-dict-words">
+          {words.map((word) => (
+            <li key={word} className="prose-dict-word">
+              <span className="prose-dict-word-text">{word}</span>
+              <button
+                type="button"
+                className="prose-dict-remove"
+                aria-label={`Remove ${word} from the dictionary`}
+                title={`Remove ${word}`}
+                onClick={() => onRemove(word)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

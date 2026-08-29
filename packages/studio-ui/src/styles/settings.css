@@ -963,3 +963,90 @@
   font-size: var(--bs-font-small);
   color: var(--bs-fg-muted);
 }
+
+/* ── Prose dictionary (Project → Prose) ──────────────────────────────
+   The author's own word list, made visible. It previously lived in a
+   sidecar dotfile with no UI at all, which is why "Add to dictionary" in
+   the editor read as doing nothing — there was nowhere for the result to
+   show up. */
+.brink-studio .prose-dict {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.brink-studio .prose-dict-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brink-studio .prose-dict-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+}
+.brink-studio .prose-dict-input:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+.brink-studio .prose-dict-empty {
+  margin: 0;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}
+/* Wrapping chips rather than one word per row: a dictionary is dozens of
+   short words, and a vertical list of them would run off the pane while
+   using a tenth of its width. */
+.brink-studio .prose-dict-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brink-studio .prose-dict-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 10px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg);
+}
+.brink-studio .prose-dict-word-text {
+  /* The words are shown exactly as stored — matching is literal, so
+     `Griswold` and `GRISWOLD` are genuinely two entries and must not be
+     made to look like one. */
+  font-family: var(--bs-font-mono);
+}
+.brink-studio .prose-dict-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--bs-fg-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.brink-studio .prose-dict-remove:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .prose-dict-remove:focus-visible {
+  outline: 1px solid var(--bs-accent);
+  outline-offset: 1px;
+}

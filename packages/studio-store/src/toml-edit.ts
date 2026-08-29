@@ -46,6 +46,22 @@ const keyLineRe = (key: string): RegExp => new RegExp(`^\\s*${key}\\s*=\\s*(.*?)
  * model (multi-line, expression) reads as null and the form shows the raw
  * editor as the way to touch it.
  */
+/**
+ * Decode one TOML string literal, basic or literal, or null when `raw` is
+ * not a single-line string.
+ *
+ * Shared by the scalar reader and the array reader so there is one answer
+ * to "what counts as a string here" — an array member and a scalar value
+ * are the same syntax, and two copies of this would drift.
+ */
+function decodeTomlString(raw: string): string | null {
+  const basic = /^"((?:[^"\\]|\\.)*)"$/.exec(raw);
+  if (basic !== null) return (basic[1] ?? "").replace(/\\(["\\])/g, "$1");
+  const literal = /^'([^']*)'$/.exec(raw);
+  if (literal !== null) return literal[1] ?? "";
+  return null;
+}
+
 export function getTomlString(source: string, table: string, key: string): string | null {
   const lines = source.split("\n");
   const range = tableRange(lines, table);
@@ -54,14 +70,7 @@ export function getTomlString(source: string, table: string, key: string): strin
   for (let i = range.start; i < range.end; i++) {
     const m = re.exec(lines[i] ?? "");
     if (m === null) continue;
-    const raw = (m[1] ?? "").replace(/\s*#.*$/, "").trim();
-    const basic = /^"((?:[^"\\]|\\.)*)"$/.exec(raw);
-    if (basic !== null) {
-      return (basic[1] ?? "").replace(/\\(["\\])/g, "$1");
-    }
-    const literal = /^'([^']*)'$/.exec(raw);
-    if (literal !== null) return literal[1] ?? "";
-    return null;
+    return decodeTomlString((m[1] ?? "").replace(/\s*#.*$/, "").trim());
   }
   return null;
 }
@@ -231,4 +240,204 @@ export function setTomlInteger(
   value: number | null,
 ): string {
   return setTomlValue(source, table, key, value === null ? null : String(Math.trunc(value)));
+}
+
+// ── Arrays of strings ────────────────────────────────────────────────────
+//
+// The module doc above declares arrays out of scope, and for the settings
+// form's scalar keys they still are. The prose dictionary forces the
+// exception: it is an author-visible, author-editable, GROWING list, and
+// the alternative — a sidecar file — was tried and rejected (decision log,
+// "Prose dictionary lives in `brink.toml`").
+//
+// Growing is the operative word, and it is why these two functions cannot
+// reuse `setTomlValue`. That function's whole model is "a key occupies one
+// line", which a word list outgrows immediately: as a single line it
+// becomes an unreadable, unmergeable smear the moment it has twenty
+// entries. So the array is written one entry per line, and read back
+// across however many lines it spans.
+
+/** Split `body` on top-level commas — commas inside strings are content. */
+function splitArrayItems(body: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (const ch of body) {
+    if (quote !== null) {
+      current += ch;
+      // Only basic strings honour escapes; in a literal string a backslash
+      // is a backslash, so `'C:\'` must not swallow the closing quote.
+      if (escaped) escaped = false;
+      else if (ch === "\\" && quote === '"') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ",") {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
+}
+
+/** Strip a trailing `# comment` that is not inside a string. */
+function stripComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === "\\" && quote === '"') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * The `[start, end)` line range that `key`'s array value occupies, tracking
+ * bracket depth so a multi-line array is covered to its closing `]`.
+ *
+ * Returns null when the key is absent or its value is not an array — the
+ * same "reads as absent, raw editor is the escape hatch" contract the
+ * scalar readers above use.
+ */
+function arrayLineRange(
+  lines: string[],
+  range: { start: number; end: number },
+  key: string,
+): { start: number; end: number } | null {
+  const re = keyLineRe(key);
+  for (let i = range.start; i < range.end; i++) {
+    const line = lines[i] ?? "";
+    const m = re.exec(line);
+    if (m === null) continue;
+    if (!(m[1] ?? "").trimStart().startsWith("[")) return null; // not an array
+    let depth = 0;
+    for (let j = i; j < range.end; j++) {
+      const text = stripComment(lines[j] ?? "");
+      let quote: '"' | "'" | null = null;
+      let escaped = false;
+      for (const ch of text) {
+        if (quote !== null) {
+          if (escaped) escaped = false;
+          else if (ch === "\\" && quote === '"') escaped = true;
+          else if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === "[") depth++;
+        else if (ch === "]") depth--;
+      }
+      if (depth <= 0) return { start: i, end: j + 1 };
+    }
+    // Unterminated array — the file is malformed. Reported as absent rather
+    // than guessed at, so an edit never truncates a value we cannot see the
+    // end of.
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Read `[table] key` as an array of strings, or null when absent or not a
+ * string array.
+ *
+ * Null and `[]` are different answers and both are load-bearing: null means
+ * the project has never had a dictionary, `[]` means it has one and it is
+ * empty. The settings view says different things for each.
+ */
+export function getTomlStringArray(source: string, table: string, key: string): string[] | null {
+  const lines = source.split("\n");
+  const range = tableRange(lines, table);
+  if (range === null) return null;
+  const arr = arrayLineRange(lines, range, key);
+  if (arr === null) return null;
+
+  const text = lines
+    .slice(arr.start, arr.end)
+    .map(stripComment)
+    .join("\n");
+  const open = text.indexOf("[");
+  const close = text.lastIndexOf("]");
+  if (open < 0 || close < open) return null;
+
+  const out: string[] = [];
+  for (const raw of splitArrayItems(text.slice(open + 1, close))) {
+    const item = raw.trim();
+    if (item === "") continue; // trailing comma, or an empty array
+    const decoded = decodeTomlString(item);
+    if (decoded === null) return null; // a non-string member: not ours to model
+    out.push(decoded);
+  }
+  return out;
+}
+
+/**
+ * Write `[table] key` as an array of strings, one entry per line, or remove
+ * the key when `values` is null.
+ *
+ * Always multi-line, even for one entry, and never re-flowed to fit: the
+ * list only grows, and a format that changes shape at some threshold
+ * produces a diff where the whole array moved when one word was added.
+ */
+export function setTomlStringArray(
+  source: string,
+  table: string,
+  key: string,
+  values: readonly string[] | null,
+): string {
+  const lines = source.split("\n");
+  const range = tableRange(lines, table);
+
+  const rendered =
+    values === null
+      ? null
+      : values.length === 0
+        ? `${key} = []`
+        : `${key} = [\n${values.map((v) => `  ${tomlString(v)},`).join("\n")}\n]`;
+
+  if (range === null) {
+    if (rendered === null) return source;
+    const suffix = `[${table}]\n${rendered}\n`;
+    if (source === "") return suffix;
+    return source.endsWith("\n") ? `${source}${suffix}` : `${source}\n${suffix}`;
+  }
+
+  const existing = arrayLineRange(lines, range, key);
+  if (existing !== null) {
+    lines.splice(existing.start, existing.end - existing.start, ...(rendered === null ? [] : rendered.split("\n")));
+    return lines.join("\n");
+  }
+
+  // No array there — but a SCALAR of the same name may be, and replacing it
+  // is the right move (the key is the key). `setTomlValue`'s remove path
+  // handles finding and deleting it.
+  const cleared = setTomlValue(source, table, key, null);
+  if (rendered === null) return cleared;
+
+  const clearedLines = cleared.split("\n");
+  const clearedRange = tableRange(clearedLines, table);
+  if (clearedRange === null) return cleared;
+  let insertAt = clearedRange.start;
+  for (let i = clearedRange.start; i < clearedRange.end; i++) {
+    const trimmed = (clearedLines[i] ?? "").trim();
+    if (trimmed !== "" && !trimmed.startsWith("#")) insertAt = i + 1;
+  }
+  clearedLines.splice(insertAt, 0, ...rendered.split("\n"));
+  return clearedLines.join("\n");
 }

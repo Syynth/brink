@@ -23,11 +23,69 @@
  */
 
 import type { StateCreator } from "zustand";
+import type { ProseLint } from "@brink-lang/editor";
+import type { Diagnostic } from "@brink/wasm-types";
 import type { StudioState } from "../index.js";
 
-/** The three buckets the panel's toggles expose. Info and Hint share one:
- *  both are advisory, and the rows already render them identically. */
-export type ProblemSeverityBucket = "error" | "warning" | "info";
+/**
+ * The `code` prefix that marks a diagnostic as coming from the prose
+ * checker rather than the compiler.
+ *
+ * A prefix on the existing `code` field rather than a new field on
+ * `Diagnostic`: `Diagnostic` is a wasm wire type, and prose lints never
+ * cross that boundary — inventing a field there would imply the compiler
+ * might one day set it. The full code is `prose:Spelling`,
+ * `prose:Repetition`, … so the checker's own rule name survives into the
+ * panel.
+ */
+export const PROSE_CODE_PREFIX = "prose:";
+
+/** Whether a diagnostic came from the prose checker. */
+export function isProseDiagnostic(diagnostic: Pick<Diagnostic, "code">): boolean {
+  return diagnostic.code?.startsWith(PROSE_CODE_PREFIX) === true;
+}
+
+/**
+ * The editor's prose findings for `file`, as panel diagnostics.
+ *
+ * A named function rather than an inline `map` at the call site so the
+ * mapping is testable: the call site is `mountStudio`, which no unit test
+ * constructs, and every field here is a silent failure if wrong — a missing
+ * `file` drops the row from its group, a missing prefix puts spelling among
+ * the TODO notes.
+ *
+ * Offsets pass through unconverted, which is correct and not an oversight:
+ * the checker's boundary works in UTF-16 code units, which is also what
+ * CodeMirror positions are and what `lineColAt` counts.
+ */
+export function toProseDiagnostics(
+  file: string,
+  lints: readonly ProseLint[],
+): Diagnostic[] {
+  return lints.map((lint) => ({
+    start: lint.start,
+    end: lint.end,
+    message: lint.message,
+    // Info: a misspelling is not a claim about the program. The panel
+    // buckets it by SOURCE, so this never lands among the E189 TODO notes.
+    severity: "Info" as const,
+    code: `${PROSE_CODE_PREFIX}${lint.kind}`,
+    file,
+  }));
+}
+
+/**
+ * The buckets the panel's toggles expose. Info and Hint share one: both are
+ * advisory, and the rows already render them identically.
+ *
+ * `prose` is not a severity — it is a SOURCE, and it is a bucket of its own
+ * precisely because it must default OFF while every severity defaults on
+ * (ruled: "the Problems panel FILTERS THEM OUT BY DEFAULT; the author opts
+ * in to seeing them in the list"). Folding spelling into `info` would put
+ * fifty proper nouns on top of the E189 TODO notes an author actually
+ * reads, which is the outcome that ruling exists to prevent.
+ */
+export type ProblemSeverityBucket = "error" | "warning" | "info" | "prose";
 
 export interface ProblemsSlice {
   /** Which severity buckets are shown. */
@@ -40,6 +98,18 @@ export interface ProblemsSlice {
   problemsGrouped: boolean;
   /** Collapsed file sections while grouped, keyed by path. */
   problemsCollapsedFiles: Readonly<Record<string, boolean>>;
+  /**
+   * Prose-checker findings, keyed by file path.
+   *
+   * Kept SEPARATE from the compile result's diagnostics rather than merged
+   * into `diagnosticsList`, because they have different lifetimes: a
+   * compile replaces every compile diagnostic at once, while prose lints
+   * arrive per open view on their own debounce. Merging them into one list
+   * would mean each producer erasing the other's rows — the same
+   * `setDiagnostics`-replaces trap the editor's per-source registry exists
+   * to avoid, one layer up.
+   */
+  proseDiagnostics: Readonly<Record<string, readonly Diagnostic[]>>;
 
   toggleProblemSeverity(bucket: ProblemSeverityBucket): void;
   setProblemsFilter(query: string): void;
@@ -48,6 +118,8 @@ export interface ProblemsSlice {
   toggleProblemsFilter(): void;
   toggleProblemsGrouped(): void;
   toggleProblemsFileCollapsed(file: string): void;
+  /** Replace one file's prose findings. An empty array clears them. */
+  setProseDiagnostics(file: string, diagnostics: readonly Diagnostic[]): void;
   /** Apply persisted preferences at boot (mount.tsx). */
   applyProblemsPrefs(prefs: ProblemsPrefs): void;
   /** Injected persistence sink; null until the app binds it. Keeps the
@@ -65,7 +137,7 @@ export interface ProblemsPrefs {
 export const PROBLEMS_STORAGE_KEY = "brink-studio.problems.v1";
 
 const DEFAULT_PREFS: ProblemsPrefs = {
-  severities: { error: true, warning: true, info: true },
+  severities: { error: true, warning: true, info: true, prose: false },
   grouped: true,
 };
 
@@ -93,6 +165,12 @@ export function loadProblemsPrefs(storage: Pick<Storage, "getItem">): ProblemsPr
       error: sev.error !== false,
       warning: sev.warning !== false,
       info: sev.info !== false,
+      // The opposite default, and the opposite rule: only an explicit
+      // `true` shows prose. A record written before this bucket existed
+      // has no `prose` key, and reading that as "shown" would turn the
+      // panel's spelling rows on for every existing author at once —
+      // exactly what defaulting off is for.
+      prose: sev.prose === true,
     },
     grouped: obj?.grouped !== false,
   };
@@ -114,13 +192,14 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
   set,
   get,
 ) => ({
-  problemsSeverities: { error: true, warning: true, info: true },
+  problemsSeverities: { error: true, warning: true, info: true, prose: false },
   problemsFilter: "",
   problemsFilterOpen: false,
   // Grouped by default (ruled): a flat list of every diagnostic in a
   // project reads as noise; per-file sections are how you actually scan it.
   problemsGrouped: true,
   problemsCollapsedFiles: {},
+  proseDiagnostics: {},
 
   _persistProblemsPrefs: null,
 
@@ -130,6 +209,22 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
 
   applyProblemsPrefs(prefs) {
     set({ problemsSeverities: prefs.severities, problemsGrouped: prefs.grouped });
+  },
+
+  setProseDiagnostics(file, diagnostics) {
+    const current = get().proseDiagnostics;
+    const existing = current[file];
+    // A view republishes on every debounce, usually with nothing new. An
+    // unconditional `set` here would re-render the panel on every keystroke
+    // pause in a document with no prose findings at all.
+    if (existing === undefined && diagnostics.length === 0) return;
+    if (existing !== undefined && sameDiagnostics(existing, diagnostics)) return;
+    if (diagnostics.length === 0) {
+      const { [file]: _dropped, ...rest } = current;
+      set({ proseDiagnostics: rest });
+      return;
+    }
+    set({ proseDiagnostics: { ...current, [file]: diagnostics } });
   },
 
   toggleProblemSeverity(bucket) {
@@ -162,3 +257,18 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
     set({ problemsCollapsedFiles: { ...current, [file]: !current[file] } });
   },
 });
+
+/** Shallow equality over the fields the panel renders. */
+function sameDiagnostics(a: readonly Diagnostic[], b: readonly Diagnostic[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((d, i) => {
+    const other = b[i];
+    return (
+      other !== undefined &&
+      d.start === other.start &&
+      d.end === other.end &&
+      d.message === other.message &&
+      d.code === other.code
+    );
+  });
+}

@@ -19,11 +19,13 @@
  * containing a variable name.
  */
 
-import { StateEffect, type Extension } from "@codemirror/state";
+import { StateEffect, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Diagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
+import { ElementType, elementTypeField } from "./element-type.js";
+import { renderDiagnosticMessage } from "./diagnostic-anatomy.js";
 
 /** A half-open range of the document, in CodeMirror positions. */
 export interface ProseRange {
@@ -70,6 +72,16 @@ export interface ProseOptions {
   /** Add a word to the project's own dictionary. Absent ⇒ no such action
    *  is offered, rather than one that silently does nothing. */
   onAddToDictionary?: (word: string) => void;
+  /**
+   * The findings of the most recent check, reported to the host.
+   *
+   * The squiggles are published into CodeMirror directly; this is the
+   * second consumer — a host that lists prose findings alongside compile
+   * diagnostics (the Problems panel). Called with `[]` whenever the set
+   * clears, including when checking is switched off, so a host list never
+   * keeps rows the editor has already stopped showing.
+   */
+  onLints?: (lints: readonly ProseLint[]) => void;
   /** Debounce before checking, ms. */
   debounceMs?: number;
 }
@@ -116,10 +128,21 @@ export function proseRangesOf(
     else holes.push(range);
   }
 
+  return subtractRanges(content, holes);
+}
+
+/**
+ * `content` minus `holes` — the gaps left over, in order.
+ *
+ * Shared by the two subtraction passes: interpolations and machinery nested
+ * inside a content span, and whole lines that are not prose at all
+ * ({@link withoutCueLines}). One interval walk rather than two, because the
+ * second one written independently is the one that gets the boundary
+ * conditions wrong.
+ */
+function subtractRanges(content: ProseRange[], holes: ProseRange[]): ProseRange[] {
   const ranges: ProseRange[] = [];
   for (const range of content) {
-    // Walk the holes that overlap this content span, in order, emitting the
-    // gaps between them.
     const inside = holes
       .filter((h) => h.to > range.from && h.from < range.to)
       .sort((a, b) => a.from - b.from);
@@ -134,6 +157,37 @@ export function proseRangesOf(
   }
 
   return ranges.filter((r) => r.to > r.from);
+}
+
+/**
+ * `ranges` with every character-cue line removed.
+ *
+ * A cue is the speaker's NAME, not prose — the same category as the knot and
+ * stitch names prose checking has always excluded. It reads as prose to the
+ * HIR projection, though: an ink cue line is an ordinary content span, so
+ * without this pass the cue's own text is spell-checked.
+ *
+ * That matters more than it looks. The dictionary seeds a cue name in TITLE
+ * case (`Griswold`), because that is the spelling the prose uses and
+ * matching is literal. Harper's proper-noun metadata then reports the
+ * all-caps cue line itself — measured, not assumed. So excluding the cue
+ * line and title-casing the seed are two halves of one fix; neither works
+ * alone.
+ *
+ * Only `character` lines. A parenthetical (`(quietly)`) and a dialogue line
+ * ARE prose and stay checked.
+ */
+export function withoutCueLines(ranges: ProseRange[], state: EditorState): ProseRange[] {
+  const infos = state.field(elementTypeField, false);
+  if (infos === undefined) return ranges;
+
+  const holes: ProseRange[] = [];
+  for (const [i, info] of infos.entries()) {
+    if (info.type !== ElementType.Character) continue;
+    const line = state.doc.line(i + 1);
+    holes.push({ from: line.from, to: line.to });
+  }
+  return holes.length === 0 ? ranges : subtractRanges(ranges, holes);
 }
 
 /**
@@ -200,7 +254,10 @@ export function proseExtension(options: ProseOptions): Extension {
 
         let ranges: ProseRange[];
         try {
-          ranges = proseRangesOf(options.getHirProjection(), doc);
+          ranges = withoutCueLines(
+            proseRangesOf(options.getHirProjection(), doc),
+            this.view.state,
+          );
         } catch {
           // The projection pull can fail transiently (the session is mid-swap).
           // Leave the previous prose diagnostics standing rather than clearing
@@ -234,12 +291,24 @@ export function proseExtension(options: ProseOptions): Extension {
             severity: "info" as const,
             source: `prose:${lint.kind}`,
             message: lint.message,
+            // The same anatomy the compiler's diagnostics use. The label
+            // here is the checker's own rule name (`spelling`), which says
+            // more than this lint's Info severity would — and it is the
+            // same slot the compiler fills with `warning`.
+            renderMessage: () => renderDiagnosticMessage(lint.kind, lint.message),
             actions: [
               ...lint.suggestions
                 .filter((s) => s.kind === "replace" || s.kind === "remove")
                 .slice(0, MAX_SUGGESTIONS)
-                .map((s) => ({
+                .map((s, i) => ({
                   name: s.kind === "remove" ? "Remove" : s.text,
+                  // Marked rather than styled by position: the checker ranks
+                  // its suggestions, and the top one is what an author takes
+                  // most of the time. `:first-of-type` would have inferred
+                  // that from DOM order, which is the same answer for the
+                  // wrong reason and breaks the moment an action is added
+                  // ahead of them.
+                  markClass: i === 0 ? "cm-prose-fix cm-prose-fix-primary" : "cm-prose-fix",
                   apply: (view: EditorView, from: number, to: number) => {
                     view.dispatch({ changes: { from, to, insert: s.text } });
                   },
@@ -252,6 +321,10 @@ export function proseExtension(options: ProseOptions): Extension {
                 ? [
                     {
                       name: "Add to dictionary",
+                      // Distinct from the replacements: it changes the
+                      // PROJECT rather than this line, so it should not look
+                      // like a fourth spelling to pick from.
+                      markClass: "cm-prose-dict",
                       apply: (view: EditorView, from: number, to: number) => {
                         options.onAddToDictionary?.(view.state.sliceDoc(from, to));
                         view.dispatch({ effects: refreshProseEffect.of() });
@@ -261,15 +334,24 @@ export function proseExtension(options: ProseOptions): Extension {
                 : []),
             ],
           })),
+          lints,
         );
       }
 
-      private publish(generation: number, diagnostics: Diagnostic[]): void {
+      private publish(
+        generation: number,
+        diagnostics: Diagnostic[],
+        lints: readonly ProseLint[] = [],
+      ): void {
         // The document moved while the check was in flight, so these offsets
         // describe text that is no longer there. A newer run is already
         // scheduled.
         if (this.destroyed || generation !== this.docGen) return;
         publishDiagnostics(this.view, "prose", diagnostics);
+        // Reported from the same guarded point as the squiggles, so the two
+        // views of one result can never disagree — a host list showing rows
+        // the editor has cleared is the failure this placement rules out.
+        options.onLints?.(lints);
       }
     },
     ),

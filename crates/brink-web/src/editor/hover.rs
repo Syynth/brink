@@ -2,7 +2,7 @@ use rowan::TextSize;
 use wasm_bindgen::prelude::*;
 
 use super::{EditorSession, ViewContext};
-use crate::editor_dto::HoverInfoJs;
+use crate::editor_dto::{HoverInfoJs, LocationJs};
 
 #[wasm_bindgen]
 impl EditorSession {
@@ -52,6 +52,28 @@ impl EditorSession {
             &project_files,
         ) {
             Some(info) => {
+                // Link targets are absolute positions in their OWN file, and
+                // that file is usually not the one being viewed — so they are
+                // deliberately not run through `to_relative`, which maps into
+                // the current view's coordinate space. The host opens the
+                // file and reveals the range.
+                // `map`, never `filter_map`: the markdown refers to these by
+                // INDEX, so dropping an unresolvable entry would shift every
+                // later one and silently navigate to the wrong place. An
+                // unresolvable file yields an empty `file`, which the host
+                // renders as plain text instead of a link.
+                let links = info
+                    .links
+                    .iter()
+                    .map(|l| LocationJs {
+                        file: project_files
+                            .iter()
+                            .find(|(fid, _, _)| *fid == l.file)
+                            .map_or_else(String::new, |(_, p, _)| p.clone()),
+                        start: l.range.start().into(),
+                        end: l.range.end().into(),
+                    })
+                    .collect();
                 let js = HoverInfoJs {
                     content: info.content,
                     start: info
@@ -60,6 +82,7 @@ impl EditorSession {
                     end: info
                         .range
                         .and_then(|r| self.to_relative(path, view, r.end().into())),
+                    links,
                 };
                 serde_json::to_string(&js).unwrap_or_default()
             }
@@ -146,7 +169,9 @@ flow start() {
         let content = v["content"].as_str().unwrap_or_default();
 
         assert!(
-            content.contains("*Defined in `market/barter.brink`*"),
+            // The path is a LINK now (#3255 decision 5): `*Defined in*
+            // [`path`](#N)`.
+            content.contains("*Defined in* [`market/barter.brink`](#"),
             "hover must resolve to the market's haggle, not the docks' homonym: {json}"
         );
     }

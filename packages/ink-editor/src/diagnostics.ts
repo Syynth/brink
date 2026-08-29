@@ -2,6 +2,7 @@ import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Diagnostic } from "@codemirror/lint";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
+import { renderDiagnosticMessage } from "./diagnostic-anatomy.js";
 import type { CompileResult } from "@brink/wasm-types";
 import { perfSpan, perfTime } from "./perf/probe.js";
 
@@ -132,16 +133,22 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
             if (w.code === "E189") continue;
             const from = Math.min(w.start, source.length);
             const to = Math.min(w.end, source.length);
+            const severity =
+              w.severity === "Error"
+                ? "error"
+                : w.severity === "Warning"
+                  ? "warning"
+                  : "info";
             diags.push({
               from,
               to: Math.max(to, from),
-              severity:
-                w.severity === "Error"
-                  ? "error"
-                  : w.severity === "Warning"
-                    ? "warning"
-                    : "info",
+              severity,
               message: w.message,
+              // The code was computed and then dropped. It is the one thing
+              // that lets an author look a diagnostic up, and the anatomy
+              // has a slot for it.
+              source: w.code,
+              renderMessage: () => renderDiagnosticMessage(severity, w.message),
             });
           }
         }
@@ -151,6 +158,7 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
             to: 0,
             severity: "error",
             message: result.error,
+            renderMessage: () => renderDiagnosticMessage("error", result.error ?? ""),
           });
         }
 

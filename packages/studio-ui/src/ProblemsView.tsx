@@ -11,7 +11,7 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
 import { lineColAt } from "@brink-lang/editor";
-import type { ProblemSeverityBucket } from "@brink/studio-store";
+import { isProseDiagnostic, type ProblemSeverityBucket } from "@brink/studio-store";
 import type { Diagnostic } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
 import { ChevronIcon, FilterIcon, GroupByFileIcon } from "./icons.js";
@@ -78,6 +78,11 @@ export function diagnosticLocation(diagnostic: Diagnostic) {
  * TODO notes (Info) are the common case.
  */
 export function severityBucket(diagnostic: Diagnostic): ProblemSeverityBucket {
+  // Source before severity: a prose finding is Info-severity, and letting
+  // it fall through to the `info` bucket would put every proper noun on
+  // top of the E189 TODO notes an author actually reads — and make the
+  // "off by default" rule impossible to express, since `info` is on.
+  if (isProseDiagnostic(diagnostic)) return "prose";
   if (diagnostic.severity === "Error") return "error";
   if (diagnostic.severity === "Info" || diagnostic.severity === "Hint") return "info";
   return "warning";
@@ -89,7 +94,12 @@ export function severityBucket(diagnostic: Diagnostic): ProblemSeverityBucket {
 export function countBySeverity(
   rows: readonly ProblemRow[],
 ): Record<ProblemSeverityBucket, number> {
-  const counts: Record<ProblemSeverityBucket, number> = { error: 0, warning: 0, info: 0 };
+  const counts: Record<ProblemSeverityBucket, number> = {
+    error: 0,
+    warning: 0,
+    info: 0,
+    prose: 0,
+  };
   for (const row of rows) counts[severityBucket(row.diagnostic)] += 1;
   return counts;
 }
@@ -134,7 +144,7 @@ export function groupProblemRows(rows: readonly ProblemRow[]): ProblemFileGroup[
     const file = row.diagnostic.file;
     let group = groups.get(file);
     if (!group) {
-      group = { file, rows: [], counts: { error: 0, warning: 0, info: 0 } };
+      group = { file, rows: [], counts: { error: 0, warning: 0, info: 0, prose: 0 } };
       groups.set(file, group);
     }
     group.rows.push(row);
@@ -150,6 +160,9 @@ export function summarizeCounts(counts: Record<ProblemSeverityBucket, number>): 
   if (counts.warning > 0)
     parts.push(`${counts.warning} warning${counts.warning === 1 ? "" : "s"}`);
   if (counts.info > 0) parts.push(`${counts.info} info`);
+  // Named for what it is rather than "prose": an author reading a count
+  // wants to know it is spelling, not which subsystem produced it.
+  if (counts.prose > 0) parts.push(`${counts.prose} spelling`);
   return parts.join(" · ");
 }
 
@@ -174,13 +187,37 @@ const BUCKET_GLYPH: Record<ProblemSeverityBucket, string> = {
   error: "\u25CF",
   warning: "\u25B2",
   info: "\u2139",
+  // Not a severity glyph: the prose toggle is a different KIND of control
+  // and should not read as a fourth severity tier.
+  prose: "\u270E",
 };
 const BUCKET_LABEL: Record<ProblemSeverityBucket, string> = {
   error: "errors",
   warning: "warnings",
   info: "info and hints",
+  prose: "spelling and grammar",
 };
-const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info"];
+const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info", "prose"];
+
+/**
+ * The compile's diagnostics plus the prose checker's findings, as one list.
+ *
+ * Two producers with different lifetimes — a compile replaces its whole set
+ * at once, prose lints arrive per open view on their own debounce — so they
+ * are stored apart and joined here, at the only place that wants them
+ * together. The `prose` filter bucket is what keeps them out of the way by
+ * default; this function deliberately does no filtering of its own, because
+ * the bucket counts in the header must show what turning the bucket ON
+ * would restore.
+ */
+function useAllDiagnostics(): readonly Diagnostic[] {
+  const compiled = useStudioStore((s) => s.diagnosticsList);
+  const prose = useStudioStore((s) => s.proseDiagnostics);
+  return useMemo(() => {
+    const extra = Object.values(prose).flat();
+    return extra.length === 0 ? compiled : [...compiled, ...extra];
+  }, [compiled, prose]);
+}
 
 /**
  * Problems controls, rendered by the shell in the panel's chrome header
@@ -191,7 +228,7 @@ const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info"];
  * turning it back on would restore.
  */
 function ProblemsActionsInner() {
-  const diagnostics = useStudioStore((s) => s.diagnosticsList);
+  const diagnostics = useAllDiagnostics();
   const severities = useStudioStore((s) => s.problemsSeverities);
   const filterOpen = useStudioStore((s) => s.problemsFilterOpen);
   const grouped = useStudioStore((s) => s.problemsGrouped);
@@ -303,7 +340,7 @@ function ProblemsViewInner() {
     setMenu({ x, y, diagnostic: row.diagnostic });
   }, []);
 
-  const diagnostics = useStudioStore((s) => s.diagnosticsList);
+  const diagnostics = useAllDiagnostics();
   const project = useStudioStore((s) => s._project);
   const severities = useStudioStore((s) => s.problemsSeverities);
   const filter = useStudioStore((s) => s.problemsFilter);

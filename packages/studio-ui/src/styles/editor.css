@@ -455,32 +455,224 @@
 .brink-studio .cm-diagnostic-error { border-left-color: var(--bs-error); }
 .brink-studio .cm-diagnostic-warning { border-left-color: var(--bs-warning); }
 /* Diagnostic hover tooltips (the "argument count mismatch" popups). The chrome
-   (radius/shadow) comes from .cm-tooltip; this lays out each message. */
-.brink-studio .cm-tooltip.cm-tooltip-lint {
+   (radius/shadow) comes from .cm-tooltip; this lays out each message.
+
+   ⚠ The width cap is the load-bearing line here. Without one, CodeMirror
+   sizes the tooltip to its content, and a long compiler message — the
+   explain-style ones run to a paragraph — stretches it across the editor,
+   which is both unreadable (a 200-character measure) and pushes the fix
+   buttons out of reach. The hover card has always been capped; this is the
+   same cap, shared through one token so the two floating explainers cannot
+   drift apart. */
+.brink-studio {
+  --bs-tooltip-max-width: 460px;
+}
+/* ⚠ The DOM is two elements, and this cost a shipped no-op fix.
+   `cm-tooltip-lint` is a `<ul>` NESTED INSIDE the tooltip box:
+
+       <div class="cm-tooltip-hover cm-tooltip">   ← the sized box
+         <ul class="cm-tooltip-lint cm-tooltip-section">
+           <li class="cm-diagnostic">…
+
+   So `.cm-tooltip.cm-tooltip-lint` (both classes, one element) matches
+   NOTHING — measured `max-width: none` and a 936px-wide tooltip while that
+   rule was in the stylesheet. The cap has to go on the outer box.
+
+   `cm-tooltip-hover` is the right host: it carries the hover card and the
+   lint tooltip, which are exactly the two floating explainers that share
+   this width. Autocomplete is `cm-tooltip-autocomplete` and sizes itself. */
+.brink-studio .cm-editor .cm-tooltip-hover {
+  max-width: var(--bs-tooltip-max-width);
+}
+.brink-studio .cm-tooltip-lint {
   padding: 0;
+  max-width: var(--bs-tooltip-max-width);
 }
 .brink-studio .cm-tooltip-lint .cm-diagnostic {
   margin: 0;
-  padding: 8px 12px 8px 10px;
-  border-left: 3px solid var(--bs-error);
+  /* Exactly the hover card's row padding (`.brink-hover-tooltip`), because
+     the two are sections of ONE panel — see the composition note below. */
+  padding: 9px 12px;
   font-size: var(--bs-font-medium);
   line-height: 1.5;
   color: var(--bs-fg);
+  /* A compiler message can carry a long unbroken token — a path, a
+     qualified name — which would push past the cap above and reintroduce
+     the horizontal sprawl the cap exists to stop. */
+  overflow-wrap: break-word;
+}
+
+/* ── Composing the hover card and the diagnostic ─────────────────────
+   Hovering a symbol that also carries a diagnostic produces ONE tooltip
+   with two sections:
+
+       <div class="cm-tooltip-hover cm-tooltip">
+         <div class="brink-hover-tooltip cm-tooltip-section">   ← the card
+         <ul  class="cm-tooltip-lint    cm-tooltip-section">    ← the lint
+
+   Both are transparent, so they were never two backgrounds — what made the
+   diagnostic read as a different window bolted underneath was a 3px severity
+   rail no other row had, and a different padding to accommodate it.
+
+   The rail goes. Severity is carried by the label word instead, which is
+   what the anatomy added it for: it survives a colourblind reader and a
+   screenshot, which the rail never did. */
+.brink-studio .cm-tooltip-hover > .cm-tooltip-section + .cm-tooltip-section {
+  border-top: 1px solid rgb(var(--bs-border-rgb) / 55%);
 }
 .brink-studio .cm-tooltip-lint .cm-diagnostic + .cm-diagnostic {
   border-top: 1px solid rgb(var(--bs-border-rgb) / 55%);
 }
-.brink-studio .cm-tooltip-lint .cm-diagnostic-error {
-  border-left-color: var(--bs-error);
-}
-.brink-studio .cm-tooltip-lint .cm-diagnostic-warning {
-  border-left-color: var(--bs-warning);
+/* No rail inside the tooltip — the label carries severity there. The lint
+   PANEL keeps its rails (the unscoped `.cm-diagnostic-*` rules above), where
+   there is no label and rows are scanned in a list. */
+.brink-studio .cm-tooltip-lint .cm-diagnostic-error,
+.brink-studio .cm-tooltip-lint .cm-diagnostic-warning,
+.brink-studio .cm-tooltip-lint .cm-diagnostic-info {
+  border-left: none;
 }
 .brink-studio .cm-tooltip-lint .cm-diagnostic code,
 .brink-studio .cm-tooltip-lint .cm-diagnostic strong {
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 0.92em;
 }
+
+/* ── Diagnostic anatomy ──────────────────────────────────────────────
+   One shape for every diagnostic, whichever produced it (compiler or prose
+   checker). CodeMirror renders three siblings inside `.cm-diagnostic` —
+   the message (our `renderMessage` output), the action buttons, then the
+   source tag — so the rows come from making the first and last full-width
+   and letting the buttons flow between them.
+
+       label   message text…            ← .cm-diagnosticText  (own row)
+       [ fix ] [ fix ] [ Add to … ]     ← buttons             (own row)
+       prose:Spelling                   ← .cm-diagnosticSource(own row)
+
+   Fixes on their OWN row is the fiddly-to-click fix: inline, a long message
+   pushed them toward the far edge, so reaching one meant crossing the whole
+   message without leaving the tooltip. */
+.brink-studio .cm-tooltip-lint .cm-diagnostic {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .cm-tooltip-lint .cm-diagnosticText,
+.brink-studio .cm-tooltip-lint .cm-diagnosticSource {
+  flex: 1 0 100%;
+}
+/* Reordered so the FIXES are the bottom row, nearest the underlined word.
+   CodeMirror emits them in the middle (message, buttons, source); this is
+   about pointer travel, not tidiness.
+   
+   Measured: the tooltip renders 1px above the word, and CodeMirror closes
+   it on any mousemove that leaves the word's range without being inside the
+   tooltip's box (`tooltipMargin` is 4px). So the reliable path to a button
+   is straight up — and whatever sits at the tooltip's bottom edge is what
+   the pointer reaches first. The source tag is not a target; the buttons
+   are. */
+.brink-studio .cm-tooltip-lint .cm-diagnosticText { order: 0; }
+.brink-studio .cm-tooltip-lint .cm-diagnosticSource { order: 1; }
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction { order: 2; }
+
+/* Label + message. The label carries severity as a WORD as well as a
+   colour: the rail alone fails a colourblind reader and fails a screenshot
+   pasted into an issue, which is how most of these get reported. */
+.brink-studio .cm-diag-body {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.brink-studio .cm-diag-label {
+  flex: none;
+  /* Small rather than micro: with the rail gone this is the ONLY severity
+     signal, so it has to be readable rather than decorative. */
+  font-size: var(--bs-font-small);
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cm-diag-label-error { color: var(--bs-error); }
+.brink-studio .cm-diag-label-warning { color: var(--bs-warning); }
+.brink-studio .cm-diag-label-info { color: var(--bs-info); }
+/* Prose rule names (`spelling`, `repetition`, `capitalization`, …) — an
+   open set, so they take the base muted colour and are not enumerated. */
+.brink-studio .cm-diag-title {
+  min-width: 0;
+}
+
+/* `info` was never themed — only error and warning were, so prose lints
+   (info-severity) inherited the error rail. Still needed for the lint
+   PANEL, which keeps its rails. */
+.brink-studio .cm-diagnostic-info {
+  border-left-color: var(--bs-info);
+}
+
+/* ── Quick-fix actions ───────────────────────────────────────────────
+   CM6 ships these as bare `<button>`s with its own stock chrome — grey
+   pills about 18px tall, with no hover or focus state. They are the point
+   of a lint (the fix is one click away), so they get a real target. */
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction {
+  margin: 0;
+  padding: 5px 11px;
+  min-height: 26px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+  color: var(--bs-fg);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: var(--bs-font-small);
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 100ms ease,
+    border-color 100ms ease;
+}
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction:hover {
+  background: var(--bs-hover-bg);
+  border-color: var(--bs-fg-muted);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction:active {
+  background: var(--bs-list-active-bg);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnosticAction:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 1px;
+}
+/* The checker's own top-ranked suggestion, and the one an author takes most
+   of the time. Marked by the PRODUCER (`markClass`) rather than selected by
+   DOM position: `:first-of-type` would give the same answer for the wrong
+   reason, and move to the wrong button the day an action is added ahead of
+   the suggestions. */
+.brink-studio .cm-tooltip-lint .cm-prose-fix-primary {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .cm-tooltip-lint .cm-prose-fix-primary:hover {
+  background: rgb(var(--bs-accent-rgb) / 14%);
+}
+/* "Add to dictionary" changes the PROJECT, not this line, so it must not
+   read as one more spelling to choose from. Set apart rather than
+   de-emphasised — for a proper noun it is often the right answer. */
+.brink-studio .cm-tooltip-lint .cm-prose-dict {
+  border-style: dashed;
+  font-family: inherit;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cm-tooltip-lint .cm-prose-dict:hover {
+  color: var(--bs-fg);
+}
+
+/* The rule's own name (`prose:Spelling`, `E063`) — present for orientation,
+   never competing with the message or the fixes. */
+.brink-studio .cm-tooltip-lint .cm-diagnosticSource {
+  margin-top: 1px;
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.04em;
+  color: var(--bs-fg-muted);
+  opacity: 0.85;
+}
+
 /* CM6 chrome — panels (search), buttons, fields, tooltips, match
    highlights. CM6 ships hardcoded light/dark base styles; the brink theme
    no longer pins `dark: true`, so every visible piece of chrome is themed
@@ -575,7 +767,7 @@
   border: none;
   padding: 9px 12px;
   font-size: var(--bs-font-medium);
-  max-width: 460px;
+  max-width: var(--bs-tooltip-max-width);
   line-height: 1.55;
 }
 /* The signature line (first) reads as a header, set off from the doc. */
@@ -587,13 +779,49 @@
   margin-bottom: 1px;
   border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
 }
+/* Rows wrap rather than widening the card (ruled 2026-08-28: "we can have
+   wrapping on things like effects"). An `effects` row can list several
+   variables, and without this the row would either overflow the cap above
+   or push it — which is the sprawl the cap exists to stop. */
+.brink-studio .brink-hover-tooltip > div {
+  overflow-wrap: break-word;
+}
 .brink-studio .brink-hover-tooltip code {
   background: var(--bs-surface-bg);
   padding: 1px 5px;
   border-radius: 3px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 0.92em;
+  /* `anywhere` rather than `break-word`: these hold identifiers and paths
+     with no spaces to break at, and it also lets the chip shrink below its
+     longest token when measuring. */
+  overflow-wrap: anywhere;
 }
+/* Navigable references (#3255, decision 5): the cells an `effects` row
+   names, and the definition site. Underlined rather than only coloured —
+   the card already uses colour for its label column, so colour alone would
+   not read as "this is a target". */
+.brink-studio .brink-hover-link {
+  color: var(--bs-info);
+  text-decoration: underline;
+  text-decoration-color: rgb(var(--bs-info-rgb, 137 220 235) / 45%);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.brink-studio .brink-hover-link:hover {
+  text-decoration-color: currentColor;
+}
+.brink-studio .brink-hover-link:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 1px;
+}
+/* A link's own code chip must not fight the link colour. */
+.brink-studio .brink-hover-link code {
+  color: inherit;
+  background: var(--bs-surface-bg);
+}
+
 .brink-studio .brink-hover-tooltip strong {
   color: var(--bs-accent);
   font-weight: 600;

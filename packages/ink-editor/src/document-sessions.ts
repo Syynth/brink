@@ -60,7 +60,7 @@ import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
-import type { ProseChecker } from "./prose.js";
+import type { ProseChecker, ProseLint } from "./prose.js";
 import { refreshProseEffect } from "./prose.js";
 import { perfSpan, perfTime } from "./perf/probe.js";
 import { detachedGutters } from "./gutter-layout.js";
@@ -112,6 +112,17 @@ export interface DocumentSessionsOptions {
   proseChecker?: ProseChecker | null;
   /** `american` | `british` | `canadian` | `australian`, from `[prose]`. */
   proseDialect?: () => string;
+  /**
+   * Store a word in the project's dictionary — the "Add to dictionary"
+   * action's implementation.
+   *
+   * The HOST's, not the session's: the list lives in `brink.toml`
+   * (decision log, "Prose dictionary lives in `brink.toml`"), and editing
+   * that file is a comment-preserving structured write the embedder owns.
+   * Absent means the embedder has nowhere to put it, and the action is then
+   * not offered at all rather than offered and silently inert.
+   */
+  onAddToDictionary?: (word: string) => void;
 }
 
 export interface DocumentCallbacks {
@@ -129,6 +140,15 @@ export interface DocumentCallbacks {
   onViewFocused?(docKey: string, groupId: string): void;
   /** The focused view changed or remounted (e2e `__brinkView` hook). */
   onFocusedViewChange?(view: EditorView | null): void;
+  /**
+   * Prose findings for `path` changed (#3256).
+   *
+   * Per FILE rather than per view: two views of one document produce the
+   * same findings, and a host list keyed by path is what the Problems panel
+   * wants. Delivered with `[]` when a file's findings clear, so a host list
+   * never keeps rows the editor has stopped showing.
+   */
+  onProseLints?(path: string, lints: readonly ProseLint[]): void;
   /** Goto-definition targets a different file. */
   onNavigateToFile?(location: Location): void;
   /** "Play from here" (#186): start a session entered at a knot/stitch path. */
@@ -1121,9 +1141,12 @@ export class DocumentSessions {
       getProseDictionary: () => this.project.getProseDictionary(),
       getProseDialect: () =>
         this.options.proseDialect?.() ?? this.project.getProseDialect(),
-      onAddToDictionary: (word) => {
-        this.project.addProseDictionaryWord(word);
-      },
+      // Passed straight through, INCLUDING when absent: `proseExtension`
+      // offers the action only when this is defined, so forwarding an
+      // always-present wrapper would put a control in the tooltip that does
+      // nothing for an embedder that cannot store a word.
+      onAddToDictionary: this.options.onAddToDictionary,
+      onProseLints: (lints) => this.callbacks.onProseLints?.(slot.path, lints),
       getTokenTypeNames,
       handleSlot: slot,
       getActiveFile: () => slot.path,

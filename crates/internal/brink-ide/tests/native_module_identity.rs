@@ -155,8 +155,11 @@ fn cross_file_hover_content(session: &IdeSession, main_id: brink_ir::FileId) -> 
 
 fn assert_native_cross_file_hover(content: &str) {
     assert!(content.contains("**knot** `haggle`"), "{content}");
+    // The path is a LINK now (#3255 decision 5) — `*Defined in* [`path`](#N)`
+    // — so this matches the path inside the link label rather than the old
+    // italicised-whole-note spelling.
     assert!(
-        content.contains("*Defined in `market/barter.brink`*"),
+        content.contains("*Defined in* [`market/barter.brink`](#"),
         "the hover must cross the file boundary: {content}"
     );
     assert!(

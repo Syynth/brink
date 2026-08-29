@@ -6,20 +6,27 @@
 //! fiction is switched off in the first session and never switched back on,
 //! so this is not a refinement of the feature — it is the feature.
 //!
-//! **The manuscript already says who its characters are.** A cue line is
-//! structural, not prose: `KAELEN` above a line of dialogue is a claimed
-//! convention the compiler resolves, and the dialect classification captures
-//! the speaker as a named attribute. So writing the story teaches the
-//! dictionary, with no author action, no settings page, and no word list to
-//! maintain. That is the part a general-purpose spell checker cannot do, and
-//! it is why this query lives next to the analysis rather than in the editor.
-//!
 //! Two sources, both project-wide:
 //!
 //! 1. **Declared names** — knots, stitches, externals, structs, variables,
 //!    lists. Whatever the author named, they meant.
-//! 2. **Dialect captures** — `speaker` attributes and character-cue content,
-//!    which is where the cast lives.
+//! 2. **Dialect captures** — `speaker` attributes and character-cue content.
+//!
+//! ⚠ **Source 2 does not fire on the native surface, and that is a known
+//! defect, not a design choice.** It reads `LineContext.dialect`, which is
+//! populated only by a host-registered `DialogueDialect` (#368) — the
+//! studio's default being the ink `@Name:<>` at-cue preset. A native
+//! project's cues are claimed by `@[convention(claims = "…")]` handlers
+//! instead, and that mechanism populates `LineContext.dialect` on no line
+//! at all. Measured: a project with a `cue` convention and a `GRISWOLD`
+//! cue line harvests `["Cue", "cue", "main"]` — the struct, the handler and
+//! the flow, but not the character.
+//!
+//! So for a `.brink` project every character name is currently underlined,
+//! and the author's own list in `[prose] dictionary` is the only remedy.
+//! Fixing it needs a record of which convention claimed a line, which
+//! nothing carries today. Do not restore the claim that the manuscript
+//! teaches the dictionary until that record exists.
 //!
 //! Mounted `std/` files are excluded: they are not the author's project, and
 //! their identifiers would put library vocabulary into a manuscript's
@@ -84,13 +91,13 @@ impl EditorSession {
                 };
                 for (name, value) in &dialect.attrs {
                     if name == "speaker" {
-                        push_words(value, &mut words);
+                        push_cue_words(value, &mut words);
                     }
                 }
                 if dialect.kind == "character"
                     && let Some(line) = lines.get(idx)
                 {
-                    push_words(line, &mut words);
+                    push_cue_words(line, &mut words);
                 }
             }
         }
@@ -127,6 +134,49 @@ fn push_words(raw: &str, out: &mut Vec<String>) {
         }
     }
     take_word(&mut current, out);
+}
+
+/// Split `raw` like [`push_words`], but normalize each word to title case.
+///
+/// A cue is written in caps by convention (`GRISWOLD`) while the prose that
+/// mentions the same character is not (`Griswold`), and matching is literal
+/// — so seeding the cue's own spelling leaves every prose mention
+/// underlined, which is the whole reported bug.
+///
+/// Seeding BOTH spellings does not work, and this is measured rather than
+/// assumed: with `["GRISWOLD", "Griswold"]` in the dictionary, `GRISWOLD` is
+/// still reported ("Did you mean `Griswold`?"). Harper's proper-noun
+/// metadata drives a capitalization rule that fires on the all-caps use
+/// regardless of the all-caps entry being present. So title case is the one
+/// form to seed, and the cue LINE is excluded from prose checking on the
+/// editor side instead — the two halves only work together.
+fn push_cue_words(raw: &str, out: &mut Vec<String>) {
+    let mut words = Vec::new();
+    push_words(raw, &mut words);
+    out.extend(words.iter().map(|w| title_case(w)));
+}
+
+/// `GRISWOLD` → `Griswold`, `O'HARA` → `O'Hara`.
+///
+/// Capitalizes the first letter of each apostrophe-separated run, but only
+/// when that run is at least two characters — so `O'HARA` becomes `O'Hara`
+/// rather than `O'hara`, while a possessive `'s` stays lowercase.
+fn title_case(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    for (i, run) in word.split('\'').enumerate() {
+        if i > 0 {
+            out.push('\'');
+        }
+        let capitalize = i == 0 || run.chars().count() >= MIN_WORD_LEN;
+        for (j, ch) in run.chars().enumerate() {
+            if j == 0 && capitalize {
+                out.extend(ch.to_uppercase());
+            } else {
+                out.extend(ch.to_lowercase());
+            }
+        }
+    }
+    out
 }
 
 fn take_word(current: &mut String, out: &mut Vec<String>) {
@@ -181,6 +231,96 @@ mod tests {
             dictionary.iter().any(|w| w == "kaelen"),
             "the knot's name should reach the dictionary; got {dictionary:?}"
         );
+    }
+
+    #[test]
+    fn the_configured_dictionary_comes_from_the_prose_table() {
+        // The author's own word list — everything the symbol table cannot
+        // know. It lives in `brink.toml` rather than a sidecar so it is
+        // shared by collaborators and survives a fresh clone (decision log,
+        // "Prose dictionary lives in `brink.toml`").
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Griswold\", \"Ashfen\"]\n")
+            .expect("valid config");
+        let words: Vec<String> =
+            serde_json::from_str(&session.configured_prose_dictionary()).expect("json");
+        assert_eq!(words, vec!["Griswold", "Ashfen"]);
+    }
+
+    #[test]
+    fn the_configured_dictionary_is_in_file_order_not_sorted() {
+        // It is the author's list, shown back to them in the settings panel.
+        // Sorting here would disagree with their file whenever they grouped
+        // it by hand.
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Zeb\", \"Ada\"]\n")
+            .expect("valid config");
+        let words: Vec<String> =
+            serde_json::from_str(&session.configured_prose_dictionary()).expect("json");
+        assert_eq!(words, vec!["Zeb", "Ada"]);
+    }
+
+    #[test]
+    fn a_config_without_a_dictionary_clears_the_previous_one() {
+        // Wholesale-replace, like every other configured_* field: a word
+        // removed from the file must stop being a known word, or "remove
+        // from dictionary" appears to do nothing until a reload.
+        let mut session = EditorSession::new();
+        session
+            .apply_project_config("[prose]\ndictionary = [\"Griswold\"]\n")
+            .expect("valid config");
+        session
+            .apply_project_config("[prose]\ndialect = \"british\"\n")
+            .expect("valid config");
+        assert_eq!(session.configured_prose_dictionary(), "[]");
+    }
+
+    #[test]
+    fn a_cue_teaches_the_dictionary_its_title_case_spelling() {
+        // The reported bug end to end: the cue is written `@GRISWOLD:<>`,
+        // the prose says `Griswold`, and matching is literal — so the cue's
+        // own spelling is not what the dictionary needs to hold.
+        let mut s = EditorSession::new();
+        let dialect = serde_json::to_string(&brink_ir::DialogueDialect::default()).expect("ser");
+        s.set_dialect(&dialect).expect("valid dialect");
+        s.update_file(
+            "main.ink",
+            "=== intro ===\n@GRISWOLD:<>\nBuying or dying?\n-> END\n",
+        );
+        let _ = s.compile_project("main.ink");
+
+        let words = s.prose_dictionary_list();
+        assert!(words.contains(&"Griswold".to_owned()), "got {words:?}");
+        // And NOT the all-caps form: seeding both is measurably worse than
+        // seeding title case alone — Harper's capitalization rule then
+        // reports the all-caps use anyway.
+        assert!(!words.contains(&"GRISWOLD".to_owned()), "got {words:?}");
+    }
+
+    #[test]
+    fn declared_names_keep_their_own_case() {
+        // Only CUE names are normalized. A knot the author spelled a
+        // particular way is offered exactly as spelled.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== kaelenIntro ===\n-> END\n");
+        let _ = s.compile_project("main.ink");
+        assert!(
+            s.prose_dictionary_list()
+                .contains(&"kaelenIntro".to_owned()),
+            "{:?}",
+            s.prose_dictionary_list()
+        );
+    }
+
+    #[test]
+    fn title_case_handles_an_irish_style_name() {
+        assert_eq!(super::title_case("O'HARA"), "O'Hara");
+        assert_eq!(super::title_case("GRISWOLD"), "Griswold");
+        assert_eq!(super::title_case("Griswold"), "Griswold");
+        // A possessive stays lowercase — the run is one character.
+        assert_eq!(super::title_case("KAELEN'S"), "Kaelen's");
     }
 
     #[test]

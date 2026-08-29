@@ -575,6 +575,18 @@ export class EditorSessionHandle {
   }
 
   /**
+   * `[prose] dictionary` from the applied `brink.toml` — the author's own
+   * word list, in the order the file writes it.
+   *
+   * Empty when the file sets none: unlike dialect and enable there is no
+   * third state to model, because "declared but empty" and "absent" ask the
+   * checker for exactly the same thing.
+   */
+  getConfiguredProseDictionary(): string[] {
+    return JSON.parse(this.session.configured_prose_dictionary()) as string[];
+  }
+
+  /**
    * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s

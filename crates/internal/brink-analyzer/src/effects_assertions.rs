@@ -331,6 +331,30 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
     }
 }
 
+/// The author-facing name of one effect-row atom.
+///
+/// **The single authority on what an effect atom is called.** Two surfaces
+/// print these — the IDE's hover row (`brink_ide::effects::EffectRowView`)
+/// and the `E103` exceedance message below — and they must agree, because
+/// an author reads one and then goes looking for the other.
+///
+/// The compiler-owned RNG cell has no symbol-index entry, so a plain index
+/// lookup falls through to the id's debug form. That shipped: hover showed
+/// `writes: GlobalVar(0x5eed0000d1ce)`, a raw internal handle, for any
+/// function that calls `RANDOM`. It is named the way the assertion surface
+/// spells it (`@[effects(writes rng)]`), so the name an author reads is the
+/// name they would write.
+#[must_use]
+pub fn effect_atom_name(id: DefinitionId, index: &SymbolIndex) -> String {
+    if id == DefinitionId::RNG_CELL {
+        return "rng".to_string();
+    }
+    index
+        .symbols
+        .get(&id)
+        .map_or_else(|| format!("{id:?}"), |info| info.name.clone())
+}
+
 /// Build the `E103` exceedance message: an opaque inferred row (a call
 /// through a function value, or an unresolved callee — spec §3) can never
 /// be bounded by a concrete assertion, so it gets its own explanatory
@@ -343,15 +367,15 @@ fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &Symbol
             .to_string();
     }
     let name_of = |id: &DefinitionId| {
-        // The compiler-owned RNG cell has no symbol-index entry — name it
-        // the way the assertion surface spells it (`writes rng`).
+        let name = effect_atom_name(*id, index);
+        // The name comes from the shared authority above; the gloss is
+        // diagnostic prose, and belongs only here — an author who never
+        // wrote `rng` needs to be told why it is in their row. Hover has no
+        // room for it and does not need it.
         if *id == DefinitionId::RNG_CELL {
-            return "rng (the std::rand RNG state cell)".to_string();
+            return format!("{name} (the std::rand RNG state cell)");
         }
-        index
-            .symbols
-            .get(id)
-            .map_or_else(|| format!("{id:?}"), |info| info.name.clone())
+        name
     };
     let mut parts = Vec::new();
     let extra_reads: Vec<String> = inferred

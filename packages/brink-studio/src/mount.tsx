@@ -53,6 +53,8 @@ import {
   BINDER_SIDECAR_PATH,
   createStudioStore,
   parseBinderOrder,
+  withDictionaryWord,
+  toProseDiagnostics,
   type StudioStore,
 } from "@brink/studio-store";
 import {
@@ -944,6 +946,13 @@ export async function mountStudio(
     onCursorChange: (line, col) => store.getState().setCursor(line, col),
     onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
     onCompileResult: handleCompileResult,
+    // Prose findings into the Problems panel (#3256). Mapped to the
+    // `Diagnostic` shape the panel renders, and marked with the
+    // `prose:` code prefix that puts them in their own filter bucket —
+    // off by default, so they never bury a compile error.
+    onProseLints: (path, lints) => {
+      store.getState().setProseDiagnostics(path, toProseDiagnostics(path, lints));
+    },
     onDocEdited: (docKey, groupId) =>
       editorGroups
         .getState()
@@ -1007,10 +1016,15 @@ export async function mountStudio(
     // module, so an embedder that never registers one pays nothing at all.
     // The dictionary is NOT passed — it comes from the session, which is the
     // only thing that knows the project's knot and cue names (#3210).
+    // "Add to dictionary" IS passed, because the author's own word list
+    // lives in `brink.toml` and editing that file is the embedder's job,
+    // not the editor package's (decision log, "Prose dictionary lives in
+    // `brink.toml`").
   }, [], {
     theme: brinkTheme,
     dialect: options.dialect,
     proseChecker: studioProseChecker,
+    onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
@@ -1023,6 +1037,39 @@ export async function mountStudio(
     notify: (n) => void notifications.notify(n),
   });
   documentsRef = documents;
+
+  /**
+   * Store `word` in `[prose] dictionary` in the project's `brink.toml`.
+   *
+   * Silently does nothing when the project has no `brink.toml` — there is
+   * nowhere to put the word, and inventing a config file as a side effect
+   * of a spelling action would be a surprising thing for a tooltip to do.
+   * The Prose settings panel already tells an author when their project has
+   * no config, which is where that gap belongs.
+   */
+  function addWordToProjectDictionary(word: string): void {
+    const configPath = store
+      .getState()
+      .outline.find((f) => !f.mounted && isConfigPath(f.path))?.path;
+    if (configPath === undefined) return;
+    const source = project.getSession().getFileSource(configPath);
+    if (source === null) return;
+    const next = withDictionaryWord(source, word);
+    if (next === null) return; // already present, or blank
+    // `applyEdit` re-applies `brink.toml` itself (via `notifyFileChanged`),
+    // so the session's `[prose] dictionary` is current by the time the
+    // recompile below asks for it. A second explicit apply here would
+    // double-apply the config, which `project-config-application.test.ts`
+    // catches by counting warning batches.
+    project.applyEdit(configPath, next);
+    documentsRef?.refreshExternal(configPath);
+    // The dictionary cache is keyed on the project's analysis, and this edit
+    // changed the config rather than any manuscript file — so invalidate it
+    // explicitly, or the checker keeps its pre-edit word list and the word
+    // stays underlined. That is precisely the "it did nothing" report.
+    project.invalidateProseDictionary();
+    documentsRef?.triggerCompile();
+  }
 
   // The store's document opener (Binder rows, addFile): note the target so
   // symbol mounts can fall back to the outline range, then open through the
