@@ -39,6 +39,7 @@ fn empty_scopes_are_omitted() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);
@@ -65,6 +66,7 @@ fn source_checksum_formatting() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0xDEAD_BEEF);
@@ -102,6 +104,7 @@ fn audio_ref_exported() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);

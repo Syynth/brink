@@ -120,6 +120,32 @@ pub struct ScopeLineTable {
     pub lines: Vec<LineEntry>,
 }
 
+/// One line-variant group (stage 1 of the shared-alternatives track,
+/// issue #3273): the record that ties `dims.iter().product()` consecutive
+/// [`LineEntry`]s in a scope's line table back to ONE authored source line
+/// whose inline alternatives were enumerated at recognition time.
+///
+/// The entries themselves are ordinary whole-line entries — each with its
+/// own `source_hash` and its own `audio_ref`, which is the point: VO is
+/// associated per *rendered* line, and a translator sees whole lines. This
+/// record exists so intl export and audio tooling can group them, and so
+/// codegen's combo switch and the table agree on the layout.
+///
+/// Layout contract: variant `(i, j, …)` — one branch index per authored
+/// alternative, in source order — lives at
+/// `base + i * dims[1..].product() + j * dims[2..].product() + …`
+/// (row-major, first alternative varies slowest). `dims` is never empty
+/// and every dim is ≥ 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineVariantGroup {
+    /// The scope whose [`ScopeLineTable`] holds this group's entries.
+    pub scope_id: DefinitionId,
+    /// Index of the group's first entry in that scope's `lines`.
+    pub base: u32,
+    /// Branch count per authored alternative, in source order.
+    pub dims: Vec<u16>,
+}
+
 /// A global variable definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlobalVarDef {

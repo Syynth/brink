@@ -168,6 +168,11 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
         StmtKind::EmitLine(emission) | StmtKind::EvalLine(emission) => {
             remap_emission(emission, map);
         }
+        StmtKind::EmitLineVariants(v) => {
+            for emission in &mut v.variants {
+                remap_emission(emission, map);
+            }
+        }
         StmtKind::ChoiceOutput { content, emission } => {
             remap_content(content, map);
             if let Some(e) = emission {

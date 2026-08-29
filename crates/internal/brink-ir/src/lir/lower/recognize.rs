@@ -418,3 +418,284 @@ fn build_recognized_parts(
         }
     }
 }
+
+// ─── Line-variant enumeration (#3273, stage 1) ──────────────────────────
+
+/// The per-line cap on enumerated variants (`dims.iter().product()`).
+///
+/// `4×4×2` fits comfortably; `8×8×8` does not — each variant is a real
+/// line-table entry, a translation unit, and a VO slot, so an unbounded
+/// product is unbounded artifact growth ("guard against unbounded
+/// growth"). Exceeding it is a **worded diagnostic** at the caller, never
+/// a silent fallback: an author whose line quietly stopped being
+/// VO-addressable would have no way to notice.
+pub const VARIANT_CAP: usize = 32;
+
+/// One authored alternative admitted to the variant model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantAlt {
+    /// Index of the `InlineSequence` part in the original content's parts.
+    pub part_idx: usize,
+    /// The alternative's sequence kind (plain `CYCLE`/`STOPPING`/`ONCE`/
+    /// `SHUFFLE` — combinations are not admitted, see
+    /// [`enumerate_variant_contents`]).
+    pub kind: hir::SequenceType,
+    /// Authored branch count (NOT the dim — a `once` alternative's dim is
+    /// `branch_count + 1`, the extra being the exhausted empty variant).
+    pub branch_count: u16,
+}
+
+/// A content line enumerated into whole-line variants (#3273).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantEnumeration {
+    /// The admitted alternatives, in part order (= source order).
+    pub alts: Vec<VariantAlt>,
+    /// Branch count per alternative **as laid out in the line table** —
+    /// `branch_count`, plus one for a `once` alternative's exhausted
+    /// (empty) variant. `dims.iter().product()` is the variant count.
+    pub dims: Vec<u16>,
+    /// One substituted whole-line content per variant, row-major with the
+    /// FIRST alternative varying slowest — variant `(i, j)` lives at
+    /// `i * dims[1] + j`, matching `brink_format::LineVariantGroup`'s
+    /// layout contract. Each is an ordinary content line (the alternative
+    /// parts replaced by the chosen branch's parts, adjacent text merged),
+    /// ready for [`try_recognize`].
+    pub variants: Vec<hir::Content>,
+}
+
+/// The cap breach — the ONE way an otherwise-admissible variant line is
+/// refused. Carried as data so the caller can word the diagnostic with
+/// the line's own numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantCapExceeded {
+    /// What `dims.iter().product()` would have been.
+    pub product: usize,
+    /// [`VARIANT_CAP`].
+    pub cap: usize,
+}
+
+/// Try to enumerate a content line's inline stateful alternatives into
+/// whole-line variants (#3273, stage 1 of the shared-alternatives track).
+///
+/// `Ok(None)` — not a variant line; the caller keeps its current path.
+/// Admission requires:
+///
+/// * at least one `InlineSequence` part, every one of a **plain** kind
+///   (`cycle` / `stopping` / `once` / `shuffle` — a `shuffle|once` or
+///   `shuffle|stopping` combination routes to the shared-inline-container
+///   fallback instead, where the exhaustion logic already lives);
+/// * every alternative branch **textual**: an empty body, or exactly one
+///   `Content` statement of `Text`/`Interpolation`/`Span` parts with no
+///   tags — a branch carrying structure (a divert, a nested alternative,
+///   glue) cannot be a whole-line variant under ANY model;
+/// * no `InlineConditional` and no `Glue`/`Spring` anywhere on the line —
+///   conditionals are condition-driven, not visit-driven, and mixed lines
+///   keep their current path until ruled otherwise.
+///
+/// The substitution itself cannot fail; the one error is the
+/// [`VARIANT_CAP`] breach, returned as data for the caller to word.
+pub fn enumerate_variant_contents(
+    content: &hir::Content,
+) -> Result<Option<VariantEnumeration>, VariantCapExceeded> {
+    let mut alts = Vec::new();
+    for (idx, part) in content.parts.iter().enumerate() {
+        match part {
+            hir::ContentPart::InlineSequence(seq) => {
+                let kind = seq.kind;
+                let plain = [
+                    hir::SequenceType::CYCLE,
+                    hir::SequenceType::STOPPING,
+                    hir::SequenceType::ONCE,
+                    hir::SequenceType::SHUFFLE,
+                ];
+                if !plain.contains(&kind) {
+                    return Ok(None);
+                }
+                if seq.branches.is_empty() || seq.branches.len() > usize::from(u16::MAX) {
+                    return Ok(None);
+                }
+                for branch in &seq.branches {
+                    if branch_textual_parts(&branch.body).is_none() {
+                        return Ok(None);
+                    }
+                }
+                let branch_count = u16::try_from(seq.branches.len()).unwrap_or(u16::MAX);
+                alts.push(VariantAlt {
+                    part_idx: idx,
+                    kind,
+                    branch_count,
+                });
+            }
+            hir::ContentPart::InlineConditional(_)
+            | hir::ContentPart::Glue
+            | hir::ContentPart::Spring => return Ok(None),
+            hir::ContentPart::Text(_)
+            | hir::ContentPart::Interpolation(_)
+            | hir::ContentPart::Span(_) => {}
+        }
+    }
+    if alts.is_empty() {
+        return Ok(None);
+    }
+
+    let dims: Vec<u16> = alts
+        .iter()
+        .map(|alt| {
+            if alt.kind == hir::SequenceType::ONCE {
+                alt.branch_count.saturating_add(1)
+            } else {
+                alt.branch_count
+            }
+        })
+        .collect();
+    let product = dims.iter().try_fold(1usize, |acc, &d| {
+        acc.checked_mul(usize::from(d))
+            .filter(|p| *p <= VARIANT_CAP)
+    });
+    let Some(product) = product else {
+        return Err(VariantCapExceeded {
+            product: dims.iter().map(|&d| usize::from(d)).product(),
+            cap: VARIANT_CAP,
+        });
+    };
+
+    // Row-major enumeration, first alternative slowest.
+    let mut variants = Vec::with_capacity(product);
+    let mut combo = vec![0u16; alts.len()];
+    loop {
+        variants.push(substitute_combo(content, &alts, &combo));
+        // Mixed-radix increment, last dim fastest.
+        let mut k = alts.len();
+        loop {
+            if k == 0 {
+                break;
+            }
+            k -= 1;
+            combo[k] += 1;
+            if combo[k] < dims[k] {
+                break;
+            }
+            combo[k] = 0;
+            if k == 0 {
+                debug_assert_eq!(
+                    variants.len(),
+                    product,
+                    "mixed-radix walk covers the product"
+                );
+                return Ok(Some(VariantEnumeration {
+                    alts,
+                    dims,
+                    variants,
+                }));
+            }
+        }
+    }
+}
+
+/// Whether the stage-2 flip (#3274) claims this content line for the
+/// variant model — the predicate `hir::normalize_file` (skip the cartesian
+/// lift), `hir::stamp_container_ids` (stamp the shared alt containers), and
+/// LIR lowering (emit [`crate::lir::StmtKind::EmitLineVariants`]) must all
+/// agree on, so it lives here, next to the admission it extends.
+///
+/// Claimed means: [`enumerate_variant_contents`] admits the line AND every
+/// enumerated variant is statically recognizable by [`try_recognize`] —
+/// a variant it would refuse (an empty exhausted `once` rendering with no
+/// surrounding text, a branch that is a bare interpolation) keeps the
+/// whole line on its pre-#3274 path, where today's behavior is already
+/// correct for the single-alternative shapes that produce such variants.
+///
+/// A [`VARIANT_CAP`] breach still claims the line: lowering words it
+/// (E191) instead of silently degrading a line the author wrote as a
+/// variant line ("never a silent fallback", the cap's own contract).
+pub fn claims_variant_line(content: &hir::Content) -> bool {
+    match enumerate_variant_contents(content) {
+        Err(_) => true,
+        Ok(Some(en)) => en.variants.iter().all(statically_recognizable),
+        Ok(None) => false,
+    }
+}
+
+/// Structural mirror of [`try_recognize`]'s acceptance — the parts shapes
+/// its Plain and Template phases admit, checkable without a `LowerCtx`.
+/// Must stay in step with `try_recognize`/[`try_recognize_template`]: a
+/// shape this admits that recognition later refuses falls back to
+/// `EmitContent`'s inline lowering (correct shared-state semantics, but
+/// the fragment-per-part line-table shape #1667 retired), so drift here
+/// is a quality regression, not a correctness one.
+fn statically_recognizable(c: &hir::Content) -> bool {
+    if let [hir::ContentPart::Text(_)] = c.parts.as_slice() {
+        return true;
+    }
+    is_template_admissible(&c.parts)
+        && content_has_span_or_interpolation(&c.parts)
+        && (content_has_nonempty_text(&c.parts) || content_has_span(&c.parts))
+}
+
+/// A branch body's content parts, if the branch is textual (see
+/// [`enumerate_variant_contents`]'s admission rules): empty body → empty
+/// parts; exactly one tag-free `Content` stmt of `Text`/`Interpolation`/
+/// `Span` parts → those parts. `None` otherwise.
+fn branch_textual_parts(body: &hir::Block) -> Option<Vec<hir::ContentPart>> {
+    match body.stmts.as_slice() {
+        [] => Some(Vec::new()),
+        [hir::Stmt::Content(c)] if c.tags.is_empty() => {
+            let ok = c.parts.iter().all(|p| {
+                matches!(
+                    p,
+                    hir::ContentPart::Text(_)
+                        | hir::ContentPart::Interpolation(_)
+                        | hir::ContentPart::Span(_)
+                )
+            });
+            ok.then(|| c.parts.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Build one variant's whole-line content: each admitted alternative
+/// replaced by its chosen branch's parts (or by nothing, for a `once`
+/// alternative's exhausted index), adjacent text merged with the same
+/// whitespace-collapse rule as [`compose_hir_content`].
+fn substitute_combo(content: &hir::Content, alts: &[VariantAlt], combo: &[u16]) -> hir::Content {
+    let mut parts: Vec<hir::ContentPart> = Vec::with_capacity(content.parts.len());
+    let push_merged = |parts: &mut Vec<hir::ContentPart>, part: &hir::ContentPart| {
+        if let (Some(hir::ContentPart::Text(last)), hir::ContentPart::Text(next)) =
+            (parts.last_mut(), part)
+        {
+            if last.ends_with(char::is_whitespace) && next.starts_with(char::is_whitespace) {
+                last.push_str(next.trim_start());
+            } else {
+                last.push_str(next);
+            }
+        } else {
+            parts.push(part.clone());
+        }
+    };
+
+    for (idx, part) in content.parts.iter().enumerate() {
+        if let Some(alt_pos) = alts.iter().position(|a| a.part_idx == idx) {
+            let hir::ContentPart::InlineSequence(seq) = part else {
+                unreachable!("alts only index InlineSequence parts");
+            };
+            let chosen = usize::from(combo[alt_pos]);
+            if chosen < seq.branches.len() {
+                let branch_parts =
+                    branch_textual_parts(&seq.branches[chosen].body).unwrap_or_default();
+                for bp in &branch_parts {
+                    push_merged(&mut parts, bp);
+                }
+            }
+            // else: a `once` alternative's exhausted variant — nothing.
+        } else {
+            push_merged(&mut parts, part);
+        }
+    }
+
+    hir::Content {
+        ptr: content.ptr,
+        parts,
+        tags: content.tags.clone(),
+    }
+}

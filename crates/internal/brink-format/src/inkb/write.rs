@@ -9,8 +9,8 @@ use crate::codec::{
 };
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DebugInfoSection,
-    DirectEffects, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, StructShapeDef,
+    DirectEffects, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry,
+    LineVariantGroup, ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -55,10 +55,16 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // exists, so this checks `is_some()` rather than emptiness like the
     // sections above.
     let has_debug_info = story.debug_info.is_some();
+    // The `LineVariantGroups` section (#3273, tag `0x12`) is likewise
+    // **optional**: emitted only when the compiler enumerated at least one
+    // variant group. Nothing does until the stage-2 flip (#3274), so every
+    // existing story omits it (byte-identical, no `VERSION` bump).
+    let has_line_variant_groups = !story.line_variant_groups.is_empty();
     let section_count = SECTION_COUNT as usize
         + usize::from(has_visibility)
         + usize::from(has_frame_shapes)
-        + usize::from(has_debug_info);
+        + usize::from(has_debug_info)
+        + usize::from(has_line_variant_groups);
     let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
 
     // Write placeholder header (zeros) — we'll patch it after writing sections.
@@ -161,6 +167,15 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         section!(
             SectionKind::DebugInfo,
             write_section_debug_info(debug_info, buf)
+        );
+    }
+    // LineVariantGroups (#3273, tag 0x12) is optional and emitted last
+    // (highest tag) — omitted entirely when empty so every story without
+    // variant groups stays byte-identical.
+    if has_line_variant_groups {
+        section!(
+            SectionKind::LineVariantGroups,
+            write_section_line_variant_groups(&story.line_variant_groups, buf)
         );
     }
 
@@ -737,6 +752,10 @@ pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
 /// column, §1.3) without another whole-format bump.
 pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 1;
 
+/// Section-local version of the `LineVariantGroups` encoding (#3273) —
+/// bump to grow the record without a format-wide `VERSION` bump.
+pub(crate) const LINE_VARIANT_GROUPS_SECTION_VERSION: u8 = 1;
+
 /// Write the D6 `DebugInfo` section (no header framing): a one-byte
 /// section-local version, the section-local file table (§2.3), then one
 /// entry table per container in `Containers` order (§2.2). Callers emit
@@ -751,6 +770,28 @@ pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 1;
 /// length), everything else in the entry is an absolute varint except the
 /// fixed-width `kind_token: u32` and `flags: u8` (§2.2's table explains why
 /// those two stay fixed-width).
+/// Encode the `LineVariantGroups` section (#3273): version byte, group
+/// count, then per group `{scope_id, base, dim-count, dims}`. Dims are u16
+/// on the wire exactly as in [`LineVariantGroup`] — a group's variant count
+/// is `dims.product()`, capped at recognition time, so no field here needs
+/// to carry more range.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "counts capped at recognition"
+)]
+pub fn write_section_line_variant_groups(groups: &[LineVariantGroup], buf: &mut Vec<u8>) {
+    write_u8(buf, LINE_VARIANT_GROUPS_SECTION_VERSION);
+    write_u32(buf, groups.len() as u32);
+    for group in groups {
+        write_def_id(buf, group.scope_id);
+        write_u32(buf, group.base);
+        write_u8(buf, group.dims.len() as u8);
+        for dim in &group.dims {
+            write_u16(buf, *dim);
+        }
+    }
+}
+
 #[expect(clippy::cast_possible_truncation)]
 pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
     write_u8(buf, DEBUG_INFO_SECTION_VERSION);

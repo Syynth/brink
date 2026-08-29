@@ -2028,6 +2028,19 @@ pub enum DiagnosticCode {
     /// studio's TODO panel a single source to consume, while never gating a
     /// compile and staying `[lints]`-tierable like every other code.
     E189,
+
+    /// A content line's inline stateful alternatives enumerate to more
+    /// whole-line variants than the variant-group cap admits (#3274).
+    ///
+    /// The stage-2 flip compiles a line of textual alternatives into one
+    /// enumerated variant group — each variant a real line-table entry, a
+    /// translation unit, and a VO slot — so the product of the
+    /// alternatives' branch counts is bounded
+    /// (`lir::lower::recognize::VARIANT_CAP`). Breaching it is a worded
+    /// hard error, never a silent fallback: an author whose line quietly
+    /// stopped being VO-addressable would have no way to notice. The fix
+    /// is to split the line or move an alternative to its own line.
+    E191,
 }
 
 impl DiagnosticCode {
@@ -2230,6 +2243,7 @@ impl DiagnosticCode {
         Self::E188,
         Self::E189,
         Self::E190,
+        Self::E191,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2429,6 +2443,7 @@ impl DiagnosticCode {
             Self::E188 => "E188",
             Self::E189 => "E189",
             Self::E190 => "E190",
+            Self::E191 => "E191",
         }
     }
 
@@ -2754,6 +2769,9 @@ impl DiagnosticCode {
             Self::E189 => "ink `TODO:` author note — work the author marked as remaining",
             Self::E190 => {
                 "renaming an EXTERNAL changes the host binding — the engine must re-register the new name"
+            }
+            Self::E191 => {
+                "inline alternatives on one line enumerate to more whole-line variants than the cap allows"
             }
         }
     }
@@ -3113,6 +3131,7 @@ impl DiagnosticCode {
             "E188" => Some(Self::E188),
             "E189" => Some(Self::E189),
             "E190" => Some(Self::E190),
+            "E191" => Some(Self::E191),
             _ => None,
         }
     }

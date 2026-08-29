@@ -318,12 +318,23 @@ pub enum SectionKind {
     /// `from_u8_rejects_unclaimed_section_tag`, is updated alongside this
     /// variant (not deleted) to pin the *new* next-free tag (`0x12`).
     DebugInfo = 0x11,
+    /// Stage 1 of the shared-alternatives track (issue #3273,
+    /// `docs/decision-log.md` 2026-08-29): [`crate::LineVariantGroup`]
+    /// records tying runs of consecutive line-table entries back to one
+    /// authored line whose inline alternatives were enumerated at
+    /// recognition time. Section-locally versioned (one prefix byte) so the
+    /// record encoding can grow without a format-wide bump. **Omitted
+    /// entirely when empty** — nothing emits a non-empty table until the
+    /// stage-2 flip (#3274), so every existing story stays byte-identical
+    /// and no `VERSION` bump is needed. `0x11` is claimed by `DebugInfo`,
+    /// so this takes the next free tag.
+    LineVariantGroups = 0x12,
 }
 
 // All v4-reserved section kinds have now graduated: `LiteralPool` (0x0B),
 // `StructShapes` (0x0C), and `EffectRows` (0x0D, T2-3). `Visibility` (0x0E)
 // and `AliasTable` (0x0F) were later one-bump additions past the reserved
-// gap; `DebugInfo` (0x11, D6) is the newest.
+// gap; `LineVariantGroups` (0x12, #3273) is the newest.
 
 impl SectionKind {
     pub(crate) fn from_u8(tag: u8) -> Result<Self, DecodeError> {
@@ -345,6 +356,7 @@ impl SectionKind {
             0x0F => Ok(Self::AliasTable),
             0x10 => Ok(Self::FrameShapes),
             0x11 => Ok(Self::DebugInfo),
+            0x12 => Ok(Self::LineVariantGroups),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -411,13 +423,14 @@ mod tests {
     /// Every v4-reserved section tag has now graduated to a real
     /// `SectionKind` variant — `LiteralPool` (0x0B, T1b-2 #570),
     /// `StructShapes` (0x0C, TM-4 #620), and `EffectRows` (0x0D, T2-3 #862).
-    /// `DebugInfo` (0x11, D6 #3184) is the newest tag; the next unclaimed
-    /// tag (0x12) is still rejected. This pin previously named `0x11` before
+    /// `LineVariantGroups` (0x12, #3273) is the newest tag; the next
+    /// unclaimed tag (0x13) is still rejected. This pin previously named
+    /// `0x12` before `LineVariantGroups` claimed it, and `0x11` before
     /// D6 claimed it — flipped here, not deleted, per
     /// `docs/debugger-spec.md` §1.1's explicit instruction.
     #[test]
     fn from_u8_rejects_unclaimed_section_tag() {
-        let tag = 0x12u8;
+        let tag = 0x13u8;
         let err = SectionKind::from_u8(tag).unwrap_err();
         assert_eq!(err, DecodeError::InvalidSectionKind(tag));
     }
@@ -432,5 +445,9 @@ mod tests {
         assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
         assert!(SectionKind::from_u8(0x10).is_ok(), "FrameShapes (FS-3c)");
         assert!(SectionKind::from_u8(0x11).is_ok(), "DebugInfo (D6 #3184)");
+        assert!(
+            SectionKind::from_u8(0x12).is_ok(),
+            "LineVariantGroups (#3273)"
+        );
     }
 }

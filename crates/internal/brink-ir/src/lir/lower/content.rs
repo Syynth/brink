@@ -136,7 +136,14 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
         .iter()
         .filter(|c| c.kind == lir::ContainerKind::Sequence)
         .count();
-    let wrapper_id = ctx.alloc_sequence_id(seq_idx);
+    // #3275 (stage 3a): a weave-line construct arrives pre-stamped (or
+    // clone-derived) — read that id so the compiled container matches what
+    // the pristine HIR carries. Content-embedded shapes the stamp walk
+    // deliberately leaves alone (choice text, tags, span children, lambda
+    // fragments) still arrive `None` and keep the derived-path mint.
+    let wrapper_id = seq
+        .container_id
+        .unwrap_or_else(|| ctx.alloc_sequence_id(seq_idx));
 
     let branches = seq
         .branches

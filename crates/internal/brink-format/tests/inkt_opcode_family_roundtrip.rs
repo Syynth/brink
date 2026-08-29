@@ -34,6 +34,7 @@ fn empty_story() -> StoryData {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     }
 }
@@ -324,5 +325,26 @@ fn collect_family_roundtrips() {
         2,
         Value::weighted(vec![(i32::MAX, Value::Int(-7)), (1, Value::none())]),
     ));
+    assert_roundtrips(&story);
+}
+
+/// #3273: the two line-variant-group opcodes round-trip through `.inkt`
+/// text (`touch_visit` / `shuffle_index_of`) alongside the target push
+/// they always follow in real emission.
+#[test]
+fn variant_group_ops_roundtrip() {
+    let mut story = empty_story();
+    push_container_with_bytecode(
+        &mut story,
+        1,
+        &[
+            Opcode::PushDivertTarget(DefinitionId::new(DefinitionTag::Address, 9)),
+            Opcode::TouchVisit,
+            Opcode::PushInt(0),
+            Opcode::PushInt(4),
+            Opcode::PushDivertTarget(DefinitionId::new(DefinitionTag::Address, 9)),
+            Opcode::ShuffleIndexOf,
+        ],
+    );
     assert_roundtrips(&story);
 }

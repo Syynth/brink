@@ -109,6 +109,8 @@ const CHOICE_COUNT: u8 = 0x83;
 const RANDOM: u8 = 0x84;
 const SEED_RANDOM: u8 = 0x85;
 const CURRENT_VISIT_COUNT: u8 = 0x86;
+const TOUCH_VISIT: u8 = 0x87;
+const SHUFFLE_INDEX_OF: u8 = 0x88;
 
 // Casts / math
 const CAST_TO_INT: u8 = 0x90;
@@ -1265,6 +1267,25 @@ pub enum Opcode {
     VisitCount,
     /// Push the visit count of the *current* container (no stack input).
     CurrentVisitCount,
+    /// #3273 (line-variant groups): pop a `DivertTarget`, increment that
+    /// container's visit count, and push the **pre**-increment count as an
+    /// `Int` — the 0-based "how many times has this alternative been
+    /// viewed" index a shared inline alternative's branch selection is
+    /// computed from. The increment is the point: the container is never
+    /// *entered* (its text lives in the enumerated line-variant table, not
+    /// in its body), so this is the one place its view is recorded.
+    /// A non-`DivertTarget` operand pushes 0 and records nothing,
+    /// mirroring [`Opcode::VisitCount`]'s malformed-input tolerance.
+    TouchVisit,
+    /// #3273 (line-variant groups): pop a `DivertTarget`, then
+    /// `num_elements`, then `seq_count` (both `Int`), and push the shuffle
+    /// branch index for THAT container — the same partial-Fisher–Yates
+    /// selection [`Opcode::Sequence`]`(Shuffle)` performs, but seeded by
+    /// the *named* container's `path_hash` instead of the current one's.
+    /// Two shared shuffles on one line must not share a seed, or their
+    /// permutations correlate; the current container (the line's scope) is
+    /// the same for both, so the current-container form cannot serve.
+    ShuffleIndexOf,
     TurnsSince,
     TurnIndex,
     ChoiceCount,
@@ -1895,6 +1916,8 @@ impl Opcode {
             // Intrinsics
             Self::VisitCount => write_u8(buf, VISIT_COUNT),
             Self::CurrentVisitCount => write_u8(buf, CURRENT_VISIT_COUNT),
+            Self::TouchVisit => write_u8(buf, TOUCH_VISIT),
+            Self::ShuffleIndexOf => write_u8(buf, SHUFFLE_INDEX_OF),
             Self::TurnsSince => write_u8(buf, TURNS_SINCE),
             Self::TurnIndex => write_u8(buf, TURN_INDEX),
             Self::ChoiceCount => write_u8(buf, CHOICE_COUNT),
@@ -2213,6 +2236,8 @@ impl Opcode {
             // Intrinsics
             VISIT_COUNT => Self::VisitCount,
             CURRENT_VISIT_COUNT => Self::CurrentVisitCount,
+            TOUCH_VISIT => Self::TouchVisit,
+            SHUFFLE_INDEX_OF => Self::ShuffleIndexOf,
             TURNS_SINCE => Self::TurnsSince,
             TURN_INDEX => Self::TurnIndex,
             CHOICE_COUNT => Self::ChoiceCount,
@@ -2554,6 +2579,8 @@ mod tests {
         for op in [
             Opcode::VisitCount,
             Opcode::CurrentVisitCount,
+            Opcode::TouchVisit,
+            Opcode::ShuffleIndexOf,
             Opcode::TurnsSince,
             Opcode::TurnIndex,
             Opcode::ChoiceCount,
