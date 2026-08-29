@@ -390,3 +390,132 @@ fn pending_external_parks_and_resumes_on_a_named_flow() {
         Err(RuntimeError::UnknownFlow(_))
     ));
 }
+
+// ── #3226: multi-hit watchpoint drain ───────────────────────────────
+
+use brink_runtime::{WatchpointObserver, WriteObserver};
+
+fn global_idx(program: &Program, name: &str) -> u32 {
+    (0..program.global_count())
+        .find(|&idx| program.global_name(idx) == Some(name))
+        .expect("VAR must have a global slot")
+}
+
+/// The #3226 premise probe. The VM has exactly two `set_global` sites —
+/// `Opcode::SetGlobal`, and `Opcode::SetTemp` writing through a `ref`
+/// pointer — and each is a single-write opcode, so ONE `vm::step` can
+/// queue at most ONE watchpoint hit. This pins that behaviorally over a
+/// fixture exercising BOTH opcode shapes back-to-back: every stop leaves
+/// the observer's queue empty (a second same-step hit would still be
+/// queued at the first stop), and each stop is correctly attributed —
+/// the earlier watched global is written, the later one still isn't.
+#[test]
+fn one_step_never_queues_a_second_watchpoint_hit() {
+    let (program, tables) = compile_ink(
+        "VAR a = 0\n\
+         VAR b = 0\n\
+         -> start\n\
+         === start ===\n\
+         ~ a = 1\n\
+         ~ set_it(b, 2)\n\
+         Done.\n\
+         -> DONE\n\
+         === function set_it(ref target, v) ===\n\
+         ~ target = v\n",
+    );
+    let a_idx = global_idx(&program, "a");
+    let b_idx = global_idx(&program, "b");
+
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+    let bp = BreakpointSet::new();
+    let mut watch = WatchpointObserver::new(vec![a_idx, b_idx]);
+
+    // Stop 1: the plain `SetGlobal` write to `a`.
+    let outcome = story
+        .debug_run_watching(&bp, &mut watch, DEFAULT_DEBUG_BUDGET)
+        .expect("first watched write");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::Watchpoint { global_idx: a_idx }
+    );
+    assert!(
+        watch.hits().is_empty(),
+        "one step queued a second hit — the #3226 premise is reachable \
+         after all; the drain contract needs a redesign, not this pin"
+    );
+    assert_eq!(
+        story.variable("a"),
+        Some(&Value::Int(1)),
+        "stop 1 is after a's write"
+    );
+    assert_eq!(
+        story.variable("b"),
+        Some(&Value::Int(0)),
+        "stop 1 is BEFORE b's write — the hit is attributed to its own \
+         instruction, not a later one"
+    );
+
+    // Stop 2: the `ref`-pointer write to `b` (`SetTemp` through a
+    // `VariablePointer` — the VM's only other `set_global` site).
+    let outcome = story
+        .debug_run_watching(&bp, &mut watch, DEFAULT_DEBUG_BUDGET)
+        .expect("second watched write");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::Watchpoint { global_idx: b_idx }
+    );
+    assert!(watch.hits().is_empty());
+    assert_eq!(story.variable("b"), Some(&Value::Int(2)));
+
+    // And the story still finishes cleanly.
+    let outcome = story
+        .debug_run_watching(&bp, &mut watch, DEFAULT_DEBUG_BUDGET)
+        .expect("run out");
+    assert_eq!(outcome.reason, DebugStopReason::Terminal);
+}
+
+/// The hardening half (#3226): a hit already queued when
+/// `debug_run_watching` is called — the observer doubles as a
+/// non-pausing logger on the production path, so leftovers are a real
+/// state — reports IMMEDIATELY at the current position, before any
+/// stepping, instead of being attributed to whatever instruction the
+/// next step executes.
+#[test]
+fn leftover_watchpoint_hit_reports_before_any_stepping() {
+    let (program, tables) = compile_ink(
+        "VAR a = 0\n\
+         -> start\n\
+         === start ===\n\
+         Some content first.\n\
+         ~ a = 1\n\
+         -> DONE\n",
+    );
+    let a_idx = global_idx(&program, "a");
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), tables);
+    let bp = BreakpointSet::new();
+
+    // Simulate a logging-mode leftover: a hit queued outside any debug run.
+    let mut watch = WatchpointObserver::new(vec![a_idx]);
+    watch.on_set_global(a_idx, &Value::Int(99));
+
+    let pos_before = story.debug_position();
+    let outcome = story
+        .debug_run_watching(&bp, &mut watch, DEFAULT_DEBUG_BUDGET)
+        .expect("leftover drain");
+    assert_eq!(
+        outcome.reason,
+        DebugStopReason::Watchpoint { global_idx: a_idx }
+    );
+    assert_eq!(
+        outcome.position, pos_before,
+        "a leftover hit must report at the position it was found at — \
+         zero instructions execute before it drains"
+    );
+    assert_eq!(
+        story.variable("a"),
+        Some(&Value::Int(0)),
+        "no stepping happened: the story's own write to a has not run"
+    );
+}

@@ -1926,6 +1926,15 @@ impl<R: StoryRng> Story<R> {
     /// the moment a watched global is written, in addition to every
     /// `debug_run` stop condition.
     ///
+    /// Drain contract (#3226): one stop per hit, each attributed to its
+    /// own writing instruction. A hit already queued when this is called
+    /// — the observer doubles as a non-pausing logger on the production
+    /// path, so leftovers are a real state — reports immediately at the
+    /// current position, before any stepping. (One VM step can queue at
+    /// most one hit today — the VM's two `set_global` sites are
+    /// single-write opcodes — but the loop-top drain makes that an
+    /// optimization detail, not a correctness dependency.)
+    ///
     /// # Errors
     /// Same as [`debug_run`](Self::debug_run).
     #[cfg(feature = "debug-hooks")]
@@ -1986,6 +1995,25 @@ impl<R: StoryRng> Story<R> {
         // stopped at.
         let mut past_entry = false;
         loop {
+            // Leftover-hit drain (#3226), BEFORE any stepping: a hit
+            // already queued in the observer — a second write from one
+            // step if an opcode ever gains one (today none does: the VM's
+            // two `set_global` sites are single-write opcodes, pinned by
+            // `one_step_never_queues_a_second_watchpoint_hit`), or a
+            // stale hit from the observer's non-pausing logging mode —
+            // reports HERE, at the position it was queued at, instead of
+            // being attributed to whatever instruction the next step
+            // happens to execute. This is what makes the post-step drain
+            // below safe by construction rather than by that invariant.
+            if let Some(hit) = watchpoints.take_hit() {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Watchpoint {
+                        global_idx: hit.global_idx,
+                    },
+                    position: Self::position_of(&flow.flow),
+                    depth: Self::depth_of(&flow.flow),
+                });
+            }
             if past_entry
                 && let Some(pos) = Self::position_of(&flow.flow)
                 && let Some(bp) = breakpoints.hit(pos)
