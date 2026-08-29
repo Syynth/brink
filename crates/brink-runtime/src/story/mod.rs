@@ -127,6 +127,28 @@ enum StepGranularity {
     Line,
 }
 
+/// The mutable per-flow state a debug verb drives (#3223): the flow plus
+/// the context pair its `ContextView` routes through — the default trio,
+/// an isolated flow's own trio, or a shared flow paired with the default
+/// context, exactly the routing every production `continue_flow*` method
+/// performs. Selected by [`Story::debug_parts`] so all six debug verbs
+/// share one selection rule.
+#[cfg(feature = "debug-hooks")]
+struct DebugTarget<'a> {
+    flow: &'a mut FlowInstance,
+    world: &'a mut World,
+    local: &'a mut FlowLocal,
+}
+
+/// The flow-independent story state every debug verb reads (#3223) —
+/// bundled so the verb impls stay under one signature as parameters grow.
+#[cfg(feature = "debug-hooks")]
+struct DebugEnv<'a> {
+    program: &'a Program,
+    line_tables: &'a [Vec<brink_format::LineEntry>],
+    resolver: Option<&'a dyn PluralResolver>,
+}
+
 impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program and its line tables.
     pub fn new(program: Arc<Program>, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
@@ -1551,6 +1573,23 @@ impl<R: StoryRng> Story<R> {
         Self::position_of(&self.default.flow)
     }
 
+    /// [`debug_position`](Self::debug_position) for any flow (#3223):
+    /// `None` targets the default flow, `Some(name)` a named flow —
+    /// isolated or shared, the same unified namespace
+    /// [`destroy_flow`](Self::destroy_flow)/[`flow_names`](Self::flow_names)
+    /// treat. `Ok(None)` is a real "no position" on a real flow, distinct
+    /// from the unknown-name error.
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_position_flow(
+        &self,
+        flow: Option<&str>,
+    ) -> Result<Option<crate::DebugPosition>, RuntimeError> {
+        Ok(Self::position_of(&self.debug_flow_ref(flow)?.flow))
+    }
+
     /// The default flow's current thread's call-stack depth — the raw
     /// count [`debug_step`](Self::debug_step)'s step-over/out logic is
     /// derived from (`docs/debugger-spec.md` §4).
@@ -1558,6 +1597,92 @@ impl<R: StoryRng> Story<R> {
     #[must_use]
     pub fn debug_call_stack_depth(&self) -> usize {
         Self::depth_of(&self.default.flow)
+    }
+
+    /// [`debug_call_stack_depth`](Self::debug_call_stack_depth) for any
+    /// flow (#3223) — flow selection as in
+    /// [`debug_position_flow`](Self::debug_position_flow).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_call_stack_depth_flow(&self, flow: Option<&str>) -> Result<usize, RuntimeError> {
+        Ok(Self::depth_of(&self.debug_flow_ref(flow)?.flow))
+    }
+
+    /// Read-only flow selection for the debug getters (#3223): `None` is
+    /// the default flow; a name resolves through the isolated map first,
+    /// then the shared map — the same order [`debug_parts`](Self::debug_parts)
+    /// uses, and unambiguous because [`spawn_flow`](Self::spawn_flow)/
+    /// [`spawn_flow_shared`](Self::spawn_flow_shared) refuse a name live in
+    /// either map.
+    #[cfg(feature = "debug-hooks")]
+    fn debug_flow_ref(&self, flow: Option<&str>) -> Result<&FlowInstance, RuntimeError> {
+        match flow {
+            None => Ok(&self.default),
+            Some(name) => self
+                .instances
+                .get(name)
+                .map(|(f, _, _)| f)
+                .or_else(|| self.shared_instances.get(name))
+                .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned())),
+        }
+    }
+
+    /// Split this story into the selected flow's mutable [`DebugTarget`]
+    /// plus the shared read-only [`DebugEnv`] (#3223). A shared flow pairs
+    /// with `default_context`/`default_local` — its writes are visible to
+    /// the default flow, true concurrent-flow semantics — while an
+    /// isolated flow drives its own context, exactly as the production
+    /// `continue_flow*` methods route each.
+    #[cfg(feature = "debug-hooks")]
+    fn debug_parts(
+        &mut self,
+        flow: Option<&str>,
+    ) -> Result<(DebugTarget<'_>, DebugEnv<'_>), RuntimeError> {
+        let Self {
+            program,
+            default,
+            default_context,
+            default_local,
+            line_tables,
+            instances,
+            shared_instances,
+            resolver,
+            ..
+        } = self;
+        let target = match flow {
+            None => DebugTarget {
+                flow: default,
+                world: default_context,
+                local: default_local,
+            },
+            Some(name) => {
+                if let Some((f, w, l)) = instances.get_mut(name) {
+                    DebugTarget {
+                        flow: f,
+                        world: w,
+                        local: l,
+                    }
+                } else if let Some(f) = shared_instances.get_mut(name) {
+                    DebugTarget {
+                        flow: f,
+                        world: default_context,
+                        local: default_local,
+                    }
+                } else {
+                    return Err(RuntimeError::UnknownFlow(name.to_owned()));
+                }
+            }
+        };
+        Ok((
+            target,
+            DebugEnv {
+                program,
+                line_tables,
+                resolver: resolver.as_deref(),
+            },
+        ))
     }
 
     /// Run the default flow forward one VM instruction at a time until an
@@ -1612,14 +1737,45 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        self.debug_run_flow(None, breakpoints, budget_ceiling)
+    }
+
+    /// [`debug_run`](Self::debug_run) for any flow (#3223): `None`
+    /// targets the default flow (identical to `debug_run`), `Some(name)`
+    /// a named flow — isolated or shared. A shared flow's writes land in
+    /// the default context, so a debug session on one is observable from
+    /// the others, exactly as in production.
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_run`](Self::debug_run) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_flow(
+        &mut self,
+        flow: Option<&str>,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow)?;
+        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling)
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn debug_run_impl(
+        env: &DebugEnv<'_>,
+        target: DebugTarget<'_>,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::DebugStopReason;
 
-        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let DebugTarget { flow, world, local } = target;
+        let mut view = ContextView::new(world, local);
         let mut steps: u64 = 0;
         let mut past_entry = false;
         loop {
             if past_entry
-                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(pos) = Self::position_of(&flow.flow)
                 && let Some(bp) = breakpoints.hit(pos)
             {
                 return Ok(crate::DebugRunOutcome {
@@ -1628,7 +1784,7 @@ impl<R: StoryRng> Story<R> {
                         name: bp.name.clone(),
                     },
                     position: Some(pos),
-                    depth: Self::depth_of(&self.default.flow),
+                    depth: Self::depth_of(&flow.flow),
                 });
             }
             past_entry = true;
@@ -1641,44 +1797,44 @@ impl<R: StoryRng> Story<R> {
             }
 
             let stepped = vm::step::<R>(
-                &mut self.default.flow,
-                &self.program,
-                &self.line_tables,
+                &mut flow.flow,
+                env.program,
+                env.line_tables,
                 &mut view,
-                &mut self.default.stats,
-                self.resolver.as_deref(),
+                &mut flow.stats,
+                env.resolver,
             )?;
 
             match stepped {
                 vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
-                    &mut self.default.flow,
+                    &mut flow.flow,
                     &mut view,
-                    &mut self.default.status,
-                    &mut self.default.stats,
+                    &mut flow.status,
+                    &mut flow.stats,
                 )? {
                     flow_instance::DoneBookkeeping::AutoSelected => {}
                     flow_instance::DoneBookkeeping::WaitingForChoice => {
                         return Ok(crate::DebugRunOutcome {
                             reason: DebugStopReason::Choices,
-                            position: Self::position_of(&self.default.flow),
-                            depth: Self::depth_of(&self.default.flow),
+                            position: Self::position_of(&flow.flow),
+                            depth: Self::depth_of(&flow.flow),
                         });
                     }
                     flow_instance::DoneBookkeeping::Terminal => {
                         return Ok(crate::DebugRunOutcome {
                             reason: DebugStopReason::Terminal,
-                            position: Self::position_of(&self.default.flow),
-                            depth: Self::depth_of(&self.default.flow),
+                            position: Self::position_of(&flow.flow),
+                            depth: Self::depth_of(&flow.flow),
                         });
                     }
                 },
                 vm::Stepped::Ended => {
                     view.increment_turn_index();
-                    self.default.status = StoryStatus::Ended;
+                    flow.status = StoryStatus::Ended;
                     return Ok(crate::DebugRunOutcome {
                         reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&self.default.flow),
-                        depth: Self::depth_of(&self.default.flow),
+                        position: Self::position_of(&flow.flow),
+                        depth: Self::depth_of(&flow.flow),
                     });
                 }
                 _ => {}
@@ -1705,9 +1861,43 @@ impl<R: StoryRng> Story<R> {
         watchpoints: &mut crate::WatchpointObserver,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        self.debug_run_watching_flow(None, breakpoints, watchpoints, budget_ceiling)
+    }
+
+    /// [`debug_run_watching`](Self::debug_run_watching) for any flow
+    /// (#3223) — flow selection as in
+    /// [`debug_run_flow`](Self::debug_run_flow). Note the watch surface is
+    /// the *context* the flow routes through: on a shared flow the watched
+    /// globals live in the default context, so a hit can be caused by the
+    /// debugged flow only (this seam steps no other flow concurrently).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_run`](Self::debug_run) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_watching_flow(
+        &mut self,
+        flow: Option<&str>,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        watchpoints: &mut crate::WatchpointObserver,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow)?;
+        Self::debug_run_watching_impl(&env, target, breakpoints, watchpoints, budget_ceiling)
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn debug_run_watching_impl(
+        env: &DebugEnv<'_>,
+        target: DebugTarget<'_>,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        watchpoints: &mut crate::WatchpointObserver,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::DebugStopReason;
         use crate::state::ObservedContext;
 
+        let DebugTarget { flow, world, local } = target;
         let mut steps: u64 = 0;
         // Same resume fix as `debug_run` — see its doc: skip the
         // breakpoint check on this call's first iteration so a resumed
@@ -1716,7 +1906,7 @@ impl<R: StoryRng> Story<R> {
         let mut past_entry = false;
         loop {
             if past_entry
-                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(pos) = Self::position_of(&flow.flow)
                 && let Some(bp) = breakpoints.hit(pos)
             {
                 return Ok(crate::DebugRunOutcome {
@@ -1725,7 +1915,7 @@ impl<R: StoryRng> Story<R> {
                         name: bp.name.clone(),
                     },
                     position: Some(pos),
-                    depth: Self::depth_of(&self.default.flow),
+                    depth: Self::depth_of(&flow.flow),
                 });
             }
             past_entry = true;
@@ -1738,15 +1928,15 @@ impl<R: StoryRng> Story<R> {
             }
 
             let stepped = {
-                let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+                let mut view = ContextView::new(&mut *world, &mut *local);
                 let mut obs_ctx = ObservedContext::new(&mut view, watchpoints);
                 vm::step::<R>(
-                    &mut self.default.flow,
-                    &self.program,
-                    &self.line_tables,
+                    &mut flow.flow,
+                    env.program,
+                    env.line_tables,
                     &mut obs_ctx,
-                    &mut self.default.stats,
-                    self.resolver.as_deref(),
+                    &mut flow.stats,
+                    env.resolver,
                 )?
             };
 
@@ -1755,47 +1945,45 @@ impl<R: StoryRng> Story<R> {
                     reason: DebugStopReason::Watchpoint {
                         global_idx: hit.global_idx,
                     },
-                    position: Self::position_of(&self.default.flow),
-                    depth: Self::depth_of(&self.default.flow),
+                    position: Self::position_of(&flow.flow),
+                    depth: Self::depth_of(&flow.flow),
                 });
             }
 
             match stepped {
                 vm::Stepped::Done => {
-                    let mut view =
-                        ContextView::new(&mut self.default_context, &mut self.default_local);
+                    let mut view = ContextView::new(&mut *world, &mut *local);
                     match flow_instance::apply_done_bookkeeping(
-                        &mut self.default.flow,
+                        &mut flow.flow,
                         &mut view,
-                        &mut self.default.status,
-                        &mut self.default.stats,
+                        &mut flow.status,
+                        &mut flow.stats,
                     )? {
                         flow_instance::DoneBookkeeping::AutoSelected => {}
                         flow_instance::DoneBookkeeping::WaitingForChoice => {
                             return Ok(crate::DebugRunOutcome {
                                 reason: DebugStopReason::Choices,
-                                position: Self::position_of(&self.default.flow),
-                                depth: Self::depth_of(&self.default.flow),
+                                position: Self::position_of(&flow.flow),
+                                depth: Self::depth_of(&flow.flow),
                             });
                         }
                         flow_instance::DoneBookkeeping::Terminal => {
                             return Ok(crate::DebugRunOutcome {
                                 reason: DebugStopReason::Terminal,
-                                position: Self::position_of(&self.default.flow),
-                                depth: Self::depth_of(&self.default.flow),
+                                position: Self::position_of(&flow.flow),
+                                depth: Self::depth_of(&flow.flow),
                             });
                         }
                     }
                 }
                 vm::Stepped::Ended => {
-                    let mut view =
-                        ContextView::new(&mut self.default_context, &mut self.default_local);
+                    let mut view = ContextView::new(&mut *world, &mut *local);
                     view.increment_turn_index();
-                    self.default.status = StoryStatus::Ended;
+                    flow.status = StoryStatus::Ended;
                     return Ok(crate::DebugRunOutcome {
                         reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&self.default.flow),
-                        depth: Self::depth_of(&self.default.flow),
+                        position: Self::position_of(&flow.flow),
+                        depth: Self::depth_of(&flow.flow),
                     });
                 }
                 _ => {}
@@ -1857,7 +2045,27 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_step_impl(
+        self.debug_step_flow(None, mode, breakpoints, budget_ceiling)
+    }
+
+    /// [`debug_step`](Self::debug_step) for any flow (#3223) — flow
+    /// selection as in [`debug_run_flow`](Self::debug_run_flow).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_step`](Self::debug_step) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_step_flow(
+        &mut self,
+        flow: Option<&str>,
+        mode: crate::debug_control::StepMode,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow)?;
+        Self::debug_step_impl(
+            &env,
+            target,
             mode,
             StepGranularity::Instruction,
             breakpoints,
@@ -1903,12 +2111,38 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_step_impl(mode, StepGranularity::Line, breakpoints, budget_ceiling)
+        self.debug_step_line_flow(None, mode, breakpoints, budget_ceiling)
+    }
+
+    /// [`debug_step_line`](Self::debug_step_line) for any flow (#3223) —
+    /// flow selection as in [`debug_run_flow`](Self::debug_run_flow).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_step_line`](Self::debug_step_line) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_step_line_flow(
+        &mut self,
+        flow: Option<&str>,
+        mode: crate::debug_control::StepMode,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow)?;
+        Self::debug_step_impl(
+            &env,
+            target,
+            mode,
+            StepGranularity::Line,
+            breakpoints,
+            budget_ceiling,
+        )
     }
 
     #[cfg(feature = "debug-hooks")]
     fn debug_step_impl(
-        &mut self,
+        env: &DebugEnv<'_>,
+        target: DebugTarget<'_>,
         mode: crate::debug_control::StepMode,
         granularity: StepGranularity,
         breakpoints: &crate::debug_control::BreakpointSet,
@@ -1916,21 +2150,23 @@ impl<R: StoryRng> Story<R> {
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::{DebugStopReason, StepMode};
 
-        let depth_before = Self::depth_of(&self.default.flow);
-        let line_before = match self.line_before(granularity, depth_before) {
-            Ok(l) => l,
-            Err(outcome) => return Ok(outcome),
-        };
-        if let Some(outcome) = self.no_step_out_target(mode, depth_before) {
+        let DebugTarget { flow, world, local } = target;
+        let depth_before = Self::depth_of(&flow.flow);
+        let line_before =
+            match Self::line_before(env.program, &flow.flow, granularity, depth_before) {
+                Ok(l) => l,
+                Err(outcome) => return Ok(outcome),
+            };
+        if let Some(outcome) = Self::no_step_out_target(&flow.flow, mode, depth_before) {
             return Ok(outcome);
         }
 
-        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let mut view = ContextView::new(world, local);
         let mut steps: u64 = 0;
         let mut past_entry = false;
         loop {
             if past_entry
-                && let Some(pos) = Self::position_of(&self.default.flow)
+                && let Some(pos) = Self::position_of(&flow.flow)
                 && let Some(bp) = breakpoints.hit(pos)
             {
                 return Ok(crate::DebugRunOutcome {
@@ -1939,7 +2175,7 @@ impl<R: StoryRng> Story<R> {
                         name: bp.name.clone(),
                     },
                     position: Some(pos),
-                    depth: Self::depth_of(&self.default.flow),
+                    depth: Self::depth_of(&flow.flow),
                 });
             }
             past_entry = true;
@@ -1952,50 +2188,50 @@ impl<R: StoryRng> Story<R> {
             }
 
             let stepped = vm::step::<R>(
-                &mut self.default.flow,
-                &self.program,
-                &self.line_tables,
+                &mut flow.flow,
+                env.program,
+                env.line_tables,
                 &mut view,
-                &mut self.default.stats,
-                self.resolver.as_deref(),
+                &mut flow.stats,
+                env.resolver,
             )?;
 
             match stepped {
                 vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
-                    &mut self.default.flow,
+                    &mut flow.flow,
                     &mut view,
-                    &mut self.default.status,
-                    &mut self.default.stats,
+                    &mut flow.status,
+                    &mut flow.stats,
                 )? {
                     flow_instance::DoneBookkeeping::AutoSelected => continue,
                     flow_instance::DoneBookkeeping::WaitingForChoice => {
                         return Ok(crate::DebugRunOutcome {
                             reason: DebugStopReason::Choices,
-                            position: Self::position_of(&self.default.flow),
-                            depth: Self::depth_of(&self.default.flow),
+                            position: Self::position_of(&flow.flow),
+                            depth: Self::depth_of(&flow.flow),
                         });
                     }
                     flow_instance::DoneBookkeeping::Terminal => {
                         return Ok(crate::DebugRunOutcome {
                             reason: DebugStopReason::Terminal,
-                            position: Self::position_of(&self.default.flow),
-                            depth: Self::depth_of(&self.default.flow),
+                            position: Self::position_of(&flow.flow),
+                            depth: Self::depth_of(&flow.flow),
                         });
                     }
                 },
                 vm::Stepped::Ended => {
                     view.increment_turn_index();
-                    self.default.status = StoryStatus::Ended;
+                    flow.status = StoryStatus::Ended;
                     return Ok(crate::DebugRunOutcome {
                         reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&self.default.flow),
-                        depth: Self::depth_of(&self.default.flow),
+                        position: Self::position_of(&flow.flow),
+                        depth: Self::depth_of(&flow.flow),
                     });
                 }
                 _ => {}
             }
 
-            let depth_after = Self::depth_of(&self.default.flow);
+            let depth_after = Self::depth_of(&flow.flow);
             let depth_ok = match mode {
                 StepMode::Into => true,
                 StepMode::Over => depth_after <= depth_before,
@@ -2005,25 +2241,20 @@ impl<R: StoryRng> Story<R> {
             // mid-line at the call site, which is where `finish` stops.
             let line_ok = match (granularity, mode) {
                 (StepGranularity::Instruction, _) | (StepGranularity::Line, StepMode::Out) => true,
-                (StepGranularity::Line, _) => Self::line_key_of(&self.default.flow, &self.program)
+                (StepGranularity::Line, _) => Self::line_key_of(&flow.flow, env.program)
                     .is_some_and(|now| Some(now) != line_before),
             };
             let stop = depth_ok && line_ok;
             if stop {
                 return Ok(crate::DebugRunOutcome {
                     reason: DebugStopReason::Step,
-                    position: Self::position_of(&self.default.flow),
+                    position: Self::position_of(&flow.flow),
                     depth: depth_after,
                 });
             }
         }
     }
 
-    /// `(file_idx, line_idx)` for wherever the default flow is stopped, or
-    /// `None` when there is no position or the artifact carries no line
-    /// index (#3264). Compared against itself to decide "still on the same
-    /// line?", never shown, so it never resolves to text.
-    #[cfg(feature = "debug-hooks")]
     /// The `NoStepOutTarget` outcome when `Out` has nowhere to go — the
     /// outermost frame, or a `Thread` frame, which is not returnable-from
     /// (`docs/debugger-spec.md` names threads as a genuine non-analogue to
@@ -2031,7 +2262,7 @@ impl<R: StoryRng> Story<R> {
     /// can actually return.
     #[cfg(feature = "debug-hooks")]
     fn no_step_out_target(
-        &self,
+        flow: &Flow,
         mode: crate::debug_control::StepMode,
         depth_before: usize,
     ) -> Option<crate::DebugRunOutcome> {
@@ -2039,16 +2270,14 @@ impl<R: StoryRng> Story<R> {
         if mode != StepMode::Out {
             return None;
         }
-        let innermost_is_thread = self
-            .default
-            .flow
+        let innermost_is_thread = flow
             .current_thread()
             .call_stack
             .last()
             .is_some_and(|frame| frame.frame_type == CallFrameType::Thread);
         (depth_before <= 1 || innermost_is_thread).then(|| crate::DebugRunOutcome {
             reason: DebugStopReason::NoStepOutTarget,
-            position: Self::position_of(&self.default.flow),
+            position: Self::position_of(flow),
             depth: depth_before,
         })
     }
@@ -2064,19 +2293,22 @@ impl<R: StoryRng> Story<R> {
     /// has no line info".
     #[cfg(feature = "debug-hooks")]
     fn line_before(
-        &self,
+        program: &crate::Program,
+        flow: &Flow,
         granularity: StepGranularity,
         depth_before: usize,
     ) -> Result<Option<(u32, u32)>, crate::DebugRunOutcome> {
         match granularity {
             StepGranularity::Instruction => Ok(None),
-            StepGranularity::Line => Self::line_key_of(&self.default.flow, &self.program)
-                .map(Some)
-                .ok_or_else(|| crate::DebugRunOutcome {
-                    reason: crate::debug_control::DebugStopReason::NoLineInfo,
-                    position: Self::position_of(&self.default.flow),
-                    depth: depth_before,
-                }),
+            StepGranularity::Line => {
+                Self::line_key_of(flow, program)
+                    .map(Some)
+                    .ok_or_else(|| crate::DebugRunOutcome {
+                        reason: crate::debug_control::DebugStopReason::NoLineInfo,
+                        position: Self::position_of(flow),
+                        depth: depth_before,
+                    })
+            }
         }
     }
 
@@ -2085,8 +2317,8 @@ impl<R: StoryRng> Story<R> {
         Self::position_of(flow).and_then(|pos| program.debug_line_key(pos))
     }
 
-    /// The default flow's current `(container_idx, offset)`, or `None`
-    /// when the innermost frame's container stack is empty — same read
+    /// The current `(container_idx, offset)` of a flow, or `None` when
+    /// the innermost frame's container stack is empty — same read
     /// `build_debug_snapshot`'s own `frame_position` closure performs.
     #[cfg(feature = "debug-hooks")]
     fn position_of(flow: &Flow) -> Option<crate::DebugPosition> {
@@ -2100,7 +2332,7 @@ impl<R: StoryRng> Story<R> {
             })
     }
 
-    /// The default flow's current thread's call-stack depth.
+    /// A flow's current thread's call-stack depth.
     #[cfg(feature = "debug-hooks")]
     fn depth_of(flow: &Flow) -> usize {
         flow.current_thread().call_stack.len()
