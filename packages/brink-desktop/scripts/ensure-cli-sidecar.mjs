@@ -47,9 +47,16 @@
 // below fails that scan as well as this script's own tests.
 
 import { execSync, execFileSync } from "node:child_process";
-import { copyFileSync, chmodSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  chmodSync,
+  mkdirSync,
+  existsSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
 const defaultRepoRoot = resolve(here, "../../..");
@@ -571,7 +578,23 @@ const requestsUniversal =
   process.argv.includes("--universal") ||
   process.env.TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin";
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compared as REAL paths. `import.meta.url` is symlink-resolved by Node
+// while `process.argv[1]` is not, so on macOS — where `/var` is a symlink
+// to `/private/var` — a script run from anywhere under `$TMPDIR` compared
+// unequal and this guard silently did not fire. That is the worst shape a
+// safety check can fail in: `tauri.conf.json`'s `beforeBundleCommand` runs
+// this file directly, and an inert guard ships whatever it was meant to
+// stop. Wrapped because `realpathSync` throws on a path that no longer
+// exists.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
   if (requestsUniversal) {
     stageUniversalCliSidecar();
   } else {

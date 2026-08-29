@@ -47,15 +47,29 @@ const EXPECTED_SCRIPTS = [
   "ensure-wasm.mjs",
 ];
 
-// The exact idiom both scripts use verbatim, and the one named in #2478.
-// The leading `process.argv[1] &&` is load-bearing, not decorative: with no
-// script path at all — `node --input-type=module -e "await import(...)"`,
-// which is precisely how `ensure-wasm.test.ts` proves the module is inert —
-// `argv[1]` is undefined and `pathToFileURL(undefined)` throws, so a guard
-// written without it makes importing the module fail instead of doing
-// nothing. Requiring the whole line is therefore stricter on purpose.
+// The idiom all four scripts use verbatim.
+//
+// It compares REAL paths. The original form compared `import.meta.url`
+// against `pathToFileURL(process.argv[1]).href` directly, and Node
+// symlink-resolves the former but not the latter — so on macOS, where
+// `/var` is a symlink to `/private/var`, a script run from anywhere under
+// `$TMPDIR` compared unequal and the guard silently did not fire. Every
+// standalone-invocation test in this directory failed that way, and worse,
+// `tauri.conf.json`'s `beforeBundleCommand` runs `assert-real-sidecar.mjs`
+// directly: an inert guard there ships the stub sidecar it exists to catch.
+//
+// The `if (!process.argv[1]) return false` arm is load-bearing, not
+// decorative: with no script path at all — `node --input-type=module -e
+// "await import(...)"`, which is precisely how `ensure-wasm.test.ts` proves
+// the module is inert — `argv[1]` is undefined and `realpathSync(undefined)`
+// throws, so a guard written without it makes importing the module fail
+// instead of doing nothing.
 const MAIN_GUARD_PATTERN =
-  /if\s*\(\s*process\.argv\[1\]\s*&&\s*import\.meta\.url\s*===\s*pathToFileURL\(process\.argv\[1\]\)\.href\s*\)/;
+  /realpathSync\(fileURLToPath\(import\.meta\.url\)\)\s*===\s*realpathSync\(process\.argv\[1\]\)/;
+
+// The undefined-`argv[1]` arm, required separately so a guard cannot drop it
+// and still match the comparison above.
+const ARGV_GUARD_PATTERN = /if\s*\(\s*!\s*process\.argv\[1\]\s*\)\s*return\s+false/;
 
 // "exports its core logic as a named function (not only top-level
 // imperative code)" — the second item of #2478's fix shape.
@@ -70,6 +84,10 @@ function listPreflightScripts(dir: string): string[] {
 
 function hasMainGuard(source: string): boolean {
   return MAIN_GUARD_PATTERN.test(source);
+}
+
+function guardsUndefinedArgv(source: string): boolean {
+  return ARGV_GUARD_PATTERN.test(source);
 }
 
 function hasNamedExport(source: string): boolean {
@@ -91,8 +109,15 @@ describe("packages/brink-desktop/scripts/*.mjs carry the main-guard (#2478)", ()
         expect(hasNamedExport(source)).toBe(true);
       });
 
-      it("carries the import.meta.url === pathToFileURL(process.argv[1]).href main-guard", () => {
+      it("carries the realpath-compared main-guard", () => {
         expect(hasMainGuard(source)).toBe(true);
+      });
+
+      it("returns false for an absent argv[1] rather than throwing on import", () => {
+        // Dropping this arm would still match the comparison above, while
+        // making a bare `import()` of the module throw inside `realpathSync`
+        // instead of doing nothing.
+        expect(guardsUndefinedArgv(source)).toBe(true);
       });
     });
   }
@@ -111,27 +136,37 @@ describe("packages/brink-desktop/scripts/*.mjs carry the main-guard (#2478)", ()
       expect(hasMainGuard(unguarded)).toBe(false);
     });
 
-    it("rejects a near-miss guard that omits the process.argv[1] check", () => {
-      // Not pedantry: without the presence check this line throws under
-      // `node -e`, where `argv[1]` is undefined — so the module is not
-      // inert on import, which is the property the guard exists to give.
-      const nearMiss = [
-        "export function ensureWasm() {}",
-        "if (import.meta.url === pathToFileURL(process.argv[1]).href) {",
-        "  ensureWasm();",
-        "}",
-      ].join("\n");
-      expect(hasMainGuard(nearMiss)).toBe(false);
-    });
-
-    it("accepts the real guard line", () => {
-      const guarded = [
+    it("rejects the old href comparison, which symlinks defeat", () => {
+      // The shape every script carried before: Node symlink-resolves
+      // `import.meta.url` but not `argv[1]`, so under macOS's
+      // `/var` -> `/private/var` this compared unequal and the guard never
+      // fired.
+      const symlinkNaive = [
         "export function ensureWasm() {}",
         "if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {",
         "  ensureWasm();",
         "}",
       ].join("\n");
+      expect(hasMainGuard(symlinkNaive)).toBe(false);
+    });
+
+    it("accepts the real guard line", () => {
+      const guarded = [
+        "export function ensureWasm() {}",
+        "const invokedDirectly = (() => {",
+        "  if (!process.argv[1]) return false;",
+        "  try {",
+        "    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);",
+        "  } catch {",
+        "    return false;",
+        "  }",
+        "})();",
+        "if (invokedDirectly) {",
+        "  ensureWasm();",
+        "}",
+      ].join("\n");
       expect(hasMainGuard(guarded)).toBe(true);
+      expect(guardsUndefinedArgv(guarded)).toBe(true);
     });
   });
 
