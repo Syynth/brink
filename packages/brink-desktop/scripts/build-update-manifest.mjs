@@ -16,9 +16,9 @@
 // Logic is exported and the standalone run sits behind the main-guard idiom
 // (#2478) that every script in this directory carries.
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 /**
  * @typedef {{ signature: string, url: string }} PlatformEntry
@@ -158,7 +158,23 @@ export function buildManifest({ dir, version, tag, repo, notes = "", pubDate, re
   return { version, notes, pub_date: pubDate, platforms };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compared as REAL paths. `import.meta.url` is symlink-resolved by Node
+// while `process.argv[1]` is not, so on macOS — where `/var` is a symlink
+// to `/private/var` — a script run from anywhere under `$TMPDIR` compared
+// unequal and this guard silently did not fire. That is the worst shape a
+// safety check can fail in: `tauri.conf.json`'s `beforeBundleCommand` runs
+// this file directly, and an inert guard ships whatever it was meant to
+// stop. Wrapped because `realpathSync` throws on a path that no longer
+// exists.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
   const [dir, version, tag, repo, out] = process.argv.slice(2);
   if (!dir || !version || !tag || !repo || !out) {
     console.error("usage: build-update-manifest.mjs <dir> <version> <tag> <repo> <out>");

@@ -284,6 +284,9 @@ importers:
       '@brink-lang/editor':
         specifier: workspace:*
         version: link:../ink-editor
+      '@brink-lang/web':
+        specifier: workspace:*
+        version: link:../wasm
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations
