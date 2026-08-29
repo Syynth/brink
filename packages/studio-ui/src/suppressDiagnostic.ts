@@ -8,7 +8,8 @@
  * | Gesture | What it writes | Compiler side |
  * |---|---|---|
  * | this line | `// brink-disable Exxx` above the line | `brink-ir::suppressions` |
- * | this file | `// brink-disable-file` at the top | same |
+ * | this code, this file | `// brink-disable-file Exxx` at the top | same |
+ * | everything, this file | `// brink-disable-file-all` at the top | same |
  * | this project | `[lints] Exxx = "allow"` | `brink-analyzer` + `brink.toml` |
  *
  * `// brink-expect` is deliberately NOT offered: it suppresses AND asserts
@@ -71,16 +72,50 @@ export function suppressOnLine(source: string, offset: number, code: string): st
 }
 
 /**
- * Put `// brink-disable-file` at the top of the file.
+ * Put `// brink-disable-file <code>` at the top of the file.
  *
  * Goes above everything, including any existing leading comment: the
  * directive is file-scoped, so its position carries no meaning beyond
  * "this file", and burying it under a header comment makes it easy to miss
  * when wondering why a file reports nothing.
+ *
+ * NAMES THE CODE (#3259). This function used to take no code at all and
+ * write a bare `// brink-disable-file`, while the menu item offering it read
+ * "Suppress E157 in this file" — so one click silenced every diagnostic in
+ * the file and the label said otherwise. Codes are whitespace-separated,
+ * matching the line-scoped directive.
+ *
+ * An existing file directive is EXTENDED rather than duplicated: two of them
+ * are legal but make the file's suppression state two things to read instead
+ * of one.
  */
-export function suppressInFile(source: string): string {
-  if (/^\s*\/\/\s*brink-disable-(file|all)\s*$/m.test(source)) return source;
-  return `// brink-disable-file\n${source}`;
+export function suppressInFile(source: string, code: string): string {
+  if (/^\s*\/\/\s*brink-disable-(file-all|all)\s*$/m.test(source)) {
+    // Already blanket-suppressed; naming one code would narrow nothing.
+    return source;
+  }
+  const existing = /^\s*\/\/\s*brink-disable-file[ \t]+(.*)$/m.exec(source);
+  if (existing) {
+    const codes = (existing[1] ?? "").trim().split(/\s+/).filter(Boolean);
+    if (codes.includes(code)) return source;
+    return source.replace(
+      existing[0],
+      `// brink-disable-file ${[...codes, code].join(" ")}`,
+    );
+  }
+  return `// brink-disable-file ${code}\n${source}`;
+}
+
+/**
+ * Put `// brink-disable-file-all` at the top of the file — every diagnostic.
+ *
+ * Spelled `-all` since #3259. The bare `// brink-disable-file` used to mean
+ * this, which is exactly why a code-scoped gesture could not be told apart
+ * from a blanket one; the compiler now reports the bare form as `E192`.
+ */
+export function suppressAllInFile(source: string): string {
+  if (/^\s*\/\/\s*brink-disable-(file-all|all)\s*$/m.test(source)) return source;
+  return `// brink-disable-file-all\n${source}`;
 }
 
 /**

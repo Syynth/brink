@@ -2041,6 +2041,20 @@ pub enum DiagnosticCode {
     /// stopped being VO-addressable would have no way to notice. The fix
     /// is to split the line or move an alternative to its own line.
     E191,
+
+    /// A `brink-`prefixed comment the suppression parser did not understand
+    /// (#3259).
+    ///
+    /// Directives were matched by exact string equality and anything else
+    /// was dropped in silence — so `// brink-disable-file E157`, which looks
+    /// exactly like the line-scoped form that DOES take codes, suppressed
+    /// nothing and reported nothing. The author got neither the behaviour
+    /// they asked for nor a reason, which is the silent-drop shape this
+    /// project treats as a bug by default.
+    ///
+    /// `Warning`-tier: the file still compiles. The harm is that a
+    /// suppression the author believes is in force is not.
+    E192,
 }
 
 impl DiagnosticCode {
@@ -2244,6 +2258,7 @@ impl DiagnosticCode {
         Self::E189,
         Self::E190,
         Self::E191,
+        Self::E192,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2444,6 +2459,7 @@ impl DiagnosticCode {
             Self::E189 => "E189",
             Self::E190 => "E190",
             Self::E191 => "E191",
+            Self::E192 => "E192",
         }
     }
 
@@ -2773,6 +2789,9 @@ impl DiagnosticCode {
             Self::E191 => {
                 "inline alternatives on one line enumerate to more whole-line variants than the cap allows"
             }
+            Self::E192 => {
+                "unrecognized `brink-` directive comment — it suppresses nothing as written"
+            }
         }
     }
 
@@ -2840,7 +2859,11 @@ impl DiagnosticCode {
             // is Warning-tier: it is the always-unsafe verdict entry behind
             // the rename Force gate, synthesized by the IDE, never emitted
             // by compilation.
-            | Self::E190 => Severity::Warning,
+            | Self::E190
+            // E192 (#3259): a directive that suppresses nothing is a
+            // warning, not an error — the file still compiles, and the harm
+            // is a suppression the author thinks is in force but is not.
+            | Self::E192 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -3132,6 +3155,7 @@ impl DiagnosticCode {
             "E189" => Some(Self::E189),
             "E190" => Some(Self::E190),
             "E191" => Some(Self::E191),
+            "E192" => Some(Self::E192),
             _ => None,
         }
     }

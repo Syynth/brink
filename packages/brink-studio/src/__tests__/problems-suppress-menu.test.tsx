@@ -106,11 +106,15 @@ const click = (label: string): void => {
 };
 
 describe("which items appear", () => {
-  it("offers all three scopes, narrowest first", () => {
+  it("offers every scope, narrowest first, each labelled for what it does", () => {
+    // The blanket file gesture is its OWN item (#3259). One item that said
+    // "Suppress E035 in this file" while silencing the whole file is what
+    // this split fixes — the label and the effect now agree, both times.
     mount(diag());
     expect(labels()).toEqual([
       "Suppress E035 on this line",
       "Suppress E035 in this file",
+      "Suppress all diagnostics in this file",
       "Suppress E035 in this project",
       "Configure E035…",
     ]);
@@ -160,10 +164,18 @@ VAR roll = 0
 `);
   });
 
-  it("this file — a directive at the top", () => {
+  it("this file — names the code, so only that code is silenced", () => {
     const { files } = mount(diag());
     click("Suppress E035 in this file");
-    expect(files.get("main.ink")).toBe(`// brink-disable-file\n${STORY}`);
+    expect(files.get("main.ink")).toBe(`// brink-disable-file E035\n${STORY}`);
+  });
+
+  it("all in this file — the -all spelling, not the bare form", () => {
+    // Bare `// brink-disable-file` is now reported as E192; the blanket
+    // meaning moved to `-all`.
+    const { files } = mount(diag());
+    click("Suppress all diagnostics in this file");
+    expect(files.get("main.ink")).toBe(`// brink-disable-file-all\n${STORY}`);
   });
 
   it("this project — writes to brink.toml, not the story", () => {

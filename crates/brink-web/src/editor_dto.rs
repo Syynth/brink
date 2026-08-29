@@ -1250,6 +1250,12 @@ const CATEGORIES: &[(&str, &str)] = &[
     // (ruled 2026-08-27, #3173).
     ("E157", "Author notes"),
     ("E189", "Author notes"),
+    // The `// brink-…` comment channel itself. Its own group rather than
+    // folded into "Deprecated spellings": the bare `// brink-disable-file`
+    // IS a superseded spelling, but E192 also covers a directive that was
+    // never valid (`// brink-disable-fil E027`), and grouping by "how the
+    // author got it wrong" would put those two in different places.
+    ("E192", "Suppression directives"),
 ];
 
 /// One diagnostic code, as the settings UI needs it (#3169).

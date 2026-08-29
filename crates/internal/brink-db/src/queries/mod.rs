@@ -3202,6 +3202,8 @@ pub struct FileDiagnostics<'a> {
 static NO_SUPPRESSIONS: Suppressions = Suppressions {
     disable_all: false,
     disable_file: false,
+    file_codes: Vec::new(),
+    malformed: Vec::new(),
     line_directives: std::collections::BTreeMap::new(),
     allow_scopes: Vec::new(),
 };
