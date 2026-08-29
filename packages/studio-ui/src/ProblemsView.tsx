@@ -14,6 +14,7 @@ import { lineColAt } from "@brink-lang/editor";
 import { isProseDiagnostic, type ProblemSeverityBucket } from "@brink/studio-store";
 import type { Diagnostic } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
+import { TODO_DIAGNOSTIC_CODE } from "./TodosView.js";
 import { ChevronIcon, FilterIcon, GroupByFileIcon } from "./icons.js";
 import {
   ProblemsContextMenu,
@@ -78,11 +79,15 @@ export function diagnosticLocation(diagnostic: Diagnostic) {
  * TODO notes (Info) are the common case.
  */
 export function severityBucket(diagnostic: Diagnostic): ProblemSeverityBucket {
-  // Source before severity: a prose finding is Info-severity, and letting
-  // it fall through to the `info` bucket would put every proper noun on
-  // top of the E189 TODO notes an author actually reads — and make the
-  // "off by default" rule impossible to express, since `info` is on.
+  // Source before severity. Both of these are Info-severity, and letting
+  // them fall through to the `info` bucket would make the "off by default"
+  // rule impossible to express, since `info` is on.
   if (isProseDiagnostic(diagnostic)) return "prose";
+  // TODO notes belong to the TODOs panel; the Problems panel shows them
+  // only when asked (ruled 2026-08-29). Before this the only lever was
+  // `[lints] E189 = "allow"`, which suppresses at the COMPILER and so
+  // emptied the TODOs panel as well.
+  if (diagnostic.code === TODO_DIAGNOSTIC_CODE) return "todo";
   if (diagnostic.severity === "Error") return "error";
   if (diagnostic.severity === "Info" || diagnostic.severity === "Hint") return "info";
   return "warning";
@@ -99,6 +104,7 @@ export function countBySeverity(
     warning: 0,
     info: 0,
     prose: 0,
+    todo: 0,
   };
   for (const row of rows) counts[severityBucket(row.diagnostic)] += 1;
   return counts;
@@ -144,7 +150,11 @@ export function groupProblemRows(rows: readonly ProblemRow[]): ProblemFileGroup[
     const file = row.diagnostic.file;
     let group = groups.get(file);
     if (!group) {
-      group = { file, rows: [], counts: { error: 0, warning: 0, info: 0, prose: 0 } };
+      group = {
+        file,
+        rows: [],
+        counts: { error: 0, warning: 0, info: 0, prose: 0, todo: 0 },
+      };
       groups.set(file, group);
     }
     group.rows.push(row);
@@ -163,6 +173,7 @@ export function summarizeCounts(counts: Record<ProblemSeverityBucket, number>): 
   // Named for what it is rather than "prose": an author reading a count
   // wants to know it is spelling, not which subsystem produced it.
   if (counts.prose > 0) parts.push(`${counts.prose} spelling`);
+  if (counts.todo > 0) parts.push(`${counts.todo} todo`);
   return parts.join(" · ");
 }
 
@@ -190,14 +201,16 @@ const BUCKET_GLYPH: Record<ProblemSeverityBucket, string> = {
   // Not a severity glyph: the prose toggle is a different KIND of control
   // and should not read as a fourth severity tier.
   prose: "\u270E",
+  todo: "\u2611",
 };
 const BUCKET_LABEL: Record<ProblemSeverityBucket, string> = {
   error: "errors",
   warning: "warnings",
   info: "info and hints",
   prose: "spelling and grammar",
+  todo: "TODO notes",
 };
-const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info", "prose"];
+const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info", "prose", "todo"];
 
 /**
  * The compile's diagnostics plus the prose checker's findings, as one list.
