@@ -3912,3 +3912,69 @@
 - **NOTE:** This is a sequencing decision about prose checking, not a
   reversal of "the project's center is the NATIVE surface". It stands
   because the ink gap was small, measured, and in the way.
+
+## Line-variant groups stage 3: combo kinds keep the lift; mixed lines share alternative state
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** compiler (hir normalize / lir lower / codegen)
+- **SCOPE:** moderate
+- **WHAT:** Two rulings settling #3275's design questions. (1) Combo-kind
+  lines (`shuffle|once`, `shuffle|stopping`) and structural-branch lines
+  **keep the cartesian lift** rather than moving to the shared-inline
+  fragment path: each rendering stays a whole line in the line table — a
+  translation unit and a VO slot. (2) Mixed lines (a stateful alternative
+  beside an inline conditional or other unclaimed construct) **pin ink's
+  shared-state semantics**: the cloned alternative keeps one container id
+  across every lifted branch, so it advances once per line view whichever
+  branch renders. The enabling move is stamping container ids on pristine
+  HIR before normalization (both compile roads), with clones deriving ids
+  deterministically and sharing revoked per lift level when a branch fails
+  to reassemble into a claimable variant line.
+- **WHY:** On (1) the maintainer's question was "what's the benefit of not
+  lifting them?" — and the only benefit was deleting normalize code, while
+  the cost was per-line VO association on those lines. Whole-line entries
+  won. On (2) the per-branch private copies produced `p` twice in
+  `{n > 1: late|early} {&p|q}` where ink documents one shared advance;
+  the ruling pins the documented semantics (permanent `variant_flip`
+  case). One-time golden churn was accepted for the stamping move; the
+  parity design made it moot — zero churn, ratchet unmoved at 5608.
+- **NOTE:** Stage 3c's residue analysis concluded the lift machinery
+  retires **nothing**: with (1) ruled, every arm of `try_lift_inline`
+  (once→stopping synthesis, synthesized else, cartesian recursion,
+  sharing revocation) is reachable through combo-kind, conditional-
+  bearing, or structural-branch lines. #3275 closes with the lift as the
+  permanent fallback model, documented in `normalize.rs`'s module doc.
+
+## Anonymous-id counters go weave-block-local; labels anchor their subtrees
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** compiler (hir stamp)
+- **SCOPE:** moderate
+- **WHAT:** Two rulings on anonymous-container identity, taken together as
+  one one-time renumbering. (1) The conditional/sequence counter (`b-N`/
+  `s-N`) stops being knot-global and adopts the scoping the choice/gather
+  counters already had: fresh wherever the walk enters a body whose scope
+  path narrows uniquely (choice bodies, sequence branches), threaded
+  through whatever continues the enclosing weave (continuations,
+  conditional branches). An insertion now shifts anonymous ids only for
+  later siblings in the same weave block, never across the whole knot.
+  (2) A `(label)` anchors its subtree: a labeled choice's or labeled
+  block's descendants scope under `#lbl:{label_id}` instead of the
+  positional path, so naming a container insulates everything inside it.
+- **WHY:** The global counter existed to keep two independent walks (HIR
+  stamping and the LIR planning pass) synchronized; the pristine-HIR
+  stamping move (#3283) reduced identity to a single walk and made the
+  constraint obsolete. Block-local counters shrink E157's exposure and
+  the save-invalidation blast radius, and label anchoring makes E157's
+  own suggested fix maximally effective. The cost — existing saves'
+  anonymous visit states detach once (`LoadReport::
+  anonymous_states_dropped`) — was accepted as a one-time break; named
+  state is unaffected. The re-scoping also fixed a real miscompile guard
+  trip: a block-level `{stopping:}` with a choice in two branches
+  stamped both `{wrapper}.c-0` (branch bodies recursed under the
+  wrapper's scope with fresh counters), tripping E060 on legal ink;
+  branch bodies now recurse under the branch's own indexed path.
+- **NOTE:** The LIR lowerer's twin display-name counter keeps its global
+  numbering — post-#3283 it feeds container display names only, so
+  stamped id paths and display names can drift apart in dumps. Accepted;
+  deriving names from stamped ids is a possible future cleanup.

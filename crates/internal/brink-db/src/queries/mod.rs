@@ -2302,8 +2302,7 @@ pub(crate) fn normalized_stamped_query(
     file: SourceFile,
 ) -> Arc<HirFile> {
     let resolved = resolutions_index_query(db, project);
-    let mut hir = lowered_query(db, project, file).hir.clone();
-    brink_ir::normalize_file(&mut hir);
+    let hir = lowered_query(db, project, file).hir.clone();
     let mut slice = [(file.file_id(db), hir)];
     // #1504: the file's own path qualifies its root-content scope path, so
     // two files' root weaves no longer mint the same anonymous ids. Reading
@@ -2321,7 +2320,16 @@ pub(crate) fn normalized_stamped_query(
         crate::modules::root_relative_key(ink_root, file.path(db)).into_owned(),
     ))
     .collect();
+    // #3275 (stage 3a): stamp BEFORE normalize — ids are minted on the
+    // pristine tree (single-construct lines keep byte-identical ids: the
+    // lift preserves statement position, and the stamp walk mirrors the
+    // lifted forms' scope paths), and `normalize_file`'s lift then
+    // INHERITS them, deriving fresh ids only for genuine clones. This is
+    // what lets a cloned stateful alternative share one container (the
+    // ruled ink semantics) — post-normalize stamping could only ever see
+    // the clones as distinct nodes.
     brink_ir::stamp_container_ids(&mut slice, &resolved.index, &file_paths);
+    brink_ir::normalize_file(&mut slice[0].1);
     let [(_, stamped)] = slice;
     Arc::new(stamped)
 }

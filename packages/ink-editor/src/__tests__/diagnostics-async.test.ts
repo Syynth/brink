@@ -12,7 +12,7 @@ import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { CompileResult } from "@brink/wasm-types";
-import { diagnosticsExtension } from "../diagnostics.js";
+import { diagnosticsExtension, refreshDiagnosticsEffect } from "../diagnostics.js";
 
 interface Deferred {
   promise: Promise<CompileResult>;
@@ -152,5 +152,104 @@ describe("diagnosticsExtension with an async compile", () => {
     });
     await vi.advanceTimersByTimeAsync(500);
     expect(diagnosticsIn(view)).toEqual(["sync road"]);
+  });
+});
+
+/**
+ * Re-publishing without a document change (#3260).
+ *
+ * The squiggles are published by this extension's ViewPlugin, which wakes on
+ * `docChanged`. A compile that lands for some other reason — a `brink.toml`
+ * edit changing `[lints]`, a suppression written into a sibling file — has
+ * no document change in THIS view, so the squiggles stayed as they were.
+ *
+ * Reported as: suppress a diagnostic project-wide from the Problems panel,
+ * watch it sit in the buffer until you type or reopen the file. "Even
+ * editing the buffer updates it" was the clue that named the cause.
+ */
+describe("refreshDiagnosticsEffect", () => {
+  let view: EditorView | null = null;
+  let next: CompileResult;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    next = resultWithError("suppress me");
+  });
+
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+    vi.useRealTimers();
+  });
+
+  function mountSync(): EditorView {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "hello\n",
+        extensions: [
+          diagnosticsExtension({
+            compile: () => next,
+            getActiveFile: () => "main.ink",
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+    return view;
+  }
+
+  it("re-publishes when the compile result changed but the document did not", async () => {
+    const v = mountSync();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(diagnosticsIn(v)).toEqual(["suppress me"]);
+
+    // The suppression lands in `brink.toml`, not in this buffer.
+    next = { ok: true, warnings: [] } as CompileResult;
+    v.dispatch({ effects: refreshDiagnosticsEffect.of() });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(diagnosticsIn(v)).toEqual([]);
+  });
+
+  it("does nothing without the effect — the bug, stated", async () => {
+    // Same setup, no refresh: the stale squiggle survives, which is exactly
+    // what an author saw after suppressing a code project-wide.
+    const v = mountSync();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(diagnosticsIn(v)).toEqual(["suppress me"]);
+
+    next = { ok: true, warnings: [] } as CompileResult;
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(diagnosticsIn(v)).toEqual(["suppress me"]);
+  });
+
+  it("an ordinary transaction does not trigger a re-publish", async () => {
+    // The effect is the signal, not "any transaction" — a selection change
+    // must not spend a compile.
+    const v = mountSync();
+    await vi.advanceTimersByTimeAsync(500);
+    let compiles = 0;
+    const counted = new EditorView({
+      state: EditorState.create({
+        doc: "hello\n",
+        extensions: [
+          diagnosticsExtension({
+            compile: () => {
+              compiles += 1;
+              return next;
+            },
+            getActiveFile: () => "main.ink",
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    const before = compiles;
+    counted.dispatch({ selection: { anchor: 1 } });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(compiles).toBe(before);
+    counted.destroy();
   });
 });
