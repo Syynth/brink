@@ -1,10 +1,26 @@
-import { type Extension } from "@codemirror/state";
+import { StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Diagnostic } from "@codemirror/lint";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
 import { renderDiagnosticMessage } from "./diagnostic-anatomy.js";
 import type { CompileResult } from "@brink/wasm-types";
 import { perfSpan, perfTime } from "./perf/probe.js";
+
+/**
+ * Re-publish compile diagnostics without a document change (#3260).
+ *
+ * The squiggles are published by this extension's own ViewPlugin, which
+ * wakes on `docChanged`. A compile that lands for some OTHER reason — a
+ * `brink.toml` edit changing `[lints]`, a suppression written into a
+ * sibling file — has no document change in THIS view to wake it, so the
+ * squiggles stayed as they were until the author typed or reopened the
+ * file. Suppressing a diagnostic project-wide and watching it sit there is
+ * how that was reported.
+ *
+ * The prose checker already had exactly this seam (`refreshProseEffect`)
+ * for the same reason; this is its compile-side twin.
+ */
+export const refreshDiagnosticsEffect = StateEffect.define<void>();
 
 export interface DiagnosticsOptions {
   /**
@@ -57,6 +73,17 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
       update(update: ViewUpdate): void {
         if (update.docChanged) {
           this.docGen += 1;
+          this.schedule();
+          return;
+        }
+        // A refresh carries no document change, so `docGen` must NOT move:
+        // bumping it would invalidate an in-flight compile whose offsets are
+        // still correct, and drop its result.
+        if (
+          update.transactions.some((t) =>
+            t.effects.some((e) => e.is(refreshDiagnosticsEffect)),
+          )
+        ) {
           this.schedule();
         }
       }
