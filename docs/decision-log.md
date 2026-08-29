@@ -4053,3 +4053,50 @@
   while already rendering call stack + locals (#3140), was built as a
   passive inspector — frame selection, breakpoint management, and
   stop-reason presentation are structural additions, not decorations.
+
+## Player rebuild: paced auto-reveal as a transport button; tag toggle; visible line rows
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (Player rebuild — debugger UI round, #452 D9 / #3199)
+- **SCOPE:** moderate
+- **WHAT:** (1) **Auto is a toggle button in the transport** (double-arrow
+  fast-forward icon, pressed state = on), replacing the checkbox. (2) An
+  **App setting governs auto-reveal pacing**: even when the runtime
+  delivers a turn's lines as a chunk, auto playback can reveal them **one
+  line at a time in rapid succession** rather than as a block — the pacing
+  is a playback concern in the Player, not a runtime delivery change.
+  (3) A **toggle shows the tags** delivered with each line
+  (`OutputLine.tags`), rendered as muted per-line chips. (4) The
+  transcript gets a **subtle row-based highlight** so the author can see
+  what constitutes a delivered line and where its boundaries are —
+  subtle but informative.
+- **WHY:** Maintainer direction on reviewing the first canvas. The pacing
+  point is explicitly about the *playback* of auto mode ("maybe the
+  runtime delivers in a big chunk, but the playback of auto mode should
+  still do one at a time") — the reading experience should keep line
+  rhythm even when the engine batches. Tags and line boundaries are
+  authoring visibility: a line is the runtime's delivery unit (and the
+  debugger's stepping unit), so the author needs to see its edges and
+  its metadata without leaving the Player.
+
+## Breakpoints share the play gutter's column
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (debugger UI round, #452 D9 / #3233)
+- **SCOPE:** moderate
+- **WHAT:** The breakpoint glyph renders **in the same gutter column as
+  the "play from here" ▶**, not in a separate host-gutter column. Their
+  placements rarely conflict — ▶ appears only on hovered *header* lines
+  (knot/stitch), breakpoints live on statement lines. Where both apply
+  (a breakpoint on a header line), the hover glyph stays ▶ and the
+  gutter's context menu carries "Set breakpoint here". The paused-here
+  execution arrow overlays the same column.
+- **WHY:** Maintainer reasoning: "a place where a breakpoint can go and
+  a 'play from here' don't overlap much." Avoids growing the gutter
+  column count, consistent with the detached-gutters ruling (#3119)
+  which preferred detaching gutters over thinning their content.
+  Implementation consequence: breakpoint markers merge into the play
+  gutter's column (extend `play-from-here.ts`'s gutter or point the
+  host-marker rendering at its slot) rather than mounting
+  `hostGutterExtension`'s parallel column; the host-gutter marker model
+  can still carry the data.

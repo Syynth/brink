@@ -55,6 +55,12 @@ tooltip explains), stepping reports no source position.
   Clicking a line with no statement binds to the nearest following
   `IS_STMT` entry (DAP convention) and the dot renders on the line it
   actually bound to.
+- **Placement (RULED 2026-08-29)**: the breakpoint glyph shares the
+  **play gutter's column** — no separate host-gutter column. ▶ appears
+  only on hovered header lines and breakpoints live on statement lines,
+  so conflicts are rare; on a header line the hover glyph stays ▶ and the
+  gutter context menu carries "Set breakpoint here". The paused-here
+  arrow (F4) overlays the same column.
 - **Model**: the store keeps breakpoints **source-anchored** (`file` +
   range), per D1's range-keyed v1 ruling. On every compile they re-bind via
   the source→program resolver; the `(container_idx, offset)` handed to the
@@ -192,6 +198,29 @@ the selection surface), and the panel header names the flow being
 inspected. Per-flow breakpoint filtering and cross-flow stepping wait for
 #3223's runtime work; nothing in this design forecloses it.
 
+### F13 — Transcript line presentation (RULED 2026-08-29)
+
+Three refinements from the canvas review, all Player-side:
+
+- **Paced auto-reveal.** Auto mode is a transport *toggle button*
+  (fast-forward icon, pressed = on), not a checkbox. An App setting
+  ("Auto reveal: paced / all at once") controls playback pacing: when the
+  runtime delivers a turn's lines as a chunk, paced mode reveals them one
+  line at a time in rapid succession (proposed default: paced, ~150 ms
+  cadence — a playback timer in the Player, no runtime change).
+  Debugger interaction rules: a breakpoint/pause **flushes the reveal
+  queue instantly** (the paused marker must never lag reality), and
+  stepping output is never paced — pacing applies to free-running play
+  only.
+- **Tags toggle.** A Player toolbar toggle shows each line's delivered
+  tags (`OutputLine.tags`) as muted mono chips after the line text.
+  Off by default; persisted UI state.
+- **Line-row boundaries.** Every transcript row carries a subtle
+  always-on treatment (alternating ~2.5% row tint) so the boundary of
+  each delivered line — the runtime's delivery unit and the debugger's
+  stepping unit — is visible at a glance; hover strengthens the band
+  full-width and carries F9's provenance affordance.
+
 ## 3. The rebuilt Player
 
 Still an editor-area document (two-up with the source, per the Inky
@@ -200,13 +229,14 @@ lineage) — the rebuild changes its anatomy, not its address:
 - **Toolbar** (left→right): Run ▶(compile+start) · Restart ⟳ · transport
   cluster (Pause ⏸ / Continue ▶ when paused · Step Over · Step Into · Step
   Out — the cluster renders only when the provider has the `debug`
-  capability, disabled-not-hidden while running) · spacer · **status chip**
-  (playing / paused at `file:line` / parked / ended / out-of-sync — the
-  single home of F7's stop reasons) · Auto checkbox · Maximize.
-- **Transcript**: the existing screenplay rendering, plus F9's provenance
-  affordance, an unobtrusive marker on the line where execution is paused,
-  and auto-scroll that suspends when the author scrolls up (rebuild
-  housekeeping).
+  capability, disabled-not-hidden while running) · **Auto toggle**
+  (fast-forward icon, F13) · **tags toggle** (F13) · spacer · **status
+  chip** (playing / paused at `file:line` / parked / ended / out-of-sync —
+  the single home of F7's stop reasons) · Maximize.
+- **Transcript**: the existing screenplay rendering, plus F13's line-row
+  boundaries and tag chips, F9's provenance affordance, an unobtrusive
+  marker on the line where execution is paused, and auto-scroll that
+  suspends when the author scrolls up (rebuild housekeeping).
 - **Choices**: unchanged presentation; shared between play and debug.
 - Absorbed Player follow-ups: #3165 (Hide/Show persistence), #2795
   (narrow-tier route back to a closed player), #2796 (closed-tab layout
@@ -238,7 +268,7 @@ start; no debug info → names the App setting.
 | Flip debug-info default on; App-settings toggle; acceptance-gate re-baseline; perf-HUD measurement | `crates/brink-web/src/editor/mod.rs`, `brink-lsp`, `brink-ide`, `acceptance_gate.rs`, settings UI | modify |
 | Export source→program: `definition_id_for_path`, `resolve_address`, #3246's inverse resolver; add a `resolveSourceLine(file, line)` binding for breakpoint binding | `crates/brink-web/src/session.rs` + `story_runner.rs`, `packages/wasm`, `wasm-types` | add |
 | Register `program` + `session` location resolvers with the `sessionDegraded` gate | `packages/brink-studio/src/mount.tsx` (~10 lines; resolvers already exported) | wire |
-| Breakpoint gutter plumbing: new `DocumentSessionsOptions` callback → `slotOptions` → `hostGutterExtension`; `refreshGutterMarkers` fan-out on store change | `packages/ink-editor/src/document-sessions.ts`, `packages/brink-studio` | wire |
+| Breakpoint gutter plumbing: markers merge into the play gutter's column (extend `play-from-here.ts` or point host-marker rendering at its slot — ruled 2026-08-29, no parallel column); new `DocumentSessionsOptions` callback + refresh fan-out on store change; "Set breakpoint here" in the gutter context menu | `packages/ink-editor/src/play-from-here.ts`, `document-sessions.ts`, `packages/brink-studio` | wire |
 | New execution-highlight CM6 extension (effect-driven StateField, `hir-overlay.ts` pattern) | `packages/ink-editor/src/` (new file) | add |
 | Breakpoint source-anchor model: range-keyed store state, rebind-on-compile, CM6 change mapping, per-project persistence, bound/hollow status | `packages/studio-store/src/slices/debug.ts` | extend |
 | Drive-loop unification: Player advance routes through `debugRun` when breakpoints armed/paused; `DebugRunOutcome` ↔ `Step` coherence; pause verb | `packages/studio-store/src/session/local-provider.ts`, session slice | modify (load-bearing) |
@@ -278,8 +308,10 @@ changesets.
    reveal-on-stop + frame tint. *Proof:* both surfaces + degraded
    suppression, the `program-view-current-position.test.tsx` standard.
 7. **W7 — Player rebuild**: toolbar/transport/status chip/transcript
-   provenance/auto-scroll + absorbed follow-ups. *Proof:* vitest over
-   commands/capabilities; provenance jump test.
+   provenance/auto-scroll + F13 (auto toggle button, paced reveal + its
+   App setting, tags toggle, line-row boundaries) + absorbed follow-ups.
+   *Proof:* vitest over commands/capabilities; provenance jump test;
+   paced-reveal queue flushes instantly on a breakpoint/pause.
 8. **W8 — Debugger panel**: the StateView replacement. *Proof:* frame
    selection drives locals + reveal; placeholder states.
 9. **W9 — Program Explorer additions**: `stepi`, frame-follow, reveal-in-

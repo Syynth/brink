@@ -22,10 +22,25 @@
     .op { color: #89dceb; } .vname { color: #eba0ac; }
   </style>
 </helmet>
-<div style="width: 680px; height: 620px; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+<div style="width: 680px; height: 720px; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
   <div>
     <div style="font-size: 14px; font-weight: 600">Gutter + execution states</div>
-    <div style="font-size: 11px; color: #6c7086">Breakpoint column renders via hostGutterExtension, right of the play gutter. Identical on .ink and .brink.</div>
+    <div style="font-size: 11px; color: #6c7086">One shared column: breakpoints render where "play from here" does (ruled 2026-08-29). Identical on .ink and .brink.</div>
+  </div>
+
+  <div class="cell">
+    <div style="display: flex; gap: 12px; align-items: flex-start">
+      <div class="sample" style="flex: 1">
+        <span class="snum">8</span>
+        <span class="sglyph"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M3.5 2.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+        <span class="scode"><span class="op">===</span> <span style="color: #89b4fa">tavern</span> <span class="op">===</span></span>
+      </div>
+      <div style="background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.4); font-size: 11px; min-width: 150px">
+        <div style="padding: 4px 10px; background: #45475a">Play from here</div>
+        <div style="padding: 4px 10px; color: #cdd6f4">Set breakpoint here</div>
+      </div>
+    </div>
+    <p class="desc"><span class="lbl" style="display:inline">Header line — shared column.</span> Hover on a knot/stitch header shows ▶ (play wins the glyph); "Set breakpoint here" lives in the gutter context menu for the rare conflict.</p>
   </div>
 
   <div class="cell">

@@ -16,15 +16,19 @@ One scenario runs through every artboard: paused at a breakpoint on
   status chip + paused transcript marker, Debugger panel in the right
   dock, paused status-bar segment.
 - `Player.dc.html` — the rebuilt Player close-up in the *playing* state:
-  transport cluster (steps disabled until paused), status strip, choice
-  buttons, and the transcript provenance affordance (hover underline +
-  `file:line · ⌘-click to reveal` tooltip).
+  transport cluster (steps disabled until paused), auto-reveal toggle
+  (fast-forward icon, paced playback per App settings), tags toggle with
+  per-line chips, zebra line-row boundaries with an incoming paced line,
+  status strip, choice buttons, and the transcript provenance affordance
+  (hover band + `file:line · ⌘-click to reveal` tooltip).
 - `DebuggerPanel.dc.html` — the StateView replacement: header transport
   mirror, interactive Frames (selected frame, kind badges, clickable
   `file:line`, a parked "resumes here" frame), locals-first Variables
   with change highlight, Breakpoints with enable checkboxes, the old
   StateView content demoted to collapsed Story sections.
-- `GutterStates.dc.html` — the marker taxonomy: bound / disabled /
+- `GutterStates.dc.html` — the marker taxonomy in the ONE shared gutter
+  column (breakpoints render where "play from here" does; context menu
+  resolves header-line conflicts): header-conflict / bound / disabled /
   unbound-hollow / paused-here / selected-frame / parked, with the
   degraded-suppression rules.
 - `Transport.dc.html` — toolbar in four states (playing, paused, parked,
