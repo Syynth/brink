@@ -1,55 +1,49 @@
-//! Scripted debug sessions (issue #3247): a fixture, a list of actions a
-//! person would take in a debugger, and a transcript of what happened.
+//! Scripted debug sessions — the shared verb set for driving a debugger
+//! (issue #3247, extracted here by #3248).
 //!
-//! **Why this exists.** Debugger semantics are otherwise defined only by
-//! Rust unit tests written alongside the code they test — so a refactor
-//! that quietly changes what `step over` does at a choice point *passes*,
-//! because the test gets updated to match the new behaviour. There is no
-//! artifact saying what stepping is supposed to do. A scripted transcript
-//! makes the behaviour itself the artifact.
+//! **Why this lives in `brink-runtime`.** Three consumers need one
+//! definition of "step over": the scripted test harness, the CLI debugger,
+//! and the studio. `brink-cli` is a published crate, so it cannot depend on
+//! the test-only harness where this started; and a new crate purely to hold
+//! it would be publishable-but-unpublished, which CI's own publishable
+//! check refuses until a maintainer publishes it by hand. `brink-runtime`
+//! already owns the debug vocabulary (`debug_control`'s `BreakpointSet`,
+//! `StepMode`, `DebugRunOutcome`), so this is its sibling rather than a
+//! new home. Gated behind `debug-hooks`, so a build without the debugger
+//! carries none of it.
 //!
-//! **Source level, never bytecode.** Every assertion and every transcript
-//! line is expressed in source terms — `main.ink:2`, a local's name and
-//! value, a stack of frame names. Bytecode offsets are deliberately absent:
-//! they churn on every codegen change, so goldens written against them
+//! **Why debugger semantics need an artifact at all.** They were otherwise
+//! defined only by Rust unit tests written alongside the code they test —
+//! so a refactor that quietly changes what `step over` does *passes*,
+//! because the test gets updated to match. A scripted transcript makes the
+//! behaviour itself the artifact.
+//!
+//! **Source level, never bytecode.** Every assertion and transcript line is
+//! `main.ink:7`, a local's name and value, a stack of frame names. Bytecode
+//! offsets churn on every codegen change; goldens written against them
 //! would break constantly and teach everyone to re-accept snapshots without
-//! reading them, which is strictly worse than having no goldens because it
-//! launders real regressions through a habit.
+//! reading them — worse than no goldens, because it launders real
+//! regressions through a habit.
 //!
 //! **Two granularities, both first-class** (RULED 2026-08-28). `stepi` is
-//! VM-instruction stepping; `step` is line stepping. Neither is a
-//! second-class wrapper over the other: the studio will present the
-//! `.inkt` disassembly and the source side by side, so an author can watch
-//! a line and the instructions it became at the same time. GDB's vocabulary
-//! is borrowed on purpose — `stepi`/`nexti` for instructions, `step`/`next`
-//! for lines — because it is the convention every debugger user already
-//! has.
+//! VM-instruction stepping; `step` (and `next`) is line stepping. Neither
+//! is a wrapper over the other: the studio presents the `.inkt`
+//! disassembly beside the source, so an author can watch a line and the
+//! instructions it became at the same time. GDB's vocabulary is borrowed on
+//! purpose — it is the convention every debugger user already has.
 //!
-//! Both verbs exist as of #3264: `stepi into|over|out` for instructions,
-//! `step into|over|out` (and `next`, GDB's spelling of `step over`) for
-//! lines. Instruction stepping was spelled `stepi` from the start
-//! precisely so that adding `step` could not silently change what an
-//! existing golden meant.
-//!
-//! **Lines are 1-based in scripts.** A script is a thing a person writes,
-//! and `main.ink:2` means what every editor means by line 2. The engine is
-//! 0-based (`Program::resolve_source_line`); the conversion happens here,
-//! at the one edge that faces a human.
-//!
-//! The verb set is intended to be shared with the CLI debugger (#3248) so
-//! there is one definition of "step over" rather than three. When that
-//! lands, this module is what it should be extracted from — it lives in
-//! the test harness for now only because creating a crate purely to hold
-//! it, before a second consumer exists, would add a publishable-crate to
-//! the workspace for no present benefit.
+//! **Lines are 1-based here.** A script is a thing a person writes, and
+//! `main.ink:7` means what every editor means by line 7. The engine is
+//! 0-based; the conversion happens at this one edge, which faces a human.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt::Write as _;
 
-use brink_runtime::{
-    BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugStopReason, DebugValue, FastRng, Program, StepMode,
-    Story,
-};
+use crate::debug::DebugValue;
+use crate::debug_control::{BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugStopReason, StepMode};
+use crate::{FastRng, Program, Story};
 
 /// One action or assertion from a `.dbg` script.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,13 +213,8 @@ fn render(value: &DebugValue) -> String {
 /// needed to report positions in source terms.
 pub struct Session {
     story: Story<FastRng>,
-    program: std::sync::Arc<Program>,
+    program: alloc::sync::Arc<Program>,
     breakpoints: BreakpointSet,
-    /// Source text per file, used only to turn a resolved byte offset back
-    /// into a line for the transcript. The harness legitimately holds these
-    /// — it compiled them — which is why this does not need the engine to
-    /// carry a byte→line index.
-    sources: BTreeMap<String, String>,
     transcript: String,
     last_reason: Option<DebugStopReason>,
 }
@@ -233,31 +222,47 @@ pub struct Session {
 impl Session {
     #[must_use]
     pub fn new(
-        program: std::sync::Arc<Program>,
+        program: alloc::sync::Arc<Program>,
         line_tables: Vec<Vec<brink_format::LineEntry>>,
-        sources: BTreeMap<String, String>,
     ) -> Self {
-        let story = Story::<FastRng>::new(std::sync::Arc::clone(&program), line_tables);
+        let story = Story::<FastRng>::new(alloc::sync::Arc::clone(&program), line_tables);
         Self {
             story,
             program,
             breakpoints: BreakpointSet::new(),
-            sources,
             transcript: String::new(),
             last_reason: None,
         }
     }
 
-    /// The 1-based line the flow is currently stopped on, or `None` when
-    /// there is no position (terminal, or parked with nothing to point at).
+    /// The transcript so far.
+    #[must_use]
+    pub fn transcript(&self) -> &str {
+        &self.transcript
+    }
+
+    /// The file and 1-based line the flow is stopped on, or `None` when
+    /// there is no source position — not started, terminal, or parked.
+    /// Public so a host (the CLI's `list`, a UI's current-line highlight)
+    /// can ask without re-deriving it from a transcript.
+    #[must_use]
+    pub fn current_position(&self) -> Option<(String, u32)> {
+        self.current_line()
+    }
+
+    /// The 1-based line the flow is stopped on, with its file.
+    ///
+    /// Needs no source text: since #3261 the `DebugInfo` file table carries
+    /// a per-file line index, so the engine answers byte→line itself. This
+    /// used to hold a `BTreeMap<String, String>` of every file's contents
+    /// purely to count newlines — a copy of the whole project, kept to
+    /// answer a question the artifact can now answer on its own.
     fn current_line(&self) -> Option<(String, u32)> {
         let pos = self.story.debug_snapshot().position?;
         let loc = self.program.resolve_debug_position(pos)?;
         let file = loc.file?;
-        let src = self.sources.get(&file)?;
-        let upto = src.get(..loc.range_start as usize)?;
-        let line = u32::try_from(upto.matches('\n').count()).ok()? + 1;
-        Some((file, line))
+        let line0 = self.program.line_at(&file, loc.range_start)?;
+        Some((file, line0 + 1))
     }
 
     fn frame_names(&self) -> Vec<String> {
@@ -267,6 +272,17 @@ impl Session {
             .iter()
             .rev()
             .filter_map(|f| f.location.clone())
+            // Root-level content (before any knot) has an empty location,
+            // which would render as a blank line — a stack listing that
+            // shows nothing where a frame is, is worse than one that names
+            // it. `<root>` is not a path, so it cannot be mistaken for one.
+            .map(|name| {
+                if name.is_empty() {
+                    "<root>".to_owned()
+                } else {
+                    name
+                }
+            })
             .collect()
     }
 
@@ -308,29 +324,43 @@ pub fn run_script(session: &mut Session, script: &[Command]) -> Result<String, S
 
 /// The verbs that move the session: break, run, step, and the two that
 /// only record state.
+/// Bind `file:line` to a program address and arm a breakpoint there.
+///
+/// Refuses rather than arming something that can never hit — and says WHY,
+/// because the two ways binding fails call for opposite responses from the
+/// user.
+fn arm_breakpoint(session: &mut Session, file: &str, line: u32) -> Result<(), String> {
+    // Scripts are 1-based; the engine is 0-based.
+    let position = session
+        .program
+        .resolve_source_line(file, line.saturating_sub(1))
+        .ok_or_else(|| {
+            let why = if session.program.has_debug_info() {
+                "that line has no executable code (a comment, a blank, or code that \
+                 folded away)"
+            } else {
+                "this story carries no debug info — recompile the source, or build the \
+                 artifact with `--debug-info`"
+            };
+            format!(
+                "{}\nbreak {file}:{line} bound to nothing — {why}. A breakpoint that can \
+                 never hit is worse than none, so this is an error rather than a silent \
+                 no-op.",
+                session.transcript
+            )
+        })?;
+    session.breakpoints.insert(
+        position.container_idx,
+        position.offset,
+        format!("{file}:{line}"),
+    );
+    let _ = writeln!(session.transcript, "break {file}:{line}");
+    Ok(())
+}
+
 fn apply_action(session: &mut Session, cmd: &Command) -> Result<(), String> {
     match cmd {
-        Command::Break { file, line } => {
-            // Scripts are 1-based; the engine is 0-based.
-            let position = session
-                .program
-                .resolve_source_line(file, line.saturating_sub(1))
-                .ok_or_else(|| {
-                    format!(
-                        "{}\nbreak {file}:{line} bound to nothing — that line has no \
-                         executable code (a comment, a blank, or code that folded away). \
-                         A breakpoint that can never hit is worse than none, so this is an \
-                         error rather than a silent no-op.",
-                        session.transcript
-                    )
-                })?;
-            session.breakpoints.insert(
-                position.container_idx,
-                position.offset,
-                format!("{file}:{line}"),
-            );
-            let _ = writeln!(session.transcript, "break {file}:{line}");
-        }
+        Command::Break { file, line } => arm_breakpoint(session, file, *line)?,
         Command::Run => {
             let outcome = session
                 .story

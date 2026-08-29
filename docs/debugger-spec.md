@@ -85,8 +85,26 @@ staleness mechanism needed.
 ### 1.2 Ship policy: dev/studio compiles only
 
 Studio compiles and an explicit `brink compile` debug flag emit the
-section; release export omits it. The exact CLI flag spelling is a D6/D9
-implementation detail, not fixed here.
+section; release export omits it.
+
+**The CLI flag spelling is `--debug-info`** (settled 2026-08-28 with #3248,
+having been left open here as "a D6/D9 implementation detail"). It is a
+mount-time `OptionOverrides { debug_info }` override on `brink compile`
+only, with no `brink.toml` key — matching the ruling below that
+debuggability is a per-invocation choice, never a project property. Two
+consequences that are part of the spelling, not incidental to it:
+
+* **`brink debug` implies it and does not accept it.** The subcommand
+  recompiles a `.ink`/`.brink` entry with `debug_info: true` unconditionally
+  (`brink-cli`'s `load_program_with_debug_info`), because a debugger without
+  the section cannot bind a breakpoint or tell when `step` has crossed a
+  line. Making the flag optional there would only offer the user a way to
+  ask for a debugger that does not work.
+* **A prebuilt `.inkb`/`.inkt` is taken as-is.** Whether it carries the
+  section was decided when it was built, and `brink debug` will not silently
+  recompile a binary artifact behind the user's back. Debugging one built
+  without `--debug-info` therefore degrades honestly rather than failing:
+  breakpoints refuse to bind, and stepping reports no source position.
 
 **RULED 2026-08-28 (#3229) — "studio compiles" means a PER-SESSION flag.**
 The editor session owns a `emit_debug_info` toggle

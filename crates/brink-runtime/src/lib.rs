@@ -74,6 +74,12 @@ pub use debug::{
     DebugChoice, DebugFrame, DebugGlobal, DebugLocal, DebugPosition, DebugRng, DebugSnapshot,
     DebugSourceLocation, DebugValue, DebugVisit,
 };
+/// Scripted debug sessions (#3247/#3248): the shared verb set the test
+/// harness, the CLI debugger and the studio all drive, so there is one
+/// definition of "step over" rather than three.
+#[cfg(feature = "debug-hooks")]
+pub mod debug_session;
+
 #[cfg(feature = "debug-hooks")]
 pub use debug_control::{
     Breakpoint, BreakpointId, BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugRunOutcome,

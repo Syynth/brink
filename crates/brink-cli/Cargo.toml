@@ -27,7 +27,11 @@ brink-project-config = { workspace = true }
 brink-fmt = { workspace = true }
 brink-format = { workspace = true, features = ["inkt"] }
 brink-intl = { workspace = true }
-brink-runtime = { workspace = true }
+# `debug-hooks` (D8, #3186): the `brink debug` subcommand (#3248) IS a
+# debugger host, so it needs the stepping/breakpoint seam. Deliberate, and
+# the second such consumer after `brink-web` — see `brink-runtime`'s own
+# feature comment for what enabling it does and does not cost.
+brink-runtime = { workspace = true, features = ["debug-hooks"] }
 xliff2 = { workspace = true }
 clap.workspace = true
 rowan.workspace = true

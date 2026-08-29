@@ -1,4 +1,5 @@
 mod batch;
+mod debug;
 mod ide;
 mod lint_overrides;
 mod tui;
@@ -223,6 +224,31 @@ enum Commands {
         #[arg(long)]
         save_transcript: Option<PathBuf>,
     },
+    /// Step through a story in a debugger (breakpoints, stepping, locals)
+    #[command(long_about = "\
+Step through a story from the terminal.
+
+Compiles the story WITH debug info (`--debug-info`'s equivalent) — without it
+there is nothing to map a bytecode position back to a line, so breakpoints
+could not bind and `step` could not know when it had crossed a line.
+
+Verbs are the same ones the scripted test harness and the studio use:
+  break <file>:<line>   arm a breakpoint (1-based lines)
+  run, continue         advance to the next breakpoint/choice/terminal
+  step into|over|out    advance one SOURCE line   (`next` = `step over`)
+  stepi into|over|out   advance one VM INSTRUCTION
+  locals, stack, list   inspect
+
+Pass --script to run a .dbg file non-interactively and print the transcript;
+that is the same format the harness fixtures use, so a session can move
+between the two without translation.")]
+    Debug {
+        /// Story file (.ink or .brink source, .inkb, or .inkt)
+        file: PathBuf,
+        /// Run a .dbg script instead of starting a REPL
+        #[arg(long)]
+        script: Option<PathBuf>,
+    },
     /// Re-render a saved transcript against a story (optionally with a locale)
     Replay {
         /// Transcript file (.brkt)
@@ -357,6 +383,9 @@ fn run_command(command: Commands) -> ExitCode {
             story,
             locale,
         } => report_result(run_replay(&transcript, &story, locale.as_deref())),
+        Commands::Debug { file, script } => {
+            report_result(debug::run_debug(&file, script.as_deref()))
+        }
         Commands::Ide { command } => ide::run(&command),
     }
 }
@@ -570,6 +599,43 @@ fn run_compile(
     }
 
     Ok(())
+}
+
+/// A linked program plus the per-file line tables `link` returns beside it
+/// — what the debugger needs in hand to start a session.
+type DebuggableProgram = (brink_runtime::Program, Vec<Vec<brink_format::LineEntry>>);
+
+/// Load `input` and link it **with debug info**, for the debugger
+/// (#3248). Source entries are recompiled with `debug_info: true`; a
+/// prebuilt `.inkb`/`.inkt` is taken as-is, since whether it carries the
+/// section was decided when it was built.
+///
+/// Returns the linked program rather than `StoryData` because every
+/// debugger operation needs the `Program`'s resolvers — `resolve_source_line`
+/// to bind a breakpoint, `resolve_debug_position`/`line_at` to say where it
+/// stopped.
+fn load_program_with_debug_info(
+    input: &std::path::Path,
+) -> Result<DebuggableProgram, Box<dyn std::error::Error>> {
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let data = if ext == "ink" || ext == "brink" {
+        let out = compile_entry(
+            input,
+            None,
+            None,
+            std::collections::BTreeMap::new(),
+            None,
+            true,
+        )?;
+        for w in &out.warnings {
+            log_diagnostic(w);
+        }
+        out.data
+    } else {
+        load_story_data(input)?
+    };
+    let linked = brink_runtime::link(&data)?;
+    Ok(linked)
 }
 
 fn load_story_data(
