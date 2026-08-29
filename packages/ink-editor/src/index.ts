@@ -386,3 +386,4 @@ export {
   clampEditorFontSize,
 } from "./theme.js";
 export { renderHoverContent } from "./hover.js";
+export { refreshDiagnosticsEffect } from "./diagnostics.js";
