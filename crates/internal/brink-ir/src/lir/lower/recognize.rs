@@ -592,6 +592,46 @@ pub fn enumerate_variant_contents(
     }
 }
 
+/// Whether the stage-2 flip (#3274) claims this content line for the
+/// variant model — the predicate `hir::normalize_file` (skip the cartesian
+/// lift), `hir::stamp_container_ids` (stamp the shared alt containers), and
+/// LIR lowering (emit [`crate::lir::StmtKind::EmitLineVariants`]) must all
+/// agree on, so it lives here, next to the admission it extends.
+///
+/// Claimed means: [`enumerate_variant_contents`] admits the line AND every
+/// enumerated variant is statically recognizable by [`try_recognize`] —
+/// a variant it would refuse (an empty exhausted `once` rendering with no
+/// surrounding text, a branch that is a bare interpolation) keeps the
+/// whole line on its pre-#3274 path, where today's behavior is already
+/// correct for the single-alternative shapes that produce such variants.
+///
+/// A [`VARIANT_CAP`] breach still claims the line: lowering words it
+/// (E191) instead of silently degrading a line the author wrote as a
+/// variant line ("never a silent fallback", the cap's own contract).
+pub fn claims_variant_line(content: &hir::Content) -> bool {
+    match enumerate_variant_contents(content) {
+        Err(_) => true,
+        Ok(Some(en)) => en.variants.iter().all(statically_recognizable),
+        Ok(None) => false,
+    }
+}
+
+/// Structural mirror of [`try_recognize`]'s acceptance — the parts shapes
+/// its Plain and Template phases admit, checkable without a `LowerCtx`.
+/// Must stay in step with `try_recognize`/[`try_recognize_template`]: a
+/// shape this admits that recognition later refuses falls back to
+/// `EmitContent`'s inline lowering (correct shared-state semantics, but
+/// the fragment-per-part line-table shape #1667 retired), so drift here
+/// is a quality regression, not a correctness one.
+fn statically_recognizable(c: &hir::Content) -> bool {
+    if let [hir::ContentPart::Text(_)] = c.parts.as_slice() {
+        return true;
+    }
+    is_template_admissible(&c.parts)
+        && content_has_span_or_interpolation(&c.parts)
+        && (content_has_nonempty_text(&c.parts) || content_has_span(&c.parts))
+}
+
 /// A branch body's content parts, if the branch is textual (see
 /// [`enumerate_variant_contents`]'s admission rules): empty body → empty
 /// parts; exactly one tag-free `Content` stmt of `Text`/`Interpolation`/
