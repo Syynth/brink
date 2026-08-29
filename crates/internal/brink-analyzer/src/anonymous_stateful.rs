@@ -10,9 +10,14 @@
 //! its id from that name — stable across a content edit anywhere else in the
 //! project. An **anonymous** scope (an unlabeled once-only choice's target
 //! container, or a sequence's wrapper container — `stamp::stamp_stmt`'s
-//! `.c{N}`/`.s-{N}` positional counters) hashes its id from *position*
+//! `.c-{N}`/`.s-{N}` positional counters) hashes its id from *position*
 //! instead: inserting or removing a sibling construct earlier in the same
-//! scope shifts every later counter, and with it every later anonymous id.
+//! **weave block** shifts every later counter, and with it every later
+//! anonymous id. (Counters are weave-block-local since the 2026-08-29
+//! re-scoping ruling — before it the `b-`/`s-` counter was knot-global, so
+//! the blast radius was the whole scope; now it is the containing block.
+//! A `(label)` additionally anchors its entire subtree — see
+//! `stamp.rs`'s "Counter scoping and edit stability".)
 //!
 //! `brink_runtime::save::load_state` already reports this (issue #1674's
 //! other deliverable, [`brink_format::LoadReport::anonymous_states_dropped`])
@@ -129,9 +134,11 @@ impl HirVisitor for AnonymousStatefulVisitor {
                 self.file,
                 choice.ptr.text_range(),
                 "this once-only choice has no name, so its 'already chosen' \
-                 state is anonymous — a content edit elsewhere in this scope \
-                 can shift its compiled identity and make it reappear as if \
-                 never chosen; give it a stable identity with `(label)`"
+                 state is anonymous — inserting or removing an earlier \
+                 sibling in the same weave block shifts its compiled \
+                 identity and makes it reappear as if never chosen; give it \
+                 a stable identity with `(label)`, which also anchors \
+                 everything inside its body"
                     .to_owned(),
             ));
         }
@@ -142,11 +149,12 @@ impl HirVisitor for AnonymousStatefulVisitor {
             self.diagnostics.push(diag(
                 self.file,
                 seq.ptr.text_range(),
-                "this sequence's position state is anonymous, so a content \
-                 edit elsewhere in this scope can shift its compiled \
-                 identity and make it restart from its first branch; move \
-                 it into its own small, stably-named stitch so nothing can \
-                 be inserted ahead of it"
+                "this sequence's position state is anonymous, so inserting \
+                 or removing an earlier sibling in the same weave block \
+                 shifts its compiled identity and makes it restart from its \
+                 first branch; place it under a `(label)`ed choice or \
+                 block, or in its own stably-named stitch, so nothing can \
+                 renumber it"
                     .to_owned(),
             ));
         }

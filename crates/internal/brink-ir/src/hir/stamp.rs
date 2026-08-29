@@ -7,6 +7,28 @@
 //! This replaces the LIR planning pass by pushing structural identity
 //! upstream: the LIR lowerer reads pre-stamped IDs directly from HIR
 //! nodes instead of re-walking the tree with synchronized counters.
+//!
+//! # Counter scoping and edit stability (ruled 2026-08-29)
+//!
+//! Anonymous ids hash from hierarchical scope paths whose numbered
+//! segments come from three counters — choice (`c-N`), gather (`g-N`),
+//! and the shared conditional/sequence counter (`b-N`/`s-N`). All three
+//! are **weave-block-local**: fresh wherever the walk enters a body whose
+//! scope path narrows to something unique to that body (a choice body, a
+//! sequence branch, a label anchor), threaded through everything that
+//! continues the enclosing weave (gather continuations, conditional
+//! branch bodies, unlabeled blocks). The payoff is edit locality: an
+//! insertion shifts anonymous ids only for later siblings *in the same
+//! weave block*, never across the whole knot. (The `b-`/`s-` counter was
+//! scope-global until the ruling — one counter per knot threaded through
+//! all nesting — a relic of the two synchronized walks the pristine-HIR
+//! stamping move retired; renumbering it was a one-time break for
+//! anonymous save state.)
+//!
+//! A **label anchors its subtree**: a labeled choice's or labeled block's
+//! descendants scope under `#lbl:{label_id}` rather than the positional
+//! path, so naming a container makes everything inside it independent of
+//! sibling edits — the strongest form of the E157 remediation.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -294,10 +316,25 @@ fn stamp_stmt(
                     }
                 }
 
-                // Recurse into choice body with narrowed scope.
-                let child_scope = format!("{scope_path}.c-{}", *choice_counter - 1);
+                // Recurse into choice body with narrowed scope. A *labeled*
+                // choice anchors its descendants on the label's own id
+                // (ruled 2026-08-29, #3234 follow-up): the label id is
+                // name-hashed — stable under any sibling edit — so hanging
+                // the subtree off `#lbl:{id}` instead of the positional
+                // `.c-{n}` makes the label insulate everything inside it,
+                // not just the choice's own visit state. `#`/`$` are both
+                // illegal in authored identifiers, so the anchor can never
+                // equal an authored scope segment (same argument as
+                // [`root_content_scope_path`]'s `#file:` qualifier), and
+                // uniqueness is inherited from the label id itself.
+                let child_scope = if choice.label.is_some() {
+                    format!("#lbl:{choice_id}")
+                } else {
+                    format!("{scope_path}.c-{}", *choice_counter - 1)
+                };
                 let mut child_choice_counter = 0;
                 let mut child_gather_counter = 0;
+                let mut child_seq_counter = 0;
                 for body_stmt in &mut choice.body.stmts {
                     stamp_stmt(
                         body_stmt,
@@ -305,7 +342,7 @@ fn stamp_stmt(
                         &child_scope,
                         label_scope,
                         index,
-                        seq_counter,
+                        &mut child_seq_counter,
                         &mut child_choice_counter,
                         &mut child_gather_counter,
                     );
@@ -340,19 +377,39 @@ fn stamp_stmt(
 
                 // Register as gather target for the lowerer.
                 *gather_counter += 1;
-            }
 
-            for s in &mut block.stmts {
-                stamp_stmt(
-                    s,
-                    file,
-                    scope_path,
-                    label_scope,
-                    index,
-                    seq_counter,
-                    choice_counter,
-                    gather_counter,
-                );
+                // Anchor descendants on the label id (same rule as a
+                // labeled choice's body above): the subtree's anonymous
+                // ids become independent of the block's own position.
+                let child_scope = format!("#lbl:{label_id}");
+                let mut child_seq = 0;
+                let mut child_choice = 0;
+                let mut child_gather = 0;
+                for s in &mut block.stmts {
+                    stamp_stmt(
+                        s,
+                        file,
+                        &child_scope,
+                        label_scope,
+                        index,
+                        &mut child_seq,
+                        &mut child_choice,
+                        &mut child_gather,
+                    );
+                }
+            } else {
+                for s in &mut block.stmts {
+                    stamp_stmt(
+                        s,
+                        file,
+                        scope_path,
+                        label_scope,
+                        index,
+                        seq_counter,
+                        choice_counter,
+                        gather_counter,
+                    );
+                }
             }
         }
 
@@ -422,17 +479,26 @@ fn stamp_stmt(
                 let branch_id = alloc_address(&branch_path);
                 branch.body.container_id = Some(branch_id);
 
-                // Sequence branches get fresh counters.
+                // Sequence branches get fresh counters, and recurse under
+                // the BRANCH's own path, not the wrapper's. Recursing under
+                // the wrapper (`child_scope`) with fresh per-branch
+                // counters stamped a choice in branch 0 and a choice in
+                // branch 1 both as `{wrapper}.c-0` — one `DefinitionId` on
+                // two containers, tripping the #1673 E060 guard on legal
+                // ink (a block-level `{stopping:}` with a choice in two
+                // branches). The branch index in the path is what keeps
+                // fresh counters collision-free.
+                let mut bseq = 0;
                 let mut bc = 0;
                 let mut gc = 0;
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
                         file,
-                        &child_scope,
+                        &branch_path,
                         label_scope,
                         index,
-                        seq_counter,
+                        &mut bseq,
                         &mut bc,
                         &mut gc,
                     );
@@ -581,8 +647,10 @@ fn stamp_inline_part(
     match part {
         hir::ContentPart::InlineSequence(seq) => {
             // Mirrors the `Stmt::Sequence` arm: wrapper `s-{n}`, branch
-            // `.{idx}`, branch bodies at the wrapper scope with fresh
-            // choice/gather counters and the SHARED sequence counter.
+            // `.{idx}`, branch bodies at the BRANCH's own path with all
+            // three counters fresh (see that arm's comment for why the
+            // branch index in the path is what keeps fresh counters
+            // collision-free).
             let seq_idx = *seq_counter;
             *seq_counter += 1;
             let display_name = format!("s-{seq_idx}");
@@ -593,18 +661,19 @@ fn stamp_inline_part(
             };
             seq.container_id = Some(alloc_address(&child_scope));
             for (branch_idx, branch) in seq.branches.iter_mut().enumerate() {
-                branch.body.container_id =
-                    Some(alloc_address(&format!("{child_scope}.{branch_idx}")));
+                let branch_path = format!("{child_scope}.{branch_idx}");
+                branch.body.container_id = Some(alloc_address(&branch_path));
+                let mut bseq = 0;
                 let mut bc = 0;
                 let mut gc = 0;
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
                         file,
-                        &child_scope,
+                        &branch_path,
                         label_scope,
                         index,
-                        seq_counter,
+                        &mut bseq,
                         &mut bc,
                         &mut gc,
                     );
@@ -1432,5 +1501,187 @@ fn qualify(scope_path: &str, name: &str) -> String {
         name.to_string()
     } else {
         format!("{scope_path}.{name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+
+    use super::*;
+    use crate::hir::{ContentPart, Stmt};
+
+    /// Parse ink source, assemble the root-weave `HirFile` the way
+    /// `brink-db`'s `lower_file` does, and stamp it against an index that
+    /// resolves the one label these fixtures use (`opt`) to a name-hashed
+    /// id — the analyzer's real resolution behavior. The label-anchoring
+    /// tests assert exactly the stability that resolution provides; the
+    /// empty-index fallback is positional and would test the wrong thing.
+    /// (The full-pipeline analog runs in `brink-test-harness`, where a
+    /// real `symbol_index` is buildable — in-crate, the analyzer dev-dep
+    /// would link a second `brink-ir` and its types don't unify.)
+    fn stamped(src: &str) -> hir::HirFile {
+        let parse = brink_syntax::parse(src);
+        let tree = parse.tree();
+        let (root_content, _top_knots, _d1) = crate::hir::lower::lower_top_level(FileId(0), &tree);
+        let (mut hir_file, _d2) = crate::hir::lower::lower_declarations(FileId(0), &tree);
+        hir_file.root_content = root_content;
+
+        let mut index = SymbolIndex::default();
+        let label_id = alloc_address("opt");
+        index.by_name.insert("opt".to_owned(), vec![label_id]);
+        index.symbols.insert(
+            label_id,
+            SymbolInfo {
+                kind: SymbolKind::Label,
+                file: FileId(0),
+                range: rowan::TextRange::default(),
+                id: label_id,
+                name: "opt".to_owned(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: None,
+                visibility: crate::symbols::Visibility::Public,
+            },
+        );
+
+        let mut files = [(FileId(0), hir_file)];
+        stamp_container_ids(&mut files, &index, &LookupMap::default());
+        let [(_, out)] = files;
+        out
+    }
+
+    fn as_choice_set(stmt: &Stmt) -> &hir::ChoiceSet {
+        match stmt {
+            Stmt::ChoiceSet(cs) => cs,
+            other => panic!("expected ChoiceSet, got {other:?}"),
+        }
+    }
+
+    /// First inline conditional's first-branch container id inside a block.
+    fn first_inline_cond_branch_id(block: &hir::Block) -> DefinitionId {
+        for stmt in &block.stmts {
+            if let Stmt::Content(c) = stmt {
+                for part in &c.parts {
+                    if let ContentPart::InlineConditional(cond) = part {
+                        return cond.branches[0]
+                            .container_id
+                            .expect("branch must be stamped");
+                    }
+                }
+            }
+        }
+        panic!("no inline conditional found in block");
+    }
+
+    /// The #1673/E060 pin: a block-level `{stopping:}` with a once-only
+    /// choice in TWO branches is legal ink. Recursing branch bodies under
+    /// the wrapper's scope with fresh per-branch counters stamped both
+    /// choices `{wrapper}.c-0` — one id on two containers. Branch bodies
+    /// now recurse under the branch's own indexed path.
+    #[test]
+    fn sequence_branch_choices_get_distinct_ids() {
+        let hir_file = stamped("{stopping:\n- one\n  * choice A\n- two\n  * choice B\n}\n");
+        let seq = hir_file
+            .root_content
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Sequence(seq) => Some(seq),
+                _ => None,
+            })
+            .expect("block sequence must lower");
+        let ids: Vec<DefinitionId> = seq
+            .branches
+            .iter()
+            .map(|b| {
+                let cs = b
+                    .body
+                    .stmts
+                    .iter()
+                    .find_map(|s| match s {
+                        Stmt::ChoiceSet(cs) => Some(cs),
+                        _ => None,
+                    })
+                    .expect("branch must hold a choice set");
+                cs.choices[0].container_id.expect("choice must be stamped")
+            })
+            .collect();
+        assert!(
+            ids.len() >= 2,
+            "fixture must produce two branches, got {}",
+            ids.len()
+        );
+        assert_ne!(
+            ids[0], ids[1],
+            "choices in two branches of one sequence must never share an id"
+        );
+    }
+
+    /// Weave-block-local counters (ruled 2026-08-29): an edit inside one
+    /// choice's body must not shift anonymous conditional/sequence ids
+    /// inside a SIBLING choice's body. Under the old scope-global counter
+    /// the sibling's `b-{n}` moved on every earlier insertion.
+    #[test]
+    fn sibling_choice_body_ids_survive_edit_in_other_body() {
+        let before = stamped("* first\n  {x: a | b}\n* second\n  {y: c | d}\n");
+        let after = stamped("* first\n  {z: e | f}\n  {x: a | b}\n* second\n  {y: c | d}\n");
+
+        let second_branch_id = |hf: &hir::HirFile| {
+            let cs = as_choice_set(&hf.root_content.stmts[0]);
+            first_inline_cond_branch_id(&cs.choices[1].body)
+        };
+        assert_eq!(
+            second_branch_id(&before),
+            second_branch_id(&after),
+            "an insertion in `first`'s body must not renumber `second`'s body"
+        );
+    }
+
+    /// Label anchoring (ruled 2026-08-29): a labeled choice's descendants
+    /// scope under `#lbl:{id}` — name-hashed, position-independent — so an
+    /// unlabeled sibling inserted BEFORE the labeled choice leaves the
+    /// whole subtree's ids untouched. The unlabeled contrast case pins
+    /// that the anonymous exposure (E157's subject) still exists without
+    /// a label.
+    #[test]
+    fn label_insulates_choice_subtree_from_earlier_siblings() {
+        let before = stamped("* (opt) labeled\n  {p: q | r}\n");
+        let after = stamped("* padding\n* (opt) labeled\n  {p: q | r}\n");
+
+        let labeled = |hf: &hir::HirFile| {
+            let cs = as_choice_set(&hf.root_content.stmts[0]);
+            let choice = cs
+                .choices
+                .iter()
+                .find(|c| c.label.is_some())
+                .expect("labeled choice present");
+            (
+                choice.container_id.expect("stamped"),
+                first_inline_cond_branch_id(&choice.body),
+            )
+        };
+        assert_eq!(
+            labeled(&before),
+            labeled(&after),
+            "a label must insulate the choice AND its subtree from sibling insertions"
+        );
+
+        // Contrast: without the label, the same insertion shifts the
+        // choice's own positional id (c-0 → c-1) — the E157 exposure.
+        let before_anon = stamped("* labeled\n  {p: q | r}\n");
+        let after_anon = stamped("* padding\n* labeled\n  {p: q | r}\n");
+        let anon_choice_id = |hf: &hir::HirFile, idx: usize| {
+            as_choice_set(&hf.root_content.stmts[0]).choices[idx]
+                .container_id
+                .expect("stamped")
+        };
+        assert_ne!(
+            anon_choice_id(&before_anon, 0),
+            anon_choice_id(&after_anon, 1),
+            "an unlabeled choice's id is positional and must shift — the E157 exposure"
+        );
     }
 }
