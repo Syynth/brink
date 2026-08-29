@@ -243,31 +243,14 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
             // "A " in `A {cond:B}` would be lost when `cond` is false.
             let has_else = branches.iter().any(|b| b.condition.is_none());
             if !has_else && (!prefix.is_empty() || !suffix.is_empty()) {
-                let mut else_body = Block::default();
-                let (p, s, t) =
-                    salted_splice_sources(&prefix, &suffix, tags, cond.branches.len() as u64);
-                splice_around(&mut else_body, &p, &s, &t, ptr);
-                if trailing_eol {
-                    else_body.stmts.push(Stmt::EndOfLine);
-                }
-                else_body.recompute_tail();
-                // Synthesized branch, not sourced from a real arm — falls
-                // back to the whole conditional's own span (see
-                // `SequenceBranch`'s doc for the same posture). Its id is
-                // derived from the last authored branch's (#3275): a
-                // `hir::Conditional` has no wrapper id to derive from, and
-                // the stamp walk cannot predict this synthesis.
-                branches.push(CondBranch {
-                    ptr: cond.ptr,
-                    condition: None,
-                    binding: None,
-                    body: else_body,
-                    container_id: cond
-                        .branches
-                        .last()
-                        .and_then(|b| b.container_id)
-                        .map(|id| super::stamp::derive_id(id, "synth-else", 0)),
-                });
+                branches.push(synthesized_else_branch(
+                    cond,
+                    &prefix,
+                    &suffix,
+                    tags,
+                    ptr,
+                    trailing_eol,
+                ));
             }
 
             revoke_sharing_if_unclaimed(&prefix, &suffix, branches.iter_mut().map(|b| &mut b.body));
@@ -395,14 +378,41 @@ fn extend_merging_text(parts: &mut Vec<ContentPart>, extra: &[ContentPart]) {
     }
 }
 
-/// Splice prefix/suffix text around a branch block's content.
-///
-/// Handles these cases:
-/// - **Single Content stmt**: parts = prefix + original + suffix, merge tags
-/// - **Empty block**: create new Content with prefix + suffix
-/// - **Multiple stmts, first is Content**: prepend prefix to first Content's parts
-/// - **Multiple stmts, last is Content**: append suffix to last Content's parts
-/// - **No Content stmts** (e.g., just Divert): insert new Content at position 0
+/// The synthesized else branch a no-else lifted conditional gets when
+/// prefix/suffix text must still emit on the all-false path. Not sourced
+/// from a real arm — falls back to the whole conditional's own span (see
+/// `SequenceBranch`'s doc for the same posture). Its id is derived from
+/// the last authored branch's (#3275): a `hir::Conditional` has no
+/// wrapper id to derive from, and the stamp walk cannot predict this
+/// synthesis (it depends on prefix/suffix).
+fn synthesized_else_branch(
+    cond: &Conditional,
+    prefix: &[ContentPart],
+    suffix: &[ContentPart],
+    tags: &[Tag],
+    ptr: Option<crate::Provenance>,
+    trailing_eol: bool,
+) -> CondBranch {
+    let mut else_body = Block::default();
+    let (p, s, t) = salted_splice_sources(prefix, suffix, tags, cond.branches.len() as u64);
+    splice_around(&mut else_body, &p, &s, &t, ptr);
+    if trailing_eol {
+        else_body.stmts.push(Stmt::EndOfLine);
+    }
+    else_body.recompute_tail();
+    CondBranch {
+        ptr: cond.ptr,
+        condition: None,
+        binding: None,
+        body: else_body,
+        container_id: cond
+            .branches
+            .last()
+            .and_then(|b| b.container_id)
+            .map(|id| super::stamp::derive_id(id, "synth-else", 0)),
+    }
+}
+
 /// A cloned stateful alternative keeps its stamped id in every branch
 /// (shared visit-count state, ruled 2026-08-29 on #3275) — but that is
 /// only sound while every branch's assembled line claims as a variant
@@ -428,11 +438,10 @@ fn revoke_sharing_if_unclaimed<'a>(
     }
     let mut branches: Vec<&mut Block> = branches.collect();
     let all_claim = branches.iter().all(|b| {
-        let content = match b.stmts.as_slice() {
-            [Stmt::Content(c)] | [Stmt::Content(c), Stmt::EndOfLine] => c,
-            _ => return false,
+        let ([Stmt::Content(c)] | [Stmt::Content(c), Stmt::EndOfLine]) = b.stmts.as_slice() else {
+            return false;
         };
-        crate::lir::lower::recognize::claims_variant_line(content)
+        crate::lir::lower::recognize::claims_variant_line(c)
     });
     if all_claim {
         return;
@@ -468,6 +477,14 @@ fn salted_splice_sources(
     (p, s, t)
 }
 
+/// Splice prefix/suffix text around a branch block's content.
+///
+/// Handles these cases:
+/// - **Single Content stmt**: parts = prefix + original + suffix, merge tags
+/// - **Empty block**: create new Content with prefix + suffix
+/// - **Multiple stmts, first is Content**: prepend prefix to first Content's parts
+/// - **Multiple stmts, last is Content**: append suffix to last Content's parts
+/// - **No Content stmts** (e.g., just Divert): insert new Content at position 0
 fn splice_around(
     block: &mut Block,
     prefix: &[ContentPart],

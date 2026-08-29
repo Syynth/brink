@@ -765,25 +765,7 @@ fn rederive_block_inner(block: &mut hir::Block, salt: u64, share_stateful: bool)
 
 fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64, share_stateful: bool) {
     match stmt {
-        hir::Stmt::ChoiceSet(cs) => {
-            if let Some(id) = cs.gather_id {
-                let derived = derive_id(id, "clone", salt);
-                cs.gather_id = Some(derived);
-                cs.continuation.container_id = Some(derived);
-            }
-            for choice in &mut cs.choices {
-                if let Some(id) = choice.container_id {
-                    choice.container_id = Some(derive_id(id, "clone", salt));
-                }
-                if let Some(c) = &mut choice.condition {
-                    rederive_cloned_expr(c, salt, share_stateful);
-                }
-                rederive_block_inner(&mut choice.body, salt, share_stateful);
-            }
-            for s in &mut cs.continuation.stmts {
-                rederive_stmt_inner(s, salt, share_stateful);
-            }
-        }
+        hir::Stmt::ChoiceSet(cs) => rederive_choice_set(cs, salt, share_stateful),
         hir::Stmt::LabeledBlock(block) => {
             // A label-bearing construct is never cloned (`lift_index`
             // lifts it first) — this arm only sees anonymous blocks.
@@ -856,7 +838,7 @@ fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64, share_stateful: bool) {
             }
         }
         hir::Stmt::ExprStmt(e) | hir::Stmt::AttachElement(e) => {
-            rederive_cloned_expr(e, salt, share_stateful)
+            rederive_cloned_expr(e, salt, share_stateful);
         }
         hir::Stmt::LogicBlock(lb) => {
             for s in &mut lb.stmts {
@@ -908,6 +890,26 @@ fn rederive_cloned_block_stmt(stmt: &mut hir::BlockStmt, salt: u64, share_statef
         }
         hir::BlockStmt::ExprStmt(e) => rederive_cloned_expr(e, salt, share_stateful),
         _ => {}
+    }
+}
+
+fn rederive_choice_set(cs: &mut hir::ChoiceSet, salt: u64, share_stateful: bool) {
+    if let Some(id) = cs.gather_id {
+        let derived = derive_id(id, "clone", salt);
+        cs.gather_id = Some(derived);
+        cs.continuation.container_id = Some(derived);
+    }
+    for choice in &mut cs.choices {
+        if let Some(id) = choice.container_id {
+            choice.container_id = Some(derive_id(id, "clone", salt));
+        }
+        if let Some(c) = &mut choice.condition {
+            rederive_cloned_expr(c, salt, share_stateful);
+        }
+        rederive_block_inner(&mut choice.body, salt, share_stateful);
+    }
+    for s in &mut cs.continuation.stmts {
+        rederive_stmt_inner(s, salt, share_stateful);
     }
 }
 
