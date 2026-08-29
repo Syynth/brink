@@ -506,15 +506,19 @@ pub fn build_prelude(
     type_mode: context::TypeMode,
     tables: context::AnalyzerTables<'_>,
 ) -> LirPrelude {
+    // #3275 (stage 3a): stamp BEFORE normalize — mirrors
+    // `brink-db`'s `normalized_stamped_query` exactly (the two roads must
+    // stay in lockstep; the id-equality gate in `brink-test-harness`
+    // pins it). Ids are minted on the pristine tree and the lift inherits
+    // them, deriving fresh ids only for genuine clones.
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
-        .map(|(id, hir_file)| {
-            let mut h = (*hir_file).clone();
-            hir::normalize_file(&mut h);
-            (*id, h)
-        })
+        .map(|(id, hir_file)| (*id, (*hir_file).clone()))
         .collect();
     hir::stamp_container_ids(&mut normalized, index, file_paths);
+    for (_, h) in &mut normalized {
+        hir::normalize_file(h);
+    }
 
     let normalized_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
@@ -1164,21 +1168,30 @@ fn try_lower_variant_line(
         // to the path the pre-#3274 lifted wrapper had, so existing
         // stories keep their shuffle orders.
         let seq_idx = ctx.ids.next_seq_index();
-        stubs.push(lir::Container {
-            id,
-            provenance: ptr,
-            name: Some(format!("s-{seq_idx}")),
-            kind: lir::ContainerKind::Sequence,
-            params: Vec::new(),
-            body: Vec::new(),
-            children: Vec::new(),
-            counting_flags: CountingFlags::VISITS,
-            temp_slot_count: 0,
-            labeled: false,
-            inline: false,
-            is_function: false,
-            local: false,
-        });
+        // #3275 (stage 3a): a stateful alternative cloned across a lifted
+        // construct's branches SHARES one stamped id (ruled 2026-08-29) —
+        // each claiming branch line reaches this emission with the same
+        // `id`, and the stubs are identical (empty, visit-counted). Emit
+        // the container once; later sites reference it through the alt's
+        // `container_id` alone. The sequence index is consumed either way
+        // so sibling container names stay stable.
+        if ctx.ids.mark_shared_emitted(id) {
+            stubs.push(lir::Container {
+                id,
+                provenance: ptr,
+                name: Some(format!("s-{seq_idx}")),
+                kind: lir::ContainerKind::Sequence,
+                params: Vec::new(),
+                body: Vec::new(),
+                children: Vec::new(),
+                counting_flags: CountingFlags::VISITS,
+                temp_slot_count: 0,
+                labeled: false,
+                inline: false,
+                is_function: false,
+                local: false,
+            });
+        }
         alts.push(lir::VariantAltEmission {
             container_id: id,
             kind: alt.kind,
