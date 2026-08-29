@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use brink_environment::{OptionOverrides, Project};
+use brink_runtime::debug_session::{Session, parse_script, run_script};
 use brink_source_tree::InMemory;
-use brink_test_harness::debug_script::{Session, parse_script, run_script};
 
 /// Compile a fixture with debug info over the production road and build a
 /// driveable session.
@@ -40,8 +40,7 @@ fn session_for(dir: &std::path::Path) -> Session {
 
     let mut sources = BTreeMap::new();
     sources.insert(name.clone(), text);
-
-    let tree = InMemory::new(sources.clone());
+    let tree = InMemory::new(sources);
     let overrides = OptionOverrides {
         debug_info: true,
         ..Default::default()
@@ -49,7 +48,7 @@ fn session_for(dir: &std::path::Path) -> Session {
     let env = Project::load(&tree, &name, &overrides).expect("Project::load");
     let out = brink_environment::compile(&env).expect("fixture compiles");
     let (program, line_tables) = brink_runtime::link(&out.data).expect("link");
-    Session::new(Arc::new(program), line_tables, sources)
+    Session::new(Arc::new(program), line_tables)
 }
 
 fn run_case(case: &str) {
@@ -102,7 +101,7 @@ fn line_stepping() {
 #[test]
 fn step_and_next_parse_as_line_granularity_and_stepi_as_instruction() {
     use brink_runtime::StepMode;
-    use brink_test_harness::debug_script::Command;
+    use brink_runtime::debug_session::Command;
 
     // The two granularities must stay distinguishable at the parser, not
     // just at the executor: aliasing `step` onto `stepi` is precisely how

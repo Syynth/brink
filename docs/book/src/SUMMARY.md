@@ -11,6 +11,7 @@
   - [brink compile](./toolchain/cli/compile.md)
   - [brink convert](./toolchain/cli/convert.md)
   - [brink play](./toolchain/cli/play.md)
+  - [brink debug](./toolchain/cli/debug.md)
   - [brink ide](./toolchain/cli/ide.md)
 - [Embedding the Runtime](./toolchain/embedding/index.md)
   - [Loading & Linking](./toolchain/embedding/loading.md)

@@ -452,6 +452,22 @@ impl Program {
         })
     }
 
+    /// Whether this program carries a `DebugInfo` section at all (#3248).
+    ///
+    /// Every other debug accessor returns `None` for two very different
+    /// reasons — "this artifact was compiled without `--debug-info`" and
+    /// "that particular position/line has nothing on it" — and a debugger
+    /// front-end must tell a user which. Reporting "that line has no
+    /// executable code" for a story compiled without the flag sends the
+    /// author hunting a bug in their source when the fix is a compiler
+    /// flag. This is the cheap discriminator that keeps that message
+    /// honest; it says nothing about whether any *particular* lookup will
+    /// succeed.
+    #[must_use]
+    pub fn has_debug_info(&self) -> bool {
+        self.debug_info.is_some()
+    }
+
     /// The program address to break on for a **line** of source, with no
     /// source text required (#3261) — the `DebugInfo` file table carries a
     /// per-file line index, so the engine can answer `file:line` directly.
