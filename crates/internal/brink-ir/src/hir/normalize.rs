@@ -7,6 +7,32 @@
 //! parts into block-level `Sequence` / `Conditional` statements. Each branch
 //! gets the surrounding text spliced in, producing complete content lines that
 //! the recognizer can match as `Plain` or `Template`.
+//!
+//! ## Post-stage-3 role: the fallback for lines the variant model declines
+//!
+//! Since the #3274 flip, a line that [`claims_variant_line`] admits — every
+//! inline alternative plain-kinded and textual, no conditional, no glue —
+//! is NOT lifted: it passes through whole and LIR lowering enumerates it
+//! into one variant group over shared alternative containers. The lift is
+//! the compilation model for everything the claim declines, and stage 3
+//! (#3275) established by reachability analysis that **all of it is
+//! load-bearing residue** — none of it retired:
+//!
+//! * combo-kind lines (`shuffle|once`, `shuffle|stopping`) keep the lift
+//!   **by ruling** (2026-08-29): each rendering stays a whole line in the
+//!   line table — a translation unit and a VO slot — which moving them to
+//!   the shared-inline fragment path would break;
+//! * conditional-bearing and structural-branch (divert/glue/nested) lines
+//!   can never be whole-line variants, so they lift; the once→stopping
+//!   exhausted-branch synthesis stays reachable through exactly these
+//!   lines (e.g. a plain `{!…}` beside an inline conditional), as does
+//!   [`synthesized_else_branch`] through every lifted no-else conditional;
+//! * a cloned **stateful** alternative keeps its stamped container id in
+//!   every branch (shared visit-count state, the #3275 mixed-line ruling),
+//!   revoked per lift level by [`revoke_sharing_if_unclaimed`] when a
+//!   branch fails to reassemble into a claimable variant line.
+//!
+//! [`claims_variant_line`]: crate::lir::lower::recognize::claims_variant_line
 
 use super::types::{
     Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceBranch,
