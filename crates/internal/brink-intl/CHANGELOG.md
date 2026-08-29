@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-intl-v0.0.16...brink-intl-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(format)* LineVariantGroups section — tag 0x12, omitted when empty ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+
+### Fixed
+
+- *(format)* `content_hash` is a specified stable hash, not `DefaultHasher` ([#3261](https://github.com/Syynth/brink/pull/3261))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-intl-v0.0.11...brink-intl-v0.0.15) - 2026-08-23
 
 ### Added

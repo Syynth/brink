@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.16...brink-runtime-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(format,runtime)* TouchVisit + ShuffleIndexOf opcodes ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(cli)* `brink debug` — a terminal debugger ([#3248](https://github.com/Syynth/brink/pull/3248))
+- *(runtime)* line-granular stepping beside the instruction verb ([#3264](https://github.com/Syynth/brink/pull/3264))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(debugger)* inverse resolver — source span to program address ([#3246](https://github.com/Syynth/brink/pull/3246))
+- *(debugger)* D8 VM debug-hooks seam — breakpoints, pause/resume, step in/over/out
+- *(runtime)* expose (container_idx, offset) execution position per frame ([#3182](https://github.com/Syynth/brink/pull/3182))
+
+### Fixed
+
+- *(lints)* restore stolen #[expect] attributes; satisfy -D warnings ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(debugger)* D8 review fixes — resume, choice boundary, Thread step-out, breakpoints in step
+- *(debug)* document External-frame position:None, add wasm/mirror/doc coverage
+
+### Other
+
+- Merge pull request #3239 from Syynth/auto/issue-3232
+- *(runtime)* brink-web is now a deliberate `debug-hooks` exception
+- Merge remote-tracking branch 'origin/main' into auto/issue-3185
+- populate the DebugInfo LocalsTable and expose named locals+values ([#3185](https://github.com/Syynth/brink/pull/3185))
+- Retire dormant Opcode::SourceLocation (ruled Q-R1, 2026-07-19)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.11...brink-runtime-v0.0.15) - 2026-08-23
 
 ### Added

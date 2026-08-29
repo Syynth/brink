@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-db-v0.0.16...brink-db-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(ir)* stage 3a — stamp container ids on pristine HIR; the lift inherits, clones derive or share ([#3275](https://github.com/Syynth/brink/pull/3275))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+
+### Fixed
+
+- *(3184)* apply PR #3219 review findings that merged before they landed
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-db-v0.0.15...brink-db-v0.0.16) - 2026-08-25
 
 ### Added

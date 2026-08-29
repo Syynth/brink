@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-fmt-v0.0.16...brink-fmt-v0.0.17) - 2026-08-29
+
+### Added
+
+- one indent width, defaulting to 4, read by everything that indents ([#3167](https://github.com/Syynth/brink/pull/3167))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-fmt-v0.0.11...brink-fmt-v0.0.15) - 2026-08-23
 
 ### Added

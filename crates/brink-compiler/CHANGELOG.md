@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-compiler-v0.0.16...brink-compiler-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(lir)* thread source provenance through Container and Stmt ([#3183](https://github.com/Syynth/brink/pull/3183))
+
+### Fixed
+
+- *(3181)* apply adversarial review findings — span regression + wrong choice locations
+- *(codegen)* thread real source_location through the EmitContent/ChoiceOutput flattening path ([#3181](https://github.com/Syynth/brink/pull/3181))
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- golden coverage for source_location values ([#3213](https://github.com/Syynth/brink/pull/3213))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-compiler-v0.0.11...brink-compiler-v0.0.15) - 2026-08-23
 
 ### Added

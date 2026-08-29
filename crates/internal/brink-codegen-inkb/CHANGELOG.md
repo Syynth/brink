@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-codegen-inkb-v0.0.16...brink-codegen-inkb-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(ir,codegen)* EmitLineVariants — the variant-group combo switch ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(format)* LineVariantGroups section — tag 0x12, omitted when empty ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- *(lir)* thread source provenance through Container and Stmt ([#3183](https://github.com/Syynth/brink/pull/3183))
+
+### Fixed
+
+- *(3184)* apply PR #3219 review findings that merged before they landed
+- *(3184)* clear the clippy failures the build could not gate
+- *(3181)* apply adversarial review findings — span regression + wrong choice locations
+- *(codegen)* thread real source_location through the EmitContent/ChoiceOutput flattening path ([#3181](https://github.com/Syynth/brink/pull/3181))
+
+### Other
+
+- populate the DebugInfo LocalsTable and expose named locals+values ([#3185](https://github.com/Syynth/brink/pull/3185))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-codegen-inkb-v0.0.11...brink-codegen-inkb-v0.0.15) - 2026-08-23
 
 ### Added

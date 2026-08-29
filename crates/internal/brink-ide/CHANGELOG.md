@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-ide-v0.0.16...brink-ide-v0.0.17) - 2026-08-29
+
+### Added
+
+- *(ide,web,editor)* make hover-card references navigable
+- *(debugger)* per-session debug-info compile toggle ([#3229](https://github.com/Syynth/brink/pull/3229))
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- *(brink-ir)* give the escape's backslash its own token, and fix native ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3157](https://github.com/Syynth/brink/pull/3157))
+- *(studio,editor,brink-ir)* Manuscript + Inky themes, role token types, color design doc ([#3121](https://github.com/Syynth/brink/pull/3121))
+
+### Fixed
+
+- *(lsp,cli)* flatten hover link refs for consumers that cannot resolve them
+- *(ide,analyzer)* name the RNG cell `rng` instead of leaking its handle
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+- *(brink-ir)* never tokenize a character inside an escape ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3154](https://github.com/Syynth/brink/pull/3154))
+
+### Other
+
+- *(editor)* WebKit rails-gutter layout fix + dispatch instrumentation + delimiter tokens ([#3118](https://github.com/Syynth/brink/pull/3118))
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-ide-v0.0.15...brink-ide-v0.0.16) - 2026-08-25
 
 ### Added
