@@ -59,12 +59,14 @@ const compileWarning: Diagnostic = {
   file: "main.ink",
 };
 
-const todoNote: Diagnostic = {
+/** A plain Info diagnostic — deliberately NOT E189, which now buckets as
+ *  `todo` rather than `info` (ruled 2026-08-29). */
+const infoNote: Diagnostic = {
   start: 10,
   end: 14,
-  message: "TODO: fix the ending",
+  message: "advisory note",
   severity: "Info",
-  code: "E189",
+  code: "E157",
   file: "main.ink",
 };
 
@@ -125,34 +127,34 @@ describe("bucketing", () => {
     // bucket keys off the source instead, which is the only way "off by
     // default" can be expressed while info stays on.
     expect(severityBucket(spelling)).toBe("prose");
-    expect(severityBucket(todoNote)).toBe("info");
+    expect(severityBucket(infoNote)).toBe("info");
   });
 
   it("recognises a prose diagnostic by its code prefix", () => {
     expect(isProseDiagnostic(spelling)).toBe(true);
-    expect(isProseDiagnostic(todoNote)).toBe(false);
+    expect(isProseDiagnostic(infoNote)).toBe(false);
     expect(isProseDiagnostic({ code: undefined })).toBe(false);
   });
 
   it("counts prose separately and names it 'spelling' in the summary", () => {
-    const rows = [compileWarning, todoNote, spelling].map((diagnostic) => ({
+    const rows = [compileWarning, infoNote, spelling].map((diagnostic) => ({
       diagnostic,
       location: "",
     }));
     const counts = countBySeverity(rows);
-    expect(counts).toEqual({ error: 0, warning: 1, info: 1, prose: 1 });
+    expect(counts).toEqual({ error: 0, warning: 1, info: 1, prose: 1 , todo: 0});
     expect(summarizeCounts(counts)).toBe("1 warning · 1 info · 1 spelling");
   });
 
   it("hides prose rows under the default toggles, keeping the rest", () => {
-    const rows = [compileWarning, todoNote, spelling].map((diagnostic) => ({
+    const rows = [compileWarning, infoNote, spelling].map((diagnostic) => ({
       diagnostic,
       location: "",
     }));
-    const defaults = { error: true, warning: true, info: true, prose: false };
+    const defaults = { error: true, warning: true, info: true, prose: false , todo: false};
     expect(filterProblemRows(rows, defaults, "").map((r) => r.diagnostic.code)).toEqual([
       "E033",
-      "E189",
+      "E157",
     ]);
     const opted = { ...defaults, prose: true };
     expect(filterProblemRows(rows, opted, "")).toHaveLength(3);
@@ -189,6 +191,74 @@ describe("mapping the editor's findings to panel rows", () => {
 
   it("maps an empty set to an empty set", () => {
     expect(toProseDiagnostics("main.ink", [])).toEqual([]);
+  });
+});
+
+describe("TODO notes are their own bucket, not `info`", () => {
+  // Reported 2026-08-29: an author who wanted TODOs out of the Problems
+  // panel had only `[lints] E189 = "allow"` to reach for — which suppresses
+  // the code at the COMPILER, and so emptied the TODOs panel too, since
+  // that panel reads the same diagnostics. Panel visibility is not a
+  // compiler concern.
+  const todo: Diagnostic = {
+    start: 0,
+    end: 4,
+    message: "TODO: fix the ending",
+    severity: "Info",
+    code: "E189",
+    file: "main.ink",
+  };
+
+  it("buckets a TODO note as `todo`, not `info`", () => {
+    expect(severityBucket(todo)).toBe("todo");
+    expect(severityBucket(infoNote)).toBe("info");
+  });
+
+  it("hides TODO notes under the default toggles", () => {
+    const rows = [compileWarning, todo].map((diagnostic) => ({ diagnostic, location: "" }));
+    const defaults = { error: true, warning: true, info: true, prose: false, todo: false };
+    expect(filterProblemRows(rows, defaults, "").map((r) => r.diagnostic.code)).toEqual([
+      "E033",
+    ]);
+  });
+
+  it("shows them when the author opts in", () => {
+    const rows = [compileWarning, todo].map((diagnostic) => ({ diagnostic, location: "" }));
+    const opted = { error: true, warning: true, info: true, prose: false, todo: true };
+    expect(filterProblemRows(rows, opted, "")).toHaveLength(2);
+  });
+
+  it("defaults off, and stays off for a record written before the bucket existed", () => {
+    expect(loadProblemsPrefs(memoryStorage()).severities.todo).toBe(false);
+    const storage = memoryStorage();
+    storage.setItem(
+      "brink-studio.problems.v1",
+      JSON.stringify({ severities: { error: true, warning: true, info: true }, grouped: true }),
+    );
+    expect(loadProblemsPrefs(storage).severities.todo).toBe(false);
+  });
+
+  it("does not touch the TODOs panel — that reads `diagnosticsList` directly", () => {
+    // The whole point of the design. `TodosView` filters `diagnosticsList`
+    // to E189 itself and never consults the Problems filter, so turning the
+    // Problems bucket off leaves the TODOs panel populated. Suppressing
+    // `[lints] E189 = "allow"` — the only lever before this — emptied both,
+    // because that suppresses at the compiler.
+    const store = createStudioStore();
+    store.getState().setCompileResult(OUTLINE, { errors: 0, warnings: 0 }, [todo], null);
+    expect(store.getState().problemsSeverities.todo).toBe(false);
+    const visibleToTodosPanel = store
+      .getState()
+      .diagnosticsList.filter((d) => d.code === "E189");
+    expect(visibleToTodosPanel).toHaveLength(1);
+  });
+
+  it("counts them separately from info", () => {
+    const rows = [infoNote, todo].map((diagnostic) => ({ diagnostic, location: "" }));
+    const counts = countBySeverity(rows);
+    expect(counts.info).toBe(1);
+    expect(counts.todo).toBe(1);
+    expect(summarizeCounts(counts)).toBe("1 info · 1 todo");
   });
 });
 

@@ -219,3 +219,31 @@ fn single_alternative_unchanged() {
         "stopping semantics unchanged for the single-alternative shape"
     );
 }
+
+/// #3275 (stage 3b) — the pinned mixed-line ruling (2026-08-29): a
+/// stateful alternative on a line with an inline conditional advances
+/// once per line VIEW, whichever conditional branch ran. Delivered by
+/// stamping before the lift: the conditional's branches each carry a
+/// clone of `{&p|q}`, and every clone keeps the one stamped container id,
+/// so all branches advance the same visit count. Pre-3a each clone had
+/// its own container: visit 2 took the "late" branch's clone on ITS
+/// first view and printed `p` again.
+#[test]
+fn mixed_line_alternative_advances_once_per_view() {
+    let out = compile(
+        "VAR n = 0\n\
+         -> loop\n\
+         === loop ===\n\
+         ~ n = n + 1\n\
+         Line: {n > 1: late|early} {&p|q}\n\
+         { n < 3: -> loop }\n\
+         -> END\n",
+    );
+    let lines = run_to_end(&out.data);
+    assert_eq!(
+        lines,
+        vec!["Line: early p", "Line: late q", "Line: late p"],
+        "the cycle advances p→q→p across views even as the conditional \
+         switches branches — shared container state, ink's semantics"
+    );
+}

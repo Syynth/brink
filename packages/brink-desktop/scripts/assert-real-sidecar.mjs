@@ -92,9 +92,9 @@
 // claiming to have verified more than it did.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import {
   executableFormatFor,
@@ -573,6 +573,22 @@ export function assertRealSidecarStaged({
 // module does nothing but hand over the function — same idiom as
 // `ensure-cli-sidecar.mjs`/`ensure-wasm.mjs`, enforced repo-wide for this
 // directory by `src/__tests__/scripts-main-guard.test.ts` (#2478).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compared as REAL paths. `import.meta.url` is symlink-resolved by Node
+// while `process.argv[1]` is not, so on macOS — where `/var` is a symlink
+// to `/private/var` — a script run from anywhere under `$TMPDIR` compared
+// unequal and this guard silently did not fire. That is the worst shape a
+// safety check can fail in: `tauri.conf.json`'s `beforeBundleCommand` runs
+// this file directly, and an inert guard ships whatever it was meant to
+// stop. Wrapped because `realpathSync` throws on a path that no longer
+// exists.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
   assertRealSidecarStaged();
 }
