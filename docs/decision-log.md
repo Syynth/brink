@@ -3944,3 +3944,37 @@
   sharing revocation) is reachable through combo-kind, conditional-
   bearing, or structural-branch lines. #3275 closes with the lift as the
   permanent fallback model, documented in `normalize.rs`'s module doc.
+
+## Anonymous-id counters go weave-block-local; labels anchor their subtrees
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** compiler (hir stamp)
+- **SCOPE:** moderate
+- **WHAT:** Two rulings on anonymous-container identity, taken together as
+  one one-time renumbering. (1) The conditional/sequence counter (`b-N`/
+  `s-N`) stops being knot-global and adopts the scoping the choice/gather
+  counters already had: fresh wherever the walk enters a body whose scope
+  path narrows uniquely (choice bodies, sequence branches), threaded
+  through whatever continues the enclosing weave (continuations,
+  conditional branches). An insertion now shifts anonymous ids only for
+  later siblings in the same weave block, never across the whole knot.
+  (2) A `(label)` anchors its subtree: a labeled choice's or labeled
+  block's descendants scope under `#lbl:{label_id}` instead of the
+  positional path, so naming a container insulates everything inside it.
+- **WHY:** The global counter existed to keep two independent walks (HIR
+  stamping and the LIR planning pass) synchronized; the pristine-HIR
+  stamping move (#3283) reduced identity to a single walk and made the
+  constraint obsolete. Block-local counters shrink E157's exposure and
+  the save-invalidation blast radius, and label anchoring makes E157's
+  own suggested fix maximally effective. The cost — existing saves'
+  anonymous visit states detach once (`LoadReport::
+  anonymous_states_dropped`) — was accepted as a one-time break; named
+  state is unaffected. The re-scoping also fixed a real miscompile guard
+  trip: a block-level `{stopping:}` with a choice in two branches
+  stamped both `{wrapper}.c-0` (branch bodies recursed under the
+  wrapper's scope with fresh counters), tripping E060 on legal ink;
+  branch bodies now recurse under the branch's own indexed path.
+- **NOTE:** The LIR lowerer's twin display-name counter keeps its global
+  numbering — post-#3283 it feeds container display names only, so
+  stamped id paths and display names can drift apart in dumps. Accepted;
+  deriving names from stamped ids is a possible future cleanup.
