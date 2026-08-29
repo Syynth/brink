@@ -147,6 +147,26 @@ struct DebugEnv<'a> {
     program: &'a Program,
     line_tables: &'a [Vec<brink_format::LineEntry>],
     resolver: Option<&'a dyn PluralResolver>,
+    /// External-function bindings (#3224). The debug loops resolve a
+    /// `Stepped::ExternalCall` through [`flow_instance::resolve_external_call`]
+    /// with this handler — the same function, same handler contract as
+    /// production `advance()` — so a bound external steps through
+    /// mid-session instead of erroring `UnresolvedExternalCall`.
+    handler: &'a dyn ExternalFnHandler,
+}
+
+/// See [`Story::debug_handle_stepped`].
+#[cfg(feature = "debug-hooks")]
+enum SteppedDisposition {
+    Continue,
+    /// An invisible default was auto-selected and the flow resumed — the
+    /// step loop skips its depth/line stop-check for this iteration
+    /// (matching the production per-turn loop's treatment: the boundary
+    /// is bookkeeping, not a place execution "is").
+    Resumed,
+    /// The step crossed (and synchronously resolved) an `External` call.
+    CrossedExternal,
+    Stop(crate::DebugRunOutcome),
 }
 
 impl<R: StoryRng> Story<R> {
@@ -792,6 +812,27 @@ impl<R: StoryRng> Story<R> {
     /// to continue execution.
     pub fn resolve_external(&mut self, value: Value) {
         self.default.flow.resolve_external(value);
+    }
+
+    /// [`resolve_external`](Self::resolve_external) for a named flow —
+    /// isolated or shared, the same unified namespace
+    /// [`destroy_flow`](Self::destroy_flow) treats (#3224: the debug
+    /// seam can park any flow on
+    /// [`DebugStopReason::AwaitingExternal`](crate::DebugStopReason::AwaitingExternal),
+    /// so any flow needs the out-of-band resolution counterpart).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `name` names no live flow.
+    pub fn resolve_external_flow(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
+        if let Some((f, _, _)) = self.instances.get_mut(name) {
+            f.flow.resolve_external(value);
+            Ok(())
+        } else if let Some(f) = self.shared_instances.get_mut(name) {
+            f.flow.resolve_external(value);
+            Ok(())
+        } else {
+            Err(RuntimeError::UnknownFlow(name.to_owned()))
+        }
     }
 
     /// Resolve a pending external call on the default flow by invoking
@@ -1636,10 +1677,11 @@ impl<R: StoryRng> Story<R> {
     /// isolated flow drives its own context, exactly as the production
     /// `continue_flow*` methods route each.
     #[cfg(feature = "debug-hooks")]
-    fn debug_parts(
-        &mut self,
+    fn debug_parts<'a>(
+        &'a mut self,
         flow: Option<&str>,
-    ) -> Result<(DebugTarget<'_>, DebugEnv<'_>), RuntimeError> {
+        handler: &'a dyn ExternalFnHandler,
+    ) -> Result<(DebugTarget<'a>, DebugEnv<'a>), RuntimeError> {
         let Self {
             program,
             default,
@@ -1681,6 +1723,7 @@ impl<R: StoryRng> Story<R> {
                 program,
                 line_tables,
                 resolver: resolver.as_deref(),
+                handler,
             },
         ))
     }
@@ -1725,19 +1768,24 @@ impl<R: StoryRng> Story<R> {
     /// pass without hitting a breakpoint or a stopping outcome — never
     /// [`RuntimeError::StepLimitExceeded`], which is the *production*
     /// step-limit error and would misreport which budget fired. Any other
-    /// error `vm::step` itself can produce, e.g.
-    /// [`RuntimeError::UnresolvedExternalCall`] if the run crosses an
-    /// `EXTERNAL` call — this raw seam has no handler to resolve one, so
-    /// it surfaces the same error `vm::step`'s own preamble already raises
-    /// for an unresolved `External` frame, rather than silently stepping
-    /// past it.
+    /// error `vm::step` itself can produce.
+    ///
+    /// An `EXTERNAL` call crossed mid-run resolves exactly as production
+    /// `advance()` resolves it (#3224): this method binds the
+    /// [`FallbackHandler`], so the in-story fallback body runs; a host
+    /// with real bindings passes its handler to
+    /// [`debug_run_flow`](Self::debug_run_flow), and a handler that
+    /// defers ([`ExternalResult::Pending`](crate::ExternalResult::Pending))
+    /// parks the run with
+    /// [`DebugStopReason::AwaitingExternal`](crate::DebugStopReason::AwaitingExternal)
+    /// — frame intact, resolve out-of-band, then resume.
     #[cfg(feature = "debug-hooks")]
     pub fn debug_run(
         &mut self,
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_run_flow(None, breakpoints, budget_ceiling)
+        self.debug_run_flow(None, &FallbackHandler, breakpoints, budget_ceiling)
     }
 
     /// [`debug_run`](Self::debug_run) for any flow (#3223): `None`
@@ -1753,11 +1801,65 @@ impl<R: StoryRng> Story<R> {
     pub fn debug_run_flow(
         &mut self,
         flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        let (target, env) = self.debug_parts(flow)?;
+        let (target, env) = self.debug_parts(flow, handler)?;
         Self::debug_run_impl(&env, target, breakpoints, budget_ceiling)
+    }
+
+    /// What one `vm::step` outcome means for a debug loop (#3224):
+    /// keep looping, keep looping but the step crossed (and resolved) an
+    /// `External` call — `debug_step_impl` flips `Into` to `Over`
+    /// semantics on that signal, spec §4 — or stop with an outcome.
+    #[cfg(feature = "debug-hooks")]
+    fn debug_handle_stepped(
+        stepped: vm::Stepped,
+        env: &DebugEnv<'_>,
+        flow: &mut FlowInstance,
+        view: &mut ContextView<'_>,
+    ) -> Result<SteppedDisposition, RuntimeError> {
+        use crate::debug_control::DebugStopReason;
+        let stop = |flow: &FlowInstance, reason| {
+            SteppedDisposition::Stop(crate::DebugRunOutcome {
+                reason,
+                position: Self::position_of(&flow.flow),
+                depth: Self::depth_of(&flow.flow),
+            })
+        };
+        Ok(match stepped {
+            vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
+                &mut flow.flow,
+                view,
+                &mut flow.status,
+                &mut flow.stats,
+            )? {
+                flow_instance::DoneBookkeeping::AutoSelected => SteppedDisposition::Resumed,
+                flow_instance::DoneBookkeeping::WaitingForChoice => {
+                    stop(flow, DebugStopReason::Choices)
+                }
+                flow_instance::DoneBookkeeping::Terminal => stop(flow, DebugStopReason::Terminal),
+            },
+            vm::Stepped::Ended => {
+                view.increment_turn_index();
+                flow.status = StoryStatus::Ended;
+                stop(flow, DebugStopReason::Terminal)
+            }
+            vm::Stepped::ExternalCall => {
+                // #3224: resolve through the SAME function production
+                // `advance()` uses, so debug and production stepping can
+                // never disagree about binding semantics. An unresolved
+                // (deferred) external parks with the frame intact for
+                // out-of-band resolution.
+                if flow_instance::resolve_external_call(&mut flow.flow, env.program, env.handler)? {
+                    SteppedDisposition::CrossedExternal
+                } else {
+                    stop(flow, DebugStopReason::AwaitingExternal)
+                }
+            }
+            vm::Stepped::Continue | vm::Stepped::ThreadCompleted => SteppedDisposition::Continue,
+        })
     }
 
     #[cfg(feature = "debug-hooks")]
@@ -1805,39 +1907,11 @@ impl<R: StoryRng> Story<R> {
                 env.resolver,
             )?;
 
-            match stepped {
-                vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
-                    &mut flow.flow,
-                    &mut view,
-                    &mut flow.status,
-                    &mut flow.stats,
-                )? {
-                    flow_instance::DoneBookkeeping::AutoSelected => {}
-                    flow_instance::DoneBookkeeping::WaitingForChoice => {
-                        return Ok(crate::DebugRunOutcome {
-                            reason: DebugStopReason::Choices,
-                            position: Self::position_of(&flow.flow),
-                            depth: Self::depth_of(&flow.flow),
-                        });
-                    }
-                    flow_instance::DoneBookkeeping::Terminal => {
-                        return Ok(crate::DebugRunOutcome {
-                            reason: DebugStopReason::Terminal,
-                            position: Self::position_of(&flow.flow),
-                            depth: Self::depth_of(&flow.flow),
-                        });
-                    }
-                },
-                vm::Stepped::Ended => {
-                    view.increment_turn_index();
-                    flow.status = StoryStatus::Ended;
-                    return Ok(crate::DebugRunOutcome {
-                        reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&flow.flow),
-                        depth: Self::depth_of(&flow.flow),
-                    });
-                }
-                _ => {}
+            match Self::debug_handle_stepped(stepped, env, flow, &mut view)? {
+                SteppedDisposition::Continue
+                | SteppedDisposition::Resumed
+                | SteppedDisposition::CrossedExternal => {}
+                SteppedDisposition::Stop(outcome) => return Ok(outcome),
             }
         }
     }
@@ -1861,7 +1935,13 @@ impl<R: StoryRng> Story<R> {
         watchpoints: &mut crate::WatchpointObserver,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_run_watching_flow(None, breakpoints, watchpoints, budget_ceiling)
+        self.debug_run_watching_flow(
+            None,
+            &FallbackHandler,
+            breakpoints,
+            watchpoints,
+            budget_ceiling,
+        )
     }
 
     /// [`debug_run_watching`](Self::debug_run_watching) for any flow
@@ -1878,11 +1958,12 @@ impl<R: StoryRng> Story<R> {
     pub fn debug_run_watching_flow(
         &mut self,
         flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
         breakpoints: &crate::debug_control::BreakpointSet,
         watchpoints: &mut crate::WatchpointObserver,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        let (target, env) = self.debug_parts(flow)?;
+        let (target, env) = self.debug_parts(flow, handler)?;
         Self::debug_run_watching_impl(&env, target, breakpoints, watchpoints, budget_ceiling)
     }
 
@@ -1950,43 +2031,15 @@ impl<R: StoryRng> Story<R> {
                 });
             }
 
-            match stepped {
-                vm::Stepped::Done => {
-                    let mut view = ContextView::new(&mut *world, &mut *local);
-                    match flow_instance::apply_done_bookkeeping(
-                        &mut flow.flow,
-                        &mut view,
-                        &mut flow.status,
-                        &mut flow.stats,
-                    )? {
-                        flow_instance::DoneBookkeeping::AutoSelected => {}
-                        flow_instance::DoneBookkeeping::WaitingForChoice => {
-                            return Ok(crate::DebugRunOutcome {
-                                reason: DebugStopReason::Choices,
-                                position: Self::position_of(&flow.flow),
-                                depth: Self::depth_of(&flow.flow),
-                            });
-                        }
-                        flow_instance::DoneBookkeeping::Terminal => {
-                            return Ok(crate::DebugRunOutcome {
-                                reason: DebugStopReason::Terminal,
-                                position: Self::position_of(&flow.flow),
-                                depth: Self::depth_of(&flow.flow),
-                            });
-                        }
-                    }
-                }
-                vm::Stepped::Ended => {
-                    let mut view = ContextView::new(&mut *world, &mut *local);
-                    view.increment_turn_index();
-                    flow.status = StoryStatus::Ended;
-                    return Ok(crate::DebugRunOutcome {
-                        reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&flow.flow),
-                        depth: Self::depth_of(&flow.flow),
-                    });
-                }
-                _ => {}
+            // A fresh (unobserved) view for the bookkeeping half — the
+            // observed one was consumed by the step above, and bookkeeping
+            // writes are not watchable state.
+            let mut view = ContextView::new(&mut *world, &mut *local);
+            match Self::debug_handle_stepped(stepped, env, flow, &mut view)? {
+                SteppedDisposition::Continue
+                | SteppedDisposition::Resumed
+                | SteppedDisposition::CrossedExternal => {}
+                SteppedDisposition::Stop(outcome) => return Ok(outcome),
             }
         }
     }
@@ -2045,7 +2098,7 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_step_flow(None, mode, breakpoints, budget_ceiling)
+        self.debug_step_flow(None, &FallbackHandler, mode, breakpoints, budget_ceiling)
     }
 
     /// [`debug_step`](Self::debug_step) for any flow (#3223) — flow
@@ -2058,11 +2111,12 @@ impl<R: StoryRng> Story<R> {
     pub fn debug_step_flow(
         &mut self,
         flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
         mode: crate::debug_control::StepMode,
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        let (target, env) = self.debug_parts(flow)?;
+        let (target, env) = self.debug_parts(flow, handler)?;
         Self::debug_step_impl(
             &env,
             target,
@@ -2111,7 +2165,7 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        self.debug_step_line_flow(None, mode, breakpoints, budget_ceiling)
+        self.debug_step_line_flow(None, &FallbackHandler, mode, breakpoints, budget_ceiling)
     }
 
     /// [`debug_step_line`](Self::debug_step_line) for any flow (#3223) —
@@ -2124,11 +2178,12 @@ impl<R: StoryRng> Story<R> {
     pub fn debug_step_line_flow(
         &mut self,
         flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
         mode: crate::debug_control::StepMode,
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        let (target, env) = self.debug_parts(flow)?;
+        let (target, env) = self.debug_parts(flow, handler)?;
         Self::debug_step_impl(
             &env,
             target,
@@ -2164,6 +2219,14 @@ impl<R: StoryRng> Story<R> {
         let mut view = ContextView::new(world, local);
         let mut steps: u64 = 0;
         let mut past_entry = false;
+        // #3224, spec §4: a call that pushes an `External` frame is opaque
+        // — no ink bytecode inside — so once one is crossed, an `Into`
+        // step adopts `Over`'s stop conditions (run until back at the
+        // starting depth) instead of stopping after its single
+        // instruction, which would strand the debugger inside a frame it
+        // cannot step through (or, with an in-story fallback, inside the
+        // fallback body `Into` was never asked to enter).
+        let mut crossed_external = false;
         loop {
             if past_entry
                 && let Some(pos) = Self::position_of(&flow.flow)
@@ -2196,50 +2259,27 @@ impl<R: StoryRng> Story<R> {
                 env.resolver,
             )?;
 
-            match stepped {
-                vm::Stepped::Done => match flow_instance::apply_done_bookkeeping(
-                    &mut flow.flow,
-                    &mut view,
-                    &mut flow.status,
-                    &mut flow.stats,
-                )? {
-                    flow_instance::DoneBookkeeping::AutoSelected => continue,
-                    flow_instance::DoneBookkeeping::WaitingForChoice => {
-                        return Ok(crate::DebugRunOutcome {
-                            reason: DebugStopReason::Choices,
-                            position: Self::position_of(&flow.flow),
-                            depth: Self::depth_of(&flow.flow),
-                        });
-                    }
-                    flow_instance::DoneBookkeeping::Terminal => {
-                        return Ok(crate::DebugRunOutcome {
-                            reason: DebugStopReason::Terminal,
-                            position: Self::position_of(&flow.flow),
-                            depth: Self::depth_of(&flow.flow),
-                        });
-                    }
-                },
-                vm::Stepped::Ended => {
-                    view.increment_turn_index();
-                    flow.status = StoryStatus::Ended;
-                    return Ok(crate::DebugRunOutcome {
-                        reason: DebugStopReason::Terminal,
-                        position: Self::position_of(&flow.flow),
-                        depth: Self::depth_of(&flow.flow),
-                    });
-                }
-                _ => {}
+            match Self::debug_handle_stepped(stepped, env, flow, &mut view)? {
+                SteppedDisposition::Continue => {}
+                SteppedDisposition::Resumed => continue,
+                SteppedDisposition::CrossedExternal => crossed_external = true,
+                SteppedDisposition::Stop(outcome) => return Ok(outcome),
             }
 
+            let effective_mode = if crossed_external && mode == StepMode::Into {
+                StepMode::Over
+            } else {
+                mode
+            };
             let depth_after = Self::depth_of(&flow.flow);
-            let depth_ok = match mode {
+            let depth_ok = match effective_mode {
                 StepMode::Into => true,
                 StepMode::Over => depth_after <= depth_before,
                 StepMode::Out => depth_after < depth_before,
             };
             // `Out` is the same verb at both granularities: returning lands
             // mid-line at the call site, which is where `finish` stops.
-            let line_ok = match (granularity, mode) {
+            let line_ok = match (granularity, effective_mode) {
                 (StepGranularity::Instruction, _) | (StepGranularity::Line, StepMode::Out) => true,
                 (StepGranularity::Line, _) => Self::line_key_of(&flow.flow, env.program)
                     .is_some_and(|now| Some(now) != line_before),

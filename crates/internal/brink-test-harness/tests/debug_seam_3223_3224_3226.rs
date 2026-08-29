@@ -84,7 +84,12 @@ fn breakpoint_in_named_flow_halts_it_and_leaves_the_default_flow_alone() {
     let bp_id = breakpoints.insert(side_idx, next_off, "side-entry");
 
     let outcome = story
-        .debug_run_flow(Some("worker"), &breakpoints, DEFAULT_DEBUG_BUDGET)
+        .debug_run_flow(
+            Some("worker"),
+            &brink_runtime::FallbackHandler,
+            &breakpoints,
+            DEFAULT_DEBUG_BUDGET,
+        )
         .expect("debug_run_flow");
     assert_eq!(
         outcome.reason,
@@ -134,6 +139,7 @@ fn debug_step_flow_advances_a_shared_flow_independently() {
     let outcome = story
         .debug_step_flow(
             Some("narrator"),
+            &brink_runtime::FallbackHandler,
             StepMode::Into,
             &BreakpointSet::new(),
             DEFAULT_DEBUG_BUDGET,
@@ -171,20 +177,216 @@ fn unknown_flow_name_is_an_error_on_every_verb() {
         Err(RuntimeError::UnknownFlow(_))
     ));
     assert!(matches!(
-        story.debug_run_flow(Some("ghost"), &bp, DEFAULT_DEBUG_BUDGET),
+        story.debug_run_flow(
+            Some("ghost"),
+            &brink_runtime::FallbackHandler,
+            &bp,
+            DEFAULT_DEBUG_BUDGET
+        ),
         Err(RuntimeError::UnknownFlow(_))
     ));
     let mut watch = brink_runtime::WatchpointObserver::new(Vec::new());
     assert!(matches!(
-        story.debug_run_watching_flow(Some("ghost"), &bp, &mut watch, DEFAULT_DEBUG_BUDGET),
+        story.debug_run_watching_flow(
+            Some("ghost"),
+            &brink_runtime::FallbackHandler,
+            &bp,
+            &mut watch,
+            DEFAULT_DEBUG_BUDGET
+        ),
         Err(RuntimeError::UnknownFlow(_))
     ));
     assert!(matches!(
-        story.debug_step_flow(Some("ghost"), StepMode::Into, &bp, DEFAULT_DEBUG_BUDGET),
+        story.debug_step_flow(
+            Some("ghost"),
+            &brink_runtime::FallbackHandler,
+            StepMode::Into,
+            &bp,
+            DEFAULT_DEBUG_BUDGET
+        ),
         Err(RuntimeError::UnknownFlow(_))
     ));
     assert!(matches!(
-        story.debug_step_line_flow(Some("ghost"), StepMode::Into, &bp, DEFAULT_DEBUG_BUDGET),
+        story.debug_step_line_flow(
+            Some("ghost"),
+            &brink_runtime::FallbackHandler,
+            StepMode::Into,
+            &bp,
+            DEFAULT_DEBUG_BUDGET
+        ),
+        Err(RuntimeError::UnknownFlow(_))
+    ));
+}
+
+// ── #3224: external-call frames are debuggable ──────────────────────
+
+use brink_format::Value;
+use brink_runtime::{ExternalFnHandler, ExternalResult};
+
+/// Handler binding `beep` to a constant — the synchronous-resolution case.
+struct Beep;
+impl ExternalFnHandler for Beep {
+    fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+        assert_eq!(name, "beep", "only one external in these fixtures");
+        ExternalResult::Resolved(Value::Int(7))
+    }
+}
+
+/// Handler that always defers — the async / world-access case.
+struct Defer;
+impl ExternalFnHandler for Defer {
+    fn call(&self, _name: &str, _args: &[Value]) -> ExternalResult {
+        ExternalResult::Pending
+    }
+}
+
+/// A story whose default flow crosses an `EXTERNAL` call with an in-story
+/// fallback. The fallback makes the `FallbackHandler` path (the bare
+/// `debug_run`) meaningful too.
+fn external_story() -> (Arc<Program>, Story<FastRng>) {
+    let (program, tables) = compile_ink(
+        "EXTERNAL beep(x)\n\
+         -> main_loop\n\
+         === main_loop ===\n\
+         Before call.\n\
+         The value is {beep(2)}.\n\
+         After call.\n\
+         -> DONE\n\
+         === function beep(x) ===\n\
+         ~ return x * 10\n",
+    );
+    let program = Arc::new(program);
+    let story = Story::<FastRng>::new(Arc::clone(&program), tables);
+    (program, story)
+}
+
+/// `debug_run` on a story with a bound external passes through the call
+/// without erroring — the exact failure #3224 names (`debug_run` used to
+/// leave the `External` frame unresolved and error
+/// `UnresolvedExternalCall` on the next step). Proven with a real
+/// handler, and with the bare method's `FallbackHandler` (in-story
+/// fallback body).
+#[test]
+fn debug_run_passes_through_a_bound_external() {
+    let (_, mut story) = external_story();
+    let outcome = story
+        .debug_run_flow(None, &Beep, &BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+        .expect("a bound external must not error mid-debug-session");
+    assert_eq!(outcome.reason, DebugStopReason::Terminal);
+
+    // The bare method (FallbackHandler) runs the in-story fallback body.
+    let (_, mut story) = external_story();
+    let outcome = story
+        .debug_run(&BreakpointSet::new(), DEFAULT_DEBUG_BUDGET)
+        .expect("the in-story fallback resolves under the bare method");
+    assert_eq!(outcome.reason, DebugStopReason::Terminal);
+}
+
+/// Walk `story` to the instruction that pushes the `External` frame: step
+/// `Into` repeatedly until the NEXT single step would cross the external.
+/// Returns the position at that call site.
+fn step_to_external_call_site(
+    story: &mut Story<FastRng>,
+    handler: &dyn ExternalFnHandler,
+) -> brink_runtime::DebugPosition {
+    let bp = BreakpointSet::new();
+    loop {
+        let before = story.debug_position().expect("running story has position");
+        let depth_before = story.debug_call_stack_depth();
+        // Probe with a CLONE so the real story stays put at the call site.
+        let mut probe = story.clone();
+        let probe_outcome = probe
+            .debug_step_flow(None, &Defer, StepMode::Into, &bp, DEFAULT_DEBUG_BUDGET)
+            .expect("probe step");
+        if probe_outcome.reason == DebugStopReason::AwaitingExternal {
+            let _ = depth_before;
+            return before;
+        }
+        let stepped = story
+            .debug_step_flow(None, handler, StepMode::Into, &bp, DEFAULT_DEBUG_BUDGET)
+            .expect("advance step");
+        assert_ne!(
+            stepped.reason,
+            DebugStopReason::Terminal,
+            "walked past the external without finding the call site"
+        );
+    }
+}
+
+/// Spec §4: step-into on a call that pushes an `External` frame behaves
+/// like step-over — same resulting position AND depth, proven by driving
+/// two clones of the same story from the same call site.
+#[test]
+fn step_into_on_external_behaves_like_step_over() {
+    let (_, mut story) = external_story();
+    let call_site = step_to_external_call_site(&mut story, &Beep);
+    let _ = call_site;
+
+    let mut into_story = story.clone();
+    let mut over_story = story;
+    let bp = BreakpointSet::new();
+
+    let into = into_story
+        .debug_step_flow(None, &Beep, StepMode::Into, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("Into across external");
+    let over = over_story
+        .debug_step_flow(None, &Beep, StepMode::Over, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("Over across external");
+
+    assert_eq!(into.reason, over.reason, "same stop reason");
+    assert_eq!(into.position, over.position, "same resulting position");
+    assert_eq!(into.depth, over.depth, "same resulting depth");
+}
+
+/// A deferring handler parks the run with `AwaitingExternal` — frame
+/// intact — and `resolve_external` + another `debug_run` resumes to the
+/// terminal, on the DEFAULT flow.
+#[test]
+fn pending_external_parks_and_resumes_on_the_default_flow() {
+    let (_, mut story) = external_story();
+    let bp = BreakpointSet::new();
+    let outcome = story
+        .debug_run_flow(None, &Defer, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("deferred external is a clean park, not an error");
+    assert_eq!(outcome.reason, DebugStopReason::AwaitingExternal);
+    assert!(
+        story.has_pending_external(),
+        "the External frame must be left intact for out-of-band resolution"
+    );
+
+    story.resolve_external(Value::Int(20));
+    let outcome = story
+        .debug_run_flow(None, &Defer, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("resume after out-of-band resolution");
+    assert_eq!(outcome.reason, DebugStopReason::Terminal);
+}
+
+/// The same park/resume works on a NAMED flow via
+/// `resolve_external_flow` — #3223's seam and #3224's contract compose.
+#[test]
+fn pending_external_parks_and_resumes_on_a_named_flow() {
+    let (program, mut story) = external_story();
+    let main_id = program
+        .definition_id_for_path("main_loop")
+        .expect("main_loop resolves");
+    story.spawn_flow("worker", main_id).expect("spawn_flow");
+
+    let bp = BreakpointSet::new();
+    let outcome = story
+        .debug_run_flow(Some("worker"), &Defer, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("deferred external parks the named flow");
+    assert_eq!(outcome.reason, DebugStopReason::AwaitingExternal);
+
+    story
+        .resolve_external_flow("worker", Value::Int(20))
+        .expect("known flow resolves");
+    let outcome = story
+        .debug_run_flow(Some("worker"), &Defer, &bp, DEFAULT_DEBUG_BUDGET)
+        .expect("resume the named flow");
+    assert_eq!(outcome.reason, DebugStopReason::Terminal);
+
+    assert!(matches!(
+        story.resolve_external_flow("ghost", Value::Null),
         Err(RuntimeError::UnknownFlow(_))
     ));
 }
