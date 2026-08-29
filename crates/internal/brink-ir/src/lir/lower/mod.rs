@@ -5,7 +5,7 @@ mod context;
 mod decls;
 mod expr;
 mod lambda;
-mod recognize;
+pub mod recognize;
 mod stmts;
 mod structs;
 mod temps;

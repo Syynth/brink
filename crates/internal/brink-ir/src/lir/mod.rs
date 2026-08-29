@@ -29,6 +29,9 @@
 pub mod lower;
 mod types;
 
+pub use lower::recognize::{
+    VARIANT_CAP, VariantAlt, VariantCapExceeded, VariantEnumeration, enumerate_variant_contents,
+};
 pub use lower::{
     AnalyzerTables, ChunkLoweringCtx, CoalesceLookup, CoalesceShape, LirPrelude, PreludeDecls,
     ScopeChunk, StructShapeData, TypeMode, UfcsLookup, UfcsVerdict, assemble_prelude,
