@@ -38,7 +38,10 @@ pub fn project_hir(
         }
     }
 
-    project_with_maps(hir, source, &decl_ids, &ref_targets)
+    // Anonymous ids (#3234): this off-db helper serves structural/id-free
+    // consumers (folding, line conversion); callers needing weave-container
+    // identity use the db road's `projection` query, which joins them.
+    project_with_maps(hir, source, &decl_ids, &ref_targets, &BTreeMap::new())
 }
 
 #[cfg(test)]

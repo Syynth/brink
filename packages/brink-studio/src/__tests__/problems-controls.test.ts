@@ -65,7 +65,7 @@ describe("severityBucket", () => {
 
 describe("countBySeverity", () => {
   it("counts every bucket over the unfiltered list", () => {
-    expect(countBySeverity(ROWS)).toEqual({ error: 1, warning: 2, info: 2, prose: 0 });
+    expect(countBySeverity(ROWS)).toEqual({ error: 1, warning: 2, info: 2, prose: 0 , todo: 0});
   });
 });
 
@@ -84,7 +84,7 @@ describe("filterProblemRows", () => {
   // Prose ON here: these cases are about SEVERITY filtering, and leaving
   // the source bucket at its off-by-default would silently drop any prose
   // row a case adds later.
-  const all = { error: true, warning: true, info: true, prose: true };
+  const all = { error: true, warning: true, info: true, prose: true , todo: false};
 
   it("passes everything through with defaults (today's behavior)", () => {
     expect(filterProblemRows(ROWS, all, "")).toHaveLength(ROWS.length);
@@ -118,30 +118,30 @@ describe("groupProblemRows", () => {
       "menus/game_menu.ink",
       "main.ink",
     ]);
-    expect(groups[0]?.counts).toEqual({ error: 1, warning: 1, info: 0, prose: 0 });
+    expect(groups[0]?.counts).toEqual({ error: 1, warning: 1, info: 0, prose: 0 , todo: 0});
     expect(groups[2]?.rows).toHaveLength(2);
   });
 
   it("groups the FILTERED set, so counts reflect what is on screen", () => {
     const visible = filterProblemRows(
       ROWS,
-      { error: true, warning: false, info: false, prose: false },
+      { error: true, warning: false, info: false, prose: false , todo: false},
       "",
     );
     const groups = groupProblemRows(visible);
     expect(groups).toHaveLength(1);
-    expect(groups[0]?.counts).toEqual({ error: 1, warning: 0, info: 0, prose: 0 });
+    expect(groups[0]?.counts).toEqual({ error: 1, warning: 0, info: 0, prose: 0 , todo: 0});
   });
 });
 
 describe("summarizeCounts", () => {
   it("omits empty buckets and singularizes", () => {
-    expect(summarizeCounts({ error: 1, warning: 2, info: 0, prose: 0 })).toBe(
+    expect(summarizeCounts({ error: 1, warning: 2, info: 0, prose: 0 , todo: 0})).toBe(
       "1 error · 2 warnings",
     );
-    expect(summarizeCounts({ error: 0, warning: 0, info: 3, prose: 0 })).toBe("3 info");
-    expect(summarizeCounts({ error: 0, warning: 0, info: 0, prose: 0 })).toBe("");
-    expect(summarizeCounts({ error: 0, warning: 0, info: 0, prose: 2 })).toBe("2 spelling");
+    expect(summarizeCounts({ error: 0, warning: 0, info: 3, prose: 0 , todo: 0})).toBe("3 info");
+    expect(summarizeCounts({ error: 0, warning: 0, info: 0, prose: 0 , todo: 0})).toBe("");
+    expect(summarizeCounts({ error: 0, warning: 0, info: 0, prose: 2 , todo: 0})).toBe("2 spelling");
   });
 });
 
@@ -157,6 +157,7 @@ describe("problems slice", () => {
       warning: true,
       info: true,
       prose: false,
+      todo: false,
     });
     expect(s.problemsFilter).toBe("");
     expect(s.problemsFilterOpen).toBe(false);
@@ -172,6 +173,7 @@ describe("problems slice", () => {
       warning: false,
       info: true,
       prose: false,
+      todo: false,
     });
     store.getState().toggleProblemSeverity("warning");
     expect(store.getState().problemsSeverities.warning).toBe(true);
@@ -219,7 +221,7 @@ describe("problems preferences persist", () => {
   it("round-trips severities and grouping", () => {
     const storage = memoryStorage();
     const prefs: ProblemsPrefs = {
-      severities: { error: true, warning: false, info: false, prose: true },
+      severities: { error: true, warning: false, info: false, prose: true , todo: false},
       grouped: false,
     };
     saveProblemsPrefs(storage, prefs);
@@ -228,7 +230,7 @@ describe("problems preferences persist", () => {
 
   it("defaults to shown+grouped when nothing is stored", () => {
     expect(loadProblemsPrefs(memoryStorage())).toEqual({
-      severities: { error: true, warning: true, info: true, prose: false },
+      severities: { error: true, warning: true, info: true, prose: false , todo: false},
       grouped: true,
     });
   });
@@ -241,9 +243,11 @@ describe("problems preferences persist", () => {
       error: true,
       warning: true,
       info: true,
-      // The opposite rule for the source bucket: a record written before it
-      // existed must not turn spelling rows on for an existing author.
+      // The opposite rule for the SOURCE buckets: a record written before
+      // they existed must not turn spelling rows — or TODO notes — on for
+      // an existing author.
       prose: false,
+      todo: false,
     });
   });
 
@@ -273,7 +277,7 @@ describe("problems preferences persist", () => {
   it("applyProblemsPrefs restores a saved view at boot", () => {
     const store = createStudioStore();
     store.getState().applyProblemsPrefs({
-      severities: { error: true, warning: false, info: false, prose: false },
+      severities: { error: true, warning: false, info: false, prose: false , todo: false},
       grouped: false,
     });
     expect(store.getState().problemsSeverities.warning).toBe(false);

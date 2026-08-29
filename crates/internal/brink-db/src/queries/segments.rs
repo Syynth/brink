@@ -486,6 +486,8 @@ pub(crate) fn projection_query(
             ref_targets.insert(proj::range_key(r.range), r.target);
         }
     }
+    let anon_ids = anonymous_id_map(db, project, file, &lowered.hir, &resolved.index);
+
     for (span, (key, delta)) in spans.iter_mut().zip(&join_keys) {
         match key {
             Some(proj::JoinKey::Decl(r)) => {
@@ -493,6 +495,9 @@ pub(crate) fn projection_query(
             }
             Some(proj::JoinKey::Ref(r)) => {
                 span.target_id = ref_targets.get(&proj::range_key(*r + *delta)).copied();
+            }
+            Some(proj::JoinKey::Anon(r)) => {
+                span.def_id = anon_ids.get(&proj::range_key(*r + *delta)).copied();
             }
             None => {}
         }
@@ -505,6 +510,36 @@ pub(crate) fn projection_query(
         lines,
         option_paths,
     }))
+}
+
+/// Pass 3b inputs (#3234): anonymous-container identity. Stamp a clone of
+/// the pristine HIR with the EXACT call the codegen road runs
+/// (`normalized_stamped_query` — same index, same file-path qualifier) and
+/// read ids off the authored nodes, keyed by the ranges the walk recorded
+/// as `JoinKey::Anon`. NOT normalized: the pristine tree is 1:1 with
+/// compiled containers (#3275) and the lift inherits these ids, so what
+/// the overlay reports is codegen's real identity by construction — the
+/// #3227 "locally computed stamp" hazard is gone because nothing about
+/// this stamp is local. Cost: one extra stamp walk per projection
+/// rebuild; no new invalidation edges (pass 3 already reads
+/// `resolutions_index_query`).
+fn anonymous_id_map(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    hir: &HirFile,
+    index: &brink_ir::SymbolIndex,
+) -> std::collections::BTreeMap<(u32, u32), brink_format::DefinitionId> {
+    let file_id = file.file_id(db);
+    let ink_root = project.ink_root(db).as_deref();
+    let file_paths: crate::determinism::LookupMap<brink_ir::FileId, String> = std::iter::once((
+        file_id,
+        crate::modules::root_relative_key(ink_root, file.path(db)).into_owned(),
+    ))
+    .collect();
+    let mut slice = [(file_id, hir.clone())];
+    brink_ir::stamp_container_ids(&mut slice, index, &file_paths);
+    brink_ir::hir::projection::anonymous_container_ids(&slice[0].1)
 }
 
 // ─── Per-segment line contexts (#3064 B3) ────────────────────────────
@@ -1082,8 +1117,19 @@ Gamma body.
                     ref_targets.insert(proj::range_key(r.range), r.target);
                 }
             }
+            // The oracle road builds the SAME anonymous-id map the
+            // assembled query's pass 3b builds (#3234): stamp a clone of
+            // the oracle HIR with the analysis index and the file's path
+            // qualifier, then hand the map to the whole-file walk.
+            let anon_ids = {
+                let file_paths: crate::determinism::LookupMap<brink_ir::FileId, String> =
+                    std::iter::once((id, "gate.ink".to_owned())).collect();
+                let mut slice = [(id, oracle.hir.clone())];
+                brink_ir::stamp_container_ids(&mut slice, &analysis.index, &file_paths);
+                proj::anonymous_container_ids(&slice[0].1)
+            };
             let oracle_projection =
-                proj::project_with_maps(&oracle.hir, source, &decl_ids, &ref_targets);
+                proj::project_with_maps(&oracle.hir, source, &decl_ids, &ref_targets, &anon_ids);
             let assembled_projection = db.projection(id).expect("projection");
             assert_eq!(
                 *assembled_projection, oracle_projection,
@@ -1364,6 +1410,109 @@ Hi.
         assert_eq!(
             before[3], after[3],
             "gamma shifted but content-unchanged — its memo must be untouched"
+        );
+    }
+}
+
+// ─── Anonymous-id join (#3234) ───────────────────────────────────────
+
+#[cfg(test)]
+mod anon_id_tests {
+    use crate::ProjectDb;
+    use brink_ir::hir::projection::SpanKind;
+
+    /// The #3234 gate: weave-container spans in the assembled projection
+    /// carry the SAME `DefinitionId`s the codegen road's HIR
+    /// (`normalized_stamped_query`) holds for those nodes — the overlay
+    /// reports the compiled program's real identity, not a locally
+    /// re-derived one (the #3227 hazard this pass-3b join retires).
+    #[test]
+    fn projection_reports_codegens_anonymous_container_ids() {
+        let src = "\
+-> start
+== start ==
+Intro line.
+* first choice
+  body one
+* (opt) labeled choice
+  body two
+- gathered here
+{x_cond:
+- branch a
+- else: branch b
+}
+-> DONE
+";
+        let mut db = ProjectDb::new();
+        db.update_file("a.ink", format!("VAR x_cond = true\n{src}"));
+        let file_id = db.file_id("a.ink").expect("file loaded");
+
+        let projection = db.projection(file_id).expect("projection builds");
+        let container_ids: Vec<(SpanKind, Option<brink_format::DefinitionId>)> = projection
+            .spans
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    SpanKind::Choice | SpanKind::Gather | SpanKind::ConditionalBranch
+                )
+            })
+            .map(|s| (s.kind, s.def_id))
+            .collect();
+
+        // Every weave container has identity now — the gap this closes.
+        assert!(
+            container_ids.len() >= 5,
+            "fixture must project 2 choices + a gather + 2 cond branches, got {container_ids:?}"
+        );
+        assert!(
+            container_ids.iter().all(|(_, id)| id.is_some()),
+            "every weave-container span must carry a stamped id: {container_ids:?}"
+        );
+
+        // And they are codegen's ids: the normalized+stamped HIR (the
+        // exact value LIR lowering consumes) holds the same ids on the
+        // same nodes. Weave nodes are untouched by the lift, so reading
+        // them off the normalized tree is exact.
+        let (salsa, project) = db.salsa_and_project();
+        let file = db.test_source_file(file_id).expect("source file");
+        let stamped = super::super::normalized_stamped_query(salsa, project, file);
+        let mut expected: Vec<brink_format::DefinitionId> = Vec::new();
+        for knot in &stamped.knots {
+            for stmt in &knot.body.stmts {
+                if let brink_ir::Stmt::ChoiceSet(cs) = stmt {
+                    for choice in &cs.choices {
+                        expected.push(choice.container_id.expect("stamped"));
+                    }
+                    expected.push(cs.gather_id.expect("stamped"));
+                }
+            }
+        }
+        let projected: std::collections::BTreeSet<_> = container_ids
+            .iter()
+            .filter_map(|(k, id)| matches!(k, SpanKind::Choice | SpanKind::Gather).then_some(*id))
+            .flatten()
+            .collect();
+        for id in &expected {
+            assert!(
+                projected.contains(id),
+                "codegen id {id} missing from projection: projected={projected:?}"
+            );
+        }
+
+        // The labeled choice's projected id IS the label's symbol id —
+        // label substitution reached the overlay.
+        let analysis = db.analysis();
+        let label_id = analysis
+            .index
+            .by_name
+            .get("start.opt")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("label symbol indexed");
+        assert!(
+            projected.contains(&label_id),
+            "labeled choice must project the label's own id {label_id}"
         );
     }
 }

@@ -101,7 +101,7 @@ The check is lexical: it fires when the assignment's target name is bound outsid
     ),
     (
         DiagnosticCode::E157,
-        r#"A save's visit/turn counts key on a scope's compiled id. A **named** scope (a knot, stitch, or a choice/gather carrying an author `(label)`) hashes its id from that name — stable no matter what else in the project changes. An **anonymous** scope (an unlabeled once-only choice's target, or a sequence's wrapper container) hashes its id from *position* instead: inserting or removing a sibling construct earlier in the same scope shifts every later positional counter, and with it every later anonymous id.
+        r#"A save's visit/turn counts key on a scope's compiled id. A **named** scope (a knot, stitch, or a choice/gather carrying an author `(label)`) hashes its id from that name — stable no matter what else in the project changes. An **anonymous** scope (an unlabeled once-only choice's target, or a sequence's wrapper container) hashes its id from *position* instead: inserting or removing a sibling construct earlier in the same **weave block** shifts every later positional counter, and with it every later anonymous id. (Counters are block-local, so an edit in one choice's body never renumbers a sibling's body — the exposure is bounded to the construct's own block. A `(label)` goes further: it anchors its entire subtree, so everything inside a labeled choice or block is independent of sibling edits anywhere.)
 
 Issue #1674 measured this exposure and found it bounded: globals are keyed by name, so only visit/turn counts are exposed to the *runtime*, and an anonymous container's count is unreadable by author expressions (there is no way to write `READ_COUNT` against something with no name). (`docs/decision-log.md`'s 2026-07-27 "CORRECTION to the R1 entry" widens this: anonymous scopes also carry translation units, so intl is exposed too — this lint and `LoadReport::anonymous_states_dropped` still only cover the visit/turn-count half.) The fallout, when a patch shifts an anonymous id, is exactly two shapes:
 
@@ -110,7 +110,7 @@ Issue #1674 measured this exposure and found it bounded: globals are keyed by na
 
 `brink_runtime::save::load_state` reports this after the fact through `LoadReport::anonymous_states_dropped` (a saved anonymous visit/turn count that no longer resolves). This lint is the *before*: a compile-time nudge to name the construct so the exposure never happens in the first place.
 
-Naming is the fix ruled proportionate for choices — a labeled choice (`* (label) …`) resolves its identity by name, not position, and is immune to this drift. A sequence has no label syntax of its own; the mitigation is structural — isolate the sequence in its own small, stably-named stitch so nothing can be inserted ahead of it.
+Naming is the fix ruled proportionate for choices — a labeled choice (`* (label) …`) resolves its identity by name, not position, is immune to this drift, and anchors everything inside its body along with it. A sequence has no label syntax of its own; the mitigation is structural — place it inside a `(label)`ed choice or block (whose anchor insulates it), or in its own small, stably-named stitch, so nothing can renumber it.
 
 This lint is **off/info by default** (RULED: a single-shot project that never patches its content should not be nagged) and tier-able through `[lints]` like any other diagnostic code — a team doing live-ops or shipping user-generated content can raise it:
 

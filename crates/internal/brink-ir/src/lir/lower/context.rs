@@ -376,6 +376,16 @@ pub fn root_definition_id() -> DefinitionId {
 /// (root, choice targets, unlabeled gathers).
 pub struct IdAllocator {
     used: LookupMap<String, DefinitionId>,
+    /// Shared containers already emitted in this allocator's file (#3275
+    /// stage 3a): a stateful alternative cloned across a lifted
+    /// construct's branches keeps ONE stamped id (shared visit-count
+    /// state, ruled 2026-08-29), so each claiming branch line's variant
+    /// emission would otherwise create an identical empty stub per clone
+    /// site — tripping codegen's #1673 uniqueness guard on ids that are
+    /// deliberately, correctly shared. First emission wins; later sites
+    /// reference the id without re-emitting. Threaded with the allocator
+    /// (one per file lowering) because clones never cross files.
+    emitted_shared: crate::determinism::LookupSet<DefinitionId>,
     /// Global counter for conditionals and sequences. Never resets —
     /// shared between the plan phase and lowering phase to ensure
     /// unique container paths across all sub-scopes.
@@ -394,6 +404,7 @@ impl IdAllocator {
         Self {
             used: LookupMap::new(),
             seq_counter: 0,
+            emitted_shared: crate::determinism::LookupSet::new(),
             path_prefix: String::new(),
         }
     }
@@ -458,6 +469,13 @@ impl IdAllocator {
     /// ensuring unique paths like `b-0`, `b-1`, etc. It resets at knot/stitch
     /// boundaries via [`reset_seq_counter`], since scope paths are qualified
     /// by knot name (e.g., `"start.b-0"` can't collide with `"waited.b-0"`).
+    /// Record that the shared container `id` is being emitted; `true` on
+    /// the first call for an id (emit it), `false` on every later call
+    /// (reference it without emitting). See `emitted_shared`.
+    pub fn mark_shared_emitted(&mut self, id: DefinitionId) -> bool {
+        self.emitted_shared.insert(id)
+    }
+
     pub fn next_seq_index(&mut self) -> usize {
         let idx = self.seq_counter;
         self.seq_counter += 1;
