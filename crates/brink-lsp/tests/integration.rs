@@ -3127,19 +3127,27 @@ fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint_that_survives_backgro
         } else if first_seen_suspicion
             && msg["method"] == "$/brink/backgroundAnalysisComplete"
             && msg["params"]["file_count"].as_u64().is_some_and(|c| c >= 1)
+            && last_diags_for_uri
+                .as_ref()
+                .is_some_and(|diags| diags.iter().any(|d| d["code"] == "rename-suspicion"))
         {
-            // One background pass completing *after* the hint first
-            // appeared is both necessary and sufficient: `did_change`'s
-            // `mutate_db` (committing the rename) and its
-            // `publish_perfile_diagnostics` (which is what set
-            // `first_seen_suspicion`) both run before its `trigger_analysis`
-            // call, and `tokio::sync::Notify::notify_one` buffers at least
-            // one wakeup — so this completion is guaranteed to be a pass
-            // that read the already-renamed db content. Waiting for a
-            // second one is not just unnecessary but can hang the test:
-            // `analysis_loop` coalesces rapid triggers into a single pass,
-            // so there may never be a further trigger (and thus no further
-            // completion) once this one fires.
+            // A background pass completing *after* the hint first appeared
+            // is the stop signal — but only once the LAST publish for the
+            // file still carries the hint. The first completion after the
+            // hint is NOT guaranteed to be the pass that read the renamed
+            // db: a pass already in flight when `did_change` landed (e.g.
+            // the startup-triggered one, reading pre-rename content) can
+            // complete after `publish_perfile_diagnostics` set
+            // `first_seen_suspicion`, clobbering the per-file publish with
+            // a stale empty set — the exact ordering a contended CI runner
+            // produced (PR #3290's `Test` job). When that happens, the
+            // buffered wakeup (`tokio::sync::Notify::notify_one` holds at
+            // least one) still owes us a further pass that DID read the
+            // renamed content, so keep reading; its publish re-carries the
+            // hint and its completion satisfies this arm. Coalescing can
+            // merge triggers into that one pass but never drops the
+            // buffered wakeup, so this cannot hang — and `MAX_MESSAGES`
+            // bounds the loop regardless.
             break;
         }
     }
