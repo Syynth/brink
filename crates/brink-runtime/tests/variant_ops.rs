@@ -7,11 +7,7 @@
 //! Programs are hand-built `StoryData`; every run is a straight-line
 //! bytecode body ending in `Done`, so nothing here can hang.
 
-#![expect(
-    clippy::unwrap_used,
-    clippy::cast_possible_wrap,
-    reason = "test harness"
-)]
+#![expect(clippy::unwrap_used, reason = "test harness")]
 
 use brink_format::{
     ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry, NameId,
@@ -120,7 +116,7 @@ fn emit_target_touch(alt: DefinitionId) -> [Opcode; 4] {
     ]
 }
 
-/// TouchVisit hands back the PRE-increment count — 0 on the first view —
+/// `TouchVisit` hands back the PRE-increment count — 0 on the first view —
 /// and each touch advances it: the "how many times has this alternative
 /// been viewed" index, recorded without ever entering the container.
 #[test]
@@ -151,7 +147,7 @@ fn touch_visit_state_is_per_container() {
     assert_eq!(out, "0\n0\n1\n", "a: 0 then 1; b: 0 — independent counters");
 }
 
-/// A malformed operand (not a DivertTarget) pushes 0 and records nothing,
+/// A malformed operand (not a `DivertTarget`) pushes 0 and records nothing,
 /// mirroring `VisitCount`'s tolerance: malformed bytecode degrades, never
 /// panics.
 #[test]
@@ -191,8 +187,8 @@ fn emit_shuffle_index(alt: DefinitionId, seq_count: i32, num_elements: i32) -> [
 /// partial-Fisher–Yates contract as `Sequence(Shuffle)`.
 #[test]
 fn shuffle_index_of_yields_a_permutation() {
-    let alt = def_id(DefinitionTag::Address, 100);
     const N: i32 = 4;
+    let alt = def_id(DefinitionTag::Address, 100);
     let mut ops = Vec::new();
     for seq_count in 0..N {
         ops.extend(emit_shuffle_index(alt, seq_count, N));
@@ -204,7 +200,7 @@ fn shuffle_index_of_yields_a_permutation() {
     assert_eq!(seen, vec![0, 1, 2, 3], "one loop visits each branch once");
 }
 
-/// Determinism: the same story (same seed, same path_hash) picks the same
+/// Determinism: the same story (same seed, same `path_hash`) picks the same
 /// permutation every run.
 #[test]
 fn shuffle_index_of_is_deterministic() {
@@ -225,10 +221,10 @@ fn shuffle_index_of_is_deterministic() {
 /// container), which is why this opcode exists (#3273).
 #[test]
 fn shuffle_index_of_seeds_by_the_named_containers_hash() {
+    const N: i32 = 8;
     let a = def_id(DefinitionTag::Address, 100);
     let b = def_id(DefinitionTag::Address, 101);
     let c = def_id(DefinitionTag::Address, 102);
-    const N: i32 = 8;
     // One full loop for each of a (hash 111), b (hash 222), c (hash 111).
     let mut ops = Vec::new();
     for alt in [a, b, c] {

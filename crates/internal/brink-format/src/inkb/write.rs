@@ -770,7 +770,6 @@ pub(crate) const LINE_VARIANT_GROUPS_SECTION_VERSION: u8 = 1;
 /// length), everything else in the entry is an absolute varint except the
 /// fixed-width `kind_token: u32` and `flags: u8` (§2.2's table explains why
 /// those two stay fixed-width).
-#[expect(clippy::cast_possible_truncation)]
 /// Encode the `LineVariantGroups` section (#3273): version byte, group
 /// count, then per group `{scope_id, base, dim-count, dims}`. Dims are u16
 /// on the wire exactly as in [`LineVariantGroup`] — a group's variant count
@@ -793,6 +792,7 @@ pub fn write_section_line_variant_groups(groups: &[LineVariantGroup], buf: &mut 
     }
 }
 
+#[expect(clippy::cast_possible_truncation)]
 pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
     write_u8(buf, DEBUG_INFO_SECTION_VERSION);
 

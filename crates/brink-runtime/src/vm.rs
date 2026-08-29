@@ -1157,10 +1157,9 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::ShuffleIndexOf => {
             let val = flow.pop_value()?;
             let path_hash = if let Value::DivertTarget(id) = val {
-                program
-                    .resolve_target(id)
-                    .map(|(container_idx, _)| program.container(container_idx).path_hash)
-                    .unwrap_or(0)
+                program.resolve_target(id).map_or(0, |(container_idx, _)| {
+                    program.container(container_idx).path_hash
+                })
             } else {
                 0
             };
@@ -3244,7 +3243,6 @@ fn handle_sequence<R: crate::rng::StoryRng>(
 ///
 /// Pops `numElements` (Int) and `seqCount` (Int) from the value stack.
 /// Uses a partial Fisher-Yates shuffle seeded with `path_hash + loopIndex + story_seed`.
-#[expect(clippy::cast_sign_loss)]
 fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
@@ -3260,6 +3258,7 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
 /// the current container's for [`Opcode::Sequence`]`(Shuffle)`, the named
 /// container's for [`Opcode::ShuffleIndexOf`] (#3273). One implementation,
 /// so the two spellings cannot drift.
+#[expect(clippy::cast_sign_loss)]
 fn handle_shuffle_with_hash<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     context: &mut (impl ContextAccess + ?Sized),

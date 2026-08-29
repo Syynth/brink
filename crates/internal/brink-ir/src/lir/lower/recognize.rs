@@ -620,7 +620,7 @@ fn branch_textual_parts(body: &hir::Block) -> Option<Vec<hir::ContentPart>> {
 /// whitespace-collapse rule as [`compose_hir_content`].
 fn substitute_combo(content: &hir::Content, alts: &[VariantAlt], combo: &[u16]) -> hir::Content {
     let mut parts: Vec<hir::ContentPart> = Vec::with_capacity(content.parts.len());
-    let mut push_merged = |parts: &mut Vec<hir::ContentPart>, part: &hir::ContentPart| {
+    let push_merged = |parts: &mut Vec<hir::ContentPart>, part: &hir::ContentPart| {
         if let (Some(hir::ContentPart::Text(last)), hir::ContentPart::Text(next)) =
             (parts.last_mut(), part)
         {

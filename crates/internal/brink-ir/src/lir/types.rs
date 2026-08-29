@@ -680,7 +680,7 @@ pub struct VariantAltEmission {
 pub struct VariantLineEmission {
     /// The alternatives, in source order — one per dim.
     pub alts: Vec<VariantAltEmission>,
-    /// Line-table layout dims (`once` = branch_count + 1). The product is
+    /// Line-table layout dims (`once` = `branch_count + 1`). The product is
     /// `variants.len()`.
     pub dims: Vec<u16>,
     /// Row-major variant lines, first alternative varying slowest. Tags

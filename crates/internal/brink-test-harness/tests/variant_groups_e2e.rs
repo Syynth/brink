@@ -134,7 +134,11 @@ fn two_stopping_alternatives_co_advance() {
     assert_eq!(data.line_variant_groups.len(), 3);
     for (i, group) in data.line_variant_groups.iter().enumerate() {
         assert_eq!(group.dims, vec![2, 2]);
-        assert_eq!(group.base, (i * 4) as u32, "consecutive 4-entry runs");
+        assert_eq!(
+            group.base,
+            u32::try_from(i * 4).unwrap(),
+            "consecutive 4-entry runs"
+        );
     }
 
     // The output buffer trims the story-final newline — assert on lines.
