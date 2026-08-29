@@ -197,7 +197,7 @@ fn cap_breach_is_a_worded_error() {
 
 /// A single stateful alternative — the overwhelmingly common shape — still
 /// behaves exactly as before the flip (it now routes through the variant
-/// model, whose arithmetic is emit_sequence's byte-for-byte).
+/// model, whose arithmetic is `emit_sequence`'s byte-for-byte).
 #[test]
 fn single_alternative_unchanged() {
     let src = "VAR n = 0\n\

@@ -127,37 +127,7 @@ fn normalize_block(block: &mut Block) {
 /// Returns `Ok(stmts)` with the replacement statements, or `Err(content)`
 /// if no inline construct was found (caller passes through unchanged).
 fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Content> {
-    // Lift a label-bearing InlineConditional FIRST when one exists (#3272):
-    // whichever construct lifts first is the one that is NOT cloned — every
-    // other construct on the line gets spliced into each of its branches.
-    // Cloning a labeled construct (a `(dup)` choice inside an `{if …}`)
-    // stamps one label's DefinitionId onto two containers, which codegen's
-    // #1673 uniqueness guard correctly refuses as E060 — an internal-error
-    // wording for legal-looking source. Lifting the label carrier first
-    // keeps the label on exactly one container; the constructs cloned into
-    // its branches are then handled by the recursive normalize pass (a
-    // textual alternative becomes a per-branch variant line — an accepted
-    // per-branch state split on these mixed lines, #3274's item 3).
-    // Otherwise: the first inline construct, the long-standing order.
-    let inline_idx = content
-        .parts
-        .iter()
-        .position(|p| match p {
-            ContentPart::InlineConditional(cond) => {
-                cond.branches.iter().any(|b| block_contains_label(&b.body))
-            }
-            _ => false,
-        })
-        .or_else(|| {
-            content.parts.iter().position(|p| {
-                matches!(
-                    p,
-                    ContentPart::InlineSequence(_) | ContentPart::InlineConditional(_)
-                )
-            })
-        });
-
-    let Some(idx) = inline_idx else {
+    let Some(idx) = lift_index(&content.parts) else {
         return Err(content);
     };
 
@@ -278,6 +248,39 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
         }
         _ => unreachable!("position() matched only InlineSequence/InlineConditional"),
     }
+}
+
+/// Which inline construct [`try_lift_inline`] lifts.
+///
+/// A label-bearing `InlineConditional` lifts FIRST when one exists
+/// (#3272): whichever construct lifts first is the one that is NOT
+/// cloned — every other construct on the line gets spliced into each of
+/// its branches. Cloning a labeled construct (a `(dup)` choice inside an
+/// `{if …}`) stamps one label's `DefinitionId` onto two containers, which
+/// codegen's #1673 uniqueness guard correctly refuses as E060 — an
+/// internal-error wording for legal-looking source. Lifting the label
+/// carrier first keeps the label on exactly one container; the constructs
+/// cloned into its branches are then handled by the recursive normalize
+/// pass (a textual alternative becomes a per-branch variant line — an
+/// accepted per-branch state split on these mixed lines, #3274's item 3).
+/// Otherwise: the first inline construct, the long-standing order.
+fn lift_index(parts: &[ContentPart]) -> Option<usize> {
+    parts
+        .iter()
+        .position(|p| match p {
+            ContentPart::InlineConditional(cond) => {
+                cond.branches.iter().any(|b| block_contains_label(&b.body))
+            }
+            _ => false,
+        })
+        .or_else(|| {
+            parts.iter().position(|p| {
+                matches!(
+                    p,
+                    ContentPart::InlineSequence(_) | ContentPart::InlineConditional(_)
+                )
+            })
+        })
 }
 
 // ─── Label detection (#3272) ────────────────────────────────────────
@@ -1033,6 +1036,26 @@ mod tests {
     /// internal error on legal-looking source).
     #[test]
     fn label_bearing_conditional_lifts_first() {
+        fn count_labeled(block: &Block) -> usize {
+            block
+                .stmts
+                .iter()
+                .map(|s| match s {
+                    Stmt::ChoiceSet(cs) => {
+                        cs.choices
+                            .iter()
+                            .map(|c| usize::from(c.label.is_some()) + count_labeled(&c.body))
+                            .sum::<usize>()
+                            + count_labeled(&cs.continuation)
+                    }
+                    Stmt::LabeledBlock(b) => count_labeled(b),
+                    Stmt::Conditional(c) => c.branches.iter().map(|b| count_labeled(&b.body)).sum(),
+                    Stmt::Sequence(sq) => sq.branches.iter().map(|b| count_labeled(&b.body)).sum(),
+                    _ => 0,
+                })
+                .sum()
+        }
+
         let labeled_choice = Choice {
             ptr: dummy_choice_ptr(),
             is_sticky: false,
@@ -1098,25 +1121,6 @@ mod tests {
             );
         };
         // The labeled choice exists exactly once across the whole tree.
-        fn count_labeled(block: &Block) -> usize {
-            block
-                .stmts
-                .iter()
-                .map(|s| match s {
-                    Stmt::ChoiceSet(cs) => {
-                        cs.choices
-                            .iter()
-                            .map(|c| usize::from(c.label.is_some()) + count_labeled(&c.body))
-                            .sum::<usize>()
-                            + count_labeled(&cs.continuation)
-                    }
-                    Stmt::LabeledBlock(b) => count_labeled(b),
-                    Stmt::Conditional(c) => c.branches.iter().map(|b| count_labeled(&b.body)).sum(),
-                    Stmt::Sequence(sq) => sq.branches.iter().map(|b| count_labeled(&b.body)).sum(),
-                    _ => 0,
-                })
-                .sum()
-        }
         let total: usize = cond.branches.iter().map(|b| count_labeled(&b.body)).sum();
         assert_eq!(total, 1, "the labeled choice must not be cloned");
     }
