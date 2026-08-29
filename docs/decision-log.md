@@ -3912,3 +3912,35 @@
 - **NOTE:** This is a sequencing decision about prose checking, not a
   reversal of "the project's center is the NATIVE surface". It stands
   because the ink gap was small, measured, and in the way.
+
+## Line-variant groups stage 3: combo kinds keep the lift; mixed lines share alternative state
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** compiler (hir normalize / lir lower / codegen)
+- **SCOPE:** moderate
+- **WHAT:** Two rulings settling #3275's design questions. (1) Combo-kind
+  lines (`shuffle|once`, `shuffle|stopping`) and structural-branch lines
+  **keep the cartesian lift** rather than moving to the shared-inline
+  fragment path: each rendering stays a whole line in the line table — a
+  translation unit and a VO slot. (2) Mixed lines (a stateful alternative
+  beside an inline conditional or other unclaimed construct) **pin ink's
+  shared-state semantics**: the cloned alternative keeps one container id
+  across every lifted branch, so it advances once per line view whichever
+  branch renders. The enabling move is stamping container ids on pristine
+  HIR before normalization (both compile roads), with clones deriving ids
+  deterministically and sharing revoked per lift level when a branch fails
+  to reassemble into a claimable variant line.
+- **WHY:** On (1) the maintainer's question was "what's the benefit of not
+  lifting them?" — and the only benefit was deleting normalize code, while
+  the cost was per-line VO association on those lines. Whole-line entries
+  won. On (2) the per-branch private copies produced `p` twice in
+  `{n > 1: late|early} {&p|q}` where ink documents one shared advance;
+  the ruling pins the documented semantics (permanent `variant_flip`
+  case). One-time golden churn was accepted for the stamping move; the
+  parity design made it moot — zero churn, ratchet unmoved at 5608.
+- **NOTE:** Stage 3c's residue analysis concluded the lift machinery
+  retires **nothing**: with (1) ruled, every arm of `try_lift_inline`
+  (once→stopping synthesis, synthesized else, cartesian recursion,
+  sharing revocation) is reachable through combo-kind, conditional-
+  bearing, or structural-branch lines. #3275 closes with the lift as the
+  permanent fallback model, documented in `normalize.rs`'s module doc.
