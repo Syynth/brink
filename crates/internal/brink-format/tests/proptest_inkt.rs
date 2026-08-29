@@ -738,6 +738,22 @@ fn arb_struct_shape() -> impl Strategy<Value = StructShapeDef> {
         .prop_map(|(id, name, fields)| StructShapeDef { id, name, fields })
 }
 
+/// #3273: an arbitrary [`LineVariantGroup`]. Pure codec coverage — the
+/// records are independent of the line tables at the wire layer, so no
+/// correlation is needed for a round-trip law.
+fn arb_line_variant_group() -> impl Strategy<Value = brink_format::LineVariantGroup> {
+    (
+        arb_def_id(),
+        any::<u32>(),
+        prop::collection::vec(1u16..=64, 1..4),
+    )
+        .prop_map(|(scope_id, base, dims)| brink_format::LineVariantGroup {
+            scope_id,
+            base,
+            dims,
+        })
+}
+
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
         prop::collection::vec(arb_container_with_lines(), 0..5),
@@ -749,6 +765,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_struct_shape(), 0..5),
         prop::collection::vec("[^\"\\\\\x00]*", 0..8),
         any::<u32>(),
+        prop::collection::vec(arb_line_variant_group(), 0..4),
     )
         .prop_map(
             |(
@@ -761,6 +778,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                 struct_shapes,
                 name_table,
                 source_checksum,
+                line_variant_groups,
             )| {
                 let (containers, mut line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 // Sort line tables by scope_id to match reader's output ordering.
@@ -783,6 +801,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     effect_rows: vec![],
                     frame_shapes: vec![],
                     debug_info: None,
+                    line_variant_groups,
                     source_checksum,
                 }
             },

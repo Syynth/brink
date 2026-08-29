@@ -416,6 +416,38 @@ fn parse_frame_shape_entry(pair: P<'_>) -> Result<FrameShapeDef, InktParseError>
     Ok(FrameShapeDef { site, slots })
 }
 
+/// #3273: parse `(line_variant_groups (group $id base (dims d0 d1 ...))*)`.
+pub(super) fn parse_line_variant_groups(
+    pair: P<'_>,
+) -> Result<Vec<crate::LineVariantGroup>, InktParseError> {
+    let mut groups = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::line_variant_group_entry {
+            let mut inner = entry.into_inner();
+            let scope_id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+                message: "expected scope def_id in variant group".into(),
+                line: 0,
+                col: 0,
+            })?)?;
+            let base = parse_u32(&inner.next().ok_or_else(|| InktParseError {
+                message: "expected base line index in variant group".into(),
+                line: 0,
+                col: 0,
+            })?)?;
+            let mut dims = Vec::new();
+            for dim in inner {
+                dims.push(parse_u16(&dim)?);
+            }
+            groups.push(crate::LineVariantGroup {
+                scope_id,
+                base,
+                dims,
+            });
+        }
+    }
+    Ok(groups)
+}
+
 /// D6 (`docs/debugger-spec.md` §2): parse
 /// `(debug_info (files …)? (dcontainer $idx (entry …)* (locals …)?)* )`.
 /// `debug_info` is only present in the text at all when debug info was

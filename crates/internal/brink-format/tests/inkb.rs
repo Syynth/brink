@@ -1206,6 +1206,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
 
@@ -1302,6 +1303,7 @@ fn roundtrip_line_part_span() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
 
@@ -1398,6 +1400,7 @@ fn roundtrip_line_flags_for_template_content() {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     };
 
@@ -1827,7 +1830,8 @@ fn debug_info_index_for(buf: &[u8]) -> brink_format::InkbIndex {
 /// still **OPEN** per `docs/ruling-ledger.md` ("`SectionEntry` has **no
 /// length**"). `read_inkb_index` calls `SectionKind::from_u8(kind_tag)?`
 /// unconditionally for every offset-table entry, so ANY unrecognized tag —
-/// this test uses the current true frontier, `0x12`, one past `DebugInfo` —
+/// this test uses the current true frontier, `0x13`, one past
+/// `LineVariantGroups` (#3273; previously `0x12`, one past `DebugInfo`) —
 /// fails the entire file's index parse (Tier 2), not just that one section.
 /// A reader that predates `SectionKind::DebugInfo` therefore fails CLOSED
 /// on a debug-info-bearing `.inkb` today, not skip-harmlessly: #1519 is the
@@ -1852,12 +1856,12 @@ fn unrecognized_section_kind_hard_rejects_the_whole_file_pending_1519() {
     // entry with the kind tag as that entry's first byte.
     let kind_byte_offset = 16 + debug_pos * 8;
     assert_eq!(buf[kind_byte_offset], SectionKind::DebugInfo as u8);
-    buf[kind_byte_offset] = 0x12; // one past the current real frontier
+    buf[kind_byte_offset] = 0x13; // one past the current real frontier
 
     let err = read_inkb_index(&buf).unwrap_err();
     assert_eq!(
         err,
-        DecodeError::InvalidSectionKind(0x12),
+        DecodeError::InvalidSectionKind(0x13),
         "an unrecognized SectionKind tag fails the WHOLE file's index parse \
          today (pending #1519), not just the one unknown section"
     );
@@ -2002,4 +2006,66 @@ fn tower_nan_lane_crosses_the_wire_bit_exact() {
             got[i]
         );
     }
+}
+
+/// #3273 stage 1: a `LineVariantGroups` section round-trips through
+/// `.inkb` — the record that ties `dims.product()` consecutive line-table
+/// entries back to one authored line with enumerated alternatives.
+#[test]
+fn roundtrip_line_variant_groups_section() {
+    let mut data = i001_data();
+    let scope_id = data.line_tables[0].scope_id;
+    data.line_variant_groups = vec![
+        brink_format::LineVariantGroup {
+            scope_id,
+            base: 0,
+            dims: vec![2, 3],
+        },
+        brink_format::LineVariantGroup {
+            scope_id,
+            base: 6,
+            dims: vec![4],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::LineVariantGroups),
+        "LineVariantGroups section present when non-empty"
+    );
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data.line_variant_groups, recovered.line_variant_groups);
+    assert_eq!(data, recovered);
+}
+
+/// The section is omitted entirely when empty — every story without
+/// variant groups stays byte-identical to before the section existed
+/// (the `Visibility`/`FrameShapes`/`DebugInfo` additive pattern).
+#[test]
+fn line_variant_groups_section_omitted_when_empty() {
+    let data = i001_data();
+    assert!(data.line_variant_groups.is_empty());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        !index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::LineVariantGroups),
+        "no LineVariantGroups section for a story without variant groups"
+    );
+
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.line_variant_groups.is_empty());
 }

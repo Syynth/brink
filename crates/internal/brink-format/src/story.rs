@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, ContainerDef, DebugInfoSection, EffectRowEntry,
-    ExternalFnDef, FrameShapeDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable,
-    StructShapeDef,
+    ExternalFnDef, FrameShapeDef, GlobalVarDef, LineVariantGroup, ListDef, ListItemDef,
+    ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::value::ListValue;
@@ -96,6 +96,13 @@ pub struct StoryData {
     /// identical to before this field existed. `Some` only for a dev/studio
     /// compile or an explicit CLI debug flag.
     pub debug_info: Option<DebugInfoSection>,
+    /// Line-variant groups (stage 1 of the shared-alternatives track,
+    /// issue #3273): records tying runs of consecutive line-table entries
+    /// back to one authored line whose inline alternatives were enumerated
+    /// at recognition time. Empty until the stage-2 flip routes lines here;
+    /// the `.inkb` section (tag `0x12`) is **omitted entirely when empty**,
+    /// so every story without variant groups stays byte-identical.
+    pub line_variant_groups: Vec<LineVariantGroup>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

@@ -34,6 +34,7 @@ fn empty_story() -> StoryData {
         effect_rows: vec![],
         frame_shapes: Vec::new(),
         debug_info: None,
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     }
 }

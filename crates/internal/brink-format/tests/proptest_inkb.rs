@@ -444,6 +444,22 @@ fn arb_address_path() -> impl Strategy<Value = AddressPath> {
     (arb_name_id(), arb_def_id()).prop_map(|(path, target)| AddressPath { path, target })
 }
 
+/// #3273: an arbitrary [`LineVariantGroup`]. Pure codec coverage — the
+/// records are independent of the line tables at the wire layer, so no
+/// correlation is needed for a round-trip law.
+fn arb_line_variant_group() -> impl Strategy<Value = brink_format::LineVariantGroup> {
+    (
+        arb_def_id(),
+        any::<u32>(),
+        prop::collection::vec(1u16..=64, 1..4),
+    )
+        .prop_map(|(scope_id, base, dims)| brink_format::LineVariantGroup {
+            scope_id,
+            base,
+            dims,
+        })
+}
+
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
         prop::collection::vec(arb_container_with_lines(), 0..5),
@@ -453,9 +469,19 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_external(), 0..5),
         prop::collection::vec(arb_address_path(), 0..5),
         prop::collection::vec(".*", 0..8),
+        prop::collection::vec(arb_line_variant_group(), 0..4),
     )
         .prop_map(
-            |(pairs, variables, list_defs, list_items, externals, address_paths, name_table)| {
+            |(
+                pairs,
+                variables,
+                list_defs,
+                list_items,
+                externals,
+                address_paths,
+                name_table,
+                line_variant_groups,
+            )| {
                 let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 StoryData {
                     containers,
@@ -475,6 +501,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     effect_rows: vec![],
                     frame_shapes: Vec::new(),
                     debug_info: None,
+                    line_variant_groups,
                     source_checksum: 0,
                 }
             },
@@ -501,8 +528,11 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 6);
 
-        // Exactly 14 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 14);
+        // The 14 mandatory sections in canonical order, plus the optional
+        // LineVariantGroups section (#3273) exactly when the story carries
+        // variant groups.
+        let expected = 14 + usize::from(!story.line_variant_groups.is_empty());
+        prop_assert_eq!(index.sections.len(), expected);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);

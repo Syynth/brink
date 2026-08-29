@@ -41,9 +41,9 @@ pub use definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef,
     DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DEBUG_FLAG_RESERVED_MASK, DebugContainerTable,
     DebugEntry, DebugFileEntry, DebugInfoSection, DebugLocalEntry, DirectEffects, DispatchEntry,
-    EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable, ParamMeta, ScopeLineTable,
-    SlotInfo, SourceLocation, StructShapeDef, content_hash,
+    EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef, LineEntry,
+    LineVariantGroup, ListDef, ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable,
+    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{

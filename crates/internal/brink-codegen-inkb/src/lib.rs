@@ -223,6 +223,11 @@ pub fn emit_with_options(
         // stays byte-identical (§1.2 ship policy). Computed above, before
         // the error check — see that comment for why.
         debug_info,
+        // #3273 stage 1: no lowering path produces variant groups until the
+        // stage-2 flip (#3274) routes multi-alternative lines through the
+        // enumeration — until then codegen always emits the empty (omitted)
+        // section.
+        line_variant_groups: Vec::new(),
         source_checksum: 0,
     })
 }

@@ -89,6 +89,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut frame_shapes = Vec::new();
     let mut struct_shapes = Vec::new();
     let mut debug_info = None;
+    let mut line_variant_groups = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -113,6 +114,9 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::effect_rows => effect_rows = defs::parse_effect_rows(inner)?,
             Rule::frame_shapes => frame_shapes = defs::parse_frame_shapes(inner)?,
             Rule::debug_info => debug_info = Some(defs::parse_debug_info(inner)?),
+            Rule::line_variant_groups => {
+                line_variant_groups = defs::parse_line_variant_groups(inner)?;
+            }
             Rule::container => {
                 let (line, col) = inner.line_col();
                 let (container, lt) = lines::parse_container(inner)?;
@@ -157,6 +161,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         effect_rows,
         frame_shapes,
         debug_info,
+        line_variant_groups,
         source_checksum,
     })
 }
