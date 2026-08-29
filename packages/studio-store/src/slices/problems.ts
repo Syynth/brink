@@ -18,8 +18,12 @@
  * closed filter row is a panel silently hiding rows with no visible cause —
  * the same failure the clear-on-close rule below exists to prevent.
  *
- * Info stays ON by default: E189 TODO notes are Info, and defaulting them
- * off would silently hide diagnostics that are visible today.
+ * Info stays ON by default. It no longer carries the E189 TODO notes: those
+ * moved to their own `todo` bucket, off by default (ruled 2026-08-29). An
+ * author who wanted TODOs out of the Problems panel had only
+ * `[lints] E189 = "allow"` to reach for — which suppresses the code at the
+ * COMPILER, and so emptied the TODO panel too, since that panel reads the
+ * same diagnostics. Panel visibility is not a compiler concern.
  */
 
 import type { StateCreator } from "zustand";
@@ -78,14 +82,15 @@ export function toProseDiagnostics(
  * The buckets the panel's toggles expose. Info and Hint share one: both are
  * advisory, and the rows already render them identically.
  *
- * `prose` is not a severity — it is a SOURCE, and it is a bucket of its own
- * precisely because it must default OFF while every severity defaults on
+ * `prose` and `todo` are not severities — they are SOURCES, and they are
+ * buckets of their own precisely because they must default OFF while every
+ * severity defaults on
  * (ruled: "the Problems panel FILTERS THEM OUT BY DEFAULT; the author opts
  * in to seeing them in the list"). Folding spelling into `info` would put
  * fifty proper nouns on top of the E189 TODO notes an author actually
  * reads, which is the outcome that ruling exists to prevent.
  */
-export type ProblemSeverityBucket = "error" | "warning" | "info" | "prose";
+export type ProblemSeverityBucket = "error" | "warning" | "info" | "prose" | "todo";
 
 export interface ProblemsSlice {
   /** Which severity buckets are shown. */
@@ -137,7 +142,7 @@ export interface ProblemsPrefs {
 export const PROBLEMS_STORAGE_KEY = "brink-studio.problems.v1";
 
 const DEFAULT_PREFS: ProblemsPrefs = {
-  severities: { error: true, warning: true, info: true, prose: false },
+  severities: { error: true, warning: true, info: true, prose: false, todo: false },
   grouped: true,
 };
 
@@ -171,6 +176,11 @@ export function loadProblemsPrefs(storage: Pick<Storage, "getItem">): ProblemsPr
       // panel's spelling rows on for every existing author at once —
       // exactly what defaulting off is for.
       prose: sev.prose === true,
+      // Same inverted rule as `prose`, and the same reason: a record
+      // written before this bucket existed has no `todo` key, and reading
+      // that as "shown" would put TODO notes back in the Problems panel for
+      // every existing author on upgrade.
+      todo: sev.todo === true,
     },
     grouped: obj?.grouped !== false,
   };
@@ -192,7 +202,7 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
   set,
   get,
 ) => ({
-  problemsSeverities: { error: true, warning: true, info: true, prose: false },
+  problemsSeverities: { error: true, warning: true, info: true, prose: false, todo: false },
   problemsFilter: "",
   problemsFilterOpen: false,
   // Grouped by default (ruled): a flat list of every diagnostic in a
