@@ -137,3 +137,66 @@
   background: var(--bs-todo, var(--bs-warning));
   color: var(--bs-editor-bg);
 }
+
+/* ── Tag chips (TODO(tag): …) ─────────────────────────────────────────
+   The tag is lifted out of the note's text into a chip: `(audio)`
+   repeated down a column is noise, and the chip is what the filter keys
+   on. Chips live in the collapsible filter row, so a closed row leaves
+   nothing narrowing the list. */
+.brink-studio .todos-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.brink-studio .todos-tag {
+  padding: 1px 8px;
+  background: transparent;
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
+  border-radius: 10px;
+  font-size: var(--bs-font-small);
+  font-family: var(--bs-font-mono);
+  cursor: pointer;
+}
+.brink-studio .todos-tag:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-fg-muted);
+}
+.brink-studio .todos-tag.on {
+  color: var(--bs-accent);
+  border-color: var(--bs-accent);
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}
+.brink-studio .todos-tag:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 1px;
+}
+
+/* The tag as it appears on a row, ahead of the note text. Muted: it is
+   context for the note, not the note. */
+.brink-studio .todos-row-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--bs-surface-bg);
+  color: var(--bs-fg-muted);
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-micro);
+}
+
+/* The file, shown only in the flat list — grouped mode has a header. */
+.brink-studio .todos-row-file {
+  flex: none;
+  margin-left: auto;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+}
+
+/* Live count on the funnel, so a narrowing filter is visible from the
+   title bar even before the row is opened. */
+.brink-studio .todos-filter-count {
+  margin-left: 3px;
+  font-size: var(--bs-font-micro);
+  color: var(--bs-accent);
+}
