@@ -55,6 +55,8 @@
      band. Derivation: --bs-todo = mix(#daa520 78%, --ctp-yellow);
      --bs-todo-band = mix(--bs-todo 82%, --bs-editor-bg). */
   --bs-todo: #e1b23f;
+  /* Draft files (#3145) — the value the hardcoded fallback used, now stated. */
+  --bs-draft: var(--ctp-peach);
   --bs-todo-band: #be973c;
   --bs-todo-ink: #2a2130;
   --bs-success: var(--ctp-green);
@@ -91,6 +93,9 @@
      alpha: rgb(var(--bs-X-rgb) / N%). Keep each triplet in sync with the
      hex of its base token above. */
   --bs-accent-rgb: 137 180 250; /* --ctp-blue */
+  /* Search's second accent — mocha's mauve — the value the hardcoded fallback used. */
+  --bs-accent-secondary: var(--ctp-mauve);
+  --bs-accent-secondary-rgb: 203 166 247;
   --bs-surface-bg-rgb: 37 37 54; /* --ctp-surface-low */
   --bs-panel-bg-rgb: 42 42 61; /* --ctp-surface-high */
   --bs-fg-rgb: 205 214 244; /* --ctp-text */
