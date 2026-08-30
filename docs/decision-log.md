@@ -4423,3 +4423,28 @@
 - **WHY:** With the ruled "no auto-start", Stop is the route back to the
   idle launcher (and W14's saves screen) — without it the only exits
   from a session were Restart or the palette.
+
+## A rebound key displaces the old owner, and says so
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings
+- **SCOPE:** moderate
+- **WHAT:** When an author binds a chord already held by another command,
+  the studio saves the new binding, takes that chord off the previous
+  owner, and names it in a warning shown before the save. It does not
+  block the save, and it does not allow two commands to hold one chord.
+  A displaced command loses only the colliding chord, keeping its others.
+  Commands keep MULTIPLE bindings throughout — the keymap UI edits the
+  whole set as chips rather than a single primary. Keymaps stay app-scope
+  (`localStorage`), not `brink.toml`: per-machine, not carried with a
+  project.
+- **WHY:** `Keymap.byChord` is a `Map<chordId, commandId>`, so two
+  commands holding one chord means the last registered silently wins and
+  the other is dead with nothing reporting it. Of the three options,
+  displacing is the only one matching what the engine actually does —
+  blocking is safe but obstructive, and allowing duplicates would let an
+  author configure something that quietly does not work, which is the
+  existing defect rather than a fix for it. The multi-binding rule exists
+  because several commands ship two or three defaults specifically to
+  dodge browser-reserved chords (#107); flattening them in the editor
+  would re-break what those alternates were added to fix.

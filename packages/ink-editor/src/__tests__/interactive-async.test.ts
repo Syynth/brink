@@ -12,6 +12,10 @@ import { EditorView } from "@codemirror/view";
 import type { CodeAction, SignatureInfo } from "@brink/wasm-types";
 import { signatureHelpExtension } from "../signature-help.js";
 import { codeActionsExtension } from "../code-actions.js";
+// The chord moved out of codeActionsExtension into the shared actions
+// keymap (editor-actions.ts) — real editors get it from the brinkStudio
+// baseline, so a bare mount must add it to keep Ctrl-. opening the menu.
+import { editorActionKeymap } from "../editor-actions.js";
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -116,7 +120,8 @@ describe("codeActionsExtension with an async source", () => {
     view = new EditorView({
       state: EditorState.create({
         doc: "hello",
-        extensions: [codeActionsExtension({ getCodeActions: source, onSelect: () => {} })],
+        extensions: [editorActionKeymap(),
+        codeActionsExtension({ getCodeActions: source, onSelect: () => {} })],
       }),
       parent: document.body,
     });

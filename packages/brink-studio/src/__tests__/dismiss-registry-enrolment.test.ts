@@ -356,7 +356,11 @@ const EXPECTED_LISTENER_FILES: Record<string, string[]> = {
     "widget-modal.ts",
     "widget-popover.ts",
   ],
-  "studio-ui": ["BinderContextMenu.tsx", "ElementDropdown.tsx"],
+  // KeymapSettings' recording gesture owns the entire keyboard while a
+  // binding is being captured (capture-phase window listener), so its
+  // Escape cannot route through the net — the same key must be swallowed
+  // before every other handler. DISMISS-NET-EXEMPT at the site.
+  "studio-ui": ["BinderContextMenu.tsx", "ElementDropdown.tsx", "KeymapSettings.tsx"],
   // The desktop shell's New Project dialog (#3012) — a modal on the
   // landing screen, OUTSIDE any studio mount, so there is no live
   // dismiss-registry to enrol in; its Escape listener carries a

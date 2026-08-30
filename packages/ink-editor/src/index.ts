@@ -1,5 +1,12 @@
 // Editor extension bundle (per-view options; see document-sessions.ts)
 export { brinkStudio, setDialect } from "./extensions.js";
+// The rebindable editor actions (Settings > Keymap; see editor-actions.ts).
+export {
+  EDITOR_ACTIONS,
+  runEditorAction,
+  setEditorActionKeys,
+} from "./editor-actions.js";
+export type { EditorActionId, EditorActionKeys } from "./editor-actions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 export { DEFAULT_INDENT } from "./extensions.js";
 

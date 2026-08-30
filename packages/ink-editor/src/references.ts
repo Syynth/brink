@@ -5,9 +5,9 @@ import {
   EditorView,
   ViewPlugin,
   type ViewUpdate,
-  keymap,
 } from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
+import { editorActionRunners } from "./editor-actions.js";
 
 export interface ReferencesOptions {
   /** Sync or async (#3110 — the studio wiring rides the worker road). */
@@ -157,16 +157,16 @@ export function referencesExtension(options: ReferencesOptions): Extension {
   return [
     referenceHighlightField,
     referenceClearTimer,
-    keymap.of([
-      {
-        key: "Shift-Alt-f",
-        run: (view: EditorView) => {
-          // Async resolution (#3110): claim the key; an empty result just
-          // shows nothing (Shift-Alt-F has no other binding to fall to).
-          void findReferencesAt(view, view.state.selection.main.head, options);
-          return true;
-        },
+    // Chord in the shared editor-actions keymap; run body stays here,
+    // closing over this extension's options.
+    editorActionRunners.of({
+      id: "editor.findReferences",
+      run: (view: EditorView) => {
+        // Async resolution (#3110): claim the key; an empty result just
+        // shows nothing (the chord has no other binding to fall to).
+        void findReferencesAt(view, view.state.selection.main.head, options);
+        return true;
       },
-    ]),
+    }),
   ];
 }
