@@ -23,7 +23,7 @@
     .key { color: #6c7086; } .num { color: #fab387; }
   </style>
 </helmet>
-<div style="width: 340px; height: 830px; display: flex; flex-direction: column; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+<div style="width: 340px; height: 960px; display: flex; flex-direction: column; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
 
   <!-- tool-window header with transport mirror in the actions slot -->
   <div style="padding: 8px 12px; font-size: 13px; font-weight: 600; color: #6c7086; border-bottom: 1px solid #45475a; letter-spacing: 0.5px; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between">
@@ -96,8 +96,26 @@
       <div class="row"><span class="key mono" style="font-size: 11px">n</span><span style="flex: 1"></span><span class="mono num" style="font-size: 11px">1</span></div>
       <div class="row" style="background: rgb(249 226 175 / 22%); border-radius: 3px"><span class="mono" style="font-size: 11px; color: #f9e2af">cost</span><span style="flex: 1"></span><span class="mono num" style="font-size: 11px">2</span></div>
       <div style="font-size: 10px; color: #6c7086; margin: 8px 0 3px">GLOBALS</div>
-      <div class="row"><span class="key mono" style="font-size: 11px">gold</span><span style="flex: 1"></span><span class="mono num" style="font-size: 11px">12</span></div>
+      <!-- inline edit in progress: click value → mono input, Enter commits (paused only) -->
+      <div class="row"><span class="key mono" style="font-size: 11px">gold</span><span style="flex: 1"></span><input class="mono" value="25" style="width: 44px; padding: 0 4px; font-size: 11px; text-align: right; background: #1e1e2e; color: #fab387; border: 1px solid #89b4fa; border-radius: 3px"></div>
       <div class="row"><span class="key mono" style="font-size: 11px">stranger_seen</span><span style="flex: 1"></span><span class="mono" style="font-size: 11px; color: #cba6f7">false</span></div>
+    </div>
+  </div>
+
+  <!-- WATCH: the mini-REPL — expressions + fragment previews, side-effect-proof -->
+  <div class="sv-section">
+    <div class="sv-header"><span style="font-size: 9px">▾</span> Watch <span style="flex: 1"></span><span style="font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; color: #6c7086">+</span></div>
+    <div style="padding: 2px 10px 8px">
+      <div class="row"><span class="mono" style="font-size: 11px; color: #cdd6f4">gold &gt;= pour(2)</span><span style="flex: 1"></span><span class="mono" style="font-size: 11px; color: #cba6f7">false</span></div>
+      <div class="row"><span class="mono" style="font-size: 11px; color: #cdd6f4">rounds * 2 + 1</span><span style="flex: 1"></span><span class="mono num" style="font-size: 11px">3</span></div>
+      <div style="padding: 2px 0">
+        <div class="row" style="padding: 0"><span class="mono" style="font-size: 11px; color: #89b4fa">-&gt; market.haggle</span><span style="flex: 1"></span><span style="font-size: 10px; color: #6c7086">▾ preview</span></div>
+        <div style="margin: 3px 0 2px 10px; padding: 5px 8px; background: #1e1e2e; border-left: 2px solid #45475a; font-family: Georgia, serif; font-size: 11.5px; line-height: 1.55; color: #a8b0d3">
+          The fishmonger names a price twice what it's worth.<br>
+          <span style="color: #6c7086; font-style: italic">&gt; would present 3 choices…</span>
+        </div>
+        <div style="margin-left: 10px; font-size: 9.5px; color: #585b70">sandboxed — no visits, globals, or RNG touched</div>
+      </div>
     </div>
   </div>
 
@@ -128,6 +146,14 @@
         <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3.4" fill="none" stroke="#f38ba8" stroke-width="1.2"></circle></svg>
         <span class="mono" style="font-size: 11px">market.brink:31</span>
         <span class="mono" style="font-size: 10px; color: #6c7086">market.haggle</span>
+        <span style="flex: 1"></span><span style="color: #6c7086; font-size: 10px">✕</span>
+      </div>
+      <!-- break-on-write data breakpoint: diamond glyph, set from a variable row's context menu -->
+      <div class="row">
+        <input type="checkbox" checked style="margin: 0; width: 11px; height: 11px">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 0.8L9.2 5 5 9.2 0.8 5z" fill="#f38ba8"></path></svg>
+        <span class="mono" style="font-size: 11px">gold</span>
+        <span class="mono" style="font-size: 10px; color: #6c7086">on write</span>
         <span style="flex: 1"></span><span style="color: #6c7086; font-size: 10px">✕</span>
       </div>
     </div>

@@ -73,8 +73,10 @@ tooltip explains), stepping reports no source position.
 - **Breakpoints section** in the panel: every breakpoint as
   `file:line — knot.path`, checkbox, click-to-reveal, remove ×; header
   actions: disable all, clear all.
-- Conditional breakpoints and watchpoint UI are **out of scope** (v2;
-  runtime tickets #3222 and `debug_run_watching` exist, the UI does not).
+- **Break-on-write data breakpoints are IN scope** (revised 2026-08-29
+  — F6/W18; D8's `debug_run_watching` supplies the runtime half) and
+  list here with a distinct glyph. Conditional (expression) breakpoints
+  remain out of scope (v2, runtime ticket #3222).
 
 ### F3 — Pause, resume, and stepping (the transport)
 
@@ -149,14 +151,30 @@ gain the resolved `file:line` (clickable) beside the container path. A
 parked flow's resume frame is labeled **"parked — resumes here"**
 (debugger-spec §2.6), never presented as a live position.
 
-### F6 — Variables
+### F6 — Variables (editing RULED 2026-08-29)
 
 Locals-first: the selected frame's locals (by name, from D7's table) are
 the top variables section, with the existing tri-state honesty ("no debug
 info for this frame" / empty / table). Globals below, keeping the
 changed-since-last-step diff highlight. Values render through the existing
-`DebugValueView` union. Editing values is out of scope (that's #57's
-re-scope, noted in §7).
+`DebugValueView` union.
+
+**Live editing** — the editing half of #57, pulled into this round:
+click a value → inline mono input in place; Enter commits, Esc cancels;
+parse/type-checked against the value's current type (red shake, no write
+on failure); the changed-highlight lights the row on commit. **Scalars
+only in v1** (int/float/bool/string; lists/structs read-only until their
+own editor design). **Paused only** (RULED — chosen over
+globals-anytime for the simpler model). Globals commit via the existing
+`Story::set_variable` (wasm exposure needed); locals need a new
+debug-seam set-temp-in-frame. Edits must take the dirty-marking write
+path so watchpoints and parked wake checks observe them. No undo; fork
+a save first (F17).
+
+**Break-on-write**: variable-row context menu → "Break on write" — a
+data breakpoint on that global, listed in the Breakpoints section with
+a distinct glyph. Runtime half already shipped (D8's
+`WatchpointObserver`/`debug_run_watching`); this is UI + bridge glue.
 
 ### F7 — Stop reasons and status
 
@@ -344,6 +362,32 @@ keep testing from there:
 - Re-scopes **#57**: the save/restore half lands here; editable runtime
   state stays out of this round.
 
+### F18 — Watch: the full mini-REPL (RULED 2026-08-29)
+
+A Watch section in the Debugger panel — **the full mini-REPL, not
+expressions-only**, because the engine is already wired end-to-end
+(verified this round; the scratch-eval-spec's "never landed" provenance
+note is stale for everything this needs): F4.1–F4.3 shipped
+`Speculation`/`KindTieredHandler` and the web `speculate()` surface,
+and F5.1 shipped tier-1 fragment evaluation (`compile_fragment`,
+mechanism B — synthetic-symbol wrap + cached recompile per
+`(checksum, fragment, kind)` + live-state seed + sandboxed run), proven
+by wasm tests through the real `evaluate()` export.
+
+- **Entries**: an arbitrary typed expression (`gold >= pour(2)` →
+  `false`) or a divert/content fragment (`-> market.haggle` → an
+  expandable transcript preview of what it *would* produce from the
+  current state). Every evaluation is side-effect-proof
+  (discard-on-drop sandbox, budgeted).
+- **Cadence**: re-evaluated at every stop/turn boundary; the fragment
+  compile is paid once per distinct entry per program version (hot
+  reload re-keys the cache once per watch).
+- **Failure**: a fragment that doesn't compile or errors shows its
+  message inline on the row; degraded suppresses re-evaluation like
+  every position feature.
+- Externals follow the shipped `@kind` tiering (queries live; effects
+  fallback-or-stop in watch context).
+
 ## 3. The rebuilt Player
 
 Still an editor-area document (two-up with the source, per the Inky
@@ -384,9 +428,13 @@ reused — keep the Mod-N slot stable). Sections, top to bottom:
    replaces the status bar's `SessionPicker`). Selection scopes
    everything below plus the transport.
 3. **Frames** — the selected flow's interactive call stack (F5).
-4. **Variables** — Locals (selected frame) then Globals (F6).
-5. **Breakpoints** (F2) — program-wide, not per-flow.
-6. **Story** (collapsed group): Pending choices · Visit counts (with the
+4. **Variables** — Locals (selected frame) then Globals, inline-editable
+   while paused (F6).
+5. **Watch** — the mini-REPL entries with live values / transcript
+   previews (F18); "+" in the section header adds one.
+6. **Breakpoints** (F2) — program-wide, not per-flow; also lists
+   break-on-write data breakpoints (F6).
+7. **Story** (collapsed group): Pending choices · Visit counts (with the
    existing filter) · RNG — the old StateView's inspection content,
    retained but demoted.
 
@@ -479,6 +527,21 @@ changesets.
     a lossy migration surfaces the report; a failed compile keeps the
     old program running with the error shown; an unmigratable position
     falls back to out-of-sync instead of guessing.
+16. **W16 — Value editing** (F6): expose `set_variable` through wasm;
+    new debug-seam set-temp-in-frame (+ its wasm binding); inline edit
+    UI, paused-only gating, dirty-path verification (a parked condition
+    reading an edited global re-evaluates; a watchpoint on it fires).
+    *Proof:* edit → continue → story reflects it; type-mismatch
+    refused; locals edit visible in the frame.
+17. **W17 — Watch section** (F18): UI over the shipped `evaluate()` —
+    entry management, re-eval on stop, expandable fragment previews,
+    inline errors. *Proof:* expression + fragment entries against a
+    live session; side-effect-proofness (watch eval leaves
+    `DebugState` untouched); degraded suppression.
+18. **W18 — Break-on-write UI** (F6): variable-row context menu, bridge
+    `debug_run_watching` into the drive loop, Breakpoints-section rows
+    with the data-breakpoint glyph. *Proof:* write to a watched global
+    pauses at the writing line.
 
 Rulings/tickets referenced but *not* absorbed: #3225 (parked position —
 needed before W5 can present parks; F11 carries the proposed answer),

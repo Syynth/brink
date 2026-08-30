@@ -25,9 +25,13 @@ One scenario runs through every artboard: paused at a breakpoint on
   mirror, a Flows section (open flows with the active one selected and a
   parked flow's "resumes here" state — replaces the status bar's
   SessionPicker), the selected flow's interactive Frames (kind badges,
-  clickable `file:line`), locals-first Variables with change highlight,
-  Breakpoints with enable checkboxes, the old StateView content demoted
-  to collapsed Story sections.
+  clickable `file:line`), locals-first Variables with change highlight
+  and an inline value edit in progress (paused-only, scalars v1), the
+  Watch mini-REPL (typed expressions + a sandboxed `-> market.haggle`
+  transcript preview, over the shipped F4/F5.1 `evaluate()` engine),
+  Breakpoints with enable checkboxes plus a break-on-write data
+  breakpoint (diamond glyph), the old StateView content demoted to
+  collapsed Story sections.
 - `GutterStates.dc.html` — the marker taxonomy in the ONE shared gutter
   column (breakpoints render where "play from here" does; context menu
   resolves header-line conflicts): header-conflict / live-line-playing /

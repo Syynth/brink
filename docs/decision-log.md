@@ -4288,3 +4288,38 @@
   with saves it makes the idle Player the place testing starts from.
   Load/fork separates the two testing motions: continuing a checkpoint
   versus branching experiments off one without clobbering it.
+
+## Debugger panel: live value editing, Watch mini-REPL, break-on-write
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime bridge (debugger UI round, #452 D9 / #57 / #411)
+- **SCOPE:** moderate
+- **WHAT:** (1) **Locals and globals are editable from the Debugger
+  panel** — click the value, inline mono input, Enter commits, Esc
+  cancels, type-checked against the value's current type; **v1 edits
+  scalars only** (int/float/bool/string; lists and structs stay
+  read-only until a value-editor design of their own); **editing is
+  allowed only while paused**. Globals commit through the existing
+  `Story::set_variable` (needs wasm exposure); locals need a new
+  debug-seam set-temp-in-frame call. Edits must go through the
+  dirty-marking write path so watchpoints and parked-condition wake
+  checks observe them. No undo — F17's fork-a-save is the safety net.
+  (2) **A Watch section ships as the full mini-REPL**, not
+  expressions-only: arbitrary typed expressions AND divert/content
+  fragments with side-effect-proof transcript previews, re-evaluated at
+  each stop. Verified wired end-to-end, not a #411 build: F4.1–F4.3
+  (`Speculation`/`KindTieredHandler`, web `speculate()`) plus F5.1
+  tier-1 fragment evaluation (`compile_fragment` mechanism B, cached
+  per (checksum, fragment, kind)) are all landed with wasm tests
+  through the real `evaluate()` export — the maintainer's "check
+  again, i think you can do a full mini-repl easily" was correct, and
+  the scratch-eval-spec's "never landed" provenance note is stale for
+  everything this needs. (3) **Break-on-write** via the variable-row
+  context menu ("Break on write"), listed in the Breakpoints section
+  with a distinct glyph — D8's `WatchpointObserver`/
+  `debug_run_watching` already provide the runtime half.
+- **WHY:** Maintainer direction with explicit alignment round. This
+  re-scopes the editing half of #57 INTO the round (the save/restore
+  half landed as F17). Paused-only editing was chosen over
+  globals-anytime for the simpler mental model, accepting the loss of
+  live wake-condition poking while parked.
