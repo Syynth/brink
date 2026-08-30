@@ -237,9 +237,11 @@ export interface PlayerSettings {
   /** Paced auto-reveal cadence in ms (RULED: paced by default, ~150 ms).
    *  0 = "all at once" (one batch per reveal). */
   pacedRevealMs: number;
+  /** Player prose size in px (W13/#3306); 0 = follow the app scale. */
+  fontSize: number;
 }
 
-const DEFAULT_PLAYER: PlayerSettings = { pacedRevealMs: 150 };
+const DEFAULT_PLAYER: PlayerSettings = { pacedRevealMs: 150, fontSize: 0 };
 
 /** Load persisted player settings. Never throws; defaults on garbage. */
 export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSettings {
@@ -256,13 +258,18 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
   } catch {
     return DEFAULT_PLAYER;
   }
-  const obj = parsed as { pacedRevealMs?: unknown } | null;
+  const obj = parsed as { pacedRevealMs?: unknown; fontSize?: unknown } | null;
   const ms = obj?.pacedRevealMs;
+  const px = obj?.fontSize;
   return {
     pacedRevealMs:
       typeof ms === "number" && Number.isFinite(ms) && ms >= 0
         ? Math.round(ms)
         : DEFAULT_PLAYER.pacedRevealMs,
+    fontSize:
+      typeof px === "number" && Number.isFinite(px) && px >= 0
+        ? Math.round(px)
+        : DEFAULT_PLAYER.fontSize,
   };
 }
 
@@ -537,12 +544,24 @@ export function DebuggingSection() {
 export function PlayerSection() {
   const pacedMs = useStudioStore((s) => s.sessionPacedMs);
   const setSessionPaced = useStudioStore((s) => s.setSessionPaced);
+  const playerFontSize = useStudioStore((s) => s.playerFontSize);
+  const setPlayerFontSize = useStudioStore((s) => s.setPlayerFontSize);
   const pacedId = useId();
 
   const onModeChange = (paced: boolean): void => {
     const ms = paced ? 150 : 0;
     setSessionPaced(ms);
-    savePlayerSettings(window.localStorage, { pacedRevealMs: ms });
+    savePlayerSettings(window.localStorage, {
+      pacedRevealMs: ms,
+      fontSize: playerFontSize,
+    });
+  };
+  const onFontChange = (px: number): void => {
+    setPlayerFontSize(px);
+    savePlayerSettings(window.localStorage, {
+      pacedRevealMs: pacedMs,
+      fontSize: px,
+    });
   };
 
   return (
@@ -553,6 +572,19 @@ export function PlayerSection() {
         htmlFor={pacedId}
       >
         <SettingsToggle id={pacedId} checked={pacedMs > 0} onChange={onModeChange} />
+      </SettingsRow>
+      <SettingsRow
+        title="Player font size"
+        description="10–32px; 0 follows the app type scale. Sizes the Player's prose only — the reading surface, not the studio chrome (W13)."
+      >
+        <SettingsStepper
+          value={playerFontSize}
+          min={0}
+          max={32}
+          label="player font size"
+          suffix="px"
+          onChange={onFontChange}
+        />
       </SettingsRow>
     </div>
   );
