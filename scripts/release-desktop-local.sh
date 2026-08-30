@@ -95,8 +95,15 @@ else
 fi
 cd "$ws"
 
-say "Building the wasm package + verified install"
+say "Building the wasm packages + verified install"
+# BOTH wasm artifacts, not just brink-web. `install:checked` refuses unless
+# every package in check-wasm-pkg.mjs's WASM_PACKAGES registry is built, and
+# `brink-prose` (the Harper prose checker, c39e83d7c) joined that registry
+# after this script was written — so a 0.5.1 release attempt died here with
+# "REFUSING TO INSTALL", naming brink-web while the missing one was
+# brink-prose. Adding a wasm crate means adding a line here.
 run_with_timeout 1800 wasm-pack build crates/brink-web --target web --out-dir www/pkg
+run_with_timeout 1800 wasm-pack build crates/brink-prose --target web --out-dir www/pkg
 run_with_timeout 1800 pnpm install:checked -- --frozen-lockfile
 
 say "Building signed bundles (app) — this is the long part"
