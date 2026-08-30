@@ -148,6 +148,7 @@ export {
   playerRef,
   registerOpenPlayerCommand,
 } from "./PlayerPane.js";
+export { DebuggerPanel, DebuggerActions } from "./DebuggerPanel.js";
 export { StateView } from "./StateView.js";
 export { ProgramView } from "./ProgramView.js";
 export {

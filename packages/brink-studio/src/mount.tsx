@@ -118,9 +118,9 @@ import {
   SEARCH_TOOL_WINDOW_ID,
   STORY_GRAPH_TYPE_ID,
   SearchView,
-  SessionPicker,
   SettingsDocument,
-  StateView,
+  DebuggerActions,
+  DebuggerPanel,
   StorySegment,
   StoreProvider,
   StructuralOpSegment,
@@ -1335,12 +1335,16 @@ export async function mountStudio(
     component: Binder,
   });
   toolWindows.register({
+    // W8/#3301: the Debugger panel REPLACES StateView (RULED redesign) in
+    // its strip slot — same id keeps the Mod-N ordering and any persisted
+    // placement stable.
     id: "state",
-    title: "State View",
+    title: "Debugger",
     icon: STATE_ICON,
     defaultPlacement: { dock: "right", section: "start" },
     defaultOpen: false,
-    component: StateView,
+    actions: DebuggerActions,
+    component: DebuggerPanel,
   });
   toolWindows.register({
     id: "program",
@@ -1444,14 +1448,8 @@ export async function mountStudio(
     priority: 9,
     component: StructuralOpSegment,
   });
-  // Multi-session picker (#182) — sits just after the story status, hidden
-  // until there's more than one session.
-  statusBarItems.register({
-    id: "status.sessions",
-    alignment: "left",
-    priority: 8,
-    component: SessionPicker,
-  });
+  // The multi-session picker RETIRED from the status bar (W8/#3301,
+  // RULED 2026-08-29): the open-flows list lives in the Debugger panel.
   statusBarItems.register({
     id: "status.cursor",
     alignment: "right",
