@@ -4189,3 +4189,13 @@
   experiment; runtime hover makes play mode an inspection surface
   without opening the panel. Both are the always-on-debug-info ruling
   paying off during ordinary playtesting.
+- **NOTE (revised same session):** the "choice presentation report"
+  runtime seam in (2) is NOT needed — maintainer: "we can look at visit
+  counts." Rejection reasons derive by elimination from surfaces that
+  already exist: the presented set (`DebugState.choices`) + visit counts
+  (`DebugState.visits` — once-only exhaustion IS the body container's
+  visit count) + #3234's anonymous-container ids in the overlay
+  projection for the identity join. The only possible bridge change is
+  widening the visits snapshot if it filters out anonymous choice-body
+  containers — W11 verifies that first. The condition-failed label is
+  by-elimination (a catch-all); edge cases live in W11's proof list.

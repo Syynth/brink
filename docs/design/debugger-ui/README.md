@@ -37,8 +37,9 @@ One scenario runs through every artboard: paused at a breakpoint on
   arrow, parked = info dashed, breakpoints = error.
 - `ChoicePoint.dc.html` — the story waiting on a choice: presented
   choice lines lit (success band) in the editor, rejected candidates
-  dimmed with their reason (`gold > 20 = false`, `once-only · used`,
-  from the runtime choice-presentation report), the runtime-value hover
+  dimmed with their reason (`gold > 20 = false`, `once-only · used` —
+  derived from the presented set + visit counts + #3234's anonymous
+  container ids, no new runtime seam), the runtime-value hover
   card on `gold`, and the Player showing the presented pair with a
   "Waiting on choice" chip.
 - `Transport.dc.html` — toolbar in five states (ready — the default, the

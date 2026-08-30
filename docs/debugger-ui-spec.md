@@ -258,14 +258,21 @@ When the session reaches `Step::Choices`, the status chip reads
   the live frontier — the possible next lines).
 - Authored choices that were **not added to the block** render dimmed
   with the reason beside them: the failing condition (`gold > 20 =
-  false`) or `once-only · used`. Runtime-driven, never guessed
-  editor-side (an editor-computed candidate set can't tell a false
-  condition from an exhausted once-only).
-- **Requires a new runtime/bridge seam**: a *choice presentation report*
-  — per choice point, the candidates evaluated with presented/rejected
-  + reason — its own runtime ticket beside #3223. Until it lands, the
-  presented set alone (already in `DebugState.choices`) can light the
-  presented lines; dimming waits for the report.
+  false`) or `once-only · used`.
+- **No new runtime seam (REVISED 2026-08-29, same session)** — the
+  reasons derive by elimination from surfaces that already exist:
+  the presented set (`DebugState.choices`) + per-container visit counts
+  (`DebugState.visits`, since choosing increments the body container's
+  count — once-only exhaustion IS a visit count) + the overlay
+  projection's container ids for anonymous choice bodies (#3234, which
+  is exactly the identity join needed). Not presented + once-only +
+  body count ≥ 1 → "used"; not presented otherwise → condition failed.
+  Two honesty notes: the condition-failed bucket is by-elimination (a
+  catch-all — thread-gathered and fallback edge cases belong in W11's
+  proof list, not behind an always-exact label), and W11 must **verify
+  `DebugState.visits` carries anonymous choice-body containers** — if
+  the snapshot filters to named containers, widening that filter is the
+  only bridge change needed.
 
 ### F15 — Runtime-value hover (RULED 2026-08-29)
 
@@ -391,11 +398,12 @@ changesets.
    explorer.
 10. **W10 — Keybindings + status bar + palette polish.**
 11. **W11 — Choice-point visualization** (F14): presented-line highlight
-    from `DebugState.choices` now; failed-choice dimming once the
-    runtime *choice presentation report* seam lands (file the runtime
-    ticket with W11). *Proof:* a choice point with a false-condition
-    choice and an exhausted once-only, both dimmed with the right
-    reason; degraded suppression.
+    from `DebugState.choices`; rejection reasons derived by elimination
+    from visits + presented set + #3234's container ids (no new runtime
+    seam — verify anonymous choice bodies appear in `DebugState.visits`
+    first). *Proof:* a choice point with a false-condition choice and an
+    exhausted once-only, both dimmed with the right reason;
+    thread-gathered and fallback edge cases; degraded suppression.
 12. **W12 — Runtime-value hover** (F15): studio-side hover merge.
     *Proof:* global + frame-local hover values, gone when degraded or
     no session.
