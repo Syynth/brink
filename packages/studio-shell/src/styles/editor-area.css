@@ -422,7 +422,7 @@
   align-items: center;
   flex-shrink: 0;
   margin-right: 5px;
-  color: var(--bs-fg-dim, #6c7086);
+  color: var(--bs-fg-muted);
 }
 
 /* A draft's icon is the same drop, drawn provisionally — dashed by the
@@ -430,5 +430,5 @@
    as a colour rule rather than an opacity one: a draft is a deliberate
    state, and dimming would read as "lesser" rather than "provisional". */
 .brink-studio .brink-file-icon-draft {
-  color: var(--bs-draft, var(--ctp-peach, #fab387));
+  color: var(--bs-draft);
 }
