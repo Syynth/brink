@@ -736,6 +736,7 @@ pub(crate) struct DebugStateJs {
     globals: Vec<DebugGlobalJs>,
     call_stack: Vec<DebugFrameJs>,
     visit_counts: Vec<DebugVisitJs>,
+    visit_ids: Vec<DebugVisitIdJs>,
     pending_choices: Vec<DebugChoiceJs>,
     rng: DebugRngJs,
 }
@@ -857,11 +858,21 @@ struct DebugVisitJs {
     count: u32,
 }
 
+/// Id-keyed visit count (W11/#3304) — anonymous containers included; the
+/// overlay-projection join surface.
+#[derive(Serialize)]
+struct DebugVisitIdJs {
+    def_id: String,
+    count: u32,
+}
+
 #[derive(Serialize)]
 struct DebugChoiceJs {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<String>,
+    /// The overlay-projection join key (W11/#3304).
+    def_id: String,
     index: usize,
 }
 
@@ -919,12 +930,21 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
                 count: v.count,
             })
             .collect(),
+        visit_ids: s
+            .visit_ids
+            .into_iter()
+            .map(|v| DebugVisitIdJs {
+                def_id: v.def_id,
+                count: v.count,
+            })
+            .collect(),
         pending_choices: s
             .pending_choices
             .into_iter()
             .map(|c| DebugChoiceJs {
                 text: c.text,
                 target: c.target,
+                def_id: c.def_id,
                 index: c.index,
             })
             .collect(),

@@ -1284,6 +1284,19 @@ impl<R: StoryRng> Story<R> {
             .collect();
         visit_counts.sort_by(|a, b| a.path.cmp(&b.path));
 
+        // Id-keyed visit counts (W11/#3304): EVERY container, anonymous
+        // choice/gather bodies included — the join surface for the HIR
+        // overlay projection's `def_id`. Sorted by id for determinism.
+        let mut visit_ids: Vec<crate::debug::DebugVisitId> = ctx
+            .visit_counts
+            .iter()
+            .map(|(id, &count)| crate::debug::DebugVisitId {
+                def_id: id.to_string(),
+                count,
+            })
+            .collect();
+        visit_ids.sort_by(|a, b| a.def_id.cmp(&b.def_id));
+
         // Pending choices: visible texts (resolved) paired with target paths.
         let visible_targets: Vec<DefinitionId> = flow
             .pending_choices
@@ -1301,6 +1314,11 @@ impl<R: StoryRng> Story<R> {
                     .get(i)
                     .and_then(|id| resolver.def_path(*id))
                     .map(str::to_owned),
+                // The overlay-projection join key (W11/#3304).
+                def_id: visible_targets
+                    .get(i)
+                    .map(alloc::string::ToString::to_string)
+                    .unwrap_or_default(),
                 // `ch.index` is the pre-filter `flow.pending_choices` position
                 // (see `resolved_choices_for`) — the same index `choose()`
                 // expects, not the post-filter enumeration position `i`.
@@ -1316,6 +1334,7 @@ impl<R: StoryRng> Story<R> {
             globals,
             call_stack,
             visit_counts,
+            visit_ids,
             pending_choices,
             rng: DebugRng {
                 seed: ctx.rng_seed,

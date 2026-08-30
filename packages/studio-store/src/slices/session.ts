@@ -86,6 +86,16 @@ export interface SessionSlice {
   /** Set the paced cadence (Settings) — pushes through to the provider. */
   setSessionPaced(delayMs: number): void;
   /**
+   * The Player's prose size in px (W13/#3306, RULED — the reading
+   * surface's size is not the UI's size, the `--bs-editor-font-size`
+   * precedent). 0 = follow the app type scale (`--bs-font-prose`).
+   * Mirrored onto the root as `--bs-player-font-size`; persisted by the
+   * app boundary alongside the paced-reveal setting.
+   */
+  playerFontSize: number;
+  /** Set the Player prose size (Settings); clamped, 0 resets to scale. */
+  setPlayerFontSize(px: number): void;
+  /**
    * Byte-range → editor terms converter for transcript provenance
    * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
    * the compiled file; the Player needs a 0-based line (hover chip) and
@@ -261,6 +271,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionText: [],
     sessionLines: [],
     sessionPacedMs: 150,
+    playerFontSize: 0,
     _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
@@ -302,6 +313,14 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       const ms = Math.max(0, delayMs);
       set({ sessionPacedMs: ms });
       get()._provider?.setPacedReveal?.(ms);
+    },
+
+    setPlayerFontSize(px) {
+      // Below the readable floor collapses to 0 = "follow the app scale"
+      // (so stepping down from 10px lands on the reset, not a stuck
+      // clamp); the ceiling matches the editor knob's philosophy.
+      const clamped = px < 10 ? 0 : Math.min(32, Math.round(px));
+      set({ playerFontSize: clamped });
     },
 
     startSession(bytes) {

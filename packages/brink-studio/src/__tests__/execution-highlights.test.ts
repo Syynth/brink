@@ -20,6 +20,8 @@ function stateWith(overrides: {
   resolved?: { file: string; line: number; range_start: number; range_len: number } | null;
   selectedFrameIdx?: number | null;
   callStack?: { position?: { container_idx: number; offset: number } }[];
+  pendingChoices?: { text: string; index: number; def_id?: string }[];
+  visitIds?: { def_id: string; count: number }[];
 }) {
   const store = createStudioStore();
   store.setState({
@@ -34,6 +36,8 @@ function stateWith(overrides: {
         : ({
             position: overrides.position ?? { container_idx: 3, offset: 7 },
             call_stack: overrides.callStack ?? [],
+            pending_choices: overrides.pendingChoices ?? [],
+            visit_ids: overrides.visitIds ?? [],
           } as never),
     _provider: {
       capabilities: ALL_CAPABILITIES,
@@ -50,6 +54,93 @@ function stateWith(overrides: {
   });
   return store.getState();
 }
+
+/** A weave with three sibling choices under one knot (choice point A)
+ *  and one unrelated choice under another knot (choice point B). */
+function projectionFixture() {
+  const container = (
+    kind: string,
+    startLine: number,
+    endLine: number,
+    extra: object = {},
+  ) => ({
+    kind,
+    container: true,
+    depth: kind === "knot" ? 0 : 1,
+    start_line: startLine,
+    start_char: 0,
+    end_line: endLine,
+    end_char: 99,
+    handle: startLine,
+    ...extra,
+  });
+  return {
+    lines: [],
+    spans: [
+      container("knot", 0, 9),
+      container("choice", 1, 2, { def_id: "$a", sticky: false, weave_depth: 1 }),
+      container("choice", 3, 4, { def_id: "$b", sticky: false, weave_depth: 1 }),
+      container("choice", 5, 6, { def_id: "$c", sticky: true, weave_depth: 1 }),
+      container("knot", 10, 19),
+      container("choice", 11, 12, { def_id: "$z", sticky: false, weave_depth: 1 }),
+    ],
+  } as never;
+}
+
+describe("choice-point visualization (W11/#3304)", () => {
+  const CHOICES = { position: { container_idx: 3, offset: 7 } };
+
+  it("presented choices light; rejected siblings dim with reasons by elimination", () => {
+    const st = stateWith({
+      ...CHOICES,
+      status: "awaiting-choice",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+      visitIds: [{ def_id: "$a", count: 1 }],
+    });
+    const out = executionHighlightsFor(st, "main.ink", projectionFixture());
+    // $c presented (line 6); $a once-only used (line 2); $b condition
+    // false (line 4); $z belongs to ANOTHER choice point — untouched.
+    expect(out).toEqual([
+      { line: 6, kind: "live" },
+      { line: 2, kind: "rejected", note: "once-only · used" },
+      { line: 4, kind: "rejected", note: "condition false" },
+    ]);
+  });
+
+  it("without a projection, the choice point falls back to the position band", () => {
+    const st = stateWith({
+      ...CHOICES,
+      status: "awaiting-choice",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+    });
+    expect(executionHighlightsFor(st, "main.ink", null)).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+    ]);
+  });
+
+  it("paused at the choice point keeps the paused stop band alongside the lit set", () => {
+    const st = stateWith({
+      ...CHOICES,
+      status: "awaiting-choice",
+      paused: true,
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+    });
+    const out = executionHighlightsFor(st, "main.ink", projectionFixture());
+    expect(out[0]).toEqual({ line: 5, kind: "paused", rangeStart: 100, rangeLen: 12 });
+    expect(out).toContainEqual({ line: 6, kind: "live" });
+  });
+
+  it("degraded suppresses the choice bands too — suppressed, never stale", () => {
+    const st = stateWith({
+      ...CHOICES,
+      status: "awaiting-choice",
+      program: "old",
+      compiled: "new",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+    });
+    expect(executionHighlightsFor(st, "main.ink", projectionFixture())).toEqual([]);
+  });
+});
 
 describe("executionHighlightsFor (W6/#3299)", () => {
   it("play is stepping: a running session lights the live band, 1-based", () => {

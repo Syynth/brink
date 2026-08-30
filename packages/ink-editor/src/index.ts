@@ -160,6 +160,7 @@ export {
   lineActionsAt,
   refreshBreakpoints,
 } from "./play-from-here.js";
+export { identifierAt, augmentHoverWithRuntimeValue } from "./hover-runtime.js";
 export {
   executionHighlightExtension,
   refreshExecutionHighlight,
