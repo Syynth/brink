@@ -974,7 +974,7 @@ export async function mountStudio(
   // flow through these callbacks; the manager keeps them targeted at the
   // focused group's active view.
   documentsRef = null; // (re)assigned immediately below
-  const documents = new DocumentSessions(project, {
+  const documents: DocumentSessions = new DocumentSessions(project, {
     onCursorChange: (line, col) => store.getState().setCursor(line, col),
     onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
     onCompileResult: handleCompileResult,
@@ -1027,7 +1027,8 @@ export async function mountStudio(
         .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
-    getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
+    getExecutionHighlights: (path) =>
+      executionHighlightsFor(store.getState(), path, documents.getHirProjection(path)),
     // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
     // instructions, target the explorer, and surface the tool window —
     // only when a target was actually set (the honest-failure

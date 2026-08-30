@@ -417,6 +417,17 @@ export class DocumentSessions {
     }
   }
 
+  /** The stashed HIR projection for an OPEN document, or `null` (unopened
+   * path, or the projection hasn't landed yet). W11/#3304's choice-point
+   * policy joins runtime ids against it — only open editors render the
+   * highlight, so open-docs-only is the exact coverage needed. */
+  getHirProjection(path: string): import("@brink/wasm-types").HirProjection | null {
+    for (const slot of this.slots.values()) {
+      if (slot.path === path) return slot.handle?.hirProjection() ?? null;
+    }
+    return null;
+  }
+
   // ── Open hints ───────────────────────────────────────────────────
 
   /**

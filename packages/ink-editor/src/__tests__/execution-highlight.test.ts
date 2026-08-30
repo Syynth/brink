@@ -118,6 +118,34 @@ describe("execution highlight (W6/#3299)", () => {
     expect(view.dom.querySelectorAll(".brink-exec-arrow-frame")).toHaveLength(1);
   });
 
+  it("a rejected choice dims with its note; condition notes enrich from the line (W11)", () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "* [Go]\n* {gold > 20} [Pricey]\n* [Other]\n",
+        extensions: [
+          elementTypeField,
+          executionHighlightExtension({
+            getExecutionHighlights: () => [
+              { line: 1, kind: "live" },
+              { line: 2, kind: "rejected", note: "condition false" },
+              { line: 3, kind: "rejected", note: "once-only · used" },
+            ],
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const rejected = Array.from(
+      view.dom.querySelectorAll<HTMLElement>(".brink-exec-rejected"),
+    );
+    expect(rejected).toHaveLength(2);
+    // The by-elimination condition case enriches from the line's own {…}.
+    expect(rejected[0].getAttribute("data-brink-exec-note")).toBe("gold > 20 = false");
+    // Other notes pass through verbatim.
+    expect(rejected[1].getAttribute("data-brink-exec-note")).toBe("once-only · used");
+  });
+
   it("a live highlight draws NO gutter glyph — the arrow belongs to pause", () => {
     const view = mount(() => [{ line: 3, kind: "live" }], true);
     refreshExecutionHighlight(view);
