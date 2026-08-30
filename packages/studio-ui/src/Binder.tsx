@@ -18,6 +18,8 @@ import {
 import {
   BrinkFileIcon,
   BrinkFileDraftIcon,
+  BrinkFileEntryIcon,
+  BrinkFileEntryOutlineIcon,
   BrinkFileFilledIcon,
   CollapseAllIcon,
   ExpandAllIcon,
@@ -69,6 +71,7 @@ function iconElement(
   expandable = false,
   expanded = false,
   draft = false,
+  entry = false,
 ): React.ReactElement | null {
   const filled = expandable && !expanded;
   switch (kind) {
@@ -79,6 +82,14 @@ function iconElement(
       // A draft is drawn provisionally rather than filled/outline
       // (decision log 2026-08-27): the fill rule encodes expansion state,
       // which a file row does not have, so the variant is free here.
+      // Entry before draft: they cannot co-occur (the entry is reachable
+      // from itself, and "reachability wins" makes a reachable file no
+      // draft at all), but the order states which fact would win.
+      //
+      // The entry obeys the same fill rule as every other row — the brand
+      // mark when collapsed over content, the outline-with-inlaid-divert
+      // when expanded or empty.
+      if (entry) return filled ? <BrinkFileEntryIcon /> : <BrinkFileEntryOutlineIcon />;
       if (draft) return <BrinkFileDraftIcon />;
       return filled ? <BrinkFileFilledIcon /> : <BrinkFileIcon />;
     case "knot":
@@ -272,6 +283,9 @@ interface RowProps {
   badge?: { text: string; tone: "entry" | "muted" };
   /** Draw the file icon in its DRAFT variant (#3145). */
   draft?: boolean;
+  /** Draw the file icon in its ENTRY variant — the drop with a divert
+   *  through it, which replaced the "entry" text badge. */
+  entry?: boolean;
   /** Dim the row (a file on disk that nothing INCLUDEs — outside the
    *  compile closure). */
   dimmed?: boolean;
@@ -318,6 +332,7 @@ export function BinderRow({
   editing,
   badge,
   draft = false,
+  entry = false,
   dimmed = false,
   marks,
   onMenuClick,
@@ -423,7 +438,7 @@ export function BinderRow({
           }
           onClick={expandable ? handleChevronClick : undefined}
         >
-          {iconElement(kind, isFunction, expandable, isExpanded, draft)}
+          {iconElement(kind, isFunction, expandable, isExpanded, draft, entry)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
@@ -1779,13 +1794,12 @@ function BinderInner() {
           depth={depth}
           kind="file"
           label={displayName(file.path)}
-          badge={
-            isEntry
-              ? { text: "entry", tone: "entry" }
-              : notIncluded
-                ? { text: "not included", tone: "muted" }
-                : undefined
-          }
+          // The entry, like a draft, carries its status in its ICON rather
+          // than a text badge — a word competing with the filename for the
+          // row's width, in a column where every row is otherwise the same
+          // drop.
+          badge={notIncluded ? { text: "not included", tone: "muted" } : undefined}
+          entry={isEntry}
           // A draft carries its status in its ICON (decision log
           // 2026-08-27), so it takes no badge and no dimming: dimming
           // reads as "lesser", and a draft is deliberate, not degraded.

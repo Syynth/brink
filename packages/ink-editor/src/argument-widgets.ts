@@ -18,7 +18,6 @@ import {
   Decoration,
   type DecorationSet,
   EditorView,
-  keymap,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
@@ -40,6 +39,7 @@ import { ensureStructuralStyles } from "./structural-styles.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
 import { DEFER_LINE_THRESHOLD } from "./deferred-refresh.js";
 import { perfTime } from "./perf/probe.js";
+import { editorActionRunners } from "./editor-actions.js";
 
 /**
  * How the *inline* call-level glyph is shown (spec §6.5). Independent of the
@@ -1081,13 +1081,12 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
     { decorations: (v) => v.decorations },
   );
 
-  // Mod-Shift-A opens the Form for the call the cursor is inside.
-  const keys = keymap.of([
-    {
-      key: "Mod-Shift-a",
-      run: (view) => openFormAtCursor(view, options.getArgumentWidgets),
-    },
-  ]);
+  // Opens the Form for the call the cursor is inside; the chord lives in
+  // the shared editor-actions keymap (default Mod-Shift-A).
+  const keys = editorActionRunners.of({
+    id: "editor.argumentForm",
+    run: (view) => openFormAtCursor(view, options.getArgumentWidgets),
+  });
 
   // Auto-open: accepting a function/method completion inserts `()` and opens the
   // Form. Deferred out of the update listener (dispatch isn't allowed in it) so

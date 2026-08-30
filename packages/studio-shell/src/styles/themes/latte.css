@@ -53,6 +53,8 @@
      band. Derivation: --bs-todo = mix(#daa520 78%, --ctp-yellow);
      --bs-todo-band = mix(--bs-todo 82%, --bs-editor-bg). */
   --bs-todo: #dba01f;
+  /* Draft files (#3145) — latte's own peach, not mocha's. */
+  --bs-draft: var(--ctp-peach);
   --bs-todo-band: #dfaf46;
   --bs-todo-ink: #2a2130;
   --bs-success: var(--ctp-green);
@@ -86,6 +88,9 @@
      rgb(var(--bs-X-rgb) / N%), plus precomputed opaque two-color mixes.
      Keep each value in sync with its base token above. */
   --bs-accent-rgb: 30 102 245; /* --ctp-blue */
+  /* Search's second accent — latte's own mauve, not mocha's. */
+  --bs-accent-secondary: var(--ctp-mauve);
+  --bs-accent-secondary-rgb: 136 57 239;
   --bs-surface-bg-rgb: 230 233 239; /* --ctp-surface-low */
   --bs-panel-bg-rgb: 220 224 232; /* --ctp-surface-high */
   --bs-fg-rgb: 76 79 105; /* --ctp-text */

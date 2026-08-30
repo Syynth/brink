@@ -20,9 +20,10 @@
  */
 
 import { Facet, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { closeHoverTooltips, Decoration, EditorView, keymap, WidgetType } from "@codemirror/view";
+import { closeHoverTooltips, Decoration, EditorView, WidgetType } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
 import { InlineNameInput } from "./inline-name-input.js";
+import { editorActionRunners } from "./editor-actions.js";
 import {
   isSafeRename,
   breakageCount,
@@ -389,23 +390,23 @@ export function renameExtension(options: RenameOptions): Extension {
     ],
   });
 
-  const keys = keymap.of([
-    {
-      key: "F2",
-      run(view: EditorView): boolean {
-        // The renameable gate resolves on the worker road (#3110): claim
-        // the key now and open the row on landing — F2 on a non-symbol
-        // simply does nothing (it has no other binding to fall through
-        // to, so the optimistic claim costs nothing observable).
-        void startInlineRename(view, view.state.selection.main.head);
-        return true;
-      },
+  // The chord lives in the shared editor-actions keymap (rebindable, and
+  // visible in Settings ▸ Keymap); this extension provides only the RUN.
+  const runner = editorActionRunners.of({
+    id: "editor.renameSymbol",
+    run(view: EditorView): boolean {
+      // The renameable gate resolves on the worker road (#3110): claim
+      // the key now and open the row on landing — the chord on a
+      // non-symbol simply does nothing (it has no other binding to fall
+      // through to, so the optimistic claim costs nothing observable).
+      void startInlineRename(view, view.state.selection.main.head);
+      return true;
     },
-  ]);
+  });
 
   return [
     field,
-    keys,
+    runner,
     renameResolverFacet.of((source, offset) => options.prepareRename(source, offset)),
   ];
 }

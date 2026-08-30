@@ -90,6 +90,7 @@ import {
   type Location as ShellLocation,
   type SourceLocation,
   type StudioExtensions,
+  KeymapOverridesService,
 } from "@brink/studio-shell";
 import {
   App,
@@ -156,6 +157,7 @@ import {
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import { registerDebugCommands } from "./debug-commands.js";
+import { registerEditorActionCommands } from "./editor-action-commands.js";
 import { registerLocationResolvers } from "./location-resolvers.js";
 import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
 import { executionHighlightsFor } from "./execution-highlights.js";
@@ -445,6 +447,7 @@ interface RootProps {
   editorGroups: EditorGroupsStore;
   layout: ShellLayoutStore;
   notifications: NotificationCenter;
+  keymapOverrides: KeymapOverridesService;
   api: StudioApi;
 }
 
@@ -459,6 +462,7 @@ function Root({
   editorGroups,
   layout,
   notifications,
+  keymapOverrides,
   api,
 }: RootProps) {
   // Tear down the wasm session + story runner when the app unmounts. The
@@ -482,6 +486,10 @@ function Root({
       editorGroups={editorGroups}
       layout={layout}
       notifications={notifications}
+      // Owned out here rather than defaulted inside ShellProvider, because
+      // the editor-action sync (editor-action-commands.ts) subscribes to
+      // the same instance the Keymap settings write through.
+      keymapOverrides={keymapOverrides}
       // Single File view's native split (decision log 2026-08-26). The shell
       // is told WHICH document sits beside the file, not what it means — so
       // "run the scene you are writing" is one prop rather than the shell
@@ -1110,6 +1118,17 @@ export async function mountStudio(
     proseChecker: studioProseChecker,
     onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
+
+  // The keymap overrides service, created here rather than defaulted inside
+  // ShellProvider: the editor-action sync below and the Settings ▸ Keymap
+  // surface must be reading and writing the same instance.
+  const keymapOverrides = new KeymapOverridesService();
+
+  // The editor's named actions (rename / references / code actions /
+  // argument form / element picker) as shell commands, with rebinds synced
+  // INTO the open editors' CodeMirror keymaps — one source of truth, so the
+  // Settings table can never show a chord the editor disagrees with.
+  registerEditorActionCommands(commands, documents, keymapOverrides);
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
   // editor text to the session and deliver pending host change
@@ -1767,6 +1786,7 @@ export async function mountStudio(
       editorGroups={editorGroups}
       layout={shellLayout}
       notifications={notifications}
+      keymapOverrides={keymapOverrides}
       api={api}
     />
   );

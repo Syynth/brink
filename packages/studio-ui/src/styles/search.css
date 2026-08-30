@@ -122,8 +122,8 @@
   gap: 5px;
   max-width: 85%;
   flex-shrink: 0;
-  background: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 14%);
-  border: 1px solid rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
+  background: rgb(var(--bs-accent-secondary-rgb) / 14%);
+  border: 1px solid rgb(var(--bs-accent-secondary-rgb) / 45%);
   border-radius: 4px;
   padding: 2px 8px;
   font-size: var(--bs-font-body);
@@ -132,7 +132,7 @@
   font-size: var(--bs-font-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--bs-accent-secondary, #cba6f7);
+  color: var(--bs-accent-secondary);
 }
 .brink-studio .search-refs-chip-symbol {
   color: var(--bs-fg);
@@ -672,7 +672,7 @@
 /* ── References dressing (card spec PR E) ─────────────────────────── */
 
 .brink-studio .search-card.decl {
-  border-color: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 60%);
+  border-color: rgb(var(--bs-accent-secondary-rgb) / 60%);
 }
 .brink-studio .search-card-kind {
   font-size: var(--bs-font-micro);
@@ -685,8 +685,8 @@
   flex-shrink: 0;
 }
 .brink-studio .search-card-kind.decl {
-  color: var(--bs-accent-secondary, #cba6f7);
-  border-color: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
+  color: var(--bs-accent-secondary);
+  border-color: rgb(var(--bs-accent-secondary-rgb) / 45%);
 }
 .brink-studio .search-card-kind.read,
 .brink-studio .search-card-kind.write {

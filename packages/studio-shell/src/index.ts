@@ -32,6 +32,21 @@ export {
   type KeymapOverrides,
   type KeymapOverridesParseResult,
 } from "./keymap.js";
+// The keymap editor's model — rows, conflict lookup, and the displacing
+// rebind (decision log 2026-08-30).
+export {
+  bindChord,
+  chordOwner,
+  effectiveChords,
+  keymapRows,
+  resetCommand,
+  serializeChord,
+  unbindChord,
+  type BindResult,
+  type KeymapCommand,
+  type KeymapRow,
+  type KeymapSource,
+} from "./keymap-model.js";
 export { attachKeyHandler, type KeyHandlerOptions } from "./keyhandler.js";
 export {
   ShellProvider,

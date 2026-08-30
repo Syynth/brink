@@ -73,6 +73,12 @@ import { refreshProseEffect } from "./prose.js";
 import { refreshDiagnosticsEffect } from "./diagnostics.js";
 import { perfSpan, perfTime } from "./perf/probe.js";
 import { detachedGutters } from "./gutter-layout.js";
+import {
+  runEditorAction,
+  setEditorActionKeys,
+  type EditorActionId,
+  type EditorActionKeys,
+} from "./editor-actions.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -397,6 +403,32 @@ export class DocumentSessions {
     }
   }
 
+  /** The host's current editor-action chords; null = shipped defaults. */
+  private editorActionKeys: EditorActionKeys | null = null;
+
+  /**
+   * Rebind the editor-action chords live across all open editors, and for
+   * every editor opened after this call (Settings ▸ Keymap). Mirrors
+   * {@link setFormGlyph}'s broadcast shape.
+   */
+  setEditorActionKeys(keys: EditorActionKeys): void {
+    this.editorActionKeys = keys;
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) setEditorActionKeys(slot.view, keys);
+    }
+  }
+
+  /**
+   * Run a named editor action on the focused view — the shell-command /
+   * palette entry point. False when no editor is focused or the focused
+   * one has the feature unwired, never a throw.
+   */
+  runEditorAction(id: EditorActionId): boolean {
+    const view = this.getFocusedView();
+    if (view === null) return false;
+    return runEditorAction(view, id);
+  }
+
   /** Toggle completion-accept auto-open live across all open editors (Settings). */
   setAutoOpen(on: boolean): void {
     this.autoOpen = on;
@@ -515,6 +547,9 @@ export class DocumentSessions {
       },
     });
     slot.view = view;
+    // A slot opened after a keymap rebind starts on the host's chords, not
+    // the shipped defaults the baseline compartment carries.
+    if (this.editorActionKeys !== null) setEditorActionKeys(view, this.editorActionKeys);
 
     if (this.focusedSlotId === id) {
       this.applyFocusSideEffects(slot);

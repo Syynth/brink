@@ -40,6 +40,7 @@ export { LintSettings } from "./LintSettings.js";
 export { FormattingSettings } from "./FormattingSettings.js";
 export { ProseSettings } from "./ProseSettings.js";
 export { DraftSettings } from "./DraftSettings.js";
+export { KeymapSettings } from "./KeymapSettings.js";
 export { ThemePicker } from "./ThemePicker.js";
 export {
   SettingsGroup,
