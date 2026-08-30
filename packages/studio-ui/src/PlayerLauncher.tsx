@@ -128,7 +128,7 @@ export function PlayerLauncher() {
       <div className="pl-start-row">
         <button
           type="button"
-          className="session-placeholder-start"
+          className="session-placeholder-start pl-run-btn"
           onClick={() => commands.dispatch("story.start")}
         >
           Run from the start

@@ -287,7 +287,22 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
-  font-family: var(--bs-font-ui, inherit);
+  /* The launcher is UI chrome, not prose — it must not inherit the
+     Player's serif reading face (maintainer feedback, W14). Matches the
+     studio root's stack (no token exists for it today). */
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-body);
+  line-height: 1.4;
+}
+/* Run-from-the-start matches the typeahead's metrics exactly — same
+   height, padding, radius, and font (maintainer feedback, W14). */
+.brink-studio .pl-start-row .pl-run-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: var(--bs-font-body);
+  line-height: 1.4;
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 .brink-studio .pl-start-row {
   display: flex;
@@ -307,6 +322,8 @@
   border-radius: 6px;
   padding: 6px 10px;
   font-size: var(--bs-font-body);
+  font-family: inherit;
+  line-height: 1.4;
 }
 .brink-studio .pl-typeahead-list {
   position: absolute;
@@ -338,6 +355,15 @@
 }
 .brink-studio .pl-typeahead-row:hover {
   background: var(--bs-hover-bg);
+}
+.brink-studio .pl-typeahead-row .pl-save-name {
+  flex-shrink: 0;
+}
+.brink-studio .pl-typeahead-row .pl-save-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
 }
 .brink-studio .pl-cap {
   font-size: var(--bs-font-small);
