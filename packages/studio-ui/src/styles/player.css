@@ -187,6 +187,9 @@
   box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
 }
 .brink-studio .player-pane .header .toolbar .player-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   border: none;
   background: transparent;
   text-align: left;
@@ -194,6 +197,15 @@
   border-radius: 4px;
   font-size: var(--bs-font-body);
   white-space: nowrap;
+}
+/* The rows keep their buttons' glyphs (maintainer feedback) — same
+   accent tint the inline toolbar gives them. */
+.brink-studio .player-pane .header .toolbar .player-overflow-item svg {
+  flex-shrink: 0;
+  color: var(--bs-accent);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:disabled svg {
+  color: var(--bs-fg-muted);
 }
 .brink-studio .player-pane .header .toolbar .player-overflow-item:hover:not(:disabled) {
   background: rgb(var(--bs-accent-rgb) / 12%);

@@ -194,6 +194,87 @@ function renderLine(line: string): ReactNode {
 
 const TAGS_KEY = "brink-studio.player.show-tags.v1";
 
+// Toolbar glyphs, shared between the inline buttons and the overflow
+// menu's rows (maintainer feedback: collapsed controls keep their icons).
+function PauseIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
+    </svg>
+  );
+}
+function ContinueIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
+      <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
+    </svg>
+  );
+}
+function StepOverIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function StepIntoIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function StepOutIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function FastForwardIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+      <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
+      <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
+    </svg>
+  );
+}
+function SaveStateIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M2 2h6.5L10 3.5V10H2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      <path d="M4 2v2.6h3.4V2M4 10V7h4v3" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+function StopIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+function TagsIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path
+        d="M1.5 5V1.5H5L10.5 7 7 10.5z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
+    </svg>
+  );
+}
+
 function loadTagsToggle(): boolean {
   try {
     return localStorage.getItem(TAGS_KEY) === "1";
@@ -473,9 +554,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             disabled={idle}
             onClick={() => commands.dispatch("story.stop")}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
-            </svg>
+            <StopIcon />
           </button>
           <button
             className="player-transport-btn"
@@ -484,10 +563,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             disabled={idle}
             onClick={() => void saveCurrentState()}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path d="M2 2h6.5L10 3.5V10H2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-              <path d="M4 2v2.6h3.4V2M4 10V7h4v3" stroke="currentColor" strokeWidth="1.1" />
-            </svg>
+            <SaveStateIcon />
           </button>
           <button
             className="player-transport-btn player-auto-btn"
@@ -496,10 +572,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             disabled={idle}
             onClick={() => revealMaximally()}
           >
-            <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
-              <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
-              <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
-            </svg>
+            <FastForwardIcon />
           </button>
           {debugCapable && collapse < 1 && (
             <span className="player-transport">
@@ -511,10 +584,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   aria-label="Continue"
                   onClick={() => commands.dispatch("debug.continue")}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
-                    <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
-                  </svg>
+                  <ContinueIcon />
                 </button>
               ) : (
                 <button
@@ -524,9 +594,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   disabled={status !== "running" && status !== "awaiting-choice"}
                   onClick={() => commands.dispatch("debug.pause")}
                 >
-                  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
-                  </svg>
+                  <PauseIcon />
                 </button>
               )}
               <button
@@ -536,11 +604,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOver")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11" r="1.6" fill="currentColor" />
-                </svg>
+                <StepOverIcon />
               </button>
               <button
                 className="player-transport-btn"
@@ -549,11 +613,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepInto")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
-                </svg>
+                <StepIntoIcon />
               </button>
               <button
                 className="player-transport-btn"
@@ -562,11 +622,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOut")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
-                </svg>
+                <StepOutIcon />
               </button>
             </span>
           )}
@@ -582,15 +638,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               });
             }}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path
-                d="M1.5 5V1.5H5L10.5 7 7 10.5z"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinejoin="round"
-              />
-              <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
-            </svg>
+            <TagsIcon />
           </button>
           </>
           )}
@@ -622,7 +670,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        {paused ? "Continue" : "Pause"}
+                        {paused ? <ContinueIcon /> : <PauseIcon />}
+                        <span>{paused ? "Continue" : "Pause"}</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -632,7 +681,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Step over
+                        <StepOverIcon />
+                        <span>Step over</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -642,7 +692,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Step into
+                        <StepIntoIcon />
+                        <span>Step into</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -652,7 +703,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Step out
+                        <StepOutIcon />
+                        <span>Step out</span>
                       </button>
                     </>
                   )}
@@ -666,7 +718,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Fast-forward
+                        <FastForwardIcon />
+                        <span>Fast-forward</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -676,7 +729,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Save state
+                        <SaveStateIcon />
+                        <span>Save state</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -686,7 +740,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        Stop
+                        <StopIcon />
+                        <span>Stop</span>
                       </button>
                       <button
                         className="player-overflow-item"
@@ -698,7 +753,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                           setOverflowOpen(false);
                         }}
                       >
-                        {showTags ? "Hide line tags" : "Show line tags"}
+                        <TagsIcon />
+                        <span>{showTags ? "Hide line tags" : "Show line tags"}</span>
                       </button>
                     </>
                   )}
