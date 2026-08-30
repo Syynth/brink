@@ -96,6 +96,9 @@ test.describe("settings document", () => {
   }) => {
     await openSettings(page);
     await openSection(page, "App", "Keymap");
+    // The JSON editor is the escape hatch below the keymap table (#3334) —
+    // collapsed until opened.
+    await page.locator(".settings-escape-hatch > summary").click();
     await page
       .locator(".settings-json")
       .fill('{\n  "palette.toggle": "Mod-J"\n}');
@@ -142,6 +145,7 @@ test.describe("settings document", () => {
   }) => {
     await openSettings(page);
     await openSection(page, "App", "Keymap");
+    await page.locator(".settings-escape-hatch > summary").click();
     await page.locator(".settings-json").fill("{not json");
     await page.locator(".settings-apply").click();
 
@@ -162,7 +166,8 @@ test.describe("settings document", () => {
     // Its own rail section now (#3174): the `[lints]` table is a PROJECT
     // setting and this flag is an APP one, which the scope switch states
     // rather than a hint inside a mixed section.
-    await openSection(page, "App", "External functions");
+    // External-function checking lives inside the Player section now.
+    await openSection(page, "App", "Player");
     const diagSelect = page.locator(".settings-select").first();
     await expect(diagSelect).toHaveValue("error");
 
@@ -176,7 +181,8 @@ test.describe("settings document", () => {
     await page.reload();
     await page.waitForSelector(".cm-content", { timeout: 10000 });
     await openSettings(page);
-    await openSection(page, "App", "External functions");
+    // External-function checking lives inside the Player section now.
+    await openSection(page, "App", "Player");
     await expect(page.locator(".settings-select").first()).toHaveValue("off");
   });
 });
