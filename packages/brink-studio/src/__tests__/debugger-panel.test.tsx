@@ -160,6 +160,35 @@ describe("Debugger panel (W8/#3301)", () => {
     expect(store.getState().selectedFrameIdx).toBeNull();
   });
 
+  it("flow rows switch the active session; the primary is not closable (ex-SessionPicker pins)", () => {
+    // The status-bar SessionPicker retired (W10/#3303) — its behaviors
+    // live here now: selection repoints the session-bound views, and the
+    // primary session carries no close affordance.
+    const store = createStudioStore();
+    const setActive = vi.fn();
+    store.setState({
+      sessionStatus: "running",
+      debugState: debugState(),
+      sessions: [
+        { id: DEFAULT_SESSION_ID, label: "Main", provider: {} as never },
+        { id: "s2", label: "intro", provider: {} as never },
+      ],
+      activeSessionId: DEFAULT_SESSION_ID,
+      setActiveSession: setActive,
+    });
+    mount(store);
+
+    const rows = Array.from(host?.querySelectorAll<HTMLButtonElement>(".dp-flow-select") ?? []);
+    expect(rows.map((r) => r.textContent)).toEqual(["Main", "intro"]);
+    act(() => rows[1].click());
+    expect(setActive).toHaveBeenCalledWith("s2");
+
+    // Close affordance: absent on the primary row, present on the second.
+    const flowRows = Array.from(host?.querySelectorAll(".dp-flow-row") ?? []);
+    expect(flowRows[0].querySelector(".dp-x")).toBeNull();
+    expect(flowRows[1].querySelector(".dp-x")).not.toBeNull();
+  });
+
   it("breakpoint rows toggle and remove through the anchor actions", () => {
     const store = createStudioStore();
     const setEnabled = vi.fn();

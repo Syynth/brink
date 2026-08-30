@@ -144,6 +144,9 @@ const STORY_STATUS_LABELS: Record<string, string> = {
 /** Story session status (spec §7.6); click restarts when that makes sense. */
 export function StorySegment() {
   const status = useStudioStore((s) => s.sessionStatus);
+  // Paused by the debugger (W10/#3303): its own presentation — a paused
+  // session is lifecycle-"running", but the author reads "paused".
+  const paused = useStudioStore((s) => s.sessionPaused);
   // Degraded mode (spec §5, #181): the running program isn't the studio's
   // latest compile. Surfaced as a status, not a notification — source-position
   // features (graph location, visit badges) are disabled while it holds.
@@ -154,12 +157,14 @@ export function StorySegment() {
 
   const label = degraded
     ? "inspecting — source out of sync"
-    : (STORY_STATUS_LABELS[status] ?? status);
+    : paused
+      ? "paused"
+      : (STORY_STATUS_LABELS[status] ?? status);
   const canRestart = commands.isEnabled("story.restart");
   const body = (
     <>
       <span
-        className={`brink-status-story-dot status-${status}${degraded ? " degraded" : ""}`}
+        className={`brink-status-story-dot status-${paused && !degraded ? "paused" : status}${degraded ? " degraded" : ""}`}
       />
       {label}
     </>
@@ -200,63 +205,6 @@ export function StructuralOpSegment() {
   );
 }
 
-/**
- * Multi-session picker (docs/multi-session-spec.md §5, #182). Lists the
- * registered sessions and repoints every session-bound view to the selected
- * one. Hidden when ≤1 session — no picker noise in the single-session studio;
- * opening the first extra session is the `story.openSession` command.
- */
-export function SessionPicker() {
-  const sessions = useStudioStore((s) => s.sessions);
-  const activeSessionId = useStudioStore((s) => s.activeSessionId);
-  const setActiveSession = useStudioStore((s) => s.setActiveSession);
-  const openSession = useStudioStore((s) => s.openSession);
-  const openFlow = useStudioStore((s) => s.openFlow);
-  const closeSession = useStudioStore((s) => s.closeSession);
-
-  if (sessions.length <= 1) return null;
-
-  const canClose = activeSessionId !== null && activeSessionId !== DEFAULT_SESSION_ID;
-  return (
-    <span className="brink-status-sessions">
-      <select
-        className="brink-session-select"
-        title="Active session"
-        value={activeSessionId ?? ""}
-        onChange={(e) => setActiveSession(e.target.value)}
-      >
-        {sessions.map((session) => (
-          <option key={session.id} value={session.id}>
-            {session.label}
-          </option>
-        ))}
-      </select>
-      <button
-        className="brink-session-add clickable"
-        title="Open a new session (independent — isolated globals)"
-        onClick={() => openSession()}
-      >
-        +
-      </button>
-      <button
-        className="brink-session-add clickable"
-        title="Open a new flow (concurrent — shares globals)"
-        onClick={() => openFlow()}
-      >
-        +⑂
-      </button>
-      {canClose && (
-        <button
-          className="brink-session-close clickable"
-          title="Close this session"
-          onClick={() => closeSession(activeSessionId)}
-        >
-          ×
-        </button>
-      )}
-    </span>
-  );
-}
 
 // ── Right group ─────────────────────────────────────────────────────
 

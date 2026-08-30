@@ -31,6 +31,9 @@ import type { StudioStore } from "@brink/studio-store";
 export function registerDebugCommands(
   commands: CommandRegistry,
   store: StudioStore,
+  /** The focused ink document's path (F9 toggles at its cursor line);
+   *  omitted by embedders without editor focus tracking. */
+  getActiveInkFile?: () => string | null,
 ): () => void {
   const debugCapable = (): boolean => store.getState().debugCapable;
 
@@ -48,6 +51,7 @@ export function registerDebugCommands(
     commands.register({
       id: "debug.continue",
       title: "Debug: Continue",
+      keybinding: "F5",
       when: debugCapable,
       // Continue (2026-08-30 ruling): run until the next content line is
       // delivered — or a breakpoint/choices/terminal stop — and resume
@@ -61,6 +65,7 @@ export function registerDebugCommands(
     commands.register({
       id: "debug.pause",
       title: "Debug: Pause",
+      keybinding: "F6",
       when: debugCapable,
       // The pause verb (W5/#3298, ruled first-class): enter the paused
       // state at the current boundary — the step controls light up, and
@@ -71,6 +76,7 @@ export function registerDebugCommands(
     commands.register({
       id: "debug.stepInto",
       title: "Debug: Step Into",
+      keybinding: "F11",
       when: debugCapable,
       run: () => store.getState().debugStepLine("into"),
     }),
@@ -78,6 +84,7 @@ export function registerDebugCommands(
     commands.register({
       id: "debug.stepOver",
       title: "Debug: Step Over",
+      keybinding: "F10",
       when: debugCapable,
       run: () => store.getState().debugStepLine("over"),
     }),
@@ -85,8 +92,24 @@ export function registerDebugCommands(
     commands.register({
       id: "debug.stepOut",
       title: "Debug: Step Out",
+      keybinding: "Shift-F11",
       when: debugCapable,
       run: () => store.getState().debugStepLine("out"),
+    }),
+
+    commands.register({
+      id: "debug.toggleBreakpoint",
+      title: "Debug: Toggle Breakpoint (Current Line)",
+      keybinding: "F9",
+      // Anchors are source-anchored (W4) — they exist without a session,
+      // so this is gated on knowing WHERE, not on debug capability.
+      when: () => getActiveInkFile?.() != null,
+      run: () => {
+        const file = getActiveInkFile?.();
+        if (file == null) return;
+        // Store cursor is 1-based; anchors are 0-based.
+        store.getState().breakpointToggleAtLine(file, store.getState().cursor.line - 1);
+      },
     }),
 
     commands.register({

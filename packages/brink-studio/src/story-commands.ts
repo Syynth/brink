@@ -60,6 +60,7 @@ export function registerStoryCommands(
     commands.register({
       id: "story.restart",
       title: "Story: Restart",
+      keybinding: "Shift-F5",
       when: () =>
         (store.getState().sessionStatus !== "none" || programBytes() !== null) &&
         can("restart"),

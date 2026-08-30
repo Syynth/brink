@@ -135,7 +135,6 @@ export {
   CursorSegment,
   ElementSegment,
   KeyHintsSegment,
-  SessionPicker,
   StorySegment,
   StructuralOpSegment,
 } from "./StatusBar.js";

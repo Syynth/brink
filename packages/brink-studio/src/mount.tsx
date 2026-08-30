@@ -694,7 +694,15 @@ export async function mountStudio(
   // breakpointRemove / breakpointToggle, gated by the bound provider's
   // "debug" capability. Real plumbing today, inert until a studio compile
   // can carry debug info (#3229) — see `debug-commands.ts`'s own doc.
-  registerDebugCommands(commands, store);
+  registerDebugCommands(commands, store, () => {
+    // F9's target: the focused group's active ink-file tab, if any.
+    const st = editorGroups.getState();
+    const group = st.groups.find((g) => g.id === st.focusedGroupId);
+    const active = group?.tabs.find(
+      (t) => documentKey(t.ref) === group.activeKey,
+    );
+    return active?.ref.typeId === INK_FILE_TYPE_ID ? active.ref.docId : null;
+  });
 
   // Recompile on demand (the player's "Run" button). A successful compile
   // starts the session via the compile-result handler below (the
