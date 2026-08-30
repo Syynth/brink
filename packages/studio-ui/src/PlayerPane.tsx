@@ -200,7 +200,19 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // observe-only provider — same posture as the Auto toggle above).
   const debugCapable = useStudioStore((s) => s.debugCapable);
   const paused = useStudioStore((s) => s.sessionPaused);
-  const pausedLocation = useStudioStore((s) => s.debugState?.current_location ?? null);
+  const pausedLocation = useStudioStore((s) => {
+    // file:line when the resolver can say (W6/#3299) — the shape every
+    // debugger user reads — falling back to the runtime's knot path.
+    const pos = s.debugState?.position;
+    const provider = s._provider;
+    if (pos && provider !== null && "resolveDebugLine" in provider) {
+      const line = (
+        provider as { resolveDebugLine(c: number, o: number): { file: string; line: number } | null }
+      ).resolveDebugLine(pos.container_idx, pos.offset);
+      if (line !== null) return `${line.file}:${line.line + 1}`;
+    }
+    return s.debugState?.current_location ?? null;
+  });
   const { commands } = useShell();
   const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
 

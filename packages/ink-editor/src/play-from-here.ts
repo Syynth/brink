@@ -18,6 +18,10 @@ import { navigateToLocation } from "./goto-definition.js";
 import { findReferencesAt } from "./references.js";
 import { startInlineRename } from "./rename.js";
 import { elementTypeField, ElementType } from "./element-type.js";
+import {
+  executionHighlightVersion,
+  type ExecutionHighlight,
+} from "./execution-highlight.js";
 
 export interface PlayFromHereOptions {
   /** Start a session at `inkPath` (`knot` or `knot.stitch`) — the gutter ▶. */
@@ -71,6 +75,12 @@ export interface PlayFromHereOptions {
    *  moves and re-renders via {@link refreshBreakpoints}. Delivered in a
    *  microtask (never synchronously inside a CM update cycle). */
   onBreakpointsMoved?: (moves: readonly { from: number; to: number }[]) => void;
+  /** The execution highlights (W6/#3299) — shared with
+   *  `executionHighlightExtension`; THIS gutter draws the arrow half
+   *  (the ruled shared column): a filled warning arrow on a `paused`
+   *  line, a hollow accent arrow on a `frame` line, nothing for `live`.
+   *  Re-read on `refreshExecutionHighlight(view)`. */
+  getExecutionHighlights?: () => readonly ExecutionHighlight[];
 }
 
 /** One breakpoint dot (W4/#3297). `bound` = solid (resolved to a program
@@ -246,6 +256,42 @@ const dotFor = {
   unbound: unboundDot,
   disabled: disabledDot,
 } as const;
+
+/** The execution arrow (W6/#3299) — the glyph half of the paused/frame
+ * treatment, sharing the play gutter's column per the ruling. */
+class ExecArrowMarker extends GutterMarker {
+  constructor(private readonly kind: "paused" | "frame") {
+    super();
+  }
+  override eq(other: GutterMarker): boolean {
+    return other instanceof ExecArrowMarker && other.kind === this.kind;
+  }
+  override toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = `brink-exec-arrow brink-exec-arrow-${this.kind}`;
+    el.title = this.kind === "paused" ? "Paused here" : "Selected frame";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("width", "10");
+    svg.setAttribute("height", "10");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M2.5 2 L10 6 L2.5 10 Z");
+    if (this.kind === "paused") {
+      path.setAttribute("fill", "currentColor");
+    } else {
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", "1.4");
+      path.setAttribute("stroke-linejoin", "round");
+    }
+    svg.appendChild(path);
+    el.appendChild(svg);
+    return el;
+  }
+}
+const pausedArrow = new ExecArrowMarker("paused");
+const frameArrow = new ExecArrowMarker("frame");
 
 // ── Right-click target ──────────────────────────────────────────────
 
@@ -477,6 +523,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
       // ▶ keeps the glyph, breakpoint or not — the breakpoint verb there is
       // the context menu.
       if (hovered === lineNo && isHeaderLine(view.state, lineNo)) return playMarker;
+      // The execution arrow outranks the dot on its own line (the canvas
+      // draws them merged; the arrow carries the load-bearing fact —
+      // where you ARE — and the band still marks the breakpoint's line).
+      const exec = options
+        .getExecutionHighlights?.()
+        .find((h) => h.line === lineNo && h.kind !== "live");
+      if (exec !== undefined) return exec.kind === "paused" ? pausedArrow : frameArrow;
       const bp = breakpointAt(lineNo);
       if (bp !== undefined) return dotFor[bp.state];
       // Hover preview on plain lines: the click affordance made visible.
@@ -488,6 +541,8 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
         update.startState.field(hoverLineField) !== update.state.field(hoverLineField) ||
         update.startState.field(breakpointsVersionField) !==
           update.state.field(breakpointsVersionField) ||
+        update.startState.field(executionHighlightVersion, false) !==
+          update.state.field(executionHighlightVersion, false) ||
         update.startState.field(elementTypeField, false) !==
           update.state.field(elementTypeField, false)
       );
@@ -672,5 +727,18 @@ const playFromHereTheme = EditorView.baseTheme({
   },
   ".brink-breakpoint-preview": {
     backgroundColor: "rgb(var(--bs-error-rgb, 239 68 68) / 30%)",
+  },
+  ".brink-exec-arrow": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "16px",
+    height: "1lh",
+  },
+  ".brink-exec-arrow-paused": {
+    color: "var(--bs-warning, #eab308)",
+  },
+  ".brink-exec-arrow-frame": {
+    color: "var(--bs-accent, #3b82f6)",
   },
 });

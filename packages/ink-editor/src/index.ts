@@ -160,6 +160,11 @@ export {
   lineActionsAt,
   refreshBreakpoints,
 } from "./play-from-here.js";
+export {
+  executionHighlightExtension,
+  refreshExecutionHighlight,
+  type ExecutionHighlight,
+} from "./execution-highlight.js";
 export type {
   PlayFromHereOptions,
   TextMenuRequest,

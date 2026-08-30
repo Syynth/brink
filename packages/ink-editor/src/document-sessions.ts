@@ -31,6 +31,10 @@ import {
   refreshBreakpoints as refreshBreakpointsInView,
   type BreakpointGutterMarker,
 } from "./play-from-here.js";
+import {
+  refreshExecutionHighlight as refreshExecutionHighlightInView,
+  type ExecutionHighlight,
+} from "./execution-highlight.js";
 import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -165,6 +169,9 @@ export interface DocumentCallbacks {
   onToggleBreakpoint?(path: string, line: number): void;
   /** Doc edits moved `path`'s breakpoint lines (1-based old→new pairs). */
   onBreakpointsMoved?(path: string, moves: readonly { from: number; to: number }[]): void;
+  /** The execution highlights for `path` (W6/#3299) — plural: a choice
+   *  point lights several lines. Re-read on `refreshExecutionHighlight()`. */
+  getExecutionHighlights?(path: string): readonly ExecutionHighlight[];
   /** Right-click a knot/stitch declaration → open the shared symbol context
    *  menu (`path` is injected from the focused view's file). */
   onSymbolContextMenu?(
@@ -397,6 +404,14 @@ export class DocumentSessions {
   refreshBreakpoints(): void {
     for (const slot of this.slots.values()) {
       if (slot.view !== null) refreshBreakpointsInView(slot.view);
+    }
+  }
+
+  /** Re-render every open editor's execution highlight from the host's
+   *  current position(s) (W6/#3299) — call whenever the runtime moved. */
+  refreshExecutionHighlight(): void {
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) refreshExecutionHighlightInView(slot.view);
     }
   }
 
@@ -1190,6 +1205,9 @@ export class DocumentSessions {
           : undefined,
       onBreakpointsMoved: this.callbacks.onBreakpointsMoved
         ? (moves) => this.callbacks.onBreakpointsMoved?.(slot.path, moves)
+        : undefined,
+      getExecutionHighlights: this.callbacks.getExecutionHighlights
+        ? () => this.callbacks.getExecutionHighlights?.(slot.path) ?? []
         : undefined,
       // Inject the focused view's file path so the host can resolve the symbol.
       onSymbolContextMenu: this.callbacks.onSymbolContextMenu

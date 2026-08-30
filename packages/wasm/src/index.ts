@@ -60,6 +60,7 @@ import type {
   StructuralResult,
   DirMoveResult,
   DebugState,
+  DebugLine,
   DebugSourceLocation,
   ProgramAddress,
   Breakpoint,
@@ -1915,6 +1916,13 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.resolve_source_line(file, line)) as ProgramAddress | null;
   }
 
+  /** The `file:line` of a bytecode position (W6/#3299): `{ file, line }`
+   * (0-based) or `null`. What the execution highlight and the paused chip
+   * consume; degraded-gate before trusting it, like every resolver. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return JSON.parse(this.runner.resolveDebugLine(containerIdx, offset)) as DebugLine | null;
+  }
+
   /** See `StorySessionHandle.hasDebugInfo`. */
   hasDebugInfo(): boolean {
     return this.runner.has_debug_info();
@@ -2899,6 +2907,13 @@ export class StorySessionHandle {
    * line index). A UI showing 1-based numbers converts at its own edge. */
   resolveSourceLine(file: string, line: number): ProgramAddress | null {
     return JSON.parse(this.session.resolve_source_line(file, line)) as ProgramAddress | null;
+  }
+
+  /** The `file:line` of a bytecode position (W6/#3299): `{ file, line }`
+   * (0-based) or `null`. What the execution highlight and the paused chip
+   * consume; degraded-gate before trusting it, like every resolver. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return JSON.parse(this.session.resolveDebugLine(containerIdx, offset)) as DebugLine | null;
   }
 
   /** Whether the loaded program carries a `DebugInfo` section at all —

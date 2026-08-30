@@ -18,6 +18,7 @@ import type {
   Breakpoint,
   Choice,
   DebugRunOutcome,
+  DebugLine,
   DebugSourceLocation,
   DebugState,
   ProgramAddress,
@@ -251,6 +252,10 @@ export interface DebugSessionProvider extends SessionProvider {
    * discriminator between "no DebugInfo section" and "nothing at that
    * position". `false` with no live session. */
   hasDebugInfo(): boolean;
+  /** See `StorySessionHandle.resolveDebugLine`'s doc (W6/#3299): the
+   * `file:line` (0-based) + covering byte range of a position, or
+   * `null`. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null;
   /** See `StorySessionHandle.debugBreakpointAdd`'s doc. */
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number;
   /** See `StorySessionHandle.debugBreakpointRemove`'s doc. */

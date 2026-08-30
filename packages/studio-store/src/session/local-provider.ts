@@ -74,6 +74,7 @@ import type {
   Breakpoint,
   Choice,
   DebugRunOutcome,
+  DebugLine,
   DebugSourceLocation,
   ProgramAddress,
   ReplayOutcome,
@@ -523,16 +524,27 @@ export class LocalSessionProvider implements DebugSessionProvider {
   // mirrored snapshot afterward (same as `reveal()`), since a breakpoint/
   // step lands the runtime at a new position the State View must reflect.
 
+  // The resolver family runs on RENDER paths (the paused chip's selector,
+  // the editor's highlight callback), so it must never throw: a freed
+  // wasm handle raises "null pointer passed to rust" from inside the
+  // binding — a nullish check can't see it (found live: a disposed
+  // duplicate dev mount crash-looped React through exactly this).
+  // `capture()` is the same mid-teardown guard `refreshDebug` uses.
+
   resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
-    return this.session?.resolveDebugPosition(containerIdx, offset) ?? null;
+    return this.capture(() => this.session?.resolveDebugPosition(containerIdx, offset) ?? null);
   }
 
   resolveSourceLine(file: string, line: number): ProgramAddress | null {
-    return this.session?.resolveSourceLine(file, line) ?? null;
+    return this.capture(() => this.session?.resolveSourceLine(file, line) ?? null);
   }
 
   hasDebugInfo(): boolean {
-    return this.session?.hasDebugInfo() ?? false;
+    return this.capture(() => this.session?.hasDebugInfo() ?? false) ?? false;
+  }
+
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return this.capture(() => this.session?.resolveDebugLine(containerIdx, offset) ?? null);
   }
 
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {

@@ -713,6 +713,25 @@ impl StoryRunner {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Parity with `WebSession::resolve_debug_line` (W6/#3299) — see it
+    /// for the contract.
+    #[wasm_bindgen(js_name = resolveDebugLine)]
+    pub fn resolve_debug_line(&self, container_idx: u32, offset: u32) -> Result<String, JsError> {
+        let position = brink_runtime::DebugPosition {
+            container_idx,
+            offset: offset as usize,
+        };
+        let resolved = self.program.resolve_debug_line(position).map(|l| {
+            serde_json::json!({
+                "file": l.file,
+                "line": l.line,
+                "range_start": l.range_start,
+                "range_len": l.range_len,
+            })
+        });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Parity with `WebSession::resolve_source_line` (W2/#3295) — see it
     /// for the contract. `line` is 0-based; `null` when unresolvable.
     pub fn resolve_source_line(&self, file: &str, line: u32) -> Result<String, JsError> {

@@ -54,6 +54,7 @@ import {
   saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
+  isDebugSessionProvider,
   sessionDegraded,
   parseBinderOrder,
   withDictionaryWord,
@@ -64,6 +65,7 @@ import {
   CommandRegistry,
   DocumentTypeRegistry,
   EDITOR_REVEAL_COMMAND_ID,
+  encodeProgramAddress,
   LocationResolvers,
   NotificationBell,
   NotificationCenter,
@@ -153,6 +155,8 @@ import { registerStoryCommands } from "./story-commands.js";
 import { registerDebugCommands } from "./debug-commands.js";
 import { registerLocationResolvers } from "./location-resolvers.js";
 import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
+import { executionHighlightsFor } from "./execution-highlights.js";
+import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -999,6 +1003,9 @@ export async function mountStudio(
       store
         .getState()
         .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
+    // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
+    // in execution-highlights.ts, tested over a real store state.
+    getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1285,6 +1292,12 @@ export async function mountStudio(
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
   (window as unknown as Record<string, unknown>).__brinkStore = store;
+  // Dev double-mounts (StrictMode / playground remounts) make a single
+  // handle ambiguous — keep them all so a probe can tell dead from live.
+  {
+    const w = window as unknown as { __brinkStores?: unknown[] };
+    (w.__brinkStores ??= []).push(store);
+  }
   (window as unknown as Record<string, unknown>).__brinkNotifications = notifications;
   (window as unknown as Record<string, unknown>).__brinkEditorGroups = editorGroups;
 
@@ -1518,36 +1531,20 @@ export async function mountStudio(
   store.getState().initialize(project, documents);
 
   // Breakpoint dots re-render on anchor changes AND on checksum changes
-  // (bound⇄unbound is a function of degraded-ness, W4/#3297). The gutter
-  // re-reads only on this refresh — no polling.
-  {
-    let last = {
-      anchors: store.getState().sourceBreakpoints,
-      program: store.getState().programChecksum,
-      compiled: store.getState().compiledChecksum,
-    };
-    store.subscribe((st) => {
-      if (
-        st.sourceBreakpoints !== last.anchors ||
-        st.programChecksum !== last.program ||
-        st.compiledChecksum !== last.compiled
-      ) {
-        // A running-program identity change means the provider swapped or
-        // reloaded its internal session — the runtime breakpoint set must
-        // re-arm from the anchors (belt to the slice-level braces in
-        // startSession/openSession, and the net for provider-internal
-        // reloads the slice never sees).
-        const programChanged = st.programChecksum !== last.program;
-        last = {
-          anchors: st.sourceBreakpoints,
-          program: st.programChecksum,
-          compiled: st.compiledChecksum,
-        };
-        if (programChanged) store.getState()._syncSourceBreakpoints();
-        documents.refreshBreakpoints();
-      }
-    });
-  }
+  // (bound⇄unbound is a function of degraded-ness, W4/#3297); the
+  // execution highlight re-renders whenever the runtime position,
+  // paused-ness, or status moves (W6/#3299). The subscription lives in
+  // `debug-refresh-subscription.ts` — its re-entrancy discipline is
+  // load-bearing and tested there.
+  subscribeDebugRefresh(store, {
+    refreshBreakpoints: () => documents.refreshBreakpoints(),
+    refreshExecutionHighlight: () => documents.refreshExecutionHighlight(),
+    revealProgram: (containerIdx, offset) =>
+      commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
+        kind: "program",
+        address: encodeProgramAddress(containerIdx, offset),
+      }),
+  });
 
   // Restore the persisted editor settings (Settings → Editor). After initialize,
   // so the actions reach `documents`; new views read them from slotOptions, open

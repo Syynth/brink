@@ -206,6 +206,30 @@ impl WebSession {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The `file:line` of a bytecode position (W6/#3299) — the
+    /// program→source resolver reduced to the shape the execution
+    /// highlight and the paused chip consume:
+    /// `{ "file": string, "line": number }` (0-based line) or `null`
+    /// (unresolvable, synthetic, or no line index). Same degraded-gating
+    /// contract as `resolve_debug_position` — the caller compares program
+    /// identity first.
+    #[wasm_bindgen(js_name = resolveDebugLine)]
+    pub fn resolve_debug_line(&self, container_idx: u32, offset: u32) -> Result<String, JsError> {
+        let position = brink_runtime::DebugPosition {
+            container_idx,
+            offset: offset as usize,
+        };
+        let resolved = self.program.resolve_debug_line(position).map(|l| {
+            serde_json::json!({
+                "file": l.file,
+                "line": l.line,
+                "range_start": l.range_start,
+                "range_len": l.range_len,
+            })
+        });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// The program address to break on for a **line** of source (W2/#3295,
     /// runtime half #3261): `{ "container_idx": number, "offset": number }`
     /// or `null`. `line` is **0-based** — a UI showing 1-based numbers

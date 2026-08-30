@@ -56,6 +56,10 @@ import {
   type ExtractKind,
 } from "./extract-actions.js";
 import { playFromHereExtension, type BreakpointGutterMarker } from "./play-from-here.js";
+import {
+  executionHighlightExtension,
+  type ExecutionHighlight,
+} from "./execution-highlight.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
 import { proseExtension } from "./prose.js";
@@ -283,6 +287,11 @@ export interface BrinkStudioOptions {
   onToggleBreakpoint?: (line: number) => void;
   /** Doc edits moved breakpoint lines (1-based old→new pairs). */
   onBreakpointsMoved?: (moves: readonly { from: number; to: number }[]) => void;
+  /** The execution highlights (W6/#3299): bands via
+   * `executionHighlightExtension`, arrows via the play gutter's shared
+   * column. Plural — a choice point lights several lines at once.
+   * Re-read only on `refreshExecutionHighlight(view)`. */
+  getExecutionHighlights?: () => readonly ExecutionHighlight[];
   /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
    *  When provided, the editor shows a hover ▶ run-icon on knot/stitch
    *  declarations (#186). */
@@ -544,6 +553,14 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         getBreakpoints: options.getBreakpoints,
         onToggleBreakpoint: options.onToggleBreakpoint,
         onBreakpointsMoved: options.onBreakpointsMoved,
+        getExecutionHighlights: options.getExecutionHighlights,
+      }),
+    );
+  }
+  if (options.getExecutionHighlights) {
+    ideExtensions.push(
+      executionHighlightExtension({
+        getExecutionHighlights: options.getExecutionHighlights,
       }),
     );
   }

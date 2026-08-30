@@ -6982,6 +6982,68 @@ mod tests {
     }
 
     #[test]
+    fn resolve_debug_line_round_trips_with_the_line_binder_on_both_surfaces() {
+        // W6/#3299: position → file:line(+range) is the highlight's and the
+        // paused chip's road. Pin it as the inverse of resolveSourceLine:
+        // bind a line to an address, resolve the address back, and land on
+        // the same file and line with a range inside that line.
+        for (file, src, line0) in [
+            (
+                "main.ink",
+                "VAR x = 0\n=== start ===\n~ x = 5\nhello\n-> END\n",
+                2u32,
+            ),
+            (
+                "main.brink",
+                "flow main() {\n  let x = 5;\n  Hello there.\n  -> END\n}\n",
+                1u32,
+            ),
+        ] {
+            let mut s = EditorSession::new();
+            s.update_file(file, src);
+            let bytes = compiled_story_bytes_of(&mut s, file);
+            let session =
+                crate::session::WebSession::new(&bytes, None, None).expect("session constructs");
+
+            let addr: serde_json::Value =
+                serde_json::from_str(&session.resolve_source_line(file, line0).expect("resolves"))
+                    .expect("valid JSON");
+            let container =
+                u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32");
+            let offset = u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32");
+
+            let back: serde_json::Value = serde_json::from_str(
+                &session
+                    .resolve_debug_line(container, offset)
+                    .expect("serializes"),
+            )
+            .expect("valid JSON");
+            assert_eq!(back["file"], serde_json::json!(file), "{file}");
+            assert_eq!(back["line"], serde_json::json!(line0), "{file}");
+            // The range rides along (the finer-tier seam): it must sit
+            // inside the named line's span of the real source.
+            let start = usize::try_from(back["range_start"].as_u64().expect("start")).expect("us");
+            let len = usize::try_from(back["range_len"].as_u64().expect("len")).expect("us");
+            let line_start: usize = src
+                .split_inclusive('\n')
+                .take(line0 as usize)
+                .map(str::len)
+                .sum();
+            let line_end = line_start
+                + src
+                    .split_inclusive('\n')
+                    .nth(line0 as usize)
+                    .expect("line exists")
+                    .len();
+            assert!(
+                start >= line_start && start + len <= line_end,
+                "{file}: range {start}+{len} must sit inside line {line0}'s \
+                 span {line_start}..{line_end}"
+            );
+        }
+    }
+
+    #[test]
     fn source_to_program_resolvers_bind_file_line_on_the_native_surface() {
         let src = "flow main() {\n  let x = 5;\n  Hello there.\n  -> END\n}\n";
         let mut s = EditorSession::new();
