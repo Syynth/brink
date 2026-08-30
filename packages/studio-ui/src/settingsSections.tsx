@@ -30,6 +30,7 @@ import { ProseSettings } from "./ProseSettings.js";
 import { DraftSettings } from "./DraftSettings.js";
 import { KeymapSettings } from "./KeymapSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
+import { SettingsGroup } from "./SettingsRow.js";
 
 /**
  * `groupId` reaches `ProjectSection`, which mounts the real `brink.toml`
@@ -112,37 +113,41 @@ export function settingsSections(groupId: string): SettingsSection[] {
       ),
     },
     {
-      // W1/#3294: the debug-info opt-out (ruled 2026-08-29, "debug info on
-      // by default"). App scope — debuggability of *your* studio compiles
-      // is a machine preference, never a property of the project.
-      id: SETTINGS_SECTION_IDS.debugging,
-      scope: "app",
-      title: "Debugging",
-      keywords: "debug info breakpoints stepping compile section emit opt out",
-      icon: SETTINGS_ICONS.diagnostics,
-      body: <DebuggingSection />,
-    },
-    {
-      // W7/#3300 F13: the paced auto-reveal cadence (ruled). App scope —
-      // how fast lines land in *your* Player is a machine preference.
+      // Playback, debugging and external-function checking were three rail
+      // rows and are now one: they are all "how the story behaves when I
+      // press play", and three rows made the rail longer than the settings
+      // under them warranted.
+      //
+      // `SETTINGS_SECTION_IDS.debugging` and `.external` stay EXPORTED —
+      // they are a live contract for embedders — and the modal already
+      // falls back for an id it cannot find, so a door naming one lands on
+      // a real section rather than an empty pane.
+      //
+      // App scope throughout: how fast lines land in *your* Player and
+      // whether *your* studio compiles carry debug info are machine
+      // preferences, never properties of the project (ruled 2026-08-29,
+      // "debug info on by default"; W7/#3300 F13).
       id: SETTINGS_SECTION_IDS.player,
       scope: "app",
       title: "Player",
-      keywords: "player auto reveal paced fast forward speed lines",
+      keywords:
+        "player auto reveal paced fast forward speed lines debug info breakpoints " +
+        "stepping compile section emit opt out host manifest binding check severity " +
+        "diagnostics external functions",
       icon: SETTINGS_ICONS.diagnostics,
-      body: <PlayerSection />,
-    },
-    {
-      // Split out of Diagnostics by the scope switch (#3174): the `[lints]`
-      // table is written to brink.toml and shared, this flag is a studio
-      // preference that stays on your machine. They were one section with a
-      // hint explaining the difference, which the switch now states.
-      id: SETTINGS_SECTION_IDS.external,
-      scope: "app",
-      title: "External functions",
-      keywords: "host manifest binding check severity diagnostics",
-      icon: SETTINGS_ICONS.diagnostics,
-      body: <DiagnosticsSection />,
+      body: (
+        <>
+          <SettingsGroup title="Playback">
+            <PlayerSection />
+          </SettingsGroup>
+          <SettingsGroup title="Debugging">
+            <DebuggingSection />
+          </SettingsGroup>
+          <SettingsGroup title="External functions">
+            <DiagnosticsSection />
+          </SettingsGroup>
+        </>
+      ),
     },
   ];
 }
