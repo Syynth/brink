@@ -84,10 +84,20 @@ test.describe("play from here (#186)", () => {
 
     // Hover a knot header line to reveal its gutter run-icon, then click it.
     // (A hidden measurement spacer also carries the class, so target `:visible`.)
+    // Re-hover under a poll: a single synthetic hover can land before the
+    // header classification / hover machinery is ready (flaked on CI), and
+    // nothing re-fires it — the poll is the honest "user wiggles the mouse".
     const header = page.locator(".cm-line").filter({ hasText: /^===/ }).first();
-    await header.hover();
     const icon = page.locator(".brink-play-gutter-icon:visible").first();
-    await expect(icon).toBeVisible();
+    await expect
+      .poll(
+        async () => {
+          await header.hover();
+          return icon.isVisible();
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
     await icon.click();
 
     await expect
