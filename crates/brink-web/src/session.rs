@@ -1285,6 +1285,57 @@ mod debug_control_tests {
         );
     }
 
+    // A line step that LANDS on an armed breakpoint must claim the hit
+    // (found live in the studio: the reveal stopped exactly at the armed
+    // address with reason "step", the resume's past-entry rule then
+    // skipped it, and the breakpoint could never fire under the unified
+    // line-stepping reveal).
+    #[test]
+    fn a_line_step_landing_on_a_breakpoint_reports_the_breakpoint() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Arm on `Second line.` (0-based 3), then line-step from the start.
+        let addr = json(
+            &session
+                .resolve_source_line("main.ink", 3)
+                .expect("resolves"),
+        );
+        let bp = session.debug_breakpoint_add(
+            u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32"),
+            u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32"),
+            None,
+        );
+
+        let mut hit = false;
+        for _ in 0..6 {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            if step["reason"]["type"] == serde_json::json!("breakpoint") {
+                assert_eq!(step["reason"]["id"], serde_json::json!(bp));
+                assert_eq!(
+                    step["position"],
+                    serde_json::json!({
+                        "container_idx": addr["container_idx"],
+                        "offset": addr["offset"],
+                    }),
+                    "the hit must be AT the armed address"
+                );
+                hit = true;
+                break;
+            }
+            assert_ne!(
+                step["reason"]["type"],
+                serde_json::json!("terminal"),
+                "stepped to the end without the breakpoint ever claiming a stop"
+            );
+        }
+        assert!(hit, "line-stepping across an armed address must report it");
+    }
+
     // The drain consumes the SAME cursor the journaled road delivers from
     // — a line surfaced by a debug advance must never be re-delivered by a
     // later `continue_single` (the double-line half of the coherence bug).

@@ -2358,9 +2358,29 @@ impl<R: StoryRng> Story<R> {
             };
             let stop = depth_ok && line_ok;
             if stop {
+                let position = Self::position_of(&flow.flow);
+                // A step that LANDS on an armed breakpoint reports the
+                // BREAKPOINT, not the step (GDB's own behavior). Reporting
+                // `Step` here made the breakpoint silently unhittable by
+                // line-stepping (found live in the W5 studio review): the
+                // next advance resumes FROM this address, where the
+                // past-entry rule rightly skips it — so no call ever got
+                // to claim the hit.
+                if let Some(pos) = position
+                    && let Some(bp) = breakpoints.hit(pos)
+                {
+                    return Ok(crate::DebugRunOutcome {
+                        reason: DebugStopReason::Breakpoint {
+                            id: bp.id,
+                            name: bp.name.clone(),
+                        },
+                        position,
+                        depth: depth_after,
+                    });
+                }
                 return Ok(crate::DebugRunOutcome {
                     reason: DebugStopReason::Step,
-                    position: Self::position_of(&flow.flow),
+                    position,
                     depth: depth_after,
                 });
             }

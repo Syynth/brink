@@ -160,6 +160,24 @@ describe("unified drive loop (W5/#3298)", () => {
     ]);
   });
 
+  it("session creation re-arms the anchors on the fresh wasm session", () => {
+    // Found live (W5 review): Run swaps the provider's internal session,
+    // the runtime breakpoint set dies with the old one, and a solid
+    // gutter dot sat over an EMPTY set — a breakpoint that never hits.
+    // startSession/openSession must re-sync after provider.start().
+    const store = createStudioStore();
+    const sync = vi.fn();
+    store.setState({ _syncSourceBreakpoints: sync });
+
+    store.getState().startSession(new Uint8Array([1, 2, 3]));
+    expect(sync).toHaveBeenCalled();
+
+    sync.mockClear();
+    store.setState({ storyBytes: new Uint8Array([1, 2, 3]) });
+    store.getState().openSession({ label: "secondary" });
+    expect(sync).toHaveBeenCalled();
+  });
+
   it("restart abandons the pause point", () => {
     const session = scriptedSession();
     const { store } = bind(session);

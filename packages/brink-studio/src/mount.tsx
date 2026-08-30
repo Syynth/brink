@@ -1284,6 +1284,7 @@ export async function mountStudio(
 
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
+  (window as unknown as Record<string, unknown>).__brinkStore = store;
   (window as unknown as Record<string, unknown>).__brinkNotifications = notifications;
   (window as unknown as Record<string, unknown>).__brinkEditorGroups = editorGroups;
 
@@ -1531,11 +1532,18 @@ export async function mountStudio(
         st.programChecksum !== last.program ||
         st.compiledChecksum !== last.compiled
       ) {
+        // A running-program identity change means the provider swapped or
+        // reloaded its internal session — the runtime breakpoint set must
+        // re-arm from the anchors (belt to the slice-level braces in
+        // startSession/openSession, and the net for provider-internal
+        // reloads the slice never sees).
+        const programChanged = st.programChecksum !== last.program;
         last = {
           anchors: st.sourceBreakpoints,
           program: st.programChecksum,
           compiled: st.compiledChecksum,
         };
+        if (programChanged) store.getState()._syncSourceBreakpoints();
         documents.refreshBreakpoints();
       }
     });
