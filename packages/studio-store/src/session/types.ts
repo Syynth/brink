@@ -354,6 +354,12 @@ export interface DebugSessionProvider extends SessionProvider {
    * terminal stop comes first. The crossed line is IN the outcome's
    * `lines` (no one-advance lag, #3321). Needs no debug line info. */
   debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
+  /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —
+   * a global. `false` = refused with nothing written. */
+  editGlobal(name: string, input: string): boolean;
+  /** Live value editing — a frame local (snapshot's innermost-first
+   * frame index + slot). Same refusal contract. */
+  editTemp(frameIdx: number, slot: number, input: string): boolean;
   /** The pause verb (W5/#3298, ruled: pause/resume is first-class): the
    * session enters the paused state at its current boundary — Continue
    * (`debugRunToLine`) delivers the next content line and resumes play;

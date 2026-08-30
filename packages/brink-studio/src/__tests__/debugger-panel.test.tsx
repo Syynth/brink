@@ -213,6 +213,138 @@ describe("Debugger panel (W8/#3301)", () => {
     expect(remove).toHaveBeenCalledWith("bp1");
   });
 
+  // ── W16/#3309: live value editing ──────────────────────────────────
+  function editableStore(overrides: Record<string, unknown> = {}) {
+    const store = createStudioStore();
+    const editGlobal = vi.fn(() => true);
+    const editTemp = vi.fn(() => true);
+    const provider = {
+      kind: "local",
+      capabilities: new Set(["debug"]),
+      getSnapshot: () => ({
+        status: "running",
+        transcript: [],
+        choices: [],
+        debugState: null,
+        paused: true,
+        reloadedAt: null,
+        debugOutcome: null,
+        auto: false,
+        programChecksum: null,
+        programModel: null,
+        programInkt: null,
+      }),
+      subscribe: () => () => {},
+      dispose: () => {},
+      editGlobal,
+      editTemp,
+    };
+    store.getState()._bindProvider(provider as never);
+    store.setState({
+      sessionStatus: "running",
+      sessionPaused: true,
+      debugState: debugState(),
+      ...overrides,
+    });
+    return { store, editGlobal, editTemp };
+  }
+
+  it("a paused global edits inline: Enter commits through debugEditGlobal", () => {
+    const { store, editGlobal } = editableStore();
+    mount(store);
+
+    const goldValue = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12",
+    ) as HTMLElement;
+    expect(goldValue, "gold's value is click-to-edit while paused").toBeTruthy();
+    act(() => goldValue.click());
+
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    expect(input).not.toBeNull();
+    input!.value = "40";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(editGlobal).toHaveBeenCalledWith("gold", "40");
+    // Committed: the input closes.
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+  });
+
+  it("a refused edit red-shakes and keeps the input; Esc cancels", () => {
+    const { store, editGlobal } = editableStore();
+    editGlobal.mockReturnValue(false);
+    mount(store);
+
+    const goldValue = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12",
+    ) as HTMLElement;
+    act(() => goldValue.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    input!.value = "abc";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    // Refused: shake class on, input stays.
+    expect(host?.querySelector(".dp-value-input")?.className).toContain("dp-shake");
+    act(() => {
+      host
+        ?.querySelector(".dp-value-input")
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+  });
+
+  it("a local edits through debugEditTemp with the frame index + slot", () => {
+    const { store, editTemp } = editableStore();
+    mount(store);
+
+    // Top frame's local `price` (slot 0) renders as an editable scalar.
+    const price = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "6",
+    ) as HTMLElement;
+    expect(price, "price is click-to-edit").toBeTruthy();
+    act(() => price.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    input!.value = "9";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(editTemp).toHaveBeenCalledWith(0, 0, "9");
+  });
+
+  it("editing is paused-only, and locals lock at a choice stop", () => {
+    // Not paused: nothing is editable.
+    const running = editableStore({ sessionPaused: false });
+    mount(running.store);
+    const off = host?.querySelectorAll(".dp-editable-off") ?? [];
+    expect(off.length).toBeGreaterThan(0);
+    act(() => (off[0] as HTMLElement).click());
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Paused at a choice stop: globals edit, locals lock (choosing
+    // restores the choice's captured thread — the edit would be lost).
+    const atChoices = editableStore({
+      debugState: debugState({ status: "waiting_for_choice" }),
+    });
+    mount(atChoices.store);
+    const price = Array.from(host?.querySelectorAll(".dp-editable-off") ?? []).find(
+      (el) => el.textContent === "6",
+    );
+    expect(price, "the local is locked at a choice stop").toBeTruthy();
+    const gold = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12" && !el.className.includes("dp-editable-off"),
+    );
+    expect(gold, "globals stay editable at a choice stop").toBeTruthy();
+  });
+
   it("disable-all / clear-all header actions drive every anchor", () => {
     const store = createStudioStore();
     store.setState({

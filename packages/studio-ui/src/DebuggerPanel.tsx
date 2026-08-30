@@ -16,7 +16,7 @@
  * their own work items. Placeholders keep StateView's honesty: no
  * session → start affordance; no debug info → names the App setting.
  */
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   EDITOR_REVEAL_COMMAND_ID,
   encodeProgramAddress,
@@ -25,12 +25,112 @@ import {
 import { DEFAULT_SESSION_ID, isDebugSessionProvider } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { DebugValueView } from "./DebugValueView.js";
-import type { DebugFrame } from "@brink/wasm-types";
+import type { DebugFrame, DebugValue } from "@brink/wasm-types";
+
+/** Seed text for editing a scalar local — the display form the parse
+ * road accepts back (strings quoted, matching the panel's rendering). */
+function scalarSeed(value: DebugValue): string | null {
+  switch (value.type) {
+    case "int":
+    case "float":
+      return String(value.value);
+    case "bool":
+      return value.value ? "true" : "false";
+    case "string":
+      return `"${value.value}"`;
+    default:
+      return null; // lists/structs/etc. stay read-only in v1 (RULED)
+  }
+}
+
+/** A global's display string, when it reads as an editable scalar. */
+function globalIsScalar(display: string): boolean {
+  return /^-?\d+(\.\d+)?$|^true$|^false$|^".*"$/s.test(display);
+}
+
+/**
+ * Live value editing (W16/#3309, RULED — paused-only, scalars only):
+ * click → inline mono input; Enter commits, Esc cancels; a refused edit
+ * (parse/type failure — the wasm boundary checks against the CURRENT
+ * type) red-shakes and keeps the input; a committed one closes and
+ * flashes the value.
+ */
+function EditableScalar({
+  display,
+  disabled,
+  disabledReason,
+  commit,
+}: {
+  display: string;
+  disabled: boolean;
+  disabledReason: string;
+  commit: (input: string) => boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [shake, setShake] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  if (!editing) {
+    return (
+      <span
+        className={
+          "dp-editable" +
+          (disabled ? " dp-editable-off" : "") +
+          (flash ? " dp-edited-flash" : "")
+        }
+        title={disabled ? disabledReason : "Click to edit — Enter commits, Esc cancels"}
+        onClick={() => {
+          if (!disabled) setEditing(true);
+        }}
+      >
+        {display}
+      </span>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      className={"dp-value-input sv-mono" + (shake ? " dp-shake" : "")}
+      defaultValue={display}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          if (commit(e.currentTarget.value)) {
+            setEditing(false);
+            setFlash(true);
+            if (flashTimer.current) clearTimeout(flashTimer.current);
+            flashTimer.current = setTimeout(() => setFlash(false), 900);
+          } else {
+            setShake(true);
+          }
+        } else if (e.key === "Escape") {
+          setEditing(false);
+        }
+      }}
+      onAnimationEnd={() => setShake(false)}
+      onBlur={() => setEditing(false)}
+    />
+  );
+}
 
 /** One frame's named locals — unchanged from StateView (#3140); see the
  * original tri-state doc: `undefined` = no debug info (says so), `[]` =
- * genuinely none (renders nothing), non-empty = names + live values. */
-function FrameLocals({ frame }: { frame: DebugFrame }) {
+ * genuinely none (renders nothing), non-empty = names + live values.
+ * W16: scalar values are click-to-edit while paused — except at a choice
+ * stop, where choosing restores the choice's captured thread and would
+ * silently overwrite the edit (measured; see the provider's doc). */
+function FrameLocals({
+  frame,
+  frameIdx,
+  editable,
+  editDisabledReason,
+}: {
+  frame: DebugFrame;
+  frameIdx: number;
+  editable: boolean;
+  editDisabledReason: string;
+}) {
+  const debugEditTemp = useStudioStore((s) => s.debugEditTemp);
   if (frame.locals === undefined) {
     return frame.temps > 0 ? (
       <p className="sv-locals-none sv-dim">no debug info for this frame</p>
@@ -41,14 +141,26 @@ function FrameLocals({ frame }: { frame: DebugFrame }) {
   return (
     <table className="sv-locals">
       <tbody>
-        {frame.locals.map((l) => (
-          <tr key={l.slot}>
-            <td className="sv-key">{l.name}</td>
-            <td className="sv-val sv-mono">
-              <DebugValueView value={l.value} />
-            </td>
-          </tr>
-        ))}
+        {frame.locals.map((l) => {
+          const seed = scalarSeed(l.value);
+          return (
+            <tr key={l.slot}>
+              <td className="sv-key">{l.name}</td>
+              <td className="sv-val sv-mono">
+                {seed === null ? (
+                  <DebugValueView value={l.value} />
+                ) : (
+                  <EditableScalar
+                    display={seed}
+                    disabled={!editable}
+                    disabledReason={editDisabledReason}
+                    commit={(input) => debugEditTemp(frameIdx, l.slot, input)}
+                  />
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -124,6 +236,7 @@ function DebuggerPanelInner() {
   const openFlow = useStudioStore((s) => s.openFlow);
   const closeSession = useStudioStore((s) => s.closeSession);
   const selectedFrameIdx = useStudioStore((s) => s.selectedFrameIdx);
+  const debugEditGlobal = useStudioStore((s) => s.debugEditGlobal);
   const selectFrame = useStudioStore((s) => s.selectFrame);
   const sourceBreakpoints = useStudioStore((s) => s.sourceBreakpoints);
   const breakpointSetEnabled = useStudioStore((s) => s.breakpointSetEnabled);
@@ -353,7 +466,16 @@ function DebuggerPanelInner() {
             <p className="dp-subhead sv-dim">
               locals — {selectedFrame.location ?? selectedFrame.kind}
             </p>
-            <FrameLocals frame={selectedFrame} />
+            <FrameLocals
+              frame={selectedFrame}
+              frameIdx={effectiveFrameIdx}
+              editable={paused && debugState.status !== "waiting_for_choice"}
+              editDisabledReason={
+                !paused
+                  ? "Pause to edit values (RULED: editing is paused-only)"
+                  : "Locals can't be edited at a choice stop — choosing restores the choice's captured thread, which would overwrite the edit"
+              }
+            />
           </>
         ) : (
           <p className="sv-empty">no frame</p>
@@ -367,7 +489,18 @@ function DebuggerPanelInner() {
               {debugState.globals.map((g) => (
                 <tr key={g.name} className={changedGlobals.has(g.name) ? "sv-changed-row" : ""}>
                   <td className="sv-key">{g.name}</td>
-                  <td className="sv-val sv-mono">{g.value}</td>
+                  <td className="sv-val sv-mono">
+                    {globalIsScalar(g.value) ? (
+                      <EditableScalar
+                        display={g.value}
+                        disabled={!paused}
+                        disabledReason="Pause to edit values (RULED: editing is paused-only)"
+                        commit={(input) => debugEditGlobal(g.name, input)}
+                      />
+                    ) : (
+                      g.value
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -4479,3 +4479,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Everything the studio persists for the author (save slots, their transcripts) serializes as human-readable JSON. The binary `.brkt`/`.inkb` codecs remain the shipping-game formats; the wasm boundary exposes the structural transcript as JSON for the studio.
 - **WHY:** Maintainer: "binary formats are for shipping games" — authoring-side artifacts should be as human-readable (inspectable, diffable, hand-fixable) as possible.
+
+## Dead-end menu items gate on capability, not notify-on-click
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** "Reveal in Program Explorer" (and by extension any context-menu item whose action can only work under a live session) is *omitted* from the menu when no session can answer, rather than shown and failing with a notification on click. Implemented as a per-open presence predicate (`canRevealInstructions`) the host wires to session state.
+- **WHY:** The source→address resolver runs through the live session's program; with no session the item is a guaranteed dead end. An item that can never work is worse than no item.

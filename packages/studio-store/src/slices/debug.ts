@@ -160,6 +160,11 @@ export interface DebugSlice {
    * delivered — or a breakpoint/choices/terminal stop — and resume play.
    * Same update/refresh contract as `debugRun`. */
   debugRunToLine(budgetCeiling?: number): void;
+  /** Live value editing (W16/#3309): commit an edit to a global. Returns
+   * whether it landed — `false` drives the panel's red-shake. */
+  debugEditGlobal(name: string, input: string): boolean;
+  /** Live value editing: commit an edit to the selected frame's local. */
+  debugEditTemp(frameIdx: number, slot: number, input: string): boolean;
   /**
    * Whether this editor session compiles with the D6 `DebugInfo` section
    * (#3229). **ON by default since 2026-08-29** (W1/#3294, "debug info on
@@ -521,6 +526,22 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
     const outcome = provider.debugRunToLine(budgetCeiling);
     set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
     get()._refreshDebugState();
+  },
+
+  debugEditGlobal(name, input) {
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return false;
+    const ok = provider.editGlobal(name, input);
+    if (ok) get()._refreshDebugState();
+    return ok;
+  },
+
+  debugEditTemp(frameIdx, slot, input) {
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return false;
+    const ok = provider.editTemp(frameIdx, slot, input);
+    if (ok) get()._refreshDebugState();
+    return ok;
   },
 
   _refreshDebugCapability() {

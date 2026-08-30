@@ -777,6 +777,38 @@ export class LocalSessionProvider implements DebugSessionProvider {
     return outcome;
   }
 
+  /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —
+   * a GLOBAL. Enforces the paused gate here (the runtime seam itself
+   * doesn't care); `false` = refused, nothing written (the panel's
+   * red-shake). A successful edit refreshes the debug mirror so the
+   * changed-row highlight lights. */
+  editGlobal(name: string, input: string): boolean {
+    if (!this.session || !this.paused) return false;
+    const ok = this.capture(() => this.session?.debugEditGlobal(name, input)) ?? false;
+    if (ok) {
+      this.refreshDebug();
+      this.emit();
+    }
+    return ok;
+  }
+
+  /** Live value editing — a frame LOCAL, addressed by the snapshot's
+   * innermost-first frame index + slot. Same paused gate and refusal
+   * contract as `editGlobal`. The panel additionally disables locals at
+   * `waiting_for_choice` (choosing restores the choice's captured thread,
+   * which would silently overwrite the edit — measured in brink-web's
+   * value_edit tests). */
+  editTemp(frameIdx: number, slot: number, input: string): boolean {
+    if (!this.session || !this.paused) return false;
+    const ok =
+      this.capture(() => this.session?.debugEditTemp(frameIdx, slot, input)) ?? false;
+    if (ok) {
+      this.refreshDebug();
+      this.emit();
+    }
+    return ok;
+  }
+
   /** Capture the durable game state (W14/#3307) — `null` without a live
    * session (the wasm handle throws through `capture`'s guard). */
   saveState(): SaveState | null {

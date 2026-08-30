@@ -3056,6 +3056,27 @@ export class StorySessionHandle {
     return JSON.parse(this.session.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
   }
 
+  /** Live value editing (W16/#3309, RULED — scalars, paused-only at the
+   * panel): parse `input` against the GLOBAL's current type and commit
+   * via the observed write path. `false` = refused (unknown global,
+   * non-scalar, or the input doesn't parse as its type) with NO write —
+   * the panel's red-shake signal. An edit can never change a value's
+   * type. */
+  debugEditGlobal(name: string, input: string): boolean {
+    return this.session.debug_edit_global(name, input);
+  }
+
+  /** Live value editing for a frame LOCAL (W16/#3309): same contract as
+   * {@link debugEditGlobal}, addressed by the debug snapshot's
+   * innermost-first frame index plus the local's `slot`. Note: at a
+   * choice stop the pending choices carry captured thread snapshots, and
+   * choosing restores that capture — a local edited there is overwritten;
+   * the panel disables local editing at `waiting_for_choice` for exactly
+   * this reason. */
+  debugEditTemp(frameIdx: number, slot: number, input: string): boolean {
+    return this.session.debug_edit_temp(frameIdx, slot, input);
+  }
+
   /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
    * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
    * artifact carries no line index. Same journal-bypass contract as

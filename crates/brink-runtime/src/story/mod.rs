@@ -1131,6 +1131,48 @@ impl<R: StoryRng> Story<R> {
         self.build_debug_snapshot(&self.default, &self.default_context)
     }
 
+    /// Read one temp slot in a call frame of the default flow (W16/#3309
+    /// value editing — the type-check source for an edit). `frame_idx`
+    /// addresses the SNAPSHOT's `call_stack` ordering — innermost
+    /// (current) frame first, matching [`DebugFrame`](crate::DebugFrame)
+    /// — not the raw stack order. `None` when the frame or slot doesn't
+    /// exist.
+    #[must_use]
+    pub fn debug_temp(&self, frame_idx: usize, slot: u16) -> Option<&Value> {
+        let call_stack = &self.default.flow.current_thread().call_stack;
+        let depth = call_stack.len();
+        let stack_idx = depth.checked_sub(1)?.checked_sub(frame_idx)?;
+        call_stack.get(stack_idx)?.temps.get(slot as usize)
+    }
+
+    /// Set one temp slot in a call frame of the default flow — the
+    /// set-temp-in-frame debug seam (W16/#3309, RULED: live value editing,
+    /// paused-only at the studio layer; the runtime itself only requires
+    /// the frame to exist). Same innermost-first `frame_idx` addressing as
+    /// [`Self::debug_temp`]. Returns whether the write landed. The slot
+    /// must already exist (`DeclareTemp` ran) — editing never allocates.
+    ///
+    /// Type discipline is the CALLER's job (the wasm boundary parses the
+    /// author's input against the slot's current type); this seam writes
+    /// whatever it is given, like the VM's own `SetTemp`.
+    pub fn debug_set_temp(&mut self, frame_idx: usize, slot: u16, value: Value) -> bool {
+        let call_stack = &mut self.default.flow.current_thread_mut().call_stack;
+        let depth = call_stack.len();
+        let Some(stack_idx) = depth.checked_sub(1).and_then(|d| d.checked_sub(frame_idx)) else {
+            return false;
+        };
+        match call_stack
+            .get_mut(stack_idx)
+            .and_then(|frame| frame.temps.get_mut(slot as usize))
+        {
+            Some(target) => {
+                *target = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// A debug snapshot of a named shared flow (#200), built against the shared
     /// `default_context` — so its globals / visit counts match the default
     /// flow's, while its call stack + temps are the flow's own. Falls back to a

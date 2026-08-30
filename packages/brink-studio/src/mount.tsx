@@ -1049,6 +1049,10 @@ export async function mountStudio(
         ensureToolWindowOpen(shellLayout, "program");
       }
     },
+    // Presence gate (maintainer feedback, W16 round): the source→address
+    // road is the LIVE session's resolver, so with no session the item
+    // would be a dead end — omit it rather than notify-on-click.
+    canRevealInstructions: () => store.getState().sessionStatus !== "none",
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>

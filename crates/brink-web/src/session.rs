@@ -851,6 +851,50 @@ impl WebSession {
         serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Live value editing (W16/#3309, RULED — paused-only at the panel,
+    /// scalars only in v1): parse the author's input against a GLOBAL's
+    /// current type and commit via `Story::set_variable` — the observed
+    /// write path, so wake checks (and W18's watchpoints, when they land)
+    /// see the edit. Returns `false` — no write — when the global doesn't
+    /// exist, its current value isn't a scalar, or the input doesn't
+    /// parse as its type (the panel's red-shake signal).
+    pub fn debug_edit_global(&self, name: &str, input: &str) -> Result<bool, JsError> {
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let Some(parsed) = session
+            .story()
+            .variable(name)
+            .and_then(|current| parse_scalar_edit(current, input))
+        else {
+            return Ok(false);
+        };
+        Ok(session.story_mut().set_variable(name, parsed))
+    }
+
+    /// Live value editing for a frame LOCAL (W16/#3309): parse the input
+    /// against the temp slot's current type and commit through the
+    /// `debug_set_temp` seam. `frame_idx` uses the debug snapshot's
+    /// innermost-first `call_stack` ordering (the panel's own indices).
+    /// Same `false`-means-refused contract as [`Self::debug_edit_global`].
+    pub fn debug_edit_temp(&self, frame_idx: u32, slot: u16, input: &str) -> Result<bool, JsError> {
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let Some(parsed) = session
+            .story()
+            .debug_temp(frame_idx as usize, slot)
+            .and_then(|current| parse_scalar_edit(current, input))
+        else {
+            return Ok(false);
+        };
+        Ok(session
+            .story_mut()
+            .debug_set_temp(frame_idx as usize, slot, parsed))
+    }
+
     /// Export the session's structural transcript as JSON (RULED
     /// 2026-08-30, "Studio saves carry the structural transcript"):
     /// `OutputPart`s — `LineRef`s + slots, never resolved text — plus the
@@ -1137,6 +1181,39 @@ impl WebSession {
 /// Widen a host-set `i32` RNG seed to the journal's advisory `Option<u64>`
 /// metadata field, preserving the bit pattern (not the numeric sign) so a
 /// negative seed round-trips exactly rather than lossily reinterpreting sign.
+/// Parse an author-typed edit against a value's CURRENT type (W16/#3309
+/// value editing — scalars only in v1, RULED). `None` = refused: the
+/// current value isn't a scalar, or the input doesn't parse as its type.
+/// The edit can never change a value's type — an int slot only accepts an
+/// int, a float slot a float (integral input included: `3` → `3.0`) — so
+/// typed-mode invariants hold across an edit. String input strips one
+/// layer of matching double quotes (the panel displays strings quoted, and
+/// the seeded input carries them back).
+fn parse_scalar_edit(current: &Value, input: &str) -> Option<Value> {
+    let trimmed = input.trim();
+    match current {
+        Value::Int(_) => trimmed.parse::<i32>().ok().map(Value::Int),
+        Value::Float(_) => trimmed
+            .parse::<f32>()
+            .ok()
+            .filter(|f| f.is_finite())
+            .map(Value::Float),
+        Value::Bool(_) => match trimmed {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        Value::String(_) => {
+            let unquoted = trimmed
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(input);
+            Some(Value::String(Arc::from(unquoted)))
+        }
+        _ => None,
+    }
+}
+
 fn seed_to_journal_u64(seed: i32) -> u64 {
     u64::from(seed.cast_unsigned())
 }
@@ -1732,6 +1809,120 @@ mod debug_control_tests {
             src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
                 .contains("Second line."),
             "debug-road provenance must cover the line's source too"
+        );
+    }
+
+    // ── W16/#3309: live value editing ───────────────────────────────────
+    //
+    // The issue's proof items: an edit is visible when the story
+    // continues; a type mismatch is refused with NO write; a frame
+    // local's edit shows in the snapshot and in later output. Parsing is
+    // typed against the CURRENT value — an edit can never change a
+    // value's type.
+    #[test]
+    fn value_edit_global_reflects_in_the_continued_story() {
+        // The interpolating line sits BEHIND a choice: at a line stop the
+        // VM has usually already buffered the next line (slots captured at
+        // push time — the #3321 commit-lag reality), so a choice point is
+        // the honest stop where an edit provably reaches the next read.
+        let src = "VAR gold = 2\n-> top\n=== top ===\nFirst.\n* [Pay] -> pay\n=== pay ===\nYou have {gold} coin.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("choices"),
+            "stopped at the choice point: {stop}"
+        );
+
+        // Refusals first — none of these may write.
+        assert!(!session.debug_edit_global("gold", "abc").expect("call ok"));
+        assert!(!session.debug_edit_global("gold", "3.5").expect("call ok"));
+        assert!(!session.debug_edit_global("missing", "1").expect("call ok"));
+
+        // The real edit commits…
+        assert!(session.debug_edit_global("gold", "12").expect("call ok"));
+        let snap = json(&session.debug_snapshot().expect("snapshot"));
+        let gold = snap["globals"]
+            .as_array()
+            .expect("globals")
+            .iter()
+            .find(|g| g["name"] == serde_json::json!("gold"))
+            .expect("gold present");
+        assert_eq!(gold["value"], serde_json::json!("12"), "{snap}");
+
+        // …and the story past the choice reads it.
+        session.choose(0).expect("choose");
+        let out = json(&session.debug_run(None).expect("continue"));
+        assert!(
+            out["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("You have 12 coin.")),
+            "the edit must reach the story's own read: {out}"
+        );
+    }
+
+    #[test]
+    fn value_edit_temp_lands_in_the_frame_and_the_story() {
+        // A temp edit needs a STATEMENT stop (`debug_step`), not a choice
+        // stop: pending choices carry captured thread snapshots, and
+        // choosing restores that thread — call stack, temps and all — so
+        // an edit made at the choice point is overwritten by the capture
+        // (measured here first). Statement stepping continues the SAME
+        // thread, and the next line's push hasn't executed yet.
+        let src = "-> top\n=== top ===\n~ temp bonus = 3\nFiller one.\nYou gain {bonus} points.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Step statements until `bonus` is live in the innermost frame.
+        let mut slot: Option<u16> = None;
+        for _ in 0..12 {
+            session.debug_step("over", None).expect("step");
+            let snap = json(&session.debug_snapshot().expect("snapshot"));
+            let found = snap["call_stack"][0]["locals"].as_array().and_then(|ls| {
+                ls.iter()
+                    .find(|l| l["name"] == serde_json::json!("bonus"))
+                    .cloned()
+            });
+            if let Some(local) = found {
+                assert_eq!(local["value"]["value"], serde_json::json!(3), "{snap}");
+                slot =
+                    Some(u16::try_from(local["slot"].as_u64().expect("slot")).expect("fits u16"));
+                break;
+            }
+        }
+        let slot = slot.expect("bonus became live within the step budget");
+
+        // Type mismatch refused; the honest edit lands; a frame that
+        // doesn't exist refuses rather than writing anywhere.
+        assert!(!session.debug_edit_temp(0, slot, "true").expect("call ok"));
+        assert!(session.debug_edit_temp(0, slot, "12").expect("call ok"));
+        assert!(!session.debug_edit_temp(9, slot, "12").expect("call ok"));
+
+        let snap2 = json(&session.debug_snapshot().expect("snapshot"));
+        let edited = snap2["call_stack"][0]["locals"]
+            .as_array()
+            .expect("locals")
+            .iter()
+            .find(|l| l["name"] == serde_json::json!("bonus"))
+            .expect("bonus still live")["value"]["value"]
+            .clone();
+        assert_eq!(edited, serde_json::json!(12), "{snap2}");
+
+        let out = json(&session.debug_run(None).expect("continue"));
+        assert!(
+            out["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("You gain 12 points.")),
+            "the temp edit must reach the story's own read: {out}"
         );
     }
 
