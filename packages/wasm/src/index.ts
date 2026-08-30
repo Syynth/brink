@@ -61,6 +61,7 @@ import type {
   DirMoveResult,
   DebugState,
   DebugSourceLocation,
+  ProgramAddress,
   Breakpoint,
   DebugRunOutcome,
   StepMode,
@@ -1842,6 +1843,36 @@ export class StoryRunnerHandle {
     ) as DebugSourceLocation | null;
   }
 
+  // ── Source→program resolvers (W2/#3295) — parity with
+  // `StorySessionHandle`'s copies below; see them for the contracts. ──
+
+  /** See `StorySessionHandle.resolveSourceRange`. */
+  resolveSourceRange(file: string, start: number, end: number): ProgramAddress | null {
+    return JSON.parse(
+      this.runner.resolve_source_range(file, start, end),
+    ) as ProgramAddress | null;
+  }
+
+  /** See `StorySessionHandle.resolveSourceLine` (`line` is 0-based). */
+  resolveSourceLine(file: string, line: number): ProgramAddress | null {
+    return JSON.parse(this.runner.resolve_source_line(file, line)) as ProgramAddress | null;
+  }
+
+  /** See `StorySessionHandle.hasDebugInfo`. */
+  hasDebugInfo(): boolean {
+    return this.runner.has_debug_info();
+  }
+
+  /** See `StorySessionHandle.sourceMatches` (tri-state; `null` = cannot tell). */
+  sourceMatches(file: string, text: string): boolean | null {
+    return JSON.parse(this.runner.source_matches(file, text)) as boolean | null;
+  }
+
+  /** See `StorySessionHandle.resolvePathAddress`. */
+  resolvePathAddress(path: string): ProgramAddress | null {
+    return JSON.parse(this.runner.resolve_path_address(path)) as ProgramAddress | null;
+  }
+
   // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
   // Parity with `StorySessionHandle`'s copy below — `LocalSessionProvider`
   // drives `StorySessionHandle`, not this type; see that copy's doc for the
@@ -2780,6 +2811,50 @@ export class StorySessionHandle {
     return JSON.parse(
       this.session.resolve_debug_position(containerIdx, offset),
     ) as DebugSourceLocation | null;
+  }
+
+  // ── Source→program resolvers (W2/#3295 — the inverse direction) ──
+  //
+  // The half a breakpoint gutter needs: source identity in, program
+  // address out. `null` is a real answer the UI must render (refuse to
+  // arm visibly), never an error to swallow; use {@link hasDebugInfo} to
+  // word the refusal honestly ("no debug info" vs "nothing on that line").
+
+  /** The program address to break on for a half-open **byte** range of
+   * `file` (#3246). `null` when the span holds no executable code or the
+   * artifact carries no `DebugInfo`. */
+  resolveSourceRange(file: string, start: number, end: number): ProgramAddress | null {
+    return JSON.parse(
+      this.session.resolve_source_range(file, start, end),
+    ) as ProgramAddress | null;
+  }
+
+  /** The program address to break on for a **0-based line** of `file`
+   * (#3261 — needs no source text; the `DebugInfo` file table carries a
+   * line index). A UI showing 1-based numbers converts at its own edge. */
+  resolveSourceLine(file: string, line: number): ProgramAddress | null {
+    return JSON.parse(this.session.resolve_source_line(file, line)) as ProgramAddress | null;
+  }
+
+  /** Whether the loaded program carries a `DebugInfo` section at all —
+   * the discriminator between "compiled without debug info" (or the
+   * App-settings opt-out, W1/#3294) and "nothing at that position". */
+  hasDebugInfo(): boolean {
+    return this.session.has_debug_info();
+  }
+
+  /** Per-file staleness: whether `text` is byte-identical to the source
+   * `file` was compiled from. `null` = cannot tell (no `DebugInfo`,
+   * unknown file, or no recorded hash) — never collapse it into "stale". */
+  sourceMatches(file: string, text: string): boolean | null {
+    return JSON.parse(this.session.source_matches(file, text)) as boolean | null;
+  }
+
+  /** The program address of a named knot/stitch/function path — name-based
+   * addressing ("break on `tavern.order`", play-from-here targets). Reads
+   * the container table; needs no `DebugInfo`. `null` for unknown paths. */
+  resolvePathAddress(path: string): ProgramAddress | null {
+    return JSON.parse(this.session.resolve_path_address(path)) as ProgramAddress | null;
   }
 
   // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──

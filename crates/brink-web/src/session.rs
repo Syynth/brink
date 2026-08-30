@@ -180,9 +180,10 @@ impl WebSession {
     /// span holds no executable code (a comment, a blank line, a line whose
     /// code folded away) — or when this artifact carries no `DebugInfo`.
     ///
-    /// `start`/`end` are a half-open **byte** range in `file`. The runtime
-    /// stores byte ranges and has no line table, so line→byte conversion
-    /// belongs to the caller, where the source text already is.
+    /// `start`/`end` are a half-open **byte** range in `file`. For the
+    /// `file:line` shape a gutter naturally has, use
+    /// [`Self::resolve_source_line`] — the `DebugInfo` file table carries a
+    /// per-file line index (#3261), so no source text is needed.
     ///
     /// `null` is a real answer a gutter must render, not an error to
     /// swallow: refusing to arm visibly beats arming a breakpoint that can
@@ -200,6 +201,74 @@ impl WebSession {
                 serde_json::json!({
                     "container_idx": p.container_idx,
                     "offset": p.offset,
+                })
+            });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// The program address to break on for a **line** of source (W2/#3295,
+    /// runtime half #3261): `{ "container_idx": number, "offset": number }`
+    /// or `null`. `line` is **0-based** — a UI showing 1-based numbers
+    /// converts at its own edge (the fencepost lives in one place per
+    /// consumer, exactly the runtime's contract).
+    ///
+    /// `null` when the artifact carries no `DebugInfo`, the file is
+    /// unknown or has no line index, or the line holds no executable code
+    /// (a comment, a blank, a line whose code folded away). Same
+    /// refuse-to-arm-visibly contract as [`Self::resolve_source_range`];
+    /// use [`Self::has_debug_info`] to tell "no section" from "nothing on
+    /// that line" when wording the refusal.
+    pub fn resolve_source_line(&self, file: &str, line: u32) -> Result<String, JsError> {
+        let resolved = self.program.resolve_source_line(file, line).map(|p| {
+            serde_json::json!({
+                "container_idx": p.container_idx,
+                "offset": p.offset,
+            })
+        });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Whether the loaded program carries a `DebugInfo` section at all
+    /// (W2/#3295; runtime #3248). The honest-refusal discriminator: every
+    /// resolver here returns `null` both for "compiled without debug info"
+    /// and for "nothing at that position", and a frontend must tell the
+    /// author which — "that line has no executable code" is a wild-goose
+    /// chase when the truth is a compiler flag (or the App-settings
+    /// opt-out, W1/#3294).
+    #[must_use]
+    pub fn has_debug_info(&self) -> bool {
+        self.program.has_debug_info()
+    }
+
+    /// Whether `text` is byte-identical to the source `file` was compiled
+    /// from (W2/#3295; runtime #3261) — the **per-file** staleness gate:
+    /// `true`/`false`, or `null` for "cannot tell" (no `DebugInfo`, file
+    /// unknown, or the compile recorded no source hash). Per-file
+    /// deliberately: one dirty file degrades debugging in that file alone,
+    /// where the whole-program `sessionDegraded` checksum degrades
+    /// everything. `null` must not be collapsed into "stale" — a hash-less
+    /// artifact would then look permanently dirty.
+    pub fn source_matches(&self, file: &str, text: &str) -> Result<String, JsError> {
+        serde_json::to_string(&self.program.source_matches(file, text))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// The program address of a named knot/stitch/function path (W2/#3295)
+    /// — `Program::definition_id_for_path` + `resolve_address` composed,
+    /// the two halves #3187 named as "both already public and can bridge
+    /// them — nothing does". `{ "container_idx": number, "offset": number }`
+    /// or `null` for an unknown path. This is name-based addressing ("break
+    /// on `tavern.order`", the launcher's play-from typeahead) — no
+    /// `DebugInfo` section required, since it reads the container table.
+    pub fn resolve_path_address(&self, path: &str) -> Result<String, JsError> {
+        let resolved = self
+            .program
+            .definition_id_for_path(path)
+            .and_then(|id| self.program.resolve_address(id))
+            .map(|(container_idx, offset)| {
+                serde_json::json!({
+                    "container_idx": container_idx,
+                    "offset": offset,
                 })
             });
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
