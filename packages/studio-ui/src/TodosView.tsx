@@ -20,9 +20,54 @@ import { lineColAt } from "@brink-lang/editor";
 import type { Diagnostic, DocumentSymbol, FileOutline } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
 import { diagnosticLocation } from "./ProblemsView.js";
+import { FilterIcon, GroupByFileIcon } from "./icons.js";
 
 /** The diagnostic code lowering assigns to `TODO:` author notes. */
 export const TODO_DIAGNOSTIC_CODE = "E189";
+
+/**
+ * A leading `(tag)` on a note, with an optional `:` after it.
+ *
+ * `TODO(audio): mix this down` reaches here as `(audio): mix this down` —
+ * the parser already takes everything after `TODO` to end of line, so the
+ * tag needs no language support, only splitting.
+ */
+const TODO_TAG_RE = /^\(\s*([^)]*?)\s*\)\s*:?\s*/;
+
+/**
+ * Split a leading `(tag)` off a note's text.
+ *
+ * `()` and `(   )` are NOT tags: an empty chip would be unlabelled and
+ * unfilterable, so the parens stay as written text instead.
+ */
+export function splitTodoTag(text: string): { tag: string | null; text: string } {
+  const m = TODO_TAG_RE.exec(text);
+  if (m === null) return { tag: null, text };
+  const tag = (m[1] ?? "").trim();
+  if (tag === "") return { tag: null, text };
+  return { tag, text: text.slice(m[0].length) };
+}
+
+/** Every tag present, in first-appearance order — the chip row's contents. */
+export function todoTags(items: readonly TodoItem[]): string[] {
+  const seen: string[] = [];
+  for (const item of items) {
+    if (item.tag !== null && !seen.includes(item.tag)) seen.push(item.tag);
+  }
+  return seen;
+}
+
+/**
+ * Notes carrying any selected tag. An empty selection means no filter —
+ * every note shows, including untagged ones.
+ */
+export function filterTodosByTag(
+  items: readonly TodoItem[],
+  selected: readonly string[],
+): TodoItem[] {
+  if (selected.length === 0) return [...items];
+  return items.filter((i) => i.tag !== null && selected.includes(i.tag));
+}
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────────
 
@@ -30,8 +75,10 @@ export interface TodoItem {
   file: string;
   start: number;
   end: number;
-  /** The note's text (diagnostic message minus the `TODO:` prefix). */
+  /** The note's text, minus the `TODO:` prefix AND any leading `(tag)`. */
   text: string;
+  /** The `TODO(tag):` tag, or null when the note carries none. */
+  tag: string | null;
   /** 1-based line when the file's source is available, else null. */
   line: number | null;
   /** Qualified containing symbol (`knot` / `knot.stitch`); null = file level. */
@@ -86,7 +133,7 @@ export function collectTodoItems(
       file: d.file,
       start: d.start,
       end: d.end,
-      text: d.message.replace(/^TODO:?\s*/, ""),
+      ...splitTodoTag(d.message.replace(/^TODO:?\s*/, "")),
       line: text === null ? null : lineColAt(text, d.start).line,
       container: containerAt(outlineByFile.get(d.file) ?? [], d.start),
     });
@@ -172,12 +219,66 @@ interface LeavingTodo {
 /** How long a removed note lingers (strikethrough) before dropping out. */
 const LEAVE_MS = 1400;
 
+/**
+ * TODOs controls, rendered by the shell in the panel's chrome header
+ * (`ToolWindowDescriptor.actions`) — the same seam Problems uses, and the
+ * reason this state lives in the store rather than in the view.
+ */
+function TodosActionsInner() {
+  const filterOpen = useStudioStore((s) => s.todosFilterOpen);
+  const grouped = useStudioStore((s) => s.todosGrouped);
+  const toggleFilter = useStudioStore((s) => s.toggleTodosFilter);
+  const toggleGrouped = useStudioStore((s) => s.toggleTodosGrouped);
+  const selected = useStudioStore((s) => s.todosSelectedTags);
+
+  return (
+    <>
+      <button
+        type="button"
+        className={"brink-binder-tool" + (filterOpen ? " active" : "")}
+        aria-pressed={filterOpen}
+        title="Filter TODOs"
+        aria-label="Filter TODOs"
+        onClick={toggleFilter}
+      >
+        <FilterIcon />
+        {/* A closed filter that is still narrowing the list would be a
+            panel hiding notes with no visible cause. Closing clears the
+            selection, so this count is only ever a live one. */}
+        {selected.length > 0 && <span className="todos-filter-count">{selected.length}</span>}
+      </button>
+      <button
+        type="button"
+        className={"brink-binder-tool" + (grouped ? " active" : "")}
+        aria-pressed={grouped}
+        title={grouped ? "Show as a flat list" : "Group by file"}
+        aria-label="Group by file"
+        onClick={toggleGrouped}
+      >
+        <GroupByFileIcon />
+      </button>
+    </>
+  );
+}
+
+export const TodosActions = memo(TodosActionsInner);
+
 function TodosViewInner() {
   const diagnostics = useStudioStore((s) => s.diagnosticsList);
   const outline = useStudioStore((s) => s.outline);
   const project = useStudioStore((s) => s._project);
   const { commands } = useShell();
+  const filterOpen = useStudioStore((s) => s.todosFilterOpen);
+  const selectedTags = useStudioStore((s) => s.todosSelectedTags);
+  const grouped = useStudioStore((s) => s.todosGrouped);
+  const toggleTag = useStudioStore((s) => s.toggleTodoTag);
   const [query, setQuery] = useState("");
+
+  // The text filter shares the collapsible row with the chips, so it
+  // shares their rule too: a closed row leaves nothing narrowing the list.
+  useEffect(() => {
+    if (!filterOpen) setQuery("");
+  }, [filterOpen]);
   const [leaving, setLeaving] = useState<LeavingTodo[]>([]);
   const prevKeyed = useRef<Map<string, TodoItem> | null>(null);
 
@@ -236,11 +337,21 @@ function TodosViewInner() {
 
   // Live and leaving items merged in (file, offset) order, then filtered
   // and grouped — a leaving row holds its old place in its old group.
-  const groups = useMemo(() => {
+  /** Every note on screen, before the tag filter — the chip row's source.
+   *  Chips come from the UNFILTERED set so selecting one cannot make the
+   *  others disappear, which would strand the selection. */
+  const visible = useMemo(() => {
     const merged = [...items, ...leaving.map((l) => l.item)];
     merged.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.start - b.start));
-    return groupTodoItems(merged.filter((i) => matchesTodoFilter(i, query)));
+    return merged.filter((i) => matchesTodoFilter(i, query));
   }, [items, leaving, query]);
+
+  const tags = useMemo(() => todoTags(visible), [visible]);
+  const shown = useMemo(
+    () => filterTodosByTag(visible, selectedTags),
+    [visible, selectedTags],
+  );
+  const groups = useMemo(() => groupTodoItems(shown), [shown]);
 
   const reveal = (file: string, start: number, end: number) => {
     commands.dispatch(
@@ -251,20 +362,69 @@ function TodosViewInner() {
 
   const isLeavingItem = (item: TodoItem) => leaving.some((l) => l.item === item);
 
+  /** One note. Shared by the grouped and flat lists so they cannot drift.
+   *  The tag renders as its own chip rather than staying in the text —
+   *  `(audio)` repeated down a column is noise, and the chip is also what
+   *  the filter is keyed on. */
+  const row = (item: TodoItem, showFile = false) => (
+    <button
+      type="button"
+      className={"todos-row" + (isLeavingItem(item) ? " is-leaving" : "")}
+      onClick={() => reveal(item.file, item.start, item.end)}
+      title={item.tag === null ? item.text : `(${item.tag}) ${item.text}`}
+    >
+      <span className="todos-mark" aria-hidden="true" />
+      {item.tag !== null && <span className="todos-row-tag">{item.tag}</span>}
+      <span className="todos-text">{item.text === "" ? "TODO" : item.text}</span>
+      {showFile && <span className="todos-row-file">{item.file}</span>}
+      {item.line !== null && <span className="todos-line">:{item.line}</span>}
+    </button>
+  );
+
   return (
     <div className="todos-view">
-      <div className="todos-filter">
-        <input
-          type="search"
-          className="todos-filter-input"
-          placeholder="Filter TODOs…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Filter TODOs"
-        />
-      </div>
+      {filterOpen && (
+        <div className="todos-filter">
+          <input
+            type="search"
+            className="todos-filter-input"
+            placeholder="Filter TODOs…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Filter TODOs"
+          />
+          {tags.length > 0 && (
+            <div className="todos-tags" role="group" aria-label="Filter by tag">
+              {tags.map((tag) => {
+                const on = selectedTags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    className={"todos-tag" + (on ? " on" : "")}
+                    aria-pressed={on}
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
       {groups.length === 0 ? (
-        <p className="todos-empty">{query.trim() === "" ? "No TODOs" : "No matching TODOs"}</p>
+        <p className="todos-empty">
+          {query.trim() === "" && selectedTags.length === 0 ? "No TODOs" : "No matching TODOs"}
+        </p>
+      ) : !grouped ? (
+        <div className="todos-list">
+          <ul className="todos-items">
+            {shown.map((item, i) => (
+              <li key={`${item.file}:${item.start}:${i}`}>{row(item, true)}</li>
+            ))}
+          </ul>
+        </div>
       ) : (
         <div className="todos-list">
           {groups.map((fileGroup) => (
@@ -293,22 +453,7 @@ function TodosViewInner() {
                   )}
                   <ul className="todos-items">
                     {group.items.map((item, ii) => (
-                      <li key={`${item.start}:${ii}`}>
-                        <button
-                          type="button"
-                          className={
-                            "todos-row" + (isLeavingItem(item) ? " is-leaving" : "")
-                          }
-                          onClick={() => reveal(item.file, item.start, item.end)}
-                          title={item.text}
-                        >
-                          <span className="todos-mark" aria-hidden="true" />
-                          <span className="todos-text">{item.text === "" ? "TODO" : item.text}</span>
-                          {item.line !== null && (
-                            <span className="todos-line">:{item.line}</span>
-                          )}
-                        </button>
-                      </li>
+                      <li key={`${item.start}:${ii}`}>{row(item)}</li>
                     ))}
                   </ul>
                 </div>

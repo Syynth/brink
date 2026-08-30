@@ -1500,7 +1500,11 @@ fn select_choice(
 /// if the handler deferred ([`ExternalResult::Pending`]), leaving the
 /// `External` frame intact for the caller to resolve out-of-band. Errors
 /// only when the handler declined and no fallback exists.
-fn resolve_external_call(
+///
+/// `pub(super)` since #3224: the `Story` debug loops resolve externals
+/// through this exact function, so debug and production stepping can
+/// never disagree about binding semantics.
+pub(super) fn resolve_external_call(
     flow: &mut Flow,
     program: &Program,
     handler: &dyn ExternalFnHandler,

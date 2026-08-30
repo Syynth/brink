@@ -39,6 +39,7 @@ export { DocumentIcon, type DocumentIconProps } from "./DocumentIcon.js";
 export { LintSettings } from "./LintSettings.js";
 export { FormattingSettings } from "./FormattingSettings.js";
 export { ProseSettings } from "./ProseSettings.js";
+export { DraftSettings } from "./DraftSettings.js";
 export { ThemePicker } from "./ThemePicker.js";
 export {
   SettingsGroup,
@@ -56,7 +57,12 @@ export {
   DEFAULT_SETTINGS_SECTION,
   SETTINGS_SECTION_IDS,
 } from "./settingsSectionIds.js";
-export { isSuppressible, suppressInFile, suppressOnLine } from "./suppressDiagnostic.js";
+export {
+  isSuppressible,
+  suppressAllInFile,
+  suppressInFile,
+  suppressOnLine,
+} from "./suppressDiagnostic.js";
 export {
   ProblemsContextMenu,
   type ProblemsMenuTarget,
@@ -158,6 +164,7 @@ export {
   type ProblemRow,
 } from "./ProblemsView.js";
 export {
+  TodosActions,
   TodosView,
   TodosBadge,
   TODO_DIAGNOSTIC_CODE,
@@ -170,6 +177,9 @@ export {
   type TodoItem,
   type TodoContainerGroup,
   type TodoFileGroup,
+  splitTodoTag,
+  todoTags,
+  filterTodosByTag,
 } from "./TodosView.js";
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
 export { PerfView } from "./PerfView.js";

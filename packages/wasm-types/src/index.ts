@@ -1335,7 +1335,11 @@ export type DebugStopReason =
    *  quietly behaving like instruction stepping, which would turn a missing
    *  line index into "why does step take four presses" instead of a legible
    *  "this build has no line info". */
-  | { type: "noLineInfo" };
+  | { type: "noLineInfo" }
+  /** A bound external's handler deferred (#3224) — the `External` frame is
+   *  intact; resolve out-of-band (`resolveExternal`), then resume with any
+   *  debug verb. */
+  | { type: "awaitingExternal" };
 
 /** The result of a `debugRun`/`debugStep` call: why it stopped, the
  *  resulting position (absent for a frame with an empty container stack,

@@ -75,6 +75,7 @@ describe("collectTodoItems", () => {
 describe("groupTodoItems", () => {
   const item = (file: string, start: number, container: string | null, text = "t"): TodoItem => ({
     file,
+    tag: null,
     start,
     end: start + 1,
     text,
@@ -106,6 +107,7 @@ describe("matchesTodoFilter", () => {
     start: 0,
     end: 1,
     text: "Minnie's letter needs a pass",
+      tag: null,
     line: 1,
     container: "start_new_game",
   };
@@ -120,7 +122,15 @@ describe("matchesTodoFilter", () => {
 
 describe("keyTodoItems", () => {
   it("keys by file + line so text edits keep the same identity", () => {
-    const a: TodoItem = { file: "a.ink", start: 0, end: 1, text: "same", line: 1, container: null };
+    const a: TodoItem = {
+      file: "a.ink",
+      start: 0,
+      end: 1,
+      text: "same",
+      tag: null,
+      line: 1,
+      container: null,
+    };
     const b: TodoItem = { ...a, start: 50, line: 3 };
     const keyed = keyTodoItems([a, b]);
     expect(keyed.size).toBe(2);
