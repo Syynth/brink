@@ -204,6 +204,8 @@ export {
   DEFAULT_SESSION_ID,
   type SessionStatus,
   type SessionSnapshot,
+  type TranscriptLine,
+  type ProvenancePoint,
   type SessionProvider,
   type SessionCapability,
   type SessionEntry,

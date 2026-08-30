@@ -30,9 +30,13 @@
   min-width: 0;
 }
 /* No pane label (removed by request — the tab already says Player); the
-   maximize control anchors the right edge instead. */
-.brink-studio .player-pane .header .toolbar .player-btn-maximize {
+   status chip anchors the right edge (spec §3: spacer · chip · Maximize),
+   capped + ellipsized so a long paused location can't widen the pane. */
+.brink-studio .player-pane .header .toolbar .player-status-chip {
   margin-left: auto;
+  max-width: 40%;
+  cursor: pointer;
+  background: transparent;
 }
 .brink-studio .player-pane .header button {
   background: var(--bs-panel-bg);
@@ -163,16 +167,92 @@
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Pause"] {
   color: var(--bs-warning);
 }
-/* The chip's home: its own strip under the toolbar, so the toolbar stays
-   compact at narrow widths (the Player artboard's own note) and the chip
-   never truncates against the transport. */
-.brink-studio .player-pane .player-status-strip {
-  padding: 4px 12px;
-  background: var(--bs-surface-bg);
-  border-bottom: 1px solid var(--bs-border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Status-chip state palette (spec §3 — the single home of stop reasons).
+   The base rule below carries the paused/warning look; each state
+   overrides the accent. */
+.brink-studio .player-status-chip.ready,
+.brink-studio .player-status-chip.ended {
+  border-color: var(--bs-border);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player-status-chip.ready .player-status-dot,
+.brink-studio .player-status-chip.ended .player-status-dot {
+  background: var(--bs-fg-muted);
+}
+.brink-studio .player-status-chip.playing {
+  border-color: var(--bs-success);
+  color: var(--bs-success);
+}
+.brink-studio .player-status-chip.playing .player-status-dot {
+  background: var(--bs-success);
+}
+.brink-studio .player-status-chip.waiting {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .player-status-chip.waiting .player-status-dot {
+  background: var(--bs-accent);
+}
+.brink-studio .player-status-chip.error {
+  border-color: var(--bs-error);
+  color: var(--bs-error);
+}
+.brink-studio .player-status-chip.error .player-status-dot {
+  background: var(--bs-error);
+}
+.brink-studio .player-status-chip.degraded {
+  border-style: dashed;
+}
+
+/* ── Line rows (W7/#3300 F13): full-width rows with a subtle alternating
+   tint so line boundaries read at a glance; hover strengthens and carries
+   the provenance chip (F9). ── */
+.brink-studio .player .player-line-row {
+  position: relative;
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin: 0 -8px;
+}
+.brink-studio .player .player-line-row:nth-child(even) {
+  background: color-mix(in srgb, var(--bs-fg) 3%, transparent);
+}
+.brink-studio .player .player-line-row:hover {
+  background: color-mix(in srgb, var(--bs-fg) 7%, transparent);
+}
+.brink-studio .player .player-line-row.kind-notice p span {
+  color: var(--bs-error);
+  font-style: normal;
+}
+.brink-studio .player .player-line-tags {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: baseline;
+}
+.brink-studio .player .player-tag-chip {
+  font-family: var(--bs-font-mono, ui-monospace, monospace);
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  background: color-mix(in srgb, var(--bs-fg) 7%, transparent);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.brink-studio .player .player-provenance-chip {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-family: var(--bs-font-mono, ui-monospace, monospace);
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  padding: 0 5px;
+  cursor: pointer;
+}
+.brink-studio .player .player-provenance-chip:hover {
+  color: var(--bs-accent);
+  border-color: var(--bs-accent);
 }
 
 .brink-studio .player-status-chip {

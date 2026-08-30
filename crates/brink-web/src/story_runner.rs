@@ -426,6 +426,7 @@ impl StoryRunner {
                 element: None,
                 choices: None,
                 name: story.pending_external_name().map(str::to_owned),
+                source: None,
             },
         };
         serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))

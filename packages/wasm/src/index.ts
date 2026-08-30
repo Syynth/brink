@@ -12,6 +12,8 @@ import init, {
   compile as wasmCompile,
   compile_fragment as wasmCompileFragment,
   program_checksum as wasmProgramChecksum,
+  program_model_of as wasmProgramModelOf,
+  program_inkt_of as wasmProgramInktOf,
   token_type_names,
   diagnostic_registry,
   token_modifier_names,
@@ -144,6 +146,20 @@ export function compile(source: string): CompileResult {
  */
 export function programChecksum(storyBytes: Uint8Array): string {
   return wasmProgramChecksum(storyBytes);
+}
+
+/**
+ * Structured `ProgramModel` for compiled `.inkb` bytes, runner-free
+ * (W7/#3300): since "no auto-start", the Program Explorer and Compiled
+ * Output are compile-bound — they must not need a running session.
+ */
+export function programModelOf(storyBytes: Uint8Array): ProgramModel {
+  return JSON.parse(wasmProgramModelOf(storyBytes)) as ProgramModel;
+}
+
+/** The `.inkt` disassembly for compiled `.inkb` bytes, runner-free. */
+export function programInktOf(storyBytes: Uint8Array): string {
+  return wasmProgramInktOf(storyBytes);
 }
 
 // ── Token legend (stateless) ────────────────────────────────────

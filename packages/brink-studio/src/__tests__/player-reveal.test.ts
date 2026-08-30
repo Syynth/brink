@@ -85,6 +85,10 @@ describe("reveal mode (#3011)", () => {
     });
     const store = storeWithSession(session);
     store.getState().setSessionAuto(true);
+    // This pin is about the BATCH road ("all at once") — the W7 paced
+    // default (F13) would pump line-by-line instead; see
+    // paced-reveal.test.ts for that mode's own pins.
+    store.getState().setSessionPaced(0);
     store.getState().revealNext();
 
     expect(session.continueToPause).toHaveBeenCalledTimes(1);

@@ -112,6 +112,7 @@ impl WebSpeculation {
                 element: None,
                 choices: None,
                 name: speculation.pending_external_name().map(str::to_owned),
+                source: None,
             },
         };
         serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))

@@ -23,6 +23,7 @@ import type {
   DebugState,
   ProgramAddress,
   ProgramModel,
+  SourceLocation,
   StepMode,
 } from "@brink/wasm-types";
 import type { StoreNotification } from "../index.js";
@@ -95,11 +96,52 @@ export function sessionDegraded(
  * reactive slice fields; `prevDebugState` (diff highlighting) is derived by the
  * store from successive snapshots — not the provider's problem (spec §3.1).
  */
+/** One transcript row (W7/#3300 — the Player's line-row model).
+ *
+ * `kind`: `"line"` = story output (tags/provenance may ride along);
+ * `"marker"` = the chosen-choice echo (`> text`); `"notice"` = a
+ * studio-side message (load/runtime errors, replay notices). */
+export interface TranscriptLine {
+  text: string;
+  kind: "line" | "marker" | "notice";
+  /** Per-line tags (`OutputLine.tags`) — the Player's tags toggle. */
+  tags: string[];
+  /** Where the line came from in the author's source (transcript
+   * provenance, spec §F9) — byte range, convert before editor use. */
+  source?: SourceLocation;
+}
+
+/** A transcript line's source, in editor terms (W7/#3300): 0-based
+ * line plus a UTF-16 code-unit span — converted from
+ * `TranscriptLine.source`'s byte range by the app boundary's registered
+ * resolver (`setSourceByteResolver`). */
+export interface ProvenancePoint {
+  line: number;
+  start: number;
+  end: number;
+}
+
+/** Story-output row helper — the shape both drive roads append. */
+export function transcriptLine(
+  text: string,
+  tags: string[] = [],
+  source?: SourceLocation,
+): TranscriptLine {
+  return { text, kind: "line", tags, ...(source ? { source } : {}) };
+}
+
+/** Studio-side message row helper (errors, notices). */
+export function transcriptNotice(text: string): TranscriptLine {
+  return { text, kind: "notice", tags: [] };
+}
+
 export interface SessionSnapshot {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   status: SessionStatus;
-  /** Append-only transcript text for the current run (today's `sessionText`). */
-  transcript: string[];
+  /** Append-only transcript for the current run — structured since
+   * W7/#3300 (line rows + tags + provenance). The slice derives the
+   * text-only `sessionText` mirror from it. */
+  transcript: TranscriptLine[];
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   choices: Choice[];
   /** Name-resolved runtime snapshot (location / globals / call stack / visits). */
@@ -217,6 +259,11 @@ export interface SessionProvider {
    * collapse what is already in the transcript.
    */
   setAuto?(auto: boolean): void;
+  /** Configure the paced auto-reveal cadence (W7/#3300 F13, RULED):
+   * with auto on and a positive delay, a reveal advances the run one
+   * line at a time in rapid succession; 0 = one batch. Optional — a
+   * provider without a paced pump ignores the setting. */
+  setPacedReveal?(delayMs: number): void;
 
   dispose(): void;
 }

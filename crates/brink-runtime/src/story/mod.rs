@@ -169,6 +169,16 @@ enum SteppedDisposition {
     Stop(crate::DebugRunOutcome),
 }
 
+/// One line handed out by [`Story::debug_drain_buffered_lines`]: text,
+/// tags, and its source location (W7/#3300 provenance — same field the
+/// production road's `OutputLine::source` carries).
+#[cfg(feature = "debug-hooks")]
+pub type DrainedLine = (
+    String,
+    alloc::vec::Vec<String>,
+    Option<brink_format::SourceLocation>,
+);
+
 /// Whether a debug run stops when the output buffer commits a line —
 /// [`Story::debug_run_to_line`]'s tier vs [`Story::debug_run`]'s free
 /// run. An enum rather than a bool so call sites read as what they do.
@@ -316,7 +326,7 @@ impl<R: StoryRng> Story<R> {
             fragments,
         )
         .into_iter()
-        .map(|(text, tags, _element)| (text, tags))
+        .map(|(text, tags, _element, _source)| (text, tags))
         .collect()
     }
 
@@ -1626,33 +1636,31 @@ impl<R: StoryRng> Story<R> {
     /// production take does; partial (uncompleted) content stays buffered
     /// untouched.
     #[cfg(feature = "debug-hooks")]
-    pub fn debug_drain_buffered_lines(
-        &mut self,
-    ) -> alloc::vec::Vec<(String, alloc::vec::Vec<String>)> {
+    pub fn debug_drain_buffered_lines(&mut self) -> alloc::vec::Vec<DrainedLine> {
         let resolver = self.resolver.as_deref();
         let mut out = alloc::vec::Vec::new();
         while self.default.flow.output.has_completed_line() {
-            let Some((text, tags, _element)) = self.default.flow.output.take_first_line(
+            let Some((text, tags, _element, source)) = self.default.flow.output.take_first_line(
                 &self.program,
                 &self.line_tables,
                 resolver,
             ) else {
                 break;
             };
-            out.push((text, tags));
+            out.push((text, tags, source));
         }
         // Mirror `advance_with_limit`'s step 2: at a yield point no more
         // output is coming, so trailing (uncommitted-newline) content is
         // flushed — this is how the line before a choice point is
         // delivered on the production road, and it must be here too.
         if self.default.status != StoryStatus::Active && self.default.flow.output.has_unread() {
-            for (text, tags, _element) in
+            for (text, tags, _element, source) in
                 self.default
                     .flow
                     .output
                     .flush_lines(&self.program, &self.line_tables, resolver)
             {
-                out.push((text, tags));
+                out.push((text, tags, source));
             }
         }
         out

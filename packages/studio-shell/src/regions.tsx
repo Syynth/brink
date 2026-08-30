@@ -384,6 +384,10 @@ export function ShellFrame() {
     <>
       {narrow && (
         <div className="studio-topbar">
+          {/* #2795: the hamburger is the mouse-discoverable route back to a
+              closed player (story.openPlayer) — the narrow tier must not
+              lose it just because the left rail is gone. */}
+          <HamburgerMenu />
           <button
             type="button"
             className="studio-iconbtn"

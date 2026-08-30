@@ -1568,6 +1568,112 @@ mod debug_control_tests {
         );
     }
 
+    /// Two-file INCLUDE fixture for the provenance tests — the shape the
+    /// studio playground actually runs (`main.ink` INCLUDE-ing the story).
+    fn debug_bytes_two_files(main: &str, other: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), main.to_string());
+        files.insert("other.ink".to_string(), other.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    // An INCLUDE-d file's lines must carry ranges in THEIR OWN file's
+    // coordinates — found live in the playground (its story is INCLUDE-d
+    // from main.ink): every provenance chip pointed hundreds of lines past
+    // the truth because the range was in include-expanded coordinates
+    // while the file name was the include target's.
+    #[test]
+    fn included_file_lines_carry_ranges_in_their_own_file() {
+        let main = "INCLUDE other.ink\n-> top\n";
+        let other = "=== top ===\nPadding one.\nPadding two.\nThe included line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes_two_files(main, other), None, None)
+            .expect("session constructs");
+
+        let mut found = false;
+        for _ in 0..6 {
+            let line = json(&session.continue_single().expect("continue_single"));
+            if line["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("The included line.")
+            {
+                let source = &line["source"];
+                assert_eq!(source["file"], serde_json::json!("other.ink"), "{line}");
+                let start =
+                    usize::try_from(source["range_start"].as_u64().expect("start")).expect("usize");
+                let end =
+                    usize::try_from(source["range_end"].as_u64().expect("end")).expect("usize");
+                assert!(
+                    end <= other.len() && other[start..end].contains("The included line."),
+                    "range {start}..{end} must be in other.ink's own coordinates \
+                     (file is {} bytes)",
+                    other.len()
+                );
+                found = true;
+                break;
+            }
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        assert!(found, "the included line never arrived");
+    }
+
+    // ── W7/#3300: transcript provenance ─────────────────────────────────
+    //
+    // Every delivered text line carries its `source` — the line-table
+    // entry's source location — on BOTH drive roads, so the Player can
+    // make each transcript row a provenance handle (hover file:line,
+    // ⌘-click reveals).
+    #[test]
+    fn delivered_lines_carry_source_provenance_on_both_roads() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Journaled road: continue_single's Line carries `source`.
+        let first = json(&session.continue_single().expect("continue_single"));
+        let source = &first["source"];
+        assert_eq!(source["file"], serde_json::json!("main.ink"), "{first}");
+        let start = source["range_start"].as_u64().expect("range_start");
+        let end = source["range_end"].as_u64().expect("range_end");
+        let text_at =
+            &src[usize::try_from(start).expect("usize")..usize::try_from(end).expect("usize")];
+        assert!(
+            text_at.contains("First line."),
+            "the range must cover the line's own source text, got {text_at:?}"
+        );
+
+        // Debug road: a drained line carries the same field.
+        let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        let lines = stop["lines"].as_array().expect("lines");
+        let second = lines
+            .iter()
+            .find(|l| l["text"].as_str().unwrap_or("").contains("Second line."))
+            .expect("the crossed line is in the outcome");
+        assert_eq!(second["source"]["file"], serde_json::json!("main.ink"));
+        let s2 = second["source"]["range_start"].as_u64().expect("start");
+        let e2 = second["source"]["range_end"].as_u64().expect("end");
+        assert!(
+            src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
+                .contains("Second line."),
+            "debug-road provenance must cover the line's source too"
+        );
+    }
+
     #[test]
     fn breakpoint_add_remove_list_roundtrip() {
         let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";

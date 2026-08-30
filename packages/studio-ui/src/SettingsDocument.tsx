@@ -229,6 +229,55 @@ export function saveDebugSettings(
   }
 }
 
+// ── Player persistence (W7/#3300 F13) ───────────────────────────────
+
+export const PLAYER_STORAGE_KEY = "brink-studio.player.v1";
+
+export interface PlayerSettings {
+  /** Paced auto-reveal cadence in ms (RULED: paced by default, ~150 ms).
+   *  0 = "all at once" (one batch per reveal). */
+  pacedRevealMs: number;
+}
+
+const DEFAULT_PLAYER: PlayerSettings = { pacedRevealMs: 150 };
+
+/** Load persisted player settings. Never throws; defaults on garbage. */
+export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSettings {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(PLAYER_STORAGE_KEY);
+  } catch {
+    return DEFAULT_PLAYER;
+  }
+  if (raw === null || raw === "") return DEFAULT_PLAYER;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_PLAYER;
+  }
+  const obj = parsed as { pacedRevealMs?: unknown } | null;
+  const ms = obj?.pacedRevealMs;
+  return {
+    pacedRevealMs:
+      typeof ms === "number" && Number.isFinite(ms) && ms >= 0
+        ? Math.round(ms)
+        : DEFAULT_PLAYER.pacedRevealMs,
+  };
+}
+
+/** Persist player settings. Storage failures degrade to in-session. */
+export function savePlayerSettings(
+  storage: Pick<Storage, "setItem">,
+  settings: PlayerSettings,
+): void {
+  try {
+    storage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Quota/denied storage — the setting still applies for this session.
+  }
+}
+
 // ── Editor persistence ──────────────────────────────────────────────
 
 export const EDITOR_STORAGE_KEY = "brink-studio.editor.v1";
@@ -477,6 +526,30 @@ export function DebuggingSection() {
         htmlFor={debugInfoId}
       >
         <SettingsToggle id={debugInfoId} checked={debugInfoEnabled} onChange={onChange} />
+      </SettingsRow>
+    </div>
+  );
+}
+
+export function PlayerSection() {
+  const pacedMs = useStudioStore((s) => s.sessionPacedMs);
+  const setSessionPaced = useStudioStore((s) => s.setSessionPaced);
+  const pacedId = useId();
+
+  const onModeChange = (paced: boolean): void => {
+    const ms = paced ? 150 : 0;
+    setSessionPaced(ms);
+    savePlayerSettings(window.localStorage, { pacedRevealMs: ms });
+  };
+
+  return (
+    <div className="settings-section">
+      <SettingsRow
+        title="Auto reveal: paced"
+        description="With the fast-forward toggle on, a reveal delivers the run one line at a time in rapid succession (paced), instead of dropping the whole chunk at once. Pausing or hitting a breakpoint stops the run instantly."
+        htmlFor={pacedId}
+      >
+        <SettingsToggle id={pacedId} checked={pacedMs > 0} onChange={onModeChange} />
       </SettingsRow>
     </div>
   );

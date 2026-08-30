@@ -41,6 +41,8 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
+import type { ProvenancePoint, TranscriptLine } from "../session/types.js";
+export type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 
 // Re-exported for back-compat: consumers import these from the store root.
 export {
@@ -67,8 +69,36 @@ export { FlowSessionProvider } from "../session/flow-provider.js";
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
-  /** Append-only transcript for the current run (cleared on restart). */
+  /** Append-only transcript TEXT for the current run (cleared on
+   * restart) — derived from `sessionLines`; kept as the stable
+   * text-only view for consumers that only need strings. */
   sessionText: string[];
+  /** The structured transcript (W7/#3300): line rows with tags and
+   * source provenance — what the rebuilt Player renders. */
+  sessionLines: TranscriptLine[];
+  /**
+   * Paced auto-reveal cadence in ms (W7/#3300 F13, RULED — the App
+   * setting "Auto reveal: paced / all at once"): with auto on, a reveal
+   * delivers the run one line at a time at this cadence; 0 = one batch.
+   * Persisted by the app boundary; applied to the provider at bind.
+   */
+  sessionPacedMs: number;
+  /** Set the paced cadence (Settings) — pushes through to the provider. */
+  setSessionPaced(delayMs: number): void;
+  /**
+   * Byte-range → editor terms converter for transcript provenance
+   * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
+   * the compiled file; the Player needs a 0-based line (hover chip) and
+   * a UTF-16 span (the reveal). Registered by the app boundary, which
+   * can read file text; `null` until then (provenance affordances hide).
+   */
+  _resolveSourceBytes:
+    | ((file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null)
+    | null;
+  /** Register the provenance converter (app boundary). */
+  setSourceByteResolver(
+    resolver: (file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null,
+  ): void;
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   sessionChoices: Choice[];
   /**
@@ -229,6 +259,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
   return {
     sessionStatus: "none",
     sessionText: [],
+    sessionLines: [],
+    sessionPacedMs: 150,
+    _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
     sessionPaused: false,
@@ -257,6 +290,18 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         };
       });
       setActive(DEFAULT_SESSION_ID);
+      // The paced cadence survives provider swaps — re-apply at bind.
+      provider.setPacedReveal?.(get().sessionPacedMs);
+    },
+
+    setSourceByteResolver(resolver) {
+      set({ _resolveSourceBytes: resolver });
+    },
+
+    setSessionPaced(delayMs) {
+      const ms = Math.max(0, delayMs);
+      set({ sessionPacedMs: ms });
+      get()._provider?.setPacedReveal?.(ms);
     },
 
     startSession(bytes) {
@@ -403,6 +448,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         _sessionBytes: null,
         sessionStatus: "none",
         sessionText: [],
+    sessionLines: [],
         sessionChoices: [],
         debugState: null,
         prevDebugState: null,
@@ -436,7 +482,8 @@ type SetFn = {
 function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
   set((s) => ({
     sessionStatus: snap.status,
-    sessionText: snap.transcript,
+    sessionText: snap.transcript.map((l) => l.text),
+    sessionLines: snap.transcript,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,

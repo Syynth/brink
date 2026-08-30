@@ -12,6 +12,7 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { ensureStoryStarted } from "./session-helpers.js";
 
 function group(page: Page, index: number): Locator {
   return page.locator(".shell-editor-group").nth(index);
@@ -97,8 +98,11 @@ test.describe("player document", () => {
   // are unaffected (they pass first try).
   test.describe.configure({ retries: 2 });
 
-  // The default (toppled-temple) project: its startup compile succeeds and
-  // auto-starts the session (§7.6), so the player document has content.
+  // The default (toppled-temple) project. Since W7/#3300 (RULED: no
+  // auto-start) the startup compile leaves the Player idle — tests that
+  // drive story CONTENT call ensureStoryStarted themselves; the layout
+  // tests must NOT (clicking Start moves focus into the player group,
+  // which would break the "editor focused" fresh-load pin).
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
@@ -128,6 +132,7 @@ test.describe("player document", () => {
   test("the session plays inside the document: stop, start, continue, choose", async ({
     page,
   }) => {
+    await ensureStoryStarted(page);
     // Driving the story to a choice point + riding out the player's hasPending
     // render flicker legitimately takes longer than a simple UI test.
     test.slow();
@@ -204,6 +209,7 @@ test.describe("player document", () => {
     page,
   }) => {
     test.slow(); // drives the story to a choice + rides the hasPending flicker
+    await ensureStoryStarted(page);
     const pane = page.locator(".player-pane");
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple", {
       timeout: 10000,

@@ -325,6 +325,9 @@ export interface SessionLine {
    * `element` field doc for today's scoping. */
   element?: ElementJs;
   choices?: Choice[];
+  /** Transcript provenance (W7/#3300) — present only for `"text"` lines
+   *  whose line-table entry carries a source location. */
+  source?: SourceLocation;
 }
 
 /**
@@ -1321,6 +1324,20 @@ export interface DebugLine {
 export interface DebugOutputLine {
   text: string;
   tags: string[];
+  /** Where the line came from in the author's source (W7/#3300
+   *  transcript provenance) — absent when the line's table entry
+   *  carries no location. */
+  source?: SourceLocation;
+}
+
+/** Mirrors `brink_format::SourceLocation` (W7/#3300): a delivered
+ *  line's origin. `range_start`/`range_end` are UTF-8 BYTE offsets in
+ *  the file as the compiler consumed it — convert before using as
+ *  editor (UTF-16) positions. */
+export interface SourceLocation {
+  file: string;
+  range_start: number;
+  range_end: number;
 }
 
 /** One breakpoint: an unconditional halt at a `(container_idx, offset)`

@@ -4410,3 +4410,16 @@
   the author experience. Because the verb runs *through* the commit
   boundary, the delivered line lands at the stop — solving the felt
   half of the #3321 lag in the same design.
+
+## The Player toolbar carries a Stop button
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / Player
+- **SCOPE:** minor/local
+- **WHAT:** The Player toolbar gains a Stop button (filled square, after
+  Restart, disabled while idle) dispatching `story.stop` — added to the
+  ruled toolbar set (Run · Restart · Stop · Auto · transport · tags ·
+  chip · Maximize).
+- **WHY:** With the ruled "no auto-start", Stop is the route back to the
+  idle launcher (and W14's saves screen) — without it the only exits
+  from a session were Restart or the palette.

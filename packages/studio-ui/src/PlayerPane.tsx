@@ -1,16 +1,23 @@
-import { Fragment, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
+  EDITOR_REVEAL_COMMAND_ID,
+  encodeProgramAddress,
   documentKey,
   findTab,
   useEditorGroups,
   useShell,
   type CommandRegistry,
+  type ShellLayoutStore,
   type DocumentRef,
   type DocumentViewProps,
   type EditorGroupsStore,
 } from "@brink/studio-shell";
-import { sessionCanContinue } from "@brink/studio-store";
+import {
+  sessionCanContinue,
+  sessionDegraded,
+  type TranscriptLine,
+} from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
@@ -52,6 +59,7 @@ export function playerRef(): DocumentRef {
 export function registerOpenPlayerCommand(
   commands: CommandRegistry,
   editorGroups: EditorGroupsStore,
+  layout?: ShellLayoutStore,
 ): () => void {
   return commands.register({
     id: OPEN_PLAYER_COMMAND_ID,
@@ -61,7 +69,10 @@ export function registerOpenPlayerCommand(
       const isOpen = findTab(state.groups, documentKey(playerRef())) !== null;
       const collapsedToSingleNonEmptyGroup =
         state.groups.length === 1 && state.groups[0].tabs.length > 0;
-      if (!isOpen && collapsedToSingleNonEmptyGroup) {
+      // #2795: the split restore honors #280's "when there is room" —
+      // at the narrow tier there is none, so reopen in the focused group.
+      const narrow = layout?.getState().tier === "narrow";
+      if (!isOpen && collapsedToSingleNonEmptyGroup && !narrow) {
         openPlayerSplit(editorGroups);
         return;
       }
@@ -178,6 +189,33 @@ function renderLine(line: string): ReactNode {
   return <span style={{ fontStyle: "italic", color: "var(--bs-fg-muted)" }}>{line}</span>;
 }
 
+// ── Tags toggle persistence (W7/#3300 F13 — off by default, persisted) ──
+
+const TAGS_KEY = "brink-studio.player.show-tags.v1";
+
+function loadTagsToggle(): boolean {
+  try {
+    return localStorage.getItem(TAGS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveTagsToggle(on: boolean): void {
+  try {
+    localStorage.setItem(TAGS_KEY, on ? "1" : "0");
+  } catch {
+    // localStorage may be unavailable; the toggle still works in-session.
+  }
+}
+
+/** Trailing path segment — the hover chip shows `name.ink:12`, not the
+ * full project-relative path. */
+function baseName(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? path : path.slice(idx + 1);
+}
+
 // ── Component ───────────────────────────────────────────────────
 
 function PlayerPane({ groupId, active }: DocumentViewProps) {
@@ -187,7 +225,13 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // the component must never hold or receive the wasm runner handle, so a
   // future SessionProvider (#127) can back it without rework.
   const status = useStudioStore((s) => s.sessionStatus);
-  const text = useStudioStore((s) => s.sessionText);
+  const lines = useStudioStore((s) => s.sessionLines);
+  // Out-of-sync gate (spec §5): degraded suppresses provenance and the
+  // chip goes warning — suppressed, never stale.
+  const degraded = useStudioStore((s) =>
+    sessionDegraded(s.programChecksum, s.compiledChecksum),
+  );
+  const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
   const choices = useStudioStore((s) => s.sessionChoices);
   const auto = useStudioStore((s) => s.sessionAuto);
   const setSessionAuto = useStudioStore((s) => s.setSessionAuto);
@@ -215,6 +259,14 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   });
   const { commands } = useShell();
   const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
+  // Tags toggle (F13): muted mono chips per line; off by default, persisted.
+  const [showTags, setShowTags] = useState(loadTagsToggle);
+  // Only the hovered row computes its provenance chip — the byte→editor
+  // walk reads the whole file, so it must never run per-row per-render.
+  const [hoverIdx, setHoverIdx] = useState(-1);
+  // Auto-scroll suspends while the author reads back (scrolled up), and
+  // resumes when they return to the bottom (rebuild housekeeping).
+  const stickToBottom = useRef(true);
 
   const ended = status === "ended" || status === "error";
   const hasPending = sessionCanContinue(status);
@@ -222,12 +274,38 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const playerRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when text changes
+  // Auto-scroll to bottom on new content — unless the author scrolled up.
   useEffect(() => {
-    if (playerRef.current) {
+    if (playerRef.current && stickToBottom.current) {
       playerRef.current.scrollTop = playerRef.current.scrollHeight;
     }
-  }, [text, choices, ended, hasPending]);
+  }, [lines, choices, ended, hasPending]);
+
+  const handleScroll = useCallback(() => {
+    const el = playerRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }, []);
+
+  // Provenance reveal (F9): a transcript row jumps back to its source —
+  // the Player-side twin of the breakpoint gutter. Degraded suppresses.
+  const revealSource = useCallback(
+    (line: TranscriptLine) => {
+      if (degraded || !line.source || !resolveSourceBytes) return;
+      const point = resolveSourceBytes(
+        line.source.file,
+        line.source.range_start,
+        line.source.range_end,
+      );
+      if (point === null) return;
+      commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
+        kind: "source",
+        file: line.source.file,
+        span: { start: point.start, end: point.end },
+      });
+    },
+    [commands, degraded, resolveSourceBytes],
+  );
 
   // Becoming the focused group's active tab takes DOM focus into the pane,
   // exactly as a revealed text document focuses its CM6 view. Without this,
@@ -266,27 +344,37 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     commands.dispatch("story.start");
   }, [commands]);
 
-  // No session: placeholder with a start affordance instead of stale content.
-  if (status === "none") {
-    return (
-      <div className="player-pane" ref={rootRef} tabIndex={-1}>
-        <div className="header">
-          <div className="toolbar" />
-        </div>
-        <div className="player">
-          <div className="session-placeholder">
-            <p className="session-placeholder-title">No story session</p>
-            <p className="session-placeholder-hint">
-              Start the story to play it here.
-            </p>
-            <button className="session-placeholder-start" onClick={handleStart}>
-              Start story
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const position = useStudioStore((s) => s.debugState?.position ?? null);
+
+  // The status chip — the single home of stop reasons (spec §3): ready /
+  // playing / paused at file:line / waiting on choice / ended / error /
+  // out-of-sync. Clicking reveals the current line in the editor.
+  const chip = degraded
+    ? { cls: "degraded", label: "Out of sync" }
+    : status === "none"
+      ? { cls: "ready", label: "Ready" }
+      : paused
+        ? { cls: "paused", label: pausedLocation ? `Paused — ${pausedLocation}` : "Paused" }
+        : status === "awaiting-choice"
+          ? { cls: "waiting", label: "Waiting on choice" }
+          : status === "ended"
+            ? { cls: "ended", label: "Ended" }
+            : status === "error"
+              ? { cls: "error", label: "Error" }
+              : { cls: "playing", label: "Playing" };
+
+  const revealCurrent = useCallback(() => {
+    if (degraded || position === null) return;
+    commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
+      kind: "program",
+      address: encodeProgramAddress(position.container_idx, position.offset),
+    });
+  }, [commands, degraded, position]);
+
+  // Idle (RULED "no auto-start", W7/#3300): the toolbar (Run + the Ready
+  // chip) stays, the body is the launcher placeholder — replaced by
+  // W14's saves launcher.
+  const idle = status === "none";
 
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
@@ -313,12 +401,23 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
             </svg>
           </button>
+          <button
+            className="player-transport-btn"
+            title="Stop the story — back to the launcher"
+            aria-label="Stop"
+            disabled={idle}
+            onClick={() => commands.dispatch("story.stop")}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
+            </svg>
+          </button>
           {canAuto && (
             <button
               className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
               title={
                 auto
-                  ? "Auto reveal on: each reveal runs to the next choice or pause"
+                  ? "Auto reveal on: a reveal runs to the next choice or pause (paced — one line at a time; configurable in Settings → Player)"
                   : "Auto reveal off: each reveal advances a single line"
               }
               aria-label="Auto reveal"
@@ -401,6 +500,36 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             </span>
           )}
           <button
+            className={"player-transport-btn player-tags-btn" + (showTags ? " active" : "")}
+            title={showTags ? "Hide line tags" : "Show line tags"}
+            aria-label="Show tags"
+            aria-pressed={showTags}
+            onClick={() => {
+              setShowTags((on) => {
+                saveTagsToggle(!on);
+                return !on;
+              });
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path
+                d="M1.5 5V1.5H5L10.5 7 7 10.5z"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+              <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            className={"player-status-chip " + chip.cls}
+            title="Reveal the current line in the editor"
+            onClick={revealCurrent}
+          >
+            <span className="player-status-dot" />
+            {chip.label}
+          </button>
+          <button
             className="player-transport-btn player-btn-maximize"
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
@@ -411,19 +540,64 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
         </div>
       </div>
-      {paused && (
-        <div className="player-status-strip">
-          <span className="player-status-chip paused" title="Paused by the debugger">
-            <span className="player-status-dot" />
-            {pausedLocation ? `Paused — ${pausedLocation}` : "Paused"}
-          </span>
-        </div>
-      )}
-      <div className="player" ref={playerRef}>
+      <div className="player" ref={playerRef} onScroll={handleScroll}>
+        {idle && (
+          <div className="session-placeholder">
+            <p className="session-placeholder-title">No story session</p>
+            <p className="session-placeholder-hint">
+              Run compiles and starts the story here.
+            </p>
+            <button className="session-placeholder-start" onClick={handleStart}>
+              Start story
+            </button>
+          </div>
+        )}
         <div className="story-text">
-          {text.map((line, i) => (
-            <p key={i}>{renderLine(line)}</p>
-          ))}
+          {lines.map((line, i) => {
+            const point =
+              i === hoverIdx && !degraded && line.source && resolveSourceBytes
+                ? resolveSourceBytes(
+                    line.source.file,
+                    line.source.range_start,
+                    line.source.range_end,
+                  )
+                : null;
+            return (
+              <div
+                key={i}
+                className={`player-line-row kind-${line.kind}`}
+                onMouseEnter={() => setHoverIdx(i)}
+                onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
+                onClick={(e) => {
+                  // ⌘/Ctrl-click anywhere on the row jumps to source (F9).
+                  if (e.metaKey || e.ctrlKey) revealSource(line);
+                }}
+              >
+                <p>{renderLine(line.text)}</p>
+                {showTags && line.tags.length > 0 && (
+                  <span className="player-line-tags">
+                    {line.tags.map((tag, ti) => (
+                      <code key={ti} className="player-tag-chip">
+                        #{tag}
+                      </code>
+                    ))}
+                  </span>
+                )}
+                {point !== null && line.source && (
+                  <button
+                    className="player-provenance-chip"
+                    title="Reveal in editor (⌘-click the line works too)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      revealSource(line);
+                    }}
+                  >
+                    {baseName(line.source.file)}:{point.line + 1}
+                  </button>
+                )}
+              </div>
+            );
+          })}
           {ended && <div className="end-marker">{"— End —"}</div>}
         </div>
         {/* Choices win over Continue: whenever a choice list is present, show

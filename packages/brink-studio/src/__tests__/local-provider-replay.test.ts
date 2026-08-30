@@ -150,7 +150,7 @@ describe("LocalSessionProvider.start() hot-reload replay outcomes", () => {
 
     const snap = provider.getSnapshot();
     expect(snap.status).toBe("error");
-    expect(snap.transcript.join("\n")).toContain("stack underflow");
+    expect(snap.transcript.map((l) => l.text).join("\n")).toContain("stack underflow");
     expect(appendOutput).toHaveBeenCalledWith("story", expect.stringContaining("stack underflow"));
     expect(notify).toHaveBeenCalledWith({
       severity: "warning",
@@ -217,7 +217,7 @@ describe("LocalSessionProvider.start() hot-reload recovery when reload() throws"
     expect(sessionFactory).toHaveBeenCalledWith(NEW_BYTES);
     const snap = provider.getSnapshot();
     expect(snap.status).not.toBe("error");
-    expect(snap.transcript).toContain("fresh start");
+    expect(snap.transcript.map((l) => l.text)).toContain("fresh start");
   });
 
   it("does not double-free when the fallback session construction also throws", () => {
@@ -239,7 +239,7 @@ describe("LocalSessionProvider.start() hot-reload recovery when reload() throws"
 
     expect(prev.free).toHaveBeenCalledTimes(1);
     expect(provider.getSnapshot().status).toBe("error");
-    expect(provider.getSnapshot().transcript.join("\n")).toContain("also broken");
+    expect(provider.getSnapshot().transcript.map((l) => l.text).join("\n")).toContain("also broken");
   });
 });
 

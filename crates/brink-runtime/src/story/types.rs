@@ -104,6 +104,12 @@ pub struct OutputLine {
     pub tags: Vec<String>,
     /// The run of adjacent content this line belongs to. See [`BlockId`].
     pub block_id: BlockId,
+    /// Where this line came from in the author's source (W7/#3300
+    /// transcript provenance): the first contributing line-table entry's
+    /// `source_location` — file plus UTF-8 byte range as the compiler
+    /// consumed it. `None` when no entry contributed one (pure
+    /// interpolation, or a program compiled without locations).
+    pub source: Option<brink_format::SourceLocation>,
     /// This line's classification. See [`Element`]'s own doc for what's
     /// populated today and what isn't.
     pub element: Element,
