@@ -2,7 +2,8 @@
 //!
 //! Supports:
 //! - `// brink-disable-all`  — suppress all diagnostics for the entire project (root file only)
-//! - `// brink-disable-file` — suppress all diagnostics in this file
+//! - `// brink-disable-file-all` — suppress all diagnostics in this file
+//! - `// brink-disable-file E027 E035` — suppress specific code(s) for the whole file
 //! - `// brink-disable`      — suppress all diagnostics on the next line
 //! - `// brink-disable E027` — suppress specific code(s) on the next line
 //! - `// brink-expect E027`  — suppress E027 on next line, error if E027 doesn't appear
@@ -51,8 +52,28 @@ use crate::{Diagnostic, DiagnosticCode, FileId};
 pub struct Suppressions {
     /// `// brink-disable-all` found in this file.
     pub disable_all: bool,
-    /// `// brink-disable-file` found in this file.
+    /// `// brink-disable-file-all` found in this file — every diagnostic
+    /// silenced.
+    ///
+    /// Spelled `-all` since #3259: `// brink-disable-file` now takes codes,
+    /// and a bare form that silently meant "everything" is what let the
+    /// Problems panel offer "Suppress E157 in this file" while silencing the
+    /// whole file.
     pub disable_file: bool,
+    /// Codes named by `// brink-disable-file E157 E033` — silenced for the
+    /// whole file, and only these.
+    ///
+    /// Whitespace-separated, matching the line-scoped `// brink-disable
+    /// E027 E035` form (ruled 2026-08-29). Empty when no such directive
+    /// appears.
+    pub file_codes: Vec<DiagnosticCode>,
+    /// `brink-`prefixed comments the parser did not understand.
+    ///
+    /// Recorded rather than ignored: an unrecognized directive used to be
+    /// dropped in total silence, so `// brink-disable-file E157` — which
+    /// matched no branch before #3259 — suppressed nothing AND warned
+    /// nothing. [`apply_suppressions`] turns each into `E191`.
+    pub malformed: Vec<MalformedDirective>,
     /// Target line (0-based) → directive. Sorted by line.
     pub line_directives: BTreeMap<u32, LineDirective>,
     /// `@[allow(…)]` declaration scopes (issue #1161), in source order.
@@ -81,6 +102,15 @@ pub struct AllowScope {
     pub codes: Vec<DiagnosticCode>,
 }
 
+/// A `brink-`prefixed comment the parser did not understand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalformedDirective {
+    /// Byte range of the comment, for the diagnostic's location.
+    pub range: TextRange,
+    /// The comment text as written, minus the `//`, for the message.
+    pub text: String,
+}
+
 /// A per-line suppression or expectation directive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineDirective {
@@ -99,6 +129,37 @@ pub enum DirectiveKind {
     Disable,
     /// `// brink-expect` — suppress matched diagnostics, error if none match.
     Expect,
+}
+
+/// Whether an unmatched comment was plainly *trying* to be a directive.
+///
+/// Deliberately narrow, and the narrowness is load-bearing. A first attempt
+/// reported any comment whose text began `brink-`, which fired on the
+/// mounted stdlib itself: `std/conventions/screenplay.brink` wraps the path
+/// `crates/internal/brink-environment` across lines, so one line reads
+///
+/// ```text
+/// //      brink-environment`), so it now sits alongside a project's own
+/// ```
+///
+/// — prose, not a directive. Every `brink ide check` on a clean project
+/// then reported `E192`, which the CLI's own tests caught.
+///
+/// Two conditions, both required:
+///
+/// 1. The comment is the whole line. A `//` appearing mid-line is prose or
+///    a path, never a directive — the valid forms above still accept one
+///    for backward compatibility, but nothing is *reported* for it.
+/// 2. Its first token starts with `brink-disable` or `brink-expect` — the
+///    two directive families. That still catches the misspellings worth
+///    catching (`brink-disable-fil`, `brink-expects`) while `brink-ide`,
+///    `brink-analyzer` and `brink-environment` can never trip it.
+fn looks_like_directive_attempt(line: &str, comment: &str) -> bool {
+    if !line.trim_start().starts_with("//") {
+        return false;
+    }
+    let first = comment.split_whitespace().next().unwrap_or("");
+    first.starts_with("brink-disable") || first.starts_with("brink-expect")
 }
 
 /// Parse suppression/expectation directives from source text.
@@ -129,10 +190,50 @@ pub fn parse_suppressions(source: &str) -> Suppressions {
         };
         let comment = line[comment_pos + 2..].trim();
 
+        let comment_byte_start = line_byte_start + comment_pos as u32;
+        let comment_byte_end = line_byte_start + line.len() as u32;
+        let comment_range = TextRange::new(comment_byte_start.into(), comment_byte_end.into());
+        // Whether an unmatched form here is worth REPORTING. Computed once
+        // and applied at every `malformed` site below — gating only the
+        // catch-all arm left a mid-line
+        // `Text with // brink-disable-file in it` still reporting through
+        // the code-parsing arm.
+        let reportable = looks_like_directive_attempt(line, comment);
+
         if comment == "brink-disable-all" {
             result.disable_all = true;
-        } else if comment == "brink-disable-file" {
+        } else if comment == "brink-disable-file-all" {
             result.disable_file = true;
+        } else if let Some(codes_str) = comment.strip_prefix("brink-disable-file ") {
+            // File-scoped, code-named (#3259). An unrecognized code here is
+            // NOT silently dropped: a directive naming only codes the
+            // compiler does not know silences nothing, and saying so is the
+            // whole point of this pass.
+            let codes: Vec<DiagnosticCode> = codes_str
+                .split_whitespace()
+                .filter_map(DiagnosticCode::from_str_code)
+                .collect();
+            if codes.is_empty() {
+                if reportable {
+                    result.malformed.push(MalformedDirective {
+                        range: comment_range,
+                        text: comment.to_owned(),
+                    });
+                }
+            } else {
+                result.file_codes.extend(codes);
+            }
+        } else if comment == "brink-disable-file" {
+            // Bare form: it used to mean "everything in this file", silently.
+            // That is now `brink-disable-file-all`, so this is incomplete
+            // rather than blanket — and it suppresses nothing until the
+            // author says which.
+            if reportable {
+                result.malformed.push(MalformedDirective {
+                    range: comment_range,
+                    text: comment.to_owned(),
+                });
+            }
         } else if comment == "brink-disable" || comment == "brink-expect" {
             let kind = if comment == "brink-expect" {
                 DirectiveKind::Expect
@@ -140,14 +241,12 @@ pub fn parse_suppressions(source: &str) -> Suppressions {
                 DirectiveKind::Disable
             };
             let target_line = (line_idx + 1) as u32;
-            let comment_byte_start = line_byte_start + comment_pos as u32;
-            let comment_byte_end = line_byte_start + line.len() as u32;
             result.line_directives.insert(
                 target_line,
                 LineDirective {
                     kind,
                     codes: None,
-                    range: TextRange::new(comment_byte_start.into(), comment_byte_end.into()),
+                    range: comment_range,
                 },
             );
         } else if let Some(codes_str) = comment
@@ -163,19 +262,29 @@ pub fn parse_suppressions(source: &str) -> Suppressions {
                 .split_whitespace()
                 .filter_map(DiagnosticCode::from_str_code)
                 .collect();
-            if !codes.is_empty() {
+            if codes.is_empty() {
+                if reportable {
+                    result.malformed.push(MalformedDirective {
+                        range: comment_range,
+                        text: comment.to_owned(),
+                    });
+                }
+            } else {
                 let target_line = (line_idx + 1) as u32;
-                let comment_byte_start = line_byte_start + comment_pos as u32;
-                let comment_byte_end = line_byte_start + line.len() as u32;
                 result.line_directives.insert(
                     target_line,
                     LineDirective {
                         kind,
                         codes: Some(codes),
-                        range: TextRange::new(comment_byte_start.into(), comment_byte_end.into()),
+                        range: comment_range,
                     },
                 );
             }
+        } else if reportable {
+            result.malformed.push(MalformedDirective {
+                range: comment_range,
+                text: comment.to_owned(),
+            });
         }
     }
 
@@ -207,6 +316,9 @@ pub fn apply_suppressions(
     suppressions: &Suppressions,
 ) -> Vec<Diagnostic> {
     if suppressions.disable_file {
+        // `// brink-disable-file-all` — nothing survives, and a malformed
+        // directive elsewhere in the file is moot because its report would
+        // be suppressed too.
         return Vec::new();
     }
 
@@ -232,6 +344,13 @@ pub fn apply_suppressions(
     let mut result = Vec::with_capacity(diagnostics.len());
 
     for diag in diagnostics {
+        // File-scoped codes (`// brink-disable-file E157 E033`, #3259).
+        // Checked before any position mapping: the directive covers the
+        // whole file, so where the diagnostic sits does not matter.
+        if suppressions.file_codes.contains(&diag.code) {
+            continue;
+        }
+
         let byte_offset: u32 = diag.range.start().into();
         let line = line_starts
             .partition_point(|&start| start <= byte_offset)
@@ -263,6 +382,26 @@ pub fn apply_suppressions(
         }
 
         result.push(diag);
+    }
+
+    // Emit E192 for directives the parser did not understand (#3259).
+    //
+    // Before this, an unreadable directive was dropped in silence: it
+    // suppressed nothing and said nothing, so an author who wrote
+    // `// brink-disable-file E157` had no way to learn that the form did not
+    // exist. Reported per occurrence, at the comment itself.
+    for directive in &suppressions.malformed {
+        result.push(Diagnostic {
+            file: file_id,
+            range: directive.range,
+            message: format!(
+                "`// {}` is not a directive this compiler understands, so it suppresses \
+                 nothing — did you mean `// brink-disable-file <CODE>…`, \
+                 `// brink-disable-file-all`, or `// brink-disable <CODE>…`?",
+                directive.text
+            ),
+            code: DiagnosticCode::E192,
+        });
     }
 
     // Emit E036 for unsatisfied expect directives
@@ -304,11 +443,96 @@ mod tests {
     }
 
     #[test]
-    fn parse_disable_file() {
-        let src = "// brink-disable-file\nHello\n";
-        let sup = parse_suppressions(src);
+    fn the_file_blanket_is_spelled_disable_file_all() {
+        // Renamed in #3259: `brink-disable-file` now takes codes, so the
+        // blanket needs its own spelling rather than being the bare form.
+        let sup = parse_suppressions("// brink-disable-file-all\nHello\n");
         assert!(!sup.disable_all);
         assert!(sup.disable_file);
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn a_bare_disable_file_is_malformed_rather_than_a_silent_blanket() {
+        // It used to silence the whole file. Now it names no codes and is
+        // not the `-all` spelling, so it suppresses nothing — and says so,
+        // instead of quietly doing more than the author asked.
+        let sup = parse_suppressions("// brink-disable-file\nHello\n");
+        assert!(!sup.disable_file);
+        assert!(sup.file_codes.is_empty());
+        assert_eq!(sup.malformed.len(), 1, "{:?}", sup.malformed);
+        assert_eq!(sup.malformed[0].text, "brink-disable-file");
+    }
+
+    #[test]
+    fn a_file_directive_names_codes_whitespace_separated() {
+        // Whitespace, matching the line-scoped form (ruled 2026-08-29).
+        let sup = parse_suppressions("// brink-disable-file E027 E028\nHello\n");
+        assert_eq!(
+            sup.file_codes,
+            vec![DiagnosticCode::E027, DiagnosticCode::E028]
+        );
+        assert!(
+            !sup.disable_file,
+            "naming codes must not silence everything"
+        );
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn a_file_directive_naming_only_unknown_codes_is_malformed() {
+        let sup = parse_suppressions("// brink-disable-file XXXX\nHello\n");
+        assert!(sup.file_codes.is_empty());
+        assert_eq!(sup.malformed.len(), 1, "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn a_misspelled_directive_in_the_disable_family_is_recorded() {
+        // The silent drop this closes: a directive the parser cannot read
+        // used to suppress nothing AND report nothing.
+        let sup = parse_suppressions("// brink-disable-fil E027\nHello\n");
+        assert_eq!(sup.malformed.len(), 1, "{:?}", sup.malformed);
+        assert_eq!(sup.malformed[0].text, "brink-disable-fil E027");
+    }
+
+    #[test]
+    fn prose_that_merely_mentions_a_brink_name_is_not_a_directive() {
+        // ⚠ REGRESSION. A first attempt reported any comment whose text
+        // began `brink-`, and the mounted stdlib trips exactly that:
+        // `std/conventions/screenplay.brink` wraps the path
+        // `crates/internal/brink-environment` across lines, leaving a
+        // comment line that begins `brink-environment`. Every
+        // `brink ide check` on a CLEAN project then reported E192.
+        let sup = parse_suppressions(
+            "//      brink-environment`), so it now sits alongside a project's own\nHello\n",
+        );
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn an_ordinary_comment_is_not_a_directive() {
+        // The scan must not claim every comment is a malformed directive.
+        let sup = parse_suppressions("// just a note about brink\nHello\n");
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn a_mid_line_comment_is_never_reported() {
+        // A `//` inside prose or a path is not an attempt at a directive.
+        // The valid forms still accept one for backward compatibility; only
+        // REPORTING is gated on the comment owning its line.
+        let sup = parse_suppressions("Text with // brink-disable-file in it\nHello\n");
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
+    }
+
+    #[test]
+    fn a_badly_transposed_name_is_not_caught_and_that_is_deliberate() {
+        // `brink-disabel-file` does not start with `brink-disable`, so it
+        // reads as an unrelated `brink-` word. Catching it would mean
+        // reporting prose, which is the regression above. Narrow on
+        // purpose: a false report on the stdlib is worse than a missed typo.
+        let sup = parse_suppressions("// brink-disabel-file E027\nHello\n");
+        assert!(sup.malformed.is_empty(), "{:?}", sup.malformed);
     }
 
     #[test]

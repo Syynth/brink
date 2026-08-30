@@ -3979,6 +3979,31 @@
   stamped id paths and display names can drift apart in dumps. Accepted;
   deriving names from stamped ids is a possible future cleanup.
 
+## Config list settings follow the dictionary's shape, and globs show what they matched
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings
+- **SCOPE:** moderate
+- **WHAT:** A `brink.toml` list-valued key gets its Settings surface in the
+  shape the prose dictionary established — an add field, removable rows,
+  and pure `source -> source` transforms in `studio-store` rather than
+  edit logic living in the panel. `[project] drafts` is the first to
+  follow it. Where the list holds globs rather than literals, each row
+  additionally reports what it currently matches, distinguishing three
+  states: drafts produced, files matched that the story still reaches
+  (so not drafts), and nothing matched.
+- **WHY:** The user asked for drafts "as a list like dictionary, but with
+  nicer globs". A glob is not a literal: an author cannot tell by reading
+  it back whether it worked. Two ordinary mistakes are invisible in a
+  bare list — a typo matching nothing looks exactly like a working
+  pattern, and a pattern naming a file the entry still reaches produces
+  no draft at all under "reachability wins" (2026-08-27), so it appears
+  to do nothing for no stated reason. Showing the match set turns both
+  into something the author can see and fix. The dictionary's shape is
+  reused because these panels are where an author goes to confirm an
+  action elsewhere in the app worked, and two list surfaces that behave
+  differently would undercut that.
+
 ## Debugger UI: debug info on by default for studio compiles; pause is a first-class verb
 - **WHEN:** 2026-08-29
 - **PROJECT:** brink

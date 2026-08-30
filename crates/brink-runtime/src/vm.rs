@@ -32,6 +32,7 @@ use crate::tower_ops;
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
+#[derive(Clone, Copy)]
 pub(crate) enum Stepped {
     /// Opcode executed (or bookkeeping done), keep going.
     Continue,

@@ -49,6 +49,8 @@ import {
 } from "@brink-lang/editor";
 import {
   loadProblemsPrefs,
+  loadTodosPrefs,
+  saveTodosPrefs,
   saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
@@ -107,6 +109,7 @@ import {
   ProblemsBadge,
   ProblemsView,
   TodosBadge,
+  TodosActions,
   TodosView,
   ProgramView,
   SEARCH_TOOL_WINDOW_ID,
@@ -1335,6 +1338,7 @@ export async function mountStudio(
     defaultPlacement: { dock: "right", section: "end" },
     defaultOpen: false,
     badge: TodosBadge,
+    actions: TodosActions,
     component: TodosView,
   });
   // Performance HUD (prod-perf ruling 2026-08-25): all builds, closed by
@@ -1492,6 +1496,14 @@ export async function mountStudio(
     store
       .getState()
       .setProblemsPrefsSink((prefs) => saveProblemsPrefs(window.localStorage, prefs));
+  }
+  // TODOs panel: grouping persists, the tag selection does not. A tag is a
+  // property of THIS project's notes — restoring `(audio)` into a project
+  // that has no such tag would filter the panel empty with no visible
+  // cause, the same reason the filter text is not persisted either.
+  {
+    store.getState().applyTodosPrefs(loadTodosPrefs(window.localStorage));
+    store.getState().setTodosPrefsSink((prefs) => saveTodosPrefs(window.localStorage, prefs));
   }
   // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
   // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):

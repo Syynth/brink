@@ -17,6 +17,7 @@ import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
 import type { SearchSlice } from "./slices/search.js";
 import type { ProblemsSlice } from "./slices/problems.js";
+import type { TodosSlice } from "./slices/todos.js";
 import type { SymbolMenuSlice } from "./slices/symbol-menu.js";
 import type { ConflictSlice } from "./slices/conflict.js";
 import type { DebugSlice } from "./slices/debug.js";
@@ -30,6 +31,7 @@ import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
 import { createSearchSlice } from "./slices/search.js";
 import { createProblemsSlice } from "./slices/problems.js";
+import { createTodosSlice } from "./slices/todos.js";
 import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
 import { createConflictSlice } from "./slices/conflict.js";
 import { createDebugSlice } from "./slices/debug.js";
@@ -67,6 +69,7 @@ export interface StudioState
     OutputSlice,
     SearchSlice,
     ProblemsSlice,
+    TodosSlice,
     SymbolMenuSlice,
     ConflictSlice,
     DebugSlice {
@@ -139,6 +142,7 @@ export const createStudioStore = () =>
       ...createOutputSlice(...args),
       ...createSearchSlice(...args),
       ...createProblemsSlice(...args),
+      ...createTodosSlice(...args),
       ...createSymbolMenuSlice(...args),
       ...createConflictSlice(...args),
       ...createDebugSlice(...args),
@@ -241,6 +245,14 @@ export {
   withDictionaryWord,
   withoutDictionaryWord,
 } from "./prose-dictionary.js";
+// The author's draft globs in `[project] drafts` — the glob half of draft
+// status; the reachability half stays in Rust (see draft-globs.ts).
+export {
+  draftGlobProblem,
+  draftGlobs,
+  withDraftGlob,
+  withoutDraftGlob,
+} from "./draft-globs.js";
 // The .binder.json order sidecar's pure model (#3038).
 export {
   BINDER_SIDECAR_PATH,
@@ -355,6 +367,12 @@ export type {
   ProblemsPrefs,
   ProblemsSlice,
 } from "./slices/problems.js";
+export type { TodosPrefs, TodosSlice } from "./slices/todos.js";
+export {
+  TODOS_STORAGE_KEY,
+  loadTodosPrefs,
+  saveTodosPrefs,
+} from "./slices/todos.js";
 export {
   PROBLEMS_STORAGE_KEY,
   PROSE_CODE_PREFIX,
