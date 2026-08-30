@@ -11,7 +11,24 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { ensureStoryStarted } from "./session-helpers.js";
+import { dumpStudioState, ensureStoryStarted } from "./session-helpers.js";
+
+// Failure-state dump (#3346): the live-overlay flake fails with
+// `data-current` absent for the whole window on CI only — the store
+// state at failure is what tells a stuck degraded window, an unresolved
+// current_location, and a dead overlay subscription apart. Logged to
+// stdout (the CI job log, where failures are read) AND attached to the
+// report artifact.
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const dump = await dumpStudioState(page);
+  // eslint-disable-next-line no-console -- the CI job log is the point
+  console.log(`[#3346 failure-state dump] ${testInfo.title}\n${dump}`);
+  await testInfo.attach("studio-state.json", {
+    body: dump,
+    contentType: "application/json",
+  });
+});
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
