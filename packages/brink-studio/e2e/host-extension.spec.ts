@@ -192,7 +192,7 @@ test("the registered manifest drives diagnostics; the external-check flag suppre
   // now states rather than a hint inside one mixed section.
   await page.locator(".brink-settings-scope", { hasText: "App" }).click();
   await page
-    .locator(".brink-settings-nav-item", { hasText: "External functions" })
+    .locator(".brink-settings-nav-item", { hasText: "Player" })
     .click();
   await page.locator(".settings-select").first().selectOption("off");
   await expect(problemsBadge).toHaveCount(0, { timeout: 10000 });
