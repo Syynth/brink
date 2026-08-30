@@ -28,6 +28,7 @@ import { LintSettings } from "./LintSettings.js";
 import { FormattingSettings } from "./FormattingSettings.js";
 import { ProseSettings } from "./ProseSettings.js";
 import { DraftSettings } from "./DraftSettings.js";
+import { KeymapSettings } from "./KeymapSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
 /**
@@ -101,9 +102,14 @@ export function settingsSections(groupId: string): SettingsSection[] {
       id: SETTINGS_SECTION_IDS.keymap,
       scope: "app",
       title: "Keymap",
-      keywords: "keybinding shortcut chord override",
+      keywords: "keybinding shortcut chord override hotkey key binding rebind conflict",
       icon: SETTINGS_ICONS.keymap,
-      body: <KeymapSection />,
+      body: (
+        <>
+          <KeymapSettings />
+          <KeymapSection />
+        </>
+      ),
     },
     {
       // W1/#3294: the debug-info opt-out (ruled 2026-08-29, "debug info on

@@ -1189,3 +1189,210 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+
+/* ---- Keymap table (#3294 follow-up) --------------------------------- */
+.brink-studio .keymap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.brink-studio .keymap-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.brink-studio .keymap-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bs-input-bg, var(--bs-surface-bg));
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .keymap-search:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+.brink-studio .keymap-bykey {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .keymap-bykey.active {
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  border-color: var(--bs-accent);
+}
+.brink-studio .keymap-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brink-studio .keymap-heading {
+  padding: 10px 4px 4px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-top: 1px solid var(--bs-border);
+}
+.brink-studio .keymap-heading:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.brink-studio .keymap-row {
+  border-radius: 4px;
+}
+.brink-studio .keymap-row:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .keymap-row.is-capturing {
+  background: var(--bs-panel-bg);
+  outline: 1px solid var(--bs-accent);
+  padding-bottom: 6px;
+}
+.brink-studio .keymap-row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 68px 22px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 4px;
+}
+.brink-studio .keymap-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--bs-fg);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .keymap-chords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.brink-studio .keymap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.brink-studio .keymap-chord {
+  padding: 1px 6px;
+  background: var(--bs-surface-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  color: var(--bs-fg-muted);
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-small);
+}
+/* A customised binding is the one thing worth colouring in the table —
+   everything else is the shipped default. */
+.brink-studio .keymap-chord.is-custom {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .keymap-chord.is-capturing {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .keymap-chip-remove,
+.brink-studio .keymap-add,
+.brink-studio .keymap-reset {
+  padding: 0 3px;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  line-height: 1;
+  cursor: pointer;
+}
+.brink-studio .keymap-chip-remove:hover,
+.brink-studio .keymap-add:hover,
+.brink-studio .keymap-reset:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .keymap-unbound {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .keymap-source {
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+}
+.brink-studio .keymap-source.is-custom,
+.brink-studio .keymap-source.is-capturing {
+  color: var(--bs-accent);
+}
+.brink-studio .keymap-capture {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 90px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  outline: none;
+}
+.brink-studio .keymap-capture-hint {
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .keymap-capture-help,
+.brink-studio .keymap-conflict {
+  margin: 0;
+  padding: 0 4px 2px;
+  font-size: var(--bs-font-small);
+  line-height: 1.5;
+}
+.brink-studio .keymap-capture-help {
+  color: var(--bs-fg-muted);
+}
+/* Stated, not merely implied by the count: a rebind silently killing
+   another command's key is the failure this whole surface exists to
+   prevent. */
+.brink-studio .keymap-conflict {
+  color: var(--bs-warning);
+}
+.brink-studio .keymap-conflict-chord {
+  font-family: var(--bs-font-mono);
+}
+.brink-studio .keymap-empty {
+  margin: 0;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .keymap-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .keymap-reset-all {
+  margin-left: auto;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .keymap-reset-all:disabled {
+  color: var(--bs-fg-muted);
+  cursor: default;
+}
+.brink-studio .settings-escape-hatch > summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}

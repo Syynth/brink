@@ -448,11 +448,14 @@ export function KeymapSection() {
   };
 
   return (
-    <section className="settings-section">
+    <details className="settings-section settings-escape-hatch">
+      <summary>Edit as JSON</summary>
       <p className="settings-section-hint">
         JSON mapping a command id to a keybinding ({'"Mod-K"'}), an array of
         keybindings, or <code>null</code> to unbind. Overrides replace the
-        command{"'"}s default bindings and take effect on Apply.
+        command{"'"}s default bindings and take effect on Apply. The table
+        above writes this file; edit it directly for anything the table
+        cannot express.
       </p>
       <textarea
         className="settings-json"
@@ -470,7 +473,7 @@ export function KeymapSection() {
       <button type="button" className="settings-apply" onClick={apply}>
         Apply
       </button>
-    </section>
+    </details>
   );
 }
 
