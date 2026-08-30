@@ -76,6 +76,7 @@ import {
   ViewRevealHandlers,
   createEditorGroupsStore,
   createShellLayoutStore,
+  ensureToolWindowOpen,
   attachEditorPersistence,
   loadEditorSnapshot,
   reconcileEditorSnapshot,
@@ -121,6 +122,7 @@ import {
   SettingsDocument,
   DebuggerActions,
   DebuggerPanel,
+  ProgramExplorerActions,
   StorySegment,
   StoreProvider,
   StructuralOpSegment,
@@ -1018,6 +1020,15 @@ export async function mountStudio(
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
     getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
+    // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
+    // instructions, target the explorer, and surface the tool window —
+    // only when a target was actually set (the honest-failure
+    // notifications come from the store action).
+    onRevealInstructions: (path, line) => {
+      if (store.getState().revealInstructionsAt(path, line - 1)) {
+        ensureToolWindowOpen(shellLayout, "program");
+      }
+    },
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1352,6 +1363,9 @@ export async function mountStudio(
     icon: PROGRAM_ICON,
     defaultPlacement: { dock: "bottom", section: "start" },
     defaultOpen: false,
+    // W9/#3302: stepi controls — the instruction tier lives here, never
+    // in the Player toolbar (the ruled granularity ladder).
+    actions: ProgramExplorerActions,
     component: ProgramView,
   });
   toolWindows.register({
