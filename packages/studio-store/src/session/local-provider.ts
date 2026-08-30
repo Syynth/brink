@@ -76,8 +76,10 @@ import type {
   DebugRunOutcome,
   DebugLine,
   DebugSourceLocation,
+  LoadReport,
   ProgramAddress,
   ReplayOutcome,
+  SaveState,
   SessionJournal,
   SessionLine,
   StepMode,
@@ -664,6 +666,79 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.applyDebugOutcome(outcome, false);
     this.emit();
     return outcome;
+  }
+
+  /** Capture the durable game state (W14/#3307) — `null` without a live
+   * session (the wasm handle throws through `capture`'s guard). */
+  saveState(): SaveState | null {
+    return this.capture(() => this.session?.saveState() ?? null);
+  }
+
+  /**
+   * Load a checkpoint (W14/#3307): restore the durable state, divert to
+   * the slot's recorded knot (the save format carries no execution
+   * position — knot-entry granularity is the honest v1), and reveal.
+   * The transcript starts fresh ("you're just here again", the restore
+   * precedent); a non-clean `LoadReport` surfaces as a transcript notice
+   * — never a silent load (RULED). Returns the report, `null` without a
+   * live session.
+   */
+  loadCheckpoint(state: SaveState, knotPath: string | null): LoadReport | null {
+    const session = this.session;
+    if (!session) return null;
+    let report: LoadReport;
+    try {
+      // `load_state` is turn-boundary only, and any reveal leaves the
+      // session mid-turn (found live: a fresh start's first reveal was
+      // enough to refuse the load) — restart to a clean boundary first;
+      // the checkpoint replaces the state a restart resets anyway.
+      session.restart();
+      report = session.loadState(state);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.callbacks.notify({
+        severity: "error",
+        source: "story",
+        message: `Load failed: ${msg}`,
+      });
+      return null;
+    }
+    this.stopPacedPump();
+    this.paused = false;
+    this.lastOutcome = null;
+    this.transcript = [];
+    this.choices = [];
+    this.status = "running";
+    const drops =
+      report.anonymous_states_dropped +
+      report.unknown_globals.length +
+      report.unresolved_renames.length;
+    if (drops > 0) {
+      const parts: string[] = [];
+      if (report.anonymous_states_dropped > 0)
+        parts.push(`${report.anonymous_states_dropped} anonymous visit state${report.anonymous_states_dropped === 1 ? "" : "s"} dropped`);
+      if (report.unknown_globals.length > 0)
+        parts.push(`unknown globals: ${report.unknown_globals.join(", ")}`);
+      if (report.unresolved_renames.length > 0)
+        parts.push(`unresolved renames: ${report.unresolved_renames.join(", ")}`);
+      this.transcript = [transcriptNotice(`Loaded — ${parts.join("; ")}.`)];
+    }
+    if (knotPath !== null) {
+      try {
+        // Same dev affordance as play-from-here (M-2b): the recorded
+        // knot may be #@private.
+        session.setDevVisibilityOverride(true);
+        session.goToPath(knotPath);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.transcript = [
+          ...this.transcript,
+          transcriptNotice(`Loaded, but could not divert to ${knotPath}: ${msg}`),
+        ];
+      }
+    }
+    this.reveal();
+    return report;
   }
 
   pause(): void {

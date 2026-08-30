@@ -21,8 +21,10 @@ import type {
   DebugLine,
   DebugSourceLocation,
   DebugState,
+  LoadReport,
   ProgramAddress,
   ProgramModel,
+  SaveState,
   SourceLocation,
   StepMode,
 } from "@brink/wasm-types";
@@ -264,6 +266,13 @@ export interface SessionProvider {
    * line at a time in rapid succession; 0 = one batch. Optional — a
    * provider without a paced pump ignores the setting. */
   setPacedReveal?(delayMs: number): void;
+  /** Capture the durable game state (W14/#3307); `null` without a live
+   * session. Optional — observe-only providers skip checkpoints. */
+  saveState?(): SaveState | null;
+  /** Load a checkpoint and divert to its recorded knot (W14/#3307) —
+   * see the local provider's doc; returns the `LoadReport` (surfaced,
+   * never silent) or `null` without a live session. */
+  loadCheckpoint?(state: SaveState, knotPath: string | null): LoadReport | null;
 
   dispose(): void;
 }

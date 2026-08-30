@@ -19,6 +19,7 @@ import {
   type TranscriptLine,
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+import { PlayerLauncher } from "./PlayerLauncher.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
 //
@@ -232,6 +233,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     sessionDegraded(s.programChecksum, s.compiledChecksum),
   );
   const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
+  const saveCurrentState = useStudioStore((s) => s.saveCurrentState);
   const choices = useStudioStore((s) => s.sessionChoices);
   const auto = useStudioStore((s) => s.sessionAuto);
   const setSessionAuto = useStudioStore((s) => s.setSessionAuto);
@@ -412,6 +414,18 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
             </svg>
           </button>
+          <button
+            className="player-transport-btn"
+            title="Save state — checkpoint the current point (W14); writes back to a loaded save"
+            aria-label="Save state"
+            disabled={idle}
+            onClick={() => void saveCurrentState()}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M2 2h6.5L10 3.5V10H2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+              <path d="M4 2v2.6h3.4V2M4 10V7h4v3" stroke="currentColor" strokeWidth="1.1" />
+            </svg>
+          </button>
           {canAuto && (
             <button
               className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
@@ -541,17 +555,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         </div>
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
-        {idle && (
-          <div className="session-placeholder">
-            <p className="session-placeholder-title">No story session</p>
-            <p className="session-placeholder-hint">
-              Run compiles and starts the story here.
-            </p>
-            <button className="session-placeholder-start" onClick={handleStart}>
-              Start story
-            </button>
-          </div>
-        )}
+        {idle && <PlayerLauncher />}
         <div className="story-text">
           {lines.map((line, i) => {
             const point =

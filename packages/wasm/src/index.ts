@@ -2843,10 +2843,13 @@ export class StorySessionHandle {
     return JSON.parse(this.session.save_state()) as SaveState;
   }
 
-  /** Load durable game state (turn-boundary only, journaled). */
-  loadState(state: SaveState): void {
-    this.session.load_state(JSON.stringify(state));
+  /** Load durable game state (turn-boundary only, journaled). Returns
+   * the {@link LoadReport} — a stale load's drops surface to the caller
+   * (W14/#3307 compat honesty), never silently. */
+  loadState(state: SaveState): LoadReport {
+    const report = JSON.parse(this.session.load_state(JSON.stringify(state))) as LoadReport;
     this.noteJournalActivity();
+    return report;
   }
 
   /** Evaluate an ink function from the host, journaling a `call` event. The

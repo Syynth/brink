@@ -835,17 +835,20 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("save error: {e}")))
     }
 
-    /// Load a `SaveState` JSON (turn-boundary only, journaled).
-    pub fn load_state(&self, json: &str) -> Result<(), JsError> {
+    /// Load a `SaveState` JSON (turn-boundary only, journaled). Returns
+    /// the `LoadReport` JSON (W14/#3307 compat honesty, RULED): a stale
+    /// load's drops surface to the caller, never silently.
+    pub fn load_state(&self, json: &str) -> Result<String, JsError> {
         let state: brink_runtime::SaveState =
             serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;
         let mut borrow = self.session.borrow_mut();
         let session = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
-        session
+        let report = session
             .load_state(&state)
-            .map_err(|e| JsError::new(&format!("load_state error: {e}")))
+            .map_err(|e| JsError::new(&format!("load_state error: {e}")))?;
+        serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Evaluate an ink function from the host, journaling a `Call` event. The
@@ -1671,6 +1674,70 @@ mod debug_control_tests {
             src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
                 .contains("Second line."),
             "debug-road provenance must cover the line's source too"
+        );
+    }
+
+    // ── W14/#3307: the LoadReport reaches the session road ──────────────
+    //
+    // A clean load reports all-zeros; loading a save whose anonymous
+    // choice-body id no longer exists in the (edited) program reports the
+    // drop — surfaced, never silent (the ruled compat honesty). The
+    // session layer used to DISCARD the runtime's report entirely.
+    #[test]
+    fn load_state_reports_clean_and_stale_loads_through_the_session() {
+        let src_a = "VAR gold = 2\n-> shop\n=== shop ===\nWelcome.\n* [Cheap thing] -> shop\n+ [Browse] -> shop\n";
+        // Every choice is gone → the anonymous body id has nowhere to land
+        // (a same-position survivor could otherwise inherit the id — the
+        // positional half of the identity cluster).
+        let src_b = "VAR gold = 2\n-> shop\n=== shop ===\nWelcome.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_a), None, None).expect("session constructs");
+        for _ in 0..3 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session_a.continue_single().expect("continue"))
+                    .expect("JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        session_a.choose(0).expect("choose the once-only");
+        for _ in 0..3 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session_a.continue_single().expect("continue"))
+                    .expect("JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        let save = session_a.save_state().expect("save_state");
+
+        // Clean: load back into a fresh session on the SAME program.
+        let fresh = WebSession::new(&debug_bytes(src_a), None, None).expect("constructs");
+        let clean: serde_json::Value =
+            serde_json::from_str(&fresh.load_state(&save).expect("load")).expect("JSON");
+        assert_eq!(
+            clean["anonymous_states_dropped"],
+            serde_json::json!(0),
+            "{clean}"
+        );
+        assert_eq!(clean["unknown_globals"], serde_json::json!([]));
+        // The durable state round-trips: the loaded session's snapshot
+        // carries the saved turn index.
+        let snap_saved: serde_json::Value =
+            serde_json::from_str(&session_a.debug_snapshot().expect("snap")).expect("JSON");
+        let snap_loaded: serde_json::Value =
+            serde_json::from_str(&fresh.debug_snapshot().expect("snap")).expect("JSON");
+        assert_eq!(snap_loaded["turn_index"], snap_saved["turn_index"]);
+        assert_eq!(snap_loaded["globals"], snap_saved["globals"]);
+
+        // Stale: the edited program can't place the anonymous visit.
+        let edited = WebSession::new(&debug_bytes(src_b), None, None).expect("constructs");
+        let stale: serde_json::Value =
+            serde_json::from_str(&edited.load_state(&save).expect("load")).expect("JSON");
+        assert!(
+            stale["anonymous_states_dropped"].as_u64().unwrap_or(0) >= 1,
+            "the dropped anonymous visit must be REPORTED: {stale}"
         );
     }
 

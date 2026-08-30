@@ -35,6 +35,7 @@ import { createTodosSlice } from "./slices/todos.js";
 import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
 import { createConflictSlice } from "./slices/conflict.js";
 import { createDebugSlice } from "./slices/debug.js";
+import { createSavesSlice, type SavesSlice } from "./slices/saves.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -72,7 +73,8 @@ export interface StudioState
     TodosSlice,
     SymbolMenuSlice,
     ConflictSlice,
-    DebugSlice {
+    DebugSlice,
+    SavesSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -146,6 +148,7 @@ export const createStudioStore = () =>
       ...createSymbolMenuSlice(...args),
       ...createConflictSlice(...args),
       ...createDebugSlice(...args),
+      ...createSavesSlice(...args),
 
       // Non-reactive refs
       _documents: null,
@@ -220,6 +223,16 @@ export {
   isDebugSessionProvider,
   type DebugSessionProvider,
 } from "./slices/debug.js";
+
+// Runtime save/load (W14/#3307): the checkpoint-store seam. The
+// localStorage factory is the web default; desktop replaces via mount.
+export {
+  localStorageSaveStore,
+  type SavePayload,
+  type SaveSlotMeta,
+  type SaveStore,
+} from "./session/save-store.js";
+export type { SaveLocation } from "./slices/saves.js";
 
 // Problems ordering (canonical sort, unit-testable pure helper) + the
 // external-check severity level (Settings document, #93).
