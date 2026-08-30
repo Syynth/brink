@@ -67,7 +67,9 @@ const LINES: LinesTable = {
           content: "The golem grinds upright.",
           hash: "a1",
           audio: "se/golem_wake",
-          source: { file: "scenes/temple.ink", range_start: 214, range_end: 240 },
+          // Byte range of "The golem" on line 3 of TEMPLE_SRC — after an
+          // em-dash, so the UTF-8/UTF-16 drift is live in this fixture.
+          source: { file: "scenes/temple.ink", range_start: 30, range_end: 39 },
         },
         {
           index: 1,
@@ -95,9 +97,21 @@ const LINES: LinesTable = {
   ],
 };
 
+// Line 1 holds an em-dash (3 bytes / 1 unit): everything after it drifts
+// if raw bytes reach the UTF-16 reveal road.
+// bytes: "so — it begins\n" = 17 (em-dash 3), "quiet\n" = 6 → line 3 at byte 23.
+const TEMPLE_SRC = "so — it begins\nquiet\nnow, The golem wakes.\n";
+
 function mount(): { commands: CommandRegistry; dispatched: [string, unknown][] } {
   const store = createStudioStore();
   store.setState({ programModel: MODEL, programLines: LINES, entryFile: "main.ink" });
+  store.setState({
+    _project: {
+      getSession: () => ({
+        getFileSource: (path: string) => (path === "scenes/temple.ink" ? TEMPLE_SRC : null),
+      }),
+    } as never,
+  });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -172,7 +186,15 @@ describe("the Line tables view", () => {
     expect(audio[1].querySelector(".pv-lines-audio-ref")).toBeNull();
   });
 
-  it("source cells ride the Problems panel's reveal road", () => {
+  it("labels the source with its line number, computed from the byte offset", () => {
+    mount();
+    // range_start 30 sits on line 3 of TEMPLE_SRC.
+    expect(container!.querySelector(".pv-lines-source-link")?.textContent).toBe("temple.ink:3");
+  });
+
+  it("converts the byte range to UTF-16 before riding the reveal road", () => {
+    // The em-dash on line 1 costs 3 bytes but 1 code unit, so raw bytes
+    // would overshoot by 2 — the drift the maintainer saw live.
     const { dispatched } = mount();
     act(() => {
       container!.querySelector<HTMLButtonElement>(".pv-lines-source-link")!.click();
@@ -180,9 +202,20 @@ describe("the Line tables view", () => {
     expect(dispatched).toEqual([
       [
         EDITOR_REVEAL_COMMAND_ID,
-        { kind: "source", file: "scenes/temple.ink", span: { start: 214, end: 240 } },
+        { kind: "source", file: "scenes/temple.ink", span: { start: 28, end: 37 } },
       ],
     ]);
+  });
+
+  it("still navigates, unconverted and unnumbered, when the file is not in the session", () => {
+    const { dispatched } = mount();
+    // Point the fixture's source at a file the stub cannot serve.
+    act(() => {
+      [...container!.querySelectorAll<HTMLButtonElement>(".pv-lines-scope")]
+        .find((b) => b.textContent?.includes("turn"))!
+        .click();
+    });
+    expect(dispatched).toEqual([]);
   });
 
   it("states the scope's facts in its header", () => {

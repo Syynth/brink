@@ -19,14 +19,10 @@
  */
 
 import { memo, useMemo, useState } from "react";
-import type {
-  LinePart,
-  LinesTable,
-  LinesTableLine,
-  LinesTableScope,
-} from "@brink/wasm-types";
+import type { LinePart, LinesTableLine, LinesTableScope } from "@brink/wasm-types";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
-import { useStudioStore } from "./StoreContext.js";
+import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+import { buildSourceIndex, type SourceIndex } from "./source-index.js";
 
 /** Root first, knots in appearance order, stitches under their knot. */
 function orderScopes(scopes: readonly LinesTableScope[]): LinesTableScope[] {
@@ -99,8 +95,28 @@ export function ProgramLinesViewInner({
   currentScopePath: string | null;
 }) {
   const { commands } = useShell();
+  const storeApi = useStudioStoreApi();
   const programLines = useStudioStore((s) => s.programLines);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Per-file source index (line numbers + byte→UTF-16), lazily built and
+  // cached for the life of this compile product — a new compile makes a
+  // new map, so edited files never serve a stale index. See
+  // source-index.ts for why the conversion is not optional: the table's
+  // ranges are UTF-8 bytes and the reveal road is UTF-16.
+  const fileIndexes = useMemo(
+    () => new Map<string, SourceIndex | null>(),
+    [programLines],
+  );
+  const indexFor = (file: string): SourceIndex | null => {
+    let cached = fileIndexes.get(file);
+    if (cached === undefined) {
+      const source = storeApi.getState()._project?.getSession().getFileSource(file) ?? null;
+      cached = source === null ? null : buildSourceIndex(source);
+      fileIndexes.set(file, cached);
+    }
+    return cached;
+  };
 
   // The export's scope order is flat compile order, which scatters
   // stitches away from their knots. The rail is a TREE reading: root
@@ -185,7 +201,7 @@ export function ProgramLinesViewInner({
             </thead>
             <tbody>
               {selected.lines.map((line) => (
-                <LineRow key={line.index} line={line} commands={commands} />
+                <LineRow key={line.index} line={line} commands={commands} indexFor={indexFor} />
               ))}
             </tbody>
           </table>
@@ -208,11 +224,15 @@ export function ProgramLinesViewInner({
 function LineRow({
   line,
   commands,
+  indexFor,
 }: {
   line: LinesTableLine;
   commands: { dispatch: (id: string, arg?: unknown) => void };
+  indexFor: (file: string) => SourceIndex | null;
 }) {
   const source = line.source ?? null;
+  const index = source ? indexFor(source.file) : null;
+  const lineNo = source && index ? index.lineForByte(source.range_start) : null;
   return (
     <tr>
       <td className="pv-lines-idx">{line.index}</td>
@@ -234,15 +254,26 @@ function LineRow({
             title={`${source.file} · bytes ${source.range_start}–${source.range_end}`}
             onClick={() =>
               // The same road a Problems row rides (`diagnosticLocation`) —
-              // one reveal contract, not a second navigation.
+              // one reveal contract, not a second navigation. The table's
+              // ranges are UTF-8 bytes; the road is UTF-16 — convert, or
+              // every multibyte character above the target shifts the
+              // highlight. A file the session cannot serve (no index)
+              // still navigates, best-effort, with the raw offsets.
               commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
                 kind: "source",
                 file: source.file,
-                span: { start: source.range_start, end: source.range_end },
+                span:
+                  index === null
+                    ? { start: source.range_start, end: source.range_end }
+                    : {
+                        start: index.utf16ForByte(source.range_start),
+                        end: index.utf16ForByte(source.range_end),
+                      },
               })
             }
           >
             {source.file.split("/").pop()}
+            {lineNo !== null ? `:${lineNo}` : ""}
           </button>
         )}
       </td>
