@@ -175,7 +175,7 @@ impl OutputBuffer {
             // not be re-scanned on the next loop iteration.
             self.cursor += split_at + 1;
 
-            let (mut text, tags, suppressed, element) = lines.swap_remove(0);
+            let (mut text, tags, suppressed, element, source) = lines.swap_remove(0);
             // The trailing filler entry — now at index 0 after `swap_remove`
             // — carries the element-attachment state as of the END of this
             // slice (past this line's own `Newline`, so it reflects any
@@ -184,12 +184,12 @@ impl OutputBuffer {
             // whether or not this one is suppressed.
             self.pending_element = lines
                 .first()
-                .map_or_else(BTreeMap::new, |(_, _, _, e)| e.clone());
+                .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
             if suppressed {
                 continue;
             }
             text.push('\n');
-            return Some((text, tags, element));
+            return Some((text, tags, element, source));
         }
     }
 
@@ -246,11 +246,11 @@ impl OutputBuffer {
         // (issue #2108 review finding).
         self.pending_element = annotated
             .last()
-            .map_or_else(BTreeMap::new, |(_, _, _, e)| e.clone());
+            .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
         let result: Vec<_> = annotated
             .into_iter()
-            .filter_map(|(text, tags, suppressed, element)| {
-                (!suppressed).then_some((text, tags, element))
+            .filter_map(|(text, tags, suppressed, element, source)| {
+                (!suppressed).then_some((text, tags, element, source))
             })
             .collect();
         self.cursor = self.transcript.len();

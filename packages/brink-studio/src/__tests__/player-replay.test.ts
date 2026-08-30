@@ -88,7 +88,7 @@ describe("LocalSessionProvider legacy choice-log migration", () => {
     // Continue from there) — no reset to a fresh run.
     expect(session.restart).not.toHaveBeenCalled();
     expect(snap().status).toBe("done");
-    expect(snap().transcript).toEqual(["stuck"]);
+    expect(snap().transcript.map((l) => l.text)).toEqual(["stuck"]);
     expect(notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
   });
 
@@ -104,7 +104,7 @@ describe("LocalSessionProvider legacy choice-log migration", () => {
     // The single saved choice is applied; no divergence notification fires.
     expect(session.choose).toHaveBeenCalledWith(0);
     expect(session.restart).not.toHaveBeenCalled();
-    expect(snap().transcript).toContain("> Go");
+    expect(snap().transcript.map((l) => l.text)).toContain("> Go");
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -176,7 +176,7 @@ describe("LocalSessionProvider legacy choice-log migration", () => {
     const { notify, snap } = startWithSavedLog(session, [0, 1]);
 
     expect(snap().status).toBe("error");
-    expect(snap().transcript.join("\n")).toContain("vm exploded");
+    expect(snap().transcript.map((l) => l.text).join("\n")).toContain("vm exploded");
     expect(notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
   });
 });

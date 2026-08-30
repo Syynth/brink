@@ -74,7 +74,9 @@ import type {
   Breakpoint,
   Choice,
   DebugRunOutcome,
+  DebugLine,
   DebugSourceLocation,
+  ProgramAddress,
   ReplayOutcome,
   SessionJournal,
   SessionLine,
@@ -87,7 +89,10 @@ import {
   ALL_CAPABILITIES,
   sessionCanContinue,
   statusOfLine,
+  transcriptLine,
+  transcriptNotice,
   type DebugSessionProvider,
+  type TranscriptLine,
   type ProviderCallbacks,
   type SessionCapability,
   type SessionSnapshot,
@@ -194,8 +199,17 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * restoring a journal must not silently change how the next reveal behaves.
    */
   private auto = false;
+  /** Paced auto-reveal (W7/#3300 F13, RULED): with auto on and a
+   * positive delay, a Continue reveals the run ONE line at a time in
+   * rapid succession instead of one batch. 0 = all at once. */
+  private pacedDelayMs = 0;
+  private pacedTimer: ReturnType<typeof setTimeout> | null = null;
   private status: SessionStatus = "none";
-  private transcript: string[] = [];
+  private transcript: TranscriptLine[] = [];
+  /** Paused by the debugger (W5/#3298) — see `SessionSnapshot.paused`. */
+  private paused = false;
+  /** The most recent debug-advance outcome (W5/#3298). */
+  private lastOutcome: DebugRunOutcome | null = null;
   private choices: Choice[] = [];
   private debugState: SessionSnapshot["debugState"] = null;
   private programModel: SessionSnapshot["programModel"] = null;
@@ -254,7 +268,9 @@ export class LocalSessionProvider implements DebugSessionProvider {
       : null;
     if (opts?.session) {
       this.status = opts.status ?? "running";
-      this.transcript = opts.transcript ?? [];
+      this.transcript = (opts.transcript ?? []).map((t) =>
+        typeof t === "string" ? transcriptLine(t) : t,
+      );
       this.choices = opts.choices ?? [];
       this.watchJournal(opts.session);
     }
@@ -293,6 +309,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
       programChecksum: this.programChecksum,
       programModel: this.programModel,
       programInkt: this.programInkt,
+      paused: this.paused,
+      debugOutcome: this.lastOutcome,
       auto: this.auto,
     };
   }
@@ -383,7 +401,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
       this.session = null;
       this.bytes = null;
       this.status = "error";
-      this.transcript = [`Load error: ${msg}`];
+      this.transcript = [transcriptNotice(`Load error: ${msg}`)];
       this.choices = [];
       this.programModel = null;
       this.programInkt = null;
@@ -395,6 +413,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   restart(): void {
+    this.stopPacedPump();
     if (!this.session) {
       // No live session (e.g. a prior load error or a stop) — restart means a
       // fresh start on the bytes this session last ran.
@@ -406,6 +425,9 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.status = "running";
     this.transcript = [];
     this.choices = [];
+    // A restart abandons the debug pause point — it belongs to the old run.
+    this.paused = false;
+    this.lastOutcome = null;
     // Re-navigate a "play from here" session to its entry on restart — still a
     // dev affordance, so keep the #@private visibility override on (M-2b).
     if (this.startPath) {
@@ -416,6 +438,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   stop(): void {
+    this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
     this.session = null;
@@ -443,7 +466,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
-      this.transcript = [...this.transcript, `Choose error: ${msg}`];
+      this.transcript = [...this.transcript, transcriptNotice(`Choose error: ${msg}`)];
       this.choices = [];
       this.callbacks.appendOutput("story", `Choose error: ${msg}`);
       this.emit();
@@ -451,12 +474,15 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
 
     // Append the chosen text as a marker, clear choices.
-    if (choiceText) this.transcript = [...this.transcript, `> ${choiceText}`];
+    if (choiceText)
+      this.transcript = [...this.transcript, { text: `> ${choiceText}`, kind: "marker", tags: [] } satisfies TranscriptLine];
     this.choices = [];
 
     // Reveal the next section (emits). The journal-dirty hook handles
-    // persistence — no bespoke save call here.
-    this.reveal();
+    // persistence — no bespoke save call here. Choosing while paused
+    // STAYS paused (F7's ruled choice presentation) — only the Continue/
+    // reveal gesture resumes (2026-08-30 ruling), and this is not it.
+    this.reveal(this.paused);
   }
 
   /**
@@ -473,7 +499,43 @@ export class LocalSessionProvider implements DebugSessionProvider {
   setAuto(auto: boolean): void {
     if (this.auto === auto) return;
     this.auto = auto;
+    // Turning auto OFF mid-run abandons the paced pump immediately.
+    if (!auto) this.stopPacedPump();
     this.emit();
+  }
+
+  /** Configure the paced auto-reveal cadence (0 disables — batch mode). */
+  setPacedReveal(delayMs: number): void {
+    this.pacedDelayMs = Math.max(0, delayMs);
+    if (this.pacedDelayMs === 0) this.stopPacedPump();
+  }
+
+  /** Whether a paced run is currently pumping (test/UI observability). */
+  pacedRunning(): boolean {
+    return this.pacedTimer !== null;
+  }
+
+  private stopPacedPump(): void {
+    if (this.pacedTimer !== null) {
+      clearTimeout(this.pacedTimer);
+      this.pacedTimer = null;
+    }
+  }
+
+  /** One paced tick: reveal a single content line, then keep pumping
+   * while the session is still plainly running — a choice point, a
+   * terminal, an error, a breakpoint hit, or an explicit pause all end
+   * the run (the paused check is the ruled instant flush: nothing is
+   * queued, so stopping the pump IS the flush). */
+  private pacedTick(): void {
+    this.pacedTimer = null;
+    if (!this.session || this.paused || this.status !== "running") return;
+    this.revealOne();
+    if (this.status === "running" && !this.paused && this.pacedDelayMs > 0) {
+      this.pacedTimer = setTimeout(() => {
+        this.pacedTick();
+      }, this.pacedDelayMs);
+    }
   }
 
   continue(): void {
@@ -489,6 +551,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   dispose(): void {
+    this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
     this.session = null;
@@ -501,6 +564,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.programModel = null;
     this.programInkt = null;
     this.programChecksum = null;
+    this.paused = false;
+    this.lastOutcome = null;
   }
 
   // ── DebugSessionProvider (D8, #3186 — control-half bridge, #3232) ──
@@ -511,8 +576,27 @@ export class LocalSessionProvider implements DebugSessionProvider {
   // mirrored snapshot afterward (same as `reveal()`), since a breakpoint/
   // step lands the runtime at a new position the State View must reflect.
 
+  // The resolver family runs on RENDER paths (the paused chip's selector,
+  // the editor's highlight callback), so it must never throw: a freed
+  // wasm handle raises "null pointer passed to rust" from inside the
+  // binding — a nullish check can't see it (found live: a disposed
+  // duplicate dev mount crash-looped React through exactly this).
+  // `capture()` is the same mid-teardown guard `refreshDebug` uses.
+
   resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
-    return this.session?.resolveDebugPosition(containerIdx, offset) ?? null;
+    return this.capture(() => this.session?.resolveDebugPosition(containerIdx, offset) ?? null);
+  }
+
+  resolveSourceLine(file: string, line: number): ProgramAddress | null {
+    return this.capture(() => this.session?.resolveSourceLine(file, line) ?? null);
+  }
+
+  hasDebugInfo(): boolean {
+    return this.capture(() => this.session?.hasDebugInfo() ?? false) ?? false;
+  }
+
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return this.capture(() => this.session?.resolveDebugLine(containerIdx, offset) ?? null);
   }
 
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {
@@ -539,20 +623,62 @@ export class LocalSessionProvider implements DebugSessionProvider {
     // No live session: nothing to run — reported the same way `debug_run`
     // itself reports "nothing left to do", so a caller need not special-case
     // "no session" vs. "session already at its end."
-    if (!session) return { reason: { type: "terminal" }, depth: 0 };
+    if (!session) return { reason: { type: "terminal" }, depth: 0, lines: [] };
+    // Continue (F5): free-run resumes — paused clears unless the run stops
+    // at another breakpoint (applyDebugOutcome re-sets it then).
+    this.paused = false;
     const outcome = session.debugRun(budgetCeiling);
-    this.refreshDebug();
+    this.applyDebugOutcome(outcome, false);
     this.emit();
     return outcome;
   }
 
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
     const session = this.session;
-    if (!session) return { reason: { type: "terminal" }, depth: 0 };
+    if (!session) return { reason: { type: "terminal" }, depth: 0, lines: [] };
     const outcome = session.debugStep(mode, budgetCeiling);
-    this.refreshDebug();
+    // An explicit step leaves the session paused — stepping IS the paused
+    // mode's way of moving (W5/#3298).
+    this.applyDebugOutcome(outcome, true);
     this.emit();
     return outcome;
+  }
+
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    const session = this.session;
+    if (!session) return { reason: { type: "terminal" }, depth: 0, lines: [] };
+    const outcome = session.debugStepLine(mode, budgetCeiling);
+    this.applyDebugOutcome(outcome, true);
+    this.emit();
+    return outcome;
+  }
+
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    const session = this.session;
+    if (!session) return { reason: { type: "terminal" }, depth: 0, lines: [] };
+    // Continue (2026-08-30 ruling): deliver the next content line and
+    // RESUME play — paused clears unless the run stops at a breakpoint
+    // (applyDebugOutcome re-sets it then).
+    this.paused = false;
+    const outcome = session.debugRunToLine(budgetCeiling);
+    this.applyDebugOutcome(outcome, false);
+    this.emit();
+    return outcome;
+  }
+
+  pause(): void {
+    // The pause verb (W5/#3298): enter the paused state at the current
+    // boundary. Reveals are user-driven in this architecture, so there is
+    // never a mid-flight run to interrupt — pausing here makes the NEXT
+    // advance a bounded line step and lights the step controls.
+    if (this.paused || !this.session) return;
+    // Ruled instant flush: pausing mid-paced-run stops the pump NOW —
+    // nothing is queued (each tick advanced the VM one line), so
+    // stopping the pump is the whole flush.
+    this.stopPacedPump();
+    this.paused = true;
+    this.refreshDebug();
+    this.emit();
   }
 
   // ── Internals ─────────────────────────────────────────────────────
@@ -608,7 +734,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * terminal (`choices`/`done`/`end`), which is why wrapping it in an array
    * needs no special-casing.
    */
-  private reveal(): void {
+  private reveal(stayPaused = false): void {
     const session = this.session;
     if (!session) {
       this.emit();
@@ -616,15 +742,46 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
 
     try {
-      const lines = this.auto ? session.continueToPause() : [session.continueSingle()];
-      this.appendLines(lines);
-      const last = lines.at(-1);
-      this.status = last ? statusOfLine(last.type) : this.status;
-      this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
+      if (this.auto && !this.paused && this.pacedDelayMs > 0) {
+        // Paced auto (F13): reveal THIS line now, keep pumping on the
+        // timer. Every tick goes through the same single-line road as a
+        // manual reveal, so breakpoints bound each step and the
+        // execution highlight follows the cadence. `revealOne` emits;
+        // return early so the shared tail below doesn't double-emit.
+        this.revealOne();
+        if (this.status === "running" && !this.paused) {
+          this.stopPacedPump();
+          this.pacedTimer = setTimeout(() => {
+            this.pacedTick();
+          }, this.pacedDelayMs);
+        }
+        return;
+      }
+      if (this.debugDriven()) {
+        // W5/#3298 — play and debug are ONE loop: with breakpoints armed
+        // (or the session paused), the production continue path can never
+        // hit them, so advancement routes through the debug verbs. A
+        // single reveal runs to the next CONTENT line bounded by
+        // breakpoints (2026-08-30 Continue ruling — the reveal-while-
+        // paused click IS Continue, and it RESUMES play; the choose road
+        // passes `stayPaused` to keep F7's paused choice presentation);
+        // auto is a free run to the next breakpoint/choice/terminal.
+        // Debug advances bypass the journal by ruled design — choices
+        // stay journaled, so replay/restore still reconstructs to the
+        // same turn boundary, only a paused-mid-turn position is not
+        // itself restorable.
+        this.advanceDebug(this.auto && !this.paused ? "run" : "line", stayPaused);
+      } else {
+        const lines = this.auto ? session.continueToPause() : [session.continueSingle()];
+        this.appendLines(lines);
+        const last = lines.at(-1);
+        this.status = last ? statusOfLine(last.type) : this.status;
+        this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
-      this.transcript = [...this.transcript, `Runtime error: ${msg}`];
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
       this.choices = [];
       this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
     }
@@ -633,10 +790,113 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.emit();
   }
 
+  /** One single-line advance — the unit both a manual reveal and each
+   *  paced tick share: debug-driven when breakpoints are armed (or
+   *  paused), the journaled road otherwise. Refreshes and emits. */
+  private revealOne(): void {
+    const session = this.session;
+    if (!session) {
+      this.emit();
+      return;
+    }
+    try {
+      if (this.debugDriven()) {
+        this.advanceDebug("line", false);
+      } else {
+        const line = session.continueSingle();
+        this.appendLines([line]);
+        this.status = statusOfLine(line.type);
+        this.choices = line.type === "choices" ? (line.choices ?? []) : [];
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.status = "error";
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
+      this.choices = [];
+      this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
+    }
+    this.refreshDebug();
+    this.emit();
+  }
+
   private appendLines(lines: SessionLine[]): void {
     for (const line of lines) {
       const text = line.text.replace(/\n$/, "");
-      if (text) this.transcript = [...this.transcript, text];
+      if (text)
+        this.transcript = [
+          ...this.transcript,
+          transcriptLine(text, line.tags, line.source),
+        ];
+    }
+  }
+
+  /** Whether advancement must route through the debug verbs (W5/#3298):
+   *  armed breakpoints only ever hit inside the debug loop, and a paused
+   *  session resumes through it. */
+  private debugDriven(): boolean {
+    if (this.paused) return true;
+    try {
+      return (this.session?.debugBreakpoints().length ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One debug-driven advance: `"line"` = the author-tier content-line
+   *  run (2026-08-30 Continue ruling — deliver the next content line,
+   *  bounded by breakpoints, needs no debug line info), `"run"` =
+   *  free-run to the next breakpoint/choice/terminal. `stayPaused` keeps
+   *  the paused state across an ordinary stop; a breakpoint/watchpoint
+   *  hit pauses regardless. */
+  private advanceDebug(kind: "run" | "line", stayPaused: boolean): void {
+    const session = this.session;
+    if (!session) return;
+    const outcome =
+      kind === "run" ? session.debugRun() : session.debugRunToLine();
+    this.applyDebugOutcome(outcome, stayPaused);
+  }
+
+  /** Fold a debug outcome into the mirrored session state: transcript
+   *  delta, paused-ness, status, choices. */
+  private applyDebugOutcome(outcome: DebugRunOutcome, stayPaused: boolean): void {
+    this.lastOutcome = outcome;
+    for (const line of outcome.lines) {
+      const text = line.text.replace(/\n$/, "");
+      if (text)
+        this.transcript = [
+          ...this.transcript,
+          transcriptLine(text, line.tags, line.source),
+        ];
+    }
+    this.refreshDebug();
+    switch (outcome.reason.type) {
+      case "breakpoint":
+      case "watchpoint":
+        this.paused = true;
+        this.status = "running";
+        this.choices = [];
+        break;
+      case "choices":
+        // Choices and debug share one presentation (spec F7): picking a
+        // choice while paused stays paused.
+        this.paused = stayPaused;
+        this.status = "awaiting-choice";
+        this.choices = choicesFromDebugState(this.debugState);
+        break;
+      case "terminal":
+        this.paused = false;
+        this.status = this.debugState
+          ? statusOfSnapshotStatus(this.debugState.status)
+          : "done";
+        this.choices = [];
+        break;
+      default:
+        // step / noStepOutTarget / awaitingExternal: position moved (or
+        // honestly refused); paused-ness follows the caller's intent.
+        this.paused = stayPaused;
+        this.status = "running";
+        this.choices = [];
+        break;
     }
   }
 
@@ -695,7 +955,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
           this.status = "error";
           this.transcript = [
             ...this.transcript,
-            `Runtime error: ${outcome.reason.message}`,
+            transcriptNotice(`Runtime error: ${outcome.reason.message}`),
           ];
           this.callbacks.appendOutput(
             "story",
@@ -728,7 +988,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     const session = this.session;
     if (!session) return;
 
-    const allText: string[] = [];
+    const allText: TranscriptLine[] = [];
     let choiceIdx = 0;
 
     const finishAndPersist = (): void => {
@@ -763,14 +1023,14 @@ export class LocalSessionProvider implements DebugSessionProvider {
         this.status = "error";
         this.choices = [];
         this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
-        allText.push(`Runtime error: ${msg}`);
+        allText.push(transcriptNotice(`Runtime error: ${msg}`));
         diverge();
         return;
       }
 
       for (const line of lines) {
         const text = line.text.replace(/\n$/, "");
-        if (text) allText.push(text);
+        if (text) allText.push(transcriptLine(text, line.tags, line.source));
       }
 
       const last = lines.at(-1);
@@ -798,7 +1058,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
         }
 
         const choiceText = offered.find((c) => c.index === savedChoice)?.text;
-        if (choiceText) allText.push(`> ${choiceText}`);
+        if (choiceText) allText.push({ text: `> ${choiceText}`, kind: "marker", tags: [] });
         choiceIdx += 1;
         continue;
       }

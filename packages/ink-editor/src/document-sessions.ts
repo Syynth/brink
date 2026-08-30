@@ -27,6 +27,14 @@
  */
 
 import { docString } from "./doc-string";
+import {
+  refreshBreakpoints as refreshBreakpointsInView,
+  type BreakpointGutterMarker,
+} from "./play-from-here.js";
+import {
+  refreshExecutionHighlight as refreshExecutionHighlightInView,
+  type ExecutionHighlight,
+} from "./execution-highlight.js";
 import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -154,10 +162,20 @@ export interface DocumentCallbacks {
   onNavigateToFile?(location: Location): void;
   /** "Play from here" (#186): start a session entered at a knot/stitch path. */
   onPlayFrom?(inkPath: string, label?: string): void;
+  /** Breakpoint dots for `path` (W4/#3297) — 1-based lines, host-owned
+   *  truth; after it changes call `refreshBreakpoints()` below. */
+  getBreakpoints?(path: string): readonly BreakpointGutterMarker[];
+  /** Gutter click toggled a breakpoint at a 1-based line of `path`. */
+  onToggleBreakpoint?(path: string, line: number): void;
+  /** Doc edits moved `path`'s breakpoint lines (1-based old→new pairs). */
+  onBreakpointsMoved?(path: string, moves: readonly { from: number; to: number }[]): void;
+  /** The execution highlights for `path` (W6/#3299) — plural: a choice
+   *  point lights several lines. Re-read on `refreshExecutionHighlight()`. */
+  getExecutionHighlights?(path: string): readonly ExecutionHighlight[];
   /** Right-click a knot/stitch declaration → open the shared symbol context
    *  menu (`path` is injected from the focused view's file). */
   onSymbolContextMenu?(
-    info: { path: string; knot: string; stitch?: string },
+    info: { path: string; knot: string; stitch?: string; line?: number },
     x: number,
     y: number,
   ): void;
@@ -377,6 +395,23 @@ export class DocumentSessions {
     this.autoOpen = on;
     for (const slot of this.slots.values()) {
       if (slot.view !== null) setFormAutoOpen(slot.view, on);
+    }
+  }
+
+  /** Re-render every open editor's breakpoint dots from the host's current
+   *  set (W4/#3297) — call after `getBreakpoints`' backing data changes.
+   *  The gutter re-reads only on this effect, never by polling. */
+  refreshBreakpoints(): void {
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) refreshBreakpointsInView(slot.view);
+    }
+  }
+
+  /** Re-render every open editor's execution highlight from the host's
+   *  current position(s) (W6/#3299) — call whenever the runtime moved. */
+  refreshExecutionHighlight(): void {
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) refreshExecutionHighlightInView(slot.view);
     }
   }
 
@@ -1156,6 +1191,23 @@ export class DocumentSessions {
       // hover ▶ / right-click menu never appears as a dead control.
       onPlayFrom: this.callbacks.onPlayFrom
         ? (inkPath, label) => this.callbacks.onPlayFrom?.(inkPath, label)
+        : undefined,
+      // Breakpoints (W4/#3297): per-slot closures inject the file path,
+      // same shape as onSymbolContextMenu below. Only exposed when both
+      // halves are wired, so the gutter never shows a dead affordance.
+      getBreakpoints:
+        this.callbacks.getBreakpoints && this.callbacks.onToggleBreakpoint
+          ? () => this.callbacks.getBreakpoints?.(slot.path) ?? []
+          : undefined,
+      onToggleBreakpoint:
+        this.callbacks.getBreakpoints && this.callbacks.onToggleBreakpoint
+          ? (line) => this.callbacks.onToggleBreakpoint?.(slot.path, line)
+          : undefined,
+      onBreakpointsMoved: this.callbacks.onBreakpointsMoved
+        ? (moves) => this.callbacks.onBreakpointsMoved?.(slot.path, moves)
+        : undefined,
+      getExecutionHighlights: this.callbacks.getExecutionHighlights
+        ? () => this.callbacks.getExecutionHighlights?.(slot.path) ?? []
         : undefined,
       // Inject the focused view's file path so the host can resolve the symbol.
       onSymbolContextMenu: this.callbacks.onSymbolContextMenu

@@ -32,6 +32,7 @@ import {
   ALL_CAPABILITIES,
   DEFAULT_SESSION_ID,
   EMPTY_SNAPSHOT,
+  isDebugSessionProvider,
   type SessionCapability,
   type SessionEntry,
   type SessionId,
@@ -40,6 +41,8 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
+import type { ProvenancePoint, TranscriptLine } from "../session/types.js";
+export type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 
 // Re-exported for back-compat: consumers import these from the store root.
 export {
@@ -66,8 +69,36 @@ export { FlowSessionProvider } from "../session/flow-provider.js";
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
-  /** Append-only transcript for the current run (cleared on restart). */
+  /** Append-only transcript TEXT for the current run (cleared on
+   * restart) — derived from `sessionLines`; kept as the stable
+   * text-only view for consumers that only need strings. */
   sessionText: string[];
+  /** The structured transcript (W7/#3300): line rows with tags and
+   * source provenance — what the rebuilt Player renders. */
+  sessionLines: TranscriptLine[];
+  /**
+   * Paced auto-reveal cadence in ms (W7/#3300 F13, RULED — the App
+   * setting "Auto reveal: paced / all at once"): with auto on, a reveal
+   * delivers the run one line at a time at this cadence; 0 = one batch.
+   * Persisted by the app boundary; applied to the provider at bind.
+   */
+  sessionPacedMs: number;
+  /** Set the paced cadence (Settings) — pushes through to the provider. */
+  setSessionPaced(delayMs: number): void;
+  /**
+   * Byte-range → editor terms converter for transcript provenance
+   * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
+   * the compiled file; the Player needs a 0-based line (hover chip) and
+   * a UTF-16 span (the reveal). Registered by the app boundary, which
+   * can read file text; `null` until then (provenance affordances hide).
+   */
+  _resolveSourceBytes:
+    | ((file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null)
+    | null;
+  /** Register the provenance converter (app boundary). */
+  setSourceByteResolver(
+    resolver: (file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null,
+  ): void;
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   sessionChoices: Choice[];
   /**
@@ -77,6 +108,9 @@ export interface SessionSlice {
    * copy that can drift.
    */
   sessionAuto: boolean;
+  /** Paused by the debugger (W5/#3298) — mirrors `SessionSnapshot.paused`.
+   * What enables the transport's step controls and the paused chip. */
+  sessionPaused: boolean;
 
   /**
    * The session registry (docs/multi-session-spec.md, #182) — ordered, the
@@ -154,6 +188,8 @@ export interface SessionSlice {
   chooseOption(index: number): void;
   /** Reveal the next line from the runtime (or surface choices/end). */
   revealNext(): void;
+  /** Pause the running session at its current boundary (W5/#3298). */
+  pauseSession(): void;
   /**
    * Set the reveal mode (#3011). No-op on a provider without the `auto`
    * capability, which is also why the Player hides the toggle for those.
@@ -223,8 +259,12 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
   return {
     sessionStatus: "none",
     sessionText: [],
+    sessionLines: [],
+    sessionPacedMs: 150,
+    _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
+    sessionPaused: false,
     sessions: [],
     activeSessionId: null,
     _provider: null,
@@ -250,6 +290,18 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         };
       });
       setActive(DEFAULT_SESSION_ID);
+      // The paced cadence survives provider swaps — re-apply at bind.
+      provider.setPacedReveal?.(get().sessionPacedMs);
+    },
+
+    setSourceByteResolver(resolver) {
+      set({ _resolveSourceBytes: resolver });
+    },
+
+    setSessionPaced(delayMs) {
+      const ms = Math.max(0, delayMs);
+      set({ sessionPacedMs: ms });
+      get()._provider?.setPacedReveal?.(ms);
     },
 
     startSession(bytes) {
@@ -271,6 +323,11 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       }
       set({ _sessionBytes: bytes });
       entry?.provider.start?.(bytes);
+      // A start swaps the provider's internal wasm session — the runtime
+      // breakpoint set dies with the old one, so the anchors must re-arm
+      // on the new program (W4/W5 #3297/#3298: found live — a solid gutter
+      // dot over an empty runtime set is a breakpoint that never hits).
+      get()._syncSourceBreakpoints();
     },
 
     openSession(opts) {
@@ -290,6 +347,8 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       }));
       setActive(id);
       provider.start(bytes);
+      // Same re-arm-on-new-session rule as startSession above.
+      get()._syncSourceBreakpoints();
     },
 
     openFlow(opts) {
@@ -357,6 +416,13 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       get()._provider?.continue?.();
     },
 
+    pauseSession() {
+      // The pause verb (W5/#3298, ruled first-class): only meaningful on a
+      // debug-capable provider; a no-op elsewhere, like every gated verb.
+      const provider = get()._provider;
+      if (provider !== null && isDebugSessionProvider(provider)) provider.pause();
+    },
+
     setSessionAuto(auto) {
       get()._provider?.setAuto?.(auto);
     },
@@ -382,6 +448,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         _sessionBytes: null,
         sessionStatus: "none",
         sessionText: [],
+    sessionLines: [],
         sessionChoices: [],
         debugState: null,
         prevDebugState: null,
@@ -415,7 +482,8 @@ type SetFn = {
 function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
   set((s) => ({
     sessionStatus: snap.status,
-    sessionText: snap.transcript,
+    sessionText: snap.transcript.map((l) => l.text),
+    sessionLines: snap.transcript,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,
@@ -423,7 +491,27 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     programModel: snap.programModel,
     programInkt: snap.programInkt,
     programChecksum: snap.programChecksum,
+    // W5/#3298: paused-ness and the last debug outcome ride the snapshot,
+    // so a breakpoint hit during an ordinary reveal reaches the same store
+    // fields an explicit debug verb writes.
+    sessionPaused: snap.paused,
+    debugLastOutcome: snap.debugOutcome,
+    debugStatus: statusOfOutcome_(snap.paused, snap.debugOutcome),
   }));
+}
+
+/** `debugStatus` from the mirrored snapshot (W5/#3298): `paused` is the
+ * authoritative bit (a breakpoint hit or step boundary), a non-null
+ * outcome that ended free-running is `stopped`, and no outcome yet is
+ * `none` — mirroring the debug slice's own `statusOfOutcome` derivation
+ * from before the drive loops unified. */
+function statusOfOutcome_(
+  paused: boolean,
+  outcome: import("@brink/wasm-types").DebugRunOutcome | null,
+): "none" | "paused" | "stopped" {
+  if (paused) return "paused";
+  if (outcome === null) return "none";
+  return "stopped";
 }
 
 export { EMPTY_SNAPSHOT };

@@ -100,7 +100,7 @@ user-overridable through the existing keymap service):
 | Verb | Behavior | Key |
 |---|---|---|
 | Pause | Suspend at the next statement boundary | F6 |
-| Continue | Resume normal play (to next breakpoint, choice, or terminal) | F5 |
+| Continue | Run until the next **content line** is delivered (or breakpoint/choices/terminal), then resume normal play — RULED 2026-08-30, revising this row's original free-run wording; the free-run remains `debug.run` (FF/auto's verb) | F5 |
 | Step over | One source line, calls run to completion | F10 |
 | Step into | One source line, descending into calls | F11 |
 | Step out | Run until the current frame returns | Shift-F11 |
@@ -216,14 +216,16 @@ mapping in the window between edit and successful migration.
 
 ### F9 — Transcript provenance jump (Player rebuild)
 
-Every transcript line the Player renders came from a real `OutputLine`
-carrying `block_id`; the line tables map it to source. The rebuilt Player
-makes each transcript line a provenance handle: hover shows `file:line`,
-click/⌘-click reveals it in the editor (same `editor.reveal` verb).
-This is the Player-side twin of the breakpoint gutter — navigation from
-*output* back to source, where the gutter navigates from source forward.
-(Build-time verification required: confirm `block_id` → line-table →
-source resolution is exposed or cheaply exposable through the wasm bridge.)
+Every transcript line the Player renders is a provenance handle: hover
+shows `file:line`, click/⌘-click reveals it in the editor (same
+`editor.reveal` verb). This is the Player-side twin of the breakpoint
+gutter — navigation from *output* back to source, where the gutter
+navigates from source forward. (Build-time verification, W7: `block_id`
+is a monotonically-minted run counter and reaches no source — the real
+road is each delivered line's first `LineRef` → the scope line table
+(via `scope_table_idx`) → `LineEntry.source_location`, now carried as
+`OutputLine.source` / the wire `Line.source` and converted byte→editor
+terms at the app boundary.)
 
 ### F10 — Disassembly beside source
 
@@ -556,9 +558,10 @@ needed before W5 can present parks; F11 carries the proposed answer),
 1. ~~**#3225** — parked `debug_position` semantics~~ — **RULED
    2026-08-29** (resume point / call site, tagged; recorded in
    `docs/debugger-spec.md` §4.1 and the decision log). No longer open.
-2. **Transcript provenance plumbing** (F9): `block_id` → source is believed
-   cheap via the line tables; verify the wasm surface during W7 and demote
-   F9 to a follow-up ticket if it isn't.
+2. **Transcript provenance plumbing** (F9): RESOLVED during W7 — not via
+   `block_id` (a run counter, reaches no source) but via the line-table
+   entries' own `source_location`, surfaced as `OutputLine.source`. Built,
+   not demoted.
 3. **Keybinding set**: F-row proposed (desktop-first per the ruled
    consumer); web embeds may need Mod-based alternates — the keymap
    override service already covers per-user remapping.

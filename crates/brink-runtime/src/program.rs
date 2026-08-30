@@ -338,6 +338,62 @@ impl Program {
         let line = Self::line_index_in(file, entry.range_start)?;
         Some((entry.file_idx, line))
     }
+}
+
+/// [`Program::resolve_debug_line`]'s answer: where a bytecode position
+/// sits in author-facing source, at both granularities the debugger
+/// serves — the line (the author tier's band/chip) and the covering
+/// entry's byte range (the finer tiers: expression rows, instruction
+/// stepping, step-out's mid-line call-site landing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedDebugLine<'a> {
+    pub file: &'a str,
+    /// 0-based.
+    pub line: u32,
+    /// Byte offset in `file`, as the compiler consumed it.
+    pub range_start: u32,
+    pub range_len: u32,
+}
+
+impl Program {
+    /// The `file:line` — plus the covering entry's exact byte range — of a
+    /// bytecode position (W6/#3299). The line places the execution
+    /// highlight's band and the paused chip; the RANGE rides along so
+    /// finer-than-line consumers need no new seam: expression-level
+    /// entries (D1's unflagged rows, once #3183's `Expr` provenance
+    /// lands), instruction stepping in the editor, and the one
+    /// mid-line case that exists TODAY — a step-out lands at the call
+    /// site, not a line start (`docs/debugger-spec.md` §4's `finish`
+    /// semantics).
+    ///
+    /// 0-based line (UIs showing 1-based convert at their edge). `None`
+    /// when the position doesn't resolve, resolves to the synthetic
+    /// sentinel, or that file carries no line index.
+    #[must_use]
+    pub fn resolve_debug_line(
+        &self,
+        position: crate::debug::DebugPosition,
+    ) -> Option<ResolvedDebugLine<'_>> {
+        let entry = self.debug_entry_at(position)?;
+        let file = self
+            .debug_info
+            .as_ref()?
+            .files
+            .get(entry.file_idx as usize)?;
+        if !matches!(
+            file.surface,
+            brink_format::FileSurface::Ink | brink_format::FileSurface::Native
+        ) {
+            return None;
+        }
+        let line = Self::line_index_in(file, entry.range_start)?;
+        Some(ResolvedDebugLine {
+            file: file.path.as_str(),
+            line,
+            range_start: entry.range_start,
+            range_len: entry.range_len,
+        })
+    }
 
     /// 0-based line containing `byte` within `file`'s line index, or `None`
     /// when that file carries no index or the offset precedes its first

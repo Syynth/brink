@@ -4375,3 +4375,51 @@
   no single honest current position, so the API reports the one
   forward-looking consumers need and marks what it is. This unblocks
   W5 (#3298)'s park presentation and closes #3225's design ask.
+
+## Continue runs to the next content line and resumes play; step verbs are the statement tier
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / runtime debug seam
+- **SCOPE:** moderate
+- **WHAT:** The Player's Continue verb (and the reveal-while-paused
+  click, which collapses into it) advances the VM **until the next
+  content line is delivered** — a committed output line — or a
+  breakpoint/choices/park/terminal stops it early. On an ordinary
+  content-line stop, Continue **resumes normal play**: the paused state
+  clears (band back to live green, chip gone, step buttons disable);
+  every subsequent reveal stays breakpoint-bounded via the W5 drive
+  loop, so nothing is lost in safety. Continue must NOT batch free-run
+  to the next choice (today's `debug_run` mapping) and must NOT halt at
+  every source statement (today's `debug_step_line("over")` mapping —
+  which made an author click through each `~` statement to reach
+  content). Step Over/Into/Out remain statement-granular toolbar verbs
+  for the programmer tier — the granularity ladder's middle tier, as
+  ruled. This REVISES the W5 pin "a paused reveal line-steps and stays
+  paused" and the spec's transport-table Continue row. Implementation:
+  one runtime verb whose stop predicate is "a content line committed",
+  built by extending #3321 (the commit-lag follow-up) since the
+  glue-boundary/commit predicate is the same design; ships as the next
+  PR in the debugger-ui stack (before W7), and W7 re-points the
+  transport at it. Statement-tier steps keep the commit lag for now
+  (the W6 highlight makes it legible); that residue stays open on
+  #3321.
+- **WHY:** Play-is-stepping makes "resume normal play" mean the reveal
+  cadence, not a classic F5 free-run — and the author-tier advance must
+  be measured in story lines, not source statements: grinding through
+  logic lines one click at a time is the programmer tier leaking into
+  the author experience. Because the verb runs *through* the commit
+  boundary, the delivered line lands at the stop — solving the felt
+  half of the #3321 lag in the same design.
+
+## The Player toolbar carries a Stop button
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / Player
+- **SCOPE:** minor/local
+- **WHAT:** The Player toolbar gains a Stop button (filled square, after
+  Restart, disabled while idle) dispatching `story.stop` — added to the
+  ruled toolbar set (Run · Restart · Stop · Auto · transport · tags ·
+  chip · Maximize).
+- **WHY:** With the ruled "no auto-start", Stop is the route back to the
+  idle launcher (and W14's saves screen) — without it the only exits
+  from a session were Restart or the palette.

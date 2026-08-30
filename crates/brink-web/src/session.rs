@@ -206,6 +206,30 @@ impl WebSession {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The `file:line` of a bytecode position (W6/#3299) — the
+    /// program→source resolver reduced to the shape the execution
+    /// highlight and the paused chip consume:
+    /// `{ "file": string, "line": number }` (0-based line) or `null`
+    /// (unresolvable, synthetic, or no line index). Same degraded-gating
+    /// contract as `resolve_debug_position` — the caller compares program
+    /// identity first.
+    #[wasm_bindgen(js_name = resolveDebugLine)]
+    pub fn resolve_debug_line(&self, container_idx: u32, offset: u32) -> Result<String, JsError> {
+        let position = brink_runtime::DebugPosition {
+            container_idx,
+            offset: offset as usize,
+        };
+        let resolved = self.program.resolve_debug_line(position).map(|l| {
+            serde_json::json!({
+                "file": l.file,
+                "line": l.line,
+                "range_start": l.range_start,
+                "range_len": l.range_len,
+            })
+        });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// The program address to break on for a **line** of source (W2/#3295,
     /// runtime half #3261): `{ "container_idx": number, "offset": number }`
     /// or `null`. `line` is **0-based** — a UI showing 1-based numbers
@@ -346,12 +370,70 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
         let outcome = session
             .story_mut()
             .debug_run(&breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Run the default flow forward until the next **content line** is
+    /// delivered (2026-08-30 Continue ruling — the granularity ladder's
+    /// top tier), or a breakpoint/choice point/terminal/deferred external
+    /// stops it early. The stop lands past the line's glue/commit
+    /// boundary, so the crossed line is IN this outcome's `lines` — no
+    /// one-advance delivery lag (#3321). Needs no debug line info (the
+    /// stop condition is output-buffer state). Same budget default and
+    /// journal-bypass contract as `debugRun`. Returns JSON
+    /// `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugRunToLine)]
+    pub fn debug_run_to_line(&self, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_run_to_line"))?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // a line the production lookahead already completed satisfies the
+        // "one content line delivered" contract by itself — the runtime
+        // verb only runs when the cursor starts empty.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
+        if drained.is_empty() {
+            let outcome = session
+                .story_mut()
+                .debug_run_to_line(&breakpoints, ceiling)
+                .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+            drained.extend(session.story_mut().debug_drain_buffered_lines());
+            let lines = crate::value_marshal::drained_lines_to_js(drained);
+            return serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+                outcome, lines,
+            ))
+            .map_err(|e| JsError::new(&format!("json error: {e}")));
+        }
+        let position = session.story_mut().debug_position();
+        let depth = session.story_mut().debug_call_stack_depth();
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            brink_runtime::DebugRunOutcome {
+                reason: brink_runtime::DebugStopReason::Step,
+                position,
+                depth,
+            },
+            lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
@@ -368,12 +450,58 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
         let outcome = session
             .story_mut()
             .debug_step(step_mode, &breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Step the default flow to the next **source line** (#3264, W5/#3298)
+    /// — the granularity every GDB-style debugger means by `step`/`next`,
+    /// and the unified Player advance when breakpoints are armed: one
+    /// visible line, bounded by any armed breakpoint, whichever comes
+    /// first. `mode` and budget as `debugStep`; same journal-bypass
+    /// contract. Returns JSON `DebugRunOutcome` (with the emitted-lines
+    /// delta), reason `noLineInfo` when the artifact carries no line index.
+    #[wasm_bindgen(js_name = debugStepLine)]
+    pub fn debug_step_line(
+        &self,
+        mode: &str,
+        budget_ceiling: Option<u32>,
+    ) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_step_line"))?;
+        let step_mode = crate::value_marshal::parse_step_mode(mode)?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
+        let outcome = session
+            .story_mut()
+            .debug_step_line(step_mode, &breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// The compiled program rendered as `.inkt` text for the Program Explorer:
@@ -1123,6 +1251,427 @@ mod debug_control_tests {
 
     fn json(s: &str) -> serde_json::Value {
         serde_json::from_str(s).expect("valid JSON")
+    }
+
+    /// Append an outcome's non-empty emitted lines to a test transcript.
+    fn push_lines(transcript: &mut Vec<String>, outcome: &serde_json::Value) {
+        for line in outcome["lines"].as_array().expect("lines array") {
+            let text = line["text"].as_str().expect("text").trim_end();
+            if !text.is_empty() {
+                transcript.push(text.to_owned());
+            }
+        }
+    }
+
+    // ── W5/#3298: the interleaved play↔debug proof the ruling requires ──
+    //
+    // Play a line normally, hit a breakpoint via debugRun, step across the
+    // code line, run to the choice point, choose (journaled), and run to
+    // the end — asserting the TRANSCRIPT stays coherent: every text line
+    // arrives exactly once, in story order, whichever loop produced it.
+    // This is the wasm-level half; the provider's routing (which verb runs
+    // when) is pinned in `packages/brink-studio`'s vitest suite.
+    #[test]
+    fn interleaved_play_and_debug_keep_one_coherent_transcript() {
+        let src = "VAR gold = 12\n                   -> tavern\n                   === tavern ===\n                   The tavern is loud tonight.\n                   ~ gold = gold - 2\n                   Ale ordered.\n                   * [Order another] -> more\n                   * [Leave] -> END\n                   === more ===\n                   Another round.\n                   -> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let mut transcript: Vec<String> = Vec::new();
+
+        // 1. Ordinary play: the first prose line arrives on the journaled
+        // road. (The production line-buffered loop runs AHEAD of what it
+        // delivers — by now "Ale ordered." is already materialized in the
+        // buffer, undelivered. That lookahead is exactly why the debug
+        // verbs drain the shared delivery cursor.)
+        let first = json(&session.continue_single().expect("continue_single"));
+        let first_text = first["text"].as_str().expect("text").trim_end().to_owned();
+        transcript.push(first_text.clone());
+        assert_eq!(first_text, "The tavern is loud tonight.");
+
+        // 2. Arm a breakpoint on `Another round.` (0-based line 9) through
+        // the same source→program road the gutter uses (W2).
+        let addr = json(
+            &session
+                .resolve_source_line("main.ink", 9)
+                .expect("resolves"),
+        );
+        let bp = session.debug_breakpoint_add(
+            u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32"),
+            u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32"),
+            Some("more-entry".to_owned()),
+        );
+
+        // 3. Free-run to the choice point: the drained delivery cursor
+        // surfaces the looked-ahead "Ale ordered." exactly once, here.
+        let to_choices = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(to_choices["reason"]["type"], serde_json::json!("choices"));
+        push_lines(&mut transcript, &to_choices);
+        assert_eq!(
+            transcript,
+            vec![
+                "The tavern is loud tonight.".to_owned(),
+                "Ale ordered.".to_owned(),
+            ],
+        );
+
+        // 4. Choose on the JOURNALED road (choices stay journaled across
+        // the unification — that is what keeps restore/replay coherent),
+        // then free-run: halts at the breakpoint BEFORE the target knot's
+        // text emits.
+        session.choose(0).expect("choose");
+        let run = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(run["reason"]["type"], serde_json::json!("breakpoint"));
+        assert_eq!(run["reason"]["id"], serde_json::json!(bp));
+        push_lines(&mut transcript, &run);
+        assert!(
+            !transcript.iter().any(|l| l == "Another round."),
+            "stopping AT the breakpoint must not have emitted the line past it"
+        );
+
+        // 5. Line-step across it: the emitted text surfaces through the
+        // outcome's lines delta — the coherence hole W5 closes.
+        let mut steps = 0;
+        while !transcript.iter().any(|l| l == "Another round.") {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            push_lines(&mut transcript, &step);
+            steps += 1;
+            assert!(steps < 8, "line-stepping never surfaced the text line");
+        }
+
+        // 6. Free-run to the end.
+        let to_end = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(to_end["reason"]["type"], serde_json::json!("terminal"));
+        push_lines(&mut transcript, &to_end);
+
+        // 7. Coherence: every text line exactly once, in story order,
+        // whichever loop produced it.
+        assert_eq!(
+            transcript,
+            vec![
+                "The tavern is loud tonight.".to_owned(),
+                "Ale ordered.".to_owned(),
+                "Another round.".to_owned(),
+            ],
+            "the interleaved loops must produce one coherent transcript"
+        );
+    }
+
+    // A line step that LANDS on an armed breakpoint must claim the hit
+    // (found live in the studio: the reveal stopped exactly at the armed
+    // address with reason "step", the resume's past-entry rule then
+    // skipped it, and the breakpoint could never fire under the unified
+    // line-stepping reveal).
+    #[test]
+    fn a_line_step_landing_on_a_breakpoint_reports_the_breakpoint() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Arm on `Second line.` (0-based 3), then line-step from the start.
+        let addr = json(
+            &session
+                .resolve_source_line("main.ink", 3)
+                .expect("resolves"),
+        );
+        let bp = session.debug_breakpoint_add(
+            u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32"),
+            u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32"),
+            None,
+        );
+
+        let mut hit = false;
+        for _ in 0..6 {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            if step["reason"]["type"] == serde_json::json!("breakpoint") {
+                assert_eq!(step["reason"]["id"], serde_json::json!(bp));
+                assert_eq!(
+                    step["position"],
+                    serde_json::json!({
+                        "container_idx": addr["container_idx"],
+                        "offset": addr["offset"],
+                    }),
+                    "the hit must be AT the armed address"
+                );
+                hit = true;
+                break;
+            }
+            assert_ne!(
+                step["reason"]["type"],
+                serde_json::json!("terminal"),
+                "stepped to the end without the breakpoint ever claiming a stop"
+            );
+        }
+        assert!(hit, "line-stepping across an armed address must report it");
+    }
+
+    // The drain consumes the SAME cursor the journaled road delivers from
+    // — a line surfaced by a debug advance must never be re-delivered by a
+    // later `continue_single` (the double-line half of the coherence bug).
+    #[test]
+    fn debug_drained_lines_are_never_redelivered_by_the_journaled_road() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let first = json(&session.continue_single().expect("continue_single"));
+        assert_eq!(first["text"], serde_json::json!("First line.\n"));
+
+        // Debug steps drain whatever the lookahead has COMMITTED — a text
+        // line commits only once the next non-whitespace output begins (or
+        // a yield), so it can surface one advance later than it was
+        // materialized. Step until it does.
+        let mut drained: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            drained.extend(
+                step["lines"]
+                    .as_array()
+                    .expect("lines")
+                    .iter()
+                    .map(|l| l["text"].as_str().expect("text").trim_end().to_owned())
+                    .filter(|t| !t.is_empty()),
+            );
+            if drained.contains(&"Second line.".to_owned()) {
+                break;
+            }
+        }
+        assert!(
+            drained.contains(&"Second line.".to_owned()),
+            "the looked-ahead line must surface through the debug outcomes: {drained:?}"
+        );
+        assert_eq!(
+            drained.iter().filter(|t| *t == "Second line.").count(),
+            1,
+            "and exactly once"
+        );
+
+        // The journaled road resumes AFTER everything the drain delivered —
+        // never re-delivering a drained line.
+        let next = json(&session.continue_single().expect("continue_single"));
+        let next_text = next["text"].as_str().unwrap_or("").trim_end();
+        assert_ne!(
+            next_text, "Second line.",
+            "a drained line must not be re-delivered by the journaled road"
+        );
+    }
+
+    // ── 2026-08-30 Continue ruling: run to the next content line ────────
+    //
+    // The verb behind the Player's Continue: each call delivers EXACTLY
+    // one content line in its own outcome — the stop lands past the
+    // glue/commit boundary, so there is no one-advance delivery lag
+    // (#3321's felt half, fixed for this tier; the statement-tier steps
+    // above still exhibit it, which stays open on #3321).
+    #[test]
+    fn debug_run_to_line_delivers_each_content_line_at_its_own_stop() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        for expected in ["First line.", "Second line."] {
+            let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+            assert_eq!(
+                stop["reason"]["type"],
+                serde_json::json!("step"),
+                "{expected}"
+            );
+            let mut lines = Vec::new();
+            push_lines(&mut lines, &stop);
+            assert_eq!(
+                lines,
+                vec![expected.to_owned()],
+                "one line per stop, AT the stop"
+            );
+        }
+
+        // The last line commits via the flush at the terminal yield — it
+        // rides the terminal stop, exactly as on the production road.
+        let end = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        assert_eq!(end["reason"]["type"], serde_json::json!("terminal"));
+        let mut lines = Vec::new();
+        push_lines(&mut lines, &end);
+        assert_eq!(lines, vec!["Third line.".to_owned()]);
+    }
+
+    // An armed breakpoint bounds the run-to-line advance — it stops AT
+    // the breakpoint, before the line past it emits.
+    #[test]
+    fn debug_run_to_line_is_bounded_by_breakpoints() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let addr = json(
+            &session
+                .resolve_source_line("main.ink", 3)
+                .expect("resolves"),
+        );
+        let bp = session.debug_breakpoint_add(
+            u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32"),
+            u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32"),
+            None,
+        );
+
+        let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        assert_eq!(stop["reason"]["type"], serde_json::json!("breakpoint"));
+        assert_eq!(stop["reason"]["id"], serde_json::json!(bp));
+        let mut lines = Vec::new();
+        push_lines(&mut lines, &stop);
+        assert!(
+            !lines.contains(&"Second line.".to_owned()),
+            "the breakpoint stop must not run past the armed line: {lines:?}"
+        );
+    }
+
+    // Continue after ordinary play: the line the production lookahead
+    // materialized (but had not delivered) surfaces exactly once, at the
+    // stop it commits on — here the choices yield, so one Continue click
+    // delivers "Ale ordered." WITH the choice point (the line before a
+    // choice belongs to its presentation, same as the production flush) —
+    // and the journaled road never re-delivers it. (The wrapper's
+    // already-committed short-circuit additionally caps a stop at one
+    // content segment when a prior advance left a committed line in the
+    // cursor — reachable through drain interleavings, not constructible
+    // from cold ordinary play, which is why THIS pin drives the
+    // commit-at-yield shape instead.)
+    #[test]
+    fn debug_run_to_line_after_ordinary_play_delivers_the_pending_line_once() {
+        let src = "VAR gold = 12\n                   -> tavern\n                   === tavern ===\n                   The tavern is loud tonight.\n                   ~ gold = gold - 2\n                   Ale ordered.\n                   * [Order another] -> END\n                   * [Leave] -> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let first = json(&session.continue_single().expect("continue_single"));
+        assert_eq!(
+            first["text"],
+            serde_json::json!("The tavern is loud tonight.\n")
+        );
+
+        let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        assert_eq!(stop["reason"]["type"], serde_json::json!("choices"));
+        let mut lines = Vec::new();
+        push_lines(&mut lines, &stop);
+        assert_eq!(lines, vec!["Ale ordered.".to_owned()]);
+
+        // Choose on the journaled road; nothing is re-delivered.
+        session.choose(1).expect("choose");
+        let next = json(&session.continue_single().expect("continue_single"));
+        assert_ne!(
+            next["text"].as_str().unwrap_or("").trim_end(),
+            "Ale ordered.",
+            "a debug-delivered line must not come back on the journaled road"
+        );
+    }
+
+    /// Two-file INCLUDE fixture for the provenance tests — the shape the
+    /// studio playground actually runs (`main.ink` INCLUDE-ing the story).
+    fn debug_bytes_two_files(main: &str, other: &str) -> Vec<u8> {
+        use std::collections::BTreeMap;
+
+        use brink_environment::{OptionOverrides, Project};
+        use brink_source_tree::InMemory;
+
+        let mut files = BTreeMap::new();
+        files.insert("main.ink".to_string(), main.to_string());
+        files.insert("other.ink".to_string(), other.to_string());
+        let tree = InMemory::new(files);
+        let overrides = OptionOverrides {
+            debug_info: true,
+            ..Default::default()
+        };
+        let env = Project::load(&tree, "main.ink", &overrides).expect("Project::load");
+        let out = brink_environment::compile(&env).expect("compile");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        bytes
+    }
+
+    // An INCLUDE-d file's lines must carry ranges in THEIR OWN file's
+    // coordinates — found live in the playground (its story is INCLUDE-d
+    // from main.ink): every provenance chip pointed hundreds of lines past
+    // the truth because the range was in include-expanded coordinates
+    // while the file name was the include target's.
+    #[test]
+    fn included_file_lines_carry_ranges_in_their_own_file() {
+        let main = "INCLUDE other.ink\n-> top\n";
+        let other = "=== top ===\nPadding one.\nPadding two.\nThe included line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes_two_files(main, other), None, None)
+            .expect("session constructs");
+
+        let mut found = false;
+        for _ in 0..6 {
+            let line = json(&session.continue_single().expect("continue_single"));
+            if line["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("The included line.")
+            {
+                let source = &line["source"];
+                assert_eq!(source["file"], serde_json::json!("other.ink"), "{line}");
+                let start =
+                    usize::try_from(source["range_start"].as_u64().expect("start")).expect("usize");
+                let end =
+                    usize::try_from(source["range_end"].as_u64().expect("end")).expect("usize");
+                assert!(
+                    end <= other.len() && other[start..end].contains("The included line."),
+                    "range {start}..{end} must be in other.ink's own coordinates \
+                     (file is {} bytes)",
+                    other.len()
+                );
+                found = true;
+                break;
+            }
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        assert!(found, "the included line never arrived");
+    }
+
+    // ── W7/#3300: transcript provenance ─────────────────────────────────
+    //
+    // Every delivered text line carries its `source` — the line-table
+    // entry's source location — on BOTH drive roads, so the Player can
+    // make each transcript row a provenance handle (hover file:line,
+    // ⌘-click reveals).
+    #[test]
+    fn delivered_lines_carry_source_provenance_on_both_roads() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Journaled road: continue_single's Line carries `source`.
+        let first = json(&session.continue_single().expect("continue_single"));
+        let source = &first["source"];
+        assert_eq!(source["file"], serde_json::json!("main.ink"), "{first}");
+        let start = source["range_start"].as_u64().expect("range_start");
+        let end = source["range_end"].as_u64().expect("range_end");
+        let text_at =
+            &src[usize::try_from(start).expect("usize")..usize::try_from(end).expect("usize")];
+        assert!(
+            text_at.contains("First line."),
+            "the range must cover the line's own source text, got {text_at:?}"
+        );
+
+        // Debug road: a drained line carries the same field.
+        let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        let lines = stop["lines"].as_array().expect("lines");
+        let second = lines
+            .iter()
+            .find(|l| l["text"].as_str().unwrap_or("").contains("Second line."))
+            .expect("the crossed line is in the outcome");
+        assert_eq!(second["source"]["file"], serde_json::json!("main.ink"));
+        let s2 = second["source"]["range_start"].as_u64().expect("start");
+        let e2 = second["source"]["range_end"].as_u64().expect("end");
+        assert!(
+            src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
+                .contains("Second line."),
+            "debug-road provenance must cover the line's source too"
+        );
     }
 
     #[test]

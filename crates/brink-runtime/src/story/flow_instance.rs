@@ -411,13 +411,13 @@ impl FlowInstance {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
         if self.flow.output.has_completed_line()
-            && let Some((text, tags, element)) =
+            && let Some((text, tags, element, source)) =
                 self.flow
                     .output
                     .take_first_line(program, line_tables, resolver)
         {
             return Ok(StepOutcome::Step(make_output_line(
-                &self.flow, text, tags, element,
+                &self.flow, text, tags, element, source,
             )));
         }
 
@@ -425,13 +425,14 @@ impl FlowInstance {
         //    (any non-Active state), flush it. At a yield point, no more
         //    output is coming, so trailing Newlines are committed.
         if self.flow.output.has_unread() && self.status != StoryStatus::Active {
-            let (text, tags, element) =
+            let (text, tags, element, source) =
                 flush_remaining(&mut self.flow, program, line_tables, resolver);
             return Ok(StepOutcome::Step(yield_step(
                 self.status,
                 text,
                 tags,
                 element,
+                source,
                 &mut self.flow,
                 program,
                 line_tables,
@@ -488,11 +489,11 @@ impl FlowInstance {
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
                     if flow.output.has_completed_line()
-                        && let Some((text, tags, element)) =
+                        && let Some((text, tags, element, source)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(StepOutcome::Step(make_output_line(
-                            flow, text, tags, element,
+                            flow, text, tags, element, source,
                         )));
                     }
                 }
@@ -504,11 +505,11 @@ impl FlowInstance {
                         return Ok(StepOutcome::AwaitingExternal);
                     }
                     if flow.output.has_completed_line()
-                        && let Some((text, tags, element)) =
+                        && let Some((text, tags, element, source)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(StepOutcome::Step(make_output_line(
-                            flow, text, tags, element,
+                            flow, text, tags, element, source,
                         )));
                     }
                 }
@@ -525,11 +526,11 @@ impl FlowInstance {
                         if all_invisible {
                             select_choice(flow, context, status, stats, 0)?;
                             if flow.output.has_completed_line()
-                                && let Some((text, tags, element)) =
+                                && let Some((text, tags, element, source)) =
                                     flow.output.take_first_line(program, line_tables, resolver)
                             {
                                 return Ok(StepOutcome::Step(make_output_line(
-                                    flow, text, tags, element,
+                                    flow, text, tags, element, source,
                                 )));
                             }
                             continue;
@@ -545,21 +546,22 @@ impl FlowInstance {
                     }
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags, element)) =
+                        && let Some((text, tags, element, source)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(StepOutcome::Step(make_output_line(
-                            flow, text, tags, element,
+                            flow, text, tags, element, source,
                         )));
                     }
 
-                    let (text, tags, element) =
+                    let (text, tags, element, source) =
                         flush_remaining(flow, program, line_tables, resolver);
                     return Ok(StepOutcome::Step(yield_step(
                         *status,
                         text,
                         tags,
                         element,
+                        source,
                         flow,
                         program,
                         line_tables,
@@ -572,21 +574,22 @@ impl FlowInstance {
                     *status = StoryStatus::Ended;
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags, element)) =
+                        && let Some((text, tags, element, source)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(StepOutcome::Step(make_output_line(
-                            flow, text, tags, element,
+                            flow, text, tags, element, source,
                         )));
                     }
 
-                    let (text, tags, element) =
+                    let (text, tags, element, source) =
                         flush_remaining(flow, program, line_tables, resolver);
                     return Ok(StepOutcome::Step(yield_step(
                         *status,
                         text,
                         tags,
                         element,
+                        source,
                         flow,
                         program,
                         line_tables,
@@ -1553,25 +1556,40 @@ pub(super) fn resolve_external_call(
 /// existing "just flatten" precision this function already had for tags:
 /// multiple flushed-at-once lines belonging to genuinely different attach
 /// runs is a pre-existing imprecision this fix does not newly introduce.
+/// `flush_remaining`'s flattened yield-time output: joined text, all tags,
+/// merged element data, and the FIRST flushed line's source location
+/// (W7/#3300 provenance — the run "is" where it starts).
+type FlushedRemaining = (
+    String,
+    Vec<String>,
+    BTreeMap<String, String>,
+    Option<brink_format::SourceLocation>,
+);
+
 fn flush_remaining(
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-) -> (String, Vec<String>, BTreeMap<String, String>) {
+) -> FlushedRemaining {
     let lines = flow.output.flush_lines(program, line_tables, resolver);
     let mut text = String::new();
     let mut tags = Vec::new();
     let mut element = BTreeMap::new();
-    for (i, (line_text, line_tags, line_element)) in lines.iter().enumerate() {
+    let mut source: Option<brink_format::SourceLocation> = None;
+    for (i, (line_text, line_tags, line_element, line_source)) in lines.iter().enumerate() {
         if i > 0 {
             text.push('\n');
         }
         text.push_str(line_text);
         tags.extend_from_slice(line_tags);
         element.extend(line_element.iter().map(|(k, v)| (k.clone(), v.clone())));
+        // First line's provenance wins — the flushed run "is" where it starts.
+        if source.is_none() {
+            source.clone_from(line_source);
+        }
     }
-    (text, tags, element)
+    (text, tags, element, source)
 }
 
 /// Build a [`Step::Line`] stamped with the flow's current [`BlockId`] and
@@ -1596,6 +1614,7 @@ fn make_output_line(
     text: String,
     tags: Vec<String>,
     data: BTreeMap<String, String>,
+    source: Option<brink_format::SourceLocation>,
 ) -> Step {
     let element = if data.is_empty() {
         Element::narrative()
@@ -1610,6 +1629,7 @@ fn make_output_line(
         tags,
         block_id: BlockId(flow.next_block_id),
         element,
+        source,
     })
 }
 
@@ -1665,6 +1685,7 @@ fn yield_step(
     text: String,
     tags: Vec<String>,
     element: BTreeMap<String, String>,
+    source: Option<brink_format::SourceLocation>,
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
@@ -1679,13 +1700,13 @@ fn yield_step(
         // Defensive fallback — `yield_step` is only ever called once
         // `status` has transitioned away from `Active` at a genuine yield
         // point (see call sites), so this arm is unreachable in practice.
-        StoryStatus::Active => return make_output_line(flow, text, tags, element),
+        StoryStatus::Active => return make_output_line(flow, text, tags, element, source),
     };
 
     if text.is_empty() && tags.is_empty() {
         terminal
     } else {
         flow.pending_terminal.stash(flow.next_block_id, terminal);
-        make_output_line(flow, text, tags, element)
+        make_output_line(flow, text, tags, element, source)
     }
 }

@@ -12,6 +12,8 @@ import init, {
   compile as wasmCompile,
   compile_fragment as wasmCompileFragment,
   program_checksum as wasmProgramChecksum,
+  program_model_of as wasmProgramModelOf,
+  program_inkt_of as wasmProgramInktOf,
   token_type_names,
   diagnostic_registry,
   token_modifier_names,
@@ -60,6 +62,7 @@ import type {
   StructuralResult,
   DirMoveResult,
   DebugState,
+  DebugLine,
   DebugSourceLocation,
   ProgramAddress,
   Breakpoint,
@@ -143,6 +146,20 @@ export function compile(source: string): CompileResult {
  */
 export function programChecksum(storyBytes: Uint8Array): string {
   return wasmProgramChecksum(storyBytes);
+}
+
+/**
+ * Structured `ProgramModel` for compiled `.inkb` bytes, runner-free
+ * (W7/#3300): since "no auto-start", the Program Explorer and Compiled
+ * Output are compile-bound — they must not need a running session.
+ */
+export function programModelOf(storyBytes: Uint8Array): ProgramModel {
+  return JSON.parse(wasmProgramModelOf(storyBytes)) as ProgramModel;
+}
+
+/** The `.inkt` disassembly for compiled `.inkb` bytes, runner-free. */
+export function programInktOf(storyBytes: Uint8Array): string {
+  return wasmProgramInktOf(storyBytes);
 }
 
 // ── Token legend (stateless) ────────────────────────────────────
@@ -1915,6 +1932,13 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.resolve_source_line(file, line)) as ProgramAddress | null;
   }
 
+  /** The `file:line` of a bytecode position (W6/#3299): `{ file, line }`
+   * (0-based) or `null`. What the execution highlight and the paused chip
+   * consume; degraded-gate before trusting it, like every resolver. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return JSON.parse(this.runner.resolveDebugLine(containerIdx, offset)) as DebugLine | null;
+  }
+
   /** See `StorySessionHandle.hasDebugInfo`. */
   hasDebugInfo(): boolean {
     return this.runner.has_debug_info();
@@ -1978,6 +2002,27 @@ export class StoryRunnerHandle {
    */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
     return JSON.parse(this.runner.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
+
+  /**
+   * Run forward until the next **content line** is delivered (2026-08-30
+   * Continue ruling — the granularity ladder's top tier), or a
+   * breakpoint/choices/terminal stop comes first. The stop lands past the
+   * glue/commit boundary, so the crossed line is IN this outcome's
+   * `lines` — no one-advance delivery lag (#3321). Needs no debug line
+   * info. Same budget default as {@link debugRun}.
+   */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
+   * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
+   * artifact carries no line index. Same journal-bypass contract as
+   * {@link debugStep}; the outcome carries the emitted-lines delta. */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugStepLine(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
   // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
@@ -2893,6 +2938,13 @@ export class StorySessionHandle {
     return JSON.parse(this.session.resolve_source_line(file, line)) as ProgramAddress | null;
   }
 
+  /** The `file:line` of a bytecode position (W6/#3299): `{ file, line }`
+   * (0-based) or `null`. What the execution highlight and the paused chip
+   * consume; degraded-gate before trusting it, like every resolver. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null {
+    return JSON.parse(this.session.resolveDebugLine(containerIdx, offset)) as DebugLine | null;
+  }
+
   /** Whether the loaded program carries a `DebugInfo` section at all —
    * the discriminator between "compiled without debug info" (or the
    * App-settings opt-out, W1/#3294) and "nothing at that position". */
@@ -2965,6 +3017,27 @@ export class StorySessionHandle {
    */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
     return JSON.parse(this.session.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
+
+  /**
+   * Run forward until the next **content line** is delivered (2026-08-30
+   * Continue ruling — the granularity ladder's top tier), or a
+   * breakpoint/choices/terminal stop comes first. The stop lands past the
+   * glue/commit boundary, so the crossed line is IN this outcome's
+   * `lines` — no one-advance delivery lag (#3321). Needs no debug line
+   * info. Same budget default as {@link debugRun}.
+   */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
+   * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
+   * artifact carries no line index. Same journal-bypass contract as
+   * {@link debugStep}; the outcome carries the emitted-lines delta. */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugStepLine(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
   // ── Shared flows (#200) ────────────────────────────────────────

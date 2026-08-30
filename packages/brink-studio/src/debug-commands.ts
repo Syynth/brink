@@ -1,6 +1,9 @@
 /**
  * Debug session commands (D8's control bridge, #3232) — `debug.run` /
- * `debug.stepInto` / `debug.stepOver` / `debug.stepOut` / `debug.
+ * `debug.continue` (2026-08-30 ruling: run to the next CONTENT line and
+ * resume play — the transport's Continue) / `debug.pause` /
+ * `debug.stepInto` / `debug.stepOver` / `debug.stepOut` (LINE steps since
+ * W5/#3298 — the statement tier) / `debug.
  * breakpointAdd` / `debug.breakpointRemove` / `debug.breakpointToggle`.
  *
  * Same discipline as `registerStoryCommands`: commands own the debug
@@ -9,13 +12,9 @@
  * simply has nothing to offer when the active provider doesn't support it
  * (a future remote provider, or before any session exists).
  *
- * SCOPE (#3232's own "Scope Honesty"): registering these makes the bridge
- * reachable through the studio's real command surface (the palette, and
- * any future gutter/breakpoint UI that dispatches by id) — but nothing in
- * the studio can compile a program WITH debug info yet (#3229), so running
- * them today is real plumbing with nothing to usefully bite into. See
- * `packages/studio-store/src/slices/debug.ts`'s own doc for the same point
- * from the state side.
+ * Since W1 (#3294) every studio compile carries debug info, and since W5
+ * (#3298) the Player's own transport dispatches these ids — they are live
+ * surface, not dormant plumbing.
  *
  * Registered at the app boundary (main.tsx) and extracted here so the
  * gating is unit-testable without the bootstrap, mirroring
@@ -47,24 +46,47 @@ export function registerDebugCommands(
     }),
 
     commands.register({
+      id: "debug.continue",
+      title: "Debug: Continue",
+      when: debugCapable,
+      // Continue (2026-08-30 ruling): run until the next content line is
+      // delivered — or a breakpoint/choices/terminal stop — and resume
+      // play. The transport's Continue; `debug.run` stays the free-run.
+      run: (args) => {
+        const budgetCeiling = (args as { budgetCeiling?: number } | undefined)?.budgetCeiling;
+        store.getState().debugRunToLine(budgetCeiling);
+      },
+    }),
+
+    commands.register({
+      id: "debug.pause",
+      title: "Debug: Pause",
+      when: debugCapable,
+      // The pause verb (W5/#3298, ruled first-class): enter the paused
+      // state at the current boundary — the step controls light up, and
+      // debug.continue delivers the next content line and resumes.
+      run: () => store.getState().pauseSession(),
+    }),
+
+    commands.register({
       id: "debug.stepInto",
       title: "Debug: Step Into",
       when: debugCapable,
-      run: () => store.getState().debugStep("into"),
+      run: () => store.getState().debugStepLine("into"),
     }),
 
     commands.register({
       id: "debug.stepOver",
       title: "Debug: Step Over",
       when: debugCapable,
-      run: () => store.getState().debugStep("over"),
+      run: () => store.getState().debugStepLine("over"),
     }),
 
     commands.register({
       id: "debug.stepOut",
       title: "Debug: Step Out",
       when: debugCapable,
-      run: () => store.getState().debugStep("out"),
+      run: () => store.getState().debugStepLine("out"),
     }),
 
     commands.register({

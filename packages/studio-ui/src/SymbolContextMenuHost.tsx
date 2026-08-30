@@ -53,11 +53,32 @@ export function SymbolContextMenuHost(): ReactElement | null {
   const symbolMenu = useStudioStore((s) => s.symbolMenu);
   const outline = useStudioStore((s) => s.outline);
   const closeSymbolMenu = useStudioStore((s) => s.closeSymbolMenu);
+  const sourceBreakpoints = useStudioStore((s) => s.sourceBreakpoints);
+  const breakpointToggleAtLine = useStudioStore((s) => s.breakpointToggleAtLine);
   const dispatch = useSymbolMenuActions();
 
   if (!symbolMenu) return null;
   const target = buildSymbolTarget(outline, symbolMenu);
   if (!target) return null;
+
+  // Header-line breakpoints (W4/#3297, ruled 2026-08-29): the gutter click
+  // on a header is play-from-here, so the header's breakpoint verb lives
+  // here. Only an editor-origin request carries a line — Binder/graph
+  // requests don't, and get no item.
+  const line = symbolMenu.line;
+  const breakpointItems =
+    line === undefined
+      ? undefined
+      : [
+          {
+            label: sourceBreakpoints.some(
+              (b) => b.file === symbolMenu.path && b.line === line - 1,
+            )
+              ? "Remove breakpoint"
+              : "Set breakpoint here",
+            action: () => breakpointToggleAtLine(symbolMenu.path, line - 1),
+          },
+        ];
 
   // Tag the rename action with the surface that raised the menu so the
   // dispatcher can route an editor-origin rename to the inline widget
@@ -75,6 +96,7 @@ export function SymbolContextMenuHost(): ReactElement | null {
       outline={outline}
       onAction={onAction}
       onClose={closeSymbolMenu}
+      extraItems={breakpointItems}
     />
   );
 }

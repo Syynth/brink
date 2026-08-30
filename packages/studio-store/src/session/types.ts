@@ -18,9 +18,12 @@ import type {
   Breakpoint,
   Choice,
   DebugRunOutcome,
+  DebugLine,
   DebugSourceLocation,
   DebugState,
+  ProgramAddress,
   ProgramModel,
+  SourceLocation,
   StepMode,
 } from "@brink/wasm-types";
 import type { StoreNotification } from "../index.js";
@@ -93,11 +96,52 @@ export function sessionDegraded(
  * reactive slice fields; `prevDebugState` (diff highlighting) is derived by the
  * store from successive snapshots — not the provider's problem (spec §3.1).
  */
+/** One transcript row (W7/#3300 — the Player's line-row model).
+ *
+ * `kind`: `"line"` = story output (tags/provenance may ride along);
+ * `"marker"` = the chosen-choice echo (`> text`); `"notice"` = a
+ * studio-side message (load/runtime errors, replay notices). */
+export interface TranscriptLine {
+  text: string;
+  kind: "line" | "marker" | "notice";
+  /** Per-line tags (`OutputLine.tags`) — the Player's tags toggle. */
+  tags: string[];
+  /** Where the line came from in the author's source (transcript
+   * provenance, spec §F9) — byte range, convert before editor use. */
+  source?: SourceLocation;
+}
+
+/** A transcript line's source, in editor terms (W7/#3300): 0-based
+ * line plus a UTF-16 code-unit span — converted from
+ * `TranscriptLine.source`'s byte range by the app boundary's registered
+ * resolver (`setSourceByteResolver`). */
+export interface ProvenancePoint {
+  line: number;
+  start: number;
+  end: number;
+}
+
+/** Story-output row helper — the shape both drive roads append. */
+export function transcriptLine(
+  text: string,
+  tags: string[] = [],
+  source?: SourceLocation,
+): TranscriptLine {
+  return { text, kind: "line", tags, ...(source ? { source } : {}) };
+}
+
+/** Studio-side message row helper (errors, notices). */
+export function transcriptNotice(text: string): TranscriptLine {
+  return { text, kind: "notice", tags: [] };
+}
+
 export interface SessionSnapshot {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   status: SessionStatus;
-  /** Append-only transcript text for the current run (today's `sessionText`). */
-  transcript: string[];
+  /** Append-only transcript for the current run — structured since
+   * W7/#3300 (line rows + tags + provenance). The slice derives the
+   * text-only `sessionText` mirror from it. */
+  transcript: TranscriptLine[];
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   choices: Choice[];
   /** Name-resolved runtime snapshot (location / globals / call stack / visits). */
@@ -111,6 +155,22 @@ export interface SessionSnapshot {
   programModel: ProgramModel | null;
   /** The compiled program as `.inkt` text (#91). Compile-bound like the model. */
   programInkt: string | null;
+  /**
+   * Paused by the debugger (W5/#3298): a breakpoint/watchpoint hit, an
+   * explicit step, or the pause verb. Orthogonal to `status` — a paused
+   * session is still `"running"` in lifecycle terms; this flag is what
+   * enables the step controls and the "Paused — file:line" chip. Cleared
+   * when a debug run resumes free-running or the session stops/restarts.
+   */
+  paused: boolean;
+  /**
+   * The most recent debug-advance outcome (W5/#3298), whether it came from
+   * an explicit step verb or the unified Player advance routing through
+   * the debug loop (armed breakpoints). `null` before any debug-driven
+   * advance this session. The Player's status chip reads the stop reason
+   * from here.
+   */
+  debugOutcome: DebugRunOutcome | null;
   /**
    * Reveal mode (#3011). `false` — the default — advances ONE line per reveal;
    * `true` runs to the next pause. Mirrored into the slice so the Player's
@@ -133,6 +193,8 @@ export const EMPTY_SNAPSHOT: SessionSnapshot = {
   programChecksum: null,
   programModel: null,
   programInkt: null,
+  paused: false,
+  debugOutcome: null,
   auto: false,
 };
 
@@ -197,6 +259,11 @@ export interface SessionProvider {
    * collapse what is already in the transcript.
    */
   setAuto?(auto: boolean): void;
+  /** Configure the paced auto-reveal cadence (W7/#3300 F13, RULED):
+   * with auto on and a positive delay, a reveal advances the run one
+   * line at a time in rapid succession; 0 = one batch. Optional — a
+   * provider without a paced pump ignores the setting. */
+  setPacedReveal?(delayMs: number): void;
 
   dispose(): void;
 }
@@ -223,6 +290,19 @@ export interface DebugSessionProvider extends SessionProvider {
   /** See `StorySessionHandle.resolveDebugPosition`'s doc (`@brink-lang/web`,
    * D9 #3187) for the full program-identity-gating contract. */
   resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null;
+  /** See `StorySessionHandle.resolveSourceLine`'s doc (W2/#3295): the
+   * program address to break on for a 0-based line of `file`, against the
+   * RUNNING session's program; `null` = unbound (no executable code, no
+   * DebugInfo, or no live session). */
+  resolveSourceLine(file: string, line: number): ProgramAddress | null;
+  /** See `StorySessionHandle.hasDebugInfo`'s doc (W2/#3295): the honest
+   * discriminator between "no DebugInfo section" and "nothing at that
+   * position". `false` with no live session. */
+  hasDebugInfo(): boolean;
+  /** See `StorySessionHandle.resolveDebugLine`'s doc (W6/#3299): the
+   * `file:line` (0-based) + covering byte range of a position, or
+   * `null`. */
+  resolveDebugLine(containerIdx: number, offset: number): DebugLine | null;
   /** See `StorySessionHandle.debugBreakpointAdd`'s doc. */
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number;
   /** See `StorySessionHandle.debugBreakpointRemove`'s doc. */
@@ -235,6 +315,21 @@ export interface DebugSessionProvider extends SessionProvider {
   debugRun(budgetCeiling?: number): DebugRunOutcome;
   /** See `StorySessionHandle.debugStep`'s doc. */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+  /** Step to the next source line (#3264, W5/#3298) — the STATEMENT-tier
+   * step the transport's Step Over/Into/Out drive (2026-08-30 Continue
+   * ruling: the author tier is `debugRunToLine`); bounded by armed
+   * breakpoints. Leaves the session paused (except at choices/terminal). */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+  /** Run until the next CONTENT line is delivered (2026-08-30 Continue
+   * ruling — the granularity ladder's top tier), or a breakpoint/choices/
+   * terminal stop comes first. The crossed line is IN the outcome's
+   * `lines` (no one-advance lag, #3321). Needs no debug line info. */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
+  /** The pause verb (W5/#3298, ruled: pause/resume is first-class): the
+   * session enters the paused state at its current boundary — Continue
+   * (`debugRunToLine`) delivers the next content line and resumes play;
+   * the statement steps advance and stay paused. */
+  pause(): void;
 }
 
 /** Narrow a bound `SessionProvider` to `DebugSessionProvider` — checks the

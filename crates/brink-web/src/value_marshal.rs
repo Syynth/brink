@@ -1013,17 +1013,76 @@ pub(crate) enum DebugStopReasonJs {
     AwaitingExternal,
 }
 
+/// One transcript line a debug advance emitted (W5/#3298) — the delta the
+/// call appended to the story transcript. Text is resolved the same way
+/// the transcript reader resolves it; tags ride along verbatim.
+#[derive(Serialize)]
+pub(crate) struct DebugOutputLineJs {
+    pub text: String,
+    pub tags: Vec<String>,
+    /// W7/#3300 transcript provenance — see `LineJs::source`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceLocationJs>,
+}
+
+/// Wire mirror of `brink_format::SourceLocation` (W7/#3300): where a
+/// delivered line came from in the author's source. `range_start`/
+/// `range_end` are UTF-8 BYTE offsets in the file as the compiler
+/// consumed it (same caveat as `DebugLine`'s range fields).
+#[derive(Serialize)]
+pub(crate) struct SourceLocationJs {
+    pub file: String,
+    pub range_start: u32,
+    pub range_end: u32,
+}
+
+pub(crate) fn source_location_to_js(loc: brink_format::SourceLocation) -> SourceLocationJs {
+    SourceLocationJs {
+        file: loc.file,
+        range_start: loc.range_start,
+        range_end: loc.range_end,
+    }
+}
+
 /// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
-/// `debugRun`/`debugStep`.
+/// `debugRun`/`debugStep`/`debugStepLine`.
 #[derive(Serialize)]
 pub(crate) struct DebugRunOutcomeJs {
     pub reason: DebugStopReasonJs,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<DebugPositionJs>,
     pub depth: usize,
+    /// The transcript delta this call produced (W5/#3298): lines emitted
+    /// while debug-stepping MUST reach the studio transcript, or stepping
+    /// over a text line silently eats its output. Empty for a stop that
+    /// emitted nothing (a `~ code` step, an immediate breakpoint).
+    pub lines: Vec<DebugOutputLineJs>,
 }
 
-pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> DebugRunOutcomeJs {
+/// Marshal drained delivery-stream lines (W5/#3298 —
+/// `Story::debug_drain_buffered_lines`). NOT a transcript slice: the
+/// production line-buffered path materializes ahead of what it delivers,
+/// so raw transcript growth both misses lines buffered before the call
+/// and mis-slices parts vs lines. The drain consumes the same cursor
+/// `continue_single` delivers from, which is what keeps the two drive
+/// roads to one coherent stream.
+pub(crate) fn drained_lines_to_js(
+    lines: Vec<brink_runtime::DrainedLine>,
+) -> Vec<DebugOutputLineJs> {
+    lines
+        .into_iter()
+        .map(|(text, tags, source)| DebugOutputLineJs {
+            text,
+            tags,
+            source: source.map(source_location_to_js),
+        })
+        .collect()
+}
+
+pub(crate) fn debug_run_outcome_to_js(
+    o: brink_runtime::DebugRunOutcome,
+    lines: Vec<DebugOutputLineJs>,
+) -> DebugRunOutcomeJs {
     use brink_runtime::DebugStopReason;
     DebugRunOutcomeJs {
         reason: match o.reason {
@@ -1043,6 +1102,7 @@ pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> Debu
             offset: p.offset,
         }),
         depth: o.depth,
+        lines,
     }
 }
 
@@ -1073,6 +1133,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             }),
             choices: None,
             name: None,
+            source: line.source.map(source_location_to_js),
         },
         // Terminals carry no payload of their own (`docs/prose-dialect-spec.md`
         // §7, RULED) — any trailing content already arrived as its own
@@ -1097,6 +1158,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
                     .collect(),
             ),
             name: None,
+            source: None,
         },
         brink_runtime::Step::Done => LineJs {
             r#type: "done",
@@ -1106,6 +1168,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             element: None,
             choices: None,
             name: None,
+            source: None,
         },
         brink_runtime::Step::End => LineJs {
             r#type: "end",
@@ -1115,6 +1178,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             element: None,
             choices: None,
             name: None,
+            source: None,
         },
         // FS-3w (`docs/flow-suspension-spec.md` §10.1): a flow parked at an
         // `await`. Runtime-unreachable until FS-3r — the E052 fence keeps
@@ -1129,6 +1193,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             element: None,
             choices: None,
             name: None,
+            source: None,
         },
     }
 }
@@ -1163,6 +1228,11 @@ pub(crate) struct LineJs {
     /// External name for the `awaiting_external` variant; omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) name: Option<String>,
+    /// Where this line came from in the author's source (W7/#3300
+    /// transcript provenance) — `Some` only for `"text"` lines whose
+    /// line-table entry carries a location.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<SourceLocationJs>,
 }
 
 /// Wire mirror of [`brink_runtime::Element`].

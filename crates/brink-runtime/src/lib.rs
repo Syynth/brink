@@ -105,6 +105,8 @@ pub use session::{
 };
 pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
+#[cfg(feature = "debug-hooks")]
+pub use story::DrainedLine;
 pub use story::{
     BlockId, Choice, DriveOutcome, Element, ExecMode, ExternalFnHandler, ExternalResult,
     FallbackHandler, FlowInstance, FunctionEval, OutputLine, Stats, Step, StepOutcome, Story,

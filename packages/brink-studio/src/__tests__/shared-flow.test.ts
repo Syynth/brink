@@ -93,7 +93,7 @@ describe("FlowSessionProvider", () => {
 
     provider.start();
     expect(runner.continueFlow).toHaveBeenCalledWith("f");
-    expect(snap.transcript).toEqual(["hi"]);
+    expect(snap.transcript.map((l) => l.text)).toEqual(["hi"]);
     expect(snap.status).toBe("ended");
     expect(snap.programChecksum).toBe("0xshared");
   });
@@ -112,7 +112,7 @@ describe("FlowSessionProvider", () => {
     provider.choose(0);
 
     expect(runner.chooseFlow).toHaveBeenCalledWith("f", 0);
-    expect(provider.getSnapshot().transcript).toContain("> Go");
+    expect(provider.getSnapshot().transcript.map((l) => l.text)).toContain("> Go");
   });
 
   it("destroys the flow on dispose", () => {

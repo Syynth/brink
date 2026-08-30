@@ -172,6 +172,31 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
     Ok(format!("0x{:08x}", data.source_checksum))
 }
 
+/// Structured `ProgramModel` JSON for compiled `.inkb` bytes — identical to
+/// `StoryRunner::program_model`, but computed WITHOUT constructing a runner
+/// (W7/#3300: since the ruled "no auto-start", compile products must not
+/// depend on a running session — the Program Explorer and Compiled Output
+/// are compile-bound surfaces).
+#[wasm_bindgen]
+pub fn program_model_of(story_bytes: &[u8]) -> Result<String, JsError> {
+    let data = brink_format::read_inkb(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+    let model = crate::program_model::build(&data);
+    serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
+}
+
+/// The `.inkt` disassembly text for compiled `.inkb` bytes — identical to
+/// `StoryRunner::program_inkt`, runner-free for the same W7/#3300 reason.
+#[wasm_bindgen]
+pub fn program_inkt_of(story_bytes: &[u8]) -> Result<String, JsError> {
+    let data = brink_format::read_inkb(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+    let mut out = String::new();
+    brink_format::write_inkt(&data, &mut out)
+        .map_err(|e| JsError::new(&format!("inkt error: {e}")))?;
+    Ok(out)
+}
+
 /// Compile a project's sources plus one synthetic knot/function appended to
 /// the entry file — Tier-1 speculative-eval fragment compilation (F5.1,
 /// `docs/speculative-eval-spec.md`'s "mechanism B"): the web layer wraps an

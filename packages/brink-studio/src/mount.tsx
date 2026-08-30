@@ -54,6 +54,8 @@ import {
   saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
+  isDebugSessionProvider,
+  sessionDegraded,
   parseBinderOrder,
   withDictionaryWord,
   toProseDiagnostics,
@@ -63,6 +65,7 @@ import {
   CommandRegistry,
   DocumentTypeRegistry,
   EDITOR_REVEAL_COMMAND_ID,
+  encodeProgramAddress,
   LocationResolvers,
   NotificationBell,
   NotificationCenter,
@@ -130,6 +133,7 @@ import {
   createStudioApi,
   inkFileRef,
   loadDebugSettings,
+  loadPlayerSettings,
   loadDiagnosticsSettings,
   loadEditorSettings,
   saveEditorSettings,
@@ -151,6 +155,10 @@ import {
 import { registerStoryCommands } from "./story-commands.js";
 import { registerDebugCommands } from "./debug-commands.js";
 import { registerLocationResolvers } from "./location-resolvers.js";
+import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
+import { executionHighlightsFor } from "./execution-highlights.js";
+import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
+import { provenanceFromBytes } from "./transcript-provenance.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -687,11 +695,16 @@ export async function mountStudio(
   registerDebugCommands(commands, store);
 
   // Recompile on demand (the player's "Run" button). A successful compile
-  // auto-starts the session via the compile-result handler below.
+  // starts the session via the compile-result handler below (the
+  // pending-start flag — a cold compile alone leaves the Player idle,
+  // per the ruled "no auto-start").
   commands.register({
     id: "compile.run",
     title: "Compile: Run",
-    run: () => store.getState().compile(),
+    run: () => {
+      pendingStart = true;
+      store.getState().compile();
+    },
   });
 
   // Notification service (spec §7.5). The center is created here — not
@@ -782,7 +795,7 @@ export async function mountStudio(
   // story.openPlayer. The old player tool window is gone; State View takes
   // its right/start strip slot.
   documentTypes.register({ id: PLAYER_TYPE_ID, component: PlayerPane });
-  registerOpenPlayerCommand(commands, editorGroups);
+  registerOpenPlayerCommand(commands, editorGroups, shellLayout);
   // Settings (#93) is a MODAL, not a document (#3174, ruled 2026-08-27) —
   // consult-and-adjust, so it should not cost you the file you were
   // reading. The document type is gone with the takeover it needed.
@@ -838,6 +851,8 @@ export async function mountStudio(
   // debounced compiles, compile.run, the initial compile). DocumentSessions
   // collapses reference-equal (cached) deliveries.
   let fanOutSeq = 0;
+  // Run's compile→start handshake (W7/#3300 no-auto-start ruling).
+  let pendingStart = false;
   const handleCompileResult = (result: CompileResult): void => {
     // W2d (docs/editor-worker-spec.md): the three panel pulls ride the
     // async session facade at background priority with per-panel coalesce
@@ -929,13 +944,16 @@ export async function mountStudio(
     // null) keeps the last good graph — same policy as programInkt.
     if (result.ok && storyGraph !== null) state.setStoryGraph(storyGraph);
 
-    // Recompile-while-running (spec §7.6): a successful compile auto-starts
-    // the session on the new program through the same code path as the
-    // story.start command — startSession replays the recorded choice log,
-    // truncating with a notification on divergence. A failed compile takes
-    // the `storyBytes === null` branch and leaves the existing session
-    // running on the old program.
-    if (storyBytes) {
+    // Recompile-while-running (spec §7.6): a successful compile replays
+    // the LIVE session onto the new program (startSession's journal
+    // replay, truncating with a notification on divergence). A failed
+    // compile takes the `storyBytes === null` branch and leaves the
+    // existing session on the old program. Since W7/#3300 (RULED
+    // 2026-08-29, "no auto-start"): a COLD compile leaves the Player
+    // idle — Run (compile.run + the pending-start flag) or story.start
+    // begins the session.
+    if (storyBytes && (state.sessionStatus !== "none" || pendingStart)) {
+      pendingStart = false;
       perfTime("studio.startSession", () => state.startSession(storyBytes));
     }
     endFanOut();
@@ -973,6 +991,33 @@ export async function mountStudio(
       }),
     // "Play from here" (#186): a fresh session entered at the knot/stitch path.
     onPlayFrom: (inkPath, label) => store.getState().openSession({ path: inkPath, label }),
+    // Breakpoints (W4/#3297): the gutter renders the store's source
+    // anchors (0-based there, 1-based in the editor — the fencepost lives
+    // at this edge and nowhere else). Bound renders solid only while the
+    // running program matches the latest compile (suppressed-never-stale).
+    getBreakpoints: (path) => {
+      const st = store.getState();
+      const degraded = sessionDegraded(st.programChecksum, st.compiledChecksum);
+      return st.sourceBreakpoints
+        .filter((b) => b.file === path)
+        .map((b) => ({
+          line: b.line + 1,
+          state: !b.enabled
+            ? ("disabled" as const)
+            : b.address !== null && !degraded
+              ? ("bound" as const)
+              : ("unbound" as const),
+        }));
+    },
+    onToggleBreakpoint: (path, line) =>
+      store.getState().breakpointToggleAtLine(path, line - 1),
+    onBreakpointsMoved: (path, moves) =>
+      store
+        .getState()
+        .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
+    // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
+    // in execution-highlights.ts, tested over a real store state.
+    getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1258,6 +1303,13 @@ export async function mountStudio(
 
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
+  (window as unknown as Record<string, unknown>).__brinkStore = store;
+  // Dev double-mounts (StrictMode / playground remounts) make a single
+  // handle ambiguous — keep them all so a probe can tell dead from live.
+  {
+    const w = window as unknown as { __brinkStores?: unknown[] };
+    (w.__brinkStores ??= []).push(store);
+  }
   (window as unknown as Record<string, unknown>).__brinkNotifications = notifications;
   (window as unknown as Record<string, unknown>).__brinkEditorGroups = editorGroups;
 
@@ -1473,10 +1525,57 @@ export async function mountStudio(
     loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
+  // Paced auto-reveal cadence (W7/#3300 F13, Settings → Player).
+  store.getState().setSessionPaced(
+    loadPlayerSettings(window.localStorage).pacedRevealMs,
+  );
+
+  // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the
+  // same per-project scope the editor-tab snapshot uses. No scope (an
+  // embedder without session persistence) → session-local breakpoints.
+  if (editorScope !== undefined) {
+    store.getState().applyPersistedBreakpoints(
+      loadBreakpoints(window.localStorage, editorScope),
+    );
+    store.getState().setBreakpointsSink((list) =>
+      saveBreakpoints(window.localStorage, editorScope, list),
+    );
+  }
+
+  // Transcript provenance (W7/#3300): the byte-range → editor-terms
+  // converter, registered here because only the app boundary can read
+  // file text. Callers gate on degraded-ness themselves.
+  store.getState().setSourceByteResolver((file, byteStart, byteEnd) => {
+    let text: string | null = null;
+    try {
+      text = project.getSession().getFileSource(file);
+    } catch {
+      text = null;
+    }
+    if (text === null) return null;
+    return provenanceFromBytes(text, byteStart, byteEnd);
+  });
+
   // Bind handles, kick the initial compile, and open the entry file (the
   // groups-store subscription above keeps focus tracking in sync as the
   // document component mounts).
   store.getState().initialize(project, documents);
+
+  // Breakpoint dots re-render on anchor changes AND on checksum changes
+  // (bound⇄unbound is a function of degraded-ness, W4/#3297); the
+  // execution highlight re-renders whenever the runtime position,
+  // paused-ness, or status moves (W6/#3299). The subscription lives in
+  // `debug-refresh-subscription.ts` — its re-entrancy discipline is
+  // load-bearing and tested there.
+  subscribeDebugRefresh(store, {
+    refreshBreakpoints: () => documents.refreshBreakpoints(),
+    refreshExecutionHighlight: () => documents.refreshExecutionHighlight(),
+    revealProgram: (containerIdx, offset) =>
+      commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
+        kind: "program",
+        address: encodeProgramAddress(containerIdx, offset),
+      }),
+  });
 
   // Restore the persisted editor settings (Settings → Editor). After initialize,
   // so the actions reach `documents`; new views read them from slotOptions, open

@@ -33,7 +33,7 @@ export type ContextMenuTarget =
       canRename: boolean;
     };
 
-interface MenuItem {
+export interface MenuItem {
   label: string;
   disabled?: boolean;
   action?: () => void;
@@ -47,6 +47,12 @@ interface Props {
   outline: FileOutline[];
   onAction: (action: ContextMenuAction) => void;
   onClose: () => void;
+  /** Caller-supplied items appended after the built ones, behind a
+   *  separator (W4/#3297: the editor-origin symbol menu adds its
+   *  "Set/Remove breakpoint" item here — surfaces without a line, like the
+   *  Binder, pass nothing and see nothing). Same separator normalization
+   *  as the built items. */
+  extraItems?: MenuItem[];
 }
 
 export type ContextMenuAction =
@@ -117,7 +123,7 @@ export function useContextMenuDismiss(
   useEffect(() => registerDismissible(onClose), [onClose]);
 }
 
-function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Props) {
+function BinderContextMenuInner({ x, y, target, outline, onAction, onClose, extraItems }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [submenuFor, setSubmenuFor] = useState<string | null>(null);
 
@@ -126,7 +132,12 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
   // Normalized at render (maintainer, 2026-08-23): a separator only ever
   // renders BETWEEN two real items — leading, trailing, and doubled
   // separators (e.g. from a conditionally empty group) collapse away.
-  const items: MenuItem[] = buildItems(target, outline, onAction).filter(
+  const items: MenuItem[] = [
+    ...buildItems(target, outline, onAction),
+    ...(extraItems !== undefined && extraItems.length > 0
+      ? [{ label: "---" }, ...extraItems]
+      : []),
+  ].filter(
     (item, i, all) =>
       item.label !== "---" ||
       (all.slice(0, i).some((p) => p.label !== "---") &&
