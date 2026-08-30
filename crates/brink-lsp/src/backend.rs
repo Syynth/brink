@@ -220,8 +220,13 @@ impl LanguageOptions {
             // D6 (`docs/debugger-spec.md` §1.2): no brink-lsp-side source
             // today (see `Self::store`'s doc) — same explicit-default
             // posture as `host_manifest`/`external_check`/
-            // `semantic_type_check` above, not an implicit `..`.
-            emit_debug_info: false,
+            // `semantic_type_check` above, not an implicit `..`. `true`
+            // per the 2026-08-29 "debug info on by default" ruling: inert
+            // here (brink-lsp runs diagnostics, not consumable compiles,
+            // and this is not an analysis input), but aligned with the
+            // ruled dev-session default so an LSP-side compile road, if
+            // one ever grows, inherits it rather than silently differing.
+            emit_debug_info: true,
             dialect: self
                 .dialect
                 .lock()

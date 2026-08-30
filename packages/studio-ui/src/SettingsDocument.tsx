@@ -177,6 +177,58 @@ export function saveDiagnosticsSettings(
   }
 }
 
+// ── Debugging persistence ───────────────────────────────────────────
+//
+// W1/#3294 (ruled 2026-08-29, "debug info on by default"): every studio
+// compile emits the DebugInfo section unless the author opts out here.
+// Same lenient-loader posture as the other keys; only an explicit,
+// persisted `false` opts out — absent, garbage, and anything else land on
+// the ruled default.
+
+export const DEBUG_STORAGE_KEY = "brink-studio.debug.v1";
+
+export interface DebugSettings {
+  /** Emit the `DebugInfo` section in studio compiles. Default ON — the
+   *  opt-out exists for authors who measure a compile cost they don't
+   *  want to pay; with it off, breakpoints refuse to bind and stepping
+   *  reports no source position (spec F1's honest degradation). */
+  emitDebugInfo: boolean;
+}
+
+const DEFAULT_DEBUG: DebugSettings = { emitDebugInfo: true };
+
+/** Load persisted debugging settings. Never throws; defaults on garbage. */
+export function loadDebugSettings(storage: Pick<Storage, "getItem">): DebugSettings {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(DEBUG_STORAGE_KEY);
+  } catch {
+    return DEFAULT_DEBUG;
+  }
+  if (raw === null || raw === "") return DEFAULT_DEBUG;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_DEBUG;
+  }
+  const obj = parsed as { emitDebugInfo?: unknown } | null;
+  // Default ON: only an explicit false (a persisted opt-out) disables it.
+  return { emitDebugInfo: obj?.emitDebugInfo !== false };
+}
+
+/** Persist debugging settings. Storage failures degrade to in-session. */
+export function saveDebugSettings(
+  storage: Pick<Storage, "setItem">,
+  settings: DebugSettings,
+): void {
+  try {
+    storage.setItem(DEBUG_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Quota/denied storage — the setting still applies for this session.
+  }
+}
+
 // ── Editor persistence ──────────────────────────────────────────────
 
 export const EDITOR_STORAGE_KEY = "brink-studio.editor.v1";
@@ -401,6 +453,32 @@ export function DiagnosticsSection() {
         </select>
       </SettingsRow>
     </section>
+  );
+}
+
+export function DebuggingSection() {
+  const debugInfoEnabled = useStudioStore((s) => s.debugInfoEnabled);
+  const setDebugInfoEnabled = useStudioStore((s) => s.setDebugInfoEnabled);
+  const debugInfoId = useId();
+
+  const onChange = (on: boolean): void => {
+    // The store action pushes the flag to the session and recompiles (only
+    // codegen re-runs; diagnostics stay memoized), so the change takes
+    // effect on the very next bytes the Player runs.
+    setDebugInfoEnabled(on);
+    saveDebugSettings(window.localStorage, { emitDebugInfo: on });
+  };
+
+  return (
+    <div className="settings-section">
+      <SettingsRow
+        title="Emit debug info in studio compiles"
+        description="On by default: breakpoints bind and stepping resolves to source with no restart. Turn off only if compile time on a large project becomes noticeable — the debugger then degrades honestly (breakpoints refuse to bind rather than lying)."
+        htmlFor={debugInfoId}
+      >
+        <SettingsToggle id={debugInfoId} checked={debugInfoEnabled} onChange={onChange} />
+      </SettingsRow>
+    </div>
   );
 }
 

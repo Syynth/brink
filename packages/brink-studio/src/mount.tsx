@@ -127,6 +127,7 @@ import {
   StudioApiProvider,
   createStudioApi,
   inkFileRef,
+  loadDebugSettings,
   loadDiagnosticsSettings,
   loadEditorSettings,
   saveEditorSettings,
@@ -1462,6 +1463,13 @@ export async function mountStudio(
   // initialize applies it to the wasm session ahead of the first compile.
   store.getState().setExternalCheck(
     loadDiagnosticsSettings(window.localStorage).externalCheck,
+  );
+
+  // Restore a persisted debug-info opt-out the same way (W1/#3294: on by
+  // default; only an explicit opt-out changes anything, and it must land
+  // before the first compile so the first bytes already honour it).
+  store.getState().setDebugInfoEnabled(
+    loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
   // Bind handles, kick the initial compile, and open the entry file (the

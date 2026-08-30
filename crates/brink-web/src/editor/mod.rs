@@ -416,14 +416,18 @@ impl EditorSession {
     /// position, D6's tables, D7's locals and D9's program→source resolver
     /// all resolve to nothing, however correct they are.
     ///
-    /// **Per-session by ruling (2026-08-28), not always-on and not a
-    /// `brink.toml` key.** A host turns it on for the session it is about
-    /// to debug and off when that session ends, so ordinary authoring
-    /// never pays the size/time cost and debuggability never becomes a
-    /// property of the project. The caller must **recompile** for the flag
-    /// to take effect — it changes what the next `compile_project` emits,
-    /// not the artifact already produced. That recompile is codegen only:
-    /// diagnostics are byte-identical either way and stay memoized.
+    /// **Per-session by ruling, not a `brink.toml` key — and ON by
+    /// default since 2026-08-29** (`docs/decision-log.md` "debug info on
+    /// by default", superseding the 2026-08-28 default-off consequence;
+    /// the mechanism here is unchanged). Every studio compile carries the
+    /// section so breakpoints bind and stepping resolves mid-play with no
+    /// artifact switch; a host's App-settings opt-out calls this with
+    /// `false`. Release export is unaffected (the CLI/release path's
+    /// `AnalysisOptions::default()` stays off). The caller must
+    /// **recompile** for a change to take effect — it changes what the
+    /// next `compile_project` emits, not the artifact already produced.
+    /// That recompile is codegen only: diagnostics are byte-identical
+    /// either way and stay memoized.
     ///
     /// No-ops when unchanged, so calling it on every debug-session start
     /// is safe and does not invalidate an artifact already carrying the
@@ -6631,7 +6635,9 @@ mod tests {
     // actually carries to the studio, fed to the same `WebSession` the
     // studio's `LocalSessionProvider` constructs. Both states are pinned —
     // off resolving to nothing is as much the contract as on resolving to
-    // source, since "off" is what every ordinary authoring session gets.
+    // source. Since the 2026-08-29 "debug info on by default" ruling
+    // (W1/#3294), ON is what every studio session gets from birth and OFF
+    // is the App-settings opt-out — the tests below pin that orientation.
 
     /// The `story_bytes` a successful `compile_project` hands the studio.
     fn compiled_story_bytes(s: &mut EditorSession) -> Vec<u8> {
@@ -6670,32 +6676,26 @@ mod tests {
     }
 
     #[test]
-    fn debug_info_is_off_by_default_and_the_toggle_makes_the_studios_own_bytes_debuggable() {
+    fn debug_info_is_on_by_default_and_the_opt_out_strips_the_studios_own_bytes() {
         let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
         let mut s = EditorSession::new();
         s.update_file("main.ink", src);
 
-        // Off by default — the ship-policy posture (§1.2) every ordinary
-        // authoring session keeps.
+        // ON by default — the 2026-08-29 ruling (W1/#3294): a fresh studio
+        // session's own bytes are debuggable with no toggle touched, which
+        // is what makes breakpoints bindable mid-play with no artifact
+        // switch. This is the assertion whose OLD inverse pinned #3229's
+        // gap; the orientation flipped with the ruling, the
+        // end-to-end-through-real-bytes discipline did not.
         assert!(
-            !s.debug_info_enabled(),
-            "a fresh session must not emit debug info"
+            s.debug_info_enabled(),
+            "a fresh session must emit debug info by default (W1/#3294)"
         );
-        assert_eq!(
-            resolve_entry_position(&compiled_story_bytes(&mut s)),
-            "null",
-            "without the toggle the studio's own bytes must carry no DebugInfo — \
-             this is the #3229 gap, pinned so it cannot silently return"
-        );
-
-        // On: same session, same source, recompiled.
-        s.set_debug_info_enabled(true);
-        assert!(s.debug_info_enabled(), "the toggle must stick");
 
         let resolved_json = resolve_entry_position(&compiled_story_bytes(&mut s));
         assert_ne!(
             resolved_json, "null",
-            "with the toggle on, a position from the studio's own compile must resolve"
+            "by default, a position from the studio's own compile must resolve"
         );
         let resolved: serde_json::Value = serde_json::from_str(&resolved_json).expect("valid JSON");
         assert_eq!(resolved["file"], serde_json::json!("main.ink"));

@@ -22,6 +22,7 @@ export const SETTINGS_SECTION_IDS = {
   appearance: "appearance",
   keymap: "keymap",
   external: "external",
+  debugging: "debugging",
 } as const;
 
 /** Where a door with no preference of its own lands. */
