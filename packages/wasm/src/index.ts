@@ -14,6 +14,8 @@ import init, {
   program_checksum as wasmProgramChecksum,
   program_model_of as wasmProgramModelOf,
   program_inkt_of as wasmProgramInktOf,
+  lines_table_of as wasmLinesTableOf,
+  size_report_of as wasmSizeReportOf,
   token_type_names,
   diagnostic_registry,
   token_modifier_names,
@@ -70,6 +72,7 @@ import type {
   StepMode,
   ProgramModel,
   LinesTable,
+  SizeReport,
   SaveState,
   LoadReport,
   HostManifest,
@@ -162,6 +165,21 @@ export function programModelOf(storyBytes: Uint8Array): ProgramModel {
 /** The `.inkt` disassembly for compiled `.inkb` bytes, runner-free. */
 export function programInktOf(storyBytes: Uint8Array): string {
   return wasmProgramInktOf(storyBytes);
+}
+
+/**
+ * The compiled lines table for `.inkb` bytes, runner-free (#3339) — the
+ * static mirror of {@link StoryRunner.linesTable}, for the Program
+ * Explorer's Line tables view, which shows compiled output whether or not
+ * a story is running.
+ */
+export function linesTableOf(storyBytes: Uint8Array): LinesTable {
+  return JSON.parse(wasmLinesTableOf(storyBytes)) as LinesTable;
+}
+
+/** The `.inkb` size report, runner-free (#3339 Size view). */
+export function sizeReportOf(storyBytes: Uint8Array): SizeReport {
+  return JSON.parse(wasmSizeReportOf(storyBytes)) as SizeReport;
 }
 
 // ── Token legend (stateless) ────────────────────────────────────
