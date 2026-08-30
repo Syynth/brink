@@ -30,6 +30,8 @@
   --bs-error: #c22132;
   --bs-warning: #c07a12;
   --bs-todo: #b98a1a; /* Inky highlights TODO as a goldenrod band */
+  /* Draft files (#3145) — warm, one step from --bs-todo's #b98a1a and readable on the light ground. */
+  --bs-draft: #c2661a;
   --bs-todo-band: #d9b968;
   --bs-todo-ink: #2a2130;
   --bs-success: #1d8348;
@@ -65,6 +67,9 @@
 
   /* ── Chromium-88-safe derived colors (#276) ─────────────────────── */
   --bs-accent-rgb: 26 83 216;
+  /* Search's second accent — violet cousin of the #1a53d8 accent, readable on the light ground. */
+  --bs-accent-secondary: #6a3fc0;
+  --bs-accent-secondary-rgb: 106 63 192;
   --bs-surface-bg-rgb: 242 242 242;
   --bs-panel-bg-rgb: 235 235 235;
   --bs-fg-rgb: 17 17 17;
