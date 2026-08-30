@@ -18,7 +18,7 @@
  * and says so. See `keymap-model.ts` for the rule; this file is its view.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type Chord,
   type KeymapRow,
@@ -47,6 +47,47 @@ export function KeymapSettings() {
   const [byKey, setByKey] = useState(false);
   const [capture, setCapture] = useState<Capture | null>(null);
 
+  // While recording, this listener owns the keyboard — capture phase on
+  // `window`, ahead of everything.
+  //
+  // The first version put `onKeyDown` on the capture field and relied on
+  // React's `autoFocus` to focus it. `autoFocus` is a no-op on a non-form
+  // element, so the field never had focus, every key went to the document
+  // instead, and the shell key handler and the dismiss registry (both
+  // bubble-phase on `window`) got them: Escape closed the whole Settings
+  // modal, Enter did nothing, and no key was ever recorded. Focusing the
+  // div would fix the symptom; owning the keyboard outright is what makes
+  // recording correct, because a chord being recorded must not also FIRE
+  // the command it is currently bound to.
+  useEffect(() => {
+    if (capture === null) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      // Bare Enter/Escape drive the recorder; modified ones are ordinary
+      // chords, so `Alt-Enter` and `Shift-Escape` stay bindable.
+      const bare = !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (bare && event.key === "Escape") {
+        setCapture(null);
+        return;
+      }
+      if (bare && event.key === "Enter") {
+        if (capture.chord !== null) commit(capture.commandId, capture.chord);
+        return;
+      }
+      const chord = chordFromEvent(event, isMac);
+      // `chordFromEvent` only rejects BARE modifier presses; an event
+      // reporting `key: ""` (some synthetic and IME-adjacent ones do)
+      // yields a chord with an empty key, which renders as a blank chip
+      // and could never be saved — `parseKeybinding` rejects it on the way
+      // back in. Drop it here rather than showing a recording that cannot
+      // commit.
+      if (chord !== null && chord.key !== "") probe(capture.commandId, chord);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  });
+
   const overrides = keymapOverrides.current;
   const all = useMemo(
     () => commands.list().map((c) => ({ id: c.id, title: c.title, keybinding: c.keybinding })),
@@ -58,6 +99,24 @@ export function KeymapSettings() {
   const apply = (next: typeof overrides): void => {
     keymapOverrides.set(next);
     bump((n) => n + 1);
+  };
+
+  /** Show what a chord WOULD do, without writing anything yet. */
+  const probe = (commandId: string, chord: Chord): void => {
+    const result = bindChord(all, keymapOverrides.current, commandId, chord);
+    setCapture({
+      commandId,
+      chord,
+      conflict:
+        result.displaced === null
+          ? null
+          : { title: result.displaced.title, nowUnbound: result.displaced.nowUnbound },
+    });
+  };
+
+  const commit = (commandId: string, chord: Chord): void => {
+    apply(bindChord(all, keymapOverrides.current, commandId, chord).overrides);
+    setCapture(null);
   };
 
   const visible = rows.filter((row) => matches(row, query, byKey, isMac));
@@ -103,22 +162,6 @@ export function KeymapSettings() {
                 onStartCapture={() =>
                   setCapture({ commandId: entry.row.id, chord: null, conflict: null })
                 }
-                onCancelCapture={() => setCapture(null)}
-                onCaptureChord={(chord) => {
-                  const probe = bindChord(all, overrides, entry.row.id, chord);
-                  setCapture({
-                    commandId: entry.row.id,
-                    chord,
-                    conflict:
-                      probe.displaced === null
-                        ? null
-                        : { title: probe.displaced.title, nowUnbound: probe.displaced.nowUnbound },
-                  });
-                }}
-                onCommit={(chord) => {
-                  apply(bindChord(all, overrides, entry.row.id, chord).overrides);
-                  setCapture(null);
-                }}
                 onRemove={(chord) => apply(unbindChord(all, overrides, entry.row.id, chord))}
                 onReset={() => apply(resetCommand(overrides, entry.row.id))}
               />
@@ -151,9 +194,6 @@ function KeymapRowView({
   isMac,
   capture,
   onStartCapture,
-  onCancelCapture,
-  onCaptureChord,
-  onCommit,
   onRemove,
   onReset,
 }: {
@@ -161,44 +201,17 @@ function KeymapRowView({
   isMac: boolean;
   capture: Capture | null;
   onStartCapture: () => void;
-  onCancelCapture: () => void;
-  onCaptureChord: (chord: Chord) => void;
-  onCommit: (chord: Chord) => void;
   onRemove: (chord: Chord) => void;
   onReset: () => void;
 }) {
-  const fieldRef = useRef<HTMLDivElement>(null);
-
   if (capture !== null) {
     return (
       <li className="keymap-row is-capturing">
         <div className="keymap-row-main">
           <span className="keymap-name">{row.name}</span>
-          <div
-            ref={fieldRef}
-            className="keymap-capture"
-            tabIndex={0}
-            role="textbox"
-            aria-label={`Recording a keybinding for ${row.title}`}
-            autoFocus
-            onKeyDown={(event) => {
-              // Every key belongs to the recording, including Tab and the
-              // chords the browser would otherwise act on.
-              event.preventDefault();
-              event.stopPropagation();
-              if (event.key === "Escape") {
-                onCancelCapture();
-                return;
-              }
-              if (event.key === "Enter" && capture.chord !== null) {
-                onCommit(capture.chord);
-                return;
-              }
-              const chord = chordFromEvent(event.nativeEvent, isMac);
-              if (chord !== null) onCaptureChord(chord);
-            }}
-            onBlur={onCancelCapture}
-          >
+          {/* Presentational only — the parent owns the keyboard from a
+              window capture listener while recording. */}
+          <div className="keymap-capture" aria-live="polite">
             {capture.chord === null ? (
               <span className="keymap-capture-hint">Press keys…</span>
             ) : (

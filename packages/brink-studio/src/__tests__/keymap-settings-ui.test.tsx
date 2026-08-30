@@ -85,9 +85,18 @@ function row(name: string): HTMLElement {
   return found as HTMLElement;
 }
 
-const press = (el: Element, init: KeyboardEventInit): void => {
+/**
+ * Press a key the way a real one arrives: dispatched at `window`.
+ *
+ * The first version of these tests dispatched at the capture field, which
+ * is what let the bug through — the field never had focus (React's
+ * `autoFocus` is a no-op on a div), so in the real studio no key ever
+ * reached it. Escape fell through to the Settings modal's dismisser and
+ * closed the whole dialog; Enter fell through to nothing.
+ */
+const press = (init: KeyboardEventInit): void => {
   act(() => {
-    el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
   });
 };
 
@@ -106,10 +115,9 @@ describe("the keymap table", () => {
     act(() => {
       row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
     });
-    const field = container!.querySelector(".keymap-capture")!;
-    press(field, { key: "k", metaKey: true });
+    press({ key: "k", metaKey: true });
     expect(container!.querySelector(".keymap-chord.is-capturing")).not.toBeNull();
-    press(field, { key: "Enter" });
+    press({ key: "Enter" });
     expect(overrides.current["search.symbol"]).toContain("Mod-K");
   });
 
@@ -118,7 +126,7 @@ describe("the keymap table", () => {
     act(() => {
       row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
     });
-    press(container!.querySelector(".keymap-capture")!, {
+    press({
       key: "f",
       metaKey: true,
       shiftKey: true,
@@ -135,9 +143,8 @@ describe("the keymap table", () => {
     act(() => {
       row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
     });
-    const field = container!.querySelector(".keymap-capture")!;
-    press(field, { key: "f", metaKey: true, shiftKey: true });
-    press(field, { key: "Enter" });
+    press({ key: "f", metaKey: true, shiftKey: true });
+    press({ key: "Enter" });
 
     expect(overrides.current["search.find"]).toBeNull();
     const chord = parseKeybinding("Mod-Shift-F")!;
@@ -151,9 +158,8 @@ describe("the keymap table", () => {
     act(() => {
       row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
     });
-    const field = container!.querySelector(".keymap-capture")!;
-    press(field, { key: "k", metaKey: true });
-    press(field, { key: "Escape" });
+    press({ key: "k", metaKey: true });
+    press({ key: "Escape" });
     expect(container!.querySelector(".keymap-capture")).toBeNull();
     expect(overrides.current).toEqual({});
   });
@@ -178,9 +184,8 @@ describe("the keymap table", () => {
     act(() => {
       row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
     });
-    const field = container!.querySelector(".keymap-capture")!;
-    press(field, { key: "k", metaKey: true });
-    press(field, { key: "Enter" });
+    press({ key: "k", metaKey: true });
+    press({ key: "Enter" });
     expect(row("Find symbol").querySelector(".keymap-source")!.textContent).toBe("Custom");
 
     act(() => {
@@ -188,5 +193,67 @@ describe("the keymap table", () => {
     });
     expect(overrides.current["search.symbol"]).toBeUndefined();
     expect(row("Find symbol").querySelector(".keymap-source")!.textContent).toBe("Default");
+  });
+
+  it("swallows the keys it records, so nothing else acts on them", () => {
+    // The bug this replaces: the capture field relied on React `autoFocus`,
+    // which does nothing on a div, so every key went to the document
+    // instead. Escape reached the Settings modal's dismisser and closed the
+    // whole dialog; Enter reached nothing. Recording must own the keyboard —
+    // and a chord being recorded must not also FIRE the command it is
+    // currently bound to.
+    render();
+    const seen: string[] = [];
+    const bystander = (e: Event) => seen.push((e as KeyboardEvent).key);
+    window.addEventListener("keydown", bystander);
+    const startCapture = () =>
+      act(() => {
+        row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
+      });
+    try {
+      // Each control ENDS the recording, so each needs its own session —
+      // keys arriving after one are legitimately not the recorder's.
+      startCapture();
+      press({ key: "Escape" });
+      expect(seen, "Escape leaked to the Settings dismisser").toEqual([]);
+
+      startCapture();
+      press({ key: "f", metaKey: true, shiftKey: true });
+      expect(seen, "a recorded chord leaked and could fire its command").toEqual([]);
+      press({ key: "Enter" });
+      expect(seen, "Enter leaked while recording").toEqual([]);
+
+      // Recording over: keys reach the rest of the app again.
+      press({ key: "Escape" });
+      expect(seen).toEqual(["Escape"]);
+    } finally {
+      window.removeEventListener("keydown", bystander);
+    }
+  });
+
+  it("records a modified Enter or Escape instead of treating it as a control", () => {
+    // Only BARE Enter/Escape drive the recorder, so `Alt-Enter` stays
+    // bindable rather than being swallowed as "save".
+    const { overrides } = render();
+    act(() => {
+      row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
+    });
+    press({ key: "Enter", altKey: true });
+    expect(container!.querySelector(".keymap-chord.is-capturing")?.textContent).toContain("Enter");
+    press({ key: "Enter" });
+    expect(overrides.current["search.symbol"]).toContain("Alt-Enter");
+  });
+
+  it("ignores an event that reports no key", () => {
+    // `chordFromEvent` only rejects bare MODIFIER presses; `key: ""` yields
+    // a chord with an empty key, which renders as a blank chip and cannot
+    // round-trip — `parseKeybinding` rejects it on the way back in.
+    render();
+    act(() => {
+      row("Find symbol").querySelector<HTMLButtonElement>(".keymap-add")!.click();
+    });
+    press({ key: "" });
+    expect(container!.querySelector(".keymap-chord.is-capturing")).toBeNull();
+    expect(container!.querySelector(".keymap-capture-hint")?.textContent).toContain("Press keys");
   });
 });
