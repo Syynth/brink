@@ -392,15 +392,22 @@
   background: transparent;
 }
 .brink-studio .dp-value-input {
-  width: 100%;
-  max-width: 16ch;
+  /* Zero layout shift (maintainer feedback): the input must occupy the
+     SAME box the display span did — font inherited from the cell, the
+     1px border absorbed by negative margin, no extra padding height —
+     so rows don't jump apart when editing opens. */
+  display: inline-block;
+  width: 12ch;
+  min-width: 0;
   box-sizing: border-box;
-  padding: 0 3px;
+  margin: -1px;
+  padding: 0 2px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
   border: 1px solid var(--bs-accent);
   border-radius: 3px;
-  font-size: inherit;
+  font: inherit;
+  line-height: inherit;
 }
 /* Refused edit (parse/type failure): shake, keep the input. */
 .brink-studio .dp-shake {
