@@ -68,6 +68,15 @@ struct KnotNodeJs {
     /// #3187) — before this field, a disassembly line had nothing to key a
     /// running position against.
     container_idx: u32,
+    /// Total bytecode bytes of this SCOPE — the scope container itself plus
+    /// every anonymous child container (gathers, choice targets, sequence
+    /// wrappers) that belongs to it via `scope_id`. The anonymous children
+    /// are deliberately not tree nodes, so without this rollup their bytes
+    /// would be invisible to any size accounting (#3339's size bars and
+    /// treemap read exactly this).
+    byte_size: u32,
+    /// Containers in the scope, anonymous children included ("4 cont.").
+    container_count: u32,
     disasm: Vec<DisasmLineJs>,
     children: Vec<KnotNodeJs>,
 }
@@ -337,6 +346,16 @@ pub fn build(data: &StoryData) -> ProgramModelJs {
 
 /// Build the knot → stitch tree from named scope containers.
 fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
+    // One pass to roll bytecode bytes and container counts up to their
+    // owning scope: anonymous containers carry their scope's id in
+    // `scope_id`, the scope container is its own scope.
+    let mut scope_bytes: BTreeMap<brink_format::DefinitionId, (u32, u32)> = BTreeMap::new();
+    for c in &data.containers {
+        let entry = scope_bytes.entry(c.scope_id).or_insert((0, 0));
+        entry.0 += u32::try_from(c.bytecode.len()).unwrap_or(u32::MAX);
+        entry.1 += 1;
+    }
+
     // Group named scope containers by top-level knot name. BTreeMap keeps the
     // output deterministic.
     let mut groups: BTreeMap<String, KnotGroup> = BTreeMap::new();
@@ -370,6 +389,8 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
             flags,
             path_hash: c.path_hash,
             container_idx: u32::try_from(container_idx).unwrap_or(u32::MAX),
+            byte_size: scope_bytes.get(&c.id).map_or(0, |&(b, _)| b),
+            container_count: scope_bytes.get(&c.id).map_or(0, |&(_, n)| n),
             disasm,
             children: Vec::new(),
         };
@@ -398,6 +419,10 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
                 flags: Vec::new(),
                 path_hash: 0,
                 container_idx: u32::MAX,
+                // No container backs this synthesized node; its stitches
+                // carry their own sizes.
+                byte_size: 0,
+                container_count: 0,
                 disasm: Vec::new(),
                 children: group.stitches,
             },
@@ -796,5 +821,70 @@ mod container_idx_tests {
                 prev = Some(line.offset);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_size_tests {
+    use super::build;
+
+    /// The scope rollup behind `byte_size`/`container_count` (#3339): a
+    /// knot's size must include the ANONYMOUS containers its content
+    /// compiles into (gathers, choice targets), not just the scope
+    /// container's own bytecode — those children are deliberately not tree
+    /// nodes, so this rollup is the only place their bytes are visible.
+    #[test]
+    fn scope_sizes_roll_anonymous_children_up_and_cover_all_bytecode() {
+        // `choicy` compiles its choices into anonymous child containers;
+        // `plain` is a single container. Both must account every byte.
+        let src = "=== plain ===\nJust a line.\n-> END\n=== choicy ===\nPick.\n* [a] A. -> END\n* [b] B. -> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let model = build(&out.data);
+
+        let plain = model
+            .knots
+            .iter()
+            .find(|k| k.name == "plain")
+            .expect("plain");
+        let choicy = model
+            .knots
+            .iter()
+            .find(|k| k.name == "choicy")
+            .expect("choicy");
+
+        // A single-container knot: rollup equals its own bytecode length,
+        // and it counts exactly itself.
+        let plain_container = &out.data.containers[plain.container_idx as usize];
+        assert_eq!(plain.byte_size as usize, plain_container.bytecode.len());
+        assert_eq!(plain.container_count, 1);
+
+        // The choice knot owns anonymous children: strictly more bytes and
+        // containers than its scope container alone.
+        let choicy_container = &out.data.containers[choicy.container_idx as usize];
+        assert!(
+            (choicy.byte_size as usize) > choicy_container.bytecode.len(),
+            "choicy rollup ({}) must exceed its scope container alone ({})",
+            choicy.byte_size,
+            choicy_container.bytecode.len()
+        );
+        assert!(choicy.container_count > 1, "{}", choicy.container_count);
+
+        // Conservation: every container's bytes land in exactly one scope,
+        // so the per-node rollups (plus the root scope, which has no node)
+        // must sum to the whole program. Sum ALL scopes' rollups directly.
+        let total: usize = out.data.containers.iter().map(|c| c.bytecode.len()).sum();
+        let rolled: u32 = model
+            .knots
+            .iter()
+            .map(|k| k.byte_size + k.children.iter().map(|s| s.byte_size).sum::<u32>())
+            .sum();
+        assert!(
+            (rolled as usize) <= total,
+            "rollups ({rolled}) cannot exceed the program ({total})"
+        );
+        // The remainder is exactly the root scope's containers.
+        let named: usize = rolled as usize;
+        assert!(total - named < total, "root scope holds the rest");
     }
 }

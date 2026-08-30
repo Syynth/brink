@@ -1471,6 +1471,12 @@ export interface KnotNode {
    * (rare — a knot with stitches but no own scope container).
    */
   container_idx: number;
+  /** Total bytecode bytes of this scope — the scope container plus its
+   *  anonymous children (gathers, choice targets), which are not tree
+   *  nodes and are otherwise invisible to size accounting (#3339). */
+  byte_size: number;
+  /** Containers in the scope, anonymous children included. */
+  container_count: number;
   /** Resolved bytecode disassembly, one instruction per entry. */
   disasm: DisasmLine[];
   children: KnotNode[];
