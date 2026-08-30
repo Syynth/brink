@@ -39,6 +39,7 @@ export { DocumentIcon, type DocumentIconProps } from "./DocumentIcon.js";
 export { LintSettings } from "./LintSettings.js";
 export { FormattingSettings } from "./FormattingSettings.js";
 export { ProseSettings } from "./ProseSettings.js";
+export { DraftSettings } from "./DraftSettings.js";
 export { ThemePicker } from "./ThemePicker.js";
 export {
   SettingsGroup,

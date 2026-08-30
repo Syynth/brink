@@ -237,6 +237,14 @@ export {
   withDictionaryWord,
   withoutDictionaryWord,
 } from "./prose-dictionary.js";
+// The author's draft globs in `[project] drafts` — the glob half of draft
+// status; the reachability half stays in Rust (see draft-globs.ts).
+export {
+  draftGlobProblem,
+  draftGlobs,
+  withDraftGlob,
+  withoutDraftGlob,
+} from "./draft-globs.js";
 // The .binder.json order sidecar's pure model (#3038).
 export {
   BINDER_SIDECAR_PATH,

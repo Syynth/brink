@@ -810,6 +810,18 @@ impl EditorSession {
         serde_json::to_string(&self.draft_path_list()).unwrap_or_default()
     }
 
+    /// Per-glob attribution for the Drafts settings view (#3145) — JSON
+    /// `{ compiled, globs: [{ glob, drafts, in_story }] }`.
+    ///
+    /// [`Self::draft_paths`] answers "which files are drafts"; this answers
+    /// "what is each glob I wrote actually doing", which the settings list
+    /// has to show and cannot derive from the first. See
+    /// `draft_glob_report_json` for what the two lists mean.
+    #[must_use]
+    pub fn draft_glob_report(&self) -> String {
+        self.draft_glob_report_json()
+    }
+
     /// Push the host's current values for `host`-source semantic types (Tier 3,
     /// #174) from a JSON object `{ "<type>": [{ "value", "label", "detail"? }] }`
     /// — a full snapshot that **replaces** the cache. The attached host (e.g.
@@ -5117,6 +5129,96 @@ mod tests {
         let mut sorted = drafts.clone();
         sorted.sort();
         assert_eq!(drafts, sorted, "unstable order churns every host-side memo");
+    }
+
+    fn glob_report(s: &EditorSession) -> serde_json::Value {
+        serde_json::from_str(&s.draft_glob_report()).expect("valid json")
+    }
+
+    #[test]
+    fn the_glob_report_attributes_each_match_to_the_glob_that_matched_it() {
+        let s = drafts_session("[project]\ndrafts = [\"scratch/**\"]\n");
+        let r = glob_report(&s);
+        assert_eq!(r["compiled"], serde_json::json!(true));
+        assert_eq!(r["globs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(r["globs"][0]["glob"], serde_json::json!("scratch/**"));
+        assert_eq!(
+            r["globs"][0]["drafts"],
+            serde_json::json!(["scratch/cut.ink"])
+        );
+        assert_eq!(r["globs"][0]["in_story"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_glob_naming_a_reachable_file_reports_it_in_story_not_as_a_draft() {
+        // The visible half of "reachability wins" (2026-08-27). The author
+        // wrote a glob and the file did not become a draft; a settings view
+        // that only counted `drafts` would show this glob as doing nothing
+        // and give no hint why.
+        let s = drafts_session("[project]\ndrafts = [\"scenes/**\"]\n");
+        let r = glob_report(&s);
+        assert_eq!(r["globs"][0]["drafts"], serde_json::json!([]));
+        assert_eq!(
+            r["globs"][0]["in_story"],
+            serde_json::json!(["scenes/harbour.ink"])
+        );
+    }
+
+    #[test]
+    fn a_glob_that_matches_nothing_is_distinguishable_from_one_not_yet_known() {
+        // Both report empty lists; only `compiled` separates "this glob is
+        // a typo" from "no compile has happened yet". The settings view says
+        // opposite things in those two cases, so the flag has to be there.
+        let s = drafts_session("[project]\ndrafts = [\"scrach/**\"]\n");
+        let r = glob_report(&s);
+        assert_eq!(r["compiled"], serde_json::json!(true));
+        assert_eq!(r["globs"][0]["drafts"], serde_json::json!([]));
+        assert_eq!(r["globs"][0]["in_story"], serde_json::json!([]));
+
+        let mut pending = EditorSession::new();
+        pending.update_file("main.ink", "-> END\n");
+        pending.update_file("scratch/cut.ink", "-> END\n");
+        let _ = pending.apply_project_config("[project]\ndrafts = [\"scratch/**\"]\n");
+        let r = glob_report(&pending);
+        assert_eq!(r["compiled"], serde_json::json!(false));
+        assert_eq!(r["globs"][0]["drafts"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn the_glob_report_keeps_the_authors_order_and_lists_a_file_under_each_match() {
+        // Attribution, not a partition: a file caught by two globs appears
+        // under both, because the question is what each glob does.
+        let s = drafts_session("[project]\ndrafts = [\"**/cut.ink\", \"scratch/**\"]\n");
+        let r = glob_report(&s);
+        assert_eq!(r["globs"][0]["glob"], serde_json::json!("**/cut.ink"));
+        assert_eq!(r["globs"][1]["glob"], serde_json::json!("scratch/**"));
+        assert_eq!(
+            r["globs"][0]["drafts"],
+            serde_json::json!(["scratch/cut.ink"])
+        );
+        assert_eq!(
+            r["globs"][1]["drafts"],
+            serde_json::json!(["scratch/cut.ink"])
+        );
+    }
+
+    #[test]
+    fn the_glob_report_never_attributes_a_mounted_stdlib_file_to_a_glob() {
+        // `draft_path_list` excludes the mount; a report that did not would
+        // offer the author a "draft" they cannot open or edit.
+        let s = drafts_session("[project]\ndrafts = [\"**\"]\n");
+        let r = glob_report(&s);
+        let listed: Vec<String> = r["globs"][0]["drafts"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .chain(r["globs"][0]["in_story"].as_array().expect("array").iter())
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        assert!(
+            !listed.iter().any(|p| p.starts_with("std/")),
+            "a `**` glob must not reach the mounted stdlib: {listed:?}"
+        );
     }
 
     /// A pattern-claiming handler declared inside the project's own
