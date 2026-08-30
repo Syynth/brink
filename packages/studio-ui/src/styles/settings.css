@@ -484,7 +484,14 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px 8px;
-  background: var(--ctp-base, #1e1e2e);
+  /* The app's own ground, as a THEME token. This read `var(--ctp-base)`
+     until #3294 — and mocha is the bare-class default, so it defines the
+     raw Catppuccin palette for every theme while the others override only
+     the semantic `--bs-*` layer. The rail was therefore pinned to mocha's
+     #1e1e2e everywhere, including the light themes, where a dark blue-grey
+     rail is simply wrong. No `--ctp-*` token belongs in theme-agnostic
+     chrome; `no-catppuccin-in-chrome.test.ts` now enforces that. */
+  background: var(--bs-surface-bg);
   border-right: 1px solid var(--bs-border);
   min-height: 0;
 }
@@ -532,7 +539,7 @@
   /* Lifted toward the pane's tone rather than tinted with the accent: the
      selected row is the one whose CONTENT is showing, so it should read as
      continuous with the pane beside it. */
-  background: var(--bs-panel-bg, #2a2a3d);
+  background: var(--bs-panel-bg);
   color: var(--bs-fg);
 }
 .brink-studio .brink-settings-nav-item.active svg {
@@ -550,7 +557,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bs-panel-bg, #2a2a3d);
+  background: var(--bs-panel-bg);
 }
 
 .brink-studio .brink-settings-head {
@@ -598,12 +605,24 @@
    Where a setting is WRITTEN, which changes what changing one means:
    project settings are versioned and shared, app settings are yours on
    this machine. */
+/* The selected segment is ACCENT-FILLED, not a tone step (#3294).
+   It previously drew `--bs-panel-bg` on a trough of 30%-alpha border,
+   which is the same surface the modal already sits on in most themes —
+   so "which scope am I on" came down to `--bs-fg` vs `--bs-fg-muted`.
+   That step is only legible where a theme happens to make it large:
+   inky-dark's cream #faf1c6 on near-black read fine and every other
+   theme did not, which is exactly the report.
+
+   Accent is the one pairing that cannot collapse, in any theme present
+   or future: `--bs-on-accent` is DEFINED as the colour legible on
+   `--bs-accent`, so the contrast is carried by the token contract
+   rather than by luck about how far apart two surfaces landed. */
 .brink-studio .brink-settings-scopes {
   display: flex;
   gap: 2px;
   padding: 2px;
   border-radius: 5px;
-  background: color-mix(in srgb, var(--bs-border) 30%, transparent);
+  background: color-mix(in srgb, var(--bs-border) 45%, transparent);
 }
 .brink-studio .brink-settings-scope {
   flex: 1;
@@ -614,10 +633,26 @@
   color: var(--bs-fg-muted);
   font-size: var(--bs-font-small);
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+/* The unselected half was inert on hover — nothing said it was a control
+   until you clicked it. */
+.brink-studio .brink-settings-scope:hover {
+  color: var(--bs-fg);
 }
 .brink-studio .brink-settings-scope.active {
-  background: var(--bs-panel-bg, #2a2a3d);
-  color: var(--bs-fg);
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  font-weight: 600;
+}
+.brink-studio .brink-settings-scope.active:hover {
+  color: var(--bs-on-accent);
+}
+/* Offset outward: an accent ring drawn ON the accent-filled segment
+   would be invisible, so it lands on the trough instead. */
+.brink-studio .brink-settings-scope:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 2px;
 }
 
 /* A search result from the other scope says which one it is. */
@@ -837,7 +872,7 @@
   position: absolute;
   inset: 0;
   border-radius: 9px;
-  background: var(--ctp-base, #1e1e2e);
+  background: var(--bs-surface-bg);
   border: 1px solid var(--bs-border);
   transition: background 120ms ease, border-color 120ms ease;
 }
@@ -858,7 +893,9 @@
 }
 .brink-studio .settings-toggle input:checked + .settings-toggle-track::after {
   transform: translateX(14px);
-  background: var(--ctp-base, #1e1e2e);
+  /* The knob now rides the accent-filled track, so it takes the colour
+     the theme defines as legible ON accent — not a fixed dark. */
+  background: var(--bs-on-accent);
 }
 .brink-studio .settings-toggle input:focus-visible + .settings-toggle-track {
   outline: 2px solid var(--bs-accent);

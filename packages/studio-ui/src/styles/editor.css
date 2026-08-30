@@ -804,7 +804,7 @@
 .brink-studio .brink-hover-link {
   color: var(--bs-info);
   text-decoration: underline;
-  text-decoration-color: rgb(var(--bs-info-rgb, 137 220 235) / 45%);
+  text-decoration-color: color-mix(in srgb, var(--bs-info) 45%, transparent);
   text-underline-offset: 2px;
   cursor: pointer;
   border-radius: 3px;
