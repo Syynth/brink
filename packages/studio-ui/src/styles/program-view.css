@@ -146,3 +146,164 @@
     background: color-mix(in srgb, var(--bs-accent) 14%, transparent);
   }
 }
+
+/* ── #3339 shell: identity header, view switch, structure grid ────── */
+.brink-studio .pv-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
+  flex-shrink: 0;
+}
+.brink-studio .pv-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bs-success);
+  flex-shrink: 0;
+}
+/* A running session older than this compile: the dot says so, quietly —
+   the highlights are already suppressed (spec §5), this names why. */
+.brink-studio .pv-status-dot.pv-status-stale {
+  background: var(--bs-warning);
+}
+.brink-studio .pv-program-name {
+  font-weight: 600;
+  color: var(--bs-fg);
+  font-size: var(--bs-font-body);
+}
+.brink-studio .pv-counts {
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .pv-header-spacer {
+  flex: 1;
+}
+/* The same segmented idiom as the Settings scope switch: the selected
+   segment is accent-filled, the token contract carrying the contrast. */
+.brink-studio .pv-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bs-editor-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+}
+.brink-studio .pv-seg-item {
+  padding: 2px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .pv-seg-item.active {
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  font-weight: 600;
+}
+.brink-studio .pv-seg-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.brink-studio .pv-structure {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.brink-studio .pv-defs {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--bs-border);
+  background: var(--bs-surface-bg);
+}
+.brink-studio .pv-knot-map {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 6px;
+}
+.brink-studio .pv-ext-fallback {
+  font-size: var(--bs-font-micro);
+  color: var(--bs-warning);
+  border: 1px solid var(--bs-warning);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.brink-studio .pv-ext-host {
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+/* Size columns on top-level knot rows: bytecode is the track, lines the
+   sky fill inside it — two magnitudes in one glance, shared scale. */
+.brink-studio .pv-size-bar {
+  flex: 1;
+  min-width: 60px;
+  height: 5px;
+  border-radius: 2px;
+  overflow: hidden;
+  align-self: center;
+}
+.brink-studio .pv-size-bar-bytes {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--bs-border);
+}
+.brink-studio .pv-size-bar-lines {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--bs-info);
+  opacity: 0.65;
+}
+.brink-studio .pv-size-label {
+  flex-shrink: 0;
+  width: 118px;
+  text-align: right;
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brink-studio .pv-size-label-lines {
+  color: var(--bs-info);
+}
+.brink-studio .pv-size-cont {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brink-studio .pv-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--bs-border);
+  background: var(--bs-surface-bg);
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  flex-shrink: 0;
+}
+.brink-studio .pv-footer strong {
+  color: var(--bs-fg);
+  font-weight: 600;
+}
+.brink-studio .pv-footer .pv-footer-lines {
+  color: var(--bs-info);
+}
+.brink-studio .pv-footer .pv-footer-templates {
+  color: var(--bs-accent-secondary);
+}
+.brink-studio .pv-footer-paused {
+  color: var(--bs-todo);
+  font-family: var(--bs-font-mono);
+}
