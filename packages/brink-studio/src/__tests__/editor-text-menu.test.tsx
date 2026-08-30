@@ -62,6 +62,55 @@ function items(): { label: string; disabled: boolean }[] {
 }
 
 describe("EditorTextMenuHost", () => {
+  it("offers Break on Write for a known-global identity (W18 follow-up)", () => {
+    const store = mount();
+    store.setState({
+      programModel: {
+        checksum: "0x1",
+        globals: [{ name: "gold", ty: "int", default: "2", mutable: true }],
+        lists: [],
+        externals: [],
+        knots: [],
+      } as never,
+    });
+    // A global identifier: the verb appears and toggles the slice.
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        identity: { name: "gold", gotoDefinition: vi.fn() },
+      }),
+    );
+    let entry = items().find((i) => i.label.includes("Break on Write 'gold'"));
+    expect(entry, "the verb appears for a known global").toBeDefined();
+    act(() => {
+      [...container!.querySelectorAll(".brink-context-menu-item")]
+        .find((el) => el.textContent?.includes("Break on Write 'gold'"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(store.getState().dataBreakpoints).toEqual([{ name: "gold", enabled: true }]);
+
+    // Re-open: already watched → the Remove form.
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        identity: { name: "gold", gotoDefinition: vi.fn() },
+      }),
+    );
+    entry = items().find((i) => i.label.includes("Remove Break on Write 'gold'"));
+    expect(entry, "watched → Remove form").toBeDefined();
+    act(() => store.getState().closeTextMenu());
+
+    // A NON-global identity (a knot name): no verb.
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        identity: { name: "some_knot", gotoDefinition: vi.fn() },
+      }),
+    );
+    expect(items().some((i) => i.label.includes("Break on Write"))).toBe(false);
+  });
+
+
   it("renders nothing until a request opens it", () => {
     mount();
     expect(container!.querySelector(".brink-text-menu")).toBeNull();
