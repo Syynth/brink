@@ -18,6 +18,8 @@ function stateWith(overrides: {
   compiled?: string | null;
   position?: { container_idx: number; offset: number } | null;
   resolved?: { file: string; line: number; range_start: number; range_len: number } | null;
+  selectedFrameIdx?: number | null;
+  callStack?: { position?: { container_idx: number; offset: number } }[];
 }) {
   const store = createStudioStore();
   store.setState({
@@ -25,10 +27,14 @@ function stateWith(overrides: {
     sessionPaused: overrides.paused ?? false,
     programChecksum: overrides.program === undefined ? "abc" : overrides.program,
     compiledChecksum: overrides.compiled === undefined ? "abc" : overrides.compiled,
+    selectedFrameIdx: overrides.selectedFrameIdx ?? null,
     debugState:
       overrides.position === null
         ? null
-        : ({ position: overrides.position ?? { container_idx: 3, offset: 7 } } as never),
+        : ({
+            position: overrides.position ?? { container_idx: 3, offset: 7 },
+            call_stack: overrides.callStack ?? [],
+          } as never),
     _provider: {
       capabilities: ALL_CAPABILITIES,
       resolveDebugLine: vi.fn(
@@ -72,6 +78,38 @@ describe("executionHighlightsFor (W6/#3299)", () => {
     for (const status of ["none", "ended", "error"]) {
       expect(executionHighlightsFor(stateWith({ status }), "main.ink")).toEqual([]);
     }
+  });
+
+  it("a selected non-top frame adds the accent frame band while paused (W8/#3301)", () => {
+    const st = stateWith({
+      paused: true,
+      selectedFrameIdx: 1,
+      callStack: [
+        { position: { container_idx: 3, offset: 7 } },
+        { position: { container_idx: 9, offset: 0 } },
+      ],
+    });
+    // Per-position resolver: the top position is line 4, the frame line 20.
+    (st._provider as unknown as { resolveDebugLine: unknown }).resolveDebugLine = (
+      c: number,
+    ) =>
+      c === 9
+        ? { file: "main.ink", line: 20, range_start: 700, range_len: 9 }
+        : { file: "main.ink", line: 4, range_start: 100, range_len: 12 };
+    expect(executionHighlightsFor(st, "main.ink")).toEqual([
+      { line: 5, kind: "paused", rangeStart: 100, rangeLen: 12 },
+      { line: 21, kind: "frame", rangeStart: 700, rangeLen: 9 },
+    ]);
+    // Not paused: the frame band never draws (selection is a paused-mode
+    // affordance).
+    const live = stateWith({
+      selectedFrameIdx: 1,
+      callStack: [
+        { position: { container_idx: 3, offset: 7 } },
+        { position: { container_idx: 9, offset: 0 } },
+      ],
+    });
+    expect(executionHighlightsFor(live, "main.ink").map((h) => h.kind)).toEqual(["live"]);
   });
 
   it("no runtime position (or no debug info to resolve it) is dark", () => {

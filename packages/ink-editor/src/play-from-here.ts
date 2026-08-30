@@ -70,6 +70,11 @@ export interface PlayFromHereOptions {
   /** Gutter click on a non-header line toggles a breakpoint there
    *  (1-based). Header lines keep play-from-here. */
   onToggleBreakpoint?: (line: number) => void;
+  /** "Reveal in Program Explorer" (W9/#3302): jump from a source line to
+   *  its compiled instructions — the inverse of the `.inkt` open. 1-based
+   *  line. Offered in the line context menu when present; the host owns
+   *  the source→address resolution (and its honest failure states). */
+  onRevealInstructions?: (line: number) => void;
   /** A doc edit moved breakpoint lines: old→new 1-based pairs, mapped
    *  through the change set. The host owns the anchors — it applies the
    *  moves and re-renders via {@link refreshBreakpoints}. Delivered in a
@@ -433,6 +438,14 @@ export function lineActionsAt(
         run: () => onNavigateToFile({ file: target, start: 0, end: 0 }),
       });
     }
+  }
+
+  if (options.onRevealInstructions) {
+    const { onRevealInstructions } = options;
+    actions.push({
+      label: "Reveal in Program Explorer",
+      run: () => onRevealInstructions(line.number),
+    });
   }
 
   // Fold/Unfold — CM's registered fold service decides what's foldable; a

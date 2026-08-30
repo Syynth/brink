@@ -46,7 +46,9 @@ export function subscribeDebugRefresh(
       st.sessionPaused !== last.paused ||
       st.sessionStatus !== last.status ||
       st.programChecksum !== last.program ||
-      st.compiledChecksum !== last.compiled;
+      st.compiledChecksum !== last.compiled ||
+      // W8/#3301: a frame selection draws/clears the accent frame band.
+      st.selectedFrameIdx !== last.frameIdx;
     const pausedRose = st.sessionPaused && !last.paused;
     last = {
       anchors: st.sourceBreakpoints,
@@ -55,6 +57,7 @@ export function subscribeDebugRefresh(
       debugState: st.debugState,
       paused: st.sessionPaused,
       status: st.sessionStatus,
+      frameIdx: st.selectedFrameIdx,
     };
 
     if (anchorsChanged) {
@@ -85,5 +88,6 @@ function snapshot(store: StudioStore) {
     debugState: st.debugState,
     paused: st.sessionPaused,
     status: st.sessionStatus,
+    frameIdx: st.selectedFrameIdx,
   };
 }

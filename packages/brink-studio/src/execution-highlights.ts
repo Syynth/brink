@@ -26,6 +26,7 @@ export function executionHighlightsFor(
     | "sessionStatus"
     | "sessionPaused"
     | "debugState"
+    | "selectedFrameIdx"
     | "_provider"
   >,
   path: string,
@@ -42,13 +43,41 @@ export function executionHighlightsFor(
   const provider = st._provider;
   if (!pos || provider === null || !isDebugSessionProvider(provider)) return [];
   const line = provider.resolveDebugLine(pos.container_idx, pos.offset);
-  if (line === null || line.file !== path) return [];
-  return [
-    {
+  const out: ExecutionHighlight[] = [];
+  if (line !== null && line.file === path) {
+    out.push({
       line: line.line + 1,
       kind: st.sessionPaused ? "paused" : "live",
       rangeStart: line.range_start,
       rangeLen: line.range_len,
-    },
-  ];
+    });
+  }
+  // A selected non-top stack frame (W8/#3301) coexists with the paused
+  // band — the plural seam's second consumer: accent band + hollow arrow
+  // at the frame's resume position.
+  const frameIdx = st.selectedFrameIdx;
+  if (st.sessionPaused && frameIdx !== null) {
+    const framePos = st.debugState?.call_stack?.[frameIdx]?.position;
+    if (framePos) {
+      const frameLine = provider.resolveDebugLine(
+        framePos.container_idx,
+        framePos.offset,
+      );
+      if (
+        frameLine !== null &&
+        frameLine.file === path &&
+        // The top position already carries the paused band — don't
+        // double-mark the same line.
+        frameLine.line + 1 !== out[0]?.line
+      ) {
+        out.push({
+          line: frameLine.line + 1,
+          kind: "frame",
+          rangeStart: frameLine.range_start,
+          rangeLen: frameLine.range_len,
+        });
+      }
+    }
+  }
+  return out;
 }

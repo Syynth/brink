@@ -135,7 +135,6 @@ export {
   CursorSegment,
   ElementSegment,
   KeyHintsSegment,
-  SessionPicker,
   StorySegment,
   StructuralOpSegment,
 } from "./StatusBar.js";
@@ -148,8 +147,9 @@ export {
   playerRef,
   registerOpenPlayerCommand,
 } from "./PlayerPane.js";
+export { DebuggerPanel, DebuggerActions } from "./DebuggerPanel.js";
 export { StateView } from "./StateView.js";
-export { ProgramView } from "./ProgramView.js";
+export { ProgramExplorerActions, ProgramView } from "./ProgramView.js";
 export {
   ProblemsActions,
   ProblemsView,

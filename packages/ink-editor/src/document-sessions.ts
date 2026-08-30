@@ -167,6 +167,8 @@ export interface DocumentCallbacks {
   getBreakpoints?(path: string): readonly BreakpointGutterMarker[];
   /** Gutter click toggled a breakpoint at a 1-based line of `path`. */
   onToggleBreakpoint?(path: string, line: number): void;
+  /** "Reveal in Program Explorer" (W9/#3302) — 1-based line. */
+  onRevealInstructions?(path: string, line: number): void;
   /** Doc edits moved `path`'s breakpoint lines (1-based old→new pairs). */
   onBreakpointsMoved?(path: string, moves: readonly { from: number; to: number }[]): void;
   /** The execution highlights for `path` (W6/#3299) — plural: a choice
@@ -1208,6 +1210,9 @@ export class DocumentSessions {
         : undefined,
       getExecutionHighlights: this.callbacks.getExecutionHighlights
         ? () => this.callbacks.getExecutionHighlights?.(slot.path) ?? []
+        : undefined,
+      onRevealInstructions: this.callbacks.onRevealInstructions
+        ? (line) => this.callbacks.onRevealInstructions?.(slot.path, line)
         : undefined,
       // Inject the focused view's file path so the host can resolve the symbol.
       onSymbolContextMenu: this.callbacks.onSymbolContextMenu

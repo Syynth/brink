@@ -488,6 +488,9 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,
     debugState: snap.debugState,
+    // A frame selection belongs to the stack it was made in (W8/#3301):
+    // any runtime advance replaces the snapshot and drops it back to top.
+    selectedFrameIdx: snap.debugState !== s.debugState ? null : s.selectedFrameIdx,
     programModel: snap.programModel,
     programInkt: snap.programInkt,
     programChecksum: snap.programChecksum,
