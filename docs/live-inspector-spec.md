@@ -151,6 +151,17 @@ same predicate machinery" claim from #127, made concrete.
 
 ## 5. Program identity & degraded mode
 
+> **SUPERSEDED IN PART (2026-08-30, W15/#3308 — debugger-ui-spec §F8):**
+> for the STUDIO'S OWN local session, every successful compile now
+> hot-reloads the running session automatically (journal replay when it
+> lands cleanly; durable-state migration via the `SaveState` boundary
+> when it can't), so the every-edit-degrades posture below no longer
+> describes the local Player. Degraded mode remains exactly as written
+> as the FALLBACK — a failing compile, a remote provider's genuinely
+> older program, or a migration that cannot preserve the position — and
+> suppressed-never-stale still governs the window between edit and
+> successful migration.
+
 Source mapping — reveal-from-stack-frame, graph current-location highlighting, visit-count →
 node badges, and (D9, #3187) the Program Explorer's current-knot/current-instruction
 highlight — is valid **only when the studio's local compile is the program running in the

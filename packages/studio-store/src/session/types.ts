@@ -184,6 +184,9 @@ export interface SessionSnapshot {
    * `setAuto`.
    */
   auto: boolean;
+  /** Unix ms of the last successful hot-reload (W15/#3308) — the chip's
+   * brief "reloaded" affirmation; `null` before any reload. */
+  reloadedAt: number | null;
 }
 
 /** The "no session" snapshot — the store's initial mirror and post-dispose state. */
@@ -198,6 +201,7 @@ export const EMPTY_SNAPSHOT: SessionSnapshot = {
   paused: false,
   debugOutcome: null,
   auto: false,
+  reloadedAt: null,
 };
 
 // ── Capabilities ────────────────────────────────────────────────────

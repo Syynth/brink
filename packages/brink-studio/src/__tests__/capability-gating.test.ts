@@ -28,6 +28,7 @@ function fakeProvider(caps: SessionCapability[], status: SessionStatus): Session
     choices: [],
     debugState: null,
     paused: false,
+    reloadedAt: null,
     debugOutcome: null,
     auto: false,
     programChecksum: null,

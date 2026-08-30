@@ -347,13 +347,25 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   }, [commands]);
 
   const position = useStudioStore((s) => s.debugState?.position ?? null);
+  // W15/#3308: a successful hot-reload flashes a brief affirmation in
+  // the chip (the ruled minimal UI); the tick clears it after ~2s.
+  const reloadedAt = useStudioStore((s) => s.sessionReloadedAt);
+  const [, bumpReloadTick] = useState(0);
+  const justReloaded = reloadedAt !== null && Date.now() - reloadedAt < 2000;
+  useEffect(() => {
+    if (!justReloaded) return;
+    const t = setTimeout(() => bumpReloadTick((n) => n + 1), 2100);
+    return () => clearTimeout(t);
+  }, [justReloaded, reloadedAt]);
 
   // The status chip — the single home of stop reasons (spec §3): ready /
   // playing / paused at file:line / waiting on choice / ended / error /
   // out-of-sync. Clicking reveals the current line in the editor.
   const chip = degraded
     ? { cls: "degraded", label: "Out of sync" }
-    : status === "none"
+    : justReloaded && status !== "none"
+      ? { cls: "playing", label: "Reloaded" }
+      : status === "none"
       ? { cls: "ready", label: "Ready" }
       : paused
         ? { cls: "paused", label: pausedLocation ? `Paused — ${pausedLocation}` : "Paused" }

@@ -93,6 +93,8 @@ export interface SessionSlice {
    * app boundary alongside the paced-reveal setting.
    */
   playerFontSize: number;
+  /** Mirror of the provider's last hot-reload timestamp (W15/#3308). */
+  sessionReloadedAt: number | null;
   /** Set the Player prose size (Settings); clamped, 0 resets to scale. */
   setPlayerFontSize(px: number): void;
   /**
@@ -272,6 +274,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionLines: [],
     sessionPacedMs: 150,
     playerFontSize: 0,
+    sessionReloadedAt: null,
     _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
@@ -503,6 +506,7 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionStatus: snap.status,
     sessionText: snap.transcript.map((l) => l.text),
     sessionLines: snap.transcript,
+    sessionReloadedAt: snap.reloadedAt,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,

@@ -206,6 +206,9 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * rapid succession instead of one batch. 0 = all at once. */
   private pacedDelayMs = 0;
   private pacedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Unix ms of the last successful hot-reload migration/replay (W15) —
+   * the Player chip's brief "reloaded" affirmation reads it. */
+  private reloadedAt: number | null = null;
   private status: SessionStatus = "none";
   private transcript: TranscriptLine[] = [];
   /** Paused by the debugger (W5/#3298) — see `SessionSnapshot.paused`. */
@@ -314,6 +317,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
       paused: this.paused,
       debugOutcome: this.lastOutcome,
       auto: this.auto,
+      reloadedAt: this.reloadedAt,
     };
   }
 
@@ -331,8 +335,19 @@ export class LocalSessionProvider implements DebugSessionProvider {
       const prev = this.session;
       let session: StorySessionHandle;
       let outcome: ReplayOutcome | null = null;
+      // W15/#3308 (RULED): snapshot durable state BEFORE touching the old
+      // session — the migration fallback's material. Replay stays the
+      // primary road (it preserves the exact position and transcript);
+      // the snapshot catches what replay can't.
+      let migrateState: SaveState | null = null;
+      let migrateKnot: string | null = null;
+      let migrateTurn = 0;
 
       if (prev) {
+        migrateState = this.capture(() => prev.saveState());
+        migrateKnot = this.debugState?.current_location ?? null;
+        migrateTurn = this.debugState?.turn_index ?? 0;
+        this.stopPacedPump();
         // In-place hot-reload: replays this session's own journal against the
         // recompiled program (spec's replay-on-recompile path).
         try {
@@ -377,8 +392,43 @@ export class LocalSessionProvider implements DebugSessionProvider {
       }
 
       if (outcome) {
-        // A hot-reload just ran on the live session's own journal.
+        if (outcome.type === "replayed") {
+          // A "clean" replay can still be a LIE by omission: debug-driven
+          // advances bypass the session journal (W5's ruled design — and
+          // today even choices made at a debug-road stop journal nothing,
+          // #3334), so a session that played under armed breakpoints
+          // replays to an EARLIER turn than it was actually at. Detect
+          // the regression and migrate the durable state instead.
+          const replayedTurn = this.capture(() => session.debugSnapshot())?.turn_index ?? 0;
+          if (
+            replayedTurn < migrateTurn &&
+            migrateState !== null &&
+            this.migrateInto(migrateState, migrateKnot)
+          ) {
+            return;
+          }
+          // Genuinely clean: exact position + transcript survive — the
+          // best case. Flash the chip's "reloaded" affirmation (W15).
+          this.reloadedAt = Date.now();
+          this.applyReplayOutcome(outcome);
+          return;
+        }
+        // Replay diverged or failed (W15): migrate the DURABLE state
+        // instead of truncating — globals/visits/turn survive the edit;
+        // the position drops to the recorded knot (honest fallback).
+        if (migrateState !== null && this.migrateInto(migrateState, migrateKnot)) {
+          return;
+        }
+        // No snapshot to migrate (or migration itself failed): the old
+        // truncation road, notification and all.
         this.applyReplayOutcome(outcome);
+        return;
+      }
+
+      // The reload threw and a FRESH session replaced the old one: the
+      // journal is gone, but the durable state can still migrate (W15) —
+      // previously this dropped everything.
+      if (prev && migrateState !== null && this.migrateInto(migrateState, migrateKnot)) {
         return;
       }
 
@@ -674,6 +724,18 @@ export class LocalSessionProvider implements DebugSessionProvider {
     return this.capture(() => this.session?.saveState() ?? null);
   }
 
+  /** Hot-reload migration (W15/#3308): the checkpoint road with the
+   * "reloaded" framing — restore the snapshot into the (fresh or
+   * replay-failed) session on the NEW program, divert to the recorded
+   * knot, flash the chip. Returns whether it applied. */
+  private migrateInto(state: SaveState, knotPath: string | null): boolean {
+    const report = this.loadCheckpoint(state, knotPath, "Reloaded");
+    if (report === null) return false;
+    this.reloadedAt = Date.now();
+    this.emit();
+    return true;
+  }
+
   /**
    * Load a checkpoint (W14/#3307): restore the durable state, divert to
    * the slot's recorded knot (the save format carries no execution
@@ -683,7 +745,11 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * — never a silent load (RULED). Returns the report, `null` without a
    * live session.
    */
-  loadCheckpoint(state: SaveState, knotPath: string | null): LoadReport | null {
+  loadCheckpoint(
+    state: SaveState,
+    knotPath: string | null,
+    verb: "Loaded" | "Reloaded" = "Loaded",
+  ): LoadReport | null {
     const session = this.session;
     if (!session) return null;
     let report: LoadReport;
@@ -721,7 +787,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
         parts.push(`unknown globals: ${report.unknown_globals.join(", ")}`);
       if (report.unresolved_renames.length > 0)
         parts.push(`unresolved renames: ${report.unresolved_renames.join(", ")}`);
-      this.transcript = [transcriptNotice(`Loaded — ${parts.join("; ")}.`)];
+      this.transcript = [transcriptNotice(`${verb} — ${parts.join("; ")}.`)];
     }
     if (knotPath !== null) {
       try {
