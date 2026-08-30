@@ -40,6 +40,8 @@ const PROGRAM_MODEL: ProgramModel = {
       flags: [],
       path_hash: 0,
       container_idx: 2,
+      byte_size: 64,
+      container_count: 1,
       disasm: [
         { offset: 0, text: "Const 1" },
         { offset: 4, text: "SetTemp x" },

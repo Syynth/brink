@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
-import type { KnotNode } from "@brink/wasm-types";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { KnotNode, LinesTable } from "@brink/wasm-types";
 import { useShell } from "@brink/studio-shell";
 import { sessionDegraded } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
@@ -32,6 +32,34 @@ interface RuntimePosition {
  * compile — an edited-but-not-yet-restarted session, the normal case, not
  * an error.
  */
+/** Human-readable byte count — `B` under a KiB, else one-decimal `KB`. */
+function fmtBytes(n: number): string {
+  return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
+}
+
+/** A scope's total bytes: its own rollup plus every child scope's. */
+function subtreeBytes(node: KnotNode): number {
+  return node.byte_size + node.children.reduce((sum, c) => sum + subtreeBytes(c), 0);
+}
+
+/** Scope path → emitted-line count, from the compiled lines table. */
+function linesByScope(lines: LinesTable | null): Map<string, number> {
+  const map = new Map<string, number>();
+  if (lines === null) return map;
+  for (const scope of lines.scopes) {
+    if (scope.name) map.set(scope.name, scope.lines.length);
+  }
+  return map;
+}
+
+/** A knot's line count including its stitches' scopes. */
+function subtreeLines(node: KnotNode, byScope: Map<string, number>): number {
+  return (
+    (byScope.get(node.path) ?? 0) +
+    node.children.reduce((sum, c) => sum + subtreeLines(c, byScope), 0)
+  );
+}
+
 function ProgramViewInner() {
   const model = useStudioStore((s) => s.programModel);
   const { commands } = useShell();
@@ -46,29 +74,95 @@ function ProgramViewInner() {
       : null,
   );
   const explorerTarget = useStudioStore((s) => s.programExplorerTarget);
+  const programLines = useStudioStore((s) => s.programLines);
+  const entryFile = useStudioStore((s) => s.entryFile);
   const currentPosition: RuntimePosition | null = degraded
     ? null
     : (framePosition ?? debugPosition ?? null);
 
-  if (!model) {
+  // Derived joins for the header/footer/size bars. `model` may be null on
+  // the first render — memos run unconditionally (hooks), guard inside.
+  const byScope = useMemo(() => linesByScope(programLines), [programLines]);
+  const totals = useMemo(() => {
+    if (!model) return null;
+    let stitches = 0;
+    let containers = 0;
+    let bytes = 0;
+    for (const k of model.knots) {
+      stitches += k.children.length;
+      containers += k.container_count + k.children.reduce((n, c) => n + c.container_count, 0);
+      bytes += subtreeBytes(k);
+    }
+    let lineCount = 0;
+    let tableCount = 0;
+    let templates = 0;
+    if (programLines) {
+      for (const scope of programLines.scopes) {
+        tableCount += 1;
+        lineCount += scope.lines.length;
+        for (const line of scope.lines) {
+          if (typeof line.content === "object" && line.content !== null) templates += 1;
+        }
+      }
+    }
+    const maxKnotBytes = Math.max(1, ...model.knots.map((k) => subtreeBytes(k)));
+    const maxKnotLines = Math.max(1, ...model.knots.map((k) => subtreeLines(k, byScope)));
+    return { stitches, containers, bytes, lineCount, tableCount, templates, maxKnotBytes, maxKnotLines };
+  }, [model, programLines, byScope]);
+
+  if (!model || !totals) {
     return (
       <div className="program-view">
         <div className="state-view-empty">
           <p className="state-view-empty-title">No compiled program</p>
           <p className="state-view-empty-hint">
-            Run a story to inspect its globals, lists, externals, and knots
-            (with bytecode) here.
+            Run a compile to inspect its knots, line tables, and bytecode here.
           </p>
         </div>
       </div>
     );
   }
 
+  // The program is a named thing: the entry file's stem, not a hex string.
+  const programName = entryFile?.split("/").pop()?.replace(/\.(ink|brink)$/, "") ?? "program";
+  // The paused location, named the way a save file would name it.
+  const currentKnot =
+    currentPosition === null
+      ? null
+      : findByContainer(model.knots, currentPosition.container_idx);
+
   return (
     <div className="program-view">
-      <div className="pv-toolbar">
+      {/* Identity header (#3339): name + checksum chip + counts, and the
+          view switch. Views land one PR at a time — a disabled segment is
+          a designed slot, not dead chrome; the title says where it is. */}
+      <div className="pv-header">
+        <span
+          className={"pv-status-dot" + (degraded ? " pv-status-stale" : "")}
+          title={degraded ? "running session predates this compile" : "compiled, up to date"}
+        />
+        <span className="pv-program-name">{programName}</span>
         <span className="pv-checksum" title="source checksum">
           {model.checksum}
+        </span>
+        <span className="pv-counts">
+          {model.knots.length} knots · {totals.stitches} stitches · {totals.containers} containers
+          {totals.tableCount > 0 ? ` · ${totals.lineCount} lines` : ""}
+        </span>
+        <span className="pv-header-spacer" />
+        <span className="pv-seg" role="tablist" aria-label="Program Explorer view">
+          <button type="button" className="pv-seg-item active" role="tab" aria-selected="true">
+            Structure
+          </button>
+          <button type="button" className="pv-seg-item" role="tab" disabled title="Line tables view — #3339, next phase">
+            Line tables
+          </button>
+          <button type="button" className="pv-seg-item" role="tab" disabled title="Disassembly view — #3339, next phase">
+            Disassembly
+          </button>
+          <button type="button" className="pv-seg-item" role="tab" disabled title="Size view — needs the .inkb size report (#3339)">
+            Size
+          </button>
         </span>
         <button
           type="button"
@@ -80,60 +174,82 @@ function ProgramViewInner() {
         </button>
       </div>
 
-      <div className="pv-body">
-        <Section title={`Globals (${model.globals.length})`}>
-          {model.globals.length === 0 ? (
-            <p className="sv-empty">none</p>
-          ) : (
-            <table className="sv-table">
-              <tbody>
-                {model.globals.map((g) => (
-                  <tr key={g.name}>
-                    <td className="sv-key">{g.name}</td>
-                    <td className="sv-dim pv-ty">{g.ty}</td>
-                    <td className="sv-val sv-mono">{g.default}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Section>
-
-        {model.lists.length > 0 && (
-          <Section title={`Lists (${model.lists.length})`}>
-            {model.lists.map((l) => (
-              <div key={l.name} className="pv-list">
-                <div className="sv-key pv-list-name">{l.name}</div>
-                <div className="pv-list-items">
-                  {l.items.map((it) => (
-                    <span key={it.name} className="pv-list-item">
-                      {it.name}
-                      <span className="sv-dim">·{it.ordinal}</span>
-                    </span>
+      <div className="pv-structure">
+        {/* Definitions column: what the program declares. */}
+        <div className="pv-defs">
+          <Section title={`Globals (${model.globals.length})`}>
+            {model.globals.length === 0 ? (
+              <p className="sv-empty">none</p>
+            ) : (
+              <table className="sv-table">
+                <tbody>
+                  {model.globals.map((g) => (
+                    <tr key={g.name}>
+                      <td className="sv-key">{g.name}</td>
+                      <td className="sv-dim pv-ty">{g.ty}</td>
+                      <td className="sv-val sv-mono">{g.default}</td>
+                    </tr>
                   ))}
+                </tbody>
+              </table>
+            )}
+          </Section>
+
+          {model.lists.length > 0 && (
+            <Section title={`Lists (${model.lists.length})`}>
+              {model.lists.map((l) => (
+                <div key={l.name} className="pv-list">
+                  <div className="sv-key pv-list-name">{l.name}</div>
+                  <div className="pv-list-items">
+                    {l.items.map((it) => (
+                      <span key={it.name} className="pv-list-item">
+                        {it.name}
+                        <span className="sv-dim">·{it.ordinal}</span>
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </Section>
-        )}
+              ))}
+            </Section>
+          )}
 
-        {model.externals.length > 0 && (
-          <Section title={`Externals (${model.externals.length})`}>
-            <table className="sv-table">
-              <tbody>
-                {model.externals.map((e) => (
-                  <tr key={e.name}>
-                    <td className="sv-key">{e.name}</td>
-                    <td className="sv-dim">{e.arg_count} arg{e.arg_count === 1 ? "" : "s"}</td>
-                    <td className="sv-val sv-path">{e.fallback ? `→ ${e.fallback}` : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Section>
-        )}
+          {model.externals.length > 0 && (
+            <Section title={`Externals (${model.externals.length})`}>
+              <table className="sv-table">
+                <tbody>
+                  {model.externals.map((e) => (
+                    <tr key={e.name}>
+                      <td className="sv-key">{e.name}</td>
+                      <td className="sv-dim">
+                        {e.arg_count} arg{e.arg_count === 1 ? "" : "s"}
+                      </td>
+                      <td className="sv-val">
+                        {e.fallback ? (
+                          <span
+                            className="pv-ext-fallback"
+                            title={`Fallback body: ${e.fallback} — the story runs without a host binding`}
+                          >
+                            fallback
+                          </span>
+                        ) : (
+                          <span
+                            className="pv-ext-host"
+                            title="No fallback body — a host binding must be registered"
+                          >
+                            host
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Section>
+          )}
+        </div>
 
-        <Section title={`Knots (${model.knots.length})`}>
+        {/* Knot map: the story's shape, size at a glance. */}
+        <div className="pv-knot-map">
           {model.knots.length === 0 ? (
             <p className="sv-empty">none</p>
           ) : (
@@ -144,13 +260,52 @@ function ProgramViewInner() {
                 depth={0}
                 currentPosition={currentPosition}
                 target={explorerTarget}
+                byScope={byScope}
+                maxBytes={totals.maxKnotBytes}
+                maxLines={totals.maxKnotLines}
               />
             ))
           )}
-        </Section>
+        </div>
+      </div>
+
+      <div className="pv-footer">
+        <span>
+          <strong>{fmtBytes(totals.bytes)}</strong> bytecode
+        </span>
+        {totals.tableCount > 0 && (
+          <span>
+            <strong className="pv-footer-lines">{totals.lineCount}</strong> lines in{" "}
+            {totals.tableCount} tables
+          </span>
+        )}
+        {totals.templates > 0 && (
+          <span>
+            <strong className="pv-footer-templates">{totals.templates}</strong> templates
+          </span>
+        )}
+        <span>
+          <strong>{model.externals.length}</strong> externals
+        </span>
+        <span className="pv-header-spacer" />
+        {currentKnot !== null && (
+          <span className="pv-footer-paused">
+            ● paused — {currentKnot.path} +0x{currentPosition!.offset.toString(16)}
+          </span>
+        )}
       </div>
     </div>
   );
+}
+
+/** The scope node backed by `containerIdx`, searching stitches too. */
+function findByContainer(knots: KnotNode[], containerIdx: number): KnotNode | null {
+  for (const k of knots) {
+    if (k.container_idx !== 0xffffffff && k.container_idx === containerIdx) return k;
+    const child = findByContainer(k.children, containerIdx);
+    if (child !== null) return child;
+  }
+  return null;
 }
 
 // ── Knot/stitch tree row ────────────────────────────────────────────
@@ -160,11 +315,18 @@ function KnotRow({
   depth,
   currentPosition,
   target,
+  byScope,
+  maxBytes,
+  maxLines,
 }: {
   node: KnotNode;
   depth: number;
   currentPosition: RuntimePosition | null;
   target: { address: RuntimePosition; nonce: number } | null;
+  byScope: Map<string, number>;
+  /** Largest top-level knot subtree, for the size bars' shared scale. */
+  maxBytes: number;
+  maxLines: number;
 }) {
   const [open, setOpen] = useState(false);
   const indent = 6 + depth * 12;
@@ -215,6 +377,38 @@ function KnotRow({
           </span>
         )}
         {node.flags.length > 0 && <span className="pv-flags">{node.flags.join(" ")}</span>}
+        {depth === 0 && (
+          <>
+            <span className="pv-size-bar" title="bytecode (track) and lines (fill), scaled to the largest knot">
+              <span
+                className="pv-size-bar-bytes"
+                style={{ width: `${Math.round((subtreeBytes(node) / maxBytes) * 100)}%` }}
+              >
+                <span
+                  className="pv-size-bar-lines"
+                  style={{
+                    width: `${Math.round(
+                      (subtreeLines(node, byScope) / Math.max(1, maxLines)) * 100,
+                    )}%`,
+                  }}
+                />
+              </span>
+            </span>
+            <span className="pv-size-label">
+              {fmtBytes(subtreeBytes(node))}
+              {subtreeLines(node, byScope) > 0 && (
+                <>
+                  {" · "}
+                  <span className="pv-size-label-lines">{subtreeLines(node, byScope)} lines</span>
+                </>
+              )}
+            </span>
+            <span className="pv-size-cont">
+              {node.container_count + node.children.reduce((n, c) => n + c.container_count, 0)}{" "}
+              cont.
+            </span>
+          </>
+        )}
       </button>
       {open && (
         <div className="pv-knot-body" style={{ paddingLeft: indent + 14 }}>
@@ -258,6 +452,9 @@ function KnotRow({
               depth={depth + 1}
               currentPosition={currentPosition}
               target={target}
+              byScope={byScope}
+              maxBytes={maxBytes}
+              maxLines={maxLines}
             />
           ))}
         </div>

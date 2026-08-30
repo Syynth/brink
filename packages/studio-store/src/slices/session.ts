@@ -25,7 +25,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
+import type { Choice, DebugState, LinesTable, ProgramModel } from "@brink/wasm-types";
 import type { ExternalValue } from "@brink-lang/web";
 
 import {
@@ -170,6 +170,13 @@ export interface SessionSlice {
    */
   programInkt: string | null;
   /**
+   * The compiled lines table (#3339) — per-scope line entries, captured
+   * runner-free from the same compile as `programModel`. The Program
+   * Explorer joins it against the knot tree for per-knot line counts, and
+   * the Line tables view renders it whole.
+   */
+  programLines: LinesTable | null;
+  /**
    * Identity of the running program — `ProgramModel.checksum` (spec §5).
    * Mirrored from the provider snapshot; the basis for degraded mode (#181).
    */
@@ -286,6 +293,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     prevDebugState: null,
     programModel: null,
     programInkt: null,
+    programLines: null,
     programChecksum: null,
     capabilities: ALL_CAPABILITIES,
 
@@ -473,6 +481,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         prevDebugState: null,
         programModel: null,
         programInkt: null,
+        programLines: null,
         programChecksum: null,
         // Back to the default local capability set — the next session is local
         // until a narrower provider binds.
