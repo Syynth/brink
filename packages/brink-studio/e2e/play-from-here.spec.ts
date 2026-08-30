@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { ensureStoryStarted } from "./session-helpers.js";
 import { enterStructureMode } from "./binder-mode";
 
 /**
@@ -84,6 +85,10 @@ test.describe("play from here (#186)", () => {
   test("story graph node right-click opens a session at the knot", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
+    // Since W7 (no auto-start): the status-bar picker only appears with
+    // MORE than one session, so the main session must be running before
+    // play-from-here opens the second.
+    await ensureStoryStarted(page);
 
     await runPaletteCommand(page, "Story: Open Story Graph");
     await expect(page.locator(".brink-story-graph")).toBeVisible({ timeout: 10000 });

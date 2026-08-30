@@ -10,7 +10,7 @@
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Diagnostic, FileOutline, StoryGraph } from "@brink/wasm-types";
-import { programChecksum } from "@brink-lang/web";
+import { programChecksum, programInktOf, programModelOf } from "@brink-lang/web";
 import { sortDiagnostics } from "@brink-lang/editor";
 import { insertIncludeLine, relativeIncludePath } from "../include-insert.js";
 
@@ -140,6 +140,24 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
       storyBytes,
       compiledChecksum,
     });
+    // Compile-bound program products (W7/#3300): since the ruled "no
+    // auto-start", the Program Explorer / Compiled Output must not depend
+    // on a running session — capture the model + inkt straight from the
+    // bytes, runner-free. With a live session the provider's own mirror
+    // refreshes these on the hot-replay that follows; without one, this
+    // IS the only source.
+    if (storyBytes) {
+      try {
+        set({
+          programModel: programModelOf(storyBytes),
+          programInkt: programInktOf(storyBytes),
+        });
+      } catch {
+        // A decode failure surfaces through the compile diagnostics road;
+        // the explorer keeps its last good model (same policy as the
+        // story graph).
+      }
+    }
     // Frozen search snapshot (docs/search-results-cards-spec.md): every
     // edit path funnels through a compile, so this is the one seam that
     // re-maps snapshot spans through whatever changed.

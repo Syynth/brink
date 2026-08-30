@@ -99,13 +99,13 @@ test.describe("player document", () => {
   test.describe.configure({ retries: 2 });
 
   // The default (toppled-temple) project. Since W7/#3300 (RULED: no
-  // auto-start) the startup compile leaves the Player idle — start the
-  // story explicitly, retry-clicking through the compile race (the
-  // placeholder's Start does nothing until story bytes land).
+  // auto-start) the startup compile leaves the Player idle — tests that
+  // drive story CONTENT call ensureStoryStarted themselves; the layout
+  // tests must NOT (clicking Start moves focus into the player group,
+  // which would break the "editor focused" fresh-load pin).
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
-    await ensureStoryStarted(page);
   });
 
   test("fresh load is the Inky two-up: editor left, player right, editor focused", async ({
@@ -132,6 +132,7 @@ test.describe("player document", () => {
   test("the session plays inside the document: stop, start, continue, choose", async ({
     page,
   }) => {
+    await ensureStoryStarted(page);
     // Driving the story to a choice point + riding out the player's hasPending
     // render flicker legitimately takes longer than a simple UI test.
     test.slow();
@@ -208,6 +209,7 @@ test.describe("player document", () => {
     page,
   }) => {
     test.slow(); // drives the story to a choice + rides the hasPending flicker
+    await ensureStoryStarted(page);
     const pane = page.locator(".player-pane");
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple", {
       timeout: 10000,

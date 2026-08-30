@@ -127,9 +127,11 @@ test.describe("story graph document", () => {
   test("live overlay: highlight + visit badge while running, plain graph when stopped", async ({
     page,
   }) => {
+    // Start BEFORE opening the graph — the takeover hides the Player, so
+    // the start affordance must be clicked while it is still visible.
+    await ensureStoryStarted(page);
     await openStoryGraph(page);
 
-    await ensureStoryStarted(page);
     // The started session sits at the intro choice point:
     // the current-location highlight is on `intro`. (No visit badges here —
     // the runtime only tracks counts for containers whose flags request

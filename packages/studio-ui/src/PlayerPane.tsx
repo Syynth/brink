@@ -401,6 +401,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
             </svg>
           </button>
+          <button
+            className="player-transport-btn"
+            title="Stop the story — back to the launcher"
+            aria-label="Stop"
+            disabled={idle}
+            onClick={() => commands.dispatch("story.stop")}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
+            </svg>
+          </button>
           {canAuto && (
             <button
               className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
