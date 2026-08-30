@@ -185,6 +185,22 @@ pub fn program_model_of(story_bytes: &[u8]) -> Result<String, JsError> {
     serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
 }
 
+/// The compiled program's lines table, off raw `.inkb` bytes — the static
+/// mirror of [`program_model_of`], returning the same `brink_intl::LinesJson`
+/// as `StoryRunner::lines_table`.
+///
+/// Exists because the runner-borne accessor requires a story session, and
+/// the Program Explorer's Line tables view (#3339) shows compiled output —
+/// which exists the moment a compile lands, with or without a running
+/// story.
+#[wasm_bindgen]
+pub fn lines_table_of(story_bytes: &[u8]) -> Result<String, JsError> {
+    let data = brink_format::read_inkb(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+    let lines = brink_intl::export_lines(&data, data.source_checksum);
+    serde_json::to_string(&lines).map_err(|e| JsError::new(&format!("json error: {e}")))
+}
+
 /// The `.inkt` disassembly text for compiled `.inkb` bytes — identical to
 /// `StoryRunner::program_inkt`, runner-free for the same W7/#3300 reason.
 #[wasm_bindgen]
@@ -656,5 +672,28 @@ mod tier1_fragment_wasm_tests {
                 .is_some_and(|w| !w.is_empty()),
             "{compiled}"
         );
+    }
+}
+
+#[cfg(test)]
+mod lines_table_of_tests {
+    /// The static mirror must serve the same lines the runner-borne
+    /// accessor serves, off nothing but `.inkb` bytes — the Program
+    /// Explorer's Line tables view (#3339) runs before any story exists.
+    #[test]
+    fn serves_lines_off_raw_inkb_bytes() {
+        let src = "=== greet ===\nHello there.\nA second line.\n-> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let json = super::lines_table_of(&bytes).expect("lines table");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let scopes = parsed["scopes"].as_array().expect("scopes array");
+        let greet = scopes
+            .iter()
+            .find(|s| s["name"].as_str() == Some("greet"))
+            .expect("greet scope present");
+        let lines = greet["lines"].as_array().expect("lines");
+        assert_eq!(lines.len(), 2, "{lines:?}");
     }
 }
