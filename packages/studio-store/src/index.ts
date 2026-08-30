@@ -255,6 +255,16 @@ export {
   withDraftGlob,
   withoutDraftGlob,
 } from "./draft-globs.js";
+// `[project] unprune-dirs` — a closed set of three, so the surface is
+// checkboxes rather than another free-text list.
+export {
+  PRUNABLE_DIRS,
+  isUnpruned,
+  unprunedDirs,
+  withUnprunedDir,
+  withoutUnprunedDir,
+} from "./unprune-dirs.js";
+export type { PrunableDir } from "./unprune-dirs.js";
 // The .binder.json order sidecar's pure model (#3038).
 export {
   BINDER_SIDECAR_PATH,

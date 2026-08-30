@@ -22,14 +22,18 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
 import type { DraftGlobReport } from "@brink-lang/web";
 import {
+  PRUNABLE_DIRS,
   draftGlobProblem,
   draftGlobs,
+  isUnpruned,
   withDraftGlob,
+  withUnprunedDir,
   withoutDraftGlob,
+  withoutUnprunedDir,
 } from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
-import { SettingsGroup } from "./SettingsRow.js";
+import { SettingsGroup, SettingsRow, SettingsToggle } from "./SettingsRow.js";
 
 export function DraftSettings() {
   const storeApi = useStudioStoreApi();
@@ -100,6 +104,7 @@ export function DraftSettings() {
   };
 
   return (
+    <>
     <SettingsGroup title="Drafts">
       <p className="settings-group-hint">
         Work in progress the story does not reach yet — scratch scenes, cut material,
@@ -122,8 +127,46 @@ export function DraftSettings() {
         }}
       />
     </SettingsGroup>
+
+    <SettingsGroup title="Discovery">
+      <p className="settings-group-hint">
+        Finding the project&rsquo;s files never descends into{" "}
+        <code>target</code>, <code>.git</code> or <code>node_modules</code> — they are
+        large, and a stray source file inside one is almost never part of the story.
+        Turn one on if this project genuinely keeps <code>.brink</code> or{" "}
+        <code>.ink</code> files there.
+      </p>
+      {PRUNABLE_DIRS.map((dir) => (
+        <SettingsRow key={dir} title={dir} description={DISCOVERY_HINTS[dir]}>
+          <SettingsToggle
+            checked={isUnpruned(source, dir)}
+            label={`Search ${dir}`}
+            onChange={(next) => {
+              const updated = next
+                ? withUnprunedDir(source, dir)
+                : withoutUnprunedDir(source, dir);
+              if (updated !== null) write(updated);
+            }}
+          />
+        </SettingsRow>
+      ))}
+    </SettingsGroup>
+    </>
   );
 }
+
+/**
+ * Why a project might want each one walked.
+ *
+ * Keyed by the shipping constant rather than restated as its own list, so a
+ * fourth pruned directory cannot arrive with no explanation beside it.
+ */
+const DISCOVERY_HINTS: Record<(typeof PRUNABLE_DIRS)[number], string> = {
+  target: "Rust build output. Worth searching only if a build step generates story files into it.",
+  ".git": "Version-control internals. Almost never holds story files.",
+  "node_modules":
+    "Installed packages. Worth searching if the project consumes story files from a dependency.",
+};
 
 /** What one glob currently matches, or null when the report has not seen it. */
 function matchesFor(report: DraftGlobReport | null, glob: string) {
