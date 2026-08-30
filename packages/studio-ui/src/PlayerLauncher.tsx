@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useShell } from "@brink/studio-shell";
 import type { SaveLocation, SaveSlotMeta } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+import { KnotIcon, StitchIcon } from "./icons.js";
 
 interface SymbolHit {
   path: string; // "knot" | "knot.stitch"
@@ -153,11 +154,22 @@ export function PlayerLauncher() {
                       openSession({ path: m.path, label: m.path });
                     }}
                   >
-                    <span className={`pl-chip pl-kind-${m.kind}`}>
-                      {m.kind.toUpperCase()}
+                    {/* The Binder's own symbol icons (maintainer feedback,
+                        W14) — same tint classes, instantly familiar. */}
+                    <span
+                      className={
+                        "pl-typeahead-icon " +
+                        (m.kind === "knot"
+                          ? "brink-binder-icon-knot"
+                          : "brink-binder-icon-stitch")
+                      }
+                    >
+                      {m.kind === "knot" ? <KnotIcon /> : <StitchIcon />}
                     </span>
-                    <span className="pl-save-name">{m.path}</span>
-                    <span className="pl-save-context">{m.file}</span>
+                    <span className="pl-typeahead-text">
+                      <span className="pl-save-name">{m.path}</span>
+                      <span className="pl-typeahead-file">{m.file}</span>
+                    </span>
                   </button>
                 </li>
               ))}

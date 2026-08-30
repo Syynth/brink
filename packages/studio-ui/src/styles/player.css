@@ -356,14 +356,26 @@
 .brink-studio .pl-typeahead-row:hover {
   background: var(--bs-hover-bg);
 }
-.brink-studio .pl-typeahead-row .pl-save-name {
+.brink-studio .pl-typeahead-icon {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
 }
-.brink-studio .pl-typeahead-row .pl-save-context {
+.brink-studio .pl-typeahead-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+.brink-studio .pl-typeahead-text .pl-save-name {
   overflow: hidden;
   text-overflow: ellipsis;
-  flex-shrink: 1;
-  min-width: 0;
+}
+.brink-studio .pl-typeahead-file {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .brink-studio .pl-cap {
   font-size: var(--bs-font-small);
@@ -425,13 +437,14 @@
   white-space: nowrap;
 }
 .brink-studio .pl-save-actions {
-  display: none;
+  /* Space is RESERVED (visibility, not display) so hover never reflows
+     the row — swapping context/actions made the whole row jump
+     (maintainer feedback, W14). Context stays visible alongside. */
+  display: inline-flex;
+  visibility: hidden;
   gap: 4px;
   align-items: center;
 }
 .brink-studio .pl-save-row:hover .pl-save-actions {
-  display: inline-flex;
-}
-.brink-studio .pl-save-row:hover .pl-save-context {
-  display: none;
+  visibility: visible;
 }
