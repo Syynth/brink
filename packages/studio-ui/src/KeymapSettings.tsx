@@ -84,6 +84,13 @@ export function KeymapSettings() {
       // commit.
       if (chord !== null && chord.key !== "") probe(capture.commandId, chord);
     };
+    // DISMISS-NET-EXEMPT: owns the ENTIRE keyboard for an in-progress
+    // key-recording gesture (transient React state), not a floating
+    // menu/popover/modal surface. Escape is handled here rather than via
+    // registerDismissible() because the listener must swallow every key in
+    // the capture phase — a chord being recorded must not fire the command
+    // it is currently bound to, and that includes the dismiss net's own
+    // Escape handling closing the Settings modal underneath the recording.
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   });
