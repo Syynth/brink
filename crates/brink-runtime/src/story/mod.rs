@@ -1317,7 +1317,7 @@ impl<R: StoryRng> Story<R> {
                 // The overlay-projection join key (W11/#3304).
                 def_id: visible_targets
                     .get(i)
-                    .map(std::string::ToString::to_string)
+                    .map(alloc::string::ToString::to_string)
                     .unwrap_or_default(),
                 // `ch.index` is the pre-filter `flow.pending_choices` position
                 // (see `resolved_choices_for`) — the same index `choose()`
