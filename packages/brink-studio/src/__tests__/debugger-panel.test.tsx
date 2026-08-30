@@ -393,6 +393,73 @@ describe("Debugger panel (W8/#3301)", () => {
     expect(store.getState().watchEntries.map((e) => e.source)).toContain("torch");
   });
 
+  it("break on write: the variable-row menu arms; rows list, disable, remove (W18)", () => {
+    const { store } = editableStore();
+    const provider = store.getState()._provider as unknown as {
+      debugWatchpointAdd: ReturnType<typeof vi.fn>;
+      debugWatchpointRemove: ReturnType<typeof vi.fn>;
+      debugWatchpoints: () => string[];
+    };
+    let armed: string[] = [];
+    provider.debugWatchpointAdd = vi.fn((name: string) => {
+      if (armed.includes(name)) return false;
+      armed.push(name);
+      return true;
+    });
+    provider.debugWatchpointRemove = vi.fn((name: string) => {
+      const before = armed.length;
+      armed = armed.filter((n) => n !== name);
+      return armed.length !== before;
+    });
+    provider.debugWatchpoints = () => armed;
+    mount(store);
+
+    // Right-click the gold row → the one-verb menu → arm.
+    const goldRow = Array.from(host?.querySelectorAll(".sv-table tr") ?? []).find((r) =>
+      r.textContent?.includes("gold"),
+    ) as HTMLElement;
+    act(() => {
+      goldRow.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    const item = host?.querySelector<HTMLButtonElement>(".dp-global-menu-item");
+    expect(item?.textContent).toContain("Break on write — gold");
+    act(() => item?.click());
+
+    expect(store.getState().dataBreakpoints).toEqual([{ name: "gold", enabled: true }]);
+    expect(armed).toEqual(["gold"]);
+    // Listed in the Breakpoints section with the diamond + verb.
+    expect(host?.textContent).toContain("gold — on write");
+    expect(host?.textContent).toContain("Breakpoints (1)");
+
+    // Disable keeps the row, disarms the session.
+    const checkbox = host?.querySelector<HTMLInputElement>(".dp-bp-row input");
+    act(() => checkbox?.click());
+    expect(store.getState().dataBreakpoints).toEqual([{ name: "gold", enabled: false }]);
+    expect(armed).toEqual([]);
+
+    // Remove drops the row.
+    const x = host?.querySelector<HTMLButtonElement>(".dp-bp-row .dp-x");
+    act(() => x?.click());
+    expect(store.getState().dataBreakpoints).toEqual([]);
+
+    // The menu offers Remove when already watched.
+    store.getState().dataBreakpointToggle("torch");
+    act(() => {
+      goldRow.parentElement
+        ?.querySelectorAll("tr")
+        .forEach(() => {});
+    });
+    const torchRow = Array.from(host?.querySelectorAll(".sv-table tr") ?? []).find((r) =>
+      r.textContent?.includes("torch"),
+    ) as HTMLElement;
+    act(() => {
+      torchRow.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    expect(host?.querySelector(".dp-global-menu-item")?.textContent).toContain(
+      "Remove break on write — torch",
+    );
+  });
+
   it("disable-all / clear-all header actions drive every anchor", () => {
     const store = createStudioStore();
     store.setState({

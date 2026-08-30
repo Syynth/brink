@@ -396,6 +396,15 @@ function DebuggerPanelInner() {
   const closeSession = useStudioStore((s) => s.closeSession);
   const selectedFrameIdx = useStudioStore((s) => s.selectedFrameIdx);
   const debugEditGlobal = useStudioStore((s) => s.debugEditGlobal);
+  // Break-on-write (W18/#3311): the variable-row context menu's verb +
+  // the Breakpoints section's data rows.
+  const dataBreakpoints = useStudioStore((s) => s.dataBreakpoints);
+  const dataBreakpointToggle = useStudioStore((s) => s.dataBreakpointToggle);
+  const dataBreakpointSetEnabled = useStudioStore((s) => s.dataBreakpointSetEnabled);
+  const dataBreakpointRemove = useStudioStore((s) => s.dataBreakpointRemove);
+  const [globalMenu, setGlobalMenu] = useState<{ name: string; x: number; y: number } | null>(
+    null,
+  );
   const selectFrame = useStudioStore((s) => s.selectFrame);
   const sourceBreakpoints = useStudioStore((s) => s.sourceBreakpoints);
   const breakpointSetEnabled = useStudioStore((s) => s.breakpointSetEnabled);
@@ -646,7 +655,15 @@ function DebuggerPanelInner() {
           <table className="sv-table">
             <tbody>
               {debugState.globals.map((g) => (
-                <tr key={g.name} className={changedGlobals.has(g.name) ? "sv-changed-row" : ""}>
+                <tr
+                  key={g.name}
+                  className={changedGlobals.has(g.name) ? "sv-changed-row" : ""}
+                  onContextMenu={(e) => {
+                    // The variable-row menu (W18): break on write.
+                    e.preventDefault();
+                    setGlobalMenu({ name: g.name, x: e.clientX, y: e.clientY });
+                  }}
+                >
                   <td className="sv-key">{g.name}</td>
                   <td className="sv-val sv-mono">
                     {globalIsScalar(g.value) ? (
@@ -667,12 +684,33 @@ function DebuggerPanelInner() {
         )}
       </Section>
 
+      {globalMenu && (
+        <div
+          className="dp-global-menu"
+          style={{ left: globalMenu.x, top: globalMenu.y }}
+          onMouseLeave={() => setGlobalMenu(null)}
+        >
+          <button
+            type="button"
+            className="dp-global-menu-item"
+            onClick={() => {
+              dataBreakpointToggle(globalMenu.name);
+              setGlobalMenu(null);
+            }}
+          >
+            {dataBreakpoints.some((r) => r.name === globalMenu.name)
+              ? `Remove break on write — ${globalMenu.name}`
+              : `Break on write — ${globalMenu.name}`}
+          </button>
+        </div>
+      )}
+
       {/* Watch (F18/W17) — the mini-REPL over the speculation engine. */}
       <WatchSection />
 
       {/* Breakpoints (F2) — the source anchors, program-wide. */}
       <Section
-        title={`Breakpoints (${sourceBreakpoints.length})`}
+        title={`Breakpoints (${(sourceBreakpoints.length + dataBreakpoints.length).toString()})`}
         actions={
           sourceBreakpoints.length > 0 ? (
             <>
@@ -696,8 +734,36 @@ function DebuggerPanelInner() {
           ) : undefined
         }
       >
+        {dataBreakpoints.length > 0 && (
+          <ul className="dp-breakpoints">
+            {dataBreakpoints.map((d) => (
+              <li key={`data:${d.name}`} className="dp-bp-row">
+                <input
+                  type="checkbox"
+                  checked={d.enabled}
+                  title={d.enabled ? "Disable" : "Enable"}
+                  onChange={(e) => dataBreakpointSetEnabled(d.name, e.target.checked)}
+                />
+                <span className="dp-bp-label dp-bp-data" title="Data breakpoint — pauses when this global is written">
+                  <span className="dp-bp-diamond">◆</span> {d.name} — on write
+                </span>
+                <button
+                  type="button"
+                  className="dp-x"
+                  title="Remove data breakpoint"
+                  aria-label={`Remove break on write for ${d.name}`}
+                  onClick={() => dataBreakpointRemove(d.name)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {sourceBreakpoints.length === 0 ? (
-          <p className="sv-empty">none — click the editor gutter to set one</p>
+          dataBreakpoints.length === 0 ? (
+            <p className="sv-empty">none — click the editor gutter to set one</p>
+          ) : null
         ) : (
           <ul className="dp-breakpoints">
             {sourceBreakpoints.map((b) => (

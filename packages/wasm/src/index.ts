@@ -3056,6 +3056,25 @@ export class StorySessionHandle {
     return JSON.parse(this.session.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
   }
 
+  /** Arm a break-on-write data breakpoint on a global (W18/#3311,
+   * RULED). Stored by AUTHOR NAME — re-resolved against the current
+   * program per advance, so the arm survives hot reloads. `false` = no
+   * such global, or already armed. A watched write stops the run and
+   * Continue tiers with reason `{ type: "watchpoint", name }`. */
+  debugWatchpointAdd(name: string): boolean {
+    return this.session.debugWatchpointAdd(name);
+  }
+
+  /** Disarm a data breakpoint. `false` = wasn't armed. */
+  debugWatchpointRemove(name: string): boolean {
+    return this.session.debugWatchpointRemove(name);
+  }
+
+  /** The armed data breakpoints' names, in arm order. */
+  debugWatchpoints(): string[] {
+    return JSON.parse(this.session.debugWatchpoints()) as string[];
+  }
+
   /** Live value editing (W16/#3309, RULED — scalars, paused-only at the
    * panel): parse `input` against the GLOBAL's current type and commit
    * via the observed write path. `false` = refused (unknown global,

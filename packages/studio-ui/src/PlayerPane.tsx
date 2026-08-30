@@ -323,6 +323,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // observe-only provider — same posture as the Auto toggle above).
   const debugCapable = useStudioStore((s) => s.debugCapable);
   const paused = useStudioStore((s) => s.sessionPaused);
+  // W18: a watchpoint stop names the written global in the chip.
+  const lastOutcome = useStudioStore((s) => s.debugLastOutcome);
   const pausedLocation = useStudioStore((s) => {
     // file:line when the resolver can say (W6/#3299) — the shape every
     // debugger user reads — falling back to the runtime's knot path.
@@ -498,7 +500,15 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       : status === "none"
       ? { cls: "ready", label: "Ready" }
       : paused
-        ? { cls: "paused", label: pausedLocation ? `Paused — ${pausedLocation}` : "Paused" }
+        ? {
+            cls: "paused",
+            label:
+              lastOutcome?.reason.type === "watchpoint"
+                ? `Paused on write — ${lastOutcome.reason.name ?? `g${lastOutcome.reason.global_idx.toString()}`}`
+                : pausedLocation
+                  ? `Paused — ${pausedLocation}`
+                  : "Paused",
+          }
         : status === "awaiting-choice"
           ? { cls: "waiting", label: "Waiting on choice" }
           : status === "ended"

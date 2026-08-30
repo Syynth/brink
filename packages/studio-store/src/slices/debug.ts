@@ -136,6 +136,21 @@ export interface DebugSlice {
    */
   _syncSourceBreakpoints(): void;
 
+  /** Break-on-write data breakpoints (W18/#3311, RULED): the author's
+   * armed set — kept HERE (like `sourceBreakpoints`, the store owns the
+   * truth) and mirrored into the live session's watch set; a disabled
+   * row stays listed but unarmed, exactly like a position breakpoint. */
+  dataBreakpoints: { name: string; enabled: boolean }[];
+  /** The variable-row menu's verb: watch `name`, or un-watch it if
+   * already listed. */
+  dataBreakpointToggle(name: string): void;
+  dataBreakpointSetEnabled(name: string, enabled: boolean): void;
+  dataBreakpointRemove(name: string): void;
+  /** Re-arm the live session's watch set from the enabled rows — same
+   * from-scratch discipline as `_syncSourceBreakpoints`, same call
+   * sites (bind/switch + every mutation). */
+  _syncDataBreakpoints(): void;
+
   /** Add an enabled breakpoint at a bytecode position, refreshing
    * `debugBreakpoints`. Returns -1 (never a real id) without a debug-capable
    * live session. */
@@ -258,6 +273,7 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
   debugLastOutcome: null,
   debugStatus: "none",
   sourceBreakpoints: [],
+  dataBreakpoints: [],
   _breakpointsSink: null,
 
   breakpointToggleAtLine(file, line) {
@@ -526,6 +542,49 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
     const outcome = provider.debugRunToLine(budgetCeiling);
     set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
     get()._refreshDebugState();
+  },
+
+  dataBreakpointToggle(name) {
+    const rows = get().dataBreakpoints;
+    if (rows.some((r) => r.name === name)) {
+      set({ dataBreakpoints: rows.filter((r) => r.name !== name) });
+    } else {
+      set({ dataBreakpoints: [...rows, { name, enabled: true }] });
+    }
+    get()._syncDataBreakpoints();
+  },
+
+  dataBreakpointSetEnabled(name, enabled) {
+    set({
+      dataBreakpoints: get().dataBreakpoints.map((r) =>
+        r.name === name ? { ...r, enabled } : r,
+      ),
+    });
+    get()._syncDataBreakpoints();
+  },
+
+  dataBreakpointRemove(name) {
+    set({ dataBreakpoints: get().dataBreakpoints.filter((r) => r.name !== name) });
+    get()._syncDataBreakpoints();
+  },
+
+  _syncDataBreakpoints() {
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return;
+    const want = new Set(
+      get()
+        .dataBreakpoints.filter((r) => r.enabled)
+        .map((r) => r.name),
+    );
+    for (const armed of provider.debugWatchpoints()) {
+      if (!want.has(armed)) provider.debugWatchpointRemove(armed);
+    }
+    for (const name of want) {
+      // Add refuses duplicates and unknown globals — both fine here: a
+      // name the current program doesn't know stays listed (the row is
+      // the author's intent) and simply isn't armed this compile.
+      provider.debugWatchpointAdd(name);
+    }
   },
 
   debugEditGlobal(name, input) {

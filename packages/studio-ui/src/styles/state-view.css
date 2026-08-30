@@ -522,3 +522,40 @@
   border-radius: 3px;
   font-size: var(--bs-font-small);
 }
+
+/* ── Break-on-write (W18/#3311) ── */
+.brink-studio .dp-bp-data {
+  cursor: default;
+  background: none;
+  border: none;
+  color: var(--bs-fg);
+  font-size: var(--bs-font-body);
+}
+.brink-studio .dp-bp-diamond {
+  color: var(--bs-warning);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .dp-global-menu {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+.brink-studio .dp-global-menu-item {
+  display: block;
+  border: none;
+  background: transparent;
+  color: var(--bs-fg);
+  text-align: left;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brink-studio .dp-global-menu-item:hover {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}

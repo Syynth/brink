@@ -361,6 +361,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       // on the new program (W4/W5 #3297/#3298: found live — a solid gutter
       // dot over an empty runtime set is a breakpoint that never hits).
       get()._syncSourceBreakpoints();
+      get()._syncDataBreakpoints();
     },
 
     openSession(opts) {
@@ -382,6 +383,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       provider.start(bytes);
       // Same re-arm-on-new-session rule as startSession above.
       get()._syncSourceBreakpoints();
+      get()._syncDataBreakpoints();
     },
 
     openFlow(opts) {

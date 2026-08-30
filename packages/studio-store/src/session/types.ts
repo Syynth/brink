@@ -356,6 +356,15 @@ export interface DebugSessionProvider extends SessionProvider {
    * terminal stop comes first. The crossed line is IN the outcome's
    * `lines` (no one-advance lag, #3321). Needs no debug line info. */
   debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
+  /** Break-on-write data breakpoints (W18/#3311, RULED): arm a watched
+   * global by author name — a write stops the run/Continue tiers with
+   * the watchpoint named in the stop reason. `false` = unknown global or
+   * already armed. */
+  debugWatchpointAdd(name: string): boolean;
+  /** Disarm; `false` = wasn't armed. */
+  debugWatchpointRemove(name: string): boolean;
+  /** Armed data breakpoints, in arm order. */
+  debugWatchpoints(): string[];
   /** Watch evaluation (W17/#3310, spec §F18): evaluate an expression or
    * divert/content fragment against the session's CURRENT durable state,
    * side-effect-proof (a discard-on-drop speculation over a scratch

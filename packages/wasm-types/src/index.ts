@@ -1415,7 +1415,13 @@ export interface Breakpoint {
  *  the same convention `DebugValue` above uses. */
 export type DebugStopReason =
   | { type: "breakpoint"; id: number; name: string }
-  | { type: "watchpoint"; global_idx: number }
+  | {
+      type: "watchpoint";
+      global_idx: number;
+      /** The watched global's author name (W18/#3311) — the chip's
+       *  "paused on write" label. */
+      name?: string;
+    }
   /** A choice point was reached — distinct from `"terminal"`: `choose()`
    *  followed by `continueSingle`/`debugRun`/`debugStep` can resume from
    *  here, unlike an actual `-> DONE`/`-> END`. */

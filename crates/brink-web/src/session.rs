@@ -77,6 +77,11 @@ pub struct WebSession {
     /// breakpoint's position meaningless, same caveat
     /// `resolve_debug_position`'s doc already carries for program identity.
     breakpoints: RefCell<brink_runtime::BreakpointSet>,
+    /// Break-on-write data breakpoints (W18/#3311): the watched globals'
+    /// AUTHOR NAMES. Indices are re-resolved against the CURRENT program
+    /// on every watching advance — names survive a hot reload where a
+    /// stored slot index would silently watch the wrong global.
+    watched_globals: RefCell<Vec<String>>,
 }
 
 #[wasm_bindgen]
@@ -116,6 +121,7 @@ impl WebSession {
             last_replay_outcome: RefCell::new(None),
             dev_visibility_override: Cell::new(false),
             breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
+            watched_globals: RefCell::new(Vec::new()),
         })
     }
 
@@ -355,6 +361,83 @@ impl WebSession {
         serde_json::to_string(&list).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Arm a break-on-write data breakpoint on a global (W18/#3311,
+    /// RULED). Stored by AUTHOR NAME — the slot index is re-resolved
+    /// against the current program on every watching advance, so the arm
+    /// survives hot reloads. `false` = no such global in the current
+    /// program (nothing armed), or already watched.
+    #[wasm_bindgen(js_name = debugWatchpointAdd)]
+    pub fn debug_watchpoint_add(&self, name: &str) -> Result<bool, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        if session.story().program().global_index(name).is_none() {
+            return Ok(false);
+        }
+        let mut watched = self.watched_globals.borrow_mut();
+        if watched.iter().any(|w| w == name) {
+            return Ok(false);
+        }
+        watched.push(name.to_owned());
+        Ok(true)
+    }
+
+    /// Disarm a data breakpoint by name. `false` = wasn't armed.
+    #[wasm_bindgen(js_name = debugWatchpointRemove)]
+    pub fn debug_watchpoint_remove(&self, name: &str) -> bool {
+        let mut watched = self.watched_globals.borrow_mut();
+        let before = watched.len();
+        watched.retain(|w| w != name);
+        watched.len() != before
+    }
+
+    /// The armed data breakpoints' names, in arm order (JSON `string[]`).
+    #[wasm_bindgen(js_name = debugWatchpoints)]
+    pub fn debug_watchpoints(&self) -> Result<String, JsError> {
+        serde_json::to_string(&*self.watched_globals.borrow())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Build the per-advance observer from the armed names, resolved
+    /// against the CURRENT program (see `watched_globals`' doc). `None`
+    /// when nothing is armed — the advance runs unobserved, as before.
+    fn watch_observer(
+        session: &brink_runtime::StorySession<brink_runtime::FastRng>,
+        watched: &[String],
+    ) -> Option<brink_runtime::WatchpointObserver> {
+        if watched.is_empty() {
+            return None;
+        }
+        let program = session.story().program();
+        let indices: Vec<u32> = watched
+            .iter()
+            .filter_map(|name| program.global_index(name))
+            .collect();
+        if indices.is_empty() {
+            return None;
+        }
+        Some(brink_runtime::WatchpointObserver::new(indices))
+    }
+
+    /// Resolve a watchpoint stop's slot index back to its author name in
+    /// the marshaled outcome (the wire carries both, W18).
+    fn name_watchpoint_stop(
+        js: &mut crate::value_marshal::DebugRunOutcomeJs,
+        watched: &[String],
+        session: &brink_runtime::StorySession<brink_runtime::FastRng>,
+    ) {
+        if let crate::value_marshal::DebugStopReasonJs::Watchpoint { global_idx, name } =
+            &mut js.reason
+        {
+            let program = session.story().program();
+            *name = watched
+                .iter()
+                .find(|w| program.global_index(w) == Some(*global_idx))
+                .cloned();
+        }
+    }
+
     /// Run the default flow forward until an armed breakpoint, a choice
     /// point, or a terminal outcome (`Story::debug_run`'s own doc has the
     /// full stop-condition/resume contract). `budget_ceiling` defaults to
@@ -370,20 +453,25 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        let watched = self.watched_globals.borrow().clone();
         // Drain the shared delivery cursor around the advance (W5/#3298):
         // lines the production lookahead already completed surface here
         // exactly once, and lines this advance completes follow them.
         let mut drained = session.story_mut().debug_drain_buffered_lines();
-        let outcome = session
-            .story_mut()
-            .debug_run(&breakpoints, ceiling)
-            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        // W18: armed data breakpoints route the run through the watching
+        // variant — a watched write stops it with the writer's position.
+        let outcome = match Self::watch_observer(session, &watched) {
+            Some(mut w) => session
+                .story_mut()
+                .debug_run_watching(&breakpoints, &mut w, ceiling),
+            None => session.story_mut().debug_run(&breakpoints, ceiling),
+        }
+        .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
         drained.extend(session.story_mut().debug_drain_buffered_lines());
         let lines = crate::value_marshal::drained_lines_to_js(drained);
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
-            outcome, lines,
-        ))
-        .map_err(|e| JsError::new(&format!("json error: {e}")))
+        let mut js = crate::value_marshal::debug_run_outcome_to_js(outcome, lines);
+        Self::name_watchpoint_stop(&mut js, &watched, session);
+        serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Run the default flow forward until the next **content line** is
@@ -405,22 +493,30 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        let watched = self.watched_globals.borrow().clone();
         // Drain the shared delivery cursor around the advance (W5/#3298):
         // a line the production lookahead already completed satisfies the
         // "one content line delivered" contract by itself — the runtime
         // verb only runs when the cursor starts empty.
         let mut drained = session.story_mut().debug_drain_buffered_lines();
         if drained.is_empty() {
-            let outcome = session
-                .story_mut()
-                .debug_run_to_line(&breakpoints, ceiling)
-                .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+            // W18: the Continue tier honors data breakpoints — a watched
+            // write stops before the next content line commits.
+            let outcome = match Self::watch_observer(session, &watched) {
+                Some(mut w) => {
+                    session
+                        .story_mut()
+                        .debug_run_to_line_watching(&breakpoints, &mut w, ceiling)
+                }
+                None => session.story_mut().debug_run_to_line(&breakpoints, ceiling),
+            }
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
             drained.extend(session.story_mut().debug_drain_buffered_lines());
             let lines = crate::value_marshal::drained_lines_to_js(drained);
-            return serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
-                outcome, lines,
-            ))
-            .map_err(|e| JsError::new(&format!("json error: {e}")));
+            let mut js = crate::value_marshal::debug_run_outcome_to_js(outcome, lines);
+            Self::name_watchpoint_stop(&mut js, &watched, session);
+            return serde_json::to_string(&js)
+                .map_err(|e| JsError::new(&format!("json error: {e}")));
         }
         let position = session.story_mut().debug_position();
         let depth = session.story_mut().debug_call_stack_depth();
@@ -1172,6 +1268,7 @@ impl WebSession {
                 last_replay_outcome: RefCell::new(None),
                 dev_visibility_override: Cell::new(false),
                 breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
+                watched_globals: RefCell::new(Vec::new()),
             },
             outcome,
         ))
@@ -1924,6 +2021,108 @@ mod debug_control_tests {
                     .contains("You gain 12 points.")),
             "the temp edit must reach the story's own read: {out}"
         );
+    }
+
+    // ── W18/#3311: break-on-write data breakpoints ──────────────────────
+    //
+    // The issue's proof item: a write to a watched global pauses at the
+    // writing line with the watchpoint NAMED in the stop reason — on the
+    // Continue tier (`debug_run_to_line`), the road ordinary Player
+    // advances take, not just the raw run verb.
+    #[test]
+    fn watched_write_stops_the_continue_tier_with_the_name() {
+        let src = "VAR gold = 2\n-> top\n=== top ===\nFirst.\n~ gold = 9\nSecond.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("gold").expect("arm"));
+        // Unknown global refuses; duplicate refuses.
+        assert!(!session.debug_watchpoint_add("nope").expect("call ok"));
+        assert!(!session.debug_watchpoint_add("gold").expect("call ok"));
+        assert_eq!(
+            session.debug_watchpoints().expect("list"),
+            r#"["gold"]"#,
+            "arm order, by name"
+        );
+
+        // The FIRST Continue already stops at the watchpoint: the VM runs
+        // ahead of delivery (the #3321 commit boundary), so `~ gold = 9`
+        // executes while "First." is still buffered — the stop lands at
+        // the writing instruction, named, before ANY later content.
+        let stop = json(&session.debug_run_to_line(None).expect("continue"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "{stop}"
+        );
+        assert_eq!(stop["reason"]["name"], serde_json::json!("gold"), "{stop}");
+        assert!(
+            !stop["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"].as_str().unwrap_or("").contains("Second.")),
+            "the stop lands BEFORE later content commits: {stop}"
+        );
+
+        // Disarm → the same road runs through freely; every line arrives
+        // exactly once (the buffered "First." was not eaten by the stop).
+        assert!(session.debug_watchpoint_remove("gold"));
+        let mut texts: Vec<String> = Vec::new();
+        for _ in 0..6 {
+            let out = json(&session.debug_run_to_line(None).expect("continue"));
+            for l in out["lines"].as_array().expect("lines") {
+                if let Some(t) = l["text"].as_str() {
+                    texts.push(t.to_owned());
+                }
+            }
+            if out["reason"]["type"] == serde_json::json!("terminal") {
+                break;
+            }
+        }
+        let firsts = texts.iter().filter(|t| t.contains("First.")).count();
+        let seconds = texts.iter().filter(|t| t.contains("Second.")).count();
+        assert_eq!(
+            (firsts, seconds),
+            (1, 1),
+            "each line exactly once: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn watched_write_stops_the_run_road_too() {
+        let src = "VAR hp = 3\n-> top\n=== top ===\nA line.\n~ hp = 1\nMore.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("hp").expect("arm"));
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "{stop}"
+        );
+        assert_eq!(stop["reason"]["name"], serde_json::json!("hp"), "{stop}");
+    }
+
+    #[test]
+    fn watched_write_in_a_choice_body_stops_the_post_choose_continue() {
+        let src = "VAR torch = 6\n-> top\n=== top ===\nPick.\n* [Room]\n  ~ torch = torch - 1\n  Dark room.\n- -> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("torch").expect("arm"));
+        // Run to the choice point on the watched road.
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("choices"),
+            "{stop}"
+        );
+        // Choose (the production road — selection only, no VM steps), then
+        // Continue: the body's write must stop the watched advance.
+        session.choose(0).expect("choose");
+        let out = json(&session.debug_run_to_line(None).expect("continue"));
+        assert_eq!(
+            out["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "the choice body's write must stop the post-choose continue: {out}"
+        );
+        assert_eq!(out["reason"]["name"], serde_json::json!("torch"), "{out}");
     }
 
     // ── Structural transcript (RULED 2026-08-30) ────────────────────────

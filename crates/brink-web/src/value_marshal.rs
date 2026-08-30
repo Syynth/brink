@@ -1014,7 +1014,14 @@ pub(crate) enum DebugStopReasonJs {
     #[serde(rename = "breakpoint")]
     Breakpoint { id: u32, name: String },
     #[serde(rename = "watchpoint")]
-    Watchpoint { global_idx: u32 },
+    Watchpoint {
+        global_idx: u32,
+        /// The watched global's author-facing name (W18/#3311) — resolved
+        /// by the session layer from its own watched-names list; absent
+        /// only if the slot vanished between the hit and the marshal.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     #[serde(rename = "choices")]
     Choices,
     #[serde(rename = "step")]
@@ -1107,9 +1114,10 @@ pub(crate) fn debug_run_outcome_to_js(
     DebugRunOutcomeJs {
         reason: match o.reason {
             DebugStopReason::Breakpoint { id, name } => DebugStopReasonJs::Breakpoint { id, name },
-            DebugStopReason::Watchpoint { global_idx } => {
-                DebugStopReasonJs::Watchpoint { global_idx }
-            }
+            DebugStopReason::Watchpoint { global_idx } => DebugStopReasonJs::Watchpoint {
+                global_idx,
+                name: None,
+            },
             DebugStopReason::Choices => DebugStopReasonJs::Choices,
             DebugStopReason::Step => DebugStopReasonJs::Step,
             DebugStopReason::Terminal => DebugStopReasonJs::Terminal,

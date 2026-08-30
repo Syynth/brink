@@ -792,6 +792,21 @@ export class LocalSessionProvider implements DebugSessionProvider {
     return outcome;
   }
 
+  /** Break-on-write (W18/#3311): arm/disarm/list — see the handle's
+   * docs. The provider is a thin pass-through; the paused/refresh dance
+   * belongs to the advance that HITS one, not the arming. */
+  debugWatchpointAdd(name: string): boolean {
+    return this.capture(() => this.session?.debugWatchpointAdd(name) ?? false) ?? false;
+  }
+
+  debugWatchpointRemove(name: string): boolean {
+    return this.capture(() => this.session?.debugWatchpointRemove(name) ?? false) ?? false;
+  }
+
+  debugWatchpoints(): string[] {
+    return this.capture(() => this.session?.debugWatchpoints() ?? []) ?? [];
+  }
+
   /** Watch evaluation (W17/#3310, spec §F18): run one entry against the
    * session's CURRENT durable state. The scratch runner is seeded via
    * `saveState()` (name-keyed — survives the cross-program hop), then
@@ -1148,7 +1163,13 @@ export class LocalSessionProvider implements DebugSessionProvider {
   private debugDriven(): boolean {
     if (this.paused) return true;
     try {
-      return (this.session?.debugBreakpoints().length ?? 0) > 0;
+      // Armed POSITION breakpoints or armed DATA breakpoints (W18) both
+      // demand the debug road — the production continue path can hit
+      // neither.
+      return (
+        (this.session?.debugBreakpoints().length ?? 0) > 0 ||
+        (this.session?.debugWatchpoints().length ?? 0) > 0
+      );
     } catch {
       return false;
     }
