@@ -1988,6 +1988,19 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
+
+  /**
+   * Run forward until the next **content line** is delivered (2026-08-30
+   * Continue ruling — the granularity ladder's top tier), or a
+   * breakpoint/choices/terminal stop comes first. The stop lands past the
+   * glue/commit boundary, so the crossed line is IN this outcome's
+   * `lines` — no one-advance delivery lag (#3321). Needs no debug line
+   * info. Same budget default as {@link debugRun}.
+   */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
+  }
+
   /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
    * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
    * artifact carries no line index. Same journal-bypass contract as
@@ -2988,6 +3001,19 @@ export class StorySessionHandle {
    */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
     return JSON.parse(this.session.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
+
+  /**
+   * Run forward until the next **content line** is delivered (2026-08-30
+   * Continue ruling — the granularity ladder's top tier), or a
+   * breakpoint/choices/terminal stop comes first. The stop lands past the
+   * glue/commit boundary, so the crossed line is IN this outcome's
+   * `lines` — no one-advance delivery lag (#3321). Needs no debug line
+   * info. Same budget default as {@link debugRun}.
+   */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
   }
 
   /** Step to the next **source line** (#3264, W5/#3298) — the author-tier

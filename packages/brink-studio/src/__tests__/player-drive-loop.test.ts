@@ -42,6 +42,7 @@ function scriptedSession(armed: Breakpoint[] = []) {
     debugRun: vi.fn((): DebugRunOutcome => outcome({ type: "terminal" })),
     debugStep: vi.fn((): DebugRunOutcome => outcome({ type: "step" })),
     debugStepLine: vi.fn((): DebugRunOutcome => outcome({ type: "step" })),
+    debugRunToLine: vi.fn((): DebugRunOutcome => outcome({ type: "step" })),
   };
 }
 
@@ -67,19 +68,23 @@ describe("unified drive loop (W5/#3298)", () => {
     expect(session.debugStepLine).not.toHaveBeenCalled();
   });
 
-  it("with breakpoints armed, a single reveal is a bounded line step", () => {
+  it("with breakpoints armed, a single reveal runs to the next content line", () => {
     const session = scriptedSession([BP]);
-    session.debugStepLine.mockReturnValue(
-      outcome({ type: "step" }, [{ text: "stepped line\n", tags: [] }]),
+    session.debugRunToLine.mockReturnValue(
+      outcome({ type: "step" }, [{ text: "next content line\n", tags: [] }]),
     );
     const { store } = bind(session);
 
     store.getState().revealNext();
-    expect(session.debugStepLine).toHaveBeenCalledWith("over");
+    // 2026-08-30 Continue ruling: the reveal is the author-tier
+    // content-line run, not a statement step — an author never grinds
+    // through `~` statements to reach content.
+    expect(session.debugRunToLine).toHaveBeenCalled();
+    expect(session.debugStepLine).not.toHaveBeenCalled();
     expect(session.continueSingle).not.toHaveBeenCalled();
     // The outcome's lines delta reaches the transcript — the coherence
-    // half: stepping over a text line must not eat its output.
-    expect(store.getState().sessionText).toContain("stepped line");
+    // half: the crossed line must not be eaten.
+    expect(store.getState().sessionText).toContain("next content line");
     // An ordinary playing reveal does not enter the paused state.
     expect(store.getState().sessionPaused).toBe(false);
   });
@@ -93,9 +98,9 @@ describe("unified drive loop (W5/#3298)", () => {
     expect(session.debugRun).toHaveBeenCalled();
   });
 
-  it("a breakpoint hit pauses the session; continue (debugRun) resumes", () => {
+  it("a breakpoint hit pauses the session; Continue (debugRunToLine) resumes", () => {
     const session = scriptedSession([BP]);
-    session.debugStepLine.mockReturnValue(
+    session.debugRunToLine.mockReturnValue(
       outcome({ type: "breakpoint", id: 1, name: "bp" }),
     );
     const { store } = bind(session);
@@ -103,13 +108,20 @@ describe("unified drive loop (W5/#3298)", () => {
     store.getState().revealNext();
     expect(store.getState().sessionPaused).toBe(true);
 
-    // Continue: free-run that ends at a terminal — paused clears.
-    session.debugRun.mockReturnValue(outcome({ type: "terminal" }));
-    store.getState().debugRun();
+    // Continue: deliver the next content line and resume play (2026-08-30
+    // ruling) — paused clears on an ordinary step stop.
+    session.debugRunToLine.mockReturnValue(
+      outcome({ type: "step" }, [{ text: "after the stop\n", tags: [] }]),
+    );
+    store.getState().debugRunToLine();
     expect(store.getState().sessionPaused).toBe(false);
+    expect(store.getState().sessionText).toContain("after the stop");
   });
 
-  it("the pause verb pauses; a paused reveal line-steps and stays paused", () => {
+  it("the pause verb pauses; a paused reveal delivers the next content line and RESUMES", () => {
+    // 2026-08-30 Continue ruling — this REVERSES the W5 pin ("a paused
+    // reveal line-steps and stays paused"): the reveal-while-paused click
+    // IS Continue. Staying paused is what the statement steps are for.
     const session = scriptedSession(); // no breakpoints at all
     const { store } = bind(session);
 
@@ -118,10 +130,29 @@ describe("unified drive loop (W5/#3298)", () => {
 
     store.getState().revealNext();
     // Paused routes through the debug loop even with nothing armed…
-    expect(session.debugStepLine).toHaveBeenCalledWith("over");
-    // …and an ordinary step keeps the paused state (stepping IS how a
-    // paused session moves).
+    expect(session.debugRunToLine).toHaveBeenCalled();
+    // …and the ordinary content-line stop RESUMES play.
+    expect(store.getState().sessionPaused).toBe(false);
+  });
+
+  it("choosing while paused delivers the consequence and STAYS paused (F7)", () => {
+    // The 2026-08-30 resume ruling covers the Continue/reveal gesture
+    // only — F7's paused choice presentation is unchanged: pick while
+    // paused, inspect the consequence, still paused.
+    const session = scriptedSession();
+    session.debugSnapshot.mockReturnValue({
+      status: "waiting_for_choice",
+      pending_choices: [{ index: 0, text: "Pick me" }],
+    } as never);
+    const { store, provider } = bind(session);
+    provider.pause();
+
+    session.debugRunToLine.mockReturnValue(
+      outcome({ type: "step" }, [{ text: "the consequence\n", tags: [] }]),
+    );
+    store.getState().chooseOption(0);
     expect(store.getState().sessionPaused).toBe(true);
+    expect(store.getState().sessionText).toContain("the consequence");
   });
 
   it("an explicit transport step leaves the session paused", () => {
@@ -133,20 +164,27 @@ describe("unified drive loop (W5/#3298)", () => {
     expect(store.getState().sessionPaused).toBe(true);
   });
 
-  it("noLineInfo falls back to the journaled single-line advance", () => {
+  it("the reveal road needs no debug line info (stripped artifacts still play)", () => {
+    // The content-line run's stop condition is output-buffer state, not a
+    // DebugInfo entry — the W5-era noLineInfo fallback to the journaled
+    // road is gone because the verb itself never degrades. A stripped
+    // artifact reveals through the same debug road, breakpoint-bounded.
     const session = scriptedSession([BP]);
-    session.debugStepLine.mockReturnValue(outcome({ type: "noLineInfo" }));
+    session.hasDebugInfo.mockReturnValue(false);
+    session.debugRunToLine.mockReturnValue(
+      outcome({ type: "step" }, [{ text: "still plays\n", tags: [] }]),
+    );
     const { store } = bind(session);
 
     store.getState().revealNext();
-    expect(session.continueSingle).toHaveBeenCalled();
-    expect(store.getState().sessionText).toContain("prod line");
+    expect(session.debugRunToLine).toHaveBeenCalled();
+    expect(store.getState().sessionText).toContain("still plays");
     expect(store.getState().sessionPaused).toBe(false);
   });
 
   it("a choices stop presents the runtime's pending choices", () => {
     const session = scriptedSession([BP]);
-    session.debugStepLine.mockReturnValue(outcome({ type: "choices" }));
+    session.debugRunToLine.mockReturnValue(outcome({ type: "choices" }));
     session.debugSnapshot.mockReturnValue({
       status: "waiting_for_choice",
       pending_choices: [{ index: 0, text: "Order another" }],

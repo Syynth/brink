@@ -42,6 +42,7 @@ function scriptedSession() {
     debugRun: vi.fn((): DebugRunOutcome => ({ reason: { type: "terminal" }, depth: 0, lines: [] })),
     debugStep: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
     debugStepLine: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
+    debugRunToLine: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
   };
 }
 
@@ -96,6 +97,7 @@ describe("debug.* commands gating", () => {
 
     for (const id of [
       "debug.run",
+      "debug.continue",
       "debug.stepInto",
       "debug.stepOver",
       "debug.stepOut",
@@ -114,6 +116,7 @@ describe("debug.* commands gating", () => {
     bindSession(store, scriptedSession());
 
     expect(commands.isEnabled("debug.run")).toBe(true);
+    expect(commands.isEnabled("debug.continue")).toBe(true);
     expect(commands.isEnabled("debug.stepInto")).toBe(true);
   });
 });

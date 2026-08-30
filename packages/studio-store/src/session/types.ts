@@ -268,13 +268,20 @@ export interface DebugSessionProvider extends SessionProvider {
   debugRun(budgetCeiling?: number): DebugRunOutcome;
   /** See `StorySessionHandle.debugStep`'s doc. */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
-  /** Step to the next source line (#3264, W5/#3298) — the author-tier step
-   * the transport's Step Over/Into/Out drive; bounded by armed
+  /** Step to the next source line (#3264, W5/#3298) — the STATEMENT-tier
+   * step the transport's Step Over/Into/Out drive (2026-08-30 Continue
+   * ruling: the author tier is `debugRunToLine`); bounded by armed
    * breakpoints. Leaves the session paused (except at choices/terminal). */
   debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+  /** Run until the next CONTENT line is delivered (2026-08-30 Continue
+   * ruling — the granularity ladder's top tier), or a breakpoint/choices/
+   * terminal stop comes first. The crossed line is IN the outcome's
+   * `lines` (no one-advance lag, #3321). Needs no debug line info. */
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
   /** The pause verb (W5/#3298, ruled: pause/resume is first-class): the
-   * session enters the paused state at its current boundary — the next
-   * reveal advances one line and stays paused; `debugRun` resumes. */
+   * session enters the paused state at its current boundary — Continue
+   * (`debugRunToLine`) delivers the next content line and resumes play;
+   * the statement steps advance and stay paused. */
   pause(): void;
 }
 

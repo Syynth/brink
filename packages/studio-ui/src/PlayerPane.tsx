@@ -337,9 +337,9 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               {paused ? (
                 <button
                   className="player-transport-btn"
-                  title="Continue — run to the next breakpoint, choice, or end"
+                  title="Continue — run to the next line of content and resume play"
                   aria-label="Continue"
-                  onClick={() => commands.dispatch("debug.run")}
+                  onClick={() => commands.dispatch("debug.continue")}
                 >
                   <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                     <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />

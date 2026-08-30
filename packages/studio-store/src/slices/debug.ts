@@ -126,6 +126,10 @@ export interface DebugSlice {
   debugStep(mode: StepMode, budgetCeiling?: number): void;
   /** Step by one SOURCE LINE (W5/#3298) — the transport's step verbs. */
   debugStepLine(mode: StepMode, budgetCeiling?: number): void;
+  /** Continue (2026-08-30 ruling): run until the next CONTENT line is
+   * delivered — or a breakpoint/choices/terminal stop — and resume play.
+   * Same update/refresh contract as `debugRun`. */
+  debugRunToLine(budgetCeiling?: number): void;
   /**
    * Whether this editor session compiles with the D6 `DebugInfo` section
    * (#3229). **ON by default since 2026-08-29** (W1/#3294, "debug info on
@@ -425,6 +429,18 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
     const provider = get()._provider;
     if (!provider || !isDebugSessionProvider(provider)) return;
     const outcome = provider.debugStepLine(mode, budgetCeiling);
+    set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
+    get()._refreshDebugState();
+  },
+
+  debugRunToLine(budgetCeiling) {
+    // Continue (2026-08-30 ruling — the granularity ladder's TOP tier):
+    // deliver the next content line and resume play, bounded by armed
+    // breakpoints. This is the Player transport's Continue; the statement
+    // steps above are the programmer tier.
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return;
+    const outcome = provider.debugRunToLine(budgetCeiling);
     set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
     get()._refreshDebugState();
   },

@@ -466,8 +466,10 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.choices = [];
 
     // Reveal the next section (emits). The journal-dirty hook handles
-    // persistence — no bespoke save call here.
-    this.reveal();
+    // persistence — no bespoke save call here. Choosing while paused
+    // STAYS paused (F7's ruled choice presentation) — only the Continue/
+    // reveal gesture resumes (2026-08-30 ruling), and this is not it.
+    this.reveal(this.paused);
   }
 
   /**
@@ -601,6 +603,19 @@ export class LocalSessionProvider implements DebugSessionProvider {
     return outcome;
   }
 
+  debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
+    const session = this.session;
+    if (!session) return { reason: { type: "terminal" }, depth: 0, lines: [] };
+    // Continue (2026-08-30 ruling): deliver the next content line and
+    // RESUME play — paused clears unless the run stops at a breakpoint
+    // (applyDebugOutcome re-sets it then).
+    this.paused = false;
+    const outcome = session.debugRunToLine(budgetCeiling);
+    this.applyDebugOutcome(outcome, false);
+    this.emit();
+    return outcome;
+  }
+
   pause(): void {
     // The pause verb (W5/#3298): enter the paused state at the current
     // boundary. Reveals are user-driven in this architecture, so there is
@@ -665,7 +680,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * terminal (`choices`/`done`/`end`), which is why wrapping it in an array
    * needs no special-casing.
    */
-  private reveal(): void {
+  private reveal(stayPaused = false): void {
     const session = this.session;
     if (!session) {
       this.emit();
@@ -677,12 +692,16 @@ export class LocalSessionProvider implements DebugSessionProvider {
         // W5/#3298 — play and debug are ONE loop: with breakpoints armed
         // (or the session paused), the production continue path can never
         // hit them, so advancement routes through the debug verbs. A
-        // single reveal is a line step bounded by breakpoints; auto is a
-        // free run to the next breakpoint/choice/terminal. Debug advances
-        // bypass the journal by ruled design — choices stay journaled, so
-        // replay/restore still reconstructs to the same turn boundary,
-        // only a paused-mid-turn position is not itself restorable.
-        this.advanceDebug(this.auto && !this.paused ? "run" : "line", this.paused);
+        // single reveal runs to the next CONTENT line bounded by
+        // breakpoints (2026-08-30 Continue ruling — the reveal-while-
+        // paused click IS Continue, and it RESUMES play; the choose road
+        // passes `stayPaused` to keep F7's paused choice presentation);
+        // auto is a free run to the next breakpoint/choice/terminal.
+        // Debug advances bypass the journal by ruled design — choices
+        // stay journaled, so replay/restore still reconstructs to the
+        // same turn boundary, only a paused-mid-turn position is not
+        // itself restorable.
+        this.advanceDebug(this.auto && !this.paused ? "run" : "line", stayPaused);
       } else {
         const lines = this.auto ? session.continueToPause() : [session.continueSingle()];
         this.appendLines(lines);
@@ -721,29 +740,17 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
   }
 
-  /** One debug-driven advance: `"line"` = the author-tier line step
-   *  (reveal-next, bounded by breakpoints), `"run"` = free-run to the next
-   *  breakpoint/choice/terminal. `stayPaused` keeps the paused state
-   *  across an ordinary step (stepping IS how a paused session advances);
-   *  a breakpoint/watchpoint hit pauses regardless. */
+  /** One debug-driven advance: `"line"` = the author-tier content-line
+   *  run (2026-08-30 Continue ruling — deliver the next content line,
+   *  bounded by breakpoints, needs no debug line info), `"run"` =
+   *  free-run to the next breakpoint/choice/terminal. `stayPaused` keeps
+   *  the paused state across an ordinary stop; a breakpoint/watchpoint
+   *  hit pauses regardless. */
   private advanceDebug(kind: "run" | "line", stayPaused: boolean): void {
     const session = this.session;
     if (!session) return;
-    let outcome =
-      kind === "run" ? session.debugRun() : session.debugStepLine("over");
-    if (outcome.reason.type === "noLineInfo") {
-      // No line index (debug info off/stripped): a line step has nothing
-      // to key on. Fall back to the production single-line advance rather
-      // than stalling the Player — honest degradation, not a silent remap
-      // to instruction stepping.
-      const line = session.continueSingle();
-      this.appendLines([line]);
-      this.status = statusOfLine(line.type);
-      this.choices = line.type === "choices" ? (line.choices ?? []) : [];
-      this.lastOutcome = outcome;
-      this.paused = false;
-      return;
-    }
+    const outcome =
+      kind === "run" ? session.debugRun() : session.debugRunToLine();
     this.applyDebugOutcome(outcome, stayPaused);
   }
 

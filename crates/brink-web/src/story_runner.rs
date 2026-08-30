@@ -849,6 +849,48 @@ impl StoryRunner {
         .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Run the default flow forward until the next content line is
+    /// delivered (or a breakpoint/choices/terminal stop). See
+    /// `WebSession::debug_run_to_line`'s doc. Returns JSON
+    /// `DebugRunOutcome`.
+    #[wasm_bindgen(js_name = debugRunToLine)]
+    pub fn debug_run_to_line(&self, budget_ceiling: Option<u32>) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_run_to_line"))?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        // See `WebSession`'s copy for the shared-delivery-cursor contract
+        // and the already-buffered-line short-circuit.
+        let mut drained = story.debug_drain_buffered_lines();
+        if drained.is_empty() {
+            let outcome = story
+                .debug_run_to_line(&breakpoints, ceiling)
+                .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+            drained.extend(story.debug_drain_buffered_lines());
+            let lines = crate::value_marshal::drained_lines_to_js(drained);
+            return serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+                outcome, lines,
+            ))
+            .map_err(|e| JsError::new(&format!("json error: {e}")));
+        }
+        let position = story.debug_position();
+        let depth = story.debug_call_stack_depth();
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            brink_runtime::DebugRunOutcome {
+                reason: brink_runtime::DebugStopReason::Step,
+                position,
+                depth,
+            },
+            lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
     /// `"out"`. See `WebSession::debug_step`'s doc. Returns JSON
     /// `DebugRunOutcome`.

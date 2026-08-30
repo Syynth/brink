@@ -1,7 +1,9 @@
 /**
- * Debug session commands (D8's control bridge, #3232) — `debug.run` / `debug.pause` /
+ * Debug session commands (D8's control bridge, #3232) — `debug.run` /
+ * `debug.continue` (2026-08-30 ruling: run to the next CONTENT line and
+ * resume play — the transport's Continue) / `debug.pause` /
  * `debug.stepInto` / `debug.stepOver` / `debug.stepOut` (LINE steps since
- * W5/#3298 — the author tier) / `debug.
+ * W5/#3298 — the statement tier) / `debug.
  * breakpointAdd` / `debug.breakpointRemove` / `debug.breakpointToggle`.
  *
  * Same discipline as `registerStoryCommands`: commands own the debug
@@ -44,12 +46,25 @@ export function registerDebugCommands(
     }),
 
     commands.register({
+      id: "debug.continue",
+      title: "Debug: Continue",
+      when: debugCapable,
+      // Continue (2026-08-30 ruling): run until the next content line is
+      // delivered — or a breakpoint/choices/terminal stop — and resume
+      // play. The transport's Continue; `debug.run` stays the free-run.
+      run: (args) => {
+        const budgetCeiling = (args as { budgetCeiling?: number } | undefined)?.budgetCeiling;
+        store.getState().debugRunToLine(budgetCeiling);
+      },
+    }),
+
+    commands.register({
       id: "debug.pause",
       title: "Debug: Pause",
       when: debugCapable,
       // The pause verb (W5/#3298, ruled first-class): enter the paused
-      // state at the current boundary — the next reveal is a bounded line
-      // step, the transport's step controls light up, debug.run resumes.
+      // state at the current boundary — the step controls light up, and
+      // debug.continue delivers the next content line and resumes.
       run: () => store.getState().pauseSession(),
     }),
 
