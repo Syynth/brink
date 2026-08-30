@@ -4199,3 +4199,61 @@
   widening the visits snapshot if it filters out anonymous choice-body
   containers — W11 verifies that first. The condition-failed label is
   by-elimination (a catch-all); edge cases live in W11's proof list.
+
+## Runtime save/load for testing: idle-Player surface, location by App setting
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime consumer (debugger UI round, #452 D9 / #57)
+- **SCOPE:** architectural
+- **WHAT:** (1) The author can **save and load runtime state the way a
+  game would** — visit counts, globals, position: the story's durable
+  state, NOT internal/ephemeral runtime state — to get to a particular
+  place in the story and keep testing from there. The save payload is
+  the runtime's existing `SaveState` boundary, not a new format. (2)
+  The controls are a **separate surface in the Player, present when it
+  is idle**: the idle body shows Run-from-start plus the saves list
+  (load one to start there); saving the current session is available
+  while one runs. (3) **Where saves live is an App setting**: "keep
+  saves on my machine" (private app-data folder, per project) versus
+  "project saves" (inside the project tree, shareable/committable),
+  extensible to more locations later. (4) Loading against a newer
+  compile surfaces the runtime's `LoadReport` in the UI (e.g.
+  "3 anonymous visit states dropped") rather than loading silently —
+  the #3283/#3234 identity work is what makes these saves survive
+  ordinary editing at all.
+- **WHY:** Maintainer direction on the canvas: authors need
+  checkpoint-style iteration ("get into a particular place and keep
+  testing from there"), and the idle Player body is otherwise empty —
+  it becomes the natural launcher. This is the "newer, larger ask" #57
+  was already flagged to be re-scoped against; value *editing* stays
+  out of scope here. Machine-local is the proposed default location
+  (does not dirty the repo unasked) — flagged as a knob, not ruled.
+
+## Hot reload: edits during play reach the running Player
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime consumer (debugger UI round, #452 D9)
+- **SCOPE:** architectural
+- **WHAT:** Content edits made during play mode must be reflected in
+  the running Player as immediately as possible — "hot-reloading as
+  much as we possibly can by any means necessary." On every successful
+  studio compile, the live session **migrates to the new program
+  automatically**: snapshot the durable state (the same `SaveState`
+  boundary as F17), swap programs, reload the state, re-anchor
+  breakpoints, and surface the `LoadReport` inline when anything
+  dropped. Migration lands at turn boundaries (waiting on a choice,
+  paused, parked, between paced reveals); a failed compile keeps the
+  old program running with the error surfaced. The degraded
+  "out of sync" state becomes the **fallback** — compile failing, or a
+  migration that cannot preserve the current position — not the steady
+  state after every edit. This SUPERSEDES the live-inspector-spec §5
+  posture in which every edit degrades the session until restart.
+- **WHY:** Maintainer: "it's just a fact of how the player/editor need
+  to interact." The reason it doesn't happen today is design, not
+  accident — the studio was built to degrade honestly rather than
+  guess — but the pieces that make honest migration possible now
+  exist: the `SaveState` boundary, `LoadReport`'s explicit
+  dropped-state accounting, and the #3283/#3234 block-local identity
+  work whose whole point was shrinking the save-invalidation blast
+  radius of an edit. Hot reload composes them; where they can't
+  preserve state, the old degraded path remains the honest fallback.

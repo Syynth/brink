@@ -175,14 +175,26 @@ status chip (§3) — and the panel header mirrors it:
 The status bar's `StorySegment` gains a paused state (dot color + label)
 alongside the existing degraded state.
 
-### F8 — Staleness
+### F8 — Hot reload, with staleness as the fallback (REVISED 2026-08-29)
 
-Unchanged machinery, wider application: editing source while paused flips
-`sessionDegraded`; the editor highlight and gutter binding indicators go
-stale-suppressed (hollow), the panel header shows the existing "inspecting
-— source out of sync" language, and the transport stays usable (the story
-still runs — only *source mapping* is suppressed, matching the per-file
-degradation posture of debugger-spec §2.3). Restart re-syncs.
+**Edits during play reach the running Player.** On every successful
+compile, the live session migrates to the new program automatically:
+snapshot durable state (F17's `SaveState` boundary) → swap programs →
+reload → re-anchor breakpoints (F2 already re-binds) → surface the
+`LoadReport` inline when anything dropped ("reloaded — 2 anonymous
+visit states dropped"). Migration lands at turn boundaries — waiting on
+a choice, paused, parked, between paced reveals. UI is deliberately
+minimal: a brief "reloaded" affirmation in the status chip, the report
+banner only when lossy. This supersedes live-inspector-spec §5's
+every-edit-degrades posture (that section needs the supersession
+recorded, per the D8 precedent).
+
+**Degraded mode remains, as the fallback**: a failing compile keeps the
+old program running with the error surfaced, and a migration that
+cannot preserve the current position drops to the existing
+"out of sync" state — highlights suppressed, gutter dots hollow,
+restart re-syncs. Suppressed-never-stale still governs every source
+mapping in the window between edit and successful migration.
 
 ### F9 — Transcript provenance jump (Player rebuild)
 
@@ -291,6 +303,32 @@ precedent (the reading surface's size is not the UI's size), separate
 from the app type scale. Room to grow (line spacing, face) without
 re-ruling.
 
+### F17 — Runtime save/load for testing (RULED 2026-08-29)
+
+Game-style checkpoints so the author can get somewhere in the story and
+keep testing from there:
+
+- **Payload**: the runtime's existing `SaveState` boundary — visit
+  counts, globals, position: durable story state, never
+  internal/ephemeral runtime state. No new format; the Rust↔TS DTO
+  parity tripwire already covers `SaveState`.
+- **Surface**: the Player's **idle body** is the launcher — "Run from
+  the start" plus the saves list (name · knot/position · turn · age ·
+  location badge; Load starts a session from it, × deletes). While a
+  session runs, "Save state" captures the current point (a named slot).
+- **Location is an App setting**: *machine* (private app-data folder,
+  per project — proposed default, doesn't dirty the repo) vs *project*
+  (inside the project tree, e.g. `.brink/saves/`,
+  shareable/committable); extensible. Desktop-first via the Tauri host
+  callbacks; the web embed's fallback store is a W14 build question.
+- **Compat honesty**: loading against a newer compile surfaces the
+  runtime's `LoadReport` inline ("loaded — 3 anonymous visit states
+  dropped"), never a silent load. The #3283/#3234 block-local identity
+  work is what makes saves survive ordinary editing; a save whose
+  program checksum matches loads clean.
+- Re-scopes **#57**: the save/restore half lands here; editable runtime
+  state stays out of this round.
+
 ## 3. The rebuilt Player
 
 Still an editor-area document (two-up with the source, per the Inky
@@ -311,6 +349,8 @@ lineage) — the rebuild changes its anatomy, not its address:
   marker on the line where execution is paused, and auto-scroll that
   suspends when the author scrolls up (rebuild housekeeping).
 - **Choices**: unchanged presentation; shared between play and debug.
+- **Idle body**: the saves launcher (F17) — Run from the start, or load
+  a checkpoint and continue testing from there.
 - Absorbed Player follow-ups: #3165 (Hide/Show persistence), #2795
   (narrow-tier route back to a closed player), #2796 (closed-tab layout
   memory for the other singletons — decide during build whether it
@@ -409,6 +449,21 @@ changesets.
     no session.
 13. **W13 — Player appearance settings** (F16): font-size knob in the
     App settings Player section, wired to the Player's prose styles.
+14. **W14 — Runtime save/load** (F17): saves store (machine app-data /
+    project tree per the App setting), idle-Player launcher UI, save
+    while running, `LoadReport` surfacing. Decide the web embed's
+    store during build. *Proof:* save → load → identical
+    `DebugState`; load after a recompile surfaces the report; the
+    location setting actually moves where files land.
+15. **W15 — Hot reload** (F8): auto-migrate the live session on every
+    successful compile (save → swap → load → re-anchor, at turn
+    boundaries); degraded mode demoted to fallback; record the
+    live-inspector-spec §5 supersession. Builds on W14's machinery —
+    sequence after it. *Proof:* edit a line mid-play → the next reveal
+    shows the new text with no restart; visit counts/globals survive;
+    a lossy migration surfaces the report; a failed compile keeps the
+    old program running with the error shown; an unmigratable position
+    falls back to out-of-sync instead of guessing.
 
 Rulings/tickets referenced but *not* absorbed: #3225 (parked position —
 needed before W5 can present parks; F11 carries the proposed answer),
