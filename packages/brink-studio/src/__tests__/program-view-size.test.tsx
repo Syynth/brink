@@ -111,8 +111,8 @@ function mount(report: SizeReport = REPORT) {
   });
 }
 
-const blockLabels = (): string[] =>
-  [...container!.querySelectorAll(".pv-size-block-label")].map((l) => l.textContent ?? "");
+const groupLabels = (): string[] =>
+  [...container!.querySelectorAll(".pv-size-group-label")].map((l) => l.textContent ?? "");
 
 describe("the Size view", () => {
   it("states the real split in the totals line", () => {
@@ -125,13 +125,52 @@ describe("the Size view", () => {
 
   it("maps the top level: bytecode, line tables, debug (dashed), definitions", () => {
     mount();
-    expect(blockLabels().sort()).toEqual(
+    expect(groupLabels().sort()).toEqual(
       ["bytecode", "debug info", "definitions & tables", "line tables"].sort(),
     );
-    const debug = [...container!.querySelectorAll(".pv-size-block")].find((b) =>
+    const debug = [...container!.querySelectorAll(".pv-size-group")].find((b) =>
       b.textContent?.includes("debug info"),
     );
     expect(debug?.classList.contains("pv-size-block-debug")).toBe(true);
+  });
+
+  it("nests children inside their groups, with the framing remainder shown as encoding", () => {
+    mount();
+    // Every block is mounted at the top level — the zoom is only a CSS
+    // transition — and the section-vs-content gap is an explicit block.
+    const bytecode = [...container!.querySelectorAll(".pv-size-group")].find((g) =>
+      g.textContent?.includes("bytecode"),
+    )!;
+    const titles = [...bytecode.querySelectorAll(".pv-size-block")].map(
+      (b) => b.getAttribute("title") ?? "",
+    );
+    expect(titles.some((t) => t.startsWith("big"))).toBe(true);
+    expect(titles.some((t) => t.startsWith("small"))).toBe(true);
+    // 4200 section − 4000 knot content = 200 B of real framing.
+    const encoding = bytecode.querySelector(".pv-size-block-encoding");
+    expect(encoding?.getAttribute("title")).toContain("200 B");
+  });
+
+  it("every child carries its full facts in the tooltip, size regardless", () => {
+    // Child TEXT is size-gated by a container query (labels appear only at
+    // readable sizes — a stylesheet behavior jsdom cannot evaluate, so the
+    // gating itself is verified live); the tooltip is the size-independent
+    // carrier this pins.
+    mount();
+    for (const block of container!.querySelectorAll(".pv-size-block")) {
+      expect(block.getAttribute("title")).toMatch(/ — .+ · /);
+    }
+  });
+
+  it("clicking a CHILD zooms its group — no aiming for the header strip", () => {
+    mount();
+    const bytecode = [...container!.querySelectorAll(".pv-size-group")].find((g) =>
+      g.textContent?.includes("bytecode"),
+    ) as HTMLElement;
+    act(() => {
+      bytecode.querySelector<HTMLButtonElement>(".pv-size-block")!.click();
+    });
+    expect(bytecode.classList.contains("pv-size-zoomed")).toBe(true);
   });
 
   it("shipping-only removes the debug block and re-flows the total", () => {
@@ -141,22 +180,28 @@ describe("the Size view", () => {
         .find((b) => b.textContent === "shipping only")!
         .click();
     });
-    expect(blockLabels()).not.toContain("debug info");
+    expect(groupLabels()).not.toContain("debug info");
     expect(container!.querySelector(".pv-lines-head")!.textContent).toContain("8.0 KB");
   });
 
-  it("zooms into bytecode by knot, breadcrumb back", () => {
+  it("zooms by transition: the group fills the container, breadcrumb back", () => {
     mount();
-    act(() => {
-      [...container!.querySelectorAll<HTMLButtonElement>(".pv-size-block")]
-        .find((b) => b.textContent?.includes("bytecode"))!
-        .click();
-    });
-    expect(blockLabels().sort()).toEqual(["big", "small"]);
+    const head = [...container!.querySelectorAll<HTMLButtonElement>(".pv-size-group-head")].find(
+      (b) => b.textContent?.includes("bytecode"),
+    )!;
+    act(() => head.click());
+    const group = head.closest(".pv-size-group") as HTMLElement;
+    expect(group.classList.contains("pv-size-zoomed")).toBe(true);
+    expect(group.style.width).toBe("100%");
+    // Siblings fade rather than unmount — they are mid-transition targets.
+    const dimmed = [...container!.querySelectorAll(".pv-size-dimmed")];
+    expect(dimmed.length).toBeGreaterThan(0);
+    expect(container!.querySelector(".pv-lines-head")!.textContent).toContain("bytecode");
     act(() => {
       container!.querySelector<HTMLButtonElement>(".pv-size-crumb")!.click();
     });
-    expect(blockLabels()).toContain("bytecode");
+    expect(group.classList.contains("pv-size-zoomed")).toBe(false);
+    expect(container!.querySelectorAll(".pv-size-dimmed")).toHaveLength(0);
   });
 
   it("a debug-free compile says this IS the shipping size, no dead toggle", () => {

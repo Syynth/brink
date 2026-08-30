@@ -125,21 +125,48 @@ export function ProgramSizeViewInner() {
     () => (report ? buildRoot(report, model, includeDebug) : null),
     [report, model, includeDebug],
   );
-  const focus =
-    zoom === null ? root : (root?.children?.find((c) => c.key === zoom) ?? root);
 
-  const rects = useMemo(() => {
-    const children = focus?.children ?? [];
-    return squarify(
+  // Top-level rects in container %, and each group's children in the
+  // group's own LOCAL % — every block is mounted all the time, so a zoom
+  // is nothing but a CSS transition: the group animates to fill the
+  // container and its children scale with it (maintainer, 2026-08-30).
+  const groups = useMemo(() => {
+    const children = root?.children ?? [];
+    const rects = squarify(
       children.map((c) => ({ key: c.key, value: c.bytes })),
       0,
       0,
       100,
       100,
     );
-  }, [focus]);
+    return rects.flatMap((rect) => {
+      const node = children.find((c) => c.key === rect.key);
+      if (!node) return [];
+      // Children plus the honest remainder: a section's on-disk bytes
+      // exceed its children's content bytes by real encoding/framing —
+      // shown as its own quiet block rather than silently absorbed.
+      const kids = [...(node.children ?? [])];
+      const kidSum = kids.reduce((s2, k) => s2 + k.bytes, 0);
+      if (kids.length > 0 && node.bytes - kidSum > 0) {
+        kids.push({
+          key: `${node.key}:encoding`,
+          label: "encoding",
+          bytes: node.bytes - kidSum,
+          tone: node.tone,
+        });
+      }
+      const inner = squarify(
+        kids.map((k) => ({ key: k.key, value: k.bytes })),
+        0,
+        0,
+        100,
+        100,
+      );
+      return [{ node, rect, kids, inner }];
+    });
+  }, [root]);
 
-  if (!report || !root || !focus) {
+  if (!report || !root) {
     return (
       <div className="pv-lines-empty state-view-empty">
         <p className="state-view-empty-title">No size report</p>
@@ -149,6 +176,7 @@ export function ProgramSizeViewInner() {
   }
 
   const hasDebug = report.debug > 0;
+  const zoomed = groups.find((g) => g.node.key === zoom) ?? null;
 
   return (
     <div className="pv-size">
@@ -161,8 +189,8 @@ export function ProgramSizeViewInner() {
         >
           program
         </button>
-        {zoom !== null && <span className="pv-size-crumb-sep">›</span>}
-        {zoom !== null && <span className="pv-lines-head-name">{focus.label}</span>}
+        {zoomed !== null && <span className="pv-size-crumb-sep">›</span>}
+        {zoomed !== null && <span className="pv-lines-head-name">{zoomed.node.label}</span>}
         <span className="pv-lines-head-facts">
           {fmtBytes(includeDebug ? report.total : report.shipping)}
           {hasDebug &&
@@ -195,40 +223,80 @@ export function ProgramSizeViewInner() {
       </div>
 
       <div className="pv-size-map">
-        {rects.map((rect) => {
-          const node = focus.children?.find((c) => c.key === rect.key);
-          if (!node) return null;
-          const rank = (focus.children ?? [])
-            .filter((c) => c.bytes > 0)
-            .sort((a, b) => b.bytes - a.bytes)
-            .findIndex((c) => c.key === node.key);
-          const alpha = Math.max(0.1, 0.26 - rank * 0.03);
-          const pct = Math.round((node.bytes / Math.max(1, focus.bytes)) * 100);
+        {groups.map(({ node, rect, kids, inner }) => {
+          const isZoomed = zoom === node.key;
+          const dimmed = zoom !== null && !isZoomed;
+          const pct = Math.round((node.bytes / Math.max(1, root.bytes)) * 100);
           return (
-            <button
-              key={rect.key}
-              type="button"
-              className={"pv-size-block" + (node.tone === "debug" ? " pv-size-block-debug" : "")}
+            <div
+              key={node.key}
+              className={
+                "pv-size-group" +
+                (node.tone === "debug" ? " pv-size-block-debug" : "") +
+                (isZoomed ? " pv-size-zoomed" : "") +
+                (dimmed ? " pv-size-dimmed" : "")
+              }
               style={{
-                left: `${rect.x}%`,
-                top: `${rect.y}%`,
-                width: `${rect.w}%`,
-                height: `${rect.h}%`,
-                background: `rgb(${TONE_RGB[node.tone]} / ${alpha})`,
+                left: `${isZoomed ? 0 : rect.x}%`,
+                top: `${isZoomed ? 0 : rect.y}%`,
+                width: `${isZoomed ? 100 : rect.w}%`,
+                height: `${isZoomed ? 100 : rect.h}%`,
+                background: `rgb(${TONE_RGB[node.tone]} / 0.10)`,
                 borderColor: `rgb(${TONE_RGB[node.tone]} / 0.55)`,
               }}
-              title={`${node.label} — ${fmtBytes(node.bytes)} · ${pct}%`}
-              onClick={() => {
-                if (zoom === null && node.children && node.children.length > 0) {
-                  setZoom(node.key);
-                }
-              }}
             >
-              <span className="pv-size-block-label">{node.label}</span>
-              <span className="pv-size-block-bytes">
-                {fmtBytes(node.bytes)} · {pct}%
-              </span>
-            </button>
+              <button
+                type="button"
+                className="pv-size-group-head"
+                title={`${node.label} — ${fmtBytes(node.bytes)} · ${pct}%`}
+                onClick={() => setZoom(isZoomed ? null : kids.length > 0 ? node.key : zoom)}
+              >
+                <span className="pv-size-group-label">{node.label}</span>
+                <span className="pv-size-block-bytes">
+                  {fmtBytes(node.bytes)} · {pct}%
+                </span>
+              </button>
+              <div className="pv-size-group-body">
+                {inner.map((childRect) => {
+                  const kid = kids.find((k) => k.key === childRect.key);
+                  if (!kid) return null;
+                  const rank = kids
+                    .filter((k) => k.bytes > 0)
+                    .sort((a, b) => b.bytes - a.bytes)
+                    .findIndex((k) => k.key === kid.key);
+                  const alpha = Math.max(0.08, 0.24 - rank * 0.02);
+                  const kidPct = Math.round((kid.bytes / Math.max(1, node.bytes)) * 100);
+                  const isEncoding = kid.key.endsWith(":encoding");
+                  return (
+                    <button
+                      key={kid.key}
+                      type="button"
+                      className={
+                        "pv-size-block" + (isEncoding ? " pv-size-block-encoding" : "")
+                      }
+                      style={{
+                        left: `${childRect.x}%`,
+                        top: `${childRect.y}%`,
+                        width: `${childRect.w}%`,
+                        height: `${childRect.h}%`,
+                        background: `rgb(${TONE_RGB[kid.tone]} / ${alpha})`,
+                        borderColor: `rgb(${TONE_RGB[kid.tone]} / 0.4)`,
+                      }}
+                      title={`${kid.label} — ${fmtBytes(kid.bytes)} · ${kidPct}% of ${node.label}`}
+                      // The whole group surface zooms — a child hit means
+                      // "take me in there", never "aim for the header strip"
+                      // (maintainer, 2026-08-30).
+                      onClick={() => {
+                        if (!isZoomed) setZoom(node.key);
+                      }}
+                    >
+                      <span className="pv-size-block-label">{kid.label}</span>
+                      <span className="pv-size-block-bytes">{fmtBytes(kid.bytes)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           );
         })}
       </div>
@@ -242,7 +310,7 @@ export function ProgramSizeViewInner() {
         <span className="pv-size-key">■ definitions &amp; tables</span>
         <span className="pv-header-spacer" />
         <span>
-          area ∝ on-disk bytes · knot blocks are content bytes within their section
+          area ∝ on-disk bytes · knot blocks are content bytes; the remainder shows as “encoding”
         </span>
       </div>
     </div>
