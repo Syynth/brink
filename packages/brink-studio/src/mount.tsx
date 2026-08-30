@@ -161,6 +161,7 @@ import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
 import { executionHighlightsFor } from "./execution-highlights.js";
 import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
+import { runtimeValueNote } from "./runtime-hover.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -974,7 +975,7 @@ export async function mountStudio(
   // flow through these callbacks; the manager keeps them targeted at the
   // focused group's active view.
   documentsRef = null; // (re)assigned immediately below
-  const documents = new DocumentSessions(project, {
+  const documents: DocumentSessions = new DocumentSessions(project, {
     onCursorChange: (line, col) => store.getState().setCursor(line, col),
     onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
     onCompileResult: handleCompileResult,
@@ -1027,11 +1028,14 @@ export async function mountStudio(
         .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
-    getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
+    getExecutionHighlights: (path) =>
+      executionHighlightsFor(store.getState(), path, documents.getHirProjection(path)),
     // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
     // instructions, target the explorer, and surface the tool window —
     // only when a target was actually set (the honest-failure
     // notifications come from the store action).
+    // Runtime-value hover (W12/#3305): policy in runtime-hover.ts.
+    getRuntimeValueNote: (name) => runtimeValueNote(store.getState(), name),
     onRevealInstructions: (path, line) => {
       if (store.getState().revealInstructionsAt(path, line - 1)) {
         ensureToolWindowOpen(shellLayout, "program");
@@ -1545,10 +1549,13 @@ export async function mountStudio(
     loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
-  // Paced auto-reveal cadence (W7/#3300 F13, Settings → Player).
-  store.getState().setSessionPaced(
-    loadPlayerSettings(window.localStorage).pacedRevealMs,
-  );
+  // Player settings (Settings → Player): paced cadence (W7/#3300 F13)
+  // and the prose-size knob (W13/#3306).
+  {
+    const player = loadPlayerSettings(window.localStorage);
+    store.getState().setSessionPaced(player.pacedRevealMs);
+    store.getState().setPlayerFontSize(player.fontSize);
+  }
 
   // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the
   // same per-project scope the editor-tab snapshot uses. No scope (an

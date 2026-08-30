@@ -88,6 +88,13 @@ pub struct DebugSnapshot {
     pub call_stack: Vec<DebugFrame>,
     /// Per-knot/stitch visit counts, sorted by path.
     pub visit_counts: Vec<DebugVisit>,
+    /// EVERY container visit count keyed by `DefinitionId` display string
+    /// (W11/#3304): unlike [`Self::visit_counts`] — which resolves through
+    /// named paths and silently drops anonymous containers — this carries
+    /// the anonymous choice/gather bodies too, so a consumer can join
+    /// against the HIR overlay projection's `def_id` (#3234's identity).
+    /// Sorted by id for determinism.
+    pub visit_ids: Vec<DebugVisitId>,
     /// Choices currently offered to the player.
     pub pending_choices: Vec<DebugChoice>,
     /// Story RNG state.
@@ -225,10 +232,23 @@ pub struct DebugVisit {
     pub count: u32,
 }
 
+/// A visit count keyed by `DefinitionId` (W11/#3304) — includes anonymous
+/// choice/gather body containers, which have no path.
+pub struct DebugVisitId {
+    /// `DefinitionId` display form (`$tt_hash`) — string-equal to the HIR
+    /// overlay projection's `def_id` for the same container.
+    pub def_id: String,
+    pub count: u32,
+}
+
 /// A pending choice and the knot it targets.
 pub struct DebugChoice {
     pub text: String,
     pub target: Option<String>,
+    /// The choice target's `DefinitionId` display form (W11/#3304) —
+    /// string-equal to the overlay projection's `def_id` for the choice's
+    /// own container, joining a PRESENTED choice back to its source span.
+    pub def_id: String,
     /// The raw `flow.pending_choices` index — the same pre-filter position
     /// the visible [`Choice`](crate::story::Choice)'s `index` carries and
     /// that `select_choice`/`choose` expects. Not a post-filter enumeration

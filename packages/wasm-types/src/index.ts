@@ -96,6 +96,13 @@ export interface HirSpan {
    * Absent on non-containers.
    */
   content_end_line?: number;
+  /** For Choice containers: `true` = sticky (`+`), `false` = once-only
+   *  (`*`). Absent on everything else. */
+  sticky?: boolean;
+  /** Ink weave depth for Choice/Gather containers — the sigil depth,
+   *  with inline choice sets inheriting the surrounding weave's depth.
+   *  Distinct from `depth` (all container nesting). */
+  weave_depth?: number;
 }
 
 /** One entry of a line's container stack. */
@@ -1227,9 +1234,24 @@ export interface DebugVisit {
   count: number;
 }
 
+/** Id-keyed visit count (W11/#3304): EVERY container — anonymous
+ *  choice/gather bodies included, which `visit_counts` (path-resolved)
+ *  drops. `def_id` is the `DefinitionId` display form, string-equal to
+ *  the HIR overlay projection's `HirSpan.def_id` for the same container
+ *  (#3234's identity join). */
+export interface DebugVisitId {
+  def_id: string;
+  count: number;
+}
+
 export interface DebugChoice {
   text: string;
   target?: string;
+  /** The choice's own container id (`DefinitionId` display form) —
+   *  string-equal to the overlay projection's `def_id` for the choice
+   *  span (W11/#3304): the presented-choice ↔ source join. Always sent
+   *  by the wasm; optional for older fixtures/hosts. */
+  def_id?: string;
   /**
    * The raw `pending_choices` index — the same pre-filter position the
    * live `Choice.index` carries and that `choose()` expects. Not a
@@ -1258,6 +1280,9 @@ export interface DebugState {
   globals: DebugGlobal[];
   call_stack: DebugFrame[];
   visit_counts: DebugVisit[];
+  /** See {@link DebugVisitId} (W11/#3304). Always sent by the wasm;
+   *  optional for older fixtures/hosts. */
+  visit_ids?: DebugVisitId[];
   pending_choices: DebugChoice[];
   rng: DebugRng;
 }

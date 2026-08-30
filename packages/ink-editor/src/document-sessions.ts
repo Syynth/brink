@@ -169,6 +169,8 @@ export interface DocumentCallbacks {
   onToggleBreakpoint?(path: string, line: number): void;
   /** "Reveal in Program Explorer" (W9/#3302) — 1-based line. */
   onRevealInstructions?(path: string, line: number): void;
+  /** Runtime-value hover note (W12/#3305) — see the extension option. */
+  getRuntimeValueNote?(name: string): string | null;
   /** Doc edits moved `path`'s breakpoint lines (1-based old→new pairs). */
   onBreakpointsMoved?(path: string, moves: readonly { from: number; to: number }[]): void;
   /** The execution highlights for `path` (W6/#3299) — plural: a choice
@@ -415,6 +417,17 @@ export class DocumentSessions {
     for (const slot of this.slots.values()) {
       if (slot.view !== null) refreshExecutionHighlightInView(slot.view);
     }
+  }
+
+  /** The stashed HIR projection for an OPEN document, or `null` (unopened
+   * path, or the projection hasn't landed yet). W11/#3304's choice-point
+   * policy joins runtime ids against it — only open editors render the
+   * highlight, so open-docs-only is the exact coverage needed. */
+  getHirProjection(path: string): import("@brink/wasm-types").HirProjection | null {
+    for (const slot of this.slots.values()) {
+      if (slot.path === path) return slot.handle?.hirProjection() ?? null;
+    }
+    return null;
   }
 
   // ── Open hints ───────────────────────────────────────────────────
@@ -1213,6 +1226,9 @@ export class DocumentSessions {
         : undefined,
       onRevealInstructions: this.callbacks.onRevealInstructions
         ? (line) => this.callbacks.onRevealInstructions?.(slot.path, line)
+        : undefined,
+      getRuntimeValueNote: this.callbacks.getRuntimeValueNote
+        ? (name) => this.callbacks.getRuntimeValueNote?.(name) ?? null
         : undefined,
       // Inject the focused view's file path so the host can resolve the symbol.
       onSymbolContextMenu: this.callbacks.onSymbolContextMenu

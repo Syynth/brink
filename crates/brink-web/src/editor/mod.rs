@@ -6822,6 +6822,113 @@ mod tests {
         assert!(found, "the included line never arrived");
     }
 
+    // W11/#3304 — the choice-point identity join, verified end to end on
+    // the studio's own compile road (the issue's "verify first" mandate):
+    //  1. every PRESENTED choice's `DebugChoice.def_id` string-equals some
+    //     overlay choice span's `def_id` in the same source; and
+    //  2. `visit_ids` carries the ANONYMOUS choice-body container after
+    //     choosing it (path-resolved `visit_counts` drops it — that filter
+    //     is exactly why the id-keyed surface exists).
+    #[test]
+    fn choice_point_ids_join_the_overlay_projection_and_visit_ids() {
+        let src = "VAR gold = 2\n-> shop\n=== shop ===\nWelcome.\n* [Cheap thing] -> shop\n* {gold > 20} [Pricey thing] -> shop\n+ [Browse] -> shop\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let doc = s.open_document("main.ink");
+        let bytes = compiled_story_bytes(&mut s);
+
+        // Overlay choice spans: def_id + sticky, per #3234.
+        let projection: serde_json::Value =
+            serde_json::from_str(&s.hir_spans_doc(doc)).expect("projection JSON");
+        let choice_ids: Vec<String> = projection["spans"]
+            .as_array()
+            .expect("spans")
+            .iter()
+            .filter(|sp| sp["kind"] == serde_json::json!("choice"))
+            .filter_map(|sp| sp["def_id"].as_str().map(str::to_owned))
+            .collect();
+        assert!(
+            choice_ids.len() >= 3,
+            "all three authored choices carry overlay ids: {choice_ids:?}"
+        );
+
+        let session =
+            crate::session::WebSession::new(&bytes, None, None).expect("session constructs");
+        // Play to the choice point.
+        for _ in 0..4 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session.continue_single().expect("continue_single"))
+                    .expect("valid JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        let snap: serde_json::Value =
+            serde_json::from_str(&session.debug_snapshot().expect("snapshot")).expect("JSON");
+        let pending = snap["pending_choices"].as_array().expect("choices");
+        // gold = 2 < 20: two of three presented.
+        assert_eq!(pending.len(), 2, "{snap}");
+        for c in pending {
+            let id = c["def_id"].as_str().expect("def_id");
+            assert!(
+                choice_ids.iter().any(|ci| ci == id),
+                "presented choice id {id} must join an overlay choice span: {choice_ids:?}"
+            );
+        }
+        let cheap_id = pending
+            .iter()
+            .find(|c| c["text"].as_str().unwrap_or("").contains("Cheap"))
+            .and_then(|c| c["def_id"].as_str())
+            .expect("cheap choice id")
+            .to_owned();
+
+        // Choose the once-only, loop back to the same point: the used
+        // choice vanishes from the presented set, and its ANONYMOUS body
+        // container now counts ≥ 1 in visit_ids.
+        session.choose(0).expect("choose");
+        for _ in 0..6 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session.continue_single().expect("continue_single"))
+                    .expect("valid JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        let snap2: serde_json::Value =
+            serde_json::from_str(&session.debug_snapshot().expect("snapshot")).expect("JSON");
+        let presented2: Vec<&str> = snap2["pending_choices"]
+            .as_array()
+            .expect("choices")
+            .iter()
+            .filter_map(|c| c["def_id"].as_str())
+            .collect();
+        assert!(
+            !presented2.contains(&cheap_id.as_str()),
+            "the used once-only must not be presented again: {snap2}"
+        );
+        let visit_ids = snap2["visit_ids"].as_array().expect("visit_ids");
+        let used = visit_ids
+            .iter()
+            .find(|v| v["def_id"].as_str() == Some(cheap_id.as_str()));
+        assert!(
+            used.is_some_and(|v| v["count"].as_u64().unwrap_or(0) >= 1),
+            "the chosen anonymous body must count in visit_ids: {visit_ids:?}"
+        );
+        // And the path-keyed list genuinely does NOT carry it — the gap
+        // visit_ids exists to close.
+        let named_paths: Vec<&str> = snap2["visit_counts"]
+            .as_array()
+            .expect("visit_counts")
+            .iter()
+            .filter_map(|v| v["path"].as_str())
+            .collect();
+        assert!(
+            named_paths.iter().all(|p| *p != cheap_id),
+            "sanity: the anonymous id never doubles as a named path"
+        );
+    }
+
     fn resolve_entry_position(bytes: &[u8]) -> String {
         let session =
             crate::session::WebSession::new(bytes, None, None).expect("session constructs");

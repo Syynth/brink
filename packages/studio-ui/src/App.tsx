@@ -50,6 +50,9 @@ function App({ children }: { children?: ReactNode }) {
   // every mounted editor reflows at once with no CM reconfiguration.
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
+  // Player prose size (W13/#3306): 0 = follow the app scale — the var
+  // stays unset so player.css's fallback (`--bs-font-prose`) applies.
+  const playerFontSize = useStudioStore((s) => s.playerFontSize);
 
   return (
     <div
@@ -60,6 +63,9 @@ function App({ children }: { children?: ReactNode }) {
         {
           "--bs-editor-font-size": `${editorFontSize}px`,
           "--bs-font-base": `${appFontSize}px`,
+          ...(playerFontSize > 0
+            ? { "--bs-player-font-size": `${playerFontSize}px` }
+            : {}),
         } as CSSProperties
       }
       ref={rootRef}
