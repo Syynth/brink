@@ -142,11 +142,13 @@ test.describe("player document", () => {
       timeout: 10000,
     });
 
-    // Stop → session-bound placeholder with the start affordance (§7.6).
+    // Stop → the idle LAUNCHER (W14/#3307): Run-from-the-start plus the
+    // two save sections replace the old placeholder.
     await runPaletteCommand(page, "Story: Stop");
-    await expect(pane).toContainText("No story session");
+    await expect(pane).toContainText("Run from the start");
+    await expect(pane).toContainText("This computer");
 
-    // Start from the placeholder, then play to the first choice point.
+    // Start from the launcher, then play to the first choice point.
     await pane.locator(".session-placeholder-start").click();
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple");
 
