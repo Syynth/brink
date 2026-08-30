@@ -41,6 +41,7 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
+import type { TranscriptLine } from "../session/types.js";
 
 // Re-exported for back-compat: consumers import these from the store root.
 export {
@@ -67,8 +68,13 @@ export { FlowSessionProvider } from "../session/flow-provider.js";
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
-  /** Append-only transcript for the current run (cleared on restart). */
+  /** Append-only transcript TEXT for the current run (cleared on
+   * restart) — derived from `sessionLines`; kept as the stable
+   * text-only view for consumers that only need strings. */
   sessionText: string[];
+  /** The structured transcript (W7/#3300): line rows with tags and
+   * source provenance — what the rebuilt Player renders. */
+  sessionLines: TranscriptLine[];
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   sessionChoices: Choice[];
   /**
@@ -229,6 +235,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
   return {
     sessionStatus: "none",
     sessionText: [],
+    sessionLines: [],
     sessionChoices: [],
     sessionAuto: false,
     sessionPaused: false,
@@ -403,6 +410,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         _sessionBytes: null,
         sessionStatus: "none",
         sessionText: [],
+    sessionLines: [],
         sessionChoices: [],
         debugState: null,
         prevDebugState: null,
@@ -436,7 +444,8 @@ type SetFn = {
 function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
   set((s) => ({
     sessionStatus: snap.status,
-    sessionText: snap.transcript,
+    sessionText: snap.transcript.map((l) => l.text),
+    sessionLines: snap.transcript,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,

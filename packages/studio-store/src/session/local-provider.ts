@@ -89,7 +89,10 @@ import {
   ALL_CAPABILITIES,
   sessionCanContinue,
   statusOfLine,
+  transcriptLine,
+  transcriptNotice,
   type DebugSessionProvider,
+  type TranscriptLine,
   type ProviderCallbacks,
   type SessionCapability,
   type SessionSnapshot,
@@ -197,7 +200,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
    */
   private auto = false;
   private status: SessionStatus = "none";
-  private transcript: string[] = [];
+  private transcript: TranscriptLine[] = [];
   /** Paused by the debugger (W5/#3298) — see `SessionSnapshot.paused`. */
   private paused = false;
   /** The most recent debug-advance outcome (W5/#3298). */
@@ -260,7 +263,9 @@ export class LocalSessionProvider implements DebugSessionProvider {
       : null;
     if (opts?.session) {
       this.status = opts.status ?? "running";
-      this.transcript = opts.transcript ?? [];
+      this.transcript = (opts.transcript ?? []).map((t) =>
+        typeof t === "string" ? transcriptLine(t) : t,
+      );
       this.choices = opts.choices ?? [];
       this.watchJournal(opts.session);
     }
@@ -391,7 +396,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
       this.session = null;
       this.bytes = null;
       this.status = "error";
-      this.transcript = [`Load error: ${msg}`];
+      this.transcript = [transcriptNotice(`Load error: ${msg}`)];
       this.choices = [];
       this.programModel = null;
       this.programInkt = null;
@@ -454,7 +459,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
-      this.transcript = [...this.transcript, `Choose error: ${msg}`];
+      this.transcript = [...this.transcript, transcriptNotice(`Choose error: ${msg}`)];
       this.choices = [];
       this.callbacks.appendOutput("story", `Choose error: ${msg}`);
       this.emit();
@@ -462,7 +467,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
 
     // Append the chosen text as a marker, clear choices.
-    if (choiceText) this.transcript = [...this.transcript, `> ${choiceText}`];
+    if (choiceText)
+      this.transcript = [...this.transcript, { text: `> ${choiceText}`, kind: "marker", tags: [] } satisfies TranscriptLine];
     this.choices = [];
 
     // Reveal the next section (emits). The journal-dirty hook handles
@@ -712,7 +718,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
-      this.transcript = [...this.transcript, `Runtime error: ${msg}`];
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
       this.choices = [];
       this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
     }
@@ -724,7 +730,11 @@ export class LocalSessionProvider implements DebugSessionProvider {
   private appendLines(lines: SessionLine[]): void {
     for (const line of lines) {
       const text = line.text.replace(/\n$/, "");
-      if (text) this.transcript = [...this.transcript, text];
+      if (text)
+        this.transcript = [
+          ...this.transcript,
+          transcriptLine(text, line.tags, line.source),
+        ];
     }
   }
 
@@ -760,7 +770,11 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.lastOutcome = outcome;
     for (const line of outcome.lines) {
       const text = line.text.replace(/\n$/, "");
-      if (text) this.transcript = [...this.transcript, text];
+      if (text)
+        this.transcript = [
+          ...this.transcript,
+          transcriptLine(text, line.tags, line.source),
+        ];
     }
     this.refreshDebug();
     switch (outcome.reason.type) {
@@ -849,7 +863,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
           this.status = "error";
           this.transcript = [
             ...this.transcript,
-            `Runtime error: ${outcome.reason.message}`,
+            transcriptNotice(`Runtime error: ${outcome.reason.message}`),
           ];
           this.callbacks.appendOutput(
             "story",
@@ -882,7 +896,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     const session = this.session;
     if (!session) return;
 
-    const allText: string[] = [];
+    const allText: TranscriptLine[] = [];
     let choiceIdx = 0;
 
     const finishAndPersist = (): void => {
@@ -917,14 +931,14 @@ export class LocalSessionProvider implements DebugSessionProvider {
         this.status = "error";
         this.choices = [];
         this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
-        allText.push(`Runtime error: ${msg}`);
+        allText.push(transcriptNotice(`Runtime error: ${msg}`));
         diverge();
         return;
       }
 
       for (const line of lines) {
         const text = line.text.replace(/\n$/, "");
-        if (text) allText.push(text);
+        if (text) allText.push(transcriptLine(text, line.tags, line.source));
       }
 
       const last = lines.at(-1);
@@ -952,7 +966,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
         }
 
         const choiceText = offered.find((c) => c.index === savedChoice)?.text;
-        if (choiceText) allText.push(`> ${choiceText}`);
+        if (choiceText) allText.push({ text: `> ${choiceText}`, kind: "marker", tags: [] });
         choiceIdx += 1;
         continue;
       }

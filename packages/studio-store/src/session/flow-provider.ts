@@ -19,7 +19,7 @@
  * here.
  */
 
-import type { Choice } from "@brink/wasm-types";
+import type { Choice, SourceLocation } from "@brink/wasm-types";
 
 /** The shared-flow surface `FlowSessionProvider` needs from its host handle —
  * satisfied by both `StoryRunnerHandle` and `StorySessionHandle`. */
@@ -29,6 +29,9 @@ export interface FlowLine {
   text: string;
   tags: string[];
   choices?: Choice[];
+  /** Transcript provenance (W7/#3300) — the flow verbs' wire lines carry
+   * it like every other delivered line; optional for older hosts. */
+  source?: SourceLocation;
 }
 
 export interface FlowHost {
@@ -45,6 +48,9 @@ export interface FlowHost {
 
 import {
   statusOfLine,
+  transcriptLine,
+  transcriptNotice,
+  type TranscriptLine,
   type ProviderCallbacks,
   type SessionCapability,
   type SessionProvider,
@@ -84,7 +90,7 @@ export class FlowSessionProvider implements SessionProvider {
   private readonly listeners = new Set<(s: SessionSnapshot) => void>();
 
   private status: SessionStatus = "running";
-  private transcript: string[] = [];
+  private transcript: TranscriptLine[] = [];
   private choices: Choice[] = [];
   private debugState: SessionSnapshot["debugState"] = null;
   // Program identity is the shared host's — same program as the primary.
@@ -161,7 +167,8 @@ export class FlowSessionProvider implements SessionProvider {
       this.fail("Choose error", e);
       return;
     }
-    if (choiceText) this.transcript = [...this.transcript, `> ${choiceText}`];
+    if (choiceText)
+      this.transcript = [...this.transcript, { text: `> ${choiceText}`, kind: "marker" as const, tags: [] }];
     this.choices = [];
     this.reveal();
   }
@@ -191,7 +198,7 @@ export class FlowSessionProvider implements SessionProvider {
         : [this.runner.continueFlow(this.flowName)];
       for (const line of lines) {
         const text = line.text.replace(/\n$/, "");
-        if (text) this.transcript = [...this.transcript, text];
+        if (text) this.transcript = [...this.transcript, transcriptLine(text, line.tags, line.source)];
       }
       // An empty maximal result would leave status untouched rather than
       // crashing on `undefined` — the single-line branch always has one.
@@ -219,7 +226,7 @@ export class FlowSessionProvider implements SessionProvider {
   private fail(label: string, e: unknown): void {
     const msg = e instanceof Error ? e.message : String(e);
     this.status = "error";
-    this.transcript = [...this.transcript, `${label}: ${msg}`];
+    this.transcript = [...this.transcript, transcriptNotice(`${label}: ${msg}`)];
     this.choices = [];
     this.callbacks.appendOutput("story", `${label}: ${msg}`);
     this.emit();
