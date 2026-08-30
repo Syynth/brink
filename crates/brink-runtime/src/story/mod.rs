@@ -173,7 +173,7 @@ enum SteppedDisposition {
 /// [`Story::debug_run_to_line`]'s tier vs [`Story::debug_run`]'s free
 /// run. An enum rather than a bool so call sites read as what they do.
 #[cfg(feature = "debug-hooks")]
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum StopOnLine {
     No,
     Yes,
