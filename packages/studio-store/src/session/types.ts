@@ -20,6 +20,7 @@ import type {
   DebugRunOutcome,
   DebugSourceLocation,
   DebugState,
+  ProgramAddress,
   ProgramModel,
   StepMode,
 } from "@brink/wasm-types";
@@ -223,6 +224,15 @@ export interface DebugSessionProvider extends SessionProvider {
   /** See `StorySessionHandle.resolveDebugPosition`'s doc (`@brink-lang/web`,
    * D9 #3187) for the full program-identity-gating contract. */
   resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null;
+  /** See `StorySessionHandle.resolveSourceLine`'s doc (W2/#3295): the
+   * program address to break on for a 0-based line of `file`, against the
+   * RUNNING session's program; `null` = unbound (no executable code, no
+   * DebugInfo, or no live session). */
+  resolveSourceLine(file: string, line: number): ProgramAddress | null;
+  /** See `StorySessionHandle.hasDebugInfo`'s doc (W2/#3295): the honest
+   * discriminator between "no DebugInfo section" and "nothing at that
+   * position". `false` with no live session. */
+  hasDebugInfo(): boolean;
   /** See `StorySessionHandle.debugBreakpointAdd`'s doc. */
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number;
   /** See `StorySessionHandle.debugBreakpointRemove`'s doc. */

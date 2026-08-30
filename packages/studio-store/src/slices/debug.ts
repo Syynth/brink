@@ -16,21 +16,20 @@
  * boundary alongside `story.*`) are the implementation these slice actions
  * back.
  *
- * SCOPE (#3232's own "Scope Honesty"): this plumbing is real and proven
- * against a real `WebSession`/`StorySessionHandle` (see
- * `crates/brink-web/src/session.rs`'s `debug_control_tests` and this
- * package's own vitest suite) — but nothing in the studio can compile a
- * program WITH debug info yet (#3229 is the separate, un-made ruling on
- * the toggle mechanism). Until that lands, `debugBreakpoints`/`debugRun`/
- * `debugStep` are inert against an ordinary compile: a breakpoint position
- * has nothing to resolve to, and `debugRun` just runs to the story's own
- * terminal outcome having never matched one. No view consumes this slice
- * yet either — the editor gutter / current-line highlight is a separate,
- * later ticket (#3232's own "Not in scope").
+ * SCOPE: the wasm plumbing is real and proven against a real
+ * `WebSession`/`StorySessionHandle`; W1 (#3294) made every studio compile
+ * carry debug info by default, so positions resolve for real. W4 (#3297)
+ * adds the SOURCE-ANCHORED breakpoint model below: the author's
+ * breakpoints are `(file, line)` anchors (range-keyed per D1's v1 ruling
+ * — they re-anchor on recompile and may drift across edits), and the
+ * runtime's `(container_idx, offset)` set is DERIVED state, re-bound via
+ * the provider's `resolveSourceLine` on every sync. The editor gutter
+ * consumes `sourceBreakpoints`; the raw `debugBreakpoints` mirror stays
+ * what the runtime actually has armed.
  */
 
 import type { StateCreator } from "zustand";
-import type { Breakpoint, DebugRunOutcome, StepMode } from "@brink/wasm-types";
+import type { Breakpoint, DebugRunOutcome, ProgramAddress, StepMode } from "@brink/wasm-types";
 import type { StudioState } from "../index.js";
 
 import { isDebugSessionProvider } from "../session/types.js";
@@ -64,6 +63,48 @@ export interface DebugSlice {
    *   move the session next, not more debug-stepping.
    */
   debugStatus: "none" | "paused" | "stopped";
+
+  /**
+   * The author's breakpoints (W4/#3297): source-anchored `(file, line)`
+   * entries — the STORED identity, per D1's range-keyed v1 ruling. The
+   * runtime's `(container_idx, offset)` set is derived from these on every
+   * sync; `address` records the latest binding (`null` = unbound: no
+   * executable code on that line, no debug info, or no live session to
+   * bind against — the gutter renders it hollow). `line` is 0-based.
+   */
+  sourceBreakpoints: SourceBreakpoint[];
+  /** Toggle a breakpoint anchor at `(file, line)` — the gutter-click verb.
+   * Adds an enabled anchor when none exists there, removes the existing
+   * one otherwise. Syncs + persists. */
+  breakpointToggleAtLine(file: string, line: number): void;
+  /** Enable/disable an anchor without removing it (panel checkbox). */
+  breakpointSetEnabled(key: string, enabled: boolean): void;
+  /** Remove an anchor (panel ×). */
+  breakpointRemove(key: string): void;
+  /** Apply editor change-mapping: the anchors in `file` whose lines moved
+   * under an edit. `moves` pairs old→new 0-based lines; anchors whose line
+   * isn't listed stay put. Two anchors mapped onto the same line collapse
+   * into one (the edit deleted the text between them). */
+  breakpointsMoved(file: string, moves: readonly { from: number; to: number }[]): void;
+  /** Seed anchors from persistence at bootstrap (before any session), then
+   * sync. Replaces the current set. */
+  applyPersistedBreakpoints(list: readonly { file: string; line: number; enabled: boolean }[]): void;
+  /** Where anchor changes are persisted to (per-project, wired at mount —
+   * the `setProblemsPrefsSink` pattern). */
+  setBreakpointsSink(
+    sink: ((list: { file: string; line: number; enabled: boolean }[]) => void) | null,
+  ): void;
+  /** The wired sink; internal. */
+  _breakpointsSink: ((list: { file: string; line: number; enabled: boolean }[]) => void) | null;
+  /**
+   * Re-derive every anchor's binding and re-arm the live session's runtime
+   * breakpoint set from scratch. Called on session bind/switch (via
+   * `_refreshDebugCapability`), on every compile result, and after any
+   * anchor mutation. Without a debug-capable provider this only clears the
+   * runtime mirror; anchor `address`es go `null` (nothing to bind against)
+   * — the anchors themselves always survive.
+   */
+  _syncSourceBreakpoints(): void;
 
   /** Add an enabled breakpoint at a bytecode position, refreshing
    * `debugBreakpoints`. Returns -1 (never a real id) without a debug-capable
@@ -112,6 +153,21 @@ export interface DebugSlice {
   _refreshDebugCapability(): void;
 }
 
+/** One source-anchored breakpoint (W4/#3297). See `DebugSlice.sourceBreakpoints`. */
+export interface SourceBreakpoint {
+  /** Stable identity across line moves and rebinds — never derived from
+   * the position (a `file:line` key would change under the very edits the
+   * anchor is meant to survive). */
+  key: string;
+  file: string;
+  /** 0-based, matching the wasm resolvers; 1-based display converts at
+   * the UI edge. */
+  line: number;
+  enabled: boolean;
+  /** The latest binding, or `null` = unbound (hollow in the gutter). */
+  address: ProgramAddress | null;
+}
+
 function statusOfOutcome(outcome: DebugRunOutcome | null): DebugSlice["debugStatus"] {
   if (!outcome) return "none";
   switch (outcome.reason.type) {
@@ -123,11 +179,186 @@ function statusOfOutcome(outcome: DebugRunOutcome | null): DebugSlice["debugStat
   }
 }
 
-export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (set, get) => ({
+/** Module-scope so keys stay unique across store instances in tests; only
+ * per-store uniqueness is load-bearing. */
+let nextBreakpointKey = 0;
+
+/** How far past a clicked line the toggle scans for the nearest following
+ * bindable line (spec F2's DAP-style snapping). Bounded so a click in the
+ * trailing whitespace of a file terminates instead of walking forever. */
+const BREAKPOINT_SNAP_SCAN_LINES = 50;
+
+export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (set, get) => {
+  /** The line resolver, when a debug-capable session is live. */
+  const resolver = (): ((file: string, line: number) => ProgramAddress | null) | null => {
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return null;
+    // Older test doubles narrow via the capability flag alone — probe the
+    // method rather than trusting the cast.
+    if (typeof provider.resolveSourceLine !== "function") return null;
+    return (file, line) => {
+      try {
+        return provider.resolveSourceLine(file, line);
+      } catch {
+        return null;
+      }
+    };
+  };
+
+  const persistBreakpoints = (): void => {
+    get()._breakpointsSink?.(
+      get().sourceBreakpoints.map(({ file, line, enabled }) => ({ file, line, enabled })),
+    );
+  };
+
+  return {
   debugCapable: false,
   debugBreakpoints: [],
   debugLastOutcome: null,
   debugStatus: "none",
+  sourceBreakpoints: [],
+  _breakpointsSink: null,
+
+  breakpointToggleAtLine(file, line) {
+    const anchors = get().sourceBreakpoints;
+    // Snap first (spec F2, DAP convention): the anchor lands on the line
+    // the click actually binds to, so toggling the snapped line's dot off
+    // works on the line where the dot renders. Without a live resolver
+    // (idle Player) the anchor stays where clicked and binds on the next
+    // sync.
+    const resolve = resolver();
+    let target = line;
+    if (resolve !== null && resolve(file, line) === null) {
+      for (let probe = line + 1; probe <= line + BREAKPOINT_SNAP_SCAN_LINES; probe++) {
+        if (resolve(file, probe) !== null) {
+          target = probe;
+          break;
+        }
+      }
+    }
+    const existing = anchors.find((a) => a.file === file && a.line === target);
+    if (existing !== undefined) {
+      set({ sourceBreakpoints: anchors.filter((a) => a.key !== existing.key) });
+    } else {
+      nextBreakpointKey += 1;
+      set({
+        sourceBreakpoints: [
+          ...anchors,
+          { key: `bp-${nextBreakpointKey}`, file, line: target, enabled: true, address: null },
+        ],
+      });
+    }
+    get()._syncSourceBreakpoints();
+    persistBreakpoints();
+  },
+
+  breakpointSetEnabled(key, enabled) {
+    const anchors = get().sourceBreakpoints;
+    const hit = anchors.find((a) => a.key === key);
+    if (hit === undefined || hit.enabled === enabled) return;
+    set({
+      sourceBreakpoints: anchors.map((a) => (a.key === key ? { ...a, enabled } : a)),
+    });
+    get()._syncSourceBreakpoints();
+    persistBreakpoints();
+  },
+
+  breakpointRemove(key) {
+    const anchors = get().sourceBreakpoints;
+    if (!anchors.some((a) => a.key === key)) return;
+    set({ sourceBreakpoints: anchors.filter((a) => a.key !== key) });
+    get()._syncSourceBreakpoints();
+    persistBreakpoints();
+  },
+
+  breakpointsMoved(file, moves) {
+    if (moves.length === 0) return;
+    const byFrom = new Map(moves.map((m) => [m.from, m.to]));
+    const seen = new Set<string>();
+    const next: SourceBreakpoint[] = [];
+    for (const a of get().sourceBreakpoints) {
+      const moved = a.file === file ? byFrom.get(a.line) : undefined;
+      const line = moved ?? a.line;
+      // An edit that deletes the text between two anchors can map both
+      // onto one line — keep the first, drop the duplicate.
+      const at = `${a.file} ${line}`;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      next.push(moved === undefined ? a : { ...a, line });
+    }
+    set({ sourceBreakpoints: next });
+    get()._syncSourceBreakpoints();
+    persistBreakpoints();
+  },
+
+  applyPersistedBreakpoints(list) {
+    set({
+      sourceBreakpoints: list.map((b) => {
+        nextBreakpointKey += 1;
+        return {
+          key: `bp-${nextBreakpointKey}`,
+          file: b.file,
+          line: b.line,
+          enabled: b.enabled,
+          address: null,
+        };
+      }),
+    });
+    get()._syncSourceBreakpoints();
+  },
+
+  setBreakpointsSink(sink) {
+    set({ _breakpointsSink: sink });
+  },
+
+  _syncSourceBreakpoints() {
+    const anchors = get().sourceBreakpoints;
+    const provider = get()._provider;
+    const resolve = resolver();
+    if (!provider || !isDebugSessionProvider(provider) || resolve === null) {
+      // Nothing to bind or arm against; anchors survive, bindings go null
+      // so nothing renders confidently bound.
+      if (anchors.some((a) => a.address !== null)) {
+        set({ sourceBreakpoints: anchors.map((a) => ({ ...a, address: null })) });
+      }
+      return;
+    }
+    // The runtime set is derived state — re-arm from scratch so it can
+    // never drift from the anchors (same posture as the resolvers: derived,
+    // never stored).
+    try {
+      for (const armed of provider.debugBreakpoints()) {
+        provider.debugBreakpointRemove(armed.id);
+      }
+    } catch {
+      // A provider whose session vanished mid-sync; the mirror refresh
+      // below reports whatever is really armed.
+    }
+    const next = anchors.map((a) => {
+      const address = resolve(a.file, a.line);
+      if (address !== null && a.enabled) {
+        provider.debugBreakpointAdd(
+          address.container_idx,
+          address.offset,
+          `${a.file}:${a.line + 1}`,
+        );
+      }
+      const same =
+        (address === null && a.address === null) ||
+        (address !== null &&
+          a.address !== null &&
+          address.container_idx === a.address.container_idx &&
+          address.offset === a.address.offset);
+      return same ? a : { ...a, address };
+    });
+    let mirror: Breakpoint[] = [];
+    try {
+      mirror = provider.debugBreakpoints();
+    } catch {
+      mirror = [];
+    }
+    set({ sourceBreakpoints: next, debugBreakpoints: mirror });
+  },
   // Mirrors the wasm session's own default, which is also true (W1/#3294).
   debugInfoEnabled: true,
 
@@ -208,5 +439,10 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
         debugStatus: "none",
       });
     }
+    // A bind/switch is exactly when the anchors need re-binding against
+    // the (new) session's program — and a dispose is when their bindings
+    // must go null (W4/#3297).
+    get()._syncSourceBreakpoints();
   },
-});
+  };
+};

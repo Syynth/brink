@@ -158,12 +158,14 @@ export {
   qualifiedInkPath,
   headerName,
   lineActionsAt,
+  refreshBreakpoints,
 } from "./play-from-here.js";
 export type {
   PlayFromHereOptions,
   TextMenuRequest,
   IdentityMenuSection,
   LineMenuAction,
+  BreakpointGutterMarker,
 } from "./play-from-here.js";
 
 // Host gutter markers (#343): host-contributed gutter affordances

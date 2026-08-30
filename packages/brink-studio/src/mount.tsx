@@ -52,6 +52,7 @@ import {
   saveProblemsPrefs,
   BINDER_SIDECAR_PATH,
   createStudioStore,
+  sessionDegraded,
   parseBinderOrder,
   withDictionaryWord,
   toProseDiagnostics,
@@ -148,6 +149,7 @@ import {
 import { registerStoryCommands } from "./story-commands.js";
 import { registerDebugCommands } from "./debug-commands.js";
 import { registerLocationResolvers } from "./location-resolvers.js";
+import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -970,6 +972,30 @@ export async function mountStudio(
       }),
     // "Play from here" (#186): a fresh session entered at the knot/stitch path.
     onPlayFrom: (inkPath, label) => store.getState().openSession({ path: inkPath, label }),
+    // Breakpoints (W4/#3297): the gutter renders the store's source
+    // anchors (0-based there, 1-based in the editor — the fencepost lives
+    // at this edge and nowhere else). Bound renders solid only while the
+    // running program matches the latest compile (suppressed-never-stale).
+    getBreakpoints: (path) => {
+      const st = store.getState();
+      const degraded = sessionDegraded(st.programChecksum, st.compiledChecksum);
+      return st.sourceBreakpoints
+        .filter((b) => b.file === path)
+        .map((b) => ({
+          line: b.line + 1,
+          state: !b.enabled
+            ? ("disabled" as const)
+            : b.address !== null && !degraded
+              ? ("bound" as const)
+              : ("unbound" as const),
+        }));
+    },
+    onToggleBreakpoint: (path, line) =>
+      store.getState().breakpointToggleAtLine(path, line - 1),
+    onBreakpointsMoved: (path, moves) =>
+      store
+        .getState()
+        .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1469,10 +1495,47 @@ export async function mountStudio(
     loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
+  // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the
+  // same per-project scope the editor-tab snapshot uses. No scope (an
+  // embedder without session persistence) → session-local breakpoints.
+  if (editorScope !== undefined) {
+    store.getState().applyPersistedBreakpoints(
+      loadBreakpoints(window.localStorage, editorScope),
+    );
+    store.getState().setBreakpointsSink((list) =>
+      saveBreakpoints(window.localStorage, editorScope, list),
+    );
+  }
+
   // Bind handles, kick the initial compile, and open the entry file (the
   // groups-store subscription above keeps focus tracking in sync as the
   // document component mounts).
   store.getState().initialize(project, documents);
+
+  // Breakpoint dots re-render on anchor changes AND on checksum changes
+  // (bound⇄unbound is a function of degraded-ness, W4/#3297). The gutter
+  // re-reads only on this refresh — no polling.
+  {
+    let last = {
+      anchors: store.getState().sourceBreakpoints,
+      program: store.getState().programChecksum,
+      compiled: store.getState().compiledChecksum,
+    };
+    store.subscribe((st) => {
+      if (
+        st.sourceBreakpoints !== last.anchors ||
+        st.programChecksum !== last.program ||
+        st.compiledChecksum !== last.compiled
+      ) {
+        last = {
+          anchors: st.sourceBreakpoints,
+          program: st.programChecksum,
+          compiled: st.compiledChecksum,
+        };
+        documents.refreshBreakpoints();
+      }
+    });
+  }
 
   // Restore the persisted editor settings (Settings → Editor). After initialize,
   // so the actions reach `documents`; new views read them from slotOptions, open

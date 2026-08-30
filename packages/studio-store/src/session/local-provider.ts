@@ -75,6 +75,7 @@ import type {
   Choice,
   DebugRunOutcome,
   DebugSourceLocation,
+  ProgramAddress,
   ReplayOutcome,
   SessionJournal,
   SessionLine,
@@ -513,6 +514,14 @@ export class LocalSessionProvider implements DebugSessionProvider {
 
   resolveDebugPosition(containerIdx: number, offset: number): DebugSourceLocation | null {
     return this.session?.resolveDebugPosition(containerIdx, offset) ?? null;
+  }
+
+  resolveSourceLine(file: string, line: number): ProgramAddress | null {
+    return this.session?.resolveSourceLine(file, line) ?? null;
+  }
+
+  hasDebugInfo(): boolean {
+    return this.session?.hasDebugInfo() ?? false;
   }
 
   debugBreakpointAdd(containerIdx: number, offset: number, name?: string): number {

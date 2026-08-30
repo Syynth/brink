@@ -55,7 +55,7 @@ import {
   EXTRACT_TO_KNOT_ACTION,
   type ExtractKind,
 } from "./extract-actions.js";
-import { playFromHereExtension } from "./play-from-here.js";
+import { playFromHereExtension, type BreakpointGutterMarker } from "./play-from-here.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
 import { proseExtension } from "./prose.js";
@@ -276,6 +276,13 @@ export interface BrinkStudioOptions {
     offset: number,
   ) => SignatureInfo | null | Promise<SignatureInfo | null>;
   getFoldingRanges?: (source: string) => FoldRange[];
+  /** Breakpoint dots sharing the play gutter's column (W4/#3297, ruled
+   * 2026-08-29). 1-based lines; refresh via `refreshBreakpoints(view)`. */
+  getBreakpoints?: () => readonly BreakpointGutterMarker[];
+  /** Gutter click on a non-header line toggles a breakpoint (1-based). */
+  onToggleBreakpoint?: (line: number) => void;
+  /** Doc edits moved breakpoint lines (1-based old→new pairs). */
+  onBreakpointsMoved?: (moves: readonly { from: number; to: number }[]) => void;
   /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
    *  When provided, the editor shows a hover ▶ run-icon on knot/stitch
    *  declarations (#186). */
@@ -534,6 +541,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
           options.commitRename,
         ),
         prepareRename: options.prepareRename,
+        getBreakpoints: options.getBreakpoints,
+        onToggleBreakpoint: options.onToggleBreakpoint,
+        onBreakpointsMoved: options.onBreakpointsMoved,
       }),
     );
   }

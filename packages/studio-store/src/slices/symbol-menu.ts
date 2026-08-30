@@ -50,6 +50,10 @@ export interface SymbolMenuRequest {
   /** Which surface raised the menu. Editor-origin renames run inline in the
    *  editor (#323/#324); graph-origin renames use the modal prompt. */
   source?: "editor" | "graph";
+  /** The 1-based header line, when the editor raised the menu (W4/#3297):
+   *  a header line's breakpoint verb is this menu, since its gutter click
+   *  is play-from-here. Absent from graph/binder-origin requests. */
+  line?: number;
 }
 
 /** A pending request to rename a symbol. Holds only primitives; the prompt

@@ -25,7 +25,11 @@ export interface PlayFromHereOptions {
   /** Right-click a knot/stitch declaration: open the shared symbol context
    *  menu (play-from-here + structural refactors) at the pointer. The host
    *  fills in the file path. */
-  onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
+  onSymbolContextMenu?: (
+    info: { knot: string; stitch?: string; line?: number },
+    x: number,
+    y: number,
+  ) => void;
   /** Right-click anywhere else: the editor-owned text menu request (position
    *  + Cut/Copy/Paste/Select All bound to this view). When provided, the
    *  native context menu never appears inside the editor. */
@@ -48,7 +52,55 @@ export interface PlayFromHereOptions {
    *  resolves but prepareRename refuses (externals: the host-binding
    *  contract) gets Navigate items but NO dead Rename item. */
   prepareRename?: (source: string, offset: number) => Location | null | Promise<Location | null>;
+
+  // ── Breakpoints (W4/#3297 — RULED 2026-08-29: one shared column) ──
+  // The breakpoint dots render in THIS gutter's column, not a parallel
+  // one: ▶ appears only on hovered header lines and breakpoints live on
+  // statement lines, so the two rarely conflict; on a header line the
+  // hover glyph stays ▶ and the breakpoint verb is the context menu.
+
+  /** The breakpoint dots to render, 1-based lines. Host-owned truth; call
+   *  {@link refreshBreakpoints} after it changes — the gutter re-reads on
+   *  that effect, never by polling. */
+  getBreakpoints?: () => readonly BreakpointGutterMarker[];
+  /** Gutter click on a non-header line toggles a breakpoint there
+   *  (1-based). Header lines keep play-from-here. */
+  onToggleBreakpoint?: (line: number) => void;
+  /** A doc edit moved breakpoint lines: old→new 1-based pairs, mapped
+   *  through the change set. The host owns the anchors — it applies the
+   *  moves and re-renders via {@link refreshBreakpoints}. Delivered in a
+   *  microtask (never synchronously inside a CM update cycle). */
+  onBreakpointsMoved?: (moves: readonly { from: number; to: number }[]) => void;
 }
+
+/** One breakpoint dot (W4/#3297). `bound` = solid (resolved to a program
+ * address); `unbound` = hollow (no executable code there, no debug info, or
+ * nothing to bind against); `disabled` = kept but not armed (dimmed). */
+export interface BreakpointGutterMarker {
+  /** 1-based. */
+  line: number;
+  state: "bound" | "unbound" | "disabled";
+}
+
+/** Re-read the host's breakpoints and re-render the gutter dots — the
+ * external-change path, mirroring `refreshGutterMarkers` (host-gutter.ts):
+ * a breakpoint toggled in a panel or moved by a rebind has no transaction
+ * of its own. */
+export function refreshBreakpoints(view: EditorView): void {
+  view.dispatch({ effects: refreshBreakpointsEffect.of(null) });
+}
+
+const refreshBreakpointsEffect = StateEffect.define<null>();
+
+/** Bumped by the refresh effect so `lineMarkerChange` has state to compare
+ * — gutters re-render on state changes, not on effects directly. */
+const breakpointsVersionField = StateField.define<number>({
+  create: () => 0,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(refreshBreakpointsEffect)) return value + 1;
+    return value;
+  },
+});
 
 // ── Path computation ────────────────────────────────────────────────
 
@@ -161,6 +213,39 @@ class PlayMarker extends GutterMarker {
   }
 }
 const playMarker = new PlayMarker();
+
+/** A breakpoint dot (W4/#3297) — a plain span, not a button: the whole
+ * gutter row is the click target (the gutter's own mousedown handler), and
+ * a nested button would steal it. */
+class BreakpointDotMarker extends GutterMarker {
+  constructor(
+    private readonly state: BreakpointGutterMarker["state"] | "preview",
+    private readonly title: string,
+  ) {
+    super();
+  }
+  override eq(other: GutterMarker): boolean {
+    return other instanceof BreakpointDotMarker && other.state === this.state;
+  }
+  override toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = `brink-breakpoint-dot brink-breakpoint-${this.state}`;
+    el.title = this.title;
+    return el;
+  }
+}
+const boundDot = new BreakpointDotMarker("bound", "Breakpoint");
+const unboundDot = new BreakpointDotMarker(
+  "unbound",
+  "Breakpoint (unbound — no executable code here, or no debug info)",
+);
+const disabledDot = new BreakpointDotMarker("disabled", "Breakpoint (disabled)");
+const previewDot = new BreakpointDotMarker("preview", "Click to set a breakpoint");
+const dotFor = {
+  bound: boundDot,
+  unbound: unboundDot,
+  disabled: disabledDot,
+} as const;
 
 // ── Right-click target ──────────────────────────────────────────────
 
@@ -376,20 +461,33 @@ async function buildTextMenuRequest(
 }
 
 export function playFromHereExtension(options: PlayFromHereOptions): Extension {
-  const { onPlayFrom, onSymbolContextMenu } = options;
+  const { onPlayFrom, onSymbolContextMenu, getBreakpoints, onToggleBreakpoint } = options;
+  const breakpointsOn = getBreakpoints !== undefined && onToggleBreakpoint !== undefined;
+
+  /** The host's dots for this render pass, keyed by 1-based line. */
+  const breakpointAt = (line: number): BreakpointGutterMarker | undefined =>
+    getBreakpoints?.().find((b) => b.line === line);
 
   const playGutter = gutter({
     class: "brink-play-gutter",
     lineMarker(view, line) {
-      const hovered = view.state.field(hoverLineField);
-      if (hovered == null) return null;
       const lineNo = view.state.doc.lineAt(line.from).number;
-      if (lineNo !== hovered || !isHeaderLine(view.state, lineNo)) return null;
-      return playMarker;
+      const hovered = view.state.field(hoverLineField);
+      // The ruled priority (2026-08-29): on a hovered HEADER line the play
+      // ▶ keeps the glyph, breakpoint or not — the breakpoint verb there is
+      // the context menu.
+      if (hovered === lineNo && isHeaderLine(view.state, lineNo)) return playMarker;
+      const bp = breakpointAt(lineNo);
+      if (bp !== undefined) return dotFor[bp.state];
+      // Hover preview on plain lines: the click affordance made visible.
+      if (breakpointsOn && hovered === lineNo) return previewDot;
+      return null;
     },
     lineMarkerChange(update) {
       return (
         update.startState.field(hoverLineField) !== update.state.field(hoverLineField) ||
+        update.startState.field(breakpointsVersionField) !==
+          update.state.field(breakpointsVersionField) ||
         update.startState.field(elementTypeField, false) !==
           update.state.field(elementTypeField, false)
       );
@@ -400,13 +498,46 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
       mousedown(view, line, event) {
         const lineNo = view.state.doc.lineAt(line.from).number;
         const path = inkPathForLine(view.state, lineNo);
-        if (!path) return false;
-        (event as MouseEvent).preventDefault();
-        onPlayFrom(path, path);
-        return true;
+        if (path) {
+          (event as MouseEvent).preventDefault();
+          onPlayFrom(path, path);
+          return true;
+        }
+        if (onToggleBreakpoint !== undefined) {
+          (event as MouseEvent).preventDefault();
+          onToggleBreakpoint(lineNo);
+          return true;
+        }
+        return false;
       },
     },
   });
+
+  // Doc edits move breakpoint lines (W4/#3297): map each dot's line-start
+  // through the change set and report old→new pairs. The host owns the
+  // anchors — delivery rides a microtask so the host's own store update
+  // (and its refresh dispatch) never lands inside this update cycle.
+  const breakpointMoves = ViewPlugin.fromClass(
+    class {
+      constructor(readonly view: EditorView) {}
+      update(update: { docChanged: boolean; startState: EditorState; changes: { mapPos(pos: number, assoc: number): number }; state: EditorState }): void {
+        if (!update.docChanged || options.onBreakpointsMoved === undefined) return;
+        const dots = getBreakpoints?.() ?? [];
+        if (dots.length === 0) return;
+        const moves: { from: number; to: number }[] = [];
+        for (const dot of dots) {
+          if (dot.line < 1 || dot.line > update.startState.doc.lines) continue;
+          const pos = update.startState.doc.line(dot.line).from;
+          const mapped = update.changes.mapPos(pos, 1);
+          const to = update.state.doc.lineAt(mapped).number;
+          if (to !== dot.line) moves.push({ from: dot.line, to });
+        }
+        if (moves.length > 0) {
+          queueMicrotask(() => options.onBreakpointsMoved?.(moves));
+        }
+      }
+    },
+  );
 
   // Track the hovered header line on the *whole* editor DOM (content + gutters),
   // so moving from the line into the gutter to click the ▶ keeps it revealed —
@@ -416,7 +547,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
     class {
       private readonly onMove = (e: MouseEvent): void => {
         const lineNo = lineAtPointer(this.view, e.clientX, e.clientY);
-        const next = lineNo != null && isHeaderLine(this.view.state, lineNo) ? lineNo : null;
+        // With breakpoints wired, EVERY line's hover matters (the preview
+        // dot); without them, only header lines do — exactly the old
+        // behavior, so a host without breakpoints sees no new dispatches.
+        const next =
+          lineNo != null && (breakpointsOn || isHeaderLine(this.view.state, lineNo))
+            ? lineNo
+            : null;
         if (this.view.state.field(hoverLineField) !== next) {
           this.view.dispatch({ effects: setHoverLine.of(next) });
         }
@@ -452,7 +589,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
       const info =
         lineNo == null || !onSymbolContextMenu ? null : symbolAtLine(view.state, lineNo);
       if (info && onSymbolContextMenu) {
-        onSymbolContextMenu(info, event.clientX, event.clientY);
+        // The 1-based header line rides along (W4/#3297): the header's
+        // breakpoint verb is this menu (the gutter click there is play).
+        onSymbolContextMenu(
+          lineNo == null ? info : { ...info, line: lineNo },
+          event.clientX,
+          event.clientY,
+        );
         return true;
       }
       if (onTextContextMenu) {
@@ -468,7 +611,15 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
     },
   });
 
-  return [hoverLineField, playGutter, hoverTracker, contextMenu, playFromHereTheme];
+  return [
+    hoverLineField,
+    breakpointsVersionField,
+    playGutter,
+    hoverTracker,
+    breakpointMoves,
+    contextMenu,
+    playFromHereTheme,
+  ];
 }
 
 const playFromHereTheme = EditorView.baseTheme({
@@ -498,5 +649,28 @@ const playFromHereTheme = EditorView.baseTheme({
   ".brink-play-gutter-icon:focus-visible": {
     outline: "1px solid var(--bs-accent, #3b82f6)",
     outlineOffset: "-1px",
+  },
+  // Breakpoint dots (W4/#3297) — the canvas's gutter-states taxonomy:
+  // bound solid, unbound hollow, disabled dimmed, hover preview faint.
+  ".brink-breakpoint-dot": {
+    boxSizing: "border-box",
+    display: "inline-block",
+    width: "9px",
+    height: "9px",
+    borderRadius: "50%",
+    margin: "calc((1lh - 9px) / 2) 3.5px",
+    cursor: "pointer",
+  },
+  ".brink-breakpoint-bound": {
+    backgroundColor: "var(--bs-error, #ef4444)",
+  },
+  ".brink-breakpoint-unbound": {
+    border: "1.5px solid var(--bs-error, #ef4444)",
+  },
+  ".brink-breakpoint-disabled": {
+    backgroundColor: "rgb(var(--bs-error-rgb, 239 68 68) / 45%)",
+  },
+  ".brink-breakpoint-preview": {
+    backgroundColor: "rgb(var(--bs-error-rgb, 239 68 68) / 30%)",
   },
 });
