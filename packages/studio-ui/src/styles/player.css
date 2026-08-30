@@ -62,7 +62,8 @@
 .brink-studio .player .story-text p {
   margin-bottom: 12px;
   line-height: 1.8;
-  font-size: var(--bs-font-prose);
+  /* W13/#3306: the Player's own knob wins; unset = the app type scale. */
+  font-size: var(--bs-player-font-size, var(--bs-font-prose));
   letter-spacing: 0.01em;
 }
 .brink-studio .player .choices {

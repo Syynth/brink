@@ -1549,10 +1549,13 @@ export async function mountStudio(
     loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
-  // Paced auto-reveal cadence (W7/#3300 F13, Settings → Player).
-  store.getState().setSessionPaced(
-    loadPlayerSettings(window.localStorage).pacedRevealMs,
-  );
+  // Player settings (Settings → Player): paced cadence (W7/#3300 F13)
+  // and the prose-size knob (W13/#3306).
+  {
+    const player = loadPlayerSettings(window.localStorage);
+    store.getState().setSessionPaced(player.pacedRevealMs);
+    store.getState().setPlayerFontSize(player.fontSize);
+  }
 
   // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the
   // same per-project scope the editor-tab snapshot uses. No scope (an
