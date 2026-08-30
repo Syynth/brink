@@ -100,7 +100,7 @@ user-overridable through the existing keymap service):
 | Verb | Behavior | Key |
 |---|---|---|
 | Pause | Suspend at the next statement boundary | F6 |
-| Continue | Resume normal play (to next breakpoint, choice, or terminal) | F5 |
+| Continue | Run until the next **content line** is delivered (or breakpoint/choices/terminal), then resume normal play — RULED 2026-08-30, revising this row's original free-run wording; the free-run remains `debug.run` (FF/auto's verb) | F5 |
 | Step over | One source line, calls run to completion | F10 |
 | Step into | One source line, descending into calls | F11 |
 | Step out | Run until the current frame returns | Shift-F11 |

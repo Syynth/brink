@@ -169,6 +169,16 @@ enum SteppedDisposition {
     Stop(crate::DebugRunOutcome),
 }
 
+/// Whether a debug run stops when the output buffer commits a line —
+/// [`Story::debug_run_to_line`]'s tier vs [`Story::debug_run`]'s free
+/// run. An enum rather than a bool so call sites read as what they do.
+#[cfg(feature = "debug-hooks")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StopOnLine {
+    No,
+    Yes,
+}
+
 impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program and its line tables.
     pub fn new(program: Arc<Program>, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
@@ -1604,6 +1614,50 @@ impl<R: StoryRng> Story<R> {
     // `vm::step_impl`; see `debug_control`'s module doc for the zero-cost
     // argument this depends on.
 
+    /// Drain every COMPLETED-but-undelivered line from the default flow's
+    /// output buffer — the exact cursor `continue_single` delivers from
+    /// (`advance_with_limit` step 1's `take_first_line`). The wasm debug
+    /// verbs call this before AND after stepping so the two drive roads
+    /// share ONE delivery stream (W5/#3298): the production line-buffered
+    /// path runs ahead of what it has handed out, so a line it already
+    /// completed must surface in the debug outcome exactly once — and,
+    /// because this consumes the same cursor, never again on a later
+    /// journaled continue. Suppressed segments are skipped exactly as the
+    /// production take does; partial (uncompleted) content stays buffered
+    /// untouched.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_drain_buffered_lines(
+        &mut self,
+    ) -> alloc::vec::Vec<(String, alloc::vec::Vec<String>)> {
+        let resolver = self.resolver.as_deref();
+        let mut out = alloc::vec::Vec::new();
+        while self.default.flow.output.has_completed_line() {
+            let Some((text, tags, _element)) = self.default.flow.output.take_first_line(
+                &self.program,
+                &self.line_tables,
+                resolver,
+            ) else {
+                break;
+            };
+            out.push((text, tags));
+        }
+        // Mirror `advance_with_limit`'s step 2: at a yield point no more
+        // output is coming, so trailing (uncommitted-newline) content is
+        // flushed — this is how the line before a choice point is
+        // delivered on the production road, and it must be here too.
+        if self.default.status != StoryStatus::Active && self.default.flow.output.has_unread() {
+            for (text, tags, _element) in
+                self.default
+                    .flow
+                    .output
+                    .flush_lines(&self.program, &self.line_tables, resolver)
+            {
+                out.push((text, tags));
+            }
+        }
+        out
+    }
+
     /// The default flow's current execution position, or `None` when the
     /// innermost frame has an empty container stack — mirrors
     /// [`debug_snapshot`](Self::debug_snapshot)'s `position` field without
@@ -1788,6 +1842,55 @@ impl<R: StoryRng> Story<R> {
         self.debug_run_flow(None, &FallbackHandler, breakpoints, budget_ceiling)
     }
 
+    /// Like [`debug_run`](Self::debug_run), but ALSO stops — with
+    /// [`DebugStopReason::Step`](crate::DebugStopReason::Step) — the
+    /// moment the flow's output buffer holds a **completed line**: the
+    /// granularity ladder's top tier (2026-08-30 Continue ruling,
+    /// `docs/decision-log.md`), "advance until the next content line is
+    /// delivered". The stop lands strictly *past* the line's commit
+    /// boundary (a line only completes once the following non-whitespace
+    /// output begins, because glue may still legally join onto it — the
+    /// same `has_completed_line` rule the production delivery cursor
+    /// obeys), so a caller that drains
+    /// [`debug_drain_buffered_lines`](Self::debug_drain_buffered_lines)
+    /// after this verb receives the crossed line IN this stop's outcome —
+    /// no one-advance delivery lag (#3321's felt half). Breakpoints,
+    /// choice points, terminals, and deferred externals stop it early,
+    /// exactly as in [`debug_run`](Self::debug_run); a line completed by
+    /// the *flush* at a yield point surfaces through those stops' drain
+    /// instead (the production road's own delivery for a line before a
+    /// choice). Requires no debug line info — the stop condition is
+    /// output-buffer state, not a `DebugInfo` entry.
+    ///
+    /// # Errors
+    /// As [`debug_run`](Self::debug_run).
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_to_line(
+        &mut self,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        self.debug_run_to_line_flow(None, &FallbackHandler, breakpoints, budget_ceiling)
+    }
+
+    /// [`debug_run_to_line`](Self::debug_run_to_line) for any flow —
+    /// flow selection as in [`debug_run_flow`](Self::debug_run_flow).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_run`](Self::debug_run) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_to_line_flow(
+        &mut self,
+        flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow, handler)?;
+        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling, StopOnLine::Yes)
+    }
+
     /// [`debug_run`](Self::debug_run) for any flow (#3223): `None`
     /// targets the default flow (identical to `debug_run`), `Some(name)`
     /// a named flow — isolated or shared. A shared flow's writes land in
@@ -1806,7 +1909,7 @@ impl<R: StoryRng> Story<R> {
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         let (target, env) = self.debug_parts(flow, handler)?;
-        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling)
+        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling, StopOnLine::No)
     }
 
     /// What one `vm::step` outcome means for a debug loop (#3224):
@@ -1868,6 +1971,7 @@ impl<R: StoryRng> Story<R> {
         target: DebugTarget<'_>,
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
+        stop_on_line: StopOnLine,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::DebugStopReason;
 
@@ -1912,6 +2016,18 @@ impl<R: StoryRng> Story<R> {
                 | SteppedDisposition::Resumed
                 | SteppedDisposition::CrossedExternal => {}
                 SteppedDisposition::Stop(outcome) => return Ok(outcome),
+            }
+
+            // The run-to-line tier (2026-08-30 Continue ruling): a line
+            // COMMITTING is the stop condition — checked after the step so
+            // the stop lands past the commit boundary and the line is
+            // drainable at the stop, not one advance later (#3321).
+            if stop_on_line == StopOnLine::Yes && flow.flow.output.has_completed_line() {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Step,
+                    position: Self::position_of(&flow.flow),
+                    depth: Self::depth_of(&flow.flow),
+                });
             }
         }
     }
@@ -2314,9 +2430,29 @@ impl<R: StoryRng> Story<R> {
             };
             let stop = depth_ok && line_ok;
             if stop {
+                let position = Self::position_of(&flow.flow);
+                // A step that LANDS on an armed breakpoint reports the
+                // BREAKPOINT, not the step (GDB's own behavior). Reporting
+                // `Step` here made the breakpoint silently unhittable by
+                // line-stepping (found live in the W5 studio review): the
+                // next advance resumes FROM this address, where the
+                // past-entry rule rightly skips it — so no call ever got
+                // to claim the hit.
+                if let Some(pos) = position
+                    && let Some(bp) = breakpoints.hit(pos)
+                {
+                    return Ok(crate::DebugRunOutcome {
+                        reason: DebugStopReason::Breakpoint {
+                            id: bp.id,
+                            name: bp.name.clone(),
+                        },
+                        position,
+                        depth: depth_after,
+                    });
+                }
                 return Ok(crate::DebugRunOutcome {
                     reason: DebugStopReason::Step,
-                    position: Self::position_of(&flow.flow),
+                    position,
                     depth: depth_after,
                 });
             }

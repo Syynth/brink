@@ -1013,17 +1013,48 @@ pub(crate) enum DebugStopReasonJs {
     AwaitingExternal,
 }
 
+/// One transcript line a debug advance emitted (W5/#3298) — the delta the
+/// call appended to the story transcript. Text is resolved the same way
+/// the transcript reader resolves it; tags ride along verbatim.
+#[derive(Serialize)]
+pub(crate) struct DebugOutputLineJs {
+    pub text: String,
+    pub tags: Vec<String>,
+}
+
 /// Wasm mirror of `brink_runtime::DebugRunOutcome` — the result of
-/// `debugRun`/`debugStep`.
+/// `debugRun`/`debugStep`/`debugStepLine`.
 #[derive(Serialize)]
 pub(crate) struct DebugRunOutcomeJs {
     pub reason: DebugStopReasonJs,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<DebugPositionJs>,
     pub depth: usize,
+    /// The transcript delta this call produced (W5/#3298): lines emitted
+    /// while debug-stepping MUST reach the studio transcript, or stepping
+    /// over a text line silently eats its output. Empty for a stop that
+    /// emitted nothing (a `~ code` step, an immediate breakpoint).
+    pub lines: Vec<DebugOutputLineJs>,
 }
 
-pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> DebugRunOutcomeJs {
+/// Marshal drained delivery-stream lines (W5/#3298 —
+/// `Story::debug_drain_buffered_lines`). NOT a transcript slice: the
+/// production line-buffered path materializes ahead of what it delivers,
+/// so raw transcript growth both misses lines buffered before the call
+/// and mis-slices parts vs lines. The drain consumes the same cursor
+/// `continue_single` delivers from, which is what keeps the two drive
+/// roads to one coherent stream.
+pub(crate) fn drained_lines_to_js(lines: Vec<(String, Vec<String>)>) -> Vec<DebugOutputLineJs> {
+    lines
+        .into_iter()
+        .map(|(text, tags)| DebugOutputLineJs { text, tags })
+        .collect()
+}
+
+pub(crate) fn debug_run_outcome_to_js(
+    o: brink_runtime::DebugRunOutcome,
+    lines: Vec<DebugOutputLineJs>,
+) -> DebugRunOutcomeJs {
     use brink_runtime::DebugStopReason;
     DebugRunOutcomeJs {
         reason: match o.reason {
@@ -1043,6 +1074,7 @@ pub(crate) fn debug_run_outcome_to_js(o: brink_runtime::DebugRunOutcome) -> Debu
             offset: p.offset,
         }),
         depth: o.depth,
+        lines,
     }
 }
 

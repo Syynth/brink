@@ -39,8 +39,10 @@ function scriptedSession() {
     debugBreakpointRemove: vi.fn((): boolean => true),
     debugBreakpointSetEnabled: vi.fn((): boolean => true),
     debugBreakpoints: vi.fn((): Breakpoint[] => []),
-    debugRun: vi.fn((): DebugRunOutcome => ({ reason: { type: "terminal" }, depth: 0 })),
-    debugStep: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1 })),
+    debugRun: vi.fn((): DebugRunOutcome => ({ reason: { type: "terminal" }, depth: 0, lines: [] })),
+    debugStep: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
+    debugStepLine: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
+    debugRunToLine: vi.fn((): DebugRunOutcome => ({ reason: { type: "step" }, depth: 1, lines: [] })),
   };
 }
 
@@ -95,6 +97,7 @@ describe("debug.* commands gating", () => {
 
     for (const id of [
       "debug.run",
+      "debug.continue",
       "debug.stepInto",
       "debug.stepOver",
       "debug.stepOut",
@@ -113,6 +116,7 @@ describe("debug.* commands gating", () => {
     bindSession(store, scriptedSession());
 
     expect(commands.isEnabled("debug.run")).toBe(true);
+    expect(commands.isEnabled("debug.continue")).toBe(true);
     expect(commands.isEnabled("debug.stepInto")).toBe(true);
   });
 });
@@ -153,7 +157,7 @@ describe("debugRun / debugStep and debugStatus", () => {
   it("debugRun reaching a terminal outcome reports debugStatus 'stopped'", () => {
     const store = createStudioStore();
     const session = scriptedSession();
-    session.debugRun.mockReturnValue({ reason: { type: "terminal" }, depth: 0 });
+    session.debugRun.mockReturnValue({ reason: { type: "terminal" }, depth: 0, lines: [] });
     bindSession(store, session);
 
     store.getState().debugRun();
@@ -161,6 +165,7 @@ describe("debugRun / debugStep and debugStatus", () => {
     expect(store.getState().debugLastOutcome).toEqual({
       reason: { type: "terminal" },
       depth: 0,
+      lines: [],
     });
     expect(store.getState().debugStatus).toBe("stopped");
   });
@@ -172,6 +177,7 @@ describe("debugRun / debugStep and debugStatus", () => {
       reason: { type: "breakpoint", id: 3, name: "bp" },
       position: { container_idx: 0, offset: 5 },
       depth: 1,
+      lines: [],
     });
     bindSession(store, session);
 
@@ -193,7 +199,7 @@ describe("debugRun / debugStep and debugStatus", () => {
   it("a choices outcome reports debugStatus 'stopped', matching terminal", () => {
     const store = createStudioStore();
     const session = scriptedSession();
-    session.debugRun.mockReturnValue({ reason: { type: "choices" }, depth: 0 });
+    session.debugRun.mockReturnValue({ reason: { type: "choices" }, depth: 0, lines: [] });
     bindSession(store, session);
 
     store.getState().debugRun();

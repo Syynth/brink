@@ -144,6 +144,10 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
     // edit path funnels through a compile, so this is the one seam that
     // re-maps snapshot spans through whatever changed.
     get().remapSearchSnapshot();
+    // Breakpoint anchors re-bind on every compile (W4/#3297): the runtime
+    // `(container_idx, offset)` half is derived state, and a new compile
+    // is exactly when it goes stale.
+    get()._syncSourceBreakpoints();
   },
 
   setStoryGraph(graph) {

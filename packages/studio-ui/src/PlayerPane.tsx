@@ -195,6 +195,24 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // ever advances one line) — a visible control that does nothing is worse
   // than no control (#3011).
   const canAuto = useStudioStore((s) => s._provider?.capabilities.has("auto") ?? false);
+  // Transport (W5/#3298): render the debug cluster only for a debug-capable
+  // provider (disabled-not-hidden while running, hidden entirely for an
+  // observe-only provider — same posture as the Auto toggle above).
+  const debugCapable = useStudioStore((s) => s.debugCapable);
+  const paused = useStudioStore((s) => s.sessionPaused);
+  const pausedLocation = useStudioStore((s) => {
+    // file:line when the resolver can say (W6/#3299) — the shape every
+    // debugger user reads — falling back to the runtime's knot path.
+    const pos = s.debugState?.position;
+    const provider = s._provider;
+    if (pos && provider !== null && "resolveDebugLine" in provider) {
+      const line = (
+        provider as { resolveDebugLine(c: number, o: number): { file: string; line: number } | null }
+      ).resolveDebugLine(pos.container_idx, pos.offset);
+      if (line !== null) return `${line.file}:${line.line + 1}`;
+    }
+    return s.debugState?.current_location ?? null;
+  });
   const { commands } = useShell();
   const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
 
@@ -253,7 +271,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     return (
       <div className="player-pane" ref={rootRef} tabIndex={-1}>
         <div className="header">
-          <span>Story</span>
+          <div className="toolbar" />
         </div>
         <div className="player">
           <div className="session-placeholder">
@@ -273,32 +291,117 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
-        <span>Story</span>
         <div className="toolbar">
-          <button className="btn-run" onClick={handleRun}>
-            Run
+          <button
+            className="player-transport-btn player-btn-run"
+            title="Run — compile and start the story"
+            aria-label="Run"
+            onClick={handleRun}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M2.5 1.5l8 4.5-8 4.5z" fill="currentColor" />
+            </svg>
           </button>
-          <button className="btn-restart" onClick={handleRestart}>
-            Restart
+          <button
+            className="player-transport-btn"
+            title="Restart the story"
+            aria-label="Restart"
+            onClick={handleRestart}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M10 6a4 4 0 1 1-1.2-2.8" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+            </svg>
           </button>
           {canAuto && (
-            <label
-              className="player-auto"
+            <button
+              className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
               title={
                 auto
-                  ? "Auto: each reveal runs to the next choice or pause"
-                  : "Auto off: each reveal advances a single line"
+                  ? "Auto reveal on: each reveal runs to the next choice or pause"
+                  : "Auto reveal off: each reveal advances a single line"
               }
+              aria-label="Auto reveal"
+              aria-pressed={auto}
+              onClick={() => setSessionAuto(!auto)}
             >
-              <input
-                type="checkbox"
-                checked={auto}
-                onChange={(e) => setSessionAuto(e.target.checked)}
-              />
-              Auto
-            </label>
+              <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+                <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
+                <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
+              </svg>
+            </button>
+          )}
+          {debugCapable && (
+            <span className="player-transport">
+              <span className="player-transport-sep" />
+              {paused ? (
+                <button
+                  className="player-transport-btn"
+                  title="Continue — run to the next line of content and resume play"
+                  aria-label="Continue"
+                  onClick={() => commands.dispatch("debug.continue")}
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
+                    <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  className="player-transport-btn"
+                  title="Pause — stop at the current line; step from there"
+                  aria-label="Pause"
+                  disabled={status !== "running" && status !== "awaiting-choice"}
+                  onClick={() => commands.dispatch("debug.pause")}
+                >
+                  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
+                  </svg>
+                </button>
+              )}
+              <button
+                className="player-transport-btn"
+                title="Step over — one line, calls run to completion"
+                aria-label="Step over"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepOver")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="player-transport-btn"
+                title="Step into — one line, descending into calls"
+                aria-label="Step into"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepInto")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="player-transport-btn"
+                title="Step out — run until the current frame returns"
+                aria-label="Step out"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepOut")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+            </span>
           )}
           <button
+            className="player-transport-btn player-btn-maximize"
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
             }
@@ -308,12 +411,20 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
         </div>
       </div>
+      {paused && (
+        <div className="player-status-strip">
+          <span className="player-status-chip paused" title="Paused by the debugger">
+            <span className="player-status-dot" />
+            {pausedLocation ? `Paused — ${pausedLocation}` : "Paused"}
+          </span>
+        </div>
+      )}
       <div className="player" ref={playerRef}>
         <div className="story-text">
           {text.map((line, i) => (
             <p key={i}>{renderLine(line)}</p>
           ))}
-          {ended && <div className="end-marker">{"\u2014 End \u2014"}</div>}
+          {ended && <div className="end-marker">{"— End —"}</div>}
         </div>
         {/* Choices win over Continue: whenever a choice list is present, show
             it and never the Continue button — so a transient status wobble at a

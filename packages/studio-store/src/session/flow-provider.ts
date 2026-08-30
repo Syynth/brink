@@ -121,6 +121,10 @@ export class FlowSessionProvider implements SessionProvider {
       programChecksum: this.programChecksum,
       programModel: this.programModel,
       programInkt: this.programInkt,
+      // No debug surface on the flow provider (no `debug` capability):
+      // never paused, never a debug outcome.
+      paused: false,
+      debugOutcome: null,
       auto: this.auto,
     };
   }

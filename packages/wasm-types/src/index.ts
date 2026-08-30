@@ -1300,6 +1300,29 @@ export interface ProgramAddress {
  *  `"out"` runs until the current frame returns to its caller. */
 export type StepMode = "into" | "over" | "out";
 
+/** A bytecode position resolved to author-facing source at BOTH
+ *  granularities the debugger serves (W6/#3299): the 0-based `line` (the
+ *  author tier's highlight band and paused chip) and the covering debug
+ *  entry's exact byte range — carried so finer-than-line consumers need
+ *  no new seam (expression-level entries, instruction stepping, and
+ *  step-out's mid-line call-site landing, which exists today). Offsets
+ *  are UTF-8 BYTE offsets in the file as the compiler consumed it —
+ *  convert before using as UTF-16 editor positions. */
+export interface DebugLine {
+  file: string;
+  line: number;
+  range_start: number;
+  range_len: number;
+}
+
+/** One transcript line a debug advance emitted (W5/#3298) — the delta the
+ *  call appended to the story transcript, so lines produced while stepping
+ *  reach the Player instead of vanishing. */
+export interface DebugOutputLine {
+  text: string;
+  tags: string[];
+}
+
 /** One breakpoint: an unconditional halt at a `(container_idx, offset)`
  *  bytecode position, checked before that instruction executes. `id`
  *  addresses it for `debugBreakpointRemove`/`debugBreakpointSetEnabled`. */
@@ -1348,6 +1371,9 @@ export interface DebugRunOutcome {
   reason: DebugStopReason;
   position?: { container_idx: number; offset: number };
   depth: number;
+  /** The transcript delta this call produced (W5/#3298); empty when the
+   *  stop emitted nothing (a code step, an immediate breakpoint). */
+  lines: DebugOutputLine[];
 }
 
 // ── Program model (Program Explorer) ─────────────────────────────
