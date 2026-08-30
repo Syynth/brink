@@ -513,3 +513,75 @@
 .brink-studio .pv-lines-empty {
   flex: 1;
 }
+
+/* ── #3339 Disassembly view ───────────────────────────────────────── */
+.brink-studio .pv-disasm-body {
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-small);
+  padding: 4px 0;
+}
+.brink-studio .pv-disasm-row {
+  display: grid;
+  grid-template-columns: 74px minmax(180px, 2fr) 110px minmax(0, 3fr);
+  gap: 8px;
+  padding: 1px 12px;
+  line-height: 1.8;
+  align-items: baseline;
+}
+.brink-studio .pv-disasm-row .pv-disasm-offset {
+  color: var(--bs-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brink-studio .pv-disasm-op {
+  color: var(--bs-accent);
+}
+.brink-studio .pv-disasm-row .pv-disasm-text {
+  color: var(--bs-fg);
+  overflow-wrap: anywhere;
+}
+/* The ghosted meaning — quiet, right-aligned, never louder than the code. */
+.brink-studio .pv-disasm-src {
+  text-align: right;
+  white-space: nowrap;
+}
+.brink-studio .pv-disasm-res {
+  color: var(--bs-fg-muted);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .pv-disasm-res-line {
+  color: var(--bs-fg);
+}
+.brink-studio .pv-disasm-res-fallback {
+  color: var(--bs-warning);
+}
+.brink-studio .pv-disasm-row.pv-current-instruction {
+  background: var(--bs-hover-bg);
+  outline: 1px solid var(--bs-todo);
+}
+.brink-studio .pv-disasm-row.pv-current-instruction .pv-disasm-offset {
+  color: var(--bs-todo);
+}
+.brink-studio .pv-disasm-row.pv-target-instruction {
+  background: var(--bs-list-active-bg);
+  outline: 1px dashed var(--bs-accent);
+}
+.brink-studio .pv-disasm-empty {
+  padding: 10px 14px;
+}
+/* A "line ›" jump's landing row in the Line tables view. */
+.brink-studio .pv-lines-row-target > td {
+  background: var(--bs-hover-bg);
+  outline: 1px dashed var(--bs-accent);
+}
+
+/* Very subtle row striping (maintainer, 2026-08-30): dense mono rows lose
+   their lane without it, but anything as loud as the lines table's
+   panel-bg stripe would fight the code. 4% of the foreground reads as
+   texture, not zebra — and it yields to the current/target highlights. */
+.brink-studio
+  .pv-disasm-row:nth-child(even):not(.pv-current-instruction):not(.pv-target-instruction) {
+  background: rgb(var(--bs-fg-rgb) / 4%);
+}

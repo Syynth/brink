@@ -5,6 +5,7 @@ import { sessionDegraded } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
 import { ProgramLinesView } from "./ProgramLinesView.js";
+import { ProgramDisasmView } from "./ProgramDisasmView.js";
 
 /** `(container_idx, offset)` — the shape both `DebugState.position` and a
  *  `KnotNode.disasm` entry's own `offset` (paired with the node's
@@ -79,10 +80,24 @@ function ProgramViewInner() {
   const entryFile = useStudioStore((s) => s.entryFile);
   // Which view of the one instrument (#3339). Ephemeral by design — like a
   // tab strip, not a setting.
-  const [view, setView] = useState<"structure" | "lines">("structure");
+  const [view, setView] = useState<"structure" | "lines" | "disasm">("structure");
+  // A disasm row's "line ›" jump: switch view and tell the lines view what
+  // to select. Nonce'd so revealing the same line twice still re-fires.
+  const [linesTarget, setLinesTarget] = useState<{
+    scopePath: string;
+    lineIndex: number;
+    nonce: number;
+  } | null>(null);
   const currentPosition: RuntimePosition | null = degraded
     ? null
     : (framePosition ?? debugPosition ?? null);
+
+  // "Reveal in Program Explorer" (W9) targets an INSTRUCTION, and the
+  // instruction rows live in the Disassembly view now — a reveal switches
+  // to it (the view then selects the container and marks the row).
+  useEffect(() => {
+    if (explorerTarget !== null) setView("disasm");
+  }, [explorerTarget?.nonce]);
 
   // Derived joins for the header/footer/size bars. `model` may be null on
   // the first render — memos run unconditionally (hooks), guard inside.
@@ -177,7 +192,13 @@ function ProgramViewInner() {
           >
             Line tables
           </button>
-          <button type="button" className="pv-seg-item" role="tab" disabled title="Disassembly view — #3339, next phase">
+          <button
+            type="button"
+            className={"pv-seg-item" + (view === "disasm" ? " active" : "")}
+            role="tab"
+            aria-selected={view === "disasm"}
+            onClick={() => setView("disasm")}
+          >
             Disassembly
           </button>
           <button type="button" className="pv-seg-item" role="tab" disabled title="Size view — needs the .inkb size report (#3339)">
@@ -194,8 +215,20 @@ function ProgramViewInner() {
         </button>
       </div>
 
-      {view === "lines" ? (
-        <ProgramLinesView currentScopePath={currentKnot?.path ?? null} />
+      {view === "disasm" ? (
+        <ProgramDisasmView
+          currentPosition={currentPosition}
+          target={explorerTarget}
+          onRevealLine={(scopePath, lineIndex) => {
+            setLinesTarget((prev) => ({ scopePath, lineIndex, nonce: (prev?.nonce ?? 0) + 1 }));
+            setView("lines");
+          }}
+        />
+      ) : view === "lines" ? (
+        <ProgramLinesView
+          currentScopePath={currentKnot?.path ?? null}
+          revealTarget={linesTarget}
+        />
       ) : (
       <div className="pv-structure">
         {/* Definitions column: what the program declares. */}
@@ -282,7 +315,6 @@ function ProgramViewInner() {
                 node={k}
                 depth={0}
                 currentPosition={currentPosition}
-                target={explorerTarget}
                 byScope={byScope}
                 maxBytes={totals.maxKnotBytes}
                 maxLines={totals.maxKnotLines}
@@ -341,7 +373,6 @@ function KnotRow({
   node,
   depth,
   currentPosition,
-  target,
   byScope,
   maxBytes,
   maxLines,
@@ -349,7 +380,6 @@ function KnotRow({
   node: KnotNode;
   depth: number;
   currentPosition: RuntimePosition | null;
-  target: { address: RuntimePosition; nonce: number } | null;
   byScope: Map<string, number>;
   /** Largest top-level knot subtree, for the size bars' shared scale. */
   maxBytes: number;
@@ -357,34 +387,15 @@ function KnotRow({
 }) {
   const [open, setOpen] = useState(false);
   const indent = 6 + depth * 12;
-  // "Reveal in Program Explorer" (W9/#3302): a target inside this knot's
-  // container auto-opens the row and scrolls its instruction into view.
-  // A container held by a DESCENDANT also opens this row (the child can't
-  // render while its ancestors are closed) — cheap recursive check.
-  const targetsSelf =
-    target !== null &&
-    node.container_idx !== 0xffffffff &&
-    node.container_idx === target.address.container_idx;
-  const targetsSubtree = target !== null && subtreeHasContainer(node, target.address.container_idx);
-  const targetLineRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (targetsSubtree) setOpen(true);
-  }, [targetsSubtree, target?.nonce]);
-  useEffect(() => {
-    if (targetsSelf && open) {
-      // jsdom has no scrollIntoView — the auto-open + marker class are
-      // what tests pin; the scroll is a browser nicety.
-      targetLineRef.current?.scrollIntoView?.({ block: "center" });
-    }
-  }, [targetsSelf, open, target?.nonce]);
   // `currentPosition` is already `null` while degraded (the caller
-  // computed that); a container_idx match alone is not enough — a knot
-  // with no backing container (`u32.MAX` sentinel, program_model.rs's
-  // synthesized-node case) must never match.
+  // computed that). Knot-level: the row highlights when the position sits
+  // in the scope container OR any of its anonymous children — the
+  // instruction itself lives in the Disassembly view now.
   const isCurrentKnot =
     currentPosition !== null &&
-    node.container_idx !== 0xffffffff &&
-    node.container_idx === currentPosition.container_idx;
+    ((node.container_idx !== 0xffffffff &&
+      node.container_idx === currentPosition.container_idx) ||
+      node.anon.some((a) => a.container_idx === currentPosition.container_idx));
   return (
     <div className="pv-knot">
       <button
@@ -449,36 +460,12 @@ function KnotRow({
               </>
             )}
           </div>
-          {node.disasm.length > 0 && (
-            <pre className="pv-disasm">
-              {node.disasm.map((line) => {
-                const isTargetLine = targetsSelf && line.offset === target.address.offset;
-                return (
-                  <div
-                    key={line.offset}
-                    ref={isTargetLine ? targetLineRef : undefined}
-                    className={
-                      "pv-disasm-line" +
-                      (isCurrentKnot && line.offset === currentPosition?.offset
-                        ? " pv-current-instruction"
-                        : "") +
-                      (isTargetLine ? " pv-target-instruction" : "")
-                    }
-                  >
-                    <span className="pv-disasm-offset">{line.offset}</span>
-                    <span className="pv-disasm-text">{line.text}</span>
-                  </div>
-                );
-              })}
-            </pre>
-          )}
           {node.children.map((c) => (
             <KnotRow
               key={c.path}
               node={c}
               depth={depth + 1}
               currentPosition={currentPosition}
-              target={target}
               byScope={byScope}
               maxBytes={maxBytes}
               maxLines={maxLines}
@@ -490,11 +477,6 @@ function KnotRow({
   );
 }
 
-/** Whether `node` or any descendant is backed by `containerIdx`. */
-function subtreeHasContainer(node: KnotNode, containerIdx: number): boolean {
-  if (node.container_idx !== 0xffffffff && node.container_idx === containerIdx) return true;
-  return node.children.some((c) => subtreeHasContainer(c, containerIdx));
-}
 
 /** Instruction-stepping controls (W9/#3302) for the Program Explorer's
  * header-actions slot — the granularity ladder's programmer-assist tier

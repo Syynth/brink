@@ -34,6 +34,7 @@ afterEach(() => {
 
 const MODEL: ProgramModel = {
   checksum: "0x54b500f2",
+  debug_info: false,
   globals: [{ name: "gold", ty: "int", default: "12", mutable: true }],
   lists: [],
   externals: [
@@ -50,6 +51,7 @@ const MODEL: ProgramModel = {
       container_idx: 1,
       byte_size: 300,
       container_count: 3,
+      anon: [],
       disasm: [],
       children: [
         {
@@ -61,6 +63,7 @@ const MODEL: ProgramModel = {
           container_idx: 2,
           byte_size: 100,
           container_count: 2,
+          anon: [],
           disasm: [],
           children: [],
         },
@@ -75,6 +78,7 @@ const MODEL: ProgramModel = {
       container_idx: 3,
       byte_size: 100,
       container_count: 1,
+      anon: [],
       disasm: [],
       children: [],
     },
@@ -140,12 +144,12 @@ describe("the Structure view", () => {
       "Size",
     ]);
     expect(items[0].classList.contains("active")).toBe(true);
-    // Line tables is real (phase 2) — enabled whenever a table was captured.
+    // Line tables (phase 2) and Disassembly (phase 3) are real.
     expect(items[1].disabled).toBe(false);
-    // The unbuilt two stay designed slots, each naming where its view is.
-    expect(items[2].disabled).toBe(true);
+    expect(items[2].disabled).toBe(false);
+    // Size stays a designed slot, naming what it waits on.
     expect(items[3].disabled).toBe(true);
-    expect(items[2].title).toContain("#3339");
+    expect(items[3].title).toContain("#3339");
   });
 
   it("disables the Line tables slot for a compile product without a table", () => {

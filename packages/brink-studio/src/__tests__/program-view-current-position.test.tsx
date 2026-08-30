@@ -29,6 +29,7 @@ afterEach(() => {
 
 const PROGRAM_MODEL: ProgramModel = {
   checksum: "chk-1",
+  debug_info: false,
   globals: [],
   lists: [],
   externals: [],
@@ -42,6 +43,7 @@ const PROGRAM_MODEL: ProgramModel = {
       container_idx: 2,
       byte_size: 64,
       container_count: 1,
+      anon: [],
       disasm: [
         { offset: 0, text: "Const 1" },
         { offset: 4, text: "SetTemp x" },
@@ -69,10 +71,12 @@ function mount(store: StudioStore): void {
   });
 }
 
-/** The disasm/current markers only render once the knot row is expanded. */
-function expandFirstKnot(): void {
+/** The instruction rows live in the Disassembly view (#3339 phase 3). */
+function openDisasm(): void {
   act(() => {
-    container!.querySelector<HTMLButtonElement>(".pv-knot-header")?.click();
+    [...container!.querySelectorAll<HTMLButtonElement>(".pv-seg-item")]
+      .find((b) => b.textContent === "Disassembly")!
+      .click();
   });
 }
 
@@ -95,14 +99,16 @@ describe("ProgramView current-position highlight (D9, #3187)", () => {
       } as never,
     });
     mount(store);
-    expandFirstKnot();
-
+    // Structure keeps the KNOT-level highlight…
     expect(container!.querySelector(".pv-current-knot")).not.toBeNull();
+    // …and the instruction-level one lives in the Disassembly view, which
+    // auto-follows the paused position to its container.
+    openDisasm();
     const currentInstr = container!.querySelector(".pv-current-instruction");
     expect(currentInstr).not.toBeNull();
     expect(currentInstr?.textContent).toContain("SetTemp x");
     // The other instruction, at a different offset, must NOT be marked.
-    const lines = [...container!.querySelectorAll(".pv-disasm-line")];
+    const lines = [...container!.querySelectorAll(".pv-disasm-row")];
     expect(lines).toHaveLength(2);
     expect(lines.filter((l) => l.classList.contains("pv-current-instruction"))).toHaveLength(1);
   });
@@ -128,9 +134,8 @@ describe("ProgramView current-position highlight (D9, #3187)", () => {
       } as never,
     });
     mount(store);
-    expandFirstKnot();
-
     expect(container!.querySelector(".pv-current-knot")).toBeNull();
+    openDisasm();
     expect(container!.querySelector(".pv-current-instruction")).toBeNull();
   });
 });

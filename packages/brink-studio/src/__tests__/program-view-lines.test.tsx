@@ -34,6 +34,7 @@ afterEach(() => {
 
 const MODEL: ProgramModel = {
   checksum: "0xabc",
+  debug_info: false,
   globals: [],
   lists: [],
   externals: [],
@@ -47,6 +48,7 @@ const MODEL: ProgramModel = {
       container_idx: 1,
       byte_size: 100,
       container_count: 1,
+      anon: [],
       disasm: [],
       children: [],
     },

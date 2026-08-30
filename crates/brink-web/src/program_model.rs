@@ -17,6 +17,9 @@ use serde::Serialize;
 #[derive(Serialize)]
 pub struct ProgramModelJs {
     checksum: String,
+    /// Whether this compile carried a `DebugInfo` section — the difference
+    /// between "no provenance on these rows" and "provenance is off".
+    debug_info: bool,
     globals: Vec<ProgramGlobalJs>,
     lists: Vec<ProgramListJs>,
     externals: Vec<ProgramExternalJs>,
@@ -51,6 +54,20 @@ struct ProgramExternalJs {
     fallback: Option<String>,
 }
 
+/// An anonymous child container (gather, choice target, sequence wrapper)
+/// listed under its owning scope — labeled `c-N` in scope-local,
+/// container-table order, matching the save stamps' spelling. The
+/// Disassembly view (#3339) needs these as first-class rows: the paused
+/// position routinely sits INSIDE one, and a rail of scope containers
+/// alone would show a highlight with no home.
+#[derive(Serialize)]
+struct AnonContainerJs {
+    label: String,
+    container_idx: u32,
+    byte_size: u32,
+    disasm: Vec<DisasmLineJs>,
+}
+
 #[derive(Serialize)]
 struct KnotNodeJs {
     path: String,
@@ -78,6 +95,8 @@ struct KnotNodeJs {
     /// Containers in the scope, anonymous children included ("4 cont.").
     container_count: u32,
     disasm: Vec<DisasmLineJs>,
+    /// This scope's anonymous child containers, in table order.
+    anon: Vec<AnonContainerJs>,
     children: Vec<KnotNodeJs>,
 }
 
@@ -92,6 +111,52 @@ struct DisasmLineJs {
     /// bytecode — matches `DebugPosition::offset` / `DebugEntry::bytecode_offset`.
     offset: u32,
     text: String,
+    /// Where this instruction came from (#3339 provenance column) — the
+    /// `DebugInfo` section's offset→source map, resolved at model-build
+    /// time. Absent when the compile carried no debug info, or for the
+    /// synthetic-sentinel file (§2.5). Byte offsets, like every source
+    /// range on this wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src: Option<DisasmSrcJs>,
+}
+
+#[derive(Serialize, Debug)]
+struct DisasmSrcJs {
+    file: String,
+    start: u32,
+    end: u32,
+}
+
+/// Fill each instruction's source provenance from the `DebugInfo` section.
+///
+/// The entry table is sorted by `bytecode_offset` with full coverage
+/// (§2.2), so the instruction's entry is the greatest offset ≤ its own.
+/// The synthetic-sentinel file (index 0, §2.5) yields no provenance.
+fn attach_src(lines: &mut [DisasmLineJs], data: &StoryData, container_idx: usize) {
+    let Some(di) = &data.debug_info else { return };
+    let Some(table) = di.containers.get(container_idx) else {
+        return;
+    };
+    for line in lines {
+        let idx = table
+            .entries
+            .partition_point(|e| e.bytecode_offset <= line.offset);
+        if idx == 0 {
+            continue;
+        }
+        let entry = &table.entries[idx - 1];
+        if entry.file_idx == 0 {
+            continue;
+        }
+        let Some(file) = di.files.get(entry.file_idx as usize) else {
+            continue;
+        };
+        line.src = Some(DisasmSrcJs {
+            file: file.path.clone(),
+            start: entry.range_start,
+            end: entry.range_start + entry.range_len,
+        });
+    }
 }
 
 /// Resolves ids to author-facing names for a single program.
@@ -336,6 +401,7 @@ pub fn build(data: &StoryData) -> ProgramModelJs {
         .collect();
 
     ProgramModelJs {
+        debug_info: data.debug_info.is_some(),
         checksum: format!("0x{:08x}", data.source_checksum),
         globals,
         lists,
@@ -350,10 +416,40 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
     // owning scope: anonymous containers carry their scope's id in
     // `scope_id`, the scope container is its own scope.
     let mut scope_bytes: BTreeMap<brink_format::DefinitionId, (u32, u32)> = BTreeMap::new();
-    for c in &data.containers {
+    let mut anon_by_scope: BTreeMap<brink_format::DefinitionId, Vec<AnonContainerJs>> =
+        BTreeMap::new();
+    let mut unnamed_counts: BTreeMap<brink_format::DefinitionId, u32> = BTreeMap::new();
+    for (container_idx, c) in data.containers.iter().enumerate() {
         let entry = scope_bytes.entry(c.scope_id).or_insert((0, 0));
         entry.0 += u32::try_from(c.bytecode.len()).unwrap_or(u32::MAX);
         entry.1 += 1;
+        if c.scope_id != c.id {
+            // A LABELED child (a weave label / named gather) keeps its real
+            // leaf name — `enter_container barter.opts` in the disassembly
+            // must find a rail row called `opts`, not a `c-N` that makes
+            // the reader do the join by hand (maintainer, 2026-08-30).
+            // Only genuinely unnamed containers count into the stamps'
+            // `c-N` spelling, so labels never shift the numbering.
+            let label = if r.def_path.contains_key(&c.id) {
+                leaf_name(r.path(c.id)).to_owned()
+            } else {
+                let n = unnamed_counts.entry(c.scope_id).or_insert(0);
+                let label = format!("c-{n}");
+                *n += 1;
+                label
+            };
+            let mut disasm = disassemble(&c.bytecode, r);
+            attach_src(&mut disasm, data, container_idx);
+            anon_by_scope
+                .entry(c.scope_id)
+                .or_default()
+                .push(AnonContainerJs {
+                    label,
+                    container_idx: u32::try_from(container_idx).unwrap_or(u32::MAX),
+                    byte_size: u32::try_from(c.bytecode.len()).unwrap_or(u32::MAX),
+                    disasm,
+                });
+        }
     }
 
     // Group named scope containers by top-level knot name. BTreeMap keeps the
@@ -377,7 +473,8 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
             continue;
         }
         let flags = counting_flags(c.counting_flags);
-        let disasm = disassemble(&c.bytecode, r);
+        let mut disasm = disassemble(&c.bytecode, r);
+        attach_src(&mut disasm, data, container_idx);
         let (knot, leaf) = match path.split_once('.') {
             Some((k, _)) => (k.to_owned(), false),
             None => (path.clone(), true),
@@ -392,6 +489,7 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
             byte_size: scope_bytes.get(&c.id).map_or(0, |&(b, _)| b),
             container_count: scope_bytes.get(&c.id).map_or(0, |&(_, n)| n),
             disasm,
+            anon: anon_by_scope.remove(&c.id).unwrap_or_default(),
             children: Vec::new(),
         };
         let group = groups.entry(knot).or_default();
@@ -424,6 +522,7 @@ fn build_knots(data: &StoryData, r: &Resolver) -> Vec<KnotNodeJs> {
                 byte_size: 0,
                 container_count: 0,
                 disasm: Vec::new(),
+                anon: Vec::new(),
                 children: group.stitches,
             },
         })
@@ -466,11 +565,13 @@ fn disassemble(bytecode: &[u8], r: &Resolver) -> Vec<DisasmLineJs> {
             Ok(op) => out.push(DisasmLineJs {
                 offset: u32::try_from(start).unwrap_or(u32::MAX),
                 text: format_opcode(&op, r),
+                src: None,
             }),
             Err(e) => {
                 out.push(DisasmLineJs {
                     offset: u32::try_from(start).unwrap_or(u32::MAX),
                     text: format!("<decode error: {e}>"),
+                    src: None,
                 });
                 break;
             }
@@ -820,6 +921,159 @@ mod container_idx_tests {
                 }
                 prev = Some(line.offset);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod operand_spelling_tests {
+    use super::{Resolver, format_opcode};
+    use brink_format::Opcode;
+
+    /// The Disassembly view's resolution ghosts (#3339) PARSE these
+    /// spellings in TypeScript (`ProgramDisasmView.tsx`'s `Resolution`).
+    /// This is the Rust half of that contract: changing a spelling here
+    /// must fail a test naming the parser it breaks.
+    #[test]
+    fn spellings_the_studio_resolver_parses_stay_stable() {
+        let data = brink_compiler::compile("main.ink", |_p| {
+            Ok("VAR gold = 1\n=== k ===\nHi.\n-> END\n".to_owned())
+        })
+        .expect("compiles")
+        .data;
+        let r = Resolver::new(&data);
+        assert!(format_opcode(&Opcode::EmitLine(3, 0), &r).starts_with("emit_line #3"));
+        assert!(format_opcode(&Opcode::Jump(46), &r).starts_with("jump 46"));
+        assert!(format_opcode(&Opcode::JumpIfFalse(46), &r).starts_with("jump_if_false 46"));
+        assert!(format_opcode(&Opcode::GetTemp(2), &r).starts_with("get_temp 2"));
+        // get_global / call_external carry resolved names — the PREFIX is
+        // the contract the parser keys on.
+        let g = format_opcode(&Opcode::GetGlobal(data.variables[0].id), &r);
+        assert!(g.starts_with("get_global "), "{g}");
+    }
+}
+
+#[cfg(test)]
+mod anon_container_tests {
+    use super::build;
+
+    /// The Disassembly view's rail (#3339): a choice knot's anonymous
+    /// containers appear under it, labeled in the stamps' `c-N` spelling,
+    /// carrying real disassembly — and every anonymous container in the
+    /// program belongs to exactly one scope node's `anon` list.
+    #[test]
+    fn anonymous_containers_list_under_their_scope_with_disasm() {
+        let src = "=== choicy ===\nPick.\n* [a] A. -> END\n* [b] B. -> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
+        let model = build(&out.data);
+        let choicy = model
+            .knots
+            .iter()
+            .find(|k| k.name == "choicy")
+            .expect("choicy");
+        assert!(
+            !choicy.anon.is_empty(),
+            "choices must produce anonymous containers"
+        );
+        for anon in &choicy.anon {
+            let c = &out.data.containers[anon.container_idx as usize];
+            assert_eq!(anon.byte_size as usize, c.bytecode.len());
+        }
+        // Unnamed containers take the stamps' c-N spelling, in order.
+        let unnamed: Vec<&str> = choicy
+            .anon
+            .iter()
+            .filter(|a| a.label.starts_with("c-"))
+            .map(|a| a.label.as_str())
+            .collect();
+        for (i, label) in unnamed.iter().enumerate() {
+            assert_eq!(*label, format!("c-{i}"));
+        }
+        // An EMPTY anonymous container (a weave endpoint) is legitimate and
+        // stays listed — but the choice bodies themselves must carry code.
+        assert!(
+            choicy.anon.iter().any(|a| !a.disasm.is_empty()),
+            "at least one anonymous container holds the choice bodies"
+        );
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::build;
+
+    /// The disassembly's provenance column (#3339): under a debug compile
+    /// every emit-bearing container maps instructions back to real file
+    /// ranges; without debug info the model says so (`debug_info: false`)
+    /// and no row invents a source.
+    #[test]
+    fn instructions_carry_source_ranges_exactly_when_debug_info_exists() {
+        let src = "=== k ===\nHello.\nGoodbye.\n-> END\n";
+        let read = |_p: &str| Ok(src.to_owned());
+
+        let plain = brink_compiler::compile("main.ink", read).expect("compiles");
+        let plain_model = build(&plain.data);
+        assert!(!plain_model.debug_info);
+        let k = plain_model.knots.iter().find(|n| n.name == "k").expect("k");
+        assert!(k.disasm.iter().all(|l| l.src.is_none()));
+
+        let options = brink_analyzer::AnalysisOptions {
+            emit_debug_info: true,
+            ..Default::default()
+        };
+        let dbg =
+            brink_compiler::compile_with_options("main.ink", read, options).expect("compiles");
+        let model = build(&dbg.data);
+        assert!(model.debug_info);
+        let k = model.knots.iter().find(|n| n.name == "k").expect("k");
+        let with_src: Vec<_> = k.disasm.iter().filter_map(|l| l.src.as_ref()).collect();
+        assert!(
+            !with_src.is_empty(),
+            "a debug compile must yield provenance"
+        );
+        for src_ref in with_src {
+            assert_eq!(src_ref.file, "main.ink");
+            assert!(src_ref.end > src_ref.start, "{src_ref:?}");
+            assert!(
+                (src_ref.end as usize) <= src.len(),
+                "range must stay inside the file: {src_ref:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod labeled_container_tests {
+    use super::build;
+
+    /// A weave label keeps its NAME in the rail (maintainer, 2026-08-30):
+    /// `enter_container barter.opts` must find a row called `opts` — a
+    /// reader should never join `opts` to `c-0` by hand. Labels also stay
+    /// OUT of the c-N numbering, so naming a gather cannot renumber its
+    /// unnamed siblings.
+    #[test]
+    fn a_labeled_gather_keeps_its_name_and_does_not_shift_c_numbering() {
+        let src = "=== barter ===\nHi.\n* [a] A.\n* [b] B.\n- (opts) Done.\n-> END\n";
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
+        let model = build(&out.data);
+        let barter = model
+            .knots
+            .iter()
+            .find(|k| k.name == "barter")
+            .expect("barter");
+        assert!(
+            barter.anon.iter().any(|a| a.label == "opts"),
+            "labels: {:?}",
+            barter.anon.iter().map(|a| &a.label).collect::<Vec<_>>()
+        );
+        let unnamed: Vec<&str> = barter
+            .anon
+            .iter()
+            .filter(|a| a.label.starts_with("c-"))
+            .map(|a| a.label.as_str())
+            .collect();
+        for (i, label) in unnamed.iter().enumerate() {
+            assert_eq!(*label, format!("c-{i}"), "labels must not shift numbering");
         }
     }
 }

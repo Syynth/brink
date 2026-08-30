@@ -1491,12 +1491,27 @@ export interface ProgramExternal {
  * the Program Explorer.
  */
 export interface DisasmLine {
-  /** Byte offset within the owning container's own bytecode. */
   offset: number;
   text: string;
+  /** Source provenance from the DebugInfo section (#3339) — absent when
+   *  the compile carried no debug info. Byte offsets. */
+  src?: { file: string; start: number; end: number };
 }
 
 /** A knot or stitch in the compiled-program tree. */
+/** An anonymous child container (gather, choice target, sequence
+ *  wrapper), listed under its owning scope in table order and labeled with
+ *  the save stamps' `c-N` spelling (#3339 Disassembly view). */
+export interface AnonContainer {
+  /** The container's real leaf name when it has one (a weave label —
+   *  `enter_container barter.opts` finds a row called `opts`), else the
+   *  stamps' `c-N` spelling counting unnamed containers only. */
+  label: string;
+  container_idx: number;
+  byte_size: number;
+  disasm: DisasmLine[];
+}
+
 export interface KnotNode {
   path: string;
   name: string;
@@ -1518,6 +1533,8 @@ export interface KnotNode {
   byte_size: number;
   /** Containers in the scope, anonymous children included. */
   container_count: number;
+  /** This scope's anonymous child containers, in table order. */
+  anon: AnonContainer[];
   /** Resolved bytecode disassembly, one instruction per entry. */
   disasm: DisasmLine[];
   children: KnotNode[];
@@ -1526,6 +1543,9 @@ export interface KnotNode {
 /** Structured view of the statically compiled program. */
 export interface ProgramModel {
   checksum: string;
+  /** Whether this compile carried a DebugInfo section — "no provenance on
+   *  these rows" vs "provenance is off". */
+  debug_info: boolean;
   globals: ProgramGlobal[];
   lists: ProgramList[];
   externals: ProgramExternal[];

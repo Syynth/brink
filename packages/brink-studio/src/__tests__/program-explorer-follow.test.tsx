@@ -38,6 +38,9 @@ const MODEL = {
       flags: [],
       container_idx: 5,
       path_hash: 0,
+      byte_size: 8,
+      container_count: 1,
+      anon: [],
       disasm: [
         { offset: 1, text: "emit_line #0" },
         { offset: 2, text: "emit_line #1" },
@@ -66,9 +69,13 @@ function mount(store: StudioStore) {
   });
 }
 
-function openKnot() {
-  const header = host?.querySelector<HTMLButtonElement>(".pv-knot-header");
-  act(() => header?.click());
+/** The instruction rows live in the Disassembly view (#3339 phase 3). */
+function openDisasm() {
+  act(() => {
+    [...(host?.querySelectorAll<HTMLButtonElement>(".pv-seg-item") ?? [])]
+      .find((b) => b.textContent === "Disassembly")
+      ?.click();
+  });
 }
 
 function currentOffset(): string | null {
@@ -93,11 +100,11 @@ describe("Program Explorer frame-follow (W9/#3302)", () => {
       } as never,
     });
     mount(store);
-    openKnot();
-    expect(currentOffset()).toBe("1");
+    openDisasm();
+    expect(currentOffset()).toContain("+0x01");
 
     act(() => store.getState().selectFrame(1));
-    expect(currentOffset()).toBe("2");
+    expect(currentOffset()).toContain("+0x02");
   });
 
   it("degraded suppresses the highlight even with a frame selected", () => {
@@ -116,7 +123,7 @@ describe("Program Explorer frame-follow (W9/#3302)", () => {
       } as never,
     });
     mount(store);
-    openKnot();
+    openDisasm();
     expect(currentOffset()).toBeNull();
   });
 
@@ -129,8 +136,9 @@ describe("Program Explorer frame-follow (W9/#3302)", () => {
       programExplorerTarget: { address: { container_idx: 5, offset: 2 }, nonce: 1 },
     });
     mount(store);
-    // NOT manually opened — the target opens the row itself.
+    // NOT manually opened — a reveal switches the explorer to the
+    // Disassembly view, selects the container, and marks the row.
     const marked = host?.querySelector(".pv-target-instruction .pv-disasm-offset");
-    expect(marked?.textContent).toBe("2");
+    expect(marked?.textContent).toContain("+0x02");
   });
 });

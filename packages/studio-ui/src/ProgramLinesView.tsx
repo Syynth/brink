@@ -18,9 +18,10 @@
  * that compiled it.
  */
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { LinePart, LinesTableLine, LinesTableScope } from "@brink/wasm-types";
-import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
+import { useShell } from "@brink/studio-shell";
+import { SourceLink } from "./SourceLink.js";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { buildSourceIndex, type SourceIndex } from "./source-index.js";
 
@@ -90,14 +91,25 @@ function countSelects(parts: readonly LinePart[]): number {
 
 export function ProgramLinesViewInner({
   currentScopePath,
+  revealTarget = null,
 }: {
   /** The paused execution's scope path, for the rail's ● marker. */
   currentScopePath: string | null;
+  /** A disasm row's "line ›" jump: select this scope, mark this row. */
+  revealTarget?: { scopePath: string; lineIndex: number; nonce: number } | null;
 }) {
   const { commands } = useShell();
   const storeApi = useStudioStoreApi();
   const programLines = useStudioStore((s) => s.programLines);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // A reveal from the Disassembly view selects its scope — by name, since
+  // that is what an emit_line's container knows.
+  useEffect(() => {
+    if (revealTarget === null) return;
+    const scope = (programLines?.scopes ?? []).find((sc) => sc.name === revealTarget.scopePath);
+    if (scope) setSelectedId(scope.id);
+  }, [revealTarget?.nonce]);
 
   // Per-file source index (line numbers + byte→UTF-16), lazily built and
   // cached for the life of this compile product — a new compile makes a
@@ -201,7 +213,17 @@ export function ProgramLinesViewInner({
             </thead>
             <tbody>
               {selected.lines.map((line) => (
-                <LineRow key={line.index} line={line} commands={commands} indexFor={indexFor} />
+                <LineRow
+                  key={line.index}
+                  line={line}
+                  commands={commands}
+                  indexFor={indexFor}
+                  marked={
+                    revealTarget !== null &&
+                    selected.name === revealTarget.scopePath &&
+                    line.index === revealTarget.lineIndex
+                  }
+                />
               ))}
             </tbody>
           </table>
@@ -225,16 +247,17 @@ function LineRow({
   line,
   commands,
   indexFor,
+  marked = false,
 }: {
   line: LinesTableLine;
   commands: { dispatch: (id: string, arg?: unknown) => void };
   indexFor: (file: string) => SourceIndex | null;
+  /** Highlighted as the target of a disasm "line ›" jump. */
+  marked?: boolean;
 }) {
   const source = line.source ?? null;
-  const index = source ? indexFor(source.file) : null;
-  const lineNo = source && index ? index.lineForByte(source.range_start) : null;
   return (
-    <tr>
+    <tr className={marked ? "pv-lines-row-target" : undefined}>
       <td className="pv-lines-idx">{line.index}</td>
       <td className="pv-lines-text">{renderContent(line)}</td>
       <td className="pv-lines-audio">
@@ -248,33 +271,13 @@ function LineRow({
       </td>
       <td className="pv-lines-source">
         {source && (
-          <button
-            type="button"
-            className="pv-lines-source-link"
-            title={`${source.file} · bytes ${source.range_start}–${source.range_end}`}
-            onClick={() =>
-              // The same road a Problems row rides (`diagnosticLocation`) —
-              // one reveal contract, not a second navigation. The table's
-              // ranges are UTF-8 bytes; the road is UTF-16 — convert, or
-              // every multibyte character above the target shifts the
-              // highlight. A file the session cannot serve (no index)
-              // still navigates, best-effort, with the raw offsets.
-              commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
-                kind: "source",
-                file: source.file,
-                span:
-                  index === null
-                    ? { start: source.range_start, end: source.range_end }
-                    : {
-                        start: index.utf16ForByte(source.range_start),
-                        end: index.utf16ForByte(source.range_end),
-                      },
-              })
-            }
-          >
-            {source.file.split("/").pop()}
-            {lineNo !== null ? `:${lineNo}` : ""}
-          </button>
+          <SourceLink
+            file={source.file}
+            startByte={source.range_start}
+            endByte={source.range_end}
+            indexFor={indexFor}
+            commands={commands}
+          />
         )}
       </td>
     </tr>
