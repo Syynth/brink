@@ -76,6 +76,7 @@ import {
   ViewRevealHandlers,
   createEditorGroupsStore,
   createShellLayoutStore,
+  ensureToolWindowOpen,
   attachEditorPersistence,
   loadEditorSnapshot,
   reconcileEditorSnapshot,
@@ -118,9 +119,10 @@ import {
   SEARCH_TOOL_WINDOW_ID,
   STORY_GRAPH_TYPE_ID,
   SearchView,
-  SessionPicker,
   SettingsDocument,
-  StateView,
+  DebuggerActions,
+  DebuggerPanel,
+  ProgramExplorerActions,
   StorySegment,
   StoreProvider,
   StructuralOpSegment,
@@ -692,7 +694,15 @@ export async function mountStudio(
   // breakpointRemove / breakpointToggle, gated by the bound provider's
   // "debug" capability. Real plumbing today, inert until a studio compile
   // can carry debug info (#3229) — see `debug-commands.ts`'s own doc.
-  registerDebugCommands(commands, store);
+  registerDebugCommands(commands, store, () => {
+    // F9's target: the focused group's active ink-file tab, if any.
+    const st = editorGroups.getState();
+    const group = st.groups.find((g) => g.id === st.focusedGroupId);
+    const active = group?.tabs.find(
+      (t) => documentKey(t.ref) === group.activeKey,
+    );
+    return active?.ref.typeId === INK_FILE_TYPE_ID ? active.ref.docId : null;
+  });
 
   // Recompile on demand (the player's "Run" button). A successful compile
   // starts the session via the compile-result handler below (the
@@ -1018,6 +1028,15 @@ export async function mountStudio(
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
     getExecutionHighlights: (path) => executionHighlightsFor(store.getState(), path),
+    // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
+    // instructions, target the explorer, and surface the tool window —
+    // only when a target was actually set (the honest-failure
+    // notifications come from the store action).
+    onRevealInstructions: (path, line) => {
+      if (store.getState().revealInstructionsAt(path, line - 1)) {
+        ensureToolWindowOpen(shellLayout, "program");
+      }
+    },
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1335,12 +1354,16 @@ export async function mountStudio(
     component: Binder,
   });
   toolWindows.register({
+    // W8/#3301: the Debugger panel REPLACES StateView (RULED redesign) in
+    // its strip slot — same id keeps the Mod-N ordering and any persisted
+    // placement stable.
     id: "state",
-    title: "State View",
+    title: "Debugger",
     icon: STATE_ICON,
     defaultPlacement: { dock: "right", section: "start" },
     defaultOpen: false,
-    component: StateView,
+    actions: DebuggerActions,
+    component: DebuggerPanel,
   });
   toolWindows.register({
     id: "program",
@@ -1348,6 +1371,9 @@ export async function mountStudio(
     icon: PROGRAM_ICON,
     defaultPlacement: { dock: "bottom", section: "start" },
     defaultOpen: false,
+    // W9/#3302: stepi controls — the instruction tier lives here, never
+    // in the Player toolbar (the ruled granularity ladder).
+    actions: ProgramExplorerActions,
     component: ProgramView,
   });
   toolWindows.register({
@@ -1444,14 +1470,8 @@ export async function mountStudio(
     priority: 9,
     component: StructuralOpSegment,
   });
-  // Multi-session picker (#182) — sits just after the story status, hidden
-  // until there's more than one session.
-  statusBarItems.register({
-    id: "status.sessions",
-    alignment: "left",
-    priority: 8,
-    component: SessionPicker,
-  });
+  // The multi-session picker RETIRED from the status bar (W8/#3301,
+  // RULED 2026-08-29): the open-flows list lives in the Debugger panel.
   statusBarItems.register({
     id: "status.cursor",
     alignment: "right",

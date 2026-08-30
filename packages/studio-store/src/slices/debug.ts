@@ -81,6 +81,36 @@ export interface DebugSlice {
   breakpointSetEnabled(key: string, enabled: boolean): void;
   /** Remove an anchor (panel ×). */
   breakpointRemove(key: string): void;
+  /** Disable every anchor without removing any (panel header action). */
+  breakpointsDisableAll(): void;
+  /** Remove every anchor (panel header action). */
+  breakpointsClearAll(): void;
+  /**
+   * The Debugger panel's selected stack frame (W8/#3301) — an index into
+   * `debugState.call_stack`, or `null` for "the top frame" (the default).
+   * Selection scopes the Variables section's locals, drives the editor's
+   * accent frame band (W6's `"frame"` highlight kind), and reveals the
+   * frame's position. Reset to `null` whenever the runtime advances — a
+   * selection belongs to the stack it was made in.
+   */
+  selectedFrameIdx: number | null;
+  /** Select a frame (Debugger panel click); `null` returns to the top. */
+  selectFrame(idx: number | null): void;
+  /**
+   * "Reveal in Program Explorer" (W9/#3302): the instruction the explorer
+   * should scroll to and flash — set by `revealInstructionsAt`, consumed
+   * reactively by `ProgramView`. `nonce` distinguishes repeat reveals of
+   * the same address.
+   */
+  programExplorerTarget: { address: ProgramAddress; nonce: number } | null;
+  /**
+   * Resolve a source line (0-based) to its instructions and target the
+   * Program Explorer at them. Needs a live debug-capable session (the
+   * source→address road is the session's resolver); without one — or on
+   * a line with no statement — raises an honest notification instead.
+   * Returns whether a target was set (the caller opens the tool window).
+   */
+  revealInstructionsAt(file: string, line: number): boolean;
   /** Apply editor change-mapping: the anchors in `file` whose lines moved
    * under an edit. `moves` pairs old→new 0-based lines; anchors whose line
    * isn't listed stay put. Two anchors mapped onto the same line collapse
@@ -275,6 +305,54 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
     set({ sourceBreakpoints: anchors.filter((a) => a.key !== key) });
     get()._syncSourceBreakpoints();
     persistBreakpoints();
+  },
+
+  breakpointsDisableAll() {
+    for (const b of get().sourceBreakpoints) {
+      if (b.enabled) get().breakpointSetEnabled(b.key, false);
+    }
+  },
+
+  breakpointsClearAll() {
+    for (const b of [...get().sourceBreakpoints]) {
+      get().breakpointRemove(b.key);
+    }
+  },
+
+  selectedFrameIdx: null,
+
+  selectFrame(idx) {
+    set({ selectedFrameIdx: idx });
+  },
+
+  programExplorerTarget: null,
+
+  revealInstructionsAt(file, line) {
+    const resolve = resolver();
+    if (resolve === null) {
+      get()._notify?.({
+        severity: "info",
+        source: "story",
+        message: "Start the story to map source lines to instructions.",
+      });
+      return false;
+    }
+    const address = resolve(file, line);
+    if (address === null) {
+      get()._notify?.({
+        severity: "info",
+        source: "story",
+        message: `No compiled instructions for ${file}:${line + 1}.`,
+      });
+      return false;
+    }
+    set((s) => ({
+      programExplorerTarget: {
+        address,
+        nonce: (s.programExplorerTarget?.nonce ?? 0) + 1,
+      },
+    }));
+    return true;
   },
 
   breakpointsMoved(file, moves) {

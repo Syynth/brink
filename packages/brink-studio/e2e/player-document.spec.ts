@@ -3,7 +3,7 @@
  *
  * Real-input flows over the player as an editor-area document: the fresh
  * load reproduces the Inky two-up (editor left, player right, editor
- * focused; the player tool window is gone and State View holds the right
+ * focused; the player tool window is gone and the Debugger panel holds the right
  * strip's start slot), the session plays inside the document (stop →
  * placeholder → Start → continue → choose), story.openPlayer focuses the
  * existing tab, group maximize via the palette hides docks/siblings and
@@ -123,7 +123,7 @@ test.describe("player document", () => {
     await expect(page.locator('.shell-strip-btn[aria-label="Player"]')).toHaveCount(0);
     await expect(
       page.locator(
-        '.shell-strip-right .shell-strip-section-start .shell-strip-btn[aria-label="State View"]',
+        '.shell-strip-right .shell-strip-section-start .shell-strip-btn[aria-label="Debugger"]',
       ),
     ).toBeVisible();
     await expect(page.locator('[data-toolwindow="state"]')).toHaveCount(0);

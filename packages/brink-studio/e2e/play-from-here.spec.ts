@@ -5,11 +5,22 @@ import { enterStructureMode } from "./binder-mode";
 /**
  * "Play from here" (#186) — start a fresh play session entered at a knot/stitch
  * from the binder context menu and the editor gutter ▶. Opening a session adds
- * an entry to the status-bar session picker labeled with the ink path.
+ * a row to the Debugger panel's Flows list labeled with the ink path
+ * (W8/#3301 — the status-bar SessionPicker retired).
  */
 
+/** Open the Debugger panel (idempotent enough for these flows: the strip
+ *  button toggles, so only click when the panel isn't already shown). */
+async function openDebuggerPanel(page: Page): Promise<void> {
+  if ((await page.locator(".debugger-panel").count()) === 0) {
+    await page.locator('.shell-strip-btn[aria-label="Debugger"]').click();
+  }
+  await expect(page.locator(".debugger-panel")).toBeVisible();
+}
+
 async function sessionOptionCount(page: Page): Promise<number> {
-  return page.locator(".brink-session-select option").count();
+  await openDebuggerPanel(page);
+  return page.locator(".dp-flow-row").count();
 }
 
 /**
@@ -57,8 +68,9 @@ test.describe("play from here (#186)", () => {
     await item.click();
 
     // A session entered at the knot is registered, labeled with its ink path.
+    await openDebuggerPanel(page);
     await expect(
-      page.locator(".brink-session-select option", { hasText: knotName }),
+      page.locator(".dp-flow-select", { hasText: knotName }),
     ).toHaveCount(1);
   });
 
@@ -100,9 +112,11 @@ test.describe("play from here (#186)", () => {
     await expect(item).toBeVisible();
     await item.click();
 
-    await expect(
-      page.locator(".brink-session-select option", { hasText: "intro" }),
-    ).toHaveCount(1);
+    // W8/#3301: the status-bar SessionPicker retired — the open-flows
+    // list lives in the Debugger panel now.
+    await page.locator('.shell-strip-btn[aria-label="Debugger"]').click();
+    await expect(page.locator(".dp-flow-row")).toHaveCount(2);
+    await expect(page.locator(".dp-flow-select", { hasText: "intro" })).toHaveCount(1);
   });
 
   test("editor right-click on a knot shows the shared refactor menu", async ({ page }) => {

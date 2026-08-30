@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { KnotNode } from "@brink/wasm-types";
 import { useShell } from "@brink/studio-shell";
 import { sessionDegraded } from "@brink/studio-store";
@@ -37,7 +37,18 @@ function ProgramViewInner() {
   const { commands } = useShell();
   const degraded = useStudioStore((s) => sessionDegraded(s.programChecksum, s.compiledChecksum));
   const debugPosition = useStudioStore((s) => s.debugState?.position);
-  const currentPosition: RuntimePosition | null = degraded ? null : (debugPosition ?? null);
+  // Frame-follow (W9/#3302): a selected non-top stack frame retargets the
+  // current-instruction highlight to ITS resume position — the explorer
+  // follows what the Debugger panel is inspecting, not just the top.
+  const framePosition = useStudioStore((s) =>
+    s.selectedFrameIdx !== null
+      ? (s.debugState?.call_stack?.[s.selectedFrameIdx]?.position ?? null)
+      : null,
+  );
+  const explorerTarget = useStudioStore((s) => s.programExplorerTarget);
+  const currentPosition: RuntimePosition | null = degraded
+    ? null
+    : (framePosition ?? debugPosition ?? null);
 
   if (!model) {
     return (
@@ -127,7 +138,13 @@ function ProgramViewInner() {
             <p className="sv-empty">none</p>
           ) : (
             model.knots.map((k) => (
-              <KnotRow key={k.path} node={k} depth={0} currentPosition={currentPosition} />
+              <KnotRow
+                key={k.path}
+                node={k}
+                depth={0}
+                currentPosition={currentPosition}
+                target={explorerTarget}
+              />
             ))
           )}
         </Section>
@@ -142,13 +159,35 @@ function KnotRow({
   node,
   depth,
   currentPosition,
+  target,
 }: {
   node: KnotNode;
   depth: number;
   currentPosition: RuntimePosition | null;
+  target: { address: RuntimePosition; nonce: number } | null;
 }) {
   const [open, setOpen] = useState(false);
   const indent = 6 + depth * 12;
+  // "Reveal in Program Explorer" (W9/#3302): a target inside this knot's
+  // container auto-opens the row and scrolls its instruction into view.
+  // A container held by a DESCENDANT also opens this row (the child can't
+  // render while its ancestors are closed) — cheap recursive check.
+  const targetsSelf =
+    target !== null &&
+    node.container_idx !== 0xffffffff &&
+    node.container_idx === target.address.container_idx;
+  const targetsSubtree = target !== null && subtreeHasContainer(node, target.address.container_idx);
+  const targetLineRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (targetsSubtree) setOpen(true);
+  }, [targetsSubtree, target?.nonce]);
+  useEffect(() => {
+    if (targetsSelf && open) {
+      // jsdom has no scrollIntoView — the auto-open + marker class are
+      // what tests pin; the scroll is a browser nicety.
+      targetLineRef.current?.scrollIntoView?.({ block: "center" });
+    }
+  }, [targetsSelf, open, target?.nonce]);
   // `currentPosition` is already `null` while degraded (the caller
   // computed that); a container_idx match alone is not enough — a knot
   // with no backing container (`u32.MAX` sentinel, program_model.rs's
@@ -191,30 +230,93 @@ function KnotRow({
           </div>
           {node.disasm.length > 0 && (
             <pre className="pv-disasm">
-              {node.disasm.map((line) => (
-                <div
-                  key={line.offset}
-                  className={
-                    "pv-disasm-line" +
-                    (isCurrentKnot && line.offset === currentPosition?.offset
-                      ? " pv-current-instruction"
-                      : "")
-                  }
-                >
-                  <span className="pv-disasm-offset">{line.offset}</span>
-                  <span className="pv-disasm-text">{line.text}</span>
-                </div>
-              ))}
+              {node.disasm.map((line) => {
+                const isTargetLine = targetsSelf && line.offset === target.address.offset;
+                return (
+                  <div
+                    key={line.offset}
+                    ref={isTargetLine ? targetLineRef : undefined}
+                    className={
+                      "pv-disasm-line" +
+                      (isCurrentKnot && line.offset === currentPosition?.offset
+                        ? " pv-current-instruction"
+                        : "") +
+                      (isTargetLine ? " pv-target-instruction" : "")
+                    }
+                  >
+                    <span className="pv-disasm-offset">{line.offset}</span>
+                    <span className="pv-disasm-text">{line.text}</span>
+                  </div>
+                );
+              })}
             </pre>
           )}
           {node.children.map((c) => (
-            <KnotRow key={c.path} node={c} depth={depth + 1} currentPosition={currentPosition} />
+            <KnotRow
+              key={c.path}
+              node={c}
+              depth={depth + 1}
+              currentPosition={currentPosition}
+              target={target}
+            />
           ))}
         </div>
       )}
     </div>
   );
 }
+
+/** Whether `node` or any descendant is backed by `containerIdx`. */
+function subtreeHasContainer(node: KnotNode, containerIdx: number): boolean {
+  if (node.container_idx !== 0xffffffff && node.container_idx === containerIdx) return true;
+  return node.children.some((c) => subtreeHasContainer(c, containerIdx));
+}
+
+/** Instruction-stepping controls (W9/#3302) for the Program Explorer's
+ * header-actions slot — the granularity ladder's programmer-assist tier
+ * (`stepi`), RULED to live here and never in the Player toolbar. Same
+ * enablement as the transport: paused only. */
+function ProgramExplorerActionsInner() {
+  const debugCapable = useStudioStore((s) => s.debugCapable);
+  const paused = useStudioStore((s) => s.sessionPaused);
+  const debugStep = useStudioStore((s) => s.debugStep);
+  if (!debugCapable) return null;
+  return (
+    <span className="dp-actions">
+      <button
+        type="button"
+        className="dp-action"
+        title="stepi — one instruction, descending into calls"
+        aria-label="Step instruction"
+        disabled={!paused}
+        onClick={() => debugStep("into")}
+      >
+        {"⇣i"}
+      </button>
+      <button
+        type="button"
+        className="dp-action"
+        title="stepi over — one instruction, calls run to completion"
+        aria-label="Step instruction over"
+        disabled={!paused}
+        onClick={() => debugStep("over")}
+      >
+        {"⇢i"}
+      </button>
+      <button
+        type="button"
+        className="dp-action"
+        title="stepi out — run until the current frame returns"
+        aria-label="Step instruction out"
+        disabled={!paused}
+        onClick={() => debugStep("out")}
+      >
+        {"⇡i"}
+      </button>
+    </span>
+  );
+}
+export const ProgramExplorerActions = memo(ProgramExplorerActionsInner);
 
 // ── Collapsible section ─────────────────────────────────────────────
 

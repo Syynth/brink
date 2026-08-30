@@ -36,6 +36,25 @@ describe("editor menu line actions", () => {
     view.destroy();
   });
 
+  it("offers Reveal in Program Explorer when the host wires it (W9/#3302)", () => {
+    const reveal = vi.fn();
+    const view = mount("Hello there\nSecond line\n");
+    const withCb = lineActionsAt(view, 14, {
+      onPlayFrom: () => {},
+      onRevealInstructions: reveal,
+    });
+    const item = withCb.find((a) => a.label === "Reveal in Program Explorer");
+    expect(item, "wired host must offer the reveal").toBeDefined();
+    item!.run();
+    // 1-based line of the clicked position (pos 14 is on line 2).
+    expect(reveal).toHaveBeenCalledWith(2);
+
+    // Unwired host (an embedder without a Program Explorer): no dead item.
+    const without = lineActionsAt(view, 14, { onPlayFrom: () => {} });
+    expect(without.map((a) => a.label)).not.toContain("Reveal in Program Explorer");
+    view.destroy();
+  });
+
   it("a foldable line offers Fold; a folded one offers Unfold", () => {
     const doc = "=== k ===\nline one\nline two\n";
     const view = mount(doc, {

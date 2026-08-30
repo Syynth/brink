@@ -131,3 +131,18 @@
   flex-shrink: 0;
   user-select: none;
 }
+
+/* "Reveal in Program Explorer" target (W9/#3302) — a brief flash so the
+   jump's landing point reads instantly, settling to a soft accent tint. */
+.brink-studio .pv-disasm-line.pv-target-instruction {
+  background: color-mix(in srgb, var(--bs-accent) 14%, transparent);
+  animation: pv-target-flash 1.2s ease-out;
+}
+@keyframes pv-target-flash {
+  0% {
+    background: color-mix(in srgb, var(--bs-accent) 40%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--bs-accent) 14%, transparent);
+  }
+}
