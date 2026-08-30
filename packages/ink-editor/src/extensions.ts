@@ -303,6 +303,10 @@ export interface BrinkStudioOptions {
   /** "Reveal in Program Explorer" (W9/#3302) — line context-menu jump
    *  from a source line to its compiled instructions; 1-based. */
   onRevealInstructions?: (line: number) => void;
+  /** Presence gate for the reveal item — see `PlayFromHereOptions`'s doc:
+   *  the resolver is the live session's, so the host omits the item when
+   *  no session can answer. Checked per menu open. */
+  canRevealInstructions?: () => boolean;
   /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
    *  When provided, the editor shows a hover ▶ run-icon on knot/stitch
    *  declarations (#186). */
@@ -578,6 +582,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         onBreakpointsMoved: options.onBreakpointsMoved,
         getExecutionHighlights: options.getExecutionHighlights,
         onRevealInstructions: options.onRevealInstructions,
+        canRevealInstructions: options.canRevealInstructions,
       }),
     );
   }

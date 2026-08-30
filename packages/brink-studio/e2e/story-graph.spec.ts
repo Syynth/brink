@@ -137,7 +137,14 @@ test.describe("story graph document", () => {
     // the runtime only tracks counts for containers whose flags request
     // them, and the demo story never reads knot counts; badge mapping is
     // unit-tested.)
-    await expect(graphNode(page, "intro")).toHaveAttribute("data-current", "true");
+    // Generous timeout (flaked 3x on CI, 2026-08-30): after the text
+    // first appears, the paced reveal pump still has several lines at its
+    // default cadence before the choice stop refreshes the debug mirror
+    // that feeds this overlay — a cold CI runner can exceed the 5s
+    // default while being nowhere near a real failure.
+    await expect(graphNode(page, "intro")).toHaveAttribute("data-current", "true", {
+      timeout: 15_000,
+    });
 
     // Stop the story: no session → plain graph, no overlay artifacts.
     await runPaletteCommand(page, "Story: Stop");
@@ -148,7 +155,14 @@ test.describe("story graph document", () => {
 
     // Start again: the overlay returns.
     await runPaletteCommand(page, "Story: Start");
-    await expect(graphNode(page, "intro")).toHaveAttribute("data-current", "true");
+    // Generous timeout (flaked 3x on CI, 2026-08-30): after the text
+    // first appears, the paced reveal pump still has several lines at its
+    // default cadence before the choice stop refreshes the debug mirror
+    // that feeds this overlay — a cold CI runner can exceed the 5s
+    // default while being nowhere near a real failure.
+    await expect(graphNode(page, "intro")).toHaveAttribute("data-current", "true", {
+      timeout: 15_000,
+    });
   });
 
   test("the graph reflects an edit once it recompiles", async ({ page }) => {

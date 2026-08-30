@@ -175,6 +175,9 @@ export interface DocumentCallbacks {
   onToggleBreakpoint?(path: string, line: number): void;
   /** "Reveal in Program Explorer" (W9/#3302) — 1-based line. */
   onRevealInstructions?(path: string, line: number): void;
+  /** Presence gate for the reveal item — `false` hides it (no live
+   *  session to resolve the line; maintainer feedback, W16 round). */
+  canRevealInstructions?(): boolean;
   /** Runtime-value hover note (W12/#3305) — see the extension option. */
   getRuntimeValueNote?(name: string): string | null;
   /** Doc edits moved `path`'s breakpoint lines (1-based old→new pairs). */
@@ -1261,6 +1264,9 @@ export class DocumentSessions {
         : undefined,
       onRevealInstructions: this.callbacks.onRevealInstructions
         ? (line) => this.callbacks.onRevealInstructions?.(slot.path, line)
+        : undefined,
+      canRevealInstructions: this.callbacks.canRevealInstructions
+        ? () => this.callbacks.canRevealInstructions?.() ?? true
         : undefined,
       getRuntimeValueNote: this.callbacks.getRuntimeValueNote
         ? (name) => this.callbacks.getRuntimeValueNote?.(name) ?? null

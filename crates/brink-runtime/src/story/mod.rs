@@ -1131,6 +1131,48 @@ impl<R: StoryRng> Story<R> {
         self.build_debug_snapshot(&self.default, &self.default_context)
     }
 
+    /// Read one temp slot in a call frame of the default flow (W16/#3309
+    /// value editing — the type-check source for an edit). `frame_idx`
+    /// addresses the SNAPSHOT's `call_stack` ordering — innermost
+    /// (current) frame first, matching [`DebugFrame`](crate::DebugFrame)
+    /// — not the raw stack order. `None` when the frame or slot doesn't
+    /// exist.
+    #[must_use]
+    pub fn debug_temp(&self, frame_idx: usize, slot: u16) -> Option<&Value> {
+        let call_stack = &self.default.flow.current_thread().call_stack;
+        let depth = call_stack.len();
+        let stack_idx = depth.checked_sub(1)?.checked_sub(frame_idx)?;
+        call_stack.get(stack_idx)?.temps.get(slot as usize)
+    }
+
+    /// Set one temp slot in a call frame of the default flow — the
+    /// set-temp-in-frame debug seam (W16/#3309, RULED: live value editing,
+    /// paused-only at the studio layer; the runtime itself only requires
+    /// the frame to exist). Same innermost-first `frame_idx` addressing as
+    /// [`Self::debug_temp`]. Returns whether the write landed. The slot
+    /// must already exist (`DeclareTemp` ran) — editing never allocates.
+    ///
+    /// Type discipline is the CALLER's job (the wasm boundary parses the
+    /// author's input against the slot's current type); this seam writes
+    /// whatever it is given, like the VM's own `SetTemp`.
+    pub fn debug_set_temp(&mut self, frame_idx: usize, slot: u16, value: Value) -> bool {
+        let call_stack = &mut self.default.flow.current_thread_mut().call_stack;
+        let depth = call_stack.len();
+        let Some(stack_idx) = depth.checked_sub(1).and_then(|d| d.checked_sub(frame_idx)) else {
+            return false;
+        };
+        match call_stack
+            .get_mut(stack_idx)
+            .and_then(|frame| frame.temps.get_mut(slot as usize))
+        {
+            Some(target) => {
+                *target = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// A debug snapshot of a named shared flow (#200), built against the shared
     /// `default_context` — so its globals / visit counts match the default
     /// flow's, while its call stack + temps are the flow's own. Falls back to a
@@ -1915,7 +1957,14 @@ impl<R: StoryRng> Story<R> {
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         let (target, env) = self.debug_parts(flow, handler)?;
-        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling, StopOnLine::Yes)
+        Self::debug_run_impl(
+            &env,
+            target,
+            breakpoints,
+            budget_ceiling,
+            StopOnLine::Yes,
+            None,
+        )
     }
 
     /// [`debug_run`](Self::debug_run) for any flow (#3223): `None`
@@ -1936,7 +1985,14 @@ impl<R: StoryRng> Story<R> {
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         let (target, env) = self.debug_parts(flow, handler)?;
-        Self::debug_run_impl(&env, target, breakpoints, budget_ceiling, StopOnLine::No)
+        Self::debug_run_impl(
+            &env,
+            target,
+            breakpoints,
+            budget_ceiling,
+            StopOnLine::No,
+            None,
+        )
     }
 
     /// What one `vm::step` outcome means for a debug loop (#3224):
@@ -1992,6 +2048,11 @@ impl<R: StoryRng> Story<R> {
         })
     }
 
+    /// The unified debug run loop. `watchpoints` (W18/#3311) threads the
+    /// [`WriteObserver`] seam through every step when present — the same
+    /// composition `debug_run_watching` always had, now shared with the
+    /// run-to-line tier so the Player's Continue honors data breakpoints
+    /// too. `None` steps unobserved (identical codegen path to before).
     #[cfg(feature = "debug-hooks")]
     fn debug_run_impl(
         env: &DebugEnv<'_>,
@@ -1999,14 +2060,35 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
         stop_on_line: StopOnLine,
+        mut watchpoints: Option<&mut crate::WatchpointObserver>,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::DebugStopReason;
+        use crate::state::ObservedContext;
 
         let DebugTarget { flow, world, local } = target;
-        let mut view = ContextView::new(world, local);
         let mut steps: u64 = 0;
         let mut past_entry = false;
         loop {
+            // Leftover-hit drain (#3226), BEFORE any stepping: a hit
+            // already queued in the observer reports HERE, at the position
+            // it was queued at, instead of being attributed to whatever
+            // instruction the next step happens to execute. (One VM step
+            // queues at most one hit today — the VM's two `set_global`
+            // sites are single-write opcodes, pinned by
+            // `one_step_never_queues_a_second_watchpoint_hit` — but the
+            // loop-top drain makes that an optimization detail, not a
+            // correctness dependency.)
+            if let Some(w) = watchpoints.as_deref_mut()
+                && let Some(hit) = w.take_hit()
+            {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Watchpoint {
+                        global_idx: hit.global_idx,
+                    },
+                    position: Self::position_of(&flow.flow),
+                    depth: Self::depth_of(&flow.flow),
+                });
+            }
             if past_entry
                 && let Some(pos) = Self::position_of(&flow.flow)
                 && let Some(bp) = breakpoints.hit(pos)
@@ -2029,15 +2111,44 @@ impl<R: StoryRng> Story<R> {
                 });
             }
 
-            let stepped = vm::step::<R>(
-                &mut flow.flow,
-                env.program,
-                env.line_tables,
-                &mut view,
-                &mut flow.stats,
-                env.resolver,
-            )?;
+            let stepped = if let Some(w) = watchpoints.as_deref_mut() {
+                let mut view = ContextView::new(&mut *world, &mut *local);
+                let mut obs_ctx = ObservedContext::new(&mut view, w);
+                vm::step::<R>(
+                    &mut flow.flow,
+                    env.program,
+                    env.line_tables,
+                    &mut obs_ctx,
+                    &mut flow.stats,
+                    env.resolver,
+                )?
+            } else {
+                let mut view = ContextView::new(&mut *world, &mut *local);
+                vm::step::<R>(
+                    &mut flow.flow,
+                    env.program,
+                    env.line_tables,
+                    &mut view,
+                    &mut flow.stats,
+                    env.resolver,
+                )?
+            };
 
+            if let Some(w) = watchpoints.as_deref_mut()
+                && let Some(hit) = w.take_hit()
+            {
+                return Ok(crate::DebugRunOutcome {
+                    reason: DebugStopReason::Watchpoint {
+                        global_idx: hit.global_idx,
+                    },
+                    position: Self::position_of(&flow.flow),
+                    depth: Self::depth_of(&flow.flow),
+                });
+            }
+
+            // A fresh (unobserved) view for the bookkeeping half —
+            // bookkeeping writes are not watchable state.
+            let mut view = ContextView::new(&mut *world, &mut *local);
             match Self::debug_handle_stepped(stepped, env, flow, &mut view)? {
                 SteppedDisposition::Continue
                 | SteppedDisposition::Resumed
@@ -2116,103 +2227,67 @@ impl<R: StoryRng> Story<R> {
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         let (target, env) = self.debug_parts(flow, handler)?;
-        Self::debug_run_watching_impl(&env, target, breakpoints, watchpoints, budget_ceiling)
+        Self::debug_run_impl(
+            &env,
+            target,
+            breakpoints,
+            budget_ceiling,
+            StopOnLine::No,
+            Some(watchpoints),
+        )
     }
 
+    /// [`debug_run_to_line`](Self::debug_run_to_line) with writes routed
+    /// through `watchpoints` (W18/#3311) — the Player's Continue tier
+    /// honoring data breakpoints: stops on a watched write, an armed
+    /// breakpoint, OR the next committed content line, whichever first.
+    /// Same drain contract as [`debug_run_watching`](Self::debug_run_watching).
+    ///
+    /// # Errors
+    /// Same as [`debug_run`](Self::debug_run).
     #[cfg(feature = "debug-hooks")]
-    fn debug_run_watching_impl(
-        env: &DebugEnv<'_>,
-        target: DebugTarget<'_>,
+    pub fn debug_run_to_line_watching(
+        &mut self,
         breakpoints: &crate::debug_control::BreakpointSet,
         watchpoints: &mut crate::WatchpointObserver,
         budget_ceiling: u64,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
-        use crate::debug_control::DebugStopReason;
-        use crate::state::ObservedContext;
+        self.debug_run_to_line_watching_flow(
+            None,
+            &FallbackHandler,
+            breakpoints,
+            watchpoints,
+            budget_ceiling,
+        )
+    }
 
-        let DebugTarget { flow, world, local } = target;
-        let mut steps: u64 = 0;
-        // Same resume fix as `debug_run` — see its doc: skip the
-        // breakpoint check on this call's first iteration so a resumed
-        // call doesn't immediately re-report the breakpoint it's already
-        // stopped at.
-        let mut past_entry = false;
-        loop {
-            // Leftover-hit drain (#3226), BEFORE any stepping: a hit
-            // already queued in the observer — a second write from one
-            // step if an opcode ever gains one (today none does: the VM's
-            // two `set_global` sites are single-write opcodes, pinned by
-            // `one_step_never_queues_a_second_watchpoint_hit`), or a
-            // stale hit from the observer's non-pausing logging mode —
-            // reports HERE, at the position it was queued at, instead of
-            // being attributed to whatever instruction the next step
-            // happens to execute. This is what makes the post-step drain
-            // below safe by construction rather than by that invariant.
-            if let Some(hit) = watchpoints.take_hit() {
-                return Ok(crate::DebugRunOutcome {
-                    reason: DebugStopReason::Watchpoint {
-                        global_idx: hit.global_idx,
-                    },
-                    position: Self::position_of(&flow.flow),
-                    depth: Self::depth_of(&flow.flow),
-                });
-            }
-            if past_entry
-                && let Some(pos) = Self::position_of(&flow.flow)
-                && let Some(bp) = breakpoints.hit(pos)
-            {
-                return Ok(crate::DebugRunOutcome {
-                    reason: DebugStopReason::Breakpoint {
-                        id: bp.id,
-                        name: bp.name.clone(),
-                    },
-                    position: Some(pos),
-                    depth: Self::depth_of(&flow.flow),
-                });
-            }
-            past_entry = true;
-            steps += 1;
-            if steps > budget_ceiling {
-                return Err(RuntimeError::DebugBudgetExceeded {
-                    breakpoint: "run".to_owned(),
-                    ceiling: budget_ceiling,
-                });
-            }
-
-            let stepped = {
-                let mut view = ContextView::new(&mut *world, &mut *local);
-                let mut obs_ctx = ObservedContext::new(&mut view, watchpoints);
-                vm::step::<R>(
-                    &mut flow.flow,
-                    env.program,
-                    env.line_tables,
-                    &mut obs_ctx,
-                    &mut flow.stats,
-                    env.resolver,
-                )?
-            };
-
-            if let Some(hit) = watchpoints.take_hit() {
-                return Ok(crate::DebugRunOutcome {
-                    reason: DebugStopReason::Watchpoint {
-                        global_idx: hit.global_idx,
-                    },
-                    position: Self::position_of(&flow.flow),
-                    depth: Self::depth_of(&flow.flow),
-                });
-            }
-
-            // A fresh (unobserved) view for the bookkeeping half — the
-            // observed one was consumed by the step above, and bookkeeping
-            // writes are not watchable state.
-            let mut view = ContextView::new(&mut *world, &mut *local);
-            match Self::debug_handle_stepped(stepped, env, flow, &mut view)? {
-                SteppedDisposition::Continue
-                | SteppedDisposition::Resumed
-                | SteppedDisposition::CrossedExternal => {}
-                SteppedDisposition::Stop(outcome) => return Ok(outcome),
-            }
-        }
+    /// [`debug_run_to_line_watching`](Self::debug_run_to_line_watching)
+    /// for any flow — flow selection as in
+    /// [`debug_run_flow`](Self::debug_run_flow); the watch surface is the
+    /// context the flow routes through, as in
+    /// [`debug_run_watching_flow`](Self::debug_run_watching_flow).
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownFlow`] if `flow` names no live flow; then
+    /// everything [`debug_run`](Self::debug_run) can raise.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_run_to_line_watching_flow(
+        &mut self,
+        flow: Option<&str>,
+        handler: &dyn ExternalFnHandler,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        watchpoints: &mut crate::WatchpointObserver,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let (target, env) = self.debug_parts(flow, handler)?;
+        Self::debug_run_impl(
+            &env,
+            target,
+            breakpoints,
+            budget_ceiling,
+            StopOnLine::Yes,
+            Some(watchpoints),
+        )
     }
 
     /// Step the default flow by one [`StepMode`](crate::StepMode) unit,

@@ -160,6 +160,48 @@ describe("paced auto-reveal (W7/#3300 F13)", () => {
     expect(provider.pacedRunning()).toBe(true);
   });
 
+  // ── Fast-forward = one-shot ContinueMaximally (RULED 2026-08-30) ────
+  it("continueMaximally runs the batch road once, with no sticky auto", () => {
+    const { store, provider } = bind([
+      line("one"),
+      line("two"),
+      { type: "end", text: "", tags: [] },
+    ]);
+    store.getState().setSessionPaced(0); // all-at-once App setting
+    store.getState().revealMaximally();
+
+    const session = (provider as unknown as { session: ReturnType<typeof scriptedSession> })
+      .session;
+    expect(session.continueToPause).toHaveBeenCalledTimes(1);
+    expect(store.getState().sessionText.join(" ")).toContain("one");
+    expect(store.getState().sessionText.join(" ")).toContain("two");
+    // One shot — the mode toggle it replaced must NOT flip.
+    expect(store.getState().sessionAuto).toBe(false);
+    // …and the next ordinary reveal is single-line again.
+    store.getState().revealNext();
+    expect(session.continueToPause).toHaveBeenCalledTimes(1);
+  });
+
+  it("continueMaximally honors the paced setting — pump to the stop, auto untouched", () => {
+    const { store, provider } = bind([
+      line("one"),
+      line("two"),
+      { type: "end", text: "", tags: [] },
+    ]);
+    store.getState().setSessionPaced(150);
+    store.getState().revealMaximally();
+
+    // First line lands now; the pump carries the rest on the cadence.
+    expect(store.getState().sessionText.join(" ")).toContain("one");
+    expect(provider.pacedRunning()).toBe(true);
+    vi.advanceTimersByTime(150);
+    expect(store.getState().sessionText.join(" ")).toContain("two");
+    vi.advanceTimersByTime(600);
+    expect(store.getState().sessionStatus).toBe("ended");
+    expect(provider.pacedRunning()).toBe(false);
+    expect(store.getState().sessionAuto).toBe(false);
+  });
+
   it("a breakpoint hit mid-run pauses and stops the pump", () => {
     const { store, provider } = bind([line("one"), line("two")]);
     provider.setAuto(true);

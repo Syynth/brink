@@ -213,6 +213,253 @@ describe("Debugger panel (W8/#3301)", () => {
     expect(remove).toHaveBeenCalledWith("bp1");
   });
 
+  // ── W16/#3309: live value editing ──────────────────────────────────
+  function editableStore(overrides: Record<string, unknown> = {}) {
+    const store = createStudioStore();
+    const editGlobal = vi.fn(() => true);
+    const editTemp = vi.fn(() => true);
+    const provider = {
+      kind: "local",
+      capabilities: new Set(["debug"]),
+      getSnapshot: () => ({
+        status: "running",
+        transcript: [],
+        choices: [],
+        debugState: null,
+        paused: true,
+        reloadedAt: null,
+        debugOutcome: null,
+        auto: false,
+        programChecksum: null,
+        programModel: null,
+        programInkt: null,
+      }),
+      subscribe: () => () => {},
+      dispose: () => {},
+      editGlobal,
+      editTemp,
+    };
+    store.getState()._bindProvider(provider as never);
+    store.setState({
+      sessionStatus: "running",
+      sessionPaused: true,
+      debugState: debugState(),
+      ...overrides,
+    });
+    return { store, editGlobal, editTemp };
+  }
+
+  it("a paused global edits inline: Enter commits through debugEditGlobal", () => {
+    const { store, editGlobal } = editableStore();
+    mount(store);
+
+    const goldValue = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12",
+    ) as HTMLElement;
+    expect(goldValue, "gold's value is click-to-edit while paused").toBeTruthy();
+    act(() => goldValue.click());
+
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    expect(input).not.toBeNull();
+    input!.value = "40";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(editGlobal).toHaveBeenCalledWith("gold", "40");
+    // Committed: the input closes.
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+  });
+
+  it("a refused edit red-shakes and keeps the input; Esc cancels", () => {
+    const { store, editGlobal } = editableStore();
+    editGlobal.mockReturnValue(false);
+    mount(store);
+
+    const goldValue = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12",
+    ) as HTMLElement;
+    act(() => goldValue.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    input!.value = "abc";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    // Refused: shake class on, input stays.
+    expect(host?.querySelector(".dp-value-input")?.className).toContain("dp-shake");
+    act(() => {
+      host
+        ?.querySelector(".dp-value-input")
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+  });
+
+  it("a local edits through debugEditTemp with the frame index + slot", () => {
+    const { store, editTemp } = editableStore();
+    mount(store);
+
+    // Top frame's local `price` (slot 0) renders as an editable scalar.
+    const price = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "6",
+    ) as HTMLElement;
+    expect(price, "price is click-to-edit").toBeTruthy();
+    act(() => price.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-value-input");
+    input!.value = "9";
+    act(() => {
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(editTemp).toHaveBeenCalledWith(0, 0, "9");
+  });
+
+  it("editing is paused-only, and locals lock at a choice stop", () => {
+    // Not paused: nothing is editable.
+    const running = editableStore({ sessionPaused: false });
+    mount(running.store);
+    const off = host?.querySelectorAll(".dp-editable-off") ?? [];
+    expect(off.length).toBeGreaterThan(0);
+    act(() => (off[0] as HTMLElement).click());
+    expect(host?.querySelector(".dp-value-input")).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Paused at a choice stop: globals edit, locals lock (choosing
+    // restores the choice's captured thread — the edit would be lost).
+    const atChoices = editableStore({
+      debugState: debugState({ status: "waiting_for_choice" }),
+    });
+    mount(atChoices.store);
+    const price = Array.from(host?.querySelectorAll(".dp-editable-off") ?? []).find(
+      (el) => el.textContent === "6",
+    );
+    expect(price, "the local is locked at a choice stop").toBeTruthy();
+    const gold = Array.from(host?.querySelectorAll(".dp-editable") ?? []).find(
+      (el) => el.textContent === "12" && !el.className.includes("dp-editable-off"),
+    );
+    expect(gold, "globals stay editable at a choice stop").toBeTruthy();
+  });
+
+  it("Watch section: + adds an entry, rows render results, previews expand, × removes (W17)", () => {
+    const { store } = editableStore();
+    store.setState({
+      watchEntries: [
+        { id: "w1", source: "gold >= 2" },
+        { id: "w2", source: "-> barter" },
+      ],
+      watchResults: {
+        w1: { kind: "value", display: "true" },
+        w2: {
+          kind: "transcript",
+          lines: ["Griswold spreads a stained cloth."],
+          reachedChoices: ["Browse his wares"],
+          truncated: false,
+        },
+      },
+    });
+    mount(store);
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("Watch (2)");
+    expect(text).toContain("gold >= 2");
+    expect(text).toContain("true");
+    // The fragment row summarizes; the preview is collapsed.
+    expect(text).not.toContain("Browse his wares");
+    const disclose = host?.querySelector<HTMLButtonElement>("button.dp-watch-disclose");
+    act(() => disclose?.click());
+    expect(host?.textContent).toContain("Browse his wares");
+
+    // × removes the entry through the slice.
+    const x = host?.querySelector<HTMLButtonElement>(".dp-watch-x");
+    act(() => x?.click());
+    expect(store.getState().watchEntries.map((e) => e.id)).toEqual(["w2"]);
+
+    // + opens the add input; Enter lands a new entry.
+    const plus = Array.from(host?.querySelectorAll<HTMLButtonElement>(".dp-mini") ?? []).find(
+      (b) => b.textContent === "+",
+    );
+    act(() => plus?.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-watch-input");
+    expect(input).not.toBeNull();
+    input!.value = "torch";
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(store.getState().watchEntries.map((e) => e.source)).toContain("torch");
+  });
+
+  it("break on write: the variable-row menu arms; rows list, disable, remove (W18)", () => {
+    const { store } = editableStore();
+    const provider = store.getState()._provider as unknown as {
+      debugWatchpointAdd: ReturnType<typeof vi.fn>;
+      debugWatchpointRemove: ReturnType<typeof vi.fn>;
+      debugWatchpoints: () => string[];
+    };
+    let armed: string[] = [];
+    provider.debugWatchpointAdd = vi.fn((name: string) => {
+      if (armed.includes(name)) return false;
+      armed.push(name);
+      return true;
+    });
+    provider.debugWatchpointRemove = vi.fn((name: string) => {
+      const before = armed.length;
+      armed = armed.filter((n) => n !== name);
+      return armed.length !== before;
+    });
+    provider.debugWatchpoints = () => armed;
+    mount(store);
+
+    // Right-click the gold row → the one-verb menu → arm.
+    const goldRow = Array.from(host?.querySelectorAll(".sv-table tr") ?? []).find((r) =>
+      r.textContent?.includes("gold"),
+    ) as HTMLElement;
+    act(() => {
+      goldRow.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    const item = host?.querySelector<HTMLButtonElement>(".dp-global-menu-item");
+    expect(item?.textContent).toContain("Break on write — gold");
+    act(() => item?.click());
+
+    expect(store.getState().dataBreakpoints).toEqual([{ name: "gold", enabled: true }]);
+    expect(armed).toEqual(["gold"]);
+    // Listed in the Breakpoints section with the diamond + verb.
+    expect(host?.textContent).toContain("gold — on write");
+    expect(host?.textContent).toContain("Breakpoints (1)");
+
+    // Disable keeps the row, disarms the session.
+    const checkbox = host?.querySelector<HTMLInputElement>(".dp-bp-row input");
+    act(() => checkbox?.click());
+    expect(store.getState().dataBreakpoints).toEqual([{ name: "gold", enabled: false }]);
+    expect(armed).toEqual([]);
+
+    // Remove drops the row.
+    const x = host?.querySelector<HTMLButtonElement>(".dp-bp-row .dp-x");
+    act(() => x?.click());
+    expect(store.getState().dataBreakpoints).toEqual([]);
+
+    // The menu offers Remove when already watched.
+    store.getState().dataBreakpointToggle("torch");
+    act(() => {
+      goldRow.parentElement
+        ?.querySelectorAll("tr")
+        .forEach(() => {});
+    });
+    const torchRow = Array.from(host?.querySelectorAll(".sv-table tr") ?? []).find((r) =>
+      r.textContent?.includes("torch"),
+    ) as HTMLElement;
+    act(() => {
+      torchRow.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    expect(host?.querySelector(".dp-global-menu-item")?.textContent).toContain(
+      "Remove break on write — torch",
+    );
+  });
+
   it("disable-all / clear-all header actions drive every anchor", () => {
     const store = createStudioStore();
     store.setState({

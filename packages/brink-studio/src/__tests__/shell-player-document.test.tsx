@@ -297,7 +297,7 @@ function playerView(groupId: string) {
 }
 
 describe("PlayerPane as a document view", () => {
-  it("renders the session placeholder and Start dispatches story.start", () => {
+  it("idle renders the launcher; Run from the start dispatches story.start (W14)", () => {
     const commands = new CommandRegistry();
     const dispatched: string[] = [];
     commands.register({
@@ -309,7 +309,10 @@ describe("PlayerPane as a document view", () => {
 
     const el = mount(commands, store, playerView("group-1"));
 
-    expect(el.textContent).toContain("No story session");
+    // W14/#3307: the idle body is the LAUNCHER (typeahead + the two
+    // save sections), not the old placeholder.
+    expect(el.textContent).toContain("Run from the start");
+    expect(el.textContent).toContain("This computer");
     const start = el.querySelector<HTMLButtonElement>(".session-placeholder-start");
     expect(start).not.toBeNull();
     act(() => start!.click());

@@ -4424,6 +4424,71 @@
   idle launcher (and W14's saves screen) — without it the only exits
   from a session were Restart or the palette.
 
+## Saves carry the transcript; loads and reloads stop dropping it
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / Player saves
+- **SCOPE:** moderate
+- **WHAT:** The checkpoint payload includes the TRANSCRIPT (the studio's
+  `TranscriptLine[]`, stored beside the runtime `SaveState` — the
+  runtime boundary is unchanged), and Load/Fork restore it. The
+  hot-reload migration likewise carries the live transcript through
+  instead of clearing it.
+- **WHY:** Too many operations currently drop the transcript (loads,
+  reloads, restores) — the author loses the story-so-far exactly when
+  they're trying to keep testing from a point.
+
+## Player toolbar sections collapse to menus one at a time under pressure
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / Player toolbar
+- **SCOPE:** moderate
+- **WHAT:** When the Player is too narrow for the full toolbar, its
+  sub-sections collapse INTO overflow menus one group at a time (rather
+  than wrapping, truncating, or shrinking) — transport cluster first,
+  then the secondary controls — until the toolbar fits.
+- **WHY:** The Player is often a narrow split; the earlier width
+  complaint showed the toolbar crowding out the chip. Collapsing whole
+  groups keeps every verb reachable at any width.
+
+## Fast-forward is a one-shot continue-maximally, not a mode toggle
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** debugger-ui / Player transport
+- **SCOPE:** moderate
+- **WHAT:** The FF button no longer toggles a persistent auto mode: one
+  click runs the story to the next stop (choices/breakpoint/terminal) —
+  ink's `ContinueMaximally` shape — honoring the paced/all-at-once App
+  setting for delivery, then reverts to single-line reveals. Equivalent
+  to enable-auto → continue → re-disable-auto, as one gesture.
+- **WHY:** A sticky auto mode changes what every later click means; a
+  one-shot verb is predictable and matches the C# API authors know.
+
+## Studio saves carry the structural transcript and re-render it
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / runtime seam
+- **SCOPE:** moderate
+- **WHAT:** The transcript a save carries (and the one a hot reload preserves) is the *structural* transcript — the runtime's `OutputPart` stream (`LineRef`s + slots, the `.brkt` content model) — not resolved text. Loads, forks, and hot reloads re-render it against the CURRENT program's line tables, so editing the script and reloading re-renders the story-so-far with the updated text.
+- **WHY:** The runtime was built for exactly this ("defer resolution to the latest useful point"; `.brkt` + `.inkb` re-renders without re-executing). Storing resolved text freezes the prose at save time and goes stale the moment the author edits a line.
+
+## Studio-side saves and transcripts serialize as JSON, not binary
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** Everything the studio persists for the author (save slots, their transcripts) serializes as human-readable JSON. The binary `.brkt`/`.inkb` codecs remain the shipping-game formats; the wasm boundary exposes the structural transcript as JSON for the studio.
+- **WHY:** Maintainer: "binary formats are for shipping games" — authoring-side artifacts should be as human-readable (inspectable, diffable, hand-fixable) as possible.
+
+## Dead-end menu items gate on capability, not notify-on-click
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** "Reveal in Program Explorer" (and by extension any context-menu item whose action can only work under a live session) is *omitted* from the menu when no session can answer, rather than shown and failing with a notification on click. Implemented as a per-open presence predicate (`canRevealInstructions`) the host wires to session state.
+- **WHY:** The source→address resolver runs through the live session's program; with no session the item is a guaranteed dead end. An item that can never work is worse than no item.
+||||||| 226dcb2ef
+
 ## A rebound key displaces the old owner, and says so
 - **WHEN:** 2026-08-30
 - **PROJECT:** brink

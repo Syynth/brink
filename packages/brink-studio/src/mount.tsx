@@ -164,6 +164,7 @@ import { executionHighlightsFor } from "./execution-highlights.js";
 import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
 import { runtimeValueNote } from "./runtime-hover.js";
+import { localStorageSaveStore, type SaveStore } from "@brink/studio-store";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -242,6 +243,13 @@ export interface MountStudioOptions {
    * tabs over another's.
    */
   sessionScope?: string;
+  /**
+   * Checkpoint stores (W14/#3307): a desktop/embedder host supplies
+   * file-backed stores here (Tauri callbacks — `project` in the tree,
+   * e.g. `.brink/saves/`; `local` in per-project app data). Omitted
+   * stores fall back to localStorage, scoped like the editor state.
+   */
+  saveStores?: { project?: SaveStore; local?: SaveStore };
   hostManifest?: HostManifest;
   /**
    * The dialogue dialect (#368, docs/dialect-spec.md): the project's
@@ -1049,6 +1057,10 @@ export async function mountStudio(
         ensureToolWindowOpen(shellLayout, "program");
       }
     },
+    // Presence gate (maintainer feedback, W16 round): the source→address
+    // road is the LIVE session's resolver, so with no session the item
+    // would be a dead end — omit it rather than notify-on-click.
+    canRevealInstructions: () => store.getState().sessionStatus !== "none",
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
@@ -1568,12 +1580,29 @@ export async function mountStudio(
     loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
-  // Player settings (Settings → Player): paced cadence (W7/#3300 F13)
-  // and the prose-size knob (W13/#3306).
+  // Player settings (Settings → Player): paced cadence (W7/#3300 F13),
+  // the prose-size knob (W13/#3306), and the default save target
+  // (W14/#3307).
   {
     const player = loadPlayerSettings(window.localStorage);
     store.getState().setSessionPaced(player.pacedRevealMs);
     store.getState().setPlayerFontSize(player.fontSize);
+    store.getState().setSaveLocationDefault(player.saveLocation);
+  }
+
+  // Checkpoint stores (W14/#3307): the embedder/desktop host may supply
+  // real file-backed stores; the web default backs both with
+  // localStorage, per-project via the same scope the editors use.
+  {
+    const scope = editorScope ?? "unscoped";
+    store.getState().setSaveStores({
+      project:
+        options?.saveStores?.project ??
+        localStorageSaveStore(window.localStorage, `brink-studio.saves.project.${scope}.v1`),
+      local:
+        options?.saveStores?.local ??
+        localStorageSaveStore(window.localStorage, `brink-studio.saves.local.${scope}.v1`),
+    });
   }
 
   // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the
@@ -1600,6 +1629,28 @@ export async function mountStudio(
     }
     if (text === null) return null;
     return provenanceFromBytes(text, byteStart, byteEnd);
+  });
+
+  // Watch (W17/#3310): Tier-1 fragment entries recompile against the
+  // project's CURRENT sources — only the app boundary holds them (same
+  // reasoning as the byte resolver above).
+  store.getState().setWatchProjectSource(() => {
+    try {
+      const session = project.getSession();
+      const files: Record<string, string> = {};
+      // Real project files only — the mounted std/ arrives via the
+      // fragment compile's own Project::load, not as literal sources.
+      for (const f of session.listFiles()) {
+        if (f.mounted) continue;
+        const source = session.getFileSource(f.path);
+        if (source !== null) files[f.path] = source;
+      }
+      const entry = store.getState().entryFile;
+      if (entry === null) return null;
+      return { entry, files };
+    } catch {
+      return null;
+    }
   });
 
   // Bind handles, kick the initial compile, and open the entry file (the

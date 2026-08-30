@@ -164,6 +164,56 @@
   opacity: 0.35;
   cursor: default;
 }
+/* Toolbar collapse (RULED 2026-08-30): sub-sections fold one at a time
+   into the ⋯ overflow menu when the pane is too narrow. Overflow stays
+   visible — the menu must escape the toolbar box; a too-wide frame
+   lasts only until the ResizeObserver's collapse step lands. */
+.brink-studio .player-pane .header .toolbar .player-overflow {
+  position: relative;
+  display: inline-flex;
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+  white-space: nowrap;
+}
+/* The rows keep their buttons' glyphs (maintainer feedback) — same
+   accent tint the inline toolbar gives them. */
+.brink-studio .player-pane .header .toolbar .player-overflow-item svg {
+  flex-shrink: 0;
+  color: var(--bs-accent);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:disabled svg {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:hover:not(:disabled) {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Continue"],
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Pause"] {
   color: var(--bs-warning);
@@ -279,4 +329,177 @@
   border-radius: 50%;
   background: var(--bs-warning);
   flex-shrink: 0;
+}
+
+/* ── The idle launcher (W14/#3307) — landing Recent-list vocabulary,
+   theme-tokenized. ── */
+.brink-studio .pl-launcher {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  /* The launcher is UI chrome, not prose — it must not inherit the
+     Player's serif reading face (maintainer feedback, W14). Matches the
+     studio root's stack (no token exists for it today). */
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-body);
+  line-height: 1.4;
+}
+/* Run-from-the-start matches the typeahead's metrics exactly — same
+   height, padding, radius, and font (maintainer feedback, W14). */
+.brink-studio .pl-start-row .pl-run-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: var(--bs-font-body);
+  line-height: 1.4;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.brink-studio .pl-start-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  /* The dropdown anchors to the ROW, not the input — long knot names
+     grow it leftward up to the full launcher width (maintainer
+     feedback, W14). */
+  position: relative;
+}
+.brink-studio .pl-typeahead {
+  flex: 1;
+}
+.brink-studio .pl-typeahead-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: var(--bs-font-body);
+  font-family: inherit;
+  line-height: 1.4;
+}
+.brink-studio .pl-typeahead-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: max-content;
+  min-width: min(100%, 280px);
+  max-width: 100%;
+  z-index: 30;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bs-panel-bg);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+.brink-studio .pl-typeahead-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--bs-fg);
+  cursor: pointer;
+  font-size: var(--bs-font-body);
+  text-align: left;
+}
+.brink-studio .pl-typeahead-row:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .pl-typeahead-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.brink-studio .pl-typeahead-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+.brink-studio .pl-typeahead-text .pl-save-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .pl-typeahead-file {
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .pl-cap {
+  font-size: var(--bs-font-small);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-fg-muted);
+  margin-bottom: 6px;
+}
+.brink-studio .pl-save-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bs-border);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--bs-panel-bg);
+}
+.brink-studio .pl-save-list li + li {
+  border-top: 1px solid var(--bs-border);
+}
+.brink-studio .pl-save-empty {
+  padding: 13px 12px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .pl-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: var(--bs-font-body);
+}
+.brink-studio .pl-chip {
+  font-family: var(--bs-font-mono, ui-monospace, monospace);
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
+.brink-studio .pl-chip-old {
+  color: var(--bs-warning);
+  border-color: var(--bs-warning);
+}
+.brink-studio .pl-save-name {
+  color: var(--bs-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .pl-save-context {
+  margin-left: auto;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  white-space: nowrap;
+}
+.brink-studio .pl-save-actions {
+  /* Space is RESERVED (visibility, not display) so hover never reflows
+     the row — swapping context/actions made the whole row jump
+     (maintainer feedback, W14). Context stays visible alongside. */
+  display: inline-flex;
+  visibility: hidden;
+  gap: 4px;
+  align-items: center;
+}
+.brink-studio .pl-save-row:hover .pl-save-actions {
+  visibility: visible;
 }

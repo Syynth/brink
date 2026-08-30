@@ -55,6 +55,27 @@ describe("editor menu line actions", () => {
     view.destroy();
   });
 
+  it("the reveal item gates on canRevealInstructions (no session → omitted)", () => {
+    // Maintainer feedback (W16 round): the source→address road is the
+    // LIVE session's resolver — with no session the item is a dead end,
+    // so the host's presence gate omits it instead of notify-on-click.
+    const view = mount("Hello there\nSecond line\n");
+    const gatedOff = lineActionsAt(view, 14, {
+      onPlayFrom: () => {},
+      onRevealInstructions: vi.fn(),
+      canRevealInstructions: () => false,
+    });
+    expect(gatedOff.map((a) => a.label)).not.toContain("Reveal in Program Explorer");
+
+    const gatedOn = lineActionsAt(view, 14, {
+      onPlayFrom: () => {},
+      onRevealInstructions: vi.fn(),
+      canRevealInstructions: () => true,
+    });
+    expect(gatedOn.map((a) => a.label)).toContain("Reveal in Program Explorer");
+    view.destroy();
+  });
+
   it("a foldable line offers Fold; a folded one offers Unfold", () => {
     const doc = "=== k ===\nline one\nline two\n";
     const view = mount(doc, {

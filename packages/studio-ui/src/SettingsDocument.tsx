@@ -239,9 +239,16 @@ export interface PlayerSettings {
   pacedRevealMs: number;
   /** Player prose size in px (W13/#3306); 0 = follow the app scale. */
   fontSize: number;
+  /** Default target for NEW saves (W14/#3307); both stores stay
+   * visible regardless. */
+  saveLocation: "local" | "project";
 }
 
-const DEFAULT_PLAYER: PlayerSettings = { pacedRevealMs: 150, fontSize: 0 };
+const DEFAULT_PLAYER: PlayerSettings = {
+  pacedRevealMs: 150,
+  fontSize: 0,
+  saveLocation: "local",
+};
 
 /** Load persisted player settings. Never throws; defaults on garbage. */
 export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSettings {
@@ -258,7 +265,11 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
   } catch {
     return DEFAULT_PLAYER;
   }
-  const obj = parsed as { pacedRevealMs?: unknown; fontSize?: unknown } | null;
+  const obj = parsed as {
+    pacedRevealMs?: unknown;
+    fontSize?: unknown;
+    saveLocation?: unknown;
+  } | null;
   const ms = obj?.pacedRevealMs;
   const px = obj?.fontSize;
   return {
@@ -270,6 +281,7 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
       typeof px === "number" && Number.isFinite(px) && px >= 0
         ? Math.round(px)
         : DEFAULT_PLAYER.fontSize,
+    saveLocation: obj?.saveLocation === "project" ? "project" : "local",
   };
 }
 
@@ -546,22 +558,31 @@ export function PlayerSection() {
   const setSessionPaced = useStudioStore((s) => s.setSessionPaced);
   const playerFontSize = useStudioStore((s) => s.playerFontSize);
   const setPlayerFontSize = useStudioStore((s) => s.setPlayerFontSize);
+  const saveLocation = useStudioStore((s) => s.saveLocationDefault);
+  const setSaveLocationDefault = useStudioStore((s) => s.setSaveLocationDefault);
   const pacedId = useId();
+  const saveLocId = useId();
 
+  const persist = (over: Partial<PlayerSettings>): void => {
+    savePlayerSettings(window.localStorage, {
+      pacedRevealMs: pacedMs,
+      fontSize: playerFontSize,
+      saveLocation,
+      ...over,
+    });
+  };
   const onModeChange = (paced: boolean): void => {
     const ms = paced ? 150 : 0;
     setSessionPaced(ms);
-    savePlayerSettings(window.localStorage, {
-      pacedRevealMs: ms,
-      fontSize: playerFontSize,
-    });
+    persist({ pacedRevealMs: ms });
   };
   const onFontChange = (px: number): void => {
     setPlayerFontSize(px);
-    savePlayerSettings(window.localStorage, {
-      pacedRevealMs: pacedMs,
-      fontSize: px,
-    });
+    persist({ fontSize: px });
+  };
+  const onSaveLocChange = (loc: "local" | "project"): void => {
+    setSaveLocationDefault(loc);
+    persist({ saveLocation: loc });
   };
 
   return (
@@ -585,6 +606,20 @@ export function PlayerSection() {
           suffix="px"
           onChange={onFontChange}
         />
+      </SettingsRow>
+      <SettingsRow
+        htmlFor={saveLocId}
+        title="Default save location"
+        description="Where NEW saves land (W14) — both stores always show in the launcher. 'Project' saves are shareable with the project; 'This computer' stays local."
+      >
+        <select
+          id={saveLocId}
+          value={saveLocation}
+          onChange={(e) => onSaveLocChange(e.target.value as "local" | "project")}
+        >
+          <option value="local">This computer</option>
+          <option value="project">Project</option>
+        </select>
       </SettingsRow>
     </div>
   );

@@ -21,8 +21,13 @@ import type {
   DebugLine,
   DebugSourceLocation,
   DebugState,
+  LoadReport,
   ProgramAddress,
   ProgramModel,
+  ProjectSource,
+  SaveState,
+  SpeculationResult,
+  StructuralTranscript,
   SourceLocation,
   StepMode,
 } from "@brink/wasm-types";
@@ -182,6 +187,9 @@ export interface SessionSnapshot {
    * `setAuto`.
    */
   auto: boolean;
+  /** Unix ms of the last successful hot-reload (W15/#3308) — the chip's
+   * brief "reloaded" affirmation; `null` before any reload. */
+  reloadedAt: number | null;
 }
 
 /** The "no session" snapshot — the store's initial mirror and post-dispose state. */
@@ -196,6 +204,7 @@ export const EMPTY_SNAPSHOT: SessionSnapshot = {
   paused: false,
   debugOutcome: null,
   auto: false,
+  reloadedAt: null,
 };
 
 // ── Capabilities ────────────────────────────────────────────────────
@@ -264,6 +273,28 @@ export interface SessionProvider {
    * line at a time in rapid succession; 0 = one batch. Optional — a
    * provider without a paced pump ignores the setting. */
   setPacedReveal?(delayMs: number): void;
+  /** One-shot fast-forward (RULED 2026-08-30): run to the next stop,
+   * honoring the paced setting; nothing sticky. Optional. */
+  continueMaximally?(): void;
+  /** Capture the durable game state (W14/#3307); `null` without a live
+   * session. Optional — observe-only providers skip checkpoints. */
+  saveState?(): SaveState | null;
+  /** Export the STRUCTURAL transcript (RULED 2026-08-30): the runtime's
+   * part stream as human-readable JSON, re-renderable against any later
+   * compile. `null` without a live session. Optional. */
+  exportTranscript?(): StructuralTranscript | null;
+  /** Load a checkpoint and divert to its recorded knot (W14/#3307) —
+   * see the local provider's doc; returns the `LoadReport` (surfaced,
+   * never silent) or `null` without a live session. `transcript` is the
+   * story-so-far in STRUCTURAL form (RULED 2026-08-30): re-rendered
+   * against the session's CURRENT program on restore, so an edited
+   * line's restored row shows the edited text. */
+  loadCheckpoint?(
+    state: SaveState,
+    knotPath: string | null,
+    verb?: "Loaded" | "Reloaded",
+    transcript?: StructuralTranscript | null,
+  ): LoadReport | null;
 
   dispose(): void;
 }
@@ -325,6 +356,31 @@ export interface DebugSessionProvider extends SessionProvider {
    * terminal stop comes first. The crossed line is IN the outcome's
    * `lines` (no one-advance lag, #3321). Needs no debug line info. */
   debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
+  /** Break-on-write data breakpoints (W18/#3311, RULED): arm a watched
+   * global by author name — a write stops the run/Continue tiers with
+   * the watchpoint named in the stop reason. `false` = unknown global or
+   * already armed. */
+  debugWatchpointAdd(name: string): boolean;
+  /** Disarm; `false` = wasn't armed. */
+  debugWatchpointRemove(name: string): boolean;
+  /** Armed data breakpoints, in arm order. */
+  debugWatchpoints(): string[];
+  /** Watch evaluation (W17/#3310, spec §F18): evaluate an expression or
+   * divert/content fragment against the session's CURRENT durable state,
+   * side-effect-proof (a discard-on-drop speculation over a scratch
+   * runner — nothing it does touches the session). `null` = no live
+   * session to evaluate against. Optional — only the local provider
+   * implements it. */
+  evaluateWatch?(
+    source: string,
+    opts?: { projectSource?: ProjectSource; budget?: { steps?: number; lines?: number } },
+  ): Promise<SpeculationResult> | null;
+  /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —
+   * a global. `false` = refused with nothing written. */
+  editGlobal(name: string, input: string): boolean;
+  /** Live value editing — a frame local (snapshot's innermost-first
+   * frame index + slot). Same refusal contract. */
+  editTemp(frameIdx: number, slot: number, input: string): boolean;
   /** The pause verb (W5/#3298, ruled: pause/resume is first-class): the
    * session enters the paused state at its current boundary — Continue
    * (`debugRunToLine`) delivers the next content line and resumes play;

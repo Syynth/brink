@@ -75,6 +75,12 @@ export interface PlayFromHereOptions {
    *  line. Offered in the line context menu when present; the host owns
    *  the source→address resolution (and its honest failure states). */
   onRevealInstructions?: (line: number) => void;
+  /** Presence gate for the reveal item (maintainer feedback, W16 round):
+   *  the source→address road runs through the LIVE session's resolver, so
+   *  with no session the item is a dead end — the host answers "can this
+   *  work right now?" and the menu omits the item when it can't. Absent =
+   *  always offered (back-compat). Checked per menu open. */
+  canRevealInstructions?: () => boolean;
   /** A doc edit moved breakpoint lines: old→new 1-based pairs, mapped
    *  through the change set. The host owns the anchors — it applies the
    *  moves and re-renders via {@link refreshBreakpoints}. Delivered in a
@@ -440,7 +446,7 @@ export function lineActionsAt(
     }
   }
 
-  if (options.onRevealInstructions) {
+  if (options.onRevealInstructions && (options.canRevealInstructions?.() ?? true)) {
     const { onRevealInstructions } = options;
     actions.push({
       label: "Reveal in Program Explorer",

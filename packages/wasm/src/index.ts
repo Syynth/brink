@@ -91,6 +91,8 @@ import type {
   SpeculationResult,
   TypedValue,
   ProjectSource,
+  StructuralTranscript,
+  RenderedTranscriptLine,
 } from "@brink/wasm-types";
 
 import {
@@ -2843,10 +2845,32 @@ export class StorySessionHandle {
     return JSON.parse(this.session.save_state()) as SaveState;
   }
 
-  /** Load durable game state (turn-boundary only, journaled). */
-  loadState(state: SaveState): void {
-    this.session.load_state(JSON.stringify(state));
+  /** Load durable game state (turn-boundary only, journaled). Returns
+   * the {@link LoadReport} — a stale load's drops surface to the caller
+   * (W14/#3307 compat honesty), never silently. */
+  loadState(state: SaveState): LoadReport {
+    const report = JSON.parse(this.session.load_state(JSON.stringify(state))) as LoadReport;
     this.noteJournalActivity();
+    return report;
+  }
+
+  /** Export the structural transcript (RULED 2026-08-30): `OutputPart`s
+   * — line refs + slots, never resolved text — as human-readable JSON.
+   * Pair with {@link renderTranscript} to re-render the story-so-far
+   * against whatever compile is current at read time. */
+  exportTranscript(): StructuralTranscript {
+    return JSON.parse(this.session.export_transcript()) as StructuralTranscript;
+  }
+
+  /** Render a structural transcript (possibly exported against an OLDER
+   * compile) against THIS session's current program and line tables.
+   * Cross-compile re-render is the point — an edited line's restored row
+   * shows the edited text; a container the current program no longer has
+   * is dropped, never an error. */
+  renderTranscript(transcript: StructuralTranscript): RenderedTranscriptLine[] {
+    return JSON.parse(
+      this.session.render_transcript(JSON.stringify(transcript)),
+    ) as RenderedTranscriptLine[];
   }
 
   /** Evaluate an ink function from the host, journaling a `call` event. The
@@ -3030,6 +3054,46 @@ export class StorySessionHandle {
    */
   debugRunToLine(budgetCeiling?: number): DebugRunOutcome {
     return JSON.parse(this.session.debugRunToLine(budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /** Arm a break-on-write data breakpoint on a global (W18/#3311,
+   * RULED). Stored by AUTHOR NAME — re-resolved against the current
+   * program per advance, so the arm survives hot reloads. `false` = no
+   * such global, or already armed. A watched write stops the run and
+   * Continue tiers with reason `{ type: "watchpoint", name }`. */
+  debugWatchpointAdd(name: string): boolean {
+    return this.session.debugWatchpointAdd(name);
+  }
+
+  /** Disarm a data breakpoint. `false` = wasn't armed. */
+  debugWatchpointRemove(name: string): boolean {
+    return this.session.debugWatchpointRemove(name);
+  }
+
+  /** The armed data breakpoints' names, in arm order. */
+  debugWatchpoints(): string[] {
+    return JSON.parse(this.session.debugWatchpoints()) as string[];
+  }
+
+  /** Live value editing (W16/#3309, RULED — scalars, paused-only at the
+   * panel): parse `input` against the GLOBAL's current type and commit
+   * via the observed write path. `false` = refused (unknown global,
+   * non-scalar, or the input doesn't parse as its type) with NO write —
+   * the panel's red-shake signal. An edit can never change a value's
+   * type. */
+  debugEditGlobal(name: string, input: string): boolean {
+    return this.session.debug_edit_global(name, input);
+  }
+
+  /** Live value editing for a frame LOCAL (W16/#3309): same contract as
+   * {@link debugEditGlobal}, addressed by the debug snapshot's
+   * innermost-first frame index plus the local's `slot`. Note: at a
+   * choice stop the pending choices carry captured thread snapshots, and
+   * choosing restores that capture — a local edited there is overwritten;
+   * the panel disables local editing at `waiting_for_choice` for exactly
+   * this reason. */
+  debugEditTemp(frameIdx: number, slot: number, input: string): boolean {
+    return this.session.debug_edit_temp(frameIdx, slot, input);
   }
 
   /** Step to the next **source line** (#3264, W5/#3298) — the author-tier

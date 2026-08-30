@@ -77,6 +77,11 @@ pub struct WebSession {
     /// breakpoint's position meaningless, same caveat
     /// `resolve_debug_position`'s doc already carries for program identity.
     breakpoints: RefCell<brink_runtime::BreakpointSet>,
+    /// Break-on-write data breakpoints (W18/#3311): the watched globals'
+    /// AUTHOR NAMES. Indices are re-resolved against the CURRENT program
+    /// on every watching advance — names survive a hot reload where a
+    /// stored slot index would silently watch the wrong global.
+    watched_globals: RefCell<Vec<String>>,
 }
 
 #[wasm_bindgen]
@@ -116,6 +121,7 @@ impl WebSession {
             last_replay_outcome: RefCell::new(None),
             dev_visibility_override: Cell::new(false),
             breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
+            watched_globals: RefCell::new(Vec::new()),
         })
     }
 
@@ -355,6 +361,83 @@ impl WebSession {
         serde_json::to_string(&list).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Arm a break-on-write data breakpoint on a global (W18/#3311,
+    /// RULED). Stored by AUTHOR NAME — the slot index is re-resolved
+    /// against the current program on every watching advance, so the arm
+    /// survives hot reloads. `false` = no such global in the current
+    /// program (nothing armed), or already watched.
+    #[wasm_bindgen(js_name = debugWatchpointAdd)]
+    pub fn debug_watchpoint_add(&self, name: &str) -> Result<bool, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        if session.story().program().global_index(name).is_none() {
+            return Ok(false);
+        }
+        let mut watched = self.watched_globals.borrow_mut();
+        if watched.iter().any(|w| w == name) {
+            return Ok(false);
+        }
+        watched.push(name.to_owned());
+        Ok(true)
+    }
+
+    /// Disarm a data breakpoint by name. `false` = wasn't armed.
+    #[wasm_bindgen(js_name = debugWatchpointRemove)]
+    pub fn debug_watchpoint_remove(&self, name: &str) -> bool {
+        let mut watched = self.watched_globals.borrow_mut();
+        let before = watched.len();
+        watched.retain(|w| w != name);
+        watched.len() != before
+    }
+
+    /// The armed data breakpoints' names, in arm order (JSON `string[]`).
+    #[wasm_bindgen(js_name = debugWatchpoints)]
+    pub fn debug_watchpoints(&self) -> Result<String, JsError> {
+        serde_json::to_string(&*self.watched_globals.borrow())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Build the per-advance observer from the armed names, resolved
+    /// against the CURRENT program (see `watched_globals`' doc). `None`
+    /// when nothing is armed — the advance runs unobserved, as before.
+    fn watch_observer(
+        session: &brink_runtime::StorySession<brink_runtime::FastRng>,
+        watched: &[String],
+    ) -> Option<brink_runtime::WatchpointObserver> {
+        if watched.is_empty() {
+            return None;
+        }
+        let program = session.story().program();
+        let indices: Vec<u32> = watched
+            .iter()
+            .filter_map(|name| program.global_index(name))
+            .collect();
+        if indices.is_empty() {
+            return None;
+        }
+        Some(brink_runtime::WatchpointObserver::new(indices))
+    }
+
+    /// Resolve a watchpoint stop's slot index back to its author name in
+    /// the marshaled outcome (the wire carries both, W18).
+    fn name_watchpoint_stop(
+        js: &mut crate::value_marshal::DebugRunOutcomeJs,
+        watched: &[String],
+        session: &brink_runtime::StorySession<brink_runtime::FastRng>,
+    ) {
+        if let crate::value_marshal::DebugStopReasonJs::Watchpoint { global_idx, name } =
+            &mut js.reason
+        {
+            let program = session.story().program();
+            *name = watched
+                .iter()
+                .find(|w| program.global_index(w) == Some(*global_idx))
+                .cloned();
+        }
+    }
+
     /// Run the default flow forward until an armed breakpoint, a choice
     /// point, or a terminal outcome (`Story::debug_run`'s own doc has the
     /// full stop-condition/resume contract). `budget_ceiling` defaults to
@@ -370,20 +453,25 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        let watched = self.watched_globals.borrow().clone();
         // Drain the shared delivery cursor around the advance (W5/#3298):
         // lines the production lookahead already completed surface here
         // exactly once, and lines this advance completes follow them.
         let mut drained = session.story_mut().debug_drain_buffered_lines();
-        let outcome = session
-            .story_mut()
-            .debug_run(&breakpoints, ceiling)
-            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        // W18: armed data breakpoints route the run through the watching
+        // variant — a watched write stops it with the writer's position.
+        let outcome = match Self::watch_observer(session, &watched) {
+            Some(mut w) => session
+                .story_mut()
+                .debug_run_watching(&breakpoints, &mut w, ceiling),
+            None => session.story_mut().debug_run(&breakpoints, ceiling),
+        }
+        .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
         drained.extend(session.story_mut().debug_drain_buffered_lines());
         let lines = crate::value_marshal::drained_lines_to_js(drained);
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
-            outcome, lines,
-        ))
-        .map_err(|e| JsError::new(&format!("json error: {e}")))
+        let mut js = crate::value_marshal::debug_run_outcome_to_js(outcome, lines);
+        Self::name_watchpoint_stop(&mut js, &watched, session);
+        serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Run the default flow forward until the next **content line** is
@@ -405,22 +493,30 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        let watched = self.watched_globals.borrow().clone();
         // Drain the shared delivery cursor around the advance (W5/#3298):
         // a line the production lookahead already completed satisfies the
         // "one content line delivered" contract by itself — the runtime
         // verb only runs when the cursor starts empty.
         let mut drained = session.story_mut().debug_drain_buffered_lines();
         if drained.is_empty() {
-            let outcome = session
-                .story_mut()
-                .debug_run_to_line(&breakpoints, ceiling)
-                .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+            // W18: the Continue tier honors data breakpoints — a watched
+            // write stops before the next content line commits.
+            let outcome = match Self::watch_observer(session, &watched) {
+                Some(mut w) => {
+                    session
+                        .story_mut()
+                        .debug_run_to_line_watching(&breakpoints, &mut w, ceiling)
+                }
+                None => session.story_mut().debug_run_to_line(&breakpoints, ceiling),
+            }
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
             drained.extend(session.story_mut().debug_drain_buffered_lines());
             let lines = crate::value_marshal::drained_lines_to_js(drained);
-            return serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
-                outcome, lines,
-            ))
-            .map_err(|e| JsError::new(&format!("json error: {e}")));
+            let mut js = crate::value_marshal::debug_run_outcome_to_js(outcome, lines);
+            Self::name_watchpoint_stop(&mut js, &watched, session);
+            return serde_json::to_string(&js)
+                .map_err(|e| JsError::new(&format!("json error: {e}")));
         }
         let position = session.story_mut().debug_position();
         let depth = session.story_mut().debug_call_stack_depth();
@@ -835,17 +931,122 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("save error: {e}")))
     }
 
-    /// Load a `SaveState` JSON (turn-boundary only, journaled).
-    pub fn load_state(&self, json: &str) -> Result<(), JsError> {
+    /// Load a `SaveState` JSON (turn-boundary only, journaled). Returns
+    /// the `LoadReport` JSON (W14/#3307 compat honesty, RULED): a stale
+    /// load's drops surface to the caller, never silently.
+    pub fn load_state(&self, json: &str) -> Result<String, JsError> {
         let state: brink_runtime::SaveState =
             serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;
         let mut borrow = self.session.borrow_mut();
         let session = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
-        session
+        let report = session
             .load_state(&state)
-            .map_err(|e| JsError::new(&format!("load_state error: {e}")))
+            .map_err(|e| JsError::new(&format!("load_state error: {e}")))?;
+        serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Live value editing (W16/#3309, RULED — paused-only at the panel,
+    /// scalars only in v1): parse the author's input against a GLOBAL's
+    /// current type and commit via `Story::set_variable` — the observed
+    /// write path, so wake checks (and W18's watchpoints, when they land)
+    /// see the edit. Returns `false` — no write — when the global doesn't
+    /// exist, its current value isn't a scalar, or the input doesn't
+    /// parse as its type (the panel's red-shake signal).
+    pub fn debug_edit_global(&self, name: &str, input: &str) -> Result<bool, JsError> {
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let Some(parsed) = session
+            .story()
+            .variable(name)
+            .and_then(|current| parse_scalar_edit(current, input))
+        else {
+            return Ok(false);
+        };
+        Ok(session.story_mut().set_variable(name, parsed))
+    }
+
+    /// Live value editing for a frame LOCAL (W16/#3309): parse the input
+    /// against the temp slot's current type and commit through the
+    /// `debug_set_temp` seam. `frame_idx` uses the debug snapshot's
+    /// innermost-first `call_stack` ordering (the panel's own indices).
+    /// Same `false`-means-refused contract as [`Self::debug_edit_global`].
+    pub fn debug_edit_temp(&self, frame_idx: u32, slot: u16, input: &str) -> Result<bool, JsError> {
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let Some(parsed) = session
+            .story()
+            .debug_temp(frame_idx as usize, slot)
+            .and_then(|current| parse_scalar_edit(current, input))
+        else {
+            return Ok(false);
+        };
+        Ok(session
+            .story_mut()
+            .debug_set_temp(frame_idx as usize, slot, parsed))
+    }
+
+    /// Export the session's structural transcript as JSON (RULED
+    /// 2026-08-30, "Studio saves carry the structural transcript"):
+    /// `OutputPart`s — `LineRef`s + slots, never resolved text — plus the
+    /// fragment store and the program checksum, in the human-readable
+    /// mirror of the `.brkt` content model (`transcript_json`). Pair with
+    /// [`Self::render_transcript`] to re-render against whatever program
+    /// is current at read time.
+    pub fn export_transcript(&self) -> Result<String, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let story = session.story();
+        let json = crate::transcript_json::export_transcript_json(
+            story.transcript(),
+            story.fragments(),
+            story.program().source_checksum(),
+        );
+        serde_json::to_string(&json).map_err(|e| JsError::new(&format!("export error: {e}")))
+    }
+
+    /// Render a structural-transcript JSON (from [`Self::export_transcript`],
+    /// possibly saved against an OLDER compile) against the CURRENT
+    /// program and line tables. Returns a JSON array of
+    /// `{ text, tags, source? }` lines — provenance included, so restored
+    /// transcript rows keep their chips. Cross-compile re-render is the
+    /// point (edit → reload re-renders the story-so-far); a `LineRef`
+    /// whose container no longer exists is dropped rather than erroring.
+    pub fn render_transcript(&self, json: &str) -> Result<String, JsError> {
+        let t: crate::transcript_json::TranscriptJson =
+            serde_json::from_str(json).map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let story = session.story();
+        let (parts, fragments) =
+            crate::transcript_json::decode_transcript_json(t, story.program().container_count());
+        let lines: Vec<crate::value_marshal::DebugOutputLineJs> =
+            brink_runtime::transcript::render_transcript_with_source(
+                &parts,
+                story.program(),
+                story.line_tables(),
+                None,
+                &fragments,
+            )
+            .into_iter()
+            .map(
+                |(text, tags, source)| crate::value_marshal::DebugOutputLineJs {
+                    text,
+                    tags,
+                    source: source.map(crate::value_marshal::source_location_to_js),
+                },
+            )
+            .collect();
+        serde_json::to_string(&lines).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Evaluate an ink function from the host, journaling a `Call` event. The
@@ -1067,6 +1268,7 @@ impl WebSession {
                 last_replay_outcome: RefCell::new(None),
                 dev_visibility_override: Cell::new(false),
                 breakpoints: RefCell::new(brink_runtime::BreakpointSet::new()),
+                watched_globals: RefCell::new(Vec::new()),
             },
             outcome,
         ))
@@ -1076,6 +1278,39 @@ impl WebSession {
 /// Widen a host-set `i32` RNG seed to the journal's advisory `Option<u64>`
 /// metadata field, preserving the bit pattern (not the numeric sign) so a
 /// negative seed round-trips exactly rather than lossily reinterpreting sign.
+/// Parse an author-typed edit against a value's CURRENT type (W16/#3309
+/// value editing — scalars only in v1, RULED). `None` = refused: the
+/// current value isn't a scalar, or the input doesn't parse as its type.
+/// The edit can never change a value's type — an int slot only accepts an
+/// int, a float slot a float (integral input included: `3` → `3.0`) — so
+/// typed-mode invariants hold across an edit. String input strips one
+/// layer of matching double quotes (the panel displays strings quoted, and
+/// the seeded input carries them back).
+fn parse_scalar_edit(current: &Value, input: &str) -> Option<Value> {
+    let trimmed = input.trim();
+    match current {
+        Value::Int(_) => trimmed.parse::<i32>().ok().map(Value::Int),
+        Value::Float(_) => trimmed
+            .parse::<f32>()
+            .ok()
+            .filter(|f| f.is_finite())
+            .map(Value::Float),
+        Value::Bool(_) => match trimmed {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        Value::String(_) => {
+            let unquoted = trimmed
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(input);
+            Some(Value::String(Arc::from(unquoted)))
+        }
+        _ => None,
+    }
+}
+
 fn seed_to_journal_u64(seed: i32) -> u64 {
     u64::from(seed.cast_unsigned())
 }
@@ -1671,6 +1906,378 @@ mod debug_control_tests {
             src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
                 .contains("Second line."),
             "debug-road provenance must cover the line's source too"
+        );
+    }
+
+    // ── W16/#3309: live value editing ───────────────────────────────────
+    //
+    // The issue's proof items: an edit is visible when the story
+    // continues; a type mismatch is refused with NO write; a frame
+    // local's edit shows in the snapshot and in later output. Parsing is
+    // typed against the CURRENT value — an edit can never change a
+    // value's type.
+    #[test]
+    fn value_edit_global_reflects_in_the_continued_story() {
+        // The interpolating line sits BEHIND a choice: at a line stop the
+        // VM has usually already buffered the next line (slots captured at
+        // push time — the #3321 commit-lag reality), so a choice point is
+        // the honest stop where an edit provably reaches the next read.
+        let src = "VAR gold = 2\n-> top\n=== top ===\nFirst.\n* [Pay] -> pay\n=== pay ===\nYou have {gold} coin.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("choices"),
+            "stopped at the choice point: {stop}"
+        );
+
+        // Refusals first — none of these may write.
+        assert!(!session.debug_edit_global("gold", "abc").expect("call ok"));
+        assert!(!session.debug_edit_global("gold", "3.5").expect("call ok"));
+        assert!(!session.debug_edit_global("missing", "1").expect("call ok"));
+
+        // The real edit commits…
+        assert!(session.debug_edit_global("gold", "12").expect("call ok"));
+        let snap = json(&session.debug_snapshot().expect("snapshot"));
+        let gold = snap["globals"]
+            .as_array()
+            .expect("globals")
+            .iter()
+            .find(|g| g["name"] == serde_json::json!("gold"))
+            .expect("gold present");
+        assert_eq!(gold["value"], serde_json::json!("12"), "{snap}");
+
+        // …and the story past the choice reads it.
+        session.choose(0).expect("choose");
+        let out = json(&session.debug_run(None).expect("continue"));
+        assert!(
+            out["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("You have 12 coin.")),
+            "the edit must reach the story's own read: {out}"
+        );
+    }
+
+    #[test]
+    fn value_edit_temp_lands_in_the_frame_and_the_story() {
+        // A temp edit needs a STATEMENT stop (`debug_step`), not a choice
+        // stop: pending choices carry captured thread snapshots, and
+        // choosing restores that thread — call stack, temps and all — so
+        // an edit made at the choice point is overwritten by the capture
+        // (measured here first). Statement stepping continues the SAME
+        // thread, and the next line's push hasn't executed yet.
+        let src = "-> top\n=== top ===\n~ temp bonus = 3\nFiller one.\nYou gain {bonus} points.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Step statements until `bonus` is live in the innermost frame.
+        let mut slot: Option<u16> = None;
+        for _ in 0..12 {
+            session.debug_step("over", None).expect("step");
+            let snap = json(&session.debug_snapshot().expect("snapshot"));
+            let found = snap["call_stack"][0]["locals"].as_array().and_then(|ls| {
+                ls.iter()
+                    .find(|l| l["name"] == serde_json::json!("bonus"))
+                    .cloned()
+            });
+            if let Some(local) = found {
+                assert_eq!(local["value"]["value"], serde_json::json!(3), "{snap}");
+                slot =
+                    Some(u16::try_from(local["slot"].as_u64().expect("slot")).expect("fits u16"));
+                break;
+            }
+        }
+        let slot = slot.expect("bonus became live within the step budget");
+
+        // Type mismatch refused; the honest edit lands; a frame that
+        // doesn't exist refuses rather than writing anywhere.
+        assert!(!session.debug_edit_temp(0, slot, "true").expect("call ok"));
+        assert!(session.debug_edit_temp(0, slot, "12").expect("call ok"));
+        assert!(!session.debug_edit_temp(9, slot, "12").expect("call ok"));
+
+        let snap2 = json(&session.debug_snapshot().expect("snapshot"));
+        let edited = snap2["call_stack"][0]["locals"]
+            .as_array()
+            .expect("locals")
+            .iter()
+            .find(|l| l["name"] == serde_json::json!("bonus"))
+            .expect("bonus still live")["value"]["value"]
+            .clone();
+        assert_eq!(edited, serde_json::json!(12), "{snap2}");
+
+        let out = json(&session.debug_run(None).expect("continue"));
+        assert!(
+            out["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("You gain 12 points.")),
+            "the temp edit must reach the story's own read: {out}"
+        );
+    }
+
+    // ── W18/#3311: break-on-write data breakpoints ──────────────────────
+    //
+    // The issue's proof item: a write to a watched global pauses at the
+    // writing line with the watchpoint NAMED in the stop reason — on the
+    // Continue tier (`debug_run_to_line`), the road ordinary Player
+    // advances take, not just the raw run verb.
+    #[test]
+    fn watched_write_stops_the_continue_tier_with_the_name() {
+        let src = "VAR gold = 2\n-> top\n=== top ===\nFirst.\n~ gold = 9\nSecond.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("gold").expect("arm"));
+        // Unknown global refuses; duplicate refuses.
+        assert!(!session.debug_watchpoint_add("nope").expect("call ok"));
+        assert!(!session.debug_watchpoint_add("gold").expect("call ok"));
+        assert_eq!(
+            session.debug_watchpoints().expect("list"),
+            r#"["gold"]"#,
+            "arm order, by name"
+        );
+
+        // The FIRST Continue already stops at the watchpoint: the VM runs
+        // ahead of delivery (the #3321 commit boundary), so `~ gold = 9`
+        // executes while "First." is still buffered — the stop lands at
+        // the writing instruction, named, before ANY later content.
+        let stop = json(&session.debug_run_to_line(None).expect("continue"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "{stop}"
+        );
+        assert_eq!(stop["reason"]["name"], serde_json::json!("gold"), "{stop}");
+        assert!(
+            !stop["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .any(|l| l["text"].as_str().unwrap_or("").contains("Second.")),
+            "the stop lands BEFORE later content commits: {stop}"
+        );
+
+        // Disarm → the same road runs through freely; every line arrives
+        // exactly once (the buffered "First." was not eaten by the stop).
+        assert!(session.debug_watchpoint_remove("gold"));
+        let mut texts: Vec<String> = Vec::new();
+        for _ in 0..6 {
+            let out = json(&session.debug_run_to_line(None).expect("continue"));
+            for l in out["lines"].as_array().expect("lines") {
+                if let Some(t) = l["text"].as_str() {
+                    texts.push(t.to_owned());
+                }
+            }
+            if out["reason"]["type"] == serde_json::json!("terminal") {
+                break;
+            }
+        }
+        let firsts = texts.iter().filter(|t| t.contains("First.")).count();
+        let seconds = texts.iter().filter(|t| t.contains("Second.")).count();
+        assert_eq!(
+            (firsts, seconds),
+            (1, 1),
+            "each line exactly once: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn watched_write_stops_the_run_road_too() {
+        let src = "VAR hp = 3\n-> top\n=== top ===\nA line.\n~ hp = 1\nMore.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("hp").expect("arm"));
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "{stop}"
+        );
+        assert_eq!(stop["reason"]["name"], serde_json::json!("hp"), "{stop}");
+    }
+
+    #[test]
+    fn watched_write_in_a_choice_body_stops_the_post_choose_continue() {
+        let src = "VAR torch = 6\n-> top\n=== top ===\nPick.\n* [Room]\n  ~ torch = torch - 1\n  Dark room.\n- -> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert!(session.debug_watchpoint_add("torch").expect("arm"));
+        // Run to the choice point on the watched road.
+        let stop = json(&session.debug_run(None).expect("run"));
+        assert_eq!(
+            stop["reason"]["type"],
+            serde_json::json!("choices"),
+            "{stop}"
+        );
+        // Choose (the production road — selection only, no VM steps), then
+        // Continue: the body's write must stop the watched advance.
+        session.choose(0).expect("choose");
+        let out = json(&session.debug_run_to_line(None).expect("continue"));
+        assert_eq!(
+            out["reason"]["type"],
+            serde_json::json!("watchpoint"),
+            "the choice body's write must stop the post-choose continue: {out}"
+        );
+        assert_eq!(out["reason"]["name"], serde_json::json!("torch"), "{out}");
+    }
+
+    // ── Structural transcript (RULED 2026-08-30) ────────────────────────
+    //
+    // A save's transcript is `OutputPart`s, not resolved text: exported as
+    // JSON from one session and re-rendered on ANOTHER session whose
+    // program was compiled from EDITED source, the restored lines must
+    // carry the NEW text — the whole point of the format. Provenance
+    // survives the round trip; a container index the edited program no
+    // longer has is dropped, never a panic.
+    #[test]
+    fn structural_transcript_rerenders_against_an_edited_program() {
+        let src_a = "-> top\n=== top ===\nThe lantern flickers.\nA door creaks.\n-> END\n";
+        // Same structure, edited prose — indices line up, text differs.
+        let src_b = "-> top\n=== top ===\nThe lantern GUTTERS OUT.\nA door creaks.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_a), None, None).expect("session constructs");
+        loop {
+            let line = json(&session_a.continue_single().expect("continue"));
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        let exported = session_a.export_transcript().expect("export");
+        let envelope = json(&exported);
+        assert_eq!(envelope["version"], serde_json::json!(1));
+        assert!(
+            envelope["parts"]
+                .as_array()
+                .expect("parts array")
+                .iter()
+                .any(|p| p["part"] == serde_json::json!("line")),
+            "the export must be structural (LineRefs), not resolved text: {envelope}"
+        );
+
+        // Fresh session on the EDITED compile; render the old transcript.
+        let session_b =
+            WebSession::new(&debug_bytes(src_b), None, None).expect("session constructs");
+        let rendered = json(&session_b.render_transcript(&exported).expect("render"));
+        let lines = rendered.as_array().expect("array of lines");
+        let texts: Vec<&str> = lines.iter().filter_map(|l| l["text"].as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("GUTTERS OUT")),
+            "re-render must show the EDITED text, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("flickers")),
+            "the save-time prose must NOT survive a re-render, got {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("A door creaks.")),
+            "untouched lines re-render unchanged, got {texts:?}"
+        );
+        // Provenance survives — and points into the CURRENT source.
+        let first = lines
+            .iter()
+            .find(|l| l["text"].as_str().unwrap_or("").contains("GUTTERS"))
+            .expect("edited line present");
+        let s = first["source"]["range_start"].as_u64().expect("start");
+        let e = first["source"]["range_end"].as_u64().expect("end");
+        assert!(
+            src_b[usize::try_from(s).expect("usize")..usize::try_from(e).expect("usize")]
+                .contains("GUTTERS OUT"),
+            "provenance must cover the edited line in the NEW source"
+        );
+    }
+
+    #[test]
+    fn structural_transcript_render_drops_out_of_range_containers() {
+        let src_big = "-> a\n=== a ===\nAlpha.\n-> b\n=== b ===\nBeta.\n-> END\n";
+        let src_small = "-> a\n=== a ===\nAlpha.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_big), None, None).expect("session constructs");
+        loop {
+            let line = json(&session_a.continue_single().expect("continue"));
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        let exported = session_a.export_transcript().expect("export");
+
+        let session_b =
+            WebSession::new(&debug_bytes(src_small), None, None).expect("session constructs");
+        // Must not panic; whatever containers still exist render.
+        let rendered = json(
+            &session_b
+                .render_transcript(&exported)
+                .expect("render survives"),
+        );
+        assert!(rendered.is_array(), "renders to a line array: {rendered}");
+    }
+
+    // ── W14/#3307: the LoadReport reaches the session road ──────────────
+    //
+    // A clean load reports all-zeros; loading a save whose anonymous
+    // choice-body id no longer exists in the (edited) program reports the
+    // drop — surfaced, never silent (the ruled compat honesty). The
+    // session layer used to DISCARD the runtime's report entirely.
+    #[test]
+    fn load_state_reports_clean_and_stale_loads_through_the_session() {
+        let src_a = "VAR gold = 2\n-> shop\n=== shop ===\nWelcome.\n* [Cheap thing] -> shop\n+ [Browse] -> shop\n";
+        // Every choice is gone → the anonymous body id has nowhere to land
+        // (a same-position survivor could otherwise inherit the id — the
+        // positional half of the identity cluster).
+        let src_b = "VAR gold = 2\n-> shop\n=== shop ===\nWelcome.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_a), None, None).expect("session constructs");
+        for _ in 0..3 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session_a.continue_single().expect("continue"))
+                    .expect("JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        session_a.choose(0).expect("choose the once-only");
+        for _ in 0..3 {
+            let line: serde_json::Value =
+                serde_json::from_str(&session_a.continue_single().expect("continue"))
+                    .expect("JSON");
+            if line["type"] == serde_json::json!("choices") {
+                break;
+            }
+        }
+        let save = session_a.save_state().expect("save_state");
+
+        // Clean: load back into a fresh session on the SAME program.
+        let fresh = WebSession::new(&debug_bytes(src_a), None, None).expect("constructs");
+        let clean: serde_json::Value =
+            serde_json::from_str(&fresh.load_state(&save).expect("load")).expect("JSON");
+        assert_eq!(
+            clean["anonymous_states_dropped"],
+            serde_json::json!(0),
+            "{clean}"
+        );
+        assert_eq!(clean["unknown_globals"], serde_json::json!([]));
+        // The durable state round-trips: the loaded session's snapshot
+        // carries the saved turn index.
+        let snap_saved: serde_json::Value =
+            serde_json::from_str(&session_a.debug_snapshot().expect("snap")).expect("JSON");
+        let snap_loaded: serde_json::Value =
+            serde_json::from_str(&fresh.debug_snapshot().expect("snap")).expect("JSON");
+        assert_eq!(snap_loaded["turn_index"], snap_saved["turn_index"]);
+        assert_eq!(snap_loaded["globals"], snap_saved["globals"]);
+
+        // Stale: the edited program can't place the anonymous visit.
+        let edited = WebSession::new(&debug_bytes(src_b), None, None).expect("constructs");
+        let stale: serde_json::Value =
+            serde_json::from_str(&edited.load_state(&save).expect("load")).expect("JSON");
+        assert!(
+            stale["anonymous_states_dropped"].as_u64().unwrap_or(0) >= 1,
+            "the dropped anonymous visit must be REPORTED: {stale}"
         );
     }
 

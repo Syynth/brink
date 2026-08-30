@@ -149,6 +149,7 @@ export {
   registerOpenPlayerCommand,
 } from "./PlayerPane.js";
 export { DebuggerPanel, DebuggerActions } from "./DebuggerPanel.js";
+export { PlayerLauncher } from "./PlayerLauncher.js";
 export { StateView } from "./StateView.js";
 export { ProgramExplorerActions, ProgramView } from "./ProgramView.js";
 export {

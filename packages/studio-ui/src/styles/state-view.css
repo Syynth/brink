@@ -373,3 +373,189 @@
 .brink-studio .dp-x:hover {
   color: var(--bs-error);
 }
+
+/* ── Live value editing (W16/#3309, RULED: paused-only, scalars only) ── */
+.brink-studio .dp-editable {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  border-radius: 2px;
+}
+.brink-studio .dp-editable:hover {
+  border-bottom-color: var(--bs-accent);
+  background: rgb(var(--bs-accent-rgb) / 10%);
+}
+.brink-studio .dp-editable-off {
+  cursor: default;
+}
+.brink-studio .dp-editable-off:hover {
+  border-bottom-color: transparent;
+  background: transparent;
+}
+/* The display span keeps occupying its box while the input is open, so
+   the table's auto-layout is IDENTICAL editing or not — an in-flow input
+   widened the value column and shifted every row (maintainer feedback:
+   "literally everything moves"). */
+.brink-studio .sv-table td.sv-val,
+.brink-studio .sv-locals td.sv-val {
+  position: relative;
+}
+.brink-studio .dp-editing {
+  visibility: hidden;
+}
+.brink-studio .dp-value-input {
+  /* Overlaid on the cell — absolute, so it contributes NOTHING to
+     layout. Glyph anchor: the globals cell pads 10px left; left offset
+     (7) + border (1) + padding (2) lands the first glyph exactly where
+     the span's was. Extends to the cell's right edge for typing room. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  right: 0;
+  box-sizing: border-box;
+  padding: 0 2px;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-accent);
+  border-radius: 3px;
+  font: inherit;
+  line-height: inherit;
+}
+/* The locals table pads its cells 4px, not 10 — same anchor arithmetic. */
+.brink-studio .sv-locals .dp-value-input {
+  left: 1px;
+}
+/* Refused edit (parse/type failure): shake, keep the input. */
+.brink-studio .dp-shake {
+  border-color: var(--bs-error);
+  animation: dp-shake 0.28s linear;
+}
+@keyframes dp-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+/* Committed edit: brief affirmation on the value. */
+.brink-studio .dp-edited-flash {
+  animation: dp-edited 0.9s ease-out;
+}
+@keyframes dp-edited {
+  0% { background: rgb(var(--bs-accent-rgb) / 35%); }
+  100% { background: transparent; }
+}
+
+/* ── Watch — the mini-REPL (W17/#3310, spec §F18) ── */
+.brink-studio .dp-watch-list {
+  list-style: none;
+  margin: 2px 0;
+  padding: 0;
+}
+.brink-studio .dp-watch-row {
+  margin: 0;
+}
+.brink-studio .dp-watch-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 1px 0;
+}
+.brink-studio .dp-watch-line .dp-watch-x {
+  visibility: hidden;
+}
+.brink-studio .dp-watch-line:hover .dp-watch-x {
+  visibility: visible;
+}
+.brink-studio .dp-watch-disclose {
+  flex-shrink: 0;
+  width: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-small);
+  cursor: pointer;
+}
+.brink-studio .dp-watch-disclose-none {
+  display: inline-block;
+}
+.brink-studio .dp-watch-src {
+  color: var(--bs-syn-parameter, var(--bs-fg-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+  flex-shrink: 0;
+}
+.brink-studio .dp-watch-result {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--bs-fg);
+}
+.brink-studio .dp-watch-error {
+  color: var(--bs-error);
+}
+.brink-studio .dp-watch-preview {
+  margin: 1px 0 4px 17px;
+  padding-left: 7px;
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .dp-watch-preview-line {
+  margin: 1px 0;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .dp-watch-preview-choice {
+  color: var(--bs-accent);
+}
+.brink-studio .dp-watch-input {
+  width: calc(100% - 4px);
+  box-sizing: border-box;
+  margin: 2px 0;
+  padding: 2px 4px;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-accent);
+  border-radius: 3px;
+  font-size: var(--bs-font-small);
+}
+
+/* ── Break-on-write (W18/#3311) ── */
+.brink-studio .dp-bp-data {
+  cursor: default;
+  background: none;
+  border: none;
+  color: var(--bs-fg);
+  font-size: var(--bs-font-body);
+}
+.brink-studio .dp-bp-diamond {
+  color: var(--bs-warning);
+  font-size: var(--bs-font-small);
+}
+.brink-studio .dp-global-menu {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+.brink-studio .dp-global-menu-item {
+  display: block;
+  border: none;
+  background: transparent;
+  color: var(--bs-fg);
+  text-align: left;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brink-studio .dp-global-menu-item:hover {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}

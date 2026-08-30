@@ -19,6 +19,7 @@ import {
   type TranscriptLine,
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+import { PlayerLauncher } from "./PlayerLauncher.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
 //
@@ -193,6 +194,87 @@ function renderLine(line: string): ReactNode {
 
 const TAGS_KEY = "brink-studio.player.show-tags.v1";
 
+// Toolbar glyphs, shared between the inline buttons and the overflow
+// menu's rows (maintainer feedback: collapsed controls keep their icons).
+function PauseIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
+    </svg>
+  );
+}
+function ContinueIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
+      <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
+    </svg>
+  );
+}
+function StepOverIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function StepIntoIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function StepOutIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+function FastForwardIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+      <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
+      <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
+    </svg>
+  );
+}
+function SaveStateIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M2 2h6.5L10 3.5V10H2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      <path d="M4 2v2.6h3.4V2M4 10V7h4v3" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+function StopIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+function TagsIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path
+        d="M1.5 5V1.5H5L10.5 7 7 10.5z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
+    </svg>
+  );
+}
+
 function loadTagsToggle(): boolean {
   try {
     return localStorage.getItem(TAGS_KEY) === "1";
@@ -232,18 +314,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     sessionDegraded(s.programChecksum, s.compiledChecksum),
   );
   const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
+  const saveCurrentState = useStudioStore((s) => s.saveCurrentState);
   const choices = useStudioStore((s) => s.sessionChoices);
-  const auto = useStudioStore((s) => s.sessionAuto);
-  const setSessionAuto = useStudioStore((s) => s.setSessionAuto);
-  // Hidden when the bound provider cannot switch modes (the flow provider only
-  // ever advances one line) — a visible control that does nothing is worse
-  // than no control (#3011).
-  const canAuto = useStudioStore((s) => s._provider?.capabilities.has("auto") ?? false);
+  // One-shot fast-forward (RULED 2026-08-30) — no sticky auto mode.
+  const revealMaximally = useStudioStore((s) => s.revealMaximally);
   // Transport (W5/#3298): render the debug cluster only for a debug-capable
   // provider (disabled-not-hidden while running, hidden entirely for an
   // observe-only provider — same posture as the Auto toggle above).
   const debugCapable = useStudioStore((s) => s.debugCapable);
   const paused = useStudioStore((s) => s.sessionPaused);
+  // W18: a watchpoint stop names the written global in the chip.
+  const lastOutcome = useStudioStore((s) => s.debugLastOutcome);
   const pausedLocation = useStudioStore((s) => {
     // file:line when the resolver can say (W6/#3299) — the shape every
     // debugger user reads — falling back to the runtime's knot path.
@@ -267,6 +348,59 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // Auto-scroll suspends while the author reads back (scrolled up), and
   // resumes when they return to the bottom (rebuild housekeeping).
   const stickToBottom = useRef(true);
+  // Toolbar collapse (RULED 2026-08-30): when the pane is too narrow,
+  // whole sub-sections fold into an overflow menu ONE GROUP AT A TIME —
+  // level 1 folds the transport cluster, level 2 the secondary controls
+  // (FF / Stop / Save / tags). Run, Restart, the chip and Maximize stay.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [collapse, setCollapse] = useState(0);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const expandAt = useRef<number[]>([]);
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const check = (): void => {
+      const overflowing = el.scrollWidth > el.clientWidth + 1;
+      setCollapse((c) => {
+        if (overflowing && c < 2) {
+          // Remember the width we gave up at — re-expand only with slack,
+          // so the boundary doesn't flap.
+          expandAt.current[c] = el.clientWidth + 56;
+          return c + 1;
+        }
+        if (!overflowing && c > 0 && el.clientWidth >= (expandAt.current[c - 1] ?? Infinity)) {
+          return c - 1;
+        }
+        return c;
+      });
+    };
+    // jsdom has no ResizeObserver — measure once and skip live tracking.
+    if (typeof ResizeObserver === "undefined") {
+      check();
+      return;
+    }
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    check();
+    return () => ro.disconnect();
+  }, []);
+  // Content changes overflow the toolbar without resizing it — a collapse
+  // step folding a group, but ALSO ordinary re-renders growing a control
+  // (found live: the status chip widening to "Waiting on choice" while
+  // the width held steady left a permanent overflow the ResizeObserver
+  // never saw). Re-measure after EVERY render; the check is two property
+  // reads, and setCollapse with an unchanged value schedules nothing.
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      setCollapse((c) => {
+        if (c >= 2) return c;
+        expandAt.current[c] = el.clientWidth + 56;
+        return c + 1;
+      });
+    }
+  });
 
   const ended = status === "ended" || status === "error";
   const hasPending = sessionCanContinue(status);
@@ -345,16 +479,36 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   }, [commands]);
 
   const position = useStudioStore((s) => s.debugState?.position ?? null);
+  // W15/#3308: a successful hot-reload flashes a brief affirmation in
+  // the chip (the ruled minimal UI); the tick clears it after ~2s.
+  const reloadedAt = useStudioStore((s) => s.sessionReloadedAt);
+  const [, bumpReloadTick] = useState(0);
+  const justReloaded = reloadedAt !== null && Date.now() - reloadedAt < 2000;
+  useEffect(() => {
+    if (!justReloaded) return;
+    const t = setTimeout(() => bumpReloadTick((n) => n + 1), 2100);
+    return () => clearTimeout(t);
+  }, [justReloaded, reloadedAt]);
 
   // The status chip — the single home of stop reasons (spec §3): ready /
   // playing / paused at file:line / waiting on choice / ended / error /
   // out-of-sync. Clicking reveals the current line in the editor.
   const chip = degraded
     ? { cls: "degraded", label: "Out of sync" }
-    : status === "none"
+    : justReloaded && status !== "none"
+      ? { cls: "playing", label: "Reloaded" }
+      : status === "none"
       ? { cls: "ready", label: "Ready" }
       : paused
-        ? { cls: "paused", label: pausedLocation ? `Paused — ${pausedLocation}` : "Paused" }
+        ? {
+            cls: "paused",
+            label:
+              lastOutcome?.reason.type === "watchpoint"
+                ? `Paused on write — ${lastOutcome.reason.name ?? `g${lastOutcome.reason.global_idx.toString()}`}`
+                : pausedLocation
+                  ? `Paused — ${pausedLocation}`
+                  : "Paused",
+          }
         : status === "awaiting-choice"
           ? { cls: "waiting", label: "Waiting on choice" }
           : status === "ended"
@@ -379,7 +533,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
-        <div className="toolbar">
+        <div className="toolbar" ref={toolbarRef}>
           <button
             className="player-transport-btn player-btn-run"
             title="Run — compile and start the story"
@@ -401,6 +555,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
             </svg>
           </button>
+          {collapse < 2 && (
+          <>
           <button
             className="player-transport-btn"
             title="Stop the story — back to the launcher"
@@ -408,29 +564,27 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             disabled={idle}
             onClick={() => commands.dispatch("story.stop")}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
-            </svg>
+            <StopIcon />
           </button>
-          {canAuto && (
-            <button
-              className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
-              title={
-                auto
-                  ? "Auto reveal on: a reveal runs to the next choice or pause (paced — one line at a time; configurable in Settings → Player)"
-                  : "Auto reveal off: each reveal advances a single line"
-              }
-              aria-label="Auto reveal"
-              aria-pressed={auto}
-              onClick={() => setSessionAuto(!auto)}
-            >
-              <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
-                <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
-                <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
-              </svg>
-            </button>
-          )}
-          {debugCapable && (
+          <button
+            className="player-transport-btn"
+            title="Save state — checkpoint the current point (W14); writes back to a loaded save"
+            aria-label="Save state"
+            disabled={idle}
+            onClick={() => void saveCurrentState()}
+          >
+            <SaveStateIcon />
+          </button>
+          <button
+            className="player-transport-btn player-auto-btn"
+            title="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
+            aria-label="Fast-forward"
+            disabled={idle}
+            onClick={() => revealMaximally()}
+          >
+            <FastForwardIcon />
+          </button>
+          {debugCapable && collapse < 1 && (
             <span className="player-transport">
               <span className="player-transport-sep" />
               {paused ? (
@@ -440,10 +594,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   aria-label="Continue"
                   onClick={() => commands.dispatch("debug.continue")}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
-                    <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
-                  </svg>
+                  <ContinueIcon />
                 </button>
               ) : (
                 <button
@@ -453,9 +604,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   disabled={status !== "running" && status !== "awaiting-choice"}
                   onClick={() => commands.dispatch("debug.pause")}
                 >
-                  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-                    <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
-                  </svg>
+                  <PauseIcon />
                 </button>
               )}
               <button
@@ -465,11 +614,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOver")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11" r="1.6" fill="currentColor" />
-                </svg>
+                <StepOverIcon />
               </button>
               <button
                 className="player-transport-btn"
@@ -478,11 +623,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepInto")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
-                </svg>
+                <StepIntoIcon />
               </button>
               <button
                 className="player-transport-btn"
@@ -491,11 +632,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOut")}
               >
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
-                  <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
-                </svg>
+                <StepOutIcon />
               </button>
             </span>
           )}
@@ -511,16 +648,130 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               });
             }}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path
-                d="M1.5 5V1.5H5L10.5 7 7 10.5z"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinejoin="round"
-              />
-              <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
-            </svg>
+            <TagsIcon />
           </button>
+          </>
+          )}
+          {collapse > 0 && (
+            <span className="player-overflow">
+              <button
+                className={"player-transport-btn" + (overflowOpen ? " active" : "")}
+                title="More controls"
+                aria-label="More controls"
+                aria-expanded={overflowOpen}
+                onClick={() => setOverflowOpen((o) => !o)}
+              >
+                {"⋯"}
+              </button>
+              {overflowOpen && (
+                <div
+                  className="player-overflow-menu"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setOverflowOpen(false);
+                  }}
+                >
+                  {debugCapable && (
+                    <>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused && status !== "running" && status !== "awaiting-choice"}
+                        onClick={() => {
+                          commands.dispatch(paused ? "debug.continue" : "debug.pause");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        {paused ? <ContinueIcon /> : <PauseIcon />}
+                        <span>{paused ? "Continue" : "Pause"}</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepOver");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <StepOverIcon />
+                        <span>Step over</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepInto");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <StepIntoIcon />
+                        <span>Step into</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepOut");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <StepOutIcon />
+                        <span>Step out</span>
+                      </button>
+                    </>
+                  )}
+                  {collapse >= 2 && (
+                    <>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          revealMaximally();
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <FastForwardIcon />
+                        <span>Fast-forward</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          void saveCurrentState();
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <SaveStateIcon />
+                        <span>Save state</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          commands.dispatch("story.stop");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <StopIcon />
+                        <span>Stop</span>
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        onClick={() => {
+                          setShowTags((on) => {
+                            saveTagsToggle(!on);
+                            return !on;
+                          });
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        <TagsIcon />
+                        <span>{showTags ? "Hide line tags" : "Show line tags"}</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </span>
+          )}
           <button
             className={"player-status-chip " + chip.cls}
             title="Reveal the current line in the editor"
@@ -541,17 +792,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         </div>
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
-        {idle && (
-          <div className="session-placeholder">
-            <p className="session-placeholder-title">No story session</p>
-            <p className="session-placeholder-hint">
-              Run compiles and starts the story here.
-            </p>
-            <button className="session-placeholder-start" onClick={handleStart}>
-              Start story
-            </button>
-          </div>
-        )}
+        {idle && <PlayerLauncher />}
         <div className="story-text">
           {lines.map((line, i) => {
             const point =

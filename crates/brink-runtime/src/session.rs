@@ -48,7 +48,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::mem;
 
-use brink_format::{SaveState, Value};
+use brink_format::{LoadReport, SaveState, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::error::RuntimeError;
@@ -839,13 +839,16 @@ impl<R: StoryRng> StorySession<R> {
     ///
     /// # Errors
     /// [`SessionError::MutationMidTurn`] mid-turn.
-    pub fn load_state(&mut self, state: &SaveState) -> Result<(), SessionError> {
+    pub fn load_state(&mut self, state: &SaveState) -> Result<LoadReport, SessionError> {
         self.require_turn_boundary("load_state")?;
-        self.story.load_state(state);
+        // W14/#3307 compat honesty (RULED): the report reaches the caller —
+        // a stale load ("3 anonymous visit states dropped") must never be
+        // silent. Previously discarded here.
+        let report = self.story.load_state(state);
         self.journal.push(JournalEvent::new(EventKind::LoadState {
             state: state.clone(),
         }));
-        Ok(())
+        Ok(report)
     }
 
     /// Capture the current durable game state (does not journal).

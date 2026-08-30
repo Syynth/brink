@@ -69,18 +69,27 @@
  * drives, not a second one.
  */
 
-import { StorySessionHandle, type ExternalValue } from "@brink-lang/web";
+import {
+  StoryRunnerHandle,
+  StorySessionHandle,
+  type ExternalValue,
+  type SpeculationResult,
+} from "@brink-lang/web";
 import type {
   Breakpoint,
   Choice,
   DebugRunOutcome,
   DebugLine,
   DebugSourceLocation,
+  LoadReport,
   ProgramAddress,
   ReplayOutcome,
+  SaveState,
   SessionJournal,
+  ProjectSource,
   SessionLine,
   StepMode,
+  StructuralTranscript,
 } from "@brink/wasm-types";
 
 import { FlowSessionProvider } from "./flow-provider.js";
@@ -204,6 +213,16 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * rapid succession instead of one batch. 0 = all at once. */
   private pacedDelayMs = 0;
   private pacedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Watch (W17/#3310): the scratch runner fragment/expression evals run
+   * over — an independent wasm object seeded from the session's durable
+   * state per round, re-keyed per program version so the runner's
+   * fragment-compile cache pays each entry once per compile. Nothing it
+   * does can touch the live session (discard-on-drop speculation). */
+  private watchRunner: StoryRunnerHandle | null = null;
+  private watchRunnerChecksum: string | null = null;
+  /** Unix ms of the last successful hot-reload migration/replay (W15) —
+   * the Player chip's brief "reloaded" affirmation reads it. */
+  private reloadedAt: number | null = null;
   private status: SessionStatus = "none";
   private transcript: TranscriptLine[] = [];
   /** Paused by the debugger (W5/#3298) — see `SessionSnapshot.paused`. */
@@ -312,6 +331,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
       paused: this.paused,
       debugOutcome: this.lastOutcome,
       auto: this.auto,
+      reloadedAt: this.reloadedAt,
     };
   }
 
@@ -329,8 +349,24 @@ export class LocalSessionProvider implements DebugSessionProvider {
       const prev = this.session;
       let session: StorySessionHandle;
       let outcome: ReplayOutcome | null = null;
+      // W15/#3308 (RULED): snapshot durable state BEFORE touching the old
+      // session — the migration fallback's material. Replay stays the
+      // primary road (it preserves the exact position and transcript);
+      // the snapshot catches what replay can't.
+      let migrateState: SaveState | null = null;
+      let migrateKnot: string | null = null;
+      let migrateTurn = 0;
+      let migrateTranscript: StructuralTranscript | null = null;
 
       if (prev) {
+        migrateState = this.capture(() => prev.saveState());
+        // The story-so-far, structurally (RULED 2026-08-30) — captured
+        // BEFORE the reload touches `prev`, re-rendered on the session
+        // that survives it, against the NEW program's line tables.
+        migrateTranscript = this.capture(() => prev.exportTranscript());
+        migrateKnot = this.debugState?.current_location ?? null;
+        migrateTurn = this.debugState?.turn_index ?? 0;
+        this.stopPacedPump();
         // In-place hot-reload: replays this session's own journal against the
         // recompiled program (spec's replay-on-recompile path).
         try {
@@ -375,8 +411,50 @@ export class LocalSessionProvider implements DebugSessionProvider {
       }
 
       if (outcome) {
-        // A hot-reload just ran on the live session's own journal.
+        if (outcome.type === "replayed") {
+          // A "clean" replay can still be a LIE by omission: debug-driven
+          // advances bypass the session journal (W5's ruled design — and
+          // today even choices made at a debug-road stop journal nothing,
+          // #3334), so a session that played under armed breakpoints
+          // replays to an EARLIER turn than it was actually at. Detect
+          // the regression and migrate the durable state instead.
+          const replayedTurn = this.capture(() => session.debugSnapshot())?.turn_index ?? 0;
+          if (
+            replayedTurn < migrateTurn &&
+            migrateState !== null &&
+            this.migrateInto(migrateState, migrateKnot, migrateTranscript)
+          ) {
+            return;
+          }
+          // Genuinely clean: exact position + transcript survive — the
+          // best case. Flash the chip's "reloaded" affirmation (W15).
+          this.reloadedAt = Date.now();
+          this.applyReplayOutcome(outcome);
+          return;
+        }
+        // Replay diverged or failed (W15): migrate the DURABLE state
+        // instead of truncating — globals/visits/turn survive the edit;
+        // the position drops to the recorded knot (honest fallback).
+        if (
+          migrateState !== null &&
+          this.migrateInto(migrateState, migrateKnot, migrateTranscript)
+        ) {
+          return;
+        }
+        // No snapshot to migrate (or migration itself failed): the old
+        // truncation road, notification and all.
         this.applyReplayOutcome(outcome);
+        return;
+      }
+
+      // The reload threw and a FRESH session replaced the old one: the
+      // journal is gone, but the durable state can still migrate (W15) —
+      // previously this dropped everything.
+      if (
+        prev &&
+        migrateState !== null &&
+        this.migrateInto(migrateState, migrateKnot, migrateTranscript)
+      ) {
         return;
       }
 
@@ -538,6 +616,52 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
   }
 
+  /**
+   * One-shot fast-forward (RULED 2026-08-30): run to the next stop —
+   * choices, breakpoint, terminal — ink's `ContinueMaximally` shape.
+   * Delivery honors the paced/all-at-once App setting; nothing sticky:
+   * the next ordinary reveal is single-line again (equivalent to
+   * enable-auto → continue → re-disable-auto, as one gesture).
+   */
+  continueMaximally(): void {
+    if (!sessionCanContinue(this.status)) return;
+    const session = this.session;
+    if (!session) return;
+    if (this.pacedDelayMs > 0) {
+      // Paced: reveal now, keep pumping until a stop — the pump's own
+      // conditions (status/paused) end it; no auto flag involved.
+      this.revealOne();
+      if (this.status === "running" && !this.paused) {
+        this.stopPacedPump();
+        this.pacedTimer = setTimeout(() => {
+          this.pacedTick();
+        }, this.pacedDelayMs);
+      }
+      return;
+    }
+    // All at once: the batch road (debug-driven when breakpoints are
+    // armed, so a hit still stops the run).
+    try {
+      if (this.debugDriven()) {
+        this.advanceDebug("run", false);
+      } else {
+        const lines = session.continueToPause();
+        this.appendLines(lines);
+        const last = lines.at(-1);
+        this.status = last ? statusOfLine(last.type) : this.status;
+        this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.status = "error";
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
+      this.choices = [];
+      this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
+    }
+    this.refreshDebug();
+    this.emit();
+  }
+
   continue(): void {
     // Only advance when the session actually can (mid-flow or at a `-> DONE`
     // turn boundary). At a choice point the VM is blocked awaiting input, so a
@@ -551,6 +675,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   dispose(): void {
+    this.watchRunner?.free();
+    this.watchRunner = null;
     this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
@@ -664,6 +790,207 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.applyDebugOutcome(outcome, false);
     this.emit();
     return outcome;
+  }
+
+  /** Break-on-write (W18/#3311): arm/disarm/list — see the handle's
+   * docs. The provider is a thin pass-through; the paused/refresh dance
+   * belongs to the advance that HITS one, not the arming. */
+  debugWatchpointAdd(name: string): boolean {
+    return this.capture(() => this.session?.debugWatchpointAdd(name) ?? false) ?? false;
+  }
+
+  debugWatchpointRemove(name: string): boolean {
+    return this.capture(() => this.session?.debugWatchpointRemove(name) ?? false) ?? false;
+  }
+
+  debugWatchpoints(): string[] {
+    return this.capture(() => this.session?.debugWatchpoints() ?? []) ?? [];
+  }
+
+  /** Watch evaluation (W17/#3310, spec §F18): run one entry against the
+   * session's CURRENT durable state. The scratch runner is seeded via
+   * `saveState()` (name-keyed — survives the cross-program hop), then
+   * `evaluate()` runs the shipped tiering: knot paths and literal-arg
+   * calls speculate directly; anything else takes the Tier-1
+   * fragment-compile road (cached per program version), for which the
+   * caller supplies `projectSource`. `null` = no live session. */
+  evaluateWatch(
+    source: string,
+    opts?: { projectSource?: ProjectSource; budget?: { steps?: number; lines?: number } },
+  ): Promise<SpeculationResult> | null {
+    const session = this.session;
+    if (!session || this.bytes === null) return null;
+    const state = this.capture(() => session.saveState());
+    if (state === null) return null;
+    try {
+      if (this.watchRunner === null || this.watchRunnerChecksum !== this.programChecksum) {
+        this.watchRunner?.free();
+        this.watchRunner = new StoryRunnerHandle(this.bytes);
+        this.watchRunnerChecksum = this.programChecksum;
+      }
+      this.watchRunner.load(state);
+      // A `-> knot.stitch` entry means "preview what this divert WOULD
+      // produce" (spec §F18's own example) — strip the sigil so it takes
+      // Tier-0's goToPath road (transcript preview). Left intact, the
+      // Tier-1 expression attempt succeeds FIRST as a divert-target
+      // LITERAL (`-> x` is a valid expression) and the row would show
+      // the target's name instead of the preview (measured live).
+      const divert = /^->\s*([A-Za-z_][\w.]*)\s*$/.exec(source.trim());
+      return this.watchRunner.evaluate(divert ? divert[1] : source, {
+        projectSource: opts?.projectSource,
+        budget: opts?.budget,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —
+   * a GLOBAL. Enforces the paused gate here (the runtime seam itself
+   * doesn't care); `false` = refused, nothing written (the panel's
+   * red-shake). A successful edit refreshes the debug mirror so the
+   * changed-row highlight lights. */
+  editGlobal(name: string, input: string): boolean {
+    if (!this.session || !this.paused) return false;
+    const ok = this.capture(() => this.session?.debugEditGlobal(name, input)) ?? false;
+    if (ok) {
+      this.refreshDebug();
+      this.emit();
+    }
+    return ok;
+  }
+
+  /** Live value editing — a frame LOCAL, addressed by the snapshot's
+   * innermost-first frame index + slot. Same paused gate and refusal
+   * contract as `editGlobal`. The panel additionally disables locals at
+   * `waiting_for_choice` (choosing restores the choice's captured thread,
+   * which would silently overwrite the edit — measured in brink-web's
+   * value_edit tests). */
+  editTemp(frameIdx: number, slot: number, input: string): boolean {
+    if (!this.session || !this.paused) return false;
+    const ok =
+      this.capture(() => this.session?.debugEditTemp(frameIdx, slot, input)) ?? false;
+    if (ok) {
+      this.refreshDebug();
+      this.emit();
+    }
+    return ok;
+  }
+
+  /** Capture the durable game state (W14/#3307) — `null` without a live
+   * session (the wasm handle throws through `capture`'s guard). */
+  saveState(): SaveState | null {
+    return this.capture(() => this.session?.saveState() ?? null);
+  }
+
+  /** Export the structural transcript (RULED 2026-08-30) — the part
+   * stream a save carries, re-renderable against any later compile. */
+  exportTranscript(): StructuralTranscript | null {
+    return this.capture(() => this.session?.exportTranscript() ?? null);
+  }
+
+  /** Hot-reload migration (W15/#3308): the checkpoint road with the
+   * "reloaded" framing — restore the snapshot into the (fresh or
+   * replay-failed) session on the NEW program, divert to the recorded
+   * knot, flash the chip. Returns whether it applied. */
+  private migrateInto(
+    state: SaveState,
+    knotPath: string | null,
+    transcript: StructuralTranscript | null,
+  ): boolean {
+    // The live transcript survives a hot reload (RULED 2026-08-30) — and
+    // arrives STRUCTURALLY, so re-rendering it against the new program
+    // shows the edited prose, the whole point of the format.
+    const report = this.loadCheckpoint(state, knotPath, "Reloaded", transcript);
+    if (report === null) return false;
+    this.reloadedAt = Date.now();
+    this.emit();
+    return true;
+  }
+
+  /**
+   * Load a checkpoint (W14/#3307): restore the durable state, divert to
+   * the slot's recorded knot (the save format carries no execution
+   * position — knot-entry granularity is the honest v1), and reveal.
+   * The story-so-far arrives in STRUCTURAL form (RULED 2026-08-30) and
+   * is re-rendered against the session's CURRENT program — an edited
+   * line's restored row shows the edited text; a non-clean `LoadReport`
+   * surfaces as a transcript notice — never a silent load (RULED).
+   * Returns the report, `null` without a live session.
+   */
+  loadCheckpoint(
+    state: SaveState,
+    knotPath: string | null,
+    verb: "Loaded" | "Reloaded" = "Loaded",
+    transcript: StructuralTranscript | null = null,
+  ): LoadReport | null {
+    const session = this.session;
+    if (!session) return null;
+    let report: LoadReport;
+    try {
+      // `load_state` is turn-boundary only, and any reveal leaves the
+      // session mid-turn (found live: a fresh start's first reveal was
+      // enough to refuse the load) — restart to a clean boundary first;
+      // the checkpoint replaces the state a restart resets anyway.
+      session.restart();
+      report = session.loadState(state);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.callbacks.notify({
+        severity: "error",
+        source: "story",
+        message: `Load failed: ${msg}`,
+      });
+      return null;
+    }
+    this.stopPacedPump();
+    this.paused = false;
+    this.lastOutcome = null;
+    // The caller supplies the story-so-far (a save's stored transcript,
+    // or the live one on a hot reload) — dropping it was the RULED-away
+    // behavior (2026-08-30). Rendered HERE, against the program this
+    // session now runs, not at save time.
+    this.transcript =
+      transcript === null
+        ? []
+        : (this.capture(() => session.renderTranscript(transcript)) ?? []).map(
+            (line) => transcriptLine(line.text, line.tags, line.source),
+          );
+    this.choices = [];
+    this.status = "running";
+    const drops =
+      report.anonymous_states_dropped +
+      report.unknown_globals.length +
+      report.unresolved_renames.length;
+    if (drops > 0) {
+      const parts: string[] = [];
+      if (report.anonymous_states_dropped > 0)
+        parts.push(`${report.anonymous_states_dropped} anonymous visit state${report.anonymous_states_dropped === 1 ? "" : "s"} dropped`);
+      if (report.unknown_globals.length > 0)
+        parts.push(`unknown globals: ${report.unknown_globals.join(", ")}`);
+      if (report.unresolved_renames.length > 0)
+        parts.push(`unresolved renames: ${report.unresolved_renames.join(", ")}`);
+      this.transcript = [
+        ...this.transcript,
+        transcriptNotice(`${verb} — ${parts.join("; ")}.`),
+      ];
+    }
+    if (knotPath !== null) {
+      try {
+        // Same dev affordance as play-from-here (M-2b): the recorded
+        // knot may be #@private.
+        session.setDevVisibilityOverride(true);
+        session.goToPath(knotPath);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.transcript = [
+          ...this.transcript,
+          transcriptNotice(`Loaded, but could not divert to ${knotPath}: ${msg}`),
+        ];
+      }
+    }
+    this.reveal();
+    return report;
   }
 
   pause(): void {
@@ -836,7 +1163,13 @@ export class LocalSessionProvider implements DebugSessionProvider {
   private debugDriven(): boolean {
     if (this.paused) return true;
     try {
-      return (this.session?.debugBreakpoints().length ?? 0) > 0;
+      // Armed POSITION breakpoints or armed DATA breakpoints (W18) both
+      // demand the debug road — the production continue path can hit
+      // neither.
+      return (
+        (this.session?.debugBreakpoints().length ?? 0) > 0 ||
+        (this.session?.debugWatchpoints().length ?? 0) > 0
+      );
     } catch {
       return false;
     }

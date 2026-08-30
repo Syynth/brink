@@ -127,6 +127,8 @@ export class FlowSessionProvider implements SessionProvider {
       programChecksum: this.programChecksum,
       programModel: this.programModel,
       programInkt: this.programInkt,
+      // No hot-reload on a flow view either — the HOST session reloads.
+      reloadedAt: null,
       // No debug surface on the flow provider (no `debug` capability):
       // never paused, never a debug outcome.
       paused: false,

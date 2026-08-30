@@ -93,8 +93,12 @@ export interface SessionSlice {
    * app boundary alongside the paced-reveal setting.
    */
   playerFontSize: number;
+  /** Mirror of the provider's last hot-reload timestamp (W15/#3308). */
+  sessionReloadedAt: number | null;
   /** Set the Player prose size (Settings); clamped, 0 resets to scale. */
   setPlayerFontSize(px: number): void;
+  /** One-shot fast-forward (RULED 2026-08-30) — run to the next stop. */
+  revealMaximally(): void;
   /**
    * Byte-range → editor terms converter for transcript provenance
    * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
@@ -253,7 +257,12 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     const entry = get().sessions.find((e) => e.id === id);
     if (!entry) return;
     get()._providerUnsub?.();
-    const unsub = entry.provider.subscribe((snap) => mirror(set, snap));
+    const unsub = entry.provider.subscribe((snap) => {
+      mirror(set, snap);
+      // Watch cadence (W17/#3310): every stop/turn boundary — the hook
+      // itself keys on the stop, so per-line reveals don't storm evals.
+      get()._watchOnMirror();
+    });
     set({
       _provider: entry.provider,
       _providerUnsub: unsub,
@@ -272,6 +281,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionLines: [],
     sessionPacedMs: 150,
     playerFontSize: 0,
+    sessionReloadedAt: null,
     _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
@@ -307,6 +317,10 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
     setSourceByteResolver(resolver) {
       set({ _resolveSourceBytes: resolver });
+    },
+
+    revealMaximally() {
+      get()._provider?.continueMaximally?.();
     },
 
     setSessionPaced(delayMs) {
@@ -347,6 +361,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       // on the new program (W4/W5 #3297/#3298: found live — a solid gutter
       // dot over an empty runtime set is a breakpoint that never hits).
       get()._syncSourceBreakpoints();
+      get()._syncDataBreakpoints();
     },
 
     openSession(opts) {
@@ -368,6 +383,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       provider.start(bytes);
       // Same re-arm-on-new-session rule as startSession above.
       get()._syncSourceBreakpoints();
+      get()._syncDataBreakpoints();
     },
 
     openFlow(opts) {
@@ -453,6 +469,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         return;
       }
       mirror(set, provider.getSnapshot());
+      get()._watchOnMirror();
     },
 
     disposeSession() {
@@ -503,6 +520,7 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionStatus: snap.status,
     sessionText: snap.transcript.map((l) => l.text),
     sessionLines: snap.transcript,
+    sessionReloadedAt: snap.reloadedAt,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,

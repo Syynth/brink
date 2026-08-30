@@ -634,8 +634,12 @@ impl Program {
         &self.containers[idx as usize].bytecode
     }
 
-    /// Number of containers.
-    #[cfg(feature = "testing")]
+    /// Number of containers. Promoted from `#[cfg(feature = "testing")]`
+    /// to real public API for the structural-transcript re-render road
+    /// (RULED 2026-08-30): a transcript saved against an older compile can
+    /// carry container indices this program no longer has, and the caller
+    /// must be able to bounds-filter them before `scope_table_idx` would
+    /// panic.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "container count fits in u32"
