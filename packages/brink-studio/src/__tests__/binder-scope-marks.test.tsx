@@ -62,11 +62,14 @@ function rowFor(path: string): HTMLElement | null {
 }
 
 describe("Binder scope marks (#3021)", () => {
-  it("badges the entry and dims a not-included file", () => {
+  it("marks the entry with the brink-mark icon and dims a not-included file", () => {
     mountBinder(seededStore("main.ink", ["main.ink", "scenes/harbour.ink"]));
 
+    // The entry carries its status in its ICON — the brink mark — not a
+    // text badge (matching the drafts rule, decision log 2026-08-27).
     const entryRow = rowFor("main.ink");
-    expect(entryRow?.querySelector(".brink-binder-badge-entry")?.textContent).toBe("entry");
+    expect(entryRow?.querySelector(".brink-file-icon-entry")).not.toBeNull();
+    expect(entryRow?.querySelector(".brink-binder-badge-entry")).toBeNull();
     expect(entryRow?.classList.contains("brink-binder-dimmed")).toBe(false);
 
     const offcuts = rowFor("offcuts.ink");

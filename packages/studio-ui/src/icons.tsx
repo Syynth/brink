@@ -1,3 +1,4 @@
+import { useId } from "react";
 /**
  * The binder v2 icon language (#3037 — compare
  * `docs/design/binder-v2/{Main,Structure}.dc.html`): monochrome
@@ -80,6 +81,118 @@ export function BrinkFileDraftIcon({ size = 13 }: IconProps) {
       focusable={false}
     >
       <path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z" />
+    </svg>
+  );
+}
+
+/**
+ * The entry file: the brink mark itself — the ink drop with the divert
+ * carved out of the bowl.
+ *
+ * Geometry is lifted verbatim from `assets/brand/brink-glyph.svg`, the
+ * brand asset made for exactly this ("the drop alone with the carve as
+ * true negative space, for use on any background"), and pinned to that
+ * file by `binder-entry-icon.test.tsx`. The carve is a STROKE through a
+ * mask, not a filled arrow: the brand README states the construction —
+ * one stroke weight of 7.5, mass-centred on the bowl — and that "the full
+ * arrow is used at every size; there is no simplified small-size
+ * variant", so this does not get a chunkier 13px version.
+ *
+ * The `<g>` transform maps the brand's bowl onto the SIBLING drop's bowl,
+ * and is shared by the drop and the carve so the brand geometry moves as
+ * one piece. Sibling bowl: arc endpoints (73,41)/(27,41) at r28, so its
+ * centre is (50, 41+sqrt(28^2-23^2)) = (50, 56.97). Brand bowl: (50, 54)
+ * at r30. Hence scale 28/30 with the centres matched — which makes the
+ * brand silhouette coincide with the sibling drop almost exactly (tip at
+ * 6.57 vs 6, same bottom), so the entry sits on the same footprint as
+ * every other row and the arrow rides at the bowl centre, where the brand
+ * puts it. Two earlier versions got this wrong in opposite directions:
+ * height-matching shrank the mark visibly, and box-centring
+ * (`translate(0 8)`) slid the whole glyph — arrow included — below its
+ * neighbours' bowl line.
+ *
+ * Replaces the "entry" text badge (#3014/#3021), following the rule the
+ * Binder already set for drafts: "a draft carries its status in its ICON"
+ * (decision log 2026-08-27), taking no badge.
+ */
+export function BrinkFileEntryIcon({ size = 13 }: IconProps) {
+  // The mask needs a document-unique id: the icon renders once per entry
+  // row, and duplicate ids would make every instance resolve the first.
+  const maskId = useId();
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="currentColor"
+      className="brink-file-icon-entry"
+      aria-hidden
+      focusable={false}
+    >
+      <mask id={maskId}>
+        <rect x="0" y="0" width="100" height="100" fill="white" />
+        <g transform="translate(3.333 6.569) scale(0.93333)">
+          <path
+            d="M36 54 L56 54 M50 43 L62 54 L50 65"
+            fill="none"
+            stroke="black"
+            strokeWidth={7.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </g>
+      </mask>
+      <g transform="translate(3.333 6.569) scale(0.93333)">
+        <path
+          d="M50 0 C54 10 65.6 23.4 74.94 37.34 A30 30 0 1 1 25.06 37.34 C34.4 23.4 46 10 50 0 Z"
+          mask={`url(#${maskId})`}
+        />
+      </g>
+    </svg>
+  );
+}
+
+/**
+ * The entry file, EXPANDED (or with nothing inside it).
+ *
+ * The Binder's fill rule is "filled = collapsed with content inside;
+ * outline = expanded or a leaf" (ruled 2026-08-23), and the entry has to
+ * obey it like every other row — an entry that stayed a solid mark while
+ * its neighbours hollowed out on expansion would read as a different kind
+ * of thing rather than the same file, opened.
+ *
+ * So this is the siblings' outline drop with the divert INLAID — stroked
+ * inside the bowl — rather than the brand mark's knockout, which needs a
+ * fill to cut a hole out of. Same two strokes either way.
+ *
+ * The carve is the brand's own path under the SAME bowl-to-bowl transform
+ * {@link BrinkFileEntryIcon} uses (brand bowl (50,54) r30 onto sibling
+ * bowl (50,56.97) r28 — see its derivation), so the arrow does not move a
+ * pixel when a row swaps between the two variants on expand/collapse. The
+ * scale carries the stroke width with it, keeping the brand's "one stroke
+ * weight" relation to the bowl. The first version of this transform used a
+ * mis-derived bowl centre of (50,47) — subtracting the half-chord offset
+ * instead of adding it — which parked the arrow visibly high in the drop.
+ */
+export function BrinkFileEntryOutlineIcon({ size = 13 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="brink-file-icon-entry"
+      aria-hidden
+      focusable={false}
+    >
+      <path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z" />
+      <g transform="translate(3.333 6.569) scale(0.93333)">
+        <path d="M36 54 L56 54 M50 43 L62 54 L50 65" strokeWidth={7.5} />
+      </g>
     </svg>
   );
 }

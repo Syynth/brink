@@ -3,6 +3,7 @@ import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import type { CodeAction } from "@brink/wasm-types";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import { registerDismissible } from "./dismiss-registry.js";
+import { editorActionRunners } from "./editor-actions.js";
 
 export interface CodeActionsOptions {
   /** Actions available at `offset` (cursor). Resolved + applied via `onSelect`. */
@@ -180,11 +181,12 @@ export function codeActionsExtension(options: CodeActionsOptions): Extension {
 
   return [
     codeActionsMenu,
-    keymap.of([
-      {
-        key: "Ctrl-.",
-        mac: "Cmd-.",
-        run(view: EditorView): boolean {
+    // Chord ("Mod-." — the old Ctrl-./Cmd-. pair, spelled once) lives in
+    // the shared editor-actions keymap; the run body stays here with its
+    // options and the menu plugin handle in scope.
+    editorActionRunners.of({
+      id: "editor.codeActions",
+      run(view: EditorView): boolean {
           const pos = view.state.selection.main.head;
           const source = view.state.doc.toString();
 
@@ -235,7 +237,6 @@ export function codeActionsExtension(options: CodeActionsOptions): Extension {
           }
           return open(produced);
         },
-      },
-    ]),
+    }),
   ];
 }
