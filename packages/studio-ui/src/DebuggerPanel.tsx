@@ -71,13 +71,20 @@ function EditableScalar({
   const [flash, setFlash] = useState(false);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  if (!editing) {
-    return (
+  // ZERO layout impact while editing (maintainer feedback — "literally
+  // everything moves"): the display span STAYS IN FLOW (hidden) so the
+  // table's auto-layout never sees the input at all — an in-flow input's
+  // intrinsic width widened the value column and shifted every row's
+  // columns. The input overlays the cell absolutely (the cell is the
+  // positioned ancestor), glyphs anchored where the span's were.
+  return (
+    <>
       <span
         className={
           "dp-editable" +
           (disabled ? " dp-editable-off" : "") +
-          (flash ? " dp-edited-flash" : "")
+          (flash ? " dp-edited-flash" : "") +
+          (editing ? " dp-editing" : "")
         }
         title={disabled ? disabledReason : "Click to edit — Enter commits, Esc cancels"}
         onClick={() => {
@@ -86,30 +93,30 @@ function EditableScalar({
       >
         {display}
       </span>
-    );
-  }
-  return (
-    <input
-      autoFocus
-      className={"dp-value-input sv-mono" + (shake ? " dp-shake" : "")}
-      defaultValue={display}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          if (commit(e.currentTarget.value)) {
-            setEditing(false);
-            setFlash(true);
-            if (flashTimer.current) clearTimeout(flashTimer.current);
-            flashTimer.current = setTimeout(() => setFlash(false), 900);
-          } else {
-            setShake(true);
-          }
-        } else if (e.key === "Escape") {
-          setEditing(false);
-        }
-      }}
-      onAnimationEnd={() => setShake(false)}
-      onBlur={() => setEditing(false)}
-    />
+      {editing && (
+        <input
+          autoFocus
+          className={"dp-value-input sv-mono" + (shake ? " dp-shake" : "")}
+          defaultValue={display}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              if (commit(e.currentTarget.value)) {
+                setEditing(false);
+                setFlash(true);
+                if (flashTimer.current) clearTimeout(flashTimer.current);
+                flashTimer.current = setTimeout(() => setFlash(false), 900);
+              } else {
+                setShake(true);
+              }
+            } else if (e.key === "Escape") {
+              setEditing(false);
+            }
+          }}
+          onAnimationEnd={() => setShake(false)}
+          onBlur={() => setEditing(false)}
+        />
+      )}
+    </>
   );
 }
 

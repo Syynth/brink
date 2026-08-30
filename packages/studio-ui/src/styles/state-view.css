@@ -391,16 +391,28 @@
   border-bottom-color: transparent;
   background: transparent;
 }
+/* The display span keeps occupying its box while the input is open, so
+   the table's auto-layout is IDENTICAL editing or not — an in-flow input
+   widened the value column and shifted every row (maintainer feedback:
+   "literally everything moves"). */
+.brink-studio .sv-table td.sv-val,
+.brink-studio .sv-locals td.sv-val {
+  position: relative;
+}
+.brink-studio .dp-editing {
+  visibility: hidden;
+}
 .brink-studio .dp-value-input {
-  /* Zero layout shift (maintainer feedback): the input must occupy the
-     SAME box the display span did — font inherited from the cell, the
-     1px border absorbed by negative margin, no extra padding height —
-     so rows don't jump apart when editing opens. */
-  display: inline-block;
-  width: 12ch;
-  min-width: 0;
+  /* Overlaid on the cell — absolute, so it contributes NOTHING to
+     layout. Glyph anchor: the globals cell pads 10px left; left offset
+     (7) + border (1) + padding (2) lands the first glyph exactly where
+     the span's was. Extends to the cell's right edge for typing room. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  right: 0;
   box-sizing: border-box;
-  margin: -1px;
   padding: 0 2px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
@@ -408,6 +420,10 @@
   border-radius: 3px;
   font: inherit;
   line-height: inherit;
+}
+/* The locals table pads its cells 4px, not 10 — same anchor arithmetic. */
+.brink-studio .sv-locals .dp-value-input {
+  left: 1px;
 }
 /* Refused edit (parse/type failure): shake, keep the input. */
 .brink-studio .dp-shake {
