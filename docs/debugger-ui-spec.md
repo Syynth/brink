@@ -465,60 +465,60 @@ changesets.
 
 ## 6. Work breakdown (proposed tickets, in dependency order)
 
-1. **W1 — Debug info on by default** (#3230 becomes this): flip the three
+1. **W1 (#3294) — Debug info on by default** (#3230 becomes this): flip the three
    hardcoded sites, App setting, acceptance-gate re-baseline in lockstep,
    perf-HUD before/after numbers in the PR. *Proof:* real
    `EditorSession`-built session resolves a position non-null; gate green
    with zero diagnostic drift.
-2. **W2 — Source→program wasm exports** (unblocks breakpoint binding).
+2. **W2 (#3295) — Source→program wasm exports** (unblocks breakpoint binding).
    *Proof:* Rust test over `WebSession` binds `file:line` → address on
    both surfaces.
-3. **W3 — Resolver registration + degraded gate** (tiny; unblocks all
+3. **W3 (#3296) — Resolver registration + degraded gate** (tiny; unblocks all
    reveals). *Proof:* vitest — program location reveals source; degraded
    suppresses.
-4. **W4 — Breakpoint model + gutter** (#3233's first half): store
+4. **W4 (#3297) — Breakpoint model + gutter** (#3233's first half): store
    anchoring/rebinding/persistence + editor gutter on both surfaces.
    *Proof:* vitest incl. edit-above-moves-marker, no-statement-line
    snapping, degraded hollow state.
-5. **W5 — Drive-loop unification + pause** (the load-bearing one):
+5. **W5 (#3298) — Drive-loop unification + pause** (the load-bearing one):
    interleaved play→breakpoint→step→continue→choice→terminal with a
    coherent transcript. *Proof:* store-level vitest against a real
    compiled story; mirrors a `.dbg` golden where possible.
-6. **W6 — Execution highlight** (#3233's second half): editor extension
+6. **W6 (#3299) — Execution highlight** (#3233's second half): editor extension
    with live-line tracking during play (follows F13's reveal cadence) +
    paused arrow/band + reveal-on-stop + frame tint. *Proof:* both
    surfaces + degraded suppression + the highlight advancing across a
    multi-line reveal, the `program-view-current-position.test.tsx`
    standard.
-7. **W7 — Player rebuild**: toolbar/transport/status chip/transcript
+7. **W7 (#3300) — Player rebuild**: toolbar/transport/status chip/transcript
    provenance/auto-scroll + F13 (auto toggle button, paced reveal + its
    App setting, tags toggle, line-row boundaries) + absorbed follow-ups.
    *Proof:* vitest over commands/capabilities; provenance jump test;
    paced-reveal queue flushes instantly on a breakpoint/pause.
-8. **W8 — Debugger panel**: the StateView replacement. *Proof:* frame
+8. **W8 (#3301) — Debugger panel**: the StateView replacement. *Proof:* frame
    selection drives locals + reveal; placeholder states.
-9. **W9 — Program Explorer additions**: `stepi`, frame-follow, reveal-in-
+9. **W9 (#3302) — Program Explorer additions**: `stepi`, frame-follow, reveal-in-
    explorer.
-10. **W10 — Keybindings + status bar + palette polish.**
-11. **W11 — Choice-point visualization** (F14): presented-line highlight
+10. **W10 (#3303) — Keybindings + status bar + palette polish.**
+11. **W11 (#3304) — Choice-point visualization** (F14): presented-line highlight
     from `DebugState.choices`; rejection reasons derived by elimination
     from visits + presented set + #3234's container ids (no new runtime
     seam — verify anonymous choice bodies appear in `DebugState.visits`
     first). *Proof:* a choice point with a false-condition choice and an
     exhausted once-only, both dimmed with the right reason;
     thread-gathered and fallback edge cases; degraded suppression.
-12. **W12 — Runtime-value hover** (F15): studio-side hover merge.
+12. **W12 (#3305) — Runtime-value hover** (F15): studio-side hover merge.
     *Proof:* global + frame-local hover values, gone when degraded or
     no session.
-13. **W13 — Player appearance settings** (F16): font-size knob in the
+13. **W13 (#3306) — Player appearance settings** (F16): font-size knob in the
     App settings Player section, wired to the Player's prose styles.
-14. **W14 — Runtime save/load** (F17): saves store (machine app-data /
+14. **W14 (#3307) — Runtime save/load** (F17): saves store (machine app-data /
     project tree per the App setting), idle-Player launcher UI, save
     while running, `LoadReport` surfacing. Decide the web embed's
     store during build. *Proof:* save → load → identical
     `DebugState`; load after a recompile surfaces the report; the
     location setting actually moves where files land.
-15. **W15 — Hot reload** (F8): auto-migrate the live session on every
+15. **W15 (#3308) — Hot reload** (F8): auto-migrate the live session on every
     successful compile (save → swap → load → re-anchor, at turn
     boundaries); degraded mode demoted to fallback; record the
     live-inspector-spec §5 supersession. Builds on W14's machinery —
@@ -527,18 +527,18 @@ changesets.
     a lossy migration surfaces the report; a failed compile keeps the
     old program running with the error shown; an unmigratable position
     falls back to out-of-sync instead of guessing.
-16. **W16 — Value editing** (F6): expose `set_variable` through wasm;
+16. **W16 (#3309) — Value editing** (F6): expose `set_variable` through wasm;
     new debug-seam set-temp-in-frame (+ its wasm binding); inline edit
     UI, paused-only gating, dirty-path verification (a parked condition
     reading an edited global re-evaluates; a watchpoint on it fires).
     *Proof:* edit → continue → story reflects it; type-mismatch
     refused; locals edit visible in the frame.
-17. **W17 — Watch section** (F18): UI over the shipped `evaluate()` —
+17. **W17 (#3310) — Watch section** (F18): UI over the shipped `evaluate()` —
     entry management, re-eval on stop, expandable fragment previews,
     inline errors. *Proof:* expression + fragment entries against a
     live session; side-effect-proofness (watch eval leaves
     `DebugState` untouched); degraded suppression.
-18. **W18 — Break-on-write UI** (F6): variable-row context menu, bridge
+18. **W18 (#3311) — Break-on-write UI** (F6): variable-row context menu, bridge
     `debug_run_watching` into the drive loop, Breakpoints-section rows
     with the data-breakpoint glyph. *Proof:* write to a watched global
     pauses at the writing line.
