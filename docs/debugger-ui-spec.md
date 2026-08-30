@@ -234,15 +234,18 @@ controls in its header (F3), frame-selection following (F5), and a
 (jump from a source line to its instructions — the inverse of the existing
 `.inkt` open).
 
-### F11 — Parked flows (blocked on a ruling)
+### F11 — Parked flows (RULED 2026-08-29 — #3225 resolved)
 
-The UI treatment is designed (F3/F5: disabled stepping + "parked — resumes
-here" frame label + condition-park vocabulary per debugger-spec §4 — never
-"waiting for a value"), but what `Story::debug_position()` *reports* while
-parked is the open ruling #3225. This round proposes: report the
-continuation container's offset-0 position tagged `parked: true` (and the
-call site tagged for `AwaitingExternal`), which is exactly what the
-"resumes here" label needs; the ruling belongs to #3225, not here.
+The UI treatment: disabled stepping + "parked — resumes here" frame/flow
+label + condition-park vocabulary per debugger-spec §4 — never "waiting
+for a value". The position semantics are now **ruled**
+(`docs/debugger-spec.md` §4.1): while parked, `debug_position` reports
+the **resume point** (`(continuation container, 0)`, just past the park
+statement) with an explicit parked tag; while awaiting a deferred
+external, the **call site** with a distinct awaiting-external tag. The
+tags are API-level, so no consumer can render either as "currently at".
+Implementation rides the #3215 `#[non_exhaustive]` fix and sequences
+against FS-3r (#980). W5's park presentation is unblocked.
 
 ### F12 — Multi-flow (selection surface ruled; runtime deferred)
 
@@ -550,9 +553,9 @@ needed before W5 can present parks; F11 carries the proposed answer),
 
 ## 7. Open questions
 
-1. **#3225** — parked `debug_position` semantics. Proposed answer in F11;
-   needs the maintainer ruling recorded in `docs/debugger-spec.md` §4
-   before W5 ships park presentation.
+1. ~~**#3225** — parked `debug_position` semantics~~ — **RULED
+   2026-08-29** (resume point / call site, tagged; recorded in
+   `docs/debugger-spec.md` §4.1 and the decision log). No longer open.
 2. **Transcript provenance plumbing** (F9): `block_id` → source is believed
    cheap via the line tables; verify the wasm surface during W7 and demote
    F9 to a follow-up ticket if it isn't.

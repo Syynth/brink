@@ -4323,3 +4323,30 @@
   half landed as F17). Paused-only editing was chosen over
   globals-anytime for the simpler mental model, accepting the loss of
   live wake-condition poking while parked.
+
+## Parked/awaiting debug positions report the resume point and call site, tagged
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** runtime (debugger epic #452 / #3225 — the ruling D9's W5 was blocked on)
+- **SCOPE:** moderate
+- **WHAT:** While a flow is **condition-parked** (`Step::Suspended`),
+  `Story::debug_position()` and the frame reads report the **resume
+  point** — `(continuation container_idx, offset 0)`, resolving just
+  past the park statement per `docs/debugger-spec.md` §2.6 — carried
+  with an **explicit parked tag**, never as a live position. While
+  **awaiting a deferred external** (`StepOutcome::AwaitingExternal`),
+  they report the **calling frame's call site** with a *distinct*
+  awaiting-external tag (resumption is host-driven, not
+  condition-driven; the External frame stays opaque). Rejected: the
+  pre-park position (lies about the future — that statement never runs
+  again) and "no position" (starves every consumer of the ruled
+  "parked — resumes here" treatment). The tag is API-level so no
+  consumer can honestly render "currently at". Implementation rides
+  with the #3215 `#[non_exhaustive]` hygiene fix (the shape change is
+  otherwise breaking), and sequences consciously against FS-3r (#980).
+  Recorded in `docs/debugger-spec.md` §4.1.
+- **WHY:** The split-at-park compilation model means "where the flow
+  stopped" and "where it resumes" are different containers — there is
+  no single honest current position, so the API reports the one
+  forward-looking consumers need and marks what it is. This unblocks
+  W5 (#3298)'s park presentation and closes #3225's design ask.
