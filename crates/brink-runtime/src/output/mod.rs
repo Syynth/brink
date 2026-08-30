@@ -917,13 +917,27 @@ fn part_involves_fragment_ref(part: &OutputPart) -> bool {
 /// Resolve glue and split into per-line output with associated tags and
 /// element-attachment data.
 ///
-/// A resolved line: text, tags, and element-attachment data (issue #2108,
-/// [`OutputPart::ElementAttach`]'s own doc).
-pub(crate) type ResolvedLine = (String, Vec<String>, BTreeMap<String, String>);
+/// A resolved line: text, tags, element-attachment data (issue #2108,
+/// [`OutputPart::ElementAttach`]'s own doc), and the line's source
+/// location (W7/#3300 transcript provenance — the FIRST `LineRef` part's
+/// line-table `source_location`; `None` when the line has no `LineRef`,
+/// e.g. pure interpolation, or its entry carries no location).
+pub(crate) type ResolvedLine = (
+    String,
+    Vec<String>,
+    BTreeMap<String, String>,
+    Option<brink_format::SourceLocation>,
+);
 
 /// [`ResolvedLine`] plus the issue #2091 suppression flag —
 /// [`resolve_lines_annotated`]'s own unfiltered form.
-pub(crate) type AnnotatedResolvedLine = (String, Vec<String>, bool, BTreeMap<String, String>);
+pub(crate) type AnnotatedResolvedLine = (
+    String,
+    Vec<String>,
+    bool,
+    BTreeMap<String, String>,
+    Option<brink_format::SourceLocation>,
+);
 
 /// Each returned element is `(line_text, line_tags, line_element_data)`.
 /// Tags reset every line; element-attachment data (issue #2108) persists
@@ -947,7 +961,9 @@ pub(crate) fn resolve_lines(
         fragments,
     )
     .into_iter()
-    .filter_map(|(text, tags, suppressed, element)| (!suppressed).then_some((text, tags, element)))
+    .filter_map(|(text, tags, suppressed, element, source)| {
+        (!suppressed).then_some((text, tags, element, source))
+    })
     .collect()
 }
 
@@ -1030,6 +1046,10 @@ pub(crate) fn resolve_lines_annotated(
     // from the caller's already-accumulated state (see this function's own
     // `seed_element` doc) rather than always starting empty.
     let mut current_element: BTreeMap<String, String> = seed_element;
+    // The line's provenance (W7/#3300): the FIRST `LineRef`'s line-table
+    // `source_location`. First wins — a glue-joined line spans several
+    // refs and the line "is" where it starts. Reset per line.
+    let mut current_source: Option<brink_format::SourceLocation> = None;
     let mut saw_fragment_ref = false;
     let mut after_glue = false;
 
@@ -1042,6 +1062,18 @@ pub(crate) fn resolve_lines_annotated(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                if current_source.is_none()
+                    && let OutputPart::LineRef {
+                        container_idx,
+                        line_idx,
+                        ..
+                    } = part
+                {
+                    current_source = line_tables
+                        .get(*container_idx as usize)
+                        .and_then(|t| t.get(*line_idx as usize))
+                        .and_then(|entry| entry.source_location.clone());
+                }
                 if part_involves_fragment_ref(part) {
                     saw_fragment_ref = true;
                 }
@@ -1077,6 +1109,7 @@ pub(crate) fn resolve_lines_annotated(
                         mem::take(&mut current_tags),
                         suppressed,
                         current_element.clone(),
+                        current_source.take(),
                     ));
                     current_text = String::new();
                     saw_fragment_ref = false;
@@ -1117,7 +1150,13 @@ pub(crate) fn resolve_lines_annotated(
     // issue suppresses.
     let trimmed = current_text.trim().to_string();
     let suppressed = trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
-    lines.push((trimmed, current_tags, suppressed, current_element));
+    lines.push((
+        trimmed,
+        current_tags,
+        suppressed,
+        current_element,
+        current_source,
+    ));
 
     lines
 }
@@ -1167,14 +1206,14 @@ mod tests {
             // per-line element data end to end instead.
             self.flush_lines(&p, &[], None)
                 .into_iter()
-                .map(|(text, tags, _element)| (text, tags))
+                .map(|(text, tags, _element, _source)| (text, tags))
                 .collect()
         }
 
         fn test_take_first_line(&mut self) -> Option<(String, Vec<String>)> {
             let p = test_dummy_program();
             self.take_first_line(&p, &[], None)
-                .map(|(text, tags, _element)| (text, tags))
+                .map(|(text, tags, _element, _source)| (text, tags))
         }
 
         fn test_end_capture(&mut self) -> Option<String> {
@@ -2020,7 +2059,7 @@ mod tests {
         let lines: Vec<(String, Vec<String>)> =
             resolve_lines(&parts, &program, &line_tables, None, &fragments)
                 .into_iter()
-                .map(|(text, tags, _element)| (text, tags))
+                .map(|(text, tags, _element, _source)| (text, tags))
                 .collect();
         assert_eq!(
             lines,
@@ -2079,7 +2118,7 @@ mod tests {
         let lines: Vec<(String, Vec<String>)> =
             resolve_lines(&parts, &program, &line_tables, None, &fragments)
                 .into_iter()
-                .map(|(text, tags, _element)| (text, tags))
+                .map(|(text, tags, _element, _source)| (text, tags))
                 .collect();
         assert_eq!(
             lines,
@@ -2122,7 +2161,7 @@ mod tests {
         let lines: Vec<(String, Vec<String>)> =
             resolve_lines(&parts, &program, &line_tables, None, &fragments)
                 .into_iter()
-                .map(|(text, tags, _element)| (text, tags))
+                .map(|(text, tags, _element, _source)| (text, tags))
                 .collect();
         assert_eq!(
             lines,
@@ -2173,7 +2212,7 @@ mod tests {
         // here, so 5 iterations is generous headroom against a stall.
         for _ in 0..5 {
             match buf.take_first_line(&program, &line_tables, None) {
-                Some((text, _, _)) => got.push(text),
+                Some((text, _, _, _)) => got.push(text),
                 None => break,
             }
         }
@@ -2393,7 +2432,7 @@ mod tests {
         buf.push_newline();
         buf.push_element_attach_end();
 
-        let (first_text, _, first_element) = buf
+        let (first_text, _, first_element, _) = buf
             .take_first_line(&p, &[], None)
             .expect("first line of the attach run");
         assert_eq!(first_text, "Line one.\n");
@@ -2416,7 +2455,7 @@ mod tests {
         // Pushed after the run closed — must not inherit "speaker": "VENDOR".
         buf.push_text("Unattached.");
         buf.push_newline();
-        let (after_text, _, after_element) = buf
+        let (after_text, _, after_element, _) = buf
             .take_first_line(&p, &[], None)
             .expect("line after the closed run");
         assert_eq!(after_text, "Unattached.\n");
@@ -2450,12 +2489,12 @@ mod tests {
         buf.push_text("Dialogue.");
         buf.push_newline();
 
-        let (first_text, _, first_element) =
+        let (first_text, _, first_element, _) =
             buf.take_first_line(&p, &[], None).expect("narration line");
         assert_eq!(first_text, "Intro.\n");
         assert!(first_element.is_empty(), "{first_element:?}");
 
-        let (second_text, _, second_element) =
+        let (second_text, _, second_element, _) =
             buf.take_first_line(&p, &[], None).expect("dialogue line");
         assert_eq!(second_text, "Dialogue.\n");
         assert_eq!(
@@ -2464,7 +2503,7 @@ mod tests {
         );
 
         buf.reset_cursor();
-        let (text_after_reset, _, element_after_reset) = buf
+        let (text_after_reset, _, element_after_reset, _) = buf
             .take_first_line(&p, &[], None)
             .expect("re-drained narration line after reset_cursor");
         assert_eq!(text_after_reset, "Intro.\n");

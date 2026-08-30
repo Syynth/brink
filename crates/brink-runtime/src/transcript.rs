@@ -371,7 +371,7 @@ pub fn render_transcript(
     // (`(text, tags)`) stays unchanged either way.
     resolve_lines(parts, program, line_tables, resolver, fragments)
         .into_iter()
-        .map(|(text, tags, _element)| (text, tags))
+        .map(|(text, tags, _element, _source)| (text, tags))
         .collect()
 }
 

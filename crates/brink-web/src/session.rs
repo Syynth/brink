@@ -1568,6 +1568,47 @@ mod debug_control_tests {
         );
     }
 
+    // ── W7/#3300: transcript provenance ─────────────────────────────────
+    //
+    // Every delivered text line carries its `source` — the line-table
+    // entry's source location — on BOTH drive roads, so the Player can
+    // make each transcript row a provenance handle (hover file:line,
+    // ⌘-click reveals).
+    #[test]
+    fn delivered_lines_carry_source_provenance_on_both_roads() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        // Journaled road: continue_single's Line carries `source`.
+        let first = json(&session.continue_single().expect("continue_single"));
+        let source = &first["source"];
+        assert_eq!(source["file"], serde_json::json!("main.ink"), "{first}");
+        let start = source["range_start"].as_u64().expect("range_start");
+        let end = source["range_end"].as_u64().expect("range_end");
+        let text_at =
+            &src[usize::try_from(start).expect("usize")..usize::try_from(end).expect("usize")];
+        assert!(
+            text_at.contains("First line."),
+            "the range must cover the line's own source text, got {text_at:?}"
+        );
+
+        // Debug road: a drained line carries the same field.
+        let stop = json(&session.debug_run_to_line(None).expect("debug_run_to_line"));
+        let lines = stop["lines"].as_array().expect("lines");
+        let second = lines
+            .iter()
+            .find(|l| l["text"].as_str().unwrap_or("").contains("Second line."))
+            .expect("the crossed line is in the outcome");
+        assert_eq!(second["source"]["file"], serde_json::json!("main.ink"));
+        let s2 = second["source"]["range_start"].as_u64().expect("start");
+        let e2 = second["source"]["range_end"].as_u64().expect("end");
+        assert!(
+            src[usize::try_from(s2).expect("usize")..usize::try_from(e2).expect("usize")]
+                .contains("Second line."),
+            "debug-road provenance must cover the line's source too"
+        );
+    }
+
     #[test]
     fn breakpoint_add_remove_list_roundtrip() {
         let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
