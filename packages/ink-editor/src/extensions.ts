@@ -66,6 +66,7 @@ import { hirOverlayExtension } from "./hir-overlay.js";
 import { proseExtension } from "./prose.js";
 import type { ProseChecker, ProseLint } from "./prose.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
+import { editorActionKeymap } from "./editor-actions.js";
 
 /**
  * The indent width when the project declares none — mirrors
@@ -635,6 +636,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     // elementTypeField via state.facet(documentHandleFacet).
     documentHandleFacet.of(options.handleSlot ?? null),
     dialectCompartment.of(dialectFacet.of(resolvedDialect)),
+    // The rebindable editor-action chords (rename, references, code
+    // actions, argument form, element picker) — one keymap in a
+    // compartment, dispatching into whichever feature runners the options
+    // above wired. Hosts rebind live via `setEditorActionKeys`.
+    editorActionKeymap(),
     elementTypeField,
     theme,
     // The project's indent width (#3149) — drives the guide spacing below

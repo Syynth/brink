@@ -31,6 +31,10 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CodeAction } from "@brink/wasm-types";
 import { codeActionsExtension } from "../code-actions.js";
+// The chord moved out of codeActionsExtension into the shared actions
+// keymap (editor-actions.ts) — real editors get it from the brinkStudio
+// baseline, so a bare mount must add it to keep Ctrl-. opening the menu.
+import { editorActionKeymap } from "../editor-actions.js";
 
 const DOC = "=== opening ===\nThe lights dim.\n-> END\n";
 
@@ -46,6 +50,7 @@ function mount(onSelect?: (action: CodeAction) => void): EditorView {
     state: EditorState.create({
       doc: DOC,
       extensions: [
+        editorActionKeymap(),
         codeActionsExtension({
           getCodeActions: () => ACTIONS,
           onSelect,

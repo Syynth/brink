@@ -8,6 +8,7 @@ import { findTransition, lineHasContent, executeAction, buildContext, tryDialect
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import { registerDismissible } from "./dismiss-registry.js";
+import { editorActionRunners } from "./editor-actions.js";
 
 // Tab / Shift-Tab are deliberately NOT here (ruled 2026-08-24, "the line
 // conversion stuff needs to be stripped out for now"): they indent/dedent
@@ -350,8 +351,9 @@ function dialectTabRow(key: "Tab" | "Shift-Tab", view: EditorView): boolean {
 }
 
 export function brinkKeymap(): Extension {
-  return Prec.highest(
-    keymap.of([
+  return [
+    Prec.highest(
+      keymap.of([
       ...HANDLED_KEYS.map((key) => ({
         key,
         run: (view: EditorView) => handleKey(key, view),
@@ -368,7 +370,14 @@ export function brinkKeymap(): Extension {
       { key: "End", run: handleEnd },
       { key: "ArrowRight", run: handleArrowRight },
       { key: "ArrowLeft", run: handleArrowLeft },
-      { key: "Alt-Enter", run: showInlineElementPicker },
-    ]),
-  );
+      ]),
+    ),
+    // The element picker is a named ACTION, not editing behaviour like the
+    // rows above — its chord (default Alt-Enter) lives in the shared
+    // editor-actions keymap, so it is rebindable and listed in Settings.
+    editorActionRunners.of({
+      id: "editor.insertElement",
+      run: showInlineElementPicker,
+    }),
+  ];
 }
