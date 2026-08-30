@@ -77,7 +77,12 @@ export const createSavesSlice: StateCreator<StudioState, [], [], SavesSlice> = (
     }
     const provider = get()._provider;
     if (!provider || typeof provider.loadCheckpoint !== "function") return;
-    const report = provider.loadCheckpoint(payload.state, payload.meta.knotPath);
+    const report = provider.loadCheckpoint(
+      payload.state,
+      payload.meta.knotPath,
+      "Loaded",
+      payload.transcript ?? null,
+    );
     if (report === null) return;
     set({ attachedSlot: attach ? { location, id } : null });
   };
@@ -140,7 +145,13 @@ export const createSavesSlice: StateCreator<StudioState, [], [], SavesSlice> = (
         checksum: st.programChecksum,
         savedAt: Date.now(),
       };
-      const written = await stores[location].write(id, { meta, state });
+      const written = await stores[location].write(id, {
+        meta,
+        state,
+        // Structural (RULED 2026-08-30): the part stream, not resolved
+        // text — a load re-renders it against whatever compile is current.
+        transcript: provider.exportTranscript?.() ?? undefined,
+      });
       set({ attachedSlot: { location, id: written.id } });
       await get().refreshSaves();
       get()._notify?.({

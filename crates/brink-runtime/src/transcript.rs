@@ -375,6 +375,24 @@ pub fn render_transcript(
         .collect()
 }
 
+/// Like [`render_transcript`], but keeps each line's provenance — the first
+/// `LineRef`'s line-table `source_location` (the same rule the live
+/// delivery stream uses, W7/#3300). The studio's re-render road (RULED
+/// 2026-08-30, "Studio saves carry the structural transcript") needs the
+/// provenance chips to survive a restore, not just the text.
+pub fn render_transcript_with_source(
+    parts: &[OutputPart],
+    program: &Program,
+    line_tables: &[Vec<brink_format::LineEntry>],
+    resolver: Option<&dyn brink_format::PluralResolver>,
+    fragments: &[crate::output::Fragment],
+) -> Vec<(String, Vec<String>, Option<brink_format::SourceLocation>)> {
+    resolve_lines(parts, program, line_tables, resolver, fragments)
+        .into_iter()
+        .map(|(text, tags, _element, source)| (text, tags, source))
+        .collect()
+}
+
 // ── Part codec ────────────────────────────────────────────────────────────
 //
 // One shared encode/decode pair for `OutputPart`, used by both the

@@ -1365,6 +1365,41 @@ export interface SourceLocation {
   range_end: number;
 }
 
+/** One persisted structural-transcript part (RULED 2026-08-30, "Studio
+ *  saves carry the structural transcript"): the wire mirror of
+ *  `brink-web`'s `transcript_json::PartJson`. `line` is a deferred
+ *  line-table reference — `container`/`line` index the compile the
+ *  transcript is RENDERED against, not save-time text; `slots` are
+ *  runtime `Value`s in their serde-JSON shape (opaque here). */
+export type TranscriptPart =
+  | { part: "text"; text: string }
+  | { part: "line"; container: number; line: number; slots?: unknown[]; flags?: number }
+  | { part: "value"; value: unknown }
+  | { part: "newline" }
+  | { part: "spring" }
+  | { part: "glue" }
+  | { part: "tag"; tag: string };
+
+/** The structural-transcript envelope `exportTranscript` returns and
+ *  `renderTranscript` consumes — human-readable JSON (the `.brkt`
+ *  content model; binary stays the shipping-game format). `checksum` is
+ *  the exporting compile's CRC-32, advisory only: rendering against a
+ *  DIFFERENT compile is the point (edit → reload re-renders). */
+export interface StructuralTranscript {
+  version: number;
+  checksum: number;
+  parts: TranscriptPart[];
+  fragments?: { parts: TranscriptPart[]; tags?: string[] }[];
+}
+
+/** One line of a re-rendered structural transcript: resolved against the
+ *  rendering session's CURRENT program/line tables, provenance included. */
+export interface RenderedTranscriptLine {
+  text: string;
+  tags: string[];
+  source?: SourceLocation;
+}
+
 /** One breakpoint: an unconditional halt at a `(container_idx, offset)`
  *  bytecode position, checked before that instruction executes. `id`
  *  addresses it for `debugBreakpointRemove`/`debugBreakpointSetEnabled`. */

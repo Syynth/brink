@@ -164,6 +164,44 @@
   opacity: 0.35;
   cursor: default;
 }
+/* Toolbar collapse (RULED 2026-08-30): sub-sections fold one at a time
+   into the ⋯ overflow menu when the pane is too narrow. Overflow stays
+   visible — the menu must escape the toolbar box; a too-wide frame
+   lasts only until the ResizeObserver's collapse step lands. */
+.brink-studio .player-pane .header .toolbar .player-overflow {
+  position: relative;
+  display: inline-flex;
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+  white-space: nowrap;
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:hover:not(:disabled) {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}
+.brink-studio .player-pane .header .toolbar .player-overflow-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Continue"],
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Pause"] {
   color: var(--bs-warning);

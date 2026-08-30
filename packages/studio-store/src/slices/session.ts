@@ -97,6 +97,8 @@ export interface SessionSlice {
   sessionReloadedAt: number | null;
   /** Set the Player prose size (Settings); clamped, 0 resets to scale. */
   setPlayerFontSize(px: number): void;
+  /** One-shot fast-forward (RULED 2026-08-30) — run to the next stop. */
+  revealMaximally(): void;
   /**
    * Byte-range → editor terms converter for transcript provenance
    * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
@@ -310,6 +312,10 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
     setSourceByteResolver(resolver) {
       set({ _resolveSourceBytes: resolver });
+    },
+
+    revealMaximally() {
+      get()._provider?.continueMaximally?.();
     },
 
     setSessionPaced(delayMs) {

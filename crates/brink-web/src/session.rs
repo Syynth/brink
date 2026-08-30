@@ -851,6 +851,64 @@ impl WebSession {
         serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Export the session's structural transcript as JSON (RULED
+    /// 2026-08-30, "Studio saves carry the structural transcript"):
+    /// `OutputPart`s — `LineRef`s + slots, never resolved text — plus the
+    /// fragment store and the program checksum, in the human-readable
+    /// mirror of the `.brkt` content model (`transcript_json`). Pair with
+    /// [`Self::render_transcript`] to re-render against whatever program
+    /// is current at read time.
+    pub fn export_transcript(&self) -> Result<String, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let story = session.story();
+        let json = crate::transcript_json::export_transcript_json(
+            story.transcript(),
+            story.fragments(),
+            story.program().source_checksum(),
+        );
+        serde_json::to_string(&json).map_err(|e| JsError::new(&format!("export error: {e}")))
+    }
+
+    /// Render a structural-transcript JSON (from [`Self::export_transcript`],
+    /// possibly saved against an OLDER compile) against the CURRENT
+    /// program and line tables. Returns a JSON array of
+    /// `{ text, tags, source? }` lines — provenance included, so restored
+    /// transcript rows keep their chips. Cross-compile re-render is the
+    /// point (edit → reload re-renders the story-so-far); a `LineRef`
+    /// whose container no longer exists is dropped rather than erroring.
+    pub fn render_transcript(&self, json: &str) -> Result<String, JsError> {
+        let t: crate::transcript_json::TranscriptJson =
+            serde_json::from_str(json).map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let story = session.story();
+        let (parts, fragments) =
+            crate::transcript_json::decode_transcript_json(t, story.program().container_count());
+        let lines: Vec<crate::value_marshal::DebugOutputLineJs> =
+            brink_runtime::transcript::render_transcript_with_source(
+                &parts,
+                story.program(),
+                story.line_tables(),
+                None,
+                &fragments,
+            )
+            .into_iter()
+            .map(
+                |(text, tags, source)| crate::value_marshal::DebugOutputLineJs {
+                    text,
+                    tags,
+                    source: source.map(crate::value_marshal::source_location_to_js),
+                },
+            )
+            .collect();
+        serde_json::to_string(&lines).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Evaluate an ink function from the host, journaling a `Call` event. The
     /// function's own externals resolve through the isolated (non-journaling,
     /// no-op) handler — the visible story and journal window are untouched
@@ -1675,6 +1733,98 @@ mod debug_control_tests {
                 .contains("Second line."),
             "debug-road provenance must cover the line's source too"
         );
+    }
+
+    // ── Structural transcript (RULED 2026-08-30) ────────────────────────
+    //
+    // A save's transcript is `OutputPart`s, not resolved text: exported as
+    // JSON from one session and re-rendered on ANOTHER session whose
+    // program was compiled from EDITED source, the restored lines must
+    // carry the NEW text — the whole point of the format. Provenance
+    // survives the round trip; a container index the edited program no
+    // longer has is dropped, never a panic.
+    #[test]
+    fn structural_transcript_rerenders_against_an_edited_program() {
+        let src_a = "-> top\n=== top ===\nThe lantern flickers.\nA door creaks.\n-> END\n";
+        // Same structure, edited prose — indices line up, text differs.
+        let src_b = "-> top\n=== top ===\nThe lantern GUTTERS OUT.\nA door creaks.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_a), None, None).expect("session constructs");
+        loop {
+            let line = json(&session_a.continue_single().expect("continue"));
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        let exported = session_a.export_transcript().expect("export");
+        let envelope = json(&exported);
+        assert_eq!(envelope["version"], serde_json::json!(1));
+        assert!(
+            envelope["parts"]
+                .as_array()
+                .expect("parts array")
+                .iter()
+                .any(|p| p["part"] == serde_json::json!("line")),
+            "the export must be structural (LineRefs), not resolved text: {envelope}"
+        );
+
+        // Fresh session on the EDITED compile; render the old transcript.
+        let session_b =
+            WebSession::new(&debug_bytes(src_b), None, None).expect("session constructs");
+        let rendered = json(&session_b.render_transcript(&exported).expect("render"));
+        let lines = rendered.as_array().expect("array of lines");
+        let texts: Vec<&str> = lines.iter().filter_map(|l| l["text"].as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("GUTTERS OUT")),
+            "re-render must show the EDITED text, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("flickers")),
+            "the save-time prose must NOT survive a re-render, got {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("A door creaks.")),
+            "untouched lines re-render unchanged, got {texts:?}"
+        );
+        // Provenance survives — and points into the CURRENT source.
+        let first = lines
+            .iter()
+            .find(|l| l["text"].as_str().unwrap_or("").contains("GUTTERS"))
+            .expect("edited line present");
+        let s = first["source"]["range_start"].as_u64().expect("start");
+        let e = first["source"]["range_end"].as_u64().expect("end");
+        assert!(
+            src_b[usize::try_from(s).expect("usize")..usize::try_from(e).expect("usize")]
+                .contains("GUTTERS OUT"),
+            "provenance must cover the edited line in the NEW source"
+        );
+    }
+
+    #[test]
+    fn structural_transcript_render_drops_out_of_range_containers() {
+        let src_big = "-> a\n=== a ===\nAlpha.\n-> b\n=== b ===\nBeta.\n-> END\n";
+        let src_small = "-> a\n=== a ===\nAlpha.\n-> END\n";
+
+        let session_a =
+            WebSession::new(&debug_bytes(src_big), None, None).expect("session constructs");
+        loop {
+            let line = json(&session_a.continue_single().expect("continue"));
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        let exported = session_a.export_transcript().expect("export");
+
+        let session_b =
+            WebSession::new(&debug_bytes(src_small), None, None).expect("session constructs");
+        // Must not panic; whatever containers still exist render.
+        let rendered = json(
+            &session_b
+                .render_transcript(&exported)
+                .expect("render survives"),
+        );
+        assert!(rendered.is_array(), "renders to a line array: {rendered}");
     }
 
     // ── W14/#3307: the LoadReport reaches the session road ──────────────

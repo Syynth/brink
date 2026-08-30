@@ -36,6 +36,7 @@ pub mod protocol;
 mod session;
 mod speculation;
 mod story_runner;
+mod transcript_json;
 mod value_marshal;
 
 pub use classifier::ClassifierSession;

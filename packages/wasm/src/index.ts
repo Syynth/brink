@@ -91,6 +91,8 @@ import type {
   SpeculationResult,
   TypedValue,
   ProjectSource,
+  StructuralTranscript,
+  RenderedTranscriptLine,
 } from "@brink/wasm-types";
 
 import {
@@ -2850,6 +2852,25 @@ export class StorySessionHandle {
     const report = JSON.parse(this.session.load_state(JSON.stringify(state))) as LoadReport;
     this.noteJournalActivity();
     return report;
+  }
+
+  /** Export the structural transcript (RULED 2026-08-30): `OutputPart`s
+   * — line refs + slots, never resolved text — as human-readable JSON.
+   * Pair with {@link renderTranscript} to re-render the story-so-far
+   * against whatever compile is current at read time. */
+  exportTranscript(): StructuralTranscript {
+    return JSON.parse(this.session.export_transcript()) as StructuralTranscript;
+  }
+
+  /** Render a structural transcript (possibly exported against an OLDER
+   * compile) against THIS session's current program and line tables.
+   * Cross-compile re-render is the point — an edited line's restored row
+   * shows the edited text; a container the current program no longer has
+   * is dropped, never an error. */
+  renderTranscript(transcript: StructuralTranscript): RenderedTranscriptLine[] {
+    return JSON.parse(
+      this.session.render_transcript(JSON.stringify(transcript)),
+    ) as RenderedTranscriptLine[];
   }
 
   /** Evaluate an ink function from the host, journaling a `call` event. The

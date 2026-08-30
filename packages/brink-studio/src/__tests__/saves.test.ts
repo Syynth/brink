@@ -42,6 +42,12 @@ function scriptedSession() {
     hasDebugInfo: vi.fn(() => true),
     debugBreakpoints: vi.fn(() => []),
     saveState: vi.fn((): SaveState => STATE),
+    exportTranscript: vi.fn(() => ({
+      version: 1,
+      checksum: 7,
+      parts: [{ part: "line", container: 0, line: 0 }],
+    })),
+    renderTranscript: vi.fn(() => [{ text: "the story so far", tags: [] }]),
     loadState: vi.fn(() => ({
       unknown_globals: [],
       unresolved_renames: [],
@@ -117,6 +123,24 @@ describe("save/load (W14/#3307)", () => {
     await store.getState().saveCurrentState();
     // The fork's save allocated a NEW slot; the checkpoint is untouched.
     expect(store.getState().saveSlots.local).toHaveLength(2);
+  });
+
+  it("a save carries the STRUCTURAL transcript; a load re-renders it (RULED 2026-08-30)", async () => {
+    const { store, session, stores } = storeWith();
+    await store.getState().saveCurrentState();
+
+    // The payload stores the part stream — not resolved text.
+    expect(session.exportTranscript).toHaveBeenCalled();
+    const payload = await stores.local.read("s1");
+    expect(payload?.transcript).toMatchObject({ version: 1 });
+
+    await store.getState().loadSave("local", "s1");
+    // Rendered against the CURRENT program at load time — the seam that
+    // makes an edited line's restored row show the edited text.
+    expect(session.renderTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 1 }),
+    );
+    expect(store.getState().sessionText.join(" ")).toContain("the story so far");
   });
 
   it("removing the attached slot detaches", async () => {

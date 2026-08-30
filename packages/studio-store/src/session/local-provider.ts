@@ -83,6 +83,7 @@ import type {
   SessionJournal,
   SessionLine,
   StepMode,
+  StructuralTranscript,
 } from "@brink/wasm-types";
 
 import { FlowSessionProvider } from "./flow-provider.js";
@@ -342,9 +343,14 @@ export class LocalSessionProvider implements DebugSessionProvider {
       let migrateState: SaveState | null = null;
       let migrateKnot: string | null = null;
       let migrateTurn = 0;
+      let migrateTranscript: StructuralTranscript | null = null;
 
       if (prev) {
         migrateState = this.capture(() => prev.saveState());
+        // The story-so-far, structurally (RULED 2026-08-30) — captured
+        // BEFORE the reload touches `prev`, re-rendered on the session
+        // that survives it, against the NEW program's line tables.
+        migrateTranscript = this.capture(() => prev.exportTranscript());
         migrateKnot = this.debugState?.current_location ?? null;
         migrateTurn = this.debugState?.turn_index ?? 0;
         this.stopPacedPump();
@@ -403,7 +409,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
           if (
             replayedTurn < migrateTurn &&
             migrateState !== null &&
-            this.migrateInto(migrateState, migrateKnot)
+            this.migrateInto(migrateState, migrateKnot, migrateTranscript)
           ) {
             return;
           }
@@ -416,7 +422,10 @@ export class LocalSessionProvider implements DebugSessionProvider {
         // Replay diverged or failed (W15): migrate the DURABLE state
         // instead of truncating — globals/visits/turn survive the edit;
         // the position drops to the recorded knot (honest fallback).
-        if (migrateState !== null && this.migrateInto(migrateState, migrateKnot)) {
+        if (
+          migrateState !== null &&
+          this.migrateInto(migrateState, migrateKnot, migrateTranscript)
+        ) {
           return;
         }
         // No snapshot to migrate (or migration itself failed): the old
@@ -428,7 +437,11 @@ export class LocalSessionProvider implements DebugSessionProvider {
       // The reload threw and a FRESH session replaced the old one: the
       // journal is gone, but the durable state can still migrate (W15) —
       // previously this dropped everything.
-      if (prev && migrateState !== null && this.migrateInto(migrateState, migrateKnot)) {
+      if (
+        prev &&
+        migrateState !== null &&
+        this.migrateInto(migrateState, migrateKnot, migrateTranscript)
+      ) {
         return;
       }
 
@@ -590,6 +603,52 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
   }
 
+  /**
+   * One-shot fast-forward (RULED 2026-08-30): run to the next stop —
+   * choices, breakpoint, terminal — ink's `ContinueMaximally` shape.
+   * Delivery honors the paced/all-at-once App setting; nothing sticky:
+   * the next ordinary reveal is single-line again (equivalent to
+   * enable-auto → continue → re-disable-auto, as one gesture).
+   */
+  continueMaximally(): void {
+    if (!sessionCanContinue(this.status)) return;
+    const session = this.session;
+    if (!session) return;
+    if (this.pacedDelayMs > 0) {
+      // Paced: reveal now, keep pumping until a stop — the pump's own
+      // conditions (status/paused) end it; no auto flag involved.
+      this.revealOne();
+      if (this.status === "running" && !this.paused) {
+        this.stopPacedPump();
+        this.pacedTimer = setTimeout(() => {
+          this.pacedTick();
+        }, this.pacedDelayMs);
+      }
+      return;
+    }
+    // All at once: the batch road (debug-driven when breakpoints are
+    // armed, so a hit still stops the run).
+    try {
+      if (this.debugDriven()) {
+        this.advanceDebug("run", false);
+      } else {
+        const lines = session.continueToPause();
+        this.appendLines(lines);
+        const last = lines.at(-1);
+        this.status = last ? statusOfLine(last.type) : this.status;
+        this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.status = "error";
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
+      this.choices = [];
+      this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
+    }
+    this.refreshDebug();
+    this.emit();
+  }
+
   continue(): void {
     // Only advance when the session actually can (mid-flow or at a `-> DONE`
     // turn boundary). At a choice point the VM is blocked awaiting input, so a
@@ -724,12 +783,25 @@ export class LocalSessionProvider implements DebugSessionProvider {
     return this.capture(() => this.session?.saveState() ?? null);
   }
 
+  /** Export the structural transcript (RULED 2026-08-30) — the part
+   * stream a save carries, re-renderable against any later compile. */
+  exportTranscript(): StructuralTranscript | null {
+    return this.capture(() => this.session?.exportTranscript() ?? null);
+  }
+
   /** Hot-reload migration (W15/#3308): the checkpoint road with the
    * "reloaded" framing — restore the snapshot into the (fresh or
    * replay-failed) session on the NEW program, divert to the recorded
    * knot, flash the chip. Returns whether it applied. */
-  private migrateInto(state: SaveState, knotPath: string | null): boolean {
-    const report = this.loadCheckpoint(state, knotPath, "Reloaded");
+  private migrateInto(
+    state: SaveState,
+    knotPath: string | null,
+    transcript: StructuralTranscript | null,
+  ): boolean {
+    // The live transcript survives a hot reload (RULED 2026-08-30) — and
+    // arrives STRUCTURALLY, so re-rendering it against the new program
+    // shows the edited prose, the whole point of the format.
+    const report = this.loadCheckpoint(state, knotPath, "Reloaded", transcript);
     if (report === null) return false;
     this.reloadedAt = Date.now();
     this.emit();
@@ -740,15 +812,17 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * Load a checkpoint (W14/#3307): restore the durable state, divert to
    * the slot's recorded knot (the save format carries no execution
    * position — knot-entry granularity is the honest v1), and reveal.
-   * The transcript starts fresh ("you're just here again", the restore
-   * precedent); a non-clean `LoadReport` surfaces as a transcript notice
-   * — never a silent load (RULED). Returns the report, `null` without a
-   * live session.
+   * The story-so-far arrives in STRUCTURAL form (RULED 2026-08-30) and
+   * is re-rendered against the session's CURRENT program — an edited
+   * line's restored row shows the edited text; a non-clean `LoadReport`
+   * surfaces as a transcript notice — never a silent load (RULED).
+   * Returns the report, `null` without a live session.
    */
   loadCheckpoint(
     state: SaveState,
     knotPath: string | null,
     verb: "Loaded" | "Reloaded" = "Loaded",
+    transcript: StructuralTranscript | null = null,
   ): LoadReport | null {
     const session = this.session;
     if (!session) return null;
@@ -772,7 +846,16 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.stopPacedPump();
     this.paused = false;
     this.lastOutcome = null;
-    this.transcript = [];
+    // The caller supplies the story-so-far (a save's stored transcript,
+    // or the live one on a hot reload) — dropping it was the RULED-away
+    // behavior (2026-08-30). Rendered HERE, against the program this
+    // session now runs, not at save time.
+    this.transcript =
+      transcript === null
+        ? []
+        : (this.capture(() => session.renderTranscript(transcript)) ?? []).map(
+            (line) => transcriptLine(line.text, line.tags, line.source),
+          );
     this.choices = [];
     this.status = "running";
     const drops =
@@ -787,7 +870,10 @@ export class LocalSessionProvider implements DebugSessionProvider {
         parts.push(`unknown globals: ${report.unknown_globals.join(", ")}`);
       if (report.unresolved_renames.length > 0)
         parts.push(`unresolved renames: ${report.unresolved_renames.join(", ")}`);
-      this.transcript = [transcriptNotice(`${verb} — ${parts.join("; ")}.`)];
+      this.transcript = [
+        ...this.transcript,
+        transcriptNotice(`${verb} — ${parts.join("; ")}.`),
+      ];
     }
     if (knotPath !== null) {
       try {

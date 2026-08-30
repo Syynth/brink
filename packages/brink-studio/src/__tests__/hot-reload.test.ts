@@ -28,6 +28,12 @@ function scriptedSession(overrides: Record<string, unknown> = {}) {
     programModel: vi.fn(() => ({ checksum: "0xnew" })),
     programInkt: vi.fn(() => ""),
     saveState: vi.fn((): SaveState => STATE),
+    exportTranscript: vi.fn(() => ({
+      version: 1,
+      checksum: 7,
+      parts: [{ part: "line", container: 0, line: 0 }],
+    })),
+    renderTranscript: vi.fn(() => [{ text: "re-rendered prose", tags: [] }]),
     loadState: vi.fn(() => ({
       unknown_globals: [],
       unresolved_renames: [],
@@ -112,6 +118,31 @@ describe("hot reload (W15/#3308)", () => {
     expect(session.loadState).toHaveBeenCalledWith(STATE);
     expect(session.goToPath).toHaveBeenCalledWith("barter");
     expect(store.getState().sessionReloadedAt).not.toBeNull();
+  });
+
+  it("a migration re-renders the STRUCTURAL transcript against the new program (RULED 2026-08-30)", () => {
+    const session = scriptedSession({
+      reload: vi.fn(
+        (): ReplayOutcome => ({
+          type: "diverged",
+          at_event: 2,
+          expected: {} as never,
+          found: {} as never,
+        }),
+      ),
+    });
+    const { store, provider } = bind(session);
+    provider.pause();
+    provider.start(new Uint8Array([1]));
+
+    // Captured from the OLD session before the reload touched it…
+    expect(session.exportTranscript).toHaveBeenCalled();
+    // …and re-rendered on the surviving session — LineRefs against the
+    // NEW program's line tables, so edited prose shows its edited text.
+    expect(session.renderTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 1 }),
+    );
+    expect(store.getState().sessionText.join(" ")).toContain("re-rendered prose");
   });
 
   it("a FAILED replay migrates too", () => {

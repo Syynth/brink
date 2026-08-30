@@ -235,12 +235,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
   const saveCurrentState = useStudioStore((s) => s.saveCurrentState);
   const choices = useStudioStore((s) => s.sessionChoices);
-  const auto = useStudioStore((s) => s.sessionAuto);
-  const setSessionAuto = useStudioStore((s) => s.setSessionAuto);
-  // Hidden when the bound provider cannot switch modes (the flow provider only
-  // ever advances one line) — a visible control that does nothing is worse
-  // than no control (#3011).
-  const canAuto = useStudioStore((s) => s._provider?.capabilities.has("auto") ?? false);
+  // One-shot fast-forward (RULED 2026-08-30) — no sticky auto mode.
+  const revealMaximally = useStudioStore((s) => s.revealMaximally);
   // Transport (W5/#3298): render the debug cluster only for a debug-capable
   // provider (disabled-not-hidden while running, hidden entirely for an
   // observe-only provider — same posture as the Auto toggle above).
@@ -269,6 +265,59 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // Auto-scroll suspends while the author reads back (scrolled up), and
   // resumes when they return to the bottom (rebuild housekeeping).
   const stickToBottom = useRef(true);
+  // Toolbar collapse (RULED 2026-08-30): when the pane is too narrow,
+  // whole sub-sections fold into an overflow menu ONE GROUP AT A TIME —
+  // level 1 folds the transport cluster, level 2 the secondary controls
+  // (FF / Stop / Save / tags). Run, Restart, the chip and Maximize stay.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [collapse, setCollapse] = useState(0);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const expandAt = useRef<number[]>([]);
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const check = (): void => {
+      const overflowing = el.scrollWidth > el.clientWidth + 1;
+      setCollapse((c) => {
+        if (overflowing && c < 2) {
+          // Remember the width we gave up at — re-expand only with slack,
+          // so the boundary doesn't flap.
+          expandAt.current[c] = el.clientWidth + 56;
+          return c + 1;
+        }
+        if (!overflowing && c > 0 && el.clientWidth >= (expandAt.current[c - 1] ?? Infinity)) {
+          return c - 1;
+        }
+        return c;
+      });
+    };
+    // jsdom has no ResizeObserver — measure once and skip live tracking.
+    if (typeof ResizeObserver === "undefined") {
+      check();
+      return;
+    }
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    check();
+    return () => ro.disconnect();
+  }, []);
+  // Content changes overflow the toolbar without resizing it — a collapse
+  // step folding a group, but ALSO ordinary re-renders growing a control
+  // (found live: the status chip widening to "Waiting on choice" while
+  // the width held steady left a permanent overflow the ResizeObserver
+  // never saw). Re-measure after EVERY render; the check is two property
+  // reads, and setCollapse with an unchanged value schedules nothing.
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      setCollapse((c) => {
+        if (c >= 2) return c;
+        expandAt.current[c] = el.clientWidth + 56;
+        return c + 1;
+      });
+    }
+  });
 
   const ended = status === "ended" || status === "error";
   const hasPending = sessionCanContinue(status);
@@ -393,7 +442,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
-        <div className="toolbar">
+        <div className="toolbar" ref={toolbarRef}>
           <button
             className="player-transport-btn player-btn-run"
             title="Run — compile and start the story"
@@ -415,6 +464,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
             </svg>
           </button>
+          {collapse < 2 && (
+          <>
           <button
             className="player-transport-btn"
             title="Stop the story — back to the launcher"
@@ -438,25 +489,19 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <path d="M4 2v2.6h3.4V2M4 10V7h4v3" stroke="currentColor" strokeWidth="1.1" />
             </svg>
           </button>
-          {canAuto && (
-            <button
-              className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
-              title={
-                auto
-                  ? "Auto reveal on: a reveal runs to the next choice or pause (paced — one line at a time; configurable in Settings → Player)"
-                  : "Auto reveal off: each reveal advances a single line"
-              }
-              aria-label="Auto reveal"
-              aria-pressed={auto}
-              onClick={() => setSessionAuto(!auto)}
-            >
-              <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
-                <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
-                <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
-              </svg>
-            </button>
-          )}
-          {debugCapable && (
+          <button
+            className="player-transport-btn player-auto-btn"
+            title="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
+            aria-label="Fast-forward"
+            disabled={idle}
+            onClick={() => revealMaximally()}
+          >
+            <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+              <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
+              <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
+            </svg>
+          </button>
+          {debugCapable && collapse < 1 && (
             <span className="player-transport">
               <span className="player-transport-sep" />
               {paused ? (
@@ -547,6 +592,120 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               <circle cx="3.6" cy="3.6" r="0.9" fill="currentColor" />
             </svg>
           </button>
+          </>
+          )}
+          {collapse > 0 && (
+            <span className="player-overflow">
+              <button
+                className={"player-transport-btn" + (overflowOpen ? " active" : "")}
+                title="More controls"
+                aria-label="More controls"
+                aria-expanded={overflowOpen}
+                onClick={() => setOverflowOpen((o) => !o)}
+              >
+                {"⋯"}
+              </button>
+              {overflowOpen && (
+                <div
+                  className="player-overflow-menu"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setOverflowOpen(false);
+                  }}
+                >
+                  {debugCapable && (
+                    <>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused && status !== "running" && status !== "awaiting-choice"}
+                        onClick={() => {
+                          commands.dispatch(paused ? "debug.continue" : "debug.pause");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        {paused ? "Continue" : "Pause"}
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepOver");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Step over
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepInto");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Step into
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={!paused}
+                        onClick={() => {
+                          commands.dispatch("debug.stepOut");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Step out
+                      </button>
+                    </>
+                  )}
+                  {collapse >= 2 && (
+                    <>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          revealMaximally();
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Fast-forward
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          void saveCurrentState();
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Save state
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        disabled={idle}
+                        onClick={() => {
+                          commands.dispatch("story.stop");
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        Stop
+                      </button>
+                      <button
+                        className="player-overflow-item"
+                        onClick={() => {
+                          setShowTags((on) => {
+                            saveTagsToggle(!on);
+                            return !on;
+                          });
+                          setOverflowOpen(false);
+                        }}
+                      >
+                        {showTags ? "Hide line tags" : "Show line tags"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </span>
+          )}
           <button
             className={"player-status-chip " + chip.cls}
             title="Reveal the current line in the editor"

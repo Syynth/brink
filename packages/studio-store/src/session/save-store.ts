@@ -13,7 +13,7 @@
  * loading diverts there (knot-entry granularity, the honest v1).
  */
 
-import type { SaveState } from "@brink/wasm-types";
+import type { SaveState, StructuralTranscript } from "@brink/wasm-types";
 
 /** One checkpoint's listing row. */
 export interface SaveSlotMeta {
@@ -36,6 +36,11 @@ export interface SaveSlotMeta {
 export interface SavePayload {
   meta: SaveSlotMeta;
   state: SaveState;
+  /** The story-so-far at save time, in STRUCTURAL form (RULED
+   * 2026-08-30): the runtime's part stream as JSON, re-rendered against
+   * the CURRENT compile on load — so a save restored after an edit shows
+   * the edited prose. Absent on saves from before the ruling. */
+  transcript?: StructuralTranscript;
 }
 
 /** A checkpoint store. All operations async — the desktop host's file
@@ -96,7 +101,7 @@ export function localStorageSaveStore(
         }, 0) + 1).toString()}`;
       const meta: SaveSlotMeta = { ...payload.meta, id: slotId };
       const next = blob.slots.filter((s) => s.meta.id !== slotId);
-      next.push({ meta, state: payload.state });
+      next.push({ meta, state: payload.state, transcript: payload.transcript });
       persist({ version: 1, slots: next });
       return Promise.resolve(meta);
     },

@@ -25,6 +25,7 @@ import type {
   ProgramAddress,
   ProgramModel,
   SaveState,
+  StructuralTranscript,
   SourceLocation,
   StepMode,
 } from "@brink/wasm-types";
@@ -270,13 +271,28 @@ export interface SessionProvider {
    * line at a time in rapid succession; 0 = one batch. Optional — a
    * provider without a paced pump ignores the setting. */
   setPacedReveal?(delayMs: number): void;
+  /** One-shot fast-forward (RULED 2026-08-30): run to the next stop,
+   * honoring the paced setting; nothing sticky. Optional. */
+  continueMaximally?(): void;
   /** Capture the durable game state (W14/#3307); `null` without a live
    * session. Optional — observe-only providers skip checkpoints. */
   saveState?(): SaveState | null;
+  /** Export the STRUCTURAL transcript (RULED 2026-08-30): the runtime's
+   * part stream as human-readable JSON, re-renderable against any later
+   * compile. `null` without a live session. Optional. */
+  exportTranscript?(): StructuralTranscript | null;
   /** Load a checkpoint and divert to its recorded knot (W14/#3307) —
    * see the local provider's doc; returns the `LoadReport` (surfaced,
-   * never silent) or `null` without a live session. */
-  loadCheckpoint?(state: SaveState, knotPath: string | null): LoadReport | null;
+   * never silent) or `null` without a live session. `transcript` is the
+   * story-so-far in STRUCTURAL form (RULED 2026-08-30): re-rendered
+   * against the session's CURRENT program on restore, so an edited
+   * line's restored row shows the edited text. */
+  loadCheckpoint?(
+    state: SaveState,
+    knotPath: string | null,
+    verb?: "Loaded" | "Reloaded",
+    transcript?: StructuralTranscript | null,
+  ): LoadReport | null;
 
   dispose(): void;
 }
