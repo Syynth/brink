@@ -23,6 +23,8 @@
 
   /* ── Severity & story status ────────────────────────────────────── */
   --bs-todo: #d19a2f;
+  /* Draft files (#3145) — warm orange, clear of --bs-todo's yellower #d19a2f. */
+  --bs-draft: #d98f4f;
   --bs-todo-band: #a97410; /* Inky's own dark TODO band */
   --bs-todo-ink: #000000;
   --bs-info: #6d9e8e;
@@ -57,6 +59,9 @@
 
   /* ── Chromium-88-safe derived colors (#276) ─────────────────────── */
   --bs-accent-rgb: 109 158 142;
+  /* Search's second accent — soft violet, clearly apart from the #6d9e8e teal accent. */
+  --bs-accent-secondary: #a48bd0;
+  --bs-accent-secondary-rgb: 164 139 208;
   --bs-surface-bg-rgb: 31 31 31;
   --bs-panel-bg-rgb: 24 24 24;
   --bs-fg-rgb: 250 241 198;
