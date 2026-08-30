@@ -717,3 +717,38 @@
 .brink-studio .pv-size-key-bytecode { color: var(--bs-accent); }
 .brink-studio .pv-size-key-lines { color: var(--bs-info); }
 .brink-studio .pv-size-key-debug { color: var(--bs-accent-secondary); }
+
+/* Hover marks exactly the CURRENT level's click targets: groups at root,
+   a zoomed group's children inside it — never both at once. */
+.brink-studio .pv-size-map:not(:has(.pv-size-zoomed)) .pv-size-group:hover {
+  border-width: 2px;
+  filter: brightness(1.25);
+}
+.brink-studio .pv-size-group.pv-size-zoomed .pv-size-block:not(.pv-size-zoomed):hover {
+  border-width: 2px;
+  filter: brightness(1.25);
+  cursor: pointer;
+}
+/* Leaf detail: same size-aware rule as the labels — it exists at every
+   size and RENDERS only once the leaf zoom has grown the block to where a
+   sentence fits. */
+.brink-studio .pv-size-block .pv-size-block-detail {
+  display: none;
+}
+@container (min-width: 300px) and (min-height: 120px) {
+  .brink-studio .pv-size-block .pv-size-block-detail {
+    display: block;
+    margin-top: 8px;
+    font-size: var(--bs-font-small);
+    color: var(--bs-fg-muted);
+    font-family: system-ui, sans-serif;
+    max-width: 60ch;
+    text-align: left;
+    line-height: 1.6;
+  }
+}
+.brink-studio .pv-size-jump {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--bs-font-mono);
+}

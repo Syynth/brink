@@ -31,6 +31,10 @@ interface SizeNode {
   bytes: number;
   tone: Tone;
   children?: SizeNode[];
+  /** One sentence of what this block IS, shown when zoomed to a leaf. */
+  detail?: string;
+  /** A jump into the view that owns this block's contents. */
+  jump?: { label: string; view: "disasm" | "lines"; containerIdx?: number; scopePath?: string };
 }
 
 const fmtBytes = (n: number): string =>
@@ -44,9 +48,44 @@ function knotBytes(model: ProgramModel): SizeNode[] {
       k.children.reduce((s, c) => s + c.byte_size, 0) +
       (k.anon ?? []).reduce((s, a) => s + a.byte_size, 0) +
       k.children.reduce((s, c) => s + (c.anon ?? []).reduce((t, a) => t + a.byte_size, 0), 0);
-    return { key: `knot:${k.path}`, label: k.path, bytes: subtree, tone: "bytecode" as const };
+    const containers =
+      k.container_count + k.children.reduce((n, c) => n + c.container_count, 0);
+    const instructions =
+      k.disasm.length +
+      (k.anon ?? []).reduce((n, a) => n + a.disasm.length, 0) +
+      k.children.reduce(
+        (n, c) => n + c.disasm.length + (c.anon ?? []).reduce((m, a) => m + a.disasm.length, 0),
+        0,
+      );
+    return {
+      key: `knot:${k.path}`,
+      label: k.path,
+      bytes: subtree,
+      tone: "bytecode" as const,
+      detail: `${instructions} instructions across ${containers} container${containers === 1 ? "" : "s"}`,
+      jump: { label: "open in Disassembly ›", view: "disasm" as const, containerIdx: k.container_idx },
+    };
   });
 }
+
+/** What each remaining `.inkb` section IS — one honest sentence. */
+const SECTION_DETAIL: Record<string, string> = {
+  NameTable: "every interned name — knots, variables, labels — deduplicated",
+  Variables: "global declarations with their default values",
+  ListDefs: "LIST declarations",
+  ListItems: "the items of every LIST, with their ordinals",
+  Externals: "EXTERNAL declarations and their fallback bodies' addresses",
+  Labels: "weave-label address table",
+  ListLiterals: "list literal values referenced by bytecode",
+  AddressPaths: "stamped container paths — what saves and the graph address",
+  LiteralPool: "content-hash-deduplicated constants (PushLiteral)",
+  StructShapes: "STRUCT declarations — shape id and field names",
+  EffectRows: "per-knot factored effect rows (resume scheduling)",
+  Visibility: "the ids of every #@private definition",
+  FrameShapes: "declared frame shapes for save validation",
+  LineVariantGroups: "ties enumerated alternatives back to one authored line",
+  header: "the file preamble and section offset table",
+};
 
 function buildRoot(
   report: SizeReport,
@@ -79,6 +118,11 @@ function buildRoot(
         label: s.name ?? "(root)",
         bytes: s.bytes,
         tone: "lines" as const,
+        detail: undefined,
+        jump:
+          s.name === null
+            ? undefined
+            : { label: "open in Line tables ›", view: "lines" as const, scopePath: s.name },
       })),
     });
   }
@@ -90,8 +134,20 @@ function buildRoot(
   const rest: SizeNode[] = report.sections
     .filter((s) => !["Containers", "LineTables", "DebugInfo"].includes(s.kind))
     .filter((s) => s.bytes > 0)
-    .map((s) => ({ key: `sec:${s.kind}`, label: s.kind, bytes: s.bytes, tone: "other" as const }));
-  rest.push({ key: "sec:header", label: "header", bytes: report.header, tone: "other" });
+    .map((s) => ({
+      key: `sec:${s.kind}`,
+      label: s.kind,
+      bytes: s.bytes,
+      tone: "other" as const,
+      detail: SECTION_DETAIL[s.kind],
+    }));
+  rest.push({
+    key: "sec:header",
+    label: "header",
+    bytes: report.header,
+    tone: "other",
+    detail: SECTION_DETAIL.header,
+  });
   const restTotal = rest.reduce((s, n) => s + n.bytes, 0);
   if (restTotal > 0) {
     children.push({
@@ -115,11 +171,23 @@ const TONE_RGB: Record<Tone, string> = {
   other: "var(--bs-fg-muted-rgb, 108 112 134)",
 };
 
-export function ProgramSizeViewInner() {
+export function ProgramSizeViewInner({
+  onOpenDisasm,
+  onOpenLines,
+}: {
+  /** Jump to a container in the Disassembly view. */
+  onOpenDisasm: (containerIdx: number) => void;
+  /** Jump to a scope in the Line tables view. */
+  onOpenLines: (scopePath: string) => void;
+}) {
   const report = useStudioStore((s) => s.programSize);
   const model = useStudioStore((s) => s.programModel);
   const [includeDebug, setIncludeDebug] = useState(true);
-  const [zoom, setZoom] = useState<string | null>(null);
+  // Two levels of zoom: a GROUP fills the map, then a CHILD fills the
+  // group — both pure CSS transitions on always-mounted blocks. Leaves are
+  // enterable too (maintainer, 2026-08-30): a legitimately tiny block is
+  // exactly the one you zoom to read.
+  const [zoom, setZoom] = useState<{ group: string; child: string | null } | null>(null);
 
   const root = useMemo(
     () => (report ? buildRoot(report, model, includeDebug) : null),
@@ -176,7 +244,11 @@ export function ProgramSizeViewInner() {
   }
 
   const hasDebug = report.debug > 0;
-  const zoomed = groups.find((g) => g.node.key === zoom) ?? null;
+  const zoomed = groups.find((g) => g.node.key === zoom?.group) ?? null;
+  const zoomedChild =
+    zoomed !== null && zoom?.child != null
+      ? (zoomed.kids.find((k) => k.key === zoom.child) ?? null)
+      : null;
 
   return (
     <div className="pv-size">
@@ -190,7 +262,22 @@ export function ProgramSizeViewInner() {
           program
         </button>
         {zoomed !== null && <span className="pv-size-crumb-sep">›</span>}
-        {zoomed !== null && <span className="pv-lines-head-name">{zoomed.node.label}</span>}
+        {zoomed !== null &&
+          (zoomedChild !== null ? (
+            <button
+              type="button"
+              className="pv-lines-source-link pv-size-crumb"
+              onClick={() => setZoom({ group: zoomed.node.key, child: null })}
+            >
+              {zoomed.node.label}
+            </button>
+          ) : (
+            <span className="pv-lines-head-name">{zoomed.node.label}</span>
+          ))}
+        {zoomedChild !== null && <span className="pv-size-crumb-sep">›</span>}
+        {zoomedChild !== null && (
+          <span className="pv-lines-head-name">{zoomedChild.label}</span>
+        )}
         <span className="pv-lines-head-facts">
           {fmtBytes(includeDebug ? report.total : report.shipping)}
           {hasDebug &&
@@ -224,7 +311,7 @@ export function ProgramSizeViewInner() {
 
       <div className="pv-size-map">
         {groups.map(({ node, rect, kids, inner }) => {
-          const isZoomed = zoom === node.key;
+          const isZoomed = zoom?.group === node.key;
           const dimmed = zoom !== null && !isZoomed;
           const pct = Math.round((node.bytes / Math.max(1, root.bytes)) * 100);
           return (
@@ -249,7 +336,18 @@ export function ProgramSizeViewInner() {
                 type="button"
                 className="pv-size-group-head"
                 title={`${node.label} — ${fmtBytes(node.bytes)} · ${pct}%`}
-                onClick={() => setZoom(isZoomed ? null : kids.length > 0 ? node.key : zoom)}
+                // One level at a time in BOTH directions: from a leaf,
+                // the group head goes up to the group — never straight to
+                // root (maintainer, 2026-08-30).
+                onClick={() =>
+                  setZoom(
+                    isZoomed
+                      ? zoom?.child != null
+                        ? { group: node.key, child: null }
+                        : null
+                      : { group: node.key, child: null },
+                  )
+                }
               >
                 <span className="pv-size-group-label">{node.label}</span>
                 <span className="pv-size-block-bytes">
@@ -267,31 +365,60 @@ export function ProgramSizeViewInner() {
                   const alpha = Math.max(0.08, 0.24 - rank * 0.02);
                   const kidPct = Math.round((kid.bytes / Math.max(1, node.bytes)) * 100);
                   const isEncoding = kid.key.endsWith(":encoding");
+                  const isChildZoomed = isZoomed && zoom?.child === kid.key;
+                  const childDimmed = isZoomed && zoom?.child != null && !isChildZoomed;
                   return (
                     <button
                       key={kid.key}
                       type="button"
                       className={
-                        "pv-size-block" + (isEncoding ? " pv-size-block-encoding" : "")
+                        "pv-size-block" +
+                        (isEncoding ? " pv-size-block-encoding" : "") +
+                        (isChildZoomed ? " pv-size-zoomed" : "") +
+                        (childDimmed ? " pv-size-dimmed" : "")
                       }
                       style={{
-                        left: `${childRect.x}%`,
-                        top: `${childRect.y}%`,
-                        width: `${childRect.w}%`,
-                        height: `${childRect.h}%`,
+                        left: `${isChildZoomed ? 0 : childRect.x}%`,
+                        top: `${isChildZoomed ? 0 : childRect.y}%`,
+                        width: `${isChildZoomed ? 100 : childRect.w}%`,
+                        height: `${isChildZoomed ? 100 : childRect.h}%`,
                         background: `rgb(${TONE_RGB[kid.tone]} / ${alpha})`,
                         borderColor: `rgb(${TONE_RGB[kid.tone]} / 0.4)`,
                       }}
                       title={`${kid.label} — ${fmtBytes(kid.bytes)} · ${kidPct}% of ${node.label}`}
-                      // The whole group surface zooms — a child hit means
-                      // "take me in there", never "aim for the header strip"
-                      // (maintainer, 2026-08-30).
+                      // The whole surface zooms, one level at a time: at
+                      // root a child hit enters its group; inside a group
+                      // it enters the child itself — legitimately tiny
+                      // blocks are exactly the ones you zoom to read.
                       onClick={() => {
-                        if (!isZoomed) setZoom(node.key);
+                        if (!isZoomed) setZoom({ group: node.key, child: null });
+                        else if (!isChildZoomed) setZoom({ group: node.key, child: kid.key });
                       }}
                     >
                       <span className="pv-size-block-label">{kid.label}</span>
                       <span className="pv-size-block-bytes">{fmtBytes(kid.bytes)}</span>
+                      {/* Revealed by the container query only at leaf-zoom
+                          sizes — the same size-aware rule as the labels. */}
+                      <span className="pv-size-block-detail">
+                        {fmtBytes(kid.bytes)} · {kidPct}% of {node.label}
+                        {kid.detail ? ` — ${kid.detail}` : ""}
+                        {kid.jump && (
+                          <span
+                            className="pv-lines-source-link pv-size-jump"
+                            role="link"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (kid.jump?.view === "disasm" && kid.jump.containerIdx !== undefined)
+                                onOpenDisasm(kid.jump.containerIdx);
+                              else if (kid.jump?.view === "lines" && kid.jump.scopePath)
+                                onOpenLines(kid.jump.scopePath);
+                            }}
+                          >
+                            {kid.jump.label}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}

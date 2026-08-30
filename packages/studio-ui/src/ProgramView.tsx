@@ -87,9 +87,13 @@ function ProgramViewInner() {
   // to select. Nonce'd so revealing the same line twice still re-fires.
   const [linesTarget, setLinesTarget] = useState<{
     scopePath: string;
-    lineIndex: number;
+    lineIndex: number | null;
     nonce: number;
   } | null>(null);
+  // A Size-view jump into the Disassembly view: select this container.
+  const [disasmFocus, setDisasmFocus] = useState<{ containerIdx: number; nonce: number } | null>(
+    null,
+  );
   const currentPosition: RuntimePosition | null = degraded
     ? null
     : (framePosition ?? debugPosition ?? null);
@@ -226,11 +230,25 @@ function ProgramViewInner() {
       </div>
 
       {view === "size" ? (
-        <ProgramSizeView />
+        <ProgramSizeView
+          onOpenDisasm={(containerIdx) => {
+            setDisasmFocus((prev) => ({ containerIdx, nonce: (prev?.nonce ?? 0) + 1 }));
+            setView("disasm");
+          }}
+          onOpenLines={(scopePath) => {
+            setLinesTarget((prev) => ({
+              scopePath,
+              lineIndex: null,
+              nonce: (prev?.nonce ?? 0) + 1,
+            }));
+            setView("lines");
+          }}
+        />
       ) : view === "disasm" ? (
         <ProgramDisasmView
           currentPosition={currentPosition}
           target={explorerTarget}
+          focusContainer={disasmFocus}
           onRevealLine={(scopePath, lineIndex) => {
             setLinesTarget((prev) => ({ scopePath, lineIndex, nonce: (prev?.nonce ?? 0) + 1 }));
             setView("lines");

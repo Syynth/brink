@@ -210,4 +210,50 @@ describe("the Size view", () => {
     expect(head).toContain("this IS the shipping size");
     expect(head).not.toContain("with debug info");
   });
+
+  it("zooms into a LEAF: the child fills its group, three-level breadcrumb", () => {
+    mount();
+    const group = [...container!.querySelectorAll(".pv-size-group")].find((g) =>
+      g.textContent?.includes("bytecode"),
+    ) as HTMLElement;
+    // Level 1: enter the group via a child hit.
+    act(() => group.querySelector<HTMLButtonElement>(".pv-size-block")!.click());
+    // Level 2: enter the child itself — legitimately tiny blocks are
+    // exactly the ones you zoom to read.
+    const child = group.querySelector<HTMLButtonElement>(".pv-size-block")!;
+    act(() => child.click());
+    expect(child.classList.contains("pv-size-zoomed")).toBe(true);
+    expect(child.style.width).toBe("100%");
+    // Its siblings inside the group fade; the detail sentence is in the
+    // DOM (its rendering is size-gated by the container query).
+    expect(group.querySelectorAll(".pv-size-block.pv-size-dimmed").length).toBeGreaterThan(0);
+    expect(child.querySelector(".pv-size-block-detail")?.textContent).toContain("of bytecode");
+    // Breadcrumb: program › bytecode › <leaf>; the middle crumb pops one level.
+    const crumbs = [...container!.querySelectorAll(".pv-size-crumb")];
+    expect(crumbs.length).toBe(2);
+    act(() => (crumbs[1] as HTMLButtonElement).click());
+    expect(child.classList.contains("pv-size-zoomed")).toBe(false);
+  });
+
+  it("a leaf's jump opens the view that owns it", () => {
+    mount();
+    const group = [...container!.querySelectorAll(".pv-size-group")].find((g) =>
+      g.textContent?.includes("bytecode"),
+    ) as HTMLElement;
+    act(() => group.querySelector<HTMLButtonElement>(".pv-size-block")!.click());
+    // Zoom the BIG knot specifically (it carries a disasm jump).
+    const big = [...group.querySelectorAll<HTMLButtonElement>(".pv-size-block")].find((b) =>
+      b.getAttribute("title")?.startsWith("big"),
+    )!;
+    act(() => big.click());
+    act(() => {
+      big.querySelector<HTMLElement>(".pv-size-jump")!.click();
+    });
+    // Landed in the Disassembly view with the knot's container selected.
+    expect(
+      [...container!.querySelectorAll(".pv-seg-item")].find((b) => b.textContent === "Disassembly")
+        ?.classList.contains("active"),
+    ).toBe(true);
+    expect(container!.querySelector(".pv-lines-head-name")?.textContent).toBe("big");
+  });
 });

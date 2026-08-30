@@ -96,7 +96,7 @@ export function ProgramLinesViewInner({
   /** The paused execution's scope path, for the rail's ● marker. */
   currentScopePath: string | null;
   /** A disasm row's "line ›" jump: select this scope, mark this row. */
-  revealTarget?: { scopePath: string; lineIndex: number; nonce: number } | null;
+  revealTarget?: { scopePath: string; lineIndex: number | null; nonce: number } | null;
 }) {
   const { commands } = useShell();
   const storeApi = useStudioStoreApi();
@@ -220,6 +220,7 @@ export function ProgramLinesViewInner({
                   indexFor={indexFor}
                   marked={
                     revealTarget !== null &&
+                    revealTarget.lineIndex !== null &&
                     selected.name === revealTarget.scopePath &&
                     line.index === revealTarget.lineIndex
                   }

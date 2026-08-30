@@ -100,11 +100,14 @@ function linePreview(line: LinesTableLine | undefined): string | null {
 export function ProgramDisasmViewInner({
   currentPosition,
   target,
+  focusContainer = null,
   onRevealLine,
 }: {
   currentPosition: RuntimePosition | null;
   /** "Reveal in Program Explorer" (W9) — marks and scrolls an instruction. */
   target: { address: RuntimePosition; nonce: number } | null;
+  /** A Size-view jump: select this container, no row marking. */
+  focusContainer?: { containerIdx: number; nonce: number } | null;
   onRevealLine: (scopePath: string, lineIndex: number) => void;
 }) {
   const { commands } = useShell();
@@ -143,6 +146,14 @@ export function ProgramDisasmViewInner({
       setSelectedIdx(target.address.container_idx);
     }
   }, [target?.nonce, rows]);
+  useEffect(() => {
+    if (
+      focusContainer !== null &&
+      rows.some((r) => r.containerIdx === focusContainer.containerIdx)
+    ) {
+      setSelectedIdx(focusContainer.containerIdx);
+    }
+  }, [focusContainer?.nonce, rows]);
 
   const selected =
     rows.find((r) => r.containerIdx === selectedIdx) ??
