@@ -51,6 +51,21 @@ function EditorTextMenu({
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
+  // Break on write (W18/#3311, maintainer follow-up): the editor menu
+  // offers the same verb the Debugger panel's variable rows carry, when
+  // the clicked identifier is a known GLOBAL — by the live session's
+  // debug mirror when one runs, else the compiled program model (so the
+  // verb works before any session; rows arm on bind).
+  const dataBreakpoints = useStudioStore((s) => s.dataBreakpoints);
+  const dataBreakpointToggle = useStudioStore((s) => s.dataBreakpointToggle);
+  const identityIsGlobal = useStudioStore((s) => {
+    const name = textMenu.identity?.name;
+    if (name === undefined || name === "") return false;
+    return (
+      (s.debugState?.globals.some((g) => g.name === name) ?? false) ||
+      (s.programModel?.globals.some((g) => g.name === name) ?? false)
+    );
+  });
 
   // Group order per the context-menu spec: Navigate · Rename · Text.
   const identity = textMenu.identity;
@@ -66,6 +81,17 @@ function EditorTextMenu({
                 label: identity.name === "" ? "Rename…" : `Rename '${identity.name}'…`,
                 shortcut: "F2",
                 run: identity.rename,
+              },
+            ]
+          : []),
+        ...(identityIsGlobal
+          ? [
+              {
+                label: dataBreakpoints.some((r) => r.name === identity.name)
+                  ? `Remove Break on Write '${identity.name}'`
+                  : `Break on Write '${identity.name}'`,
+                shortcut: "",
+                run: () => dataBreakpointToggle(identity.name),
               },
             ]
           : []),
