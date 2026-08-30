@@ -11,6 +11,7 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { ensureStoryStarted } from "./session-helpers.js";
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
@@ -40,8 +41,8 @@ async function openStoryGraph(page: Page): Promise<void> {
 
 test.describe("story graph document", () => {
   // The default (toppled-temple) project: its startup compile succeeds, so
-  // the graph data lands, and the session auto-starts (§7.6), so the live
-  // overlay has data from the first paint.
+  // the graph data lands. Since W7/#3300 (no auto-start) the session is
+  // started explicitly where a test needs the live overlay.
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
@@ -128,7 +129,8 @@ test.describe("story graph document", () => {
   }) => {
     await openStoryGraph(page);
 
-    // The startup compile auto-started the session at the intro choice point:
+    await ensureStoryStarted(page);
+    // The started session sits at the intro choice point:
     // the current-location highlight is on `intro`. (No visit badges here —
     // the runtime only tracks counts for containers whose flags request
     // them, and the demo story never reads knot counts; badge mapping is

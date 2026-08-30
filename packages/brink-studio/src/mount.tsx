@@ -133,6 +133,7 @@ import {
   createStudioApi,
   inkFileRef,
   loadDebugSettings,
+  loadPlayerSettings,
   loadDiagnosticsSettings,
   loadEditorSettings,
   saveEditorSettings,
@@ -694,11 +695,16 @@ export async function mountStudio(
   registerDebugCommands(commands, store);
 
   // Recompile on demand (the player's "Run" button). A successful compile
-  // auto-starts the session via the compile-result handler below.
+  // starts the session via the compile-result handler below (the
+  // pending-start flag — a cold compile alone leaves the Player idle,
+  // per the ruled "no auto-start").
   commands.register({
     id: "compile.run",
     title: "Compile: Run",
-    run: () => store.getState().compile(),
+    run: () => {
+      pendingStart = true;
+      store.getState().compile();
+    },
   });
 
   // Notification service (spec §7.5). The center is created here — not
@@ -789,7 +795,7 @@ export async function mountStudio(
   // story.openPlayer. The old player tool window is gone; State View takes
   // its right/start strip slot.
   documentTypes.register({ id: PLAYER_TYPE_ID, component: PlayerPane });
-  registerOpenPlayerCommand(commands, editorGroups);
+  registerOpenPlayerCommand(commands, editorGroups, shellLayout);
   // Settings (#93) is a MODAL, not a document (#3174, ruled 2026-08-27) —
   // consult-and-adjust, so it should not cost you the file you were
   // reading. The document type is gone with the takeover it needed.
@@ -845,6 +851,8 @@ export async function mountStudio(
   // debounced compiles, compile.run, the initial compile). DocumentSessions
   // collapses reference-equal (cached) deliveries.
   let fanOutSeq = 0;
+  // Run's compile→start handshake (W7/#3300 no-auto-start ruling).
+  let pendingStart = false;
   const handleCompileResult = (result: CompileResult): void => {
     // W2d (docs/editor-worker-spec.md): the three panel pulls ride the
     // async session facade at background priority with per-panel coalesce
@@ -936,13 +944,16 @@ export async function mountStudio(
     // null) keeps the last good graph — same policy as programInkt.
     if (result.ok && storyGraph !== null) state.setStoryGraph(storyGraph);
 
-    // Recompile-while-running (spec §7.6): a successful compile auto-starts
-    // the session on the new program through the same code path as the
-    // story.start command — startSession replays the recorded choice log,
-    // truncating with a notification on divergence. A failed compile takes
-    // the `storyBytes === null` branch and leaves the existing session
-    // running on the old program.
-    if (storyBytes) {
+    // Recompile-while-running (spec §7.6): a successful compile replays
+    // the LIVE session onto the new program (startSession's journal
+    // replay, truncating with a notification on divergence). A failed
+    // compile takes the `storyBytes === null` branch and leaves the
+    // existing session on the old program. Since W7/#3300 (RULED
+    // 2026-08-29, "no auto-start"): a COLD compile leaves the Player
+    // idle — Run (compile.run + the pending-start flag) or story.start
+    // begins the session.
+    if (storyBytes && (state.sessionStatus !== "none" || pendingStart)) {
+      pendingStart = false;
       perfTime("studio.startSession", () => state.startSession(storyBytes));
     }
     endFanOut();
@@ -1512,6 +1523,11 @@ export async function mountStudio(
   // before the first compile so the first bytes already honour it).
   store.getState().setDebugInfoEnabled(
     loadDebugSettings(window.localStorage).emitDebugInfo,
+  );
+
+  // Paced auto-reveal cadence (W7/#3300 F13, Settings → Player).
+  store.getState().setSessionPaced(
+    loadPlayerSettings(window.localStorage).pacedRevealMs,
   );
 
   // Breakpoints persist per project (W4/#3297, ruled 2026-08-29) under the

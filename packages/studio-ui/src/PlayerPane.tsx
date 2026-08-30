@@ -8,6 +8,7 @@ import {
   useEditorGroups,
   useShell,
   type CommandRegistry,
+  type ShellLayoutStore,
   type DocumentRef,
   type DocumentViewProps,
   type EditorGroupsStore,
@@ -58,6 +59,7 @@ export function playerRef(): DocumentRef {
 export function registerOpenPlayerCommand(
   commands: CommandRegistry,
   editorGroups: EditorGroupsStore,
+  layout?: ShellLayoutStore,
 ): () => void {
   return commands.register({
     id: OPEN_PLAYER_COMMAND_ID,
@@ -67,7 +69,10 @@ export function registerOpenPlayerCommand(
       const isOpen = findTab(state.groups, documentKey(playerRef())) !== null;
       const collapsedToSingleNonEmptyGroup =
         state.groups.length === 1 && state.groups[0].tabs.length > 0;
-      if (!isOpen && collapsedToSingleNonEmptyGroup) {
+      // #2795: the split restore honors #280's "when there is room" —
+      // at the narrow tier there is none, so reopen in the focused group.
+      const narrow = layout?.getState().tier === "narrow";
+      if (!isOpen && collapsedToSingleNonEmptyGroup && !narrow) {
         openPlayerSplit(editorGroups);
         return;
       }
@@ -366,27 +371,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     });
   }, [commands, degraded, position]);
 
-  // No session: placeholder with a start affordance instead of stale content.
-  if (status === "none") {
-    return (
-      <div className="player-pane" ref={rootRef} tabIndex={-1}>
-        <div className="header">
-          <div className="toolbar" />
-        </div>
-        <div className="player">
-          <div className="session-placeholder">
-            <p className="session-placeholder-title">No story session</p>
-            <p className="session-placeholder-hint">
-              Start the story to play it here.
-            </p>
-            <button className="session-placeholder-start" onClick={handleStart}>
-              Start story
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Idle (RULED "no auto-start", W7/#3300): the toolbar (Run + the Ready
+  // chip) stays, the body is the launcher placeholder — replaced by
+  // W14's saves launcher.
+  const idle = status === "none";
 
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
@@ -418,7 +406,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
               title={
                 auto
-                  ? "Auto reveal on: each reveal runs to the next choice or pause"
+                  ? "Auto reveal on: a reveal runs to the next choice or pause (paced — one line at a time; configurable in Settings → Player)"
                   : "Auto reveal off: each reveal advances a single line"
               }
               aria-label="Auto reveal"
@@ -542,6 +530,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         </div>
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
+        {idle && (
+          <div className="session-placeholder">
+            <p className="session-placeholder-title">No story session</p>
+            <p className="session-placeholder-hint">
+              Run compiles and starts the story here.
+            </p>
+            <button className="session-placeholder-start" onClick={handleStart}>
+              Start story
+            </button>
+          </div>
+        )}
         <div className="story-text">
           {lines.map((line, i) => {
             const point =

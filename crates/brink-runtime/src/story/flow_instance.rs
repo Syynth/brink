@@ -1586,7 +1586,7 @@ fn flush_remaining(
         element.extend(line_element.iter().map(|(k, v)| (k.clone(), v.clone())));
         // First line's provenance wins — the flushed run "is" where it starts.
         if source.is_none() {
-            source = line_source.clone();
+            source.clone_from(line_source);
         }
     }
     (text, tags, element, source)

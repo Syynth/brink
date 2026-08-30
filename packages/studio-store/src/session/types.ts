@@ -259,6 +259,11 @@ export interface SessionProvider {
    * collapse what is already in the transcript.
    */
   setAuto?(auto: boolean): void;
+  /** Configure the paced auto-reveal cadence (W7/#3300 F13, RULED):
+   * with auto on and a positive delay, a reveal advances the run one
+   * line at a time in rapid succession; 0 = one batch. Optional — a
+   * provider without a paced pump ignores the setting. */
+  setPacedReveal?(delayMs: number): void;
 
   dispose(): void;
 }

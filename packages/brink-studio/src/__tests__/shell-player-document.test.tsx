@@ -328,6 +328,7 @@ describe("PlayerPane as a document view", () => {
     store.setState({
       sessionStatus: "awaiting-choice",
       sessionText: ["The lights dim."],
+      sessionLines: [{ text: "The lights dim.", kind: "line" as const, tags: [] }],
       sessionChoices: [{ index: 0, text: "Step forward", tags: [] }],
     } as never);
 

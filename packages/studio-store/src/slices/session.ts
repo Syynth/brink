@@ -77,6 +77,15 @@ export interface SessionSlice {
    * source provenance — what the rebuilt Player renders. */
   sessionLines: TranscriptLine[];
   /**
+   * Paced auto-reveal cadence in ms (W7/#3300 F13, RULED — the App
+   * setting "Auto reveal: paced / all at once"): with auto on, a reveal
+   * delivers the run one line at a time at this cadence; 0 = one batch.
+   * Persisted by the app boundary; applied to the provider at bind.
+   */
+  sessionPacedMs: number;
+  /** Set the paced cadence (Settings) — pushes through to the provider. */
+  setSessionPaced(delayMs: number): void;
+  /**
    * Byte-range → editor terms converter for transcript provenance
    * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
    * the compiled file; the Player needs a 0-based line (hover chip) and
@@ -251,6 +260,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionStatus: "none",
     sessionText: [],
     sessionLines: [],
+    sessionPacedMs: 150,
     _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
@@ -280,10 +290,18 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         };
       });
       setActive(DEFAULT_SESSION_ID);
+      // The paced cadence survives provider swaps — re-apply at bind.
+      provider.setPacedReveal?.(get().sessionPacedMs);
     },
 
     setSourceByteResolver(resolver) {
       set({ _resolveSourceBytes: resolver });
+    },
+
+    setSessionPaced(delayMs) {
+      const ms = Math.max(0, delayMs);
+      set({ sessionPacedMs: ms });
+      get()._provider?.setPacedReveal?.(ms);
     },
 
     startSession(bytes) {

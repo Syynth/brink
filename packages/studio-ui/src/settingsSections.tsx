@@ -16,6 +16,7 @@ import type { SettingsSection } from "./SettingsModal.js";
 import { SETTINGS_ICONS } from "./SettingsModal.js";
 import {
   DebuggingSection,
+  PlayerSection,
   DiagnosticsSection,
   EditorSection,
   EditorViewSection,
@@ -114,6 +115,16 @@ export function settingsSections(groupId: string): SettingsSection[] {
       keywords: "debug info breakpoints stepping compile section emit opt out",
       icon: SETTINGS_ICONS.diagnostics,
       body: <DebuggingSection />,
+    },
+    {
+      // W7/#3300 F13: the paced auto-reveal cadence (ruled). App scope —
+      // how fast lines land in *your* Player is a machine preference.
+      id: SETTINGS_SECTION_IDS.player,
+      scope: "app",
+      title: "Player",
+      keywords: "player auto reveal paced fast forward speed lines",
+      icon: SETTINGS_ICONS.diagnostics,
+      body: <PlayerSection />,
     },
     {
       // Split out of Diagnostics by the scope switch (#3174): the `[lints]`

@@ -12,6 +12,7 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { ensureStoryStarted } from "./session-helpers.js";
 
 function group(page: Page, index: number): Locator {
   return page.locator(".shell-editor-group").nth(index);
@@ -97,11 +98,14 @@ test.describe("player document", () => {
   // are unaffected (they pass first try).
   test.describe.configure({ retries: 2 });
 
-  // The default (toppled-temple) project: its startup compile succeeds and
-  // auto-starts the session (§7.6), so the player document has content.
+  // The default (toppled-temple) project. Since W7/#3300 (RULED: no
+  // auto-start) the startup compile leaves the Player idle — start the
+  // story explicitly, retry-clicking through the compile race (the
+  // placeholder's Start does nothing until story bytes land).
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
+    await ensureStoryStarted(page);
   });
 
   test("fresh load is the Inky two-up: editor left, player right, editor focused", async ({

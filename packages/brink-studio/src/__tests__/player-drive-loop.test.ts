@@ -90,9 +90,12 @@ describe("unified drive loop (W5/#3298)", () => {
   });
 
   it("with breakpoints armed and auto on, reveal free-runs to the next stop", () => {
+    // The W7 paced default (F13) would pump line-by-line — this pin is
+    // about the "all at once" batch road, so switch pacing off.
     const session = scriptedSession([BP]);
     const { store, provider } = bind(session);
     provider.setAuto(true);
+    store.getState().setSessionPaced(0);
 
     store.getState().revealNext();
     expect(session.debugRun).toHaveBeenCalled();

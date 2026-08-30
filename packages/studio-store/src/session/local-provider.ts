@@ -199,6 +199,11 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * restoring a journal must not silently change how the next reveal behaves.
    */
   private auto = false;
+  /** Paced auto-reveal (W7/#3300 F13, RULED): with auto on and a
+   * positive delay, a Continue reveals the run ONE line at a time in
+   * rapid succession instead of one batch. 0 = all at once. */
+  private pacedDelayMs = 0;
+  private pacedTimer: ReturnType<typeof setTimeout> | null = null;
   private status: SessionStatus = "none";
   private transcript: TranscriptLine[] = [];
   /** Paused by the debugger (W5/#3298) — see `SessionSnapshot.paused`. */
@@ -408,6 +413,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   restart(): void {
+    this.stopPacedPump();
     if (!this.session) {
       // No live session (e.g. a prior load error or a stop) — restart means a
       // fresh start on the bytes this session last ran.
@@ -432,6 +438,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   stop(): void {
+    this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
     this.session = null;
@@ -492,7 +499,43 @@ export class LocalSessionProvider implements DebugSessionProvider {
   setAuto(auto: boolean): void {
     if (this.auto === auto) return;
     this.auto = auto;
+    // Turning auto OFF mid-run abandons the paced pump immediately.
+    if (!auto) this.stopPacedPump();
     this.emit();
+  }
+
+  /** Configure the paced auto-reveal cadence (0 disables — batch mode). */
+  setPacedReveal(delayMs: number): void {
+    this.pacedDelayMs = Math.max(0, delayMs);
+    if (this.pacedDelayMs === 0) this.stopPacedPump();
+  }
+
+  /** Whether a paced run is currently pumping (test/UI observability). */
+  pacedRunning(): boolean {
+    return this.pacedTimer !== null;
+  }
+
+  private stopPacedPump(): void {
+    if (this.pacedTimer !== null) {
+      clearTimeout(this.pacedTimer);
+      this.pacedTimer = null;
+    }
+  }
+
+  /** One paced tick: reveal a single content line, then keep pumping
+   * while the session is still plainly running — a choice point, a
+   * terminal, an error, a breakpoint hit, or an explicit pause all end
+   * the run (the paused check is the ruled instant flush: nothing is
+   * queued, so stopping the pump IS the flush). */
+  private pacedTick(): void {
+    this.pacedTimer = null;
+    if (!this.session || this.paused || this.status !== "running") return;
+    this.revealOne();
+    if (this.status === "running" && !this.paused && this.pacedDelayMs > 0) {
+      this.pacedTimer = setTimeout(() => {
+        this.pacedTick();
+      }, this.pacedDelayMs);
+    }
   }
 
   continue(): void {
@@ -508,6 +551,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   dispose(): void {
+    this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
     this.session = null;
@@ -628,6 +672,10 @@ export class LocalSessionProvider implements DebugSessionProvider {
     // never a mid-flight run to interrupt — pausing here makes the NEXT
     // advance a bounded line step and lights the step controls.
     if (this.paused || !this.session) return;
+    // Ruled instant flush: pausing mid-paced-run stops the pump NOW —
+    // nothing is queued (each tick advanced the VM one line), so
+    // stopping the pump is the whole flush.
+    this.stopPacedPump();
     this.paused = true;
     this.refreshDebug();
     this.emit();
@@ -694,6 +742,21 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
 
     try {
+      if (this.auto && !this.paused && this.pacedDelayMs > 0) {
+        // Paced auto (F13): reveal THIS line now, keep pumping on the
+        // timer. Every tick goes through the same single-line road as a
+        // manual reveal, so breakpoints bound each step and the
+        // execution highlight follows the cadence. `revealOne` emits;
+        // return early so the shared tail below doesn't double-emit.
+        this.revealOne();
+        if (this.status === "running" && !this.paused) {
+          this.stopPacedPump();
+          this.pacedTimer = setTimeout(() => {
+            this.pacedTick();
+          }, this.pacedDelayMs);
+        }
+        return;
+      }
       if (this.debugDriven()) {
         // W5/#3298 — play and debug are ONE loop: with breakpoints armed
         // (or the session paused), the production continue path can never
@@ -723,6 +786,35 @@ export class LocalSessionProvider implements DebugSessionProvider {
       this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
     }
 
+    this.refreshDebug();
+    this.emit();
+  }
+
+  /** One single-line advance — the unit both a manual reveal and each
+   *  paced tick share: debug-driven when breakpoints are armed (or
+   *  paused), the journaled road otherwise. Refreshes and emits. */
+  private revealOne(): void {
+    const session = this.session;
+    if (!session) {
+      this.emit();
+      return;
+    }
+    try {
+      if (this.debugDriven()) {
+        this.advanceDebug("line", false);
+      } else {
+        const line = session.continueSingle();
+        this.appendLines([line]);
+        this.status = statusOfLine(line.type);
+        this.choices = line.type === "choices" ? (line.choices ?? []) : [];
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.status = "error";
+      this.transcript = [...this.transcript, transcriptNotice(`Runtime error: ${msg}`)];
+      this.choices = [];
+      this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
+    }
     this.refreshDebug();
     this.emit();
   }
