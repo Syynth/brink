@@ -24,7 +24,15 @@
 }
 .brink-studio .player-pane .header .toolbar {
   display: flex;
+  align-items: center;
   gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+/* No pane label (removed by request — the tab already says Player); the
+   maximize control anchors the right edge instead. */
+.brink-studio .player-pane .header .toolbar .player-btn-maximize {
+  margin-left: auto;
 }
 .brink-studio .player-pane .header button {
   background: var(--bs-panel-bg);
@@ -130,8 +138,22 @@
   align-items: center;
   justify-content: center;
   width: 26px;
-  padding: 2px 0;
+  height: 22px;
+  padding: 0;
   color: var(--bs-accent);
+}
+.brink-studio .player-pane .header .toolbar .player-btn-run {
+  color: var(--bs-success);
+}
+/* The ruled auto-reveal TOGGLE (2026-08-29, "auto is a transport button"):
+   pressed state reads at a glance, replacing the old checkbox. */
+.brink-studio .player-pane .header .toolbar .player-auto-btn {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player-pane .header .toolbar .player-auto-btn.active {
+  color: var(--bs-accent);
+  border-color: var(--bs-accent);
+  background: rgb(var(--bs-accent-rgb) / 14%);
 }
 .brink-studio .player-pane .header .toolbar .player-transport-btn:disabled {
   opacity: 0.35;
@@ -141,6 +163,18 @@
 .brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Pause"] {
   color: var(--bs-warning);
 }
+/* The chip's home: its own strip under the toolbar, so the toolbar stays
+   compact at narrow widths (the Player artboard's own note) and the chip
+   never truncates against the transport. */
+.brink-studio .player-pane .player-status-strip {
+  padding: 4px 12px;
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .brink-studio .player-status-chip {
   display: inline-flex;
   align-items: center;
@@ -154,9 +188,9 @@
   text-transform: none;
   color: var(--bs-warning);
   white-space: nowrap;
-  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
 }
 .brink-studio .player-status-chip .player-status-dot {
   width: 7px;

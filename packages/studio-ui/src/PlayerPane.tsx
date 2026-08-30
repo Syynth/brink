@@ -259,7 +259,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
     return (
       <div className="player-pane" ref={rootRef} tabIndex={-1}>
         <div className="header">
-          <span>Story</span>
+          <div className="toolbar" />
         </div>
         <div className="player">
           <div className="session-placeholder">
@@ -279,14 +279,46 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   return (
     <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
-        <span>Story</span>
         <div className="toolbar">
-          <button className="btn-run" onClick={handleRun}>
-            Run
+          <button
+            className="player-transport-btn player-btn-run"
+            title="Run — compile and start the story"
+            aria-label="Run"
+            onClick={handleRun}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M2.5 1.5l8 4.5-8 4.5z" fill="currentColor" />
+            </svg>
           </button>
-          <button className="btn-restart" onClick={handleRestart}>
-            Restart
+          <button
+            className="player-transport-btn"
+            title="Restart the story"
+            aria-label="Restart"
+            onClick={handleRestart}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M10 6a4 4 0 1 1-1.2-2.8" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M9 1v2.5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+            </svg>
           </button>
+          {canAuto && (
+            <button
+              className={"player-transport-btn player-auto-btn" + (auto ? " active" : "")}
+              title={
+                auto
+                  ? "Auto reveal on: each reveal runs to the next choice or pause"
+                  : "Auto reveal off: each reveal advances a single line"
+              }
+              aria-label="Auto reveal"
+              aria-pressed={auto}
+              onClick={() => setSessionAuto(!auto)}
+            >
+              <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+                <path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="currentColor" />
+                <path d="M6.5 2L11 6.5 6.5 11z" fill="currentColor" />
+              </svg>
+            </button>
+          )}
           {debugCapable && (
             <span className="player-transport">
               <span className="player-transport-sep" />
@@ -354,32 +386,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
                 </svg>
               </button>
-              {paused && (
-                <span className="player-status-chip paused" title="Paused by the debugger">
-                  <span className="player-status-dot" />
-                  {pausedLocation ? `Paused — ${pausedLocation}` : "Paused"}
-                </span>
-              )}
             </span>
           )}
-          {canAuto && (
-            <label
-              className="player-auto"
-              title={
-                auto
-                  ? "Auto: each reveal runs to the next choice or pause"
-                  : "Auto off: each reveal advances a single line"
-              }
-            >
-              <input
-                type="checkbox"
-                checked={auto}
-                onChange={(e) => setSessionAuto(e.target.checked)}
-              />
-              Auto
-            </label>
-          )}
           <button
+            className="player-transport-btn player-btn-maximize"
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
             }
@@ -389,6 +399,14 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
         </div>
       </div>
+      {paused && (
+        <div className="player-status-strip">
+          <span className="player-status-chip paused" title="Paused by the debugger">
+            <span className="player-status-dot" />
+            {pausedLocation ? `Paused — ${pausedLocation}` : "Paused"}
+          </span>
+        </div>
+      )}
       <div className="player" ref={playerRef}>
         <div className="story-text">
           {text.map((line, i) => (
