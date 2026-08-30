@@ -4,6 +4,7 @@ import { useShell } from "@brink/studio-shell";
 import { sessionDegraded } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
+import { ProgramLinesView } from "./ProgramLinesView.js";
 
 /** `(container_idx, offset)` — the shape both `DebugState.position` and a
  *  `KnotNode.disasm` entry's own `offset` (paired with the node's
@@ -76,6 +77,9 @@ function ProgramViewInner() {
   const explorerTarget = useStudioStore((s) => s.programExplorerTarget);
   const programLines = useStudioStore((s) => s.programLines);
   const entryFile = useStudioStore((s) => s.entryFile);
+  // Which view of the one instrument (#3339). Ephemeral by design — like a
+  // tab strip, not a setting.
+  const [view, setView] = useState<"structure" | "lines">("structure");
   const currentPosition: RuntimePosition | null = degraded
     ? null
     : (framePosition ?? debugPosition ?? null);
@@ -151,10 +155,26 @@ function ProgramViewInner() {
         </span>
         <span className="pv-header-spacer" />
         <span className="pv-seg" role="tablist" aria-label="Program Explorer view">
-          <button type="button" className="pv-seg-item active" role="tab" aria-selected="true">
+          <button
+            type="button"
+            className={"pv-seg-item" + (view === "structure" ? " active" : "")}
+            role="tab"
+            aria-selected={view === "structure"}
+            onClick={() => setView("structure")}
+          >
             Structure
           </button>
-          <button type="button" className="pv-seg-item" role="tab" disabled title="Line tables view — #3339, next phase">
+          <button
+            type="button"
+            className={"pv-seg-item" + (view === "lines" ? " active" : "")}
+            role="tab"
+            aria-selected={view === "lines"}
+            // An older compile product without a captured table: the slot
+            // stays, disabled, saying why — never a live blank view.
+            disabled={programLines === null}
+            title={programLines === null ? "No lines table in this compile product — recompile" : undefined}
+            onClick={() => setView("lines")}
+          >
             Line tables
           </button>
           <button type="button" className="pv-seg-item" role="tab" disabled title="Disassembly view — #3339, next phase">
@@ -174,6 +194,9 @@ function ProgramViewInner() {
         </button>
       </div>
 
+      {view === "lines" ? (
+        <ProgramLinesView currentScopePath={currentKnot?.path ?? null} />
+      ) : (
       <div className="pv-structure">
         {/* Definitions column: what the program declares. */}
         <div className="pv-defs">
@@ -269,6 +292,9 @@ function ProgramViewInner() {
         </div>
       </div>
 
+      )}
+
+      {view === "structure" && (
       <div className="pv-footer">
         <span>
           <strong>{fmtBytes(totals.bytes)}</strong> bytecode
@@ -294,6 +320,7 @@ function ProgramViewInner() {
           </span>
         )}
       </div>
+      )}
     </div>
   );
 }

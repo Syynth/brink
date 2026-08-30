@@ -34,7 +34,7 @@ afterEach(() => {
 
 const MODEL: ProgramModel = {
   checksum: "0x54b500f2",
-  globals: [{ name: "gold", ty: "int", default: "12" }],
+  globals: [{ name: "gold", ty: "int", default: "12", mutable: true }],
   lists: [],
   externals: [
     { name: "play_se", arg_count: 1, fallback: "play_se_fallback" },
@@ -130,7 +130,7 @@ describe("the Structure view", () => {
     expect(container!.querySelector(".pv-counts")?.textContent).toContain("4 lines");
   });
 
-  it("ships the view switch with unbuilt views disabled, not live no-ops", () => {
+  it("ships built views live and unbuilt views as disabled slots", () => {
     mount();
     const items = [...container!.querySelectorAll<HTMLButtonElement>(".pv-seg-item")];
     expect(items.map((b) => b.textContent)).toEqual([
@@ -140,10 +140,21 @@ describe("the Structure view", () => {
       "Size",
     ]);
     expect(items[0].classList.contains("active")).toBe(true);
-    expect(items.slice(1).every((b) => b.disabled)).toBe(true);
-    // Each disabled slot says where its view is, so it reads as designed
-    // rather than broken.
-    expect(items[1].title).toContain("#3339");
+    // Line tables is real (phase 2) — enabled whenever a table was captured.
+    expect(items[1].disabled).toBe(false);
+    // The unbuilt two stay designed slots, each naming where its view is.
+    expect(items[2].disabled).toBe(true);
+    expect(items[3].disabled).toBe(true);
+    expect(items[2].title).toContain("#3339");
+  });
+
+  it("disables the Line tables slot for a compile product without a table", () => {
+    mount(null);
+    const lines = [...container!.querySelectorAll<HTMLButtonElement>(".pv-seg-item")].find(
+      (b) => b.textContent === "Line tables",
+    )!;
+    expect(lines.disabled).toBe(true);
+    expect(lines.title).toContain("recompile");
   });
 
   it("sizes knot rows by SUBTREE — a knot's stitches count toward it", () => {
