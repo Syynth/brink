@@ -6,7 +6,7 @@
     { "file": "GutterStates.dc.html", "x": 1100, "y": 1030, "w": 680, "h": 800, "title": "Gutter + execution states" },
     { "file": "Transport.dc.html", "x": 1880, "y": 1030, "w": 760, "h": 750, "title": "Transport states + keys" },
     { "file": "ChoicePoint.dc.html", "x": 0, "y": 1990, "w": 940, "h": 580, "title": "Waiting on a choice — lit + dimmed candidates" },
-    { "file": "IdleSaves.dc.html", "x": 1040, "y": 1990, "w": 560, "h": 560, "title": "Idle Player — the saves launcher" }
+    { "file": "IdleSaves.dc.html", "x": 1040, "y": 1990, "w": 560, "h": 700, "title": "Idle Player — the launcher" }
   ],
   "annotations": [
     { "id": "scenario-note", "x": 1420, "y": 40, "w": 300, "text": "One scenario across every artboard: paused at a breakpoint on `~ gold -= cost` inside function pour(n), called from tavern.order.\n\nSpec: docs/debugger-ui-spec.md\nRulings: decision-log 2026-08-29\nTheme: Catppuccin Mocha tokens, real --bs-* values." },

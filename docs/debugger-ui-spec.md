@@ -312,15 +312,30 @@ keep testing from there:
   counts, globals, position: durable story state, never
   internal/ephemeral runtime state. No new format; the Rust↔TS DTO
   parity tripwire already covers `SaveState`.
-- **Surface**: the Player's **idle body** is the launcher — "Run from
-  the start" plus the saves list (name · knot/position · turn · age ·
-  location badge; Load starts a session from it, × deletes). While a
-  session runs, "Save state" captures the current point (a named slot).
-- **Location is an App setting**: *machine* (private app-data folder,
-  per project — proposed default, doesn't dirty the repo) vs *project*
-  (inside the project tree, e.g. `.brink/saves/`,
-  shareable/committable); extensible. Desktop-first via the Tauri host
-  callbacks; the web embed's fallback store is a W14 build question.
+- **Surface**: the Player's **idle body** is the launcher (RULED
+  2026-08-29, canvas round): "Run from the start" beside a
+  **combobox/typeahead over knots and stitches** (file locations as
+  context — KNOT/STITCH kind chips in the landing recents-row
+  vocabulary) that plays from there, reusing the play-from-here start
+  path (#186) and the symbol query; below, **two stacked sections in
+  the landing screen's Recent-list style** (uppercase cap over the
+  bordered recents row list — `.landing-cap`/`.recent-projects`,
+  maintainer screenshot): **PROJECT** (project saves) and **THIS
+  COMPUTER** (machine saves). Rows follow the recents anatomy — small
+  mono chip (turn count; amber `OLD` for an older compile), save name,
+  right-aligned muted context (knot path · age). While a session runs,
+  "Save state" captures the current point into the default location.
+- **Load vs Fork (RULED 2026-08-29)**: every save offers both. *Load*
+  attaches the session to the slot — "Save state" writes back to it,
+  like continuing a save file. *Fork* starts from a copy — the session
+  is unattached and the next save picks a new slot, leaving the
+  checkpoint untouched (branch experiments without clobbering it).
+- **Location**: both stores are first-class and always visible as the
+  two doors; the App setting picks the **default target for new saves**
+  — *local* (private app-data folder, per project) vs *project* (inside
+  the project tree, e.g. `.brink/saves/`, shareable/committable);
+  extensible. Desktop-first via the Tauri host callbacks; the web
+  embed's fallback store is a W14 build question.
 - **Compat honesty**: loading against a newer compile surfaces the
   runtime's `LoadReport` inline ("loaded — 3 anonymous visit states
   dropped"), never a silent load. The #3283/#3234 block-local identity

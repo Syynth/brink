@@ -15,16 +15,22 @@
     .tbtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px;
       background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; }
     .tbtn.off { opacity: 0.35; }
-    .save { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #252536;
-      border: 1px solid #45475a; border-radius: 6px; }
-    .save .name { font-size: 13px; font-weight: 600; color: #cdd6f4; }
-    .save .meta { font-size: 11px; color: #6c7086; }
-    .loc { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #2a2a3d; border: 1px solid #45475a; color: #6c7086; }
-    .loadbtn { background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 4px;
-      padding: 3px 14px; font-size: 12px; cursor: pointer; }
+    /* landing recents-list vocabulary (packages/brink-desktop/index.html) */
+    .rlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+      border: 1px solid #45475a; border-radius: 7px; overflow: hidden; background: #1c1c2b; }
+    .rlist > div + div { border-top: 1px solid #2a2a3d; }
+    .rrow { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; }
+    .rrow:hover, .rrow.hot { background: #252536; }
+    .rbadge { font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 0.07em;
+      border: 1px solid #45475a; border-radius: 3px; padding: 2px 5px; flex-shrink: 0; color: #6c7086; }
+    .rbadge-knot { color: #cba6f7; border-color: #4a3d63; }
+    .rbadge-stitch { color: #89dceb; border-color: #3a5a6b; }
+    .rname { font-size: 12px; color: #cdd6f4; flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rdetail { font-size: 10.5px; color: #585b70; font-family: ui-monospace, "JetBrains Mono", monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
   </style>
 </helmet>
-<div style="width: 560px; height: 560px; display: flex; flex-direction: column; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+<div style="width: 560px; height: 700px; display: flex; flex-direction: column; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
 
   <!-- header: idle — transport disabled, Ready chip -->
   <div style="padding: 8px 12px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; justify-content: space-between">
@@ -44,51 +50,72 @@
     </div>
   </div>
 
-  <!-- idle body: the saves launcher -->
-  <div style="flex: 1; padding: 24px 28px; display: flex; flex-direction: column; gap: 10px; overflow: hidden">
-    <div style="display: flex; align-items: center; gap: 12px">
-      <button style="display: inline-flex; align-items: center; gap: 8px; background: #2a2a3d; color: #a6e3a1; border: 1px solid #45475a; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer">
-        <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg>
+  <!-- idle body: the launcher -->
+  <div style="flex: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow: hidden">
+
+    <!-- start row: run from start + play-from typeahead -->
+    <div style="display: flex; align-items: center; gap: 8px">
+      <button style="display: inline-flex; align-items: center; gap: 8px; background: #2a2a3d; color: #a6e3a1; border: 1px solid #45475a; border-radius: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; white-space: nowrap">
+        <svg width="11" height="11" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg>
         Run from the start
       </button>
-      <span style="font-size: 11px; color: #6c7086">or continue from a checkpoint</span>
-    </div>
-
-    <div style="display: flex; align-items: baseline; justify-content: space-between; margin-top: 10px">
-      <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; color: #6c7086">Saves</span>
-      <span style="font-size: 10px; color: #6c7086">Project saves — change in App settings</span>
-    </div>
-
-    <div class="save">
-      <div style="flex: 1; min-width: 0">
-        <div class="name">after_tavern_brawl</div>
-        <div class="meta"><span class="mono">tavern.order</span> · turn 12 · 2h ago</div>
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px; background: #2a2a3d; border: 1px solid #89b4fa; border-radius: 6px; padding: 7px 12px; font-size: 12px">
+        <svg width="12" height="12" viewBox="0 0 18 18" fill="none" stroke="#6c7086" stroke-width="1.5"><circle cx="8" cy="8" r="5"></circle><path d="M12 12l4 4"></path></svg>
+        <span class="mono">tav</span><span style="width: 1px; height: 13px; background: #cdd6f4"></span>
+        <span style="color: #585b70">play from a knot or stitch…</span>
       </div>
-      <span class="loc">project</span>
-      <button class="loadbtn">Load</button>
-      <span style="color: #6c7086; font-size: 11px; cursor: pointer">✕</span>
     </div>
 
-    <div class="save">
-      <div style="flex: 1; min-width: 0">
-        <div class="name">stranger_revealed</div>
-        <div class="meta"><span class="mono">market.meeting</span> · turn 31 · yesterday</div>
+    <!-- typeahead results: recents-row vocabulary, kind chips + file context -->
+    <div class="rlist" style="margin-left: 166px">
+      <div class="rrow hot">
+        <span class="rbadge rbadge-knot">KNOT</span>
+        <span class="rname">tavern</span>
+        <span class="rdetail">tavern.ink</span>
       </div>
-      <span class="loc">project</span>
-      <button class="loadbtn">Load</button>
-      <span style="color: #6c7086; font-size: 11px; cursor: pointer">✕</span>
+      <div class="rrow">
+        <span class="rbadge rbadge-stitch">STITCH</span>
+        <span class="rname">tavern.order</span>
+        <span class="rdetail">tavern.ink:11</span>
+      </div>
+      <div class="rrow">
+        <span class="rbadge rbadge-stitch">STITCH</span>
+        <span class="rname">market.tavern_gossip</span>
+        <span class="rdetail">market.brink:44</span>
+      </div>
     </div>
 
-    <!-- a save from an older compile: loads with a report, never silently -->
-    <div class="save" style="border-style: dashed">
-      <div style="flex: 1; min-width: 0">
-        <div class="name">act2_dawn</div>
-        <div class="meta"><span class="mono">watch.dawn</span> · turn 58 · last week · <span style="color: #f9e2af">older compile — loads with a report</span></div>
+    <!-- saves: two stacked sections in the landing Recent-list style -->
+    <div style="display: flex; flex-direction: column; gap: 7px; margin-top: 4px">
+      <div style="font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #6c7086">Project</div>
+      <div class="rlist">
+        <div class="rrow hot">
+          <span class="rbadge">TURN 12</span>
+          <span class="rname">after_tavern_brawl</span>
+          <button title="Continue this save — Save state writes back to it" style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 4px; padding: 2px 9px; font-size: 10.5px; cursor: pointer">Load</button>
+          <button title="Branch from a copy — the next save picks a new slot" style="background: transparent; color: #6c7086; border: 1px solid #45475a; border-radius: 4px; padding: 2px 9px; font-size: 10.5px; cursor: pointer">Fork</button>
+          <span class="rdetail">tavern.order · 2h</span>
+        </div>
+        <div class="rrow">
+          <span class="rbadge">TURN 31</span>
+          <span class="rname">stranger_revealed</span>
+          <span class="rdetail">market.meeting · 1d</span>
+        </div>
       </div>
-      <span class="loc">machine</span>
-      <button class="loadbtn">Load</button>
-      <span style="color: #6c7086; font-size: 11px; cursor: pointer">✕</span>
     </div>
+
+    <div style="display: flex; flex-direction: column; gap: 7px">
+      <div style="font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #6c7086">This computer</div>
+      <div class="rlist">
+        <div class="rrow" title="Older compile — loads with a report">
+          <span class="rbadge" style="color: #f9e2af; border-color: #6b5a3a">OLD</span>
+          <span class="rname" style="opacity: 0.85">act2_dawn</span>
+          <span class="rdetail">watch.dawn · turn 58 · 1w</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size: 10.5px; color: #585b70">New saves go to Project — change in App settings.</div>
 
     <!-- LoadReport surfaced inline after loading a stale save -->
     <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgb(249 226 175 / 10%); border: 1px solid rgb(249 226 175 / 40%); border-radius: 4px; font-size: 11px; color: #f9e2af">
@@ -98,7 +125,7 @@
 
     <div style="flex: 1"></div>
     <div style="font-size: 10px; color: #6c7086; border-top: 1px solid #45475a; padding-top: 8px">
-      While a session runs, “Save state” in this list captures the current point — visit counts, globals, position. Never internal runtime state.
+      Load attaches the session to the slot (Save state writes back); Fork copies — the next save picks a new slot. “Save state” captures visit counts, globals, position. Never internal runtime state.
     </div>
   </div>
 </div>

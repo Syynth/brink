@@ -42,11 +42,14 @@ One scenario runs through every artboard: paused at a breakpoint on
   container ids, no new runtime seam), the runtime-value hover
   card on `gold`, and the Player showing the presented pair with a
   "Waiting on choice" chip.
-- `IdleSaves.dc.html` — the idle Player as the saves launcher (F17):
-  Run from the start, checkpoint list (name · position · turn · age ·
-  project/machine location badge per the App setting), a stale save
-  marked "older compile — loads with a report", and the surfaced
-  LoadReport banner ("3 anonymous visit states dropped").
+- `IdleSaves.dc.html` — the idle Player as the launcher (F17): Run from
+  the start beside the play-from-anywhere typeahead (KNOT/STITCH kind
+  chips + file context), then saves as two stacked sections in the
+  landing screen's Recent-list style — caps "PROJECT" and "THIS
+  COMPUTER" over bordered row lists (TURN-count chips, amber OLD chip
+  for an older compile), Load/Fork on the hovered save (Load writes
+  back, Fork copies to a new slot), and the surfaced LoadReport banner
+  ("3 anonymous visit states dropped").
 - `Transport.dc.html` — toolbar in five states (ready — the default, the
   story never plays on open; playing; paused; parked; out-of-sync) plus
   the F-row keybinding legend. Play is stepping: one live visualization,

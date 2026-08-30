@@ -4257,3 +4257,34 @@
   work whose whole point was shrinking the save-invalidation blast
   radius of an edit. Hot reload composes them; where they can't
   preserve state, the old degraded path remains the honest fallback.
+
+## Idle launcher: save-location doors + play-from-anywhere typeahead
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (Player rebuild — debugger UI round, #452 D9)
+- **SCOPE:** moderate
+- **WHAT:** (1) The idle Player's saves present **exactly like the
+  landing screen's Recent list** (maintainer screenshot, this session):
+  two stacked sections, each an uppercase cap label over the bordered
+  recents-style row list — where the landing says "RECENT", the Player
+  says **"PROJECT"** (project saves) and **"THIS COMPUTER"** (machine
+  saves). Rows follow the recents anatomy: small mono chip, name,
+  right-aligned muted context. Both locations first-class and always
+  visible; the App setting picks the default target for new saves
+  rather than hiding a location.
+  (2) Next to "Run from the start" sits a **combobox/typeahead search
+  over knots and stitches, with file locations as context**, to "play
+  from there" — the launcher form of the existing play-from-here start
+  path (#186), reusing the symbol/outline query and the quickpick
+  idiom. (3) Each save offers **two actions: Load and Fork**. Load
+  attaches the session to the slot — "Save state" writes back to it,
+  like continuing a save file. Fork starts from a copy — the session is
+  not attached, and the next save picks a new location/slot, leaving
+  the checkpoint untouched.
+- **WHY:** Maintainer direction. Visual continuity: the launcher is the
+  Player's landing screen, so it borrows the landing's established door
+  vocabulary. The typeahead makes "get me to this scene" a typed
+  action instead of a hunt through gutters or the Binder — together
+  with saves it makes the idle Player the place testing starts from.
+  Load/fork separates the two testing motions: continuing a checkpoint
+  versus branching experiments off one without clobbering it.
