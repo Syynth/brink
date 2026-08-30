@@ -161,6 +161,7 @@ import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
 import { executionHighlightsFor } from "./execution-highlights.js";
 import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
+import { runtimeValueNote } from "./runtime-hover.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -1033,6 +1034,8 @@ export async function mountStudio(
     // instructions, target the explorer, and surface the tool window —
     // only when a target was actually set (the honest-failure
     // notifications come from the store action).
+    // Runtime-value hover (W12/#3305): policy in runtime-hover.ts.
+    getRuntimeValueNote: (name) => runtimeValueNote(store.getState(), name),
     onRevealInstructions: (path, line) => {
       if (store.getState().revealInstructionsAt(path, line - 1)) {
         ensureToolWindowOpen(shellLayout, "program");
