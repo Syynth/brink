@@ -120,6 +120,158 @@ function EditableScalar({
   );
 }
 
+/**
+ * Watch — the full mini-REPL (W17/#3310, spec §F18 RULED): typed
+ * expressions AND divert/content fragments, evaluated side-effect-proof
+ * over the speculation engine at every stop/turn boundary. Fragment
+ * results expand to a transcript preview of what the divert WOULD
+ * produce from the current state; failures sit inline on the row.
+ */
+function WatchRow({
+  entry,
+  result,
+  onRemove,
+}: {
+  entry: { id: string; source: string };
+  result:
+    | { kind: "pending" }
+    | { kind: "value"; display: string }
+    | { kind: "transcript"; lines: string[]; reachedChoices: string[]; truncated: boolean }
+    | { kind: "error"; message: string }
+    | undefined;
+  onRemove: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const r = result ?? { kind: "pending" as const };
+  const preview =
+    r.kind === "transcript"
+      ? r.lines[0] !== undefined
+        ? r.lines[0] + (r.lines.length > 1 || r.reachedChoices.length > 0 ? " …" : "")
+        : r.reachedChoices.length > 0
+          ? `⑂ ${r.reachedChoices.length.toString()} choices`
+          : "(no output)"
+      : null;
+  return (
+    <li className="dp-watch-row">
+      <div className="dp-watch-line">
+        {r.kind === "transcript" ? (
+          <button
+            type="button"
+            className="dp-watch-disclose"
+            aria-expanded={expanded}
+            title={expanded ? "Collapse the preview" : "Expand the transcript preview"}
+            onClick={() => setExpanded((e) => !e)}
+          >
+            {expanded ? "▾" : "▸"}
+          </button>
+        ) : (
+          <span className="dp-watch-disclose dp-watch-disclose-none" />
+        )}
+        <span className="dp-watch-src sv-mono" title={entry.source}>
+          {entry.source}
+        </span>
+        <span
+          className={
+            "dp-watch-result sv-mono" +
+            (r.kind === "error" ? " dp-watch-error" : "") +
+            (r.kind === "pending" ? " sv-dim" : "")
+          }
+          title={r.kind === "error" ? r.message : undefined}
+        >
+          {r.kind === "pending"
+            ? "…"
+            : r.kind === "value"
+              ? r.display
+              : r.kind === "error"
+                ? r.message
+                : preview}
+        </span>
+        <button
+          type="button"
+          className="dp-x dp-watch-x"
+          title="Remove this watch"
+          aria-label={`Remove watch ${entry.source}`}
+          onClick={onRemove}
+        >
+          ×
+        </button>
+      </div>
+      {expanded && r.kind === "transcript" && (
+        <div className="dp-watch-preview">
+          {r.lines.map((line, i) => (
+            <p key={i} className="dp-watch-preview-line">
+              {line}
+            </p>
+          ))}
+          {r.reachedChoices.map((c, i) => (
+            <p key={`c${i.toString()}`} className="dp-watch-preview-line dp-watch-preview-choice">
+              ⑂ {c}
+            </p>
+          ))}
+          {r.truncated && (
+            <p className="dp-watch-preview-line sv-dim">… stopped at the preview budget</p>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function WatchSection() {
+  const entries = useStudioStore((s) => s.watchEntries);
+  const results = useStudioStore((s) => s.watchResults);
+  const watchAdd = useStudioStore((s) => s.watchAdd);
+  const watchRemove = useStudioStore((s) => s.watchRemove);
+  const [adding, setAdding] = useState(false);
+  return (
+    <Section
+      title={`Watch (${entries.length})`}
+      actions={
+        <button
+          type="button"
+          className="dp-mini"
+          title="Add a watch — an expression (gold >= 2) or a divert (-> market)"
+          onClick={() => setAdding(true)}
+        >
+          +
+        </button>
+      }
+    >
+      {entries.length === 0 && !adding ? (
+        <p className="sv-empty">none — + watches an expression or divert</p>
+      ) : (
+        <ul className="dp-watch-list">
+          {entries.map((e) => (
+            <WatchRow
+              key={e.id}
+              entry={e}
+              result={results[e.id]}
+              onRemove={() => watchRemove(e.id)}
+            />
+          ))}
+        </ul>
+      )}
+      {adding && (
+        <input
+          autoFocus
+          className="dp-watch-input sv-mono"
+          placeholder="gold >= 2   ·   -> market.haggle"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              watchAdd(e.currentTarget.value);
+              e.currentTarget.value = "";
+              setAdding(false);
+            } else if (e.key === "Escape") {
+              setAdding(false);
+            }
+          }}
+          onBlur={() => setAdding(false)}
+        />
+      )}
+    </Section>
+  );
+}
+
 /** One frame's named locals — unchanged from StateView (#3140); see the
  * original tri-state doc: `undefined` = no debug info (says so), `[]` =
  * genuinely none (renders nothing), non-empty = names + live values.
@@ -514,6 +666,9 @@ function DebuggerPanelInner() {
           </table>
         )}
       </Section>
+
+      {/* Watch (F18/W17) — the mini-REPL over the speculation engine. */}
+      <WatchSection />
 
       {/* Breakpoints (F2) — the source anchors, program-wide. */}
       <Section

@@ -24,7 +24,9 @@ import type {
   LoadReport,
   ProgramAddress,
   ProgramModel,
+  ProjectSource,
   SaveState,
+  SpeculationResult,
   StructuralTranscript,
   SourceLocation,
   StepMode,
@@ -354,6 +356,16 @@ export interface DebugSessionProvider extends SessionProvider {
    * terminal stop comes first. The crossed line is IN the outcome's
    * `lines` (no one-advance lag, #3321). Needs no debug line info. */
   debugRunToLine(budgetCeiling?: number): DebugRunOutcome;
+  /** Watch evaluation (W17/#3310, spec §F18): evaluate an expression or
+   * divert/content fragment against the session's CURRENT durable state,
+   * side-effect-proof (a discard-on-drop speculation over a scratch
+   * runner — nothing it does touches the session). `null` = no live
+   * session to evaluate against. Optional — only the local provider
+   * implements it. */
+  evaluateWatch?(
+    source: string,
+    opts?: { projectSource?: ProjectSource; budget?: { steps?: number; lines?: number } },
+  ): Promise<SpeculationResult> | null;
   /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —
    * a global. `false` = refused with nothing written. */
   editGlobal(name: string, input: string): boolean;

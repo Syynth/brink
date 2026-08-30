@@ -257,7 +257,12 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     const entry = get().sessions.find((e) => e.id === id);
     if (!entry) return;
     get()._providerUnsub?.();
-    const unsub = entry.provider.subscribe((snap) => mirror(set, snap));
+    const unsub = entry.provider.subscribe((snap) => {
+      mirror(set, snap);
+      // Watch cadence (W17/#3310): every stop/turn boundary — the hook
+      // itself keys on the stop, so per-line reveals don't storm evals.
+      get()._watchOnMirror();
+    });
     set({
       _provider: entry.provider,
       _providerUnsub: unsub,
@@ -462,6 +467,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         return;
       }
       mirror(set, provider.getSnapshot());
+      get()._watchOnMirror();
     },
 
     disposeSession() {

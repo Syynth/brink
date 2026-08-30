@@ -1612,6 +1612,28 @@ export async function mountStudio(
     return provenanceFromBytes(text, byteStart, byteEnd);
   });
 
+  // Watch (W17/#3310): Tier-1 fragment entries recompile against the
+  // project's CURRENT sources — only the app boundary holds them (same
+  // reasoning as the byte resolver above).
+  store.getState().setWatchProjectSource(() => {
+    try {
+      const session = project.getSession();
+      const files: Record<string, string> = {};
+      // Real project files only — the mounted std/ arrives via the
+      // fragment compile's own Project::load, not as literal sources.
+      for (const f of session.listFiles()) {
+        if (f.mounted) continue;
+        const source = session.getFileSource(f.path);
+        if (source !== null) files[f.path] = source;
+      }
+      const entry = store.getState().entryFile;
+      if (entry === null) return null;
+      return { entry, files };
+    } catch {
+      return null;
+    }
+  });
+
   // Bind handles, kick the initial compile, and open the entry file (the
   // groups-store subscription above keeps focus tracking in sync as the
   // document component mounts).

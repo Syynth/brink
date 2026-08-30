@@ -69,7 +69,12 @@
  * drives, not a second one.
  */
 
-import { StorySessionHandle, type ExternalValue } from "@brink-lang/web";
+import {
+  StoryRunnerHandle,
+  StorySessionHandle,
+  type ExternalValue,
+  type SpeculationResult,
+} from "@brink-lang/web";
 import type {
   Breakpoint,
   Choice,
@@ -81,6 +86,7 @@ import type {
   ReplayOutcome,
   SaveState,
   SessionJournal,
+  ProjectSource,
   SessionLine,
   StepMode,
   StructuralTranscript,
@@ -207,6 +213,13 @@ export class LocalSessionProvider implements DebugSessionProvider {
    * rapid succession instead of one batch. 0 = all at once. */
   private pacedDelayMs = 0;
   private pacedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Watch (W17/#3310): the scratch runner fragment/expression evals run
+   * over — an independent wasm object seeded from the session's durable
+   * state per round, re-keyed per program version so the runner's
+   * fragment-compile cache pays each entry once per compile. Nothing it
+   * does can touch the live session (discard-on-drop speculation). */
+  private watchRunner: StoryRunnerHandle | null = null;
+  private watchRunnerChecksum: string | null = null;
   /** Unix ms of the last successful hot-reload migration/replay (W15) —
    * the Player chip's brief "reloaded" affirmation reads it. */
   private reloadedAt: number | null = null;
@@ -662,6 +675,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
   }
 
   dispose(): void {
+    this.watchRunner?.free();
+    this.watchRunner = null;
     this.stopPacedPump();
     this.unwatchJournal();
     if (this.session) this.session.free();
@@ -775,6 +790,44 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.applyDebugOutcome(outcome, false);
     this.emit();
     return outcome;
+  }
+
+  /** Watch evaluation (W17/#3310, spec §F18): run one entry against the
+   * session's CURRENT durable state. The scratch runner is seeded via
+   * `saveState()` (name-keyed — survives the cross-program hop), then
+   * `evaluate()` runs the shipped tiering: knot paths and literal-arg
+   * calls speculate directly; anything else takes the Tier-1
+   * fragment-compile road (cached per program version), for which the
+   * caller supplies `projectSource`. `null` = no live session. */
+  evaluateWatch(
+    source: string,
+    opts?: { projectSource?: ProjectSource; budget?: { steps?: number; lines?: number } },
+  ): Promise<SpeculationResult> | null {
+    const session = this.session;
+    if (!session || this.bytes === null) return null;
+    const state = this.capture(() => session.saveState());
+    if (state === null) return null;
+    try {
+      if (this.watchRunner === null || this.watchRunnerChecksum !== this.programChecksum) {
+        this.watchRunner?.free();
+        this.watchRunner = new StoryRunnerHandle(this.bytes);
+        this.watchRunnerChecksum = this.programChecksum;
+      }
+      this.watchRunner.load(state);
+      // A `-> knot.stitch` entry means "preview what this divert WOULD
+      // produce" (spec §F18's own example) — strip the sigil so it takes
+      // Tier-0's goToPath road (transcript preview). Left intact, the
+      // Tier-1 expression attempt succeeds FIRST as a divert-target
+      // LITERAL (`-> x` is a valid expression) and the row would show
+      // the target's name instead of the preview (measured live).
+      const divert = /^->\s*([A-Za-z_][\w.]*)\s*$/.exec(source.trim());
+      return this.watchRunner.evaluate(divert ? divert[1] : source, {
+        projectSource: opts?.projectSource,
+        budget: opts?.budget,
+      });
+    } catch {
+      return null;
+    }
   }
 
   /** Live value editing (W16/#3309, RULED: paused-only, scalars only) —

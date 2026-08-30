@@ -345,6 +345,54 @@ describe("Debugger panel (W8/#3301)", () => {
     expect(gold, "globals stay editable at a choice stop").toBeTruthy();
   });
 
+  it("Watch section: + adds an entry, rows render results, previews expand, × removes (W17)", () => {
+    const { store } = editableStore();
+    store.setState({
+      watchEntries: [
+        { id: "w1", source: "gold >= 2" },
+        { id: "w2", source: "-> barter" },
+      ],
+      watchResults: {
+        w1: { kind: "value", display: "true" },
+        w2: {
+          kind: "transcript",
+          lines: ["Griswold spreads a stained cloth."],
+          reachedChoices: ["Browse his wares"],
+          truncated: false,
+        },
+      },
+    });
+    mount(store);
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("Watch (2)");
+    expect(text).toContain("gold >= 2");
+    expect(text).toContain("true");
+    // The fragment row summarizes; the preview is collapsed.
+    expect(text).not.toContain("Browse his wares");
+    const disclose = host?.querySelector<HTMLButtonElement>("button.dp-watch-disclose");
+    act(() => disclose?.click());
+    expect(host?.textContent).toContain("Browse his wares");
+
+    // × removes the entry through the slice.
+    const x = host?.querySelector<HTMLButtonElement>(".dp-watch-x");
+    act(() => x?.click());
+    expect(store.getState().watchEntries.map((e) => e.id)).toEqual(["w2"]);
+
+    // + opens the add input; Enter lands a new entry.
+    const plus = Array.from(host?.querySelectorAll<HTMLButtonElement>(".dp-mini") ?? []).find(
+      (b) => b.textContent === "+",
+    );
+    act(() => plus?.click());
+    const input = host?.querySelector<HTMLInputElement>(".dp-watch-input");
+    expect(input).not.toBeNull();
+    input!.value = "torch";
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(store.getState().watchEntries.map((e) => e.source)).toContain("torch");
+  });
+
   it("disable-all / clear-all header actions drive every anchor", () => {
     const store = createStudioStore();
     store.setState({

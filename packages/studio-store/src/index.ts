@@ -36,6 +36,7 @@ import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
 import { createConflictSlice } from "./slices/conflict.js";
 import { createDebugSlice } from "./slices/debug.js";
 import { createSavesSlice, type SavesSlice } from "./slices/saves.js";
+import { createWatchSlice, type WatchSlice } from "./slices/watch.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -74,7 +75,8 @@ export interface StudioState
     SymbolMenuSlice,
     ConflictSlice,
     DebugSlice,
-    SavesSlice {
+    SavesSlice,
+    WatchSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -149,6 +151,7 @@ export const createStudioStore = () =>
       ...createConflictSlice(...args),
       ...createDebugSlice(...args),
       ...createSavesSlice(...args),
+      ...createWatchSlice(...args),
 
       // Non-reactive refs
       _documents: null,
