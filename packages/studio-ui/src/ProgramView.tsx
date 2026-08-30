@@ -6,6 +6,7 @@ import { useStudioStore } from "./StoreContext.js";
 import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
 import { ProgramLinesView } from "./ProgramLinesView.js";
 import { ProgramDisasmView } from "./ProgramDisasmView.js";
+import { ProgramSizeView } from "./ProgramSizeView.js";
 
 /** `(container_idx, offset)` — the shape both `DebugState.position` and a
  *  `KnotNode.disasm` entry's own `offset` (paired with the node's
@@ -77,10 +78,11 @@ function ProgramViewInner() {
   );
   const explorerTarget = useStudioStore((s) => s.programExplorerTarget);
   const programLines = useStudioStore((s) => s.programLines);
+  const programSize = useStudioStore((s) => s.programSize);
   const entryFile = useStudioStore((s) => s.entryFile);
   // Which view of the one instrument (#3339). Ephemeral by design — like a
   // tab strip, not a setting.
-  const [view, setView] = useState<"structure" | "lines" | "disasm">("structure");
+  const [view, setView] = useState<"structure" | "lines" | "disasm" | "size">("structure");
   // A disasm row's "line ›" jump: switch view and tell the lines view what
   // to select. Nonce'd so revealing the same line twice still re-fires.
   const [linesTarget, setLinesTarget] = useState<{
@@ -201,7 +203,15 @@ function ProgramViewInner() {
           >
             Disassembly
           </button>
-          <button type="button" className="pv-seg-item" role="tab" disabled title="Size view — needs the .inkb size report (#3339)">
+          <button
+            type="button"
+            className={"pv-seg-item" + (view === "size" ? " active" : "")}
+            role="tab"
+            aria-selected={view === "size"}
+            disabled={programSize === null}
+            title={programSize === null ? "No size report in this compile product — recompile" : undefined}
+            onClick={() => setView("size")}
+          >
             Size
           </button>
         </span>
@@ -215,7 +225,9 @@ function ProgramViewInner() {
         </button>
       </div>
 
-      {view === "disasm" ? (
+      {view === "size" ? (
+        <ProgramSizeView />
+      ) : view === "disasm" ? (
         <ProgramDisasmView
           currentPosition={currentPosition}
           target={explorerTarget}

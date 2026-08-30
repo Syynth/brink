@@ -585,3 +585,59 @@
   .pv-disasm-row:nth-child(even):not(.pv-current-instruction):not(.pv-target-instruction) {
   background: rgb(var(--bs-fg-rgb) / 4%);
 }
+
+/* ── #3339 Size view ──────────────────────────────────────────────── */
+.brink-studio .pv-size {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.brink-studio .pv-size-map {
+  flex: 1;
+  position: relative;
+  margin: 8px 12px;
+  min-height: 0;
+}
+.brink-studio .pv-size-block {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 4px 7px;
+  border: 1px solid;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--bs-font-mono);
+  color: var(--bs-fg);
+}
+/* Dashed = the blocks a shipping export strips. */
+.brink-studio .pv-size-block-debug {
+  border-style: dashed;
+}
+.brink-studio .pv-size-block-label {
+  font-size: var(--bs-font-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.brink-studio .pv-size-block-bytes {
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brink-studio .pv-size-crumb:disabled {
+  color: var(--bs-fg);
+  text-decoration: none;
+  cursor: default;
+}
+.brink-studio .pv-size-crumb-sep {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .pv-size-key-bytecode { color: var(--bs-accent); }
+.brink-studio .pv-size-key-lines { color: var(--bs-info); }
+.brink-studio .pv-size-key-debug { color: var(--bs-accent-secondary); }

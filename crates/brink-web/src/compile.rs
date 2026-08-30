@@ -697,3 +697,162 @@ mod lines_table_of_tests {
         assert_eq!(lines.len(), 2, "{lines:?}");
     }
 }
+
+/// Where the `.inkb` bytes go (#3339's Size view) — real on-disk section
+/// sizes from the file's own offset table, not estimates.
+///
+/// `shipping` is EXACT: the same program re-serialized without its
+/// `DebugInfo` section — what a release export produces — not
+/// `total - debug`, which would miss the header entry the omitted section
+/// no longer needs.
+///
+/// `line_scopes` splits the `LineTables` section by scope, each measured by
+/// serializing that scope's table alone (minus the section's own count
+/// prefix), so the numbers sum to the real section within framing bytes.
+#[wasm_bindgen]
+pub fn size_report_of(story_bytes: &[u8]) -> Result<String, JsError> {
+    let index = brink_format::read_inkb_index(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+    let data = brink_format::read_inkb(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+
+    let sections: Vec<serde_json::Value> = index
+        .sections
+        .iter()
+        .filter_map(|entry| {
+            let range = index.section_range(entry.kind)?;
+            Some(serde_json::json!({
+                "kind": format!("{:?}", entry.kind),
+                "bytes": range.len(),
+            }))
+        })
+        .collect();
+
+    let debug = index
+        .section_range(brink_format::SectionKind::DebugInfo)
+        .map_or(0, |r| r.len());
+
+    // Exact shipping size: re-serialize without debug info.
+    let shipping = if data.debug_info.is_some() {
+        let mut stripped = data.clone();
+        stripped.debug_info = None;
+        let mut buf = Vec::new();
+        brink_format::write_inkb(&stripped, &mut buf);
+        buf.len()
+    } else {
+        story_bytes.len()
+    };
+
+    // Per-scope line-table bytes, each measured alone (minus the u32 count
+    // prefix `write_section_line_tables` adds).
+    let resolver = crate::program_model::Resolver::new(&data);
+    let line_scopes: Vec<serde_json::Value> = data
+        .line_tables
+        .iter()
+        .map(|lt| {
+            let mut buf = Vec::new();
+            brink_format::write_section_line_tables(std::slice::from_ref(lt), &mut buf);
+            let path = resolver.path_or_empty(lt.scope_id);
+            serde_json::json!({
+                "name": if path.is_empty() { serde_json::Value::Null } else { path.into() },
+                "bytes": buf.len().saturating_sub(4),
+            })
+        })
+        .collect();
+
+    let report = serde_json::json!({
+        "total": story_bytes.len(),
+        "shipping": shipping,
+        "debug": debug,
+        "header": index.header_size(),
+        "sections": sections,
+        "line_scopes": line_scopes,
+    });
+    serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
+}
+
+#[cfg(test)]
+mod size_report_tests {
+    /// The Size view's numbers (#3339) must be REAL bytes: sections sum to
+    /// the file (with the header), per-scope line tables sum to their
+    /// section within framing, and `shipping` is an exact re-serialization
+    /// without debug info — strictly smaller when debug info exists, and
+    /// exactly the input when none does.
+    #[test]
+    fn sections_sum_to_the_file_and_shipping_is_exact() {
+        let src = "=== k ===\nHello there.\n* [a] A. -> END\n* [b] B. -> END\n";
+        let options = brink_analyzer::AnalysisOptions {
+            emit_debug_info: true,
+            ..Default::default()
+        };
+        let out =
+            brink_compiler::compile_with_options("main.ink", |_p| Ok(src.to_owned()), options)
+                .expect("compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+
+        let json = super::size_report_of(&bytes).expect("report");
+        let report: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+        let total = report["total"].as_u64().expect("total");
+        assert_eq!(total, bytes.len() as u64);
+
+        let header = report["header"].as_u64().expect("header");
+        let section_sum: u64 = report["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .map(|s| s["bytes"].as_u64().expect("bytes"))
+            .sum();
+        assert_eq!(
+            header + section_sum,
+            total,
+            "sections + header must cover the file"
+        );
+
+        let debug = report["debug"].as_u64().expect("debug");
+        assert!(debug > 0, "a debug compile carries a DebugInfo section");
+        let shipping = report["shipping"].as_u64().expect("shipping");
+        assert!(
+            shipping < total,
+            "shipping ({shipping}) must be smaller than a debug build ({total})"
+        );
+
+        // Per-scope line tables stay within their section.
+        let line_section = report["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|s| s["kind"] == "LineTables")
+            .expect("LineTables section")["bytes"]
+            .as_u64()
+            .expect("bytes");
+        let scope_sum: u64 = report["line_scopes"]
+            .as_array()
+            .expect("line_scopes")
+            .iter()
+            .map(|s| s["bytes"].as_u64().expect("bytes"))
+            .sum();
+        assert!(scope_sum <= line_section, "{scope_sum} > {line_section}");
+        assert!(
+            report["line_scopes"]
+                .as_array()
+                .expect("line_scopes")
+                .iter()
+                .any(|s| s["name"] == "k"),
+            "scopes are named by their stamped path"
+        );
+    }
+
+    #[test]
+    fn a_plain_compile_reports_itself_as_already_shipping() {
+        let out = brink_compiler::compile("main.ink", |_p| Ok("Hi.\n-> END\n".to_owned()))
+            .expect("compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let report: serde_json::Value =
+            serde_json::from_str(&super::size_report_of(&bytes).expect("report")).expect("json");
+        assert_eq!(report["debug"], 0);
+        assert_eq!(report["shipping"], report["total"]);
+    }
+}

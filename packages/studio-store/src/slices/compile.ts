@@ -10,7 +10,7 @@
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Diagnostic, FileOutline, StoryGraph } from "@brink/wasm-types";
-import { linesTableOf, programChecksum, programInktOf, programModelOf } from "@brink-lang/web";
+import { linesTableOf, programChecksum, programInktOf, programModelOf, sizeReportOf } from "@brink-lang/web";
 import { sortDiagnostics } from "@brink-lang/editor";
 import { insertIncludeLine, relativeIncludePath } from "../include-insert.js";
 
@@ -152,6 +152,7 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
           programModel: programModelOf(storyBytes),
           programInkt: programInktOf(storyBytes),
           programLines: linesTableOf(storyBytes),
+          programSize: sizeReportOf(storyBytes),
         });
       } catch {
         // A decode failure surfaces through the compile diagnostics road;

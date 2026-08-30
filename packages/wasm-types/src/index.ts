@@ -1631,6 +1631,19 @@ export interface LinesTableScope {
   lines: LinesTableLine[];
 }
 
+/** Where the `.inkb` bytes go (#3339 Size view) — real on-disk sizes
+ *  from the file's own offset table. `shipping` is an exact
+ *  re-serialization without the DebugInfo section. */
+export interface SizeReport {
+  total: number;
+  shipping: number;
+  debug: number;
+  header: number;
+  sections: { kind: string; bytes: number }[];
+  /** Per-scope line-table bytes; `name` null for the root scope. */
+  line_scopes: { name: string | null; bytes: number }[];
+}
+
 /** The compiler's lines table (`StoryRunner.linesTable()`, #366):
  *  project-wide, `INCLUDE`s already resolved by the compile. */
 export interface LinesTable {

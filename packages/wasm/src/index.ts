@@ -15,6 +15,7 @@ import init, {
   program_model_of as wasmProgramModelOf,
   program_inkt_of as wasmProgramInktOf,
   lines_table_of as wasmLinesTableOf,
+  size_report_of as wasmSizeReportOf,
   token_type_names,
   diagnostic_registry,
   token_modifier_names,
@@ -71,6 +72,7 @@ import type {
   StepMode,
   ProgramModel,
   LinesTable,
+  SizeReport,
   SaveState,
   LoadReport,
   HostManifest,
@@ -173,6 +175,11 @@ export function programInktOf(storyBytes: Uint8Array): string {
  */
 export function linesTableOf(storyBytes: Uint8Array): LinesTable {
   return JSON.parse(wasmLinesTableOf(storyBytes)) as LinesTable;
+}
+
+/** The `.inkb` size report, runner-free (#3339 Size view). */
+export function sizeReportOf(storyBytes: Uint8Array): SizeReport {
+  return JSON.parse(wasmSizeReportOf(storyBytes)) as SizeReport;
 }
 
 // ── Token legend (stateless) ────────────────────────────────────

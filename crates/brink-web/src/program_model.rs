@@ -160,7 +160,7 @@ fn attach_src(lines: &mut [DisasmLineJs], data: &StoryData, container_idx: usize
 }
 
 /// Resolves ids to author-facing names for a single program.
-struct Resolver<'a> {
+pub(crate) struct Resolver<'a> {
     data: &'a StoryData,
     /// container/scope `DefinitionId` → qualified path (from `address_paths`).
     def_path: HashMap<DefinitionId, &'a str>,
@@ -170,7 +170,7 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(data: &'a StoryData) -> Self {
+    pub(crate) fn new(data: &'a StoryData) -> Self {
         let nm = |id: NameId| data.name_table.get(id.0 as usize).map(String::as_str);
         Self {
             data,
@@ -203,6 +203,12 @@ impl<'a> Resolver<'a> {
             .get(id.0 as usize)
             .map_or("?", String::as_str)
     }
+    /// The stamped path for `id`, or `""` when unmapped — the Size
+    /// report's per-scope naming rides this (root scope has no path).
+    pub(crate) fn path_or_empty(&self, id: DefinitionId) -> &str {
+        self.path(id)
+    }
+
     fn path(&self, id: DefinitionId) -> &str {
         self.def_path.get(&id).copied().unwrap_or("?")
     }

@@ -147,9 +147,10 @@ describe("the Structure view", () => {
     // Line tables (phase 2) and Disassembly (phase 3) are real.
     expect(items[1].disabled).toBe(false);
     expect(items[2].disabled).toBe(false);
-    // Size stays a designed slot, naming what it waits on.
+    // Size disables itself only when the compile product carries no
+    // report (this fixture sets none), saying what to do about it.
     expect(items[3].disabled).toBe(true);
-    expect(items[3].title).toContain("#3339");
+    expect(items[3].title).toContain("recompile");
   });
 
   it("disables the Line tables slot for a compile product without a table", () => {

@@ -25,7 +25,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice, DebugState, LinesTable, ProgramModel } from "@brink/wasm-types";
+import type { Choice, DebugState, LinesTable, ProgramModel, SizeReport } from "@brink/wasm-types";
 import type { ExternalValue } from "@brink-lang/web";
 
 import {
@@ -180,6 +180,9 @@ export interface SessionSlice {
    * the Line tables view renders it whole.
    */
   programLines: LinesTable | null;
+  /** The `.inkb` size report (#3339 Size view) — compile-bound like the
+   *  other program products. */
+  programSize: SizeReport | null;
   /**
    * Identity of the running program — `ProgramModel.checksum` (spec §5).
    * Mirrored from the provider snapshot; the basis for degraded mode (#181).
@@ -304,6 +307,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     programModel: null,
     programInkt: null,
     programLines: null,
+    programSize: null,
     programChecksum: null,
     capabilities: ALL_CAPABILITIES,
 
@@ -499,6 +503,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         programModel: null,
         programInkt: null,
         programLines: null,
+        programSize: null,
         programChecksum: null,
         // Back to the default local capability set — the next session is local
         // until a narrower provider binds.
