@@ -1069,8 +1069,16 @@ pub(crate) fn resolve_lines_annotated(
                         ..
                     } = part
                 {
+                    // Same table selection as `resolve_line_ref`: a
+                    // `LineRef`'s `container_idx` keys the SCOPE table via
+                    // `scope_table_idx`, never `line_tables` directly —
+                    // indexing raw silently reads another scope's line
+                    // (found live: every provenance chip pointed at the
+                    // wrong place while the TEXT — resolved through the
+                    // correct road — looked fine).
+                    let scope_idx = program.scope_table_idx(*container_idx) as usize;
                     current_source = line_tables
-                        .get(*container_idx as usize)
+                        .get(scope_idx)
                         .and_then(|t| t.get(*line_idx as usize))
                         .and_then(|entry| entry.source_location.clone());
                 }

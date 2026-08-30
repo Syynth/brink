@@ -111,6 +111,16 @@ export interface TranscriptLine {
   source?: SourceLocation;
 }
 
+/** A transcript line's source, in editor terms (W7/#3300): 0-based
+ * line plus a UTF-16 code-unit span — converted from
+ * `TranscriptLine.source`'s byte range by the app boundary's registered
+ * resolver (`setSourceByteResolver`). */
+export interface ProvenancePoint {
+  line: number;
+  start: number;
+  end: number;
+}
+
 /** Story-output row helper — the shape both drive roads append. */
 export function transcriptLine(
   text: string,

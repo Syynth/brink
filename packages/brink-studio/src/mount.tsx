@@ -157,6 +157,7 @@ import { registerLocationResolvers } from "./location-resolvers.js";
 import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
 import { executionHighlightsFor } from "./execution-highlights.js";
 import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
+import { provenanceFromBytes } from "./transcript-provenance.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -1524,6 +1525,20 @@ export async function mountStudio(
       saveBreakpoints(window.localStorage, editorScope, list),
     );
   }
+
+  // Transcript provenance (W7/#3300): the byte-range → editor-terms
+  // converter, registered here because only the app boundary can read
+  // file text. Callers gate on degraded-ness themselves.
+  store.getState().setSourceByteResolver((file, byteStart, byteEnd) => {
+    let text: string | null = null;
+    try {
+      text = project.getSession().getFileSource(file);
+    } catch {
+      text = null;
+    }
+    if (text === null) return null;
+    return provenanceFromBytes(text, byteStart, byteEnd);
+  });
 
   // Bind handles, kick the initial compile, and open the entry file (the
   // groups-store subscription above keeps focus tracking in sync as the

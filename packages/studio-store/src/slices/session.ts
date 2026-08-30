@@ -41,7 +41,8 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
-import type { TranscriptLine } from "../session/types.js";
+import type { ProvenancePoint, TranscriptLine } from "../session/types.js";
+export type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 
 // Re-exported for back-compat: consumers import these from the store root.
 export {
@@ -75,6 +76,20 @@ export interface SessionSlice {
   /** The structured transcript (W7/#3300): line rows with tags and
    * source provenance — what the rebuilt Player renders. */
   sessionLines: TranscriptLine[];
+  /**
+   * Byte-range → editor terms converter for transcript provenance
+   * (W7/#3300): `TranscriptLine.source` carries UTF-8 BYTE offsets in
+   * the compiled file; the Player needs a 0-based line (hover chip) and
+   * a UTF-16 span (the reveal). Registered by the app boundary, which
+   * can read file text; `null` until then (provenance affordances hide).
+   */
+  _resolveSourceBytes:
+    | ((file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null)
+    | null;
+  /** Register the provenance converter (app boundary). */
+  setSourceByteResolver(
+    resolver: (file: string, byteStart: number, byteEnd: number) => ProvenancePoint | null,
+  ): void;
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   sessionChoices: Choice[];
   /**
@@ -236,6 +251,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionStatus: "none",
     sessionText: [],
     sessionLines: [],
+    _resolveSourceBytes: null,
     sessionChoices: [],
     sessionAuto: false,
     sessionPaused: false,
@@ -264,6 +280,10 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         };
       });
       setActive(DEFAULT_SESSION_ID);
+    },
+
+    setSourceByteResolver(resolver) {
+      set({ _resolveSourceBytes: resolver });
     },
 
     startSession(bytes) {

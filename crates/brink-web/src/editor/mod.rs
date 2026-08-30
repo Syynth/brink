@@ -6765,6 +6765,63 @@ mod tests {
     /// Resolve the flow's entry position through the same `WebSession` the
     /// studio's `LocalSessionProvider` builds, returning the resolver's
     /// JSON (`"null"` when the artifact carries no `DebugInfo`).
+    // W7/#3300 transcript provenance, over the STUDIO's own compile road
+    // (`EditorSession::compile_project` — the db pull, not
+    // `brink_environment::compile`). The choice weave in `top` gives the
+    // program child containers, so `second`'s container index diverges
+    // from its SCOPE-table index — the exact misalignment that made raw
+    // `line_tables[container_idx]` indexing read another scope's line
+    // (found live in the playground: every provenance chip pointed
+    // hundreds of lines past the truth while the TEXT — which always
+    // resolved through `scope_table_idx` — looked fine).
+    #[test]
+    fn delivered_line_provenance_is_file_local_on_the_studio_compile_road() {
+        let other = "VAR gold = 12\n=== top ===\nOpening line.\n* [Onward] -> second\n* [Also onward] -> second\n=== second ===\nPadding one.\nPadding two.\nThe included line has {gold} coins.\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "INCLUDE other.ink\n// padding comment line one\n// padding comment line two\n-> top\n",
+        );
+        s.update_file("other.ink", other);
+        let bytes = compiled_story_bytes(&mut s);
+        let session =
+            crate::session::WebSession::new(&bytes, None, None).expect("session constructs");
+
+        let mut found = false;
+        for _ in 0..10 {
+            let raw = session.continue_single().expect("continue_single");
+            let line: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+            if line["type"] == serde_json::json!("choices") {
+                session.choose(0).expect("choose");
+                continue;
+            }
+            if line["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("The included line")
+            {
+                let source = &line["source"];
+                assert_eq!(source["file"], serde_json::json!("other.ink"), "{line}");
+                let start =
+                    usize::try_from(source["range_start"].as_u64().expect("start")).expect("usize");
+                let end =
+                    usize::try_from(source["range_end"].as_u64().expect("end")).expect("usize");
+                assert!(
+                    end <= other.len() && other[start..end].contains("The included line"),
+                    "range {start}..{end} must be in other.ink's own coordinates \
+                     (file is {} bytes)",
+                    other.len()
+                );
+                found = true;
+                break;
+            }
+            if line["type"] == serde_json::json!("end") {
+                break;
+            }
+        }
+        assert!(found, "the included line never arrived");
+    }
+
     fn resolve_entry_position(bytes: &[u8]) -> String {
         let session =
             crate::session::WebSession::new(bytes, None, None).expect("session constructs");
