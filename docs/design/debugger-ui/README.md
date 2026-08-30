@@ -28,8 +28,12 @@ One scenario runs through every artboard: paused at a breakpoint on
   StateView content demoted to collapsed Story sections.
 - `GutterStates.dc.html` — the marker taxonomy in the ONE shared gutter
   column (breakpoints render where "play from here" does; context menu
-  resolves header-line conflicts): header-conflict / bound / disabled /
-  unbound-hollow / paused-here / selected-frame / parked, with the
-  degraded-suppression rules.
-- `Transport.dc.html` — toolbar in four states (playing, paused, parked,
-  out-of-sync) plus the F-row keybinding legend.
+  resolves header-line conflicts): header-conflict / live-line-playing /
+  bound / disabled / unbound-hollow / paused-here / selected-frame /
+  parked, with the degraded-suppression rules. Color language: live =
+  success, paused = warning + arrow, selected frame = accent + hollow
+  arrow, parked = info dashed, breakpoints = error.
+- `Transport.dc.html` — toolbar in five states (ready — the default, the
+  story never plays on open; playing; paused; parked; out-of-sync) plus
+  the F-row keybinding legend. Play is stepping: one live visualization,
+  pause just stops the advance.

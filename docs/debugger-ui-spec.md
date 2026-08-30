@@ -78,6 +78,19 @@ tooltip explains), stepping reports no source position.
 
 ### F3 — Pause, resume, and stepping (the transport)
 
+**The granularity ladder (RULED 2026-08-29).** Three stepping tiers,
+coarse to fine, matching who is holding the controls:
+
+1. **Story line** — the delivered `OutputLine`, the author's primary
+   debugging unit. The existing reveal-next verb IS the first-class
+   step; auto mode is it self-advancing (F4/F13). Most story-and-logic
+   debugging happens here without touching the debug cluster at all.
+2. **Source statement** — step into/over/out, the deeper
+   logic-investigation tier when line-level advance isn't enough.
+3. **Instruction** — `stepi`, the programmer-assist tier ("when the
+   programmer needs to step in to help"); lives in the Program
+   Explorer, never the Player toolbar.
+
 The Player toolbar carries the transport (§3). Verbs, with proposed
 keybindings (declared on the `debug.*`/`story.*` command descriptors;
 user-overridable through the existing keymap service):
@@ -102,14 +115,25 @@ Instruction stepping (`stepi`) lives in the **Program Explorer's** header
 actions, not the Player toolbar — the audience watching instructions is
 already looking at the disassembly. Same enablement rules.
 
-### F4 — Execution highlight
+### F4 — Execution highlight (RULED 2026-08-29: live during play, not paused-only)
 
-- **Editor**: when paused, the current line gets a highlight band + a
-  gutter arrow, resolved through the program→source chain, in whichever
-  file the position lands (auto-open + reveal on stop, like any IDE).
-  Selecting a non-top stack frame moves the highlight to that frame's line
-  in a visually distinct "frame" tint (VS Code convention: yellow current /
-  grey selected-frame).
+**Play is stepping.** The story never auto-starts (the Player opens
+idle; Run begins a session), and from the moment a session runs, the
+editor carries the per-line treatment *continuously*: the highlight
+follows each delivered line as it is revealed — paced auto, manual
+Continue, or a debug step are all the same visualization advancing.
+Pause and breakpoints stop the advance; they do not switch anything on.
+
+- **Editor, while playing**: the line being revealed carries a
+  success-tint band (no gutter glyph), moving with the reveal cadence
+  (F13). The editor never auto-scrolls to follow playback — clicking the
+  status chip reveals the current line (follow-toggle: open knob, §7).
+- **Editor, while paused**: warning-tint band + gutter arrow, auto-open
+  + reveal on stop like any IDE. Selecting a non-top stack frame shows
+  that frame's line in an accent-tint band with a hollow arrow.
+- Color language across all execution states: **live = success tint ·
+  paused = warning tint + arrow · selected frame = accent tint + hollow
+  arrow · parked = info dashed · breakpoints = error dots**.
 - **Program Explorer**: the existing current-instruction highlight, plus
   it follows frame selection.
 - Both are suppressed under `sessionDegraded` (already the Program
@@ -232,7 +256,10 @@ lineage) — the rebuild changes its anatomy, not its address:
   capability, disabled-not-hidden while running) · **Auto toggle**
   (fast-forward icon, F13) · **tags toggle** (F13) · spacer · **status
   chip** (playing / paused at `file:line` / parked / ended / out-of-sync —
-  the single home of F7's stop reasons) · Maximize.
+  the single home of F7's stop reasons) · Maximize. The chip's state set
+  starts at **ready** — the story never plays by default (RULED
+  2026-08-29); Run compiles and starts the session, and clicking the
+  chip reveals the current line in the editor.
 - **Transcript**: the existing screenplay rendering, plus F13's line-row
   boundaries and tag chips, F9's provenance affordance, an unobtrusive
   marker on the line where execution is paused, and auto-scroll that
@@ -304,9 +331,12 @@ changesets.
    interleaved play→breakpoint→step→continue→choice→terminal with a
    coherent transcript. *Proof:* store-level vitest against a real
    compiled story; mirrors a `.dbg` golden where possible.
-6. **W6 — Execution highlight** (#3233's second half): editor extension +
-   reveal-on-stop + frame tint. *Proof:* both surfaces + degraded
-   suppression, the `program-view-current-position.test.tsx` standard.
+6. **W6 — Execution highlight** (#3233's second half): editor extension
+   with live-line tracking during play (follows F13's reveal cadence) +
+   paused arrow/band + reveal-on-stop + frame tint. *Proof:* both
+   surfaces + degraded suppression + the highlight advancing across a
+   multi-line reveal, the `program-view-current-position.test.tsx`
+   standard.
 7. **W7 — Player rebuild**: toolbar/transport/status chip/transcript
    provenance/auto-scroll + F13 (auto toggle button, paced reveal + its
    App setting, tags toggle, line-row boundaries) + absorbed follow-ups.
@@ -334,3 +364,7 @@ needed before W5 can present parks; F11 carries the proposed answer),
 3. **Keybinding set**: F-row proposed (desktop-first per the ruled
    consumer); web embeds may need Mod-based alternates — the keymap
    override service already covers per-user remapping.
+4. **Follow-execution scrolling**: the live highlight (F4) never scrolls
+   the editor by default; whether a "follow execution" toggle (viewport
+   tracks the live line) is wanted, and where it lives, is an open knob
+   for W6/W7 — the chip-click reveal is the committed baseline.

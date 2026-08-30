@@ -22,7 +22,7 @@
     .op { color: #89dceb; } .vname { color: #eba0ac; }
   </style>
 </helmet>
-<div style="width: 680px; height: 720px; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+<div style="width: 680px; height: 800px; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
   <div>
     <div style="font-size: 14px; font-weight: 600">Gutter + execution states</div>
     <div style="font-size: 11px; color: #6c7086">One shared column: breakpoints render where "play from here" does (ruled 2026-08-29). Identical on .ink and .brink.</div>
@@ -41,6 +41,15 @@
       </div>
     </div>
     <p class="desc"><span class="lbl" style="display:inline">Header line — shared column.</span> Hover on a knot/stitch header shows ▶ (play wins the glyph); "Set breakpoint here" lives in the gutter context menu for the rare conflict.</p>
+  </div>
+
+  <div class="cell">
+    <div class="sample" style="background: rgb(166 227 161 / 9%)">
+      <span class="snum">9</span>
+      <span class="sglyph"></span>
+      <span class="scode">The tavern is loud tonight.</span>
+    </div>
+    <p class="desc"><span class="lbl" style="display:inline">Live line — playing.</span> While a session runs, the line being revealed carries a success band that advances with the reveal cadence — play IS stepping. No gutter glyph; the arrow belongs to pause. Never auto-scrolls the editor.</p>
   </div>
 
   <div class="cell">

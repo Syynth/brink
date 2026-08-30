@@ -4100,3 +4100,45 @@
   host-marker rendering at its slot) rather than mounting
   `hostGutterExtension`'s parallel column; the host-gutter marker model
   can still carry the data.
+
+## Play is stepping: no auto-start, and the editor tracks the live line while playing
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor-ui (debugger UI round, #452 D9 / #3199)
+- **SCOPE:** architectural
+- **WHAT:** (1) **The story does not play by default.** Opening the
+  studio/Player never starts a session; the Player opens idle ("ready")
+  and Run compiles and begins one. (2) **While a session is running, the
+  editor reflects it with the per-line treatment continuously** — the
+  execution highlight follows each delivered line as it is revealed
+  (paced or manual), not only when paused. Since playback advances one
+  line at a time anyway, "debugging" and "stepping through the story"
+  are ONE experience: auto mode is automatic stepping, Continue is a
+  step, pause/breakpoints just stop the advance — the visualization is
+  already live either way.
+- **WHY:** Maintainer direction on the canvas: "once the player is in
+  'play' mode and we have a live session running, the editor should
+  reflect that with the per line treatment... we can kind of unify the
+  'debugging' and 'stepping through the story' experience." This
+  collapses what would otherwise be two visual systems (a play mode with
+  no source feedback + a debug mode with highlights) into one, and makes
+  the always-on debug-info ruling pay off during ordinary playtesting,
+  not just at breakpoints. Color language: live line = success tint,
+  paused = warning tint + arrow, selected frame = accent tint + hollow
+  arrow, parked = info dashed. Degraded suppression applies to all of
+  them identically. The editor never auto-scrolls to follow playback by
+  default (typing while a story runs must stay hostile-free); clicking
+  the status chip reveals the current line — whether a follow-execution
+  toggle is wanted stays an open knob for the build.
+
+  The granularity ladder behind the unification (maintainer, same
+  session): "the author wants to debug their story and logic line by
+  line anyway, and the instruction and code level 'step line' is just
+  for even more granular and detailed investigation or when the
+  programmer needs to step in to help." Three tiers: (1) the **story
+  line** (delivered `OutputLine`) is the author's primary stepping unit
+  — the existing reveal-next IS the first-class step, and auto mode is
+  it self-advancing; (2) **source-statement** step into/over/out is the
+  deeper logic-investigation tier; (3) **instruction-level** `stepi` is
+  the programmer-assist tier — which is why it lives in the Program
+  Explorer, not the Player toolbar.
