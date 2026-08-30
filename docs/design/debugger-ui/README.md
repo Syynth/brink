@@ -22,10 +22,12 @@ One scenario runs through every artboard: paused at a breakpoint on
   status strip, choice buttons, and the transcript provenance affordance
   (hover band + `file:line · ⌘-click to reveal` tooltip).
 - `DebuggerPanel.dc.html` — the StateView replacement: header transport
-  mirror, interactive Frames (selected frame, kind badges, clickable
-  `file:line`, a parked "resumes here" frame), locals-first Variables
-  with change highlight, Breakpoints with enable checkboxes, the old
-  StateView content demoted to collapsed Story sections.
+  mirror, a Flows section (open flows with the active one selected and a
+  parked flow's "resumes here" state — replaces the status bar's
+  SessionPicker), the selected flow's interactive Frames (kind badges,
+  clickable `file:line`), locals-first Variables with change highlight,
+  Breakpoints with enable checkboxes, the old StateView content demoted
+  to collapsed Story sections.
 - `GutterStates.dc.html` — the marker taxonomy in the ONE shared gutter
   column (breakpoints render where "play from here" does; context menu
   resolves header-line conflicts): header-conflict / live-line-playing /
@@ -33,6 +35,12 @@ One scenario runs through every artboard: paused at a breakpoint on
   parked, with the degraded-suppression rules. Color language: live =
   success, paused = warning + arrow, selected frame = accent + hollow
   arrow, parked = info dashed, breakpoints = error.
+- `ChoicePoint.dc.html` — the story waiting on a choice: presented
+  choice lines lit (success band) in the editor, rejected candidates
+  dimmed with their reason (`gold > 20 = false`, `once-only · used`,
+  from the runtime choice-presentation report), the runtime-value hover
+  card on `gold`, and the Player showing the presented pair with a
+  "Waiting on choice" chip.
 - `Transport.dc.html` — toolbar in five states (ready — the default, the
   story never plays on open; playing; paused; parked; out-of-sync) plus
   the F-row keybinding legend. Play is stepping: one live visualization,

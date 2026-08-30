@@ -214,13 +214,17 @@ continuation container's offset-0 position tagged `parked: true` (and the
 call site tagged for `AwaitingExternal`), which is exactly what the
 "resumes here" label needs; the ruling belongs to #3225, not here.
 
-### F12 — Multi-flow (deferred)
+### F12 — Multi-flow (selection surface ruled; runtime deferred)
 
-The runtime seam is default-flow-only (#3223). The UI reserves the concept:
-the debugger drives the **active session** (the existing session picker is
-the selection surface), and the panel header names the flow being
-inspected. Per-flow breakpoint filtering and cross-flow stepping wait for
-#3223's runtime work; nothing in this design forecloses it.
+The runtime seam is default-flow-only (#3223). **The Debugger panel's
+Flows section is the selection surface (RULED 2026-08-29)**: the list of
+open flows/sessions lives in the panel above Frames — the status bar's
+`SessionPicker` retires, the status bar keeps only the one-line story
+status. Selecting a flow scopes Frames/Variables and the transport to
+it; a parked flow shows "parked — resumes here" in this list (its
+Frames view shows the resume frame), never as a pseudo-frame in another
+flow's stack. Per-flow breakpoint filtering and cross-flow stepping wait
+for #3223's runtime work; nothing in this design forecloses it.
 
 ### F13 — Transcript line presentation (RULED 2026-08-29)
 
@@ -244,6 +248,41 @@ Three refinements from the canvas review, all Player-side:
   each delivered line — the runtime's delivery unit and the debugger's
   stepping unit — is visible at a glance; hover strengthens the band
   full-width and carries F9's provenance affordance.
+
+### F14 — Choice-point visualization (RULED 2026-08-29)
+
+When the session reaches `Step::Choices`, the status chip reads
+**"Waiting on choice"** and the editor lights the choice point:
+
+- Every **presented** choice's line gets the success-tint band (they are
+  the live frontier — the possible next lines).
+- Authored choices that were **not added to the block** render dimmed
+  with the reason beside them: the failing condition (`gold > 20 =
+  false`) or `once-only · used`. Runtime-driven, never guessed
+  editor-side (an editor-computed candidate set can't tell a false
+  condition from an exhausted once-only).
+- **Requires a new runtime/bridge seam**: a *choice presentation report*
+  — per choice point, the candidates evaluated with presented/rejected
+  + reason — its own runtime ticket beside #3223. Until it lands, the
+  presented set alone (already in `DebugState.choices`) can light the
+  presented lines; dimming waits for the report.
+
+### F15 — Runtime-value hover (RULED 2026-08-29)
+
+While a session is live and in-sync, hovering a variable in the editor
+adds its **current runtime value** to the existing hover: globals
+always, frame locals while paused in that frame's scope. Studio-side
+merge (existing hover identifies the symbol; `DebugState`
+globals/locals supply the value) — no new wasm surface expected.
+Suppressed under `sessionDegraded` like every position feature.
+
+### F16 — Player appearance settings (RULED 2026-08-29)
+
+The Player gets its own appearance section in App settings, starting
+with **font size** — its own knob on the `--bs-editor-font-size`
+precedent (the reading surface's size is not the UI's size), separate
+from the app type scale. Room to grow (line spacing, face) without
+re-ruling.
 
 ## 3. The rebuilt Player
 
@@ -275,13 +314,17 @@ lineage) — the rebuild changes its anatomy, not its address:
 Replaces StateView in its strip slot (right dock, `state` id retired or
 reused — keep the Mod-N slot stable). Sections, top to bottom:
 
-1. **Header**: status line mirroring the Player chip + flow name;
-   header-actions: transport mirror (small pause/step icons) so stepping
-   works with the Player hidden.
-2. **Frames** — interactive call stack (F5).
-3. **Variables** — Locals (selected frame) then Globals (F6).
-4. **Breakpoints** (F2).
-5. **Story** (collapsed group): Pending choices · Visit counts (with the
+1. **Header**: status line mirroring the Player chip; header-actions:
+   transport mirror (small pause/step icons) so stepping works with the
+   Player hidden.
+2. **Flows** — every open flow/session, active one highlighted; parked
+   flows carry their "resumes here" state here (F12, ruled 2026-08-29 —
+   replaces the status bar's `SessionPicker`). Selection scopes
+   everything below plus the transport.
+3. **Frames** — the selected flow's interactive call stack (F5).
+4. **Variables** — Locals (selected frame) then Globals (F6).
+5. **Breakpoints** (F2) — program-wide, not per-flow.
+6. **Story** (collapsed group): Pending choices · Visit counts (with the
    existing filter) · RNG — the old StateView's inspection content,
    retained but demoted.
 
@@ -303,7 +346,7 @@ start; no debug info → names the App setting.
 | Debugger panel | `packages/studio-ui/src/StateView.tsx` → new component (keep `DebugValueView`, `FrameLocals` internals where they fit) | replace |
 | Frame-selection state (`selectedFrameIdx`), reveal-on-stop, highlight publication | session/debug slices + `mount.tsx` | add |
 | Keybindings on `debug.*`/`story.*` descriptors (F3's table) | `packages/brink-studio/src/debug-commands.ts`, `story-commands.ts` | modify |
-| Status bar paused state | `packages/studio-ui/src/StatusBar.tsx` | modify |
+| Status bar paused state; `SessionPicker` retires (flow list moves into the Debugger panel, ruled 2026-08-29) | `packages/studio-ui/src/StatusBar.tsx` | modify |
 | `stepi` + frame-follow in Program Explorer | `packages/studio-ui/src/ProgramView.tsx` | modify |
 
 Changesets: every one of these lands under the `@brink-lang/studio`
@@ -347,6 +390,17 @@ changesets.
 9. **W9 — Program Explorer additions**: `stepi`, frame-follow, reveal-in-
    explorer.
 10. **W10 — Keybindings + status bar + palette polish.**
+11. **W11 — Choice-point visualization** (F14): presented-line highlight
+    from `DebugState.choices` now; failed-choice dimming once the
+    runtime *choice presentation report* seam lands (file the runtime
+    ticket with W11). *Proof:* a choice point with a false-condition
+    choice and an exhausted once-only, both dimmed with the right
+    reason; degraded suppression.
+12. **W12 — Runtime-value hover** (F15): studio-side hover merge.
+    *Proof:* global + frame-local hover values, gone when degraded or
+    no session.
+13. **W13 — Player appearance settings** (F16): font-size knob in the
+    App settings Player section, wired to the Player's prose styles.
 
 Rulings/tickets referenced but *not* absorbed: #3225 (parked position —
 needed before W5 can present parks; F11 carries the proposed answer),

@@ -4142,3 +4142,50 @@
   deeper logic-investigation tier; (3) **instruction-level** `stepi` is
   the programmer-assist tier — which is why it lives in the Program
   Explorer, not the Player toolbar.
+
+## The Debugger panel owns the flow list, not the status bar
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger UI round, #452 D9 / #3223)
+- **SCOPE:** moderate
+- **WHAT:** The list of open flows/sessions lives in the **Debugger
+  panel** as its own section (above Frames), not in the bottom
+  rail/status bar — the status bar's `SessionPicker` retires. Selecting
+  a flow scopes Frames/Variables and the transport to it; a parked flow
+  shows its "parked — resumes here" state in this list (and its Frames
+  view shows the resume frame), never as a pseudo-frame in another
+  flow's call stack. This is F12's selection surface answered: when
+  #3223 lands multi-flow runtime support, the panel's Flows section is
+  where the author picks the flow being debugged.
+- **WHY:** Maintainer direction. Flow selection is debugger context —
+  it belongs beside the call stack it scopes, not in global chrome; the
+  status bar keeps only the one-line story status. Call stacks are
+  per-flow, so the flow list is also the only honest home for a parked
+  flow's resume state.
+
+## Choice-point visualization, runtime-value hover, Player appearance settings
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor-ui + runtime seam (debugger UI round, #452 D9)
+- **SCOPE:** moderate
+- **WHAT:** (1) **The Player gets its own appearance settings**, starting
+  with font size — its own knob on the `--bs-editor-font-size` precedent
+  ("make the text bigger about the thing you read is a different request
+  from make the UI bigger"), separate from the app type scale. (2) **When
+  the story waits on a choice, the editor lights the choice point**:
+  every presented choice's line is highlighted, and authored choices
+  that were NOT added to the block render dimmed **with the reason**
+  (condition evaluated false, once-only exhausted) — driven by runtime
+  state, not editor-side guessing. This requires a new runtime/bridge
+  seam: a **choice presentation report** (per choice point: the
+  candidates evaluated, presented/rejected, and the rejection reason) —
+  filed as its own runtime ticket alongside #3223. (3) **Editor hover
+  shows runtime variable values during a live, in-sync session** —
+  globals always, frame locals while paused — layered onto the existing
+  hover, suppressed under `sessionDegraded`.
+- **WHY:** Maintainer direction on the canvas. Choice dimming turns the
+  commonest story-logic question — "why didn't my choice appear?" —
+  into something read off the source instead of debugged by
+  experiment; runtime hover makes play mode an inspection surface
+  without opening the panel. Both are the always-on-debug-info ruling
+  paying off during ordinary playtesting.

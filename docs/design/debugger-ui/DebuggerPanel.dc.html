@@ -23,7 +23,7 @@
     .key { color: #6c7086; } .num { color: #fab387; }
   </style>
 </helmet>
-<div style="width: 340px; height: 780px; display: flex; flex-direction: column; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+<div style="width: 340px; height: 830px; display: flex; flex-direction: column; background: #252536; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
 
   <!-- tool-window header with transport mirror in the actions slot -->
   <div style="padding: 8px 12px; font-size: 13px; font-weight: 600; color: #6c7086; border-bottom: 1px solid #45475a; letter-spacing: 0.5px; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between">
@@ -41,11 +41,29 @@
   <div style="padding: 8px 10px; border-bottom: 1px solid #45475a; display: flex; align-items: center; gap: 8px; font-size: 12px">
     <span class="badge" style="color: #f9e2af; border-color: #f9e2af">paused</span>
     <span>at breakpoint <span class="mono" style="font-size: 11px; color: #f5c2e7">pour-entry</span></span>
-    <span style="flex: 1"></span>
-    <span class="badge">flow: default</span>
   </div>
 
-  <!-- FRAMES: interactive, top frame selected -->
+  <!-- FLOWS: every open flow; selection scopes Frames/Variables + the transport -->
+  <div class="sv-section">
+    <div class="sv-header"><span style="font-size: 9px">▾</span> Flows</div>
+    <div style="padding: 0 0 6px">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: rgb(137 180 250 / 14%); border-left: 2px solid #89b4fa; cursor: pointer">
+        <span class="mono" style="font-size: 11px">default</span>
+        <span class="badge" style="color: #f9e2af; border-color: #f9e2af">paused</span>
+        <span style="flex: 1"></span>
+        <span class="mono" style="font-size: 11px; color: #89b4fa">tavern.ink:5</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 12px; cursor: pointer; opacity: 0.85">
+        <span class="mono" style="font-size: 11px">night_watch</span>
+        <span class="badge" style="color: #89dceb; border-style: dashed">parked</span>
+        <span style="font-size: 10px; color: #6c7086; font-style: italic">resumes here</span>
+        <span style="flex: 1"></span>
+        <span class="mono" style="font-size: 11px; color: #89b4fa">watch.brink:9</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FRAMES: the selected flow's stack, interactive, top frame selected -->
   <div class="sv-section">
     <div class="sv-header"><span style="font-size: 9px">▾</span> Frames</div>
     <div style="padding: 0 0 6px">
@@ -66,14 +84,6 @@
         <span class="mono" style="font-size: 11px; color: #cba6f7">tavern.order</span>
         <span style="flex: 1"></span>
         <span class="mono" style="font-size: 11px; color: #89b4fa">tavern.ink:14</span>
-      </div>
-      <!-- a parked flow frame, for reference: how §2.6's "resumes here" reads -->
-      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 12px; opacity: 0.75">
-        <span class="badge" style="color: #89dceb; border-style: dashed">parked</span>
-        <span class="mono" style="font-size: 11px; color: #cba6f7">night_watch</span>
-        <span style="font-size: 10px; color: #6c7086; font-style: italic">resumes here</span>
-        <span style="flex: 1"></span>
-        <span class="mono" style="font-size: 11px; color: #89b4fa">watch.brink:9</span>
       </div>
     </div>
   </div>

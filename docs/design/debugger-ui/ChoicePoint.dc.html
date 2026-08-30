@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    a { color: #89b4fa; } a:hover { color: #b4befe; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .ed-line { display: flex; align-items: center; height: 20.8px; white-space: pre; }
+    .ed-num { width: 30px; text-align: right; padding-right: 6px; color: #6c7086; font-size: 11px; flex-shrink: 0; }
+    .ed-glyph { width: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .ed-code { padding-left: 8px; font-size: 13px; color: #cdd6f4; }
+    .kw { color: #cba6f7; } .op { color: #89dceb; } .num { color: #fab387; }
+    .vname { color: #eba0ac; } .fn { color: #89b4fa; }
+    .reason { display: inline-block; margin-left: 10px; padding: 0 6px; border: 1px solid rgb(243 139 168 / 45%); border-radius: 3px;
+      font-family: "JetBrains Mono", monospace; font-size: 10px; color: #f38ba8; }
+    .reason.used { border-color: #45475a; color: #6c7086; }
+  </style>
+</helmet>
+<div style="width: 940px; height: 580px; display: flex; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+
+  <!-- editor: the choice point lit by runtime state -->
+  <div style="flex: 1; display: flex; flex-direction: column; border-right: 1px solid #45475a; min-width: 0">
+    <div style="height: 30px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: stretch">
+      <div style="display: flex; align-items: center; padding: 0 14px; background: #1e1e2e; border-right: 1px solid #45475a; font-size: 12px">tavern.ink</div>
+    </div>
+    <div class="mono" style="flex: 1; padding-top: 8px; line-height: 1.6; overflow: hidden">
+      <div class="ed-line"><span class="ed-num">11</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">-</span> <span style="color: #f5c2e7">(order)</span></span></div>
+      <!-- presented choice -->
+      <div class="ed-line" style="background: rgb(166 227 161 / 9%)">
+        <span class="ed-num">12</span><span class="ed-glyph"></span>
+        <span class="ed-code"><span class="kw">*</span> [Order an ale]</span>
+      </div>
+      <div class="ed-line"><span class="ed-num">13</span><span class="ed-glyph"></span><span class="ed-code">    <span class="op">~</span> <span class="vname">rounds</span> <span class="op">+=</span> <span class="num">1</span></span></div>
+      <div class="ed-line"><span class="ed-num">14</span><span class="ed-glyph"></span><span class="ed-code">    Spent {<span class="fn">pour</span>(<span class="vname">rounds</span>)} gold.</span></div>
+      <!-- rejected: condition false — dimmed, reason chip; hover card on `gold` below -->
+      <div class="ed-line">
+        <span class="ed-num">15</span><span class="ed-glyph"></span>
+        <span class="ed-code" style="opacity: 0.45"><span class="kw">*</span> {<span class="vname">gold</span> <span class="op">&gt;</span> <span class="num">20</span>} [Buy the whole bottle]</span>
+        <span class="reason">gold &gt; 20 = false</span>
+      </div>
+      <!-- runtime-value hover card, anchored under `gold` -->
+      <div style="margin: 2px 0 4px 84px; display: inline-block; padding: 6px 10px; background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.4); font-size: 11px; line-height: 1.5">
+        <span class="mono"><span class="kw">VAR</span> <span class="vname">gold</span>: <span style="color: #89dceb">int</span></span><br>
+        <span class="mono" style="color: #6c7086">runtime</span> <span class="mono"><span class="vname">gold</span> <span class="op">=</span> <span class="num">12</span></span>
+      </div>
+      <div class="ed-line" style="opacity: 0.45"><span class="ed-num">16</span><span class="ed-glyph"></span><span class="ed-code">    The barkeep whistles and reaches high.</span></div>
+      <!-- rejected: once-only exhausted -->
+      <div class="ed-line">
+        <span class="ed-num">17</span><span class="ed-glyph"></span>
+        <span class="ed-code" style="opacity: 0.45"><span class="kw">*</span> [Compliment the fiddler]</span>
+        <span class="reason used">once-only · used</span>
+      </div>
+      <div class="ed-line" style="opacity: 0.45"><span class="ed-num">18</span><span class="ed-glyph"></span><span class="ed-code">    She nods without missing a note.</span></div>
+      <!-- presented choice -->
+      <div class="ed-line" style="background: rgb(166 227 161 / 9%)">
+        <span class="ed-num">19</span><span class="ed-glyph"></span>
+        <span class="ed-code"><span class="kw">*</span> [Ask about the stranger]</span>
+      </div>
+      <div class="ed-line"><span class="ed-num">20</span><span class="ed-glyph"></span><span class="ed-code">    He leans in close, voice low.</span></div>
+      <div class="ed-line"><span class="ed-num">21</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">-</span> The night wears on.</span></div>
+    </div>
+    <div style="padding: 6px 12px; border-top: 1px solid #45475a; font-size: 10px; color: #6c7086">
+      Presented choices: success band · rejected: dimmed + reason (runtime choice-presentation report) · hover: live values while in sync
+    </div>
+  </div>
+
+  <!-- player: waiting on the choice -->
+  <div style="width: 360px; display: flex; flex-direction: column; min-width: 0">
+    <div style="padding: 8px 12px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; justify-content: space-between">
+      <span style="font-size: 13px; font-weight: 600; color: #6c7086; letter-spacing: 0.5px; text-transform: uppercase">Story</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #f9e2af; border-radius: 10px; font-size: 11px; color: #f9e2af; white-space: nowrap">
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #f9e2af"></span>
+        Waiting on choice
+      </span>
+    </div>
+    <div style="flex: 1; padding: 18px 20px; font-family: Georgia, 'Palatino Linotype', serif; font-size: 17px; line-height: 1.8; overflow: hidden">
+      <p style="margin: 0; padding: 5px 10px; border-radius: 3px">The tavern is loud tonight.</p>
+      <p style="margin: 0; padding: 5px 10px; border-radius: 3px; background: rgb(205 214 244 / 2.5%); color: #6c7086; font-style: italic">&gt; Order an ale</p>
+      <p style="margin: 0; padding: 5px 10px; border-radius: 3px">Spent 2 gold.</p>
+      <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 14px; padding: 0 10px">
+        <button style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 6px; padding: 10px 16px; font-size: 16px; font-family: inherit; text-align: left">Order an ale</button>
+        <button style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 6px; padding: 10px 16px; font-size: 16px; font-family: inherit; text-align: left">Ask about the stranger</button>
+      </div>
+      <div style="margin-top: 10px; padding: 0 10px; font-family: system-ui, sans-serif; font-size: 10px; color: #6c7086">2 of 4 authored choices presented — see the dimmed lines in the editor for why</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
