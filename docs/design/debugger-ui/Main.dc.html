@@ -1,0 +1,210 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    a { color: #89b4fa; } a:hover { color: #b4befe; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+    /* editor lines */
+    .ed-line { display: flex; align-items: center; height: 20.8px; white-space: pre; }
+    .ed-num { width: 30px; text-align: right; padding-right: 6px; color: #6c7086; font-size: 11px; flex-shrink: 0; }
+    .ed-glyph { width: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .ed-code { padding-left: 8px; font-size: 13px; color: #cdd6f4; }
+    .kw { color: #cba6f7; } .op { color: #89dceb; } .num { color: #fab387; }
+    .vname { color: #eba0ac; } .lbl { color: #f5c2e7; } .fn { color: #89b4fa; }
+    .cmt { color: #6c7086; } .muted { color: #6c7086; }
+    /* panel bits */
+    .sv-section { border-bottom: 1px solid #45475a; }
+    .sv-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; color: #6c7086;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
+    .sv-body { padding: 2px 10px 8px; font-size: 12px; }
+    .sv-key { color: #6c7086; } .sv-val { color: #cdd6f4; }
+    .badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #2a2a3d;
+      border: 1px solid #45475a; color: #6c7086; white-space: nowrap; }
+    .tbtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+      background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; }
+    .tbtn.off { opacity: 0.35; }
+  </style>
+</helmet>
+<div style="width: 1360px; height: 860px; display: flex; flex-direction: column; background: #1e1e2e; color: #cdd6f4; font-size: 12px; overflow: hidden; border: 1px solid #45475a; box-sizing: border-box">
+
+  <!-- ─── main row: strip · editor · player · debugger dock ─── -->
+  <div style="flex: 1; display: flex; min-height: 0">
+
+    <!-- activity strip -->
+    <div style="width: 40px; background: #252536; border-right: 1px solid #45475a; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 10px">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#6c7086" stroke-width="1.5"><path d="M3 2h9l3 3v11H3z"></path><path d="M6 8h6M6 11h6"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#6c7086" stroke-width="1.5"><circle cx="8" cy="8" r="5"></circle><path d="M12 12l4 4"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#89b4fa" stroke-width="1.5"><path d="M4 3l8 6-8 6z"></path><path d="M14 3v12" stroke-linecap="round"></path></svg>
+    </div>
+
+    <!-- editor group -->
+    <div style="flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid #45475a">
+      <!-- tab bar -->
+      <div style="height: 30px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: stretch">
+        <div style="display: flex; align-items: center; gap: 6px; padding: 0 14px; background: #1e1e2e; border-right: 1px solid #45475a; font-size: 12px">tavern.ink</div>
+        <div style="display: flex; align-items: center; gap: 6px; padding: 0 14px; border-right: 1px solid #45475a; font-size: 12px; color: #6c7086">market.brink</div>
+      </div>
+      <!-- editor body -->
+      <div class="mono" style="flex: 1; padding-top: 6px; overflow: hidden; line-height: 1.6">
+        <div class="ed-line"><span class="ed-num">1</span><span class="ed-glyph"></span><span class="ed-code"><span class="kw">VAR</span> <span class="vname">gold</span> <span class="op">=</span> <span class="num">12</span></span></div>
+        <div class="ed-line"><span class="ed-num">2</span><span class="ed-glyph"></span><span class="ed-code"></span></div>
+        <div class="ed-line"><span class="ed-num">3</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">===</span> <span class="kw">function</span> <span class="fn">pour</span>(<span class="vname">n</span>) <span class="op">===</span></span></div>
+        <div class="ed-line"><span class="ed-num">4</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">~</span> <span class="kw">temp</span> <span class="vname">cost</span> <span class="op">=</span> <span class="vname">n</span> <span class="op">*</span> <span class="num">2</span></span></div>
+        <!-- paused line: breakpoint + execution arrow + band -->
+        <div class="ed-line" style="background: rgb(249 226 175 / 14%)">
+          <span class="ed-num">5</span>
+          <span class="ed-glyph"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="6" cy="8" r="4.5" fill="#f38ba8"></circle><path d="M8 4.5l5 3.5-5 3.5z" fill="#f9e2af" stroke="#1e1e2e" stroke-width="0.75"></path></svg></span>
+          <span class="ed-code"><span class="op">~</span> <span class="vname">gold</span> <span class="op">-=</span> <span class="vname">cost</span></span>
+        </div>
+        <div class="ed-line"><span class="ed-num">6</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">~</span> <span class="kw">return</span> <span class="vname">cost</span></span></div>
+        <div class="ed-line"><span class="ed-num">7</span><span class="ed-glyph"></span><span class="ed-code"></span></div>
+        <div class="ed-line"><span class="ed-num">8</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">===</span> <span class="fn">tavern</span> <span class="op">===</span></span></div>
+        <div class="ed-line"><span class="ed-num">9</span><span class="ed-glyph"></span><span class="ed-code">The tavern is loud tonight.</span></div>
+        <div class="ed-line"><span class="ed-num">10</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">~</span> <span class="kw">temp</span> <span class="vname">rounds</span> <span class="op">=</span> <span class="num">0</span></span></div>
+        <div class="ed-line"><span class="ed-num">11</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">-</span> <span class="lbl">(order)</span></span></div>
+        <div class="ed-line"><span class="ed-num">12</span><span class="ed-glyph"></span><span class="ed-code"><span class="kw">*</span> [Order an ale]</span></div>
+        <div class="ed-line"><span class="ed-num">13</span><span class="ed-glyph"></span><span class="ed-code">    <span class="op">~</span> <span class="vname">rounds</span> <span class="op">+=</span> <span class="num">1</span></span></div>
+        <!-- selected-frame line (the call site, frame 2) -->
+        <div class="ed-line" style="background: rgb(137 180 250 / 10%)">
+          <span class="ed-num">14</span>
+          <span class="ed-glyph"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="6" cy="8" r="4.5" fill="#f38ba8"></circle></svg></span>
+          <span class="ed-code">    Spent {<span class="fn">pour</span>(<span class="vname">rounds</span>)} gold.</span>
+        </div>
+        <div class="ed-line"><span class="ed-num">15</span><span class="ed-glyph"></span><span class="ed-code"><span class="kw">*</span> [Ask about the stranger]</span></div>
+        <div class="ed-line"><span class="ed-num">16</span><span class="ed-glyph"></span><span class="ed-code">    He leans in close, voice low.</span></div>
+        <div class="ed-line"><span class="ed-num">17</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">-</span> The night wears on.</span></div>
+        <div class="ed-line"><span class="ed-num">18</span><span class="ed-glyph"></span><span class="ed-code"><span class="op">-&gt;</span> <span class="fn">order</span></span></div>
+      </div>
+    </div>
+
+    <!-- player split -->
+    <div style="width: 420px; display: flex; flex-direction: column; border-right: 1px solid #45475a; min-width: 0">
+      <div style="height: 30px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: stretch">
+        <div style="display: flex; align-items: center; padding: 0 14px; background: #1e1e2e; border-right: 1px solid #45475a; font-size: 12px">Story</div>
+      </div>
+      <!-- rebuilt player toolbar -->
+      <div style="padding: 6px 10px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; gap: 6px">
+        <span class="tbtn" title="Run"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+        <span class="tbtn" title="Restart"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+        <span class="tbtn" title="Auto reveal"><svg width="13" height="13" viewBox="0 0 13 13"><path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="#cdd6f4"></path><path d="M6.5 2L11 6.5 6.5 11z" fill="#cdd6f4"></path></svg></span>
+        <span style="width: 1px; height: 16px; background: #45475a; margin: 0 2px"></span>
+        <span class="tbtn" title="Continue (F5)"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M1.5 2h1.6v8H1.5z" fill="#f9e2af"></path><path d="M5 1.5l6 4.5-6 4.5z" fill="#f9e2af"></path></svg></span>
+        <span class="tbtn" title="Step over (F10)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+        <span class="tbtn" title="Step into (F11)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+        <span class="tbtn" title="Step out (Shift-F11)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+        <span style="flex: 1"></span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #f9e2af; border-radius: 10px; font-size: 11px; color: #f9e2af; white-space: nowrap">
+          <span style="width: 7px; height: 7px; border-radius: 50%; background: #f9e2af"></span>
+          Paused — tavern.ink:5
+        </span>
+      </div>
+      <!-- transcript -->
+      <div style="flex: 1; padding: 20px 24px; font-family: Georgia, 'Palatino Linotype', serif; font-size: 17px; line-height: 1.8; overflow: hidden">
+        <p style="margin: 0; padding: 5px 10px; border-radius: 3px">The tavern is loud tonight.</p>
+        <p style="margin: 0; padding: 5px 10px; border-radius: 3px; background: rgb(205 214 244 / 2.5%); color: #6c7086; font-style: italic">&gt; Order an ale</p>
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 16px; color: #f9e2af; font-family: system-ui, sans-serif; font-size: 11px">
+          <span style="flex: 1; height: 1px; background: rgb(249 226 175 / 40%)"></span>
+          paused at tavern.ink:5
+          <span style="flex: 1; height: 1px; background: rgb(249 226 175 / 40%)"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- debugger dock (StateView replacement) -->
+    <div style="width: 336px; background: #252536; display: flex; flex-direction: column; min-width: 0">
+      <div style="padding: 8px 12px; font-size: 13px; font-weight: 600; color: #6c7086; border-bottom: 1px solid #45475a; letter-spacing: 0.5px; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between">
+        <span>Debugger</span>
+        <span style="display: flex; gap: 2px">
+          <span class="tbtn" style="width: 20px; height: 18px"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1.5 2h1.6v8H1.5z" fill="#f9e2af"></path><path d="M5 1.5l6 4.5-6 4.5z" fill="#f9e2af"></path></svg></span>
+          <span class="tbtn" style="width: 20px; height: 18px"><svg width="11" height="11" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+        </span>
+      </div>
+      <!-- status -->
+      <div style="padding: 8px 10px; border-bottom: 1px solid #45475a; display: flex; align-items: center; gap: 8px; font-size: 12px">
+        <span class="badge" style="color: #f9e2af; border-color: #f9e2af">paused</span>
+        <span>at breakpoint</span>
+      </div>
+      <!-- flows -->
+      <div class="sv-section">
+        <div class="sv-header"><span style="font-size: 9px">▾</span> Flows</div>
+        <div style="padding: 0 0 6px">
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: rgb(137 180 250 / 14%); border-left: 2px solid #89b4fa">
+            <span class="mono" style="font-size: 11px">default</span>
+            <span class="badge" style="color: #f9e2af; border-color: #f9e2af">paused</span>
+            <span style="flex: 1"></span>
+            <span class="mono" style="font-size: 11px; color: #89b4fa">tavern.ink:5</span>
+          </div>
+        </div>
+      </div>
+      <!-- frames -->
+      <div class="sv-section">
+        <div class="sv-header"><span style="font-size: 9px">▾</span> Frames</div>
+        <div class="sv-body" style="padding: 0 0 6px">
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: rgb(137 180 250 / 14%); border-left: 2px solid #89b4fa">
+            <span class="badge" style="color: #89dceb">function</span>
+            <span class="mono" style="font-size: 11px; color: #cba6f7">pour</span>
+            <span style="flex: 1"></span>
+            <span class="mono" style="font-size: 11px; color: #89b4fa">tavern.ink:5</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 12px">
+            <span class="badge">root</span>
+            <span class="mono" style="font-size: 11px; color: #cba6f7">tavern.order</span>
+            <span style="flex: 1"></span>
+            <span class="mono" style="font-size: 11px; color: #89b4fa">tavern.ink:14</span>
+          </div>
+        </div>
+      </div>
+      <!-- variables -->
+      <div class="sv-section">
+        <div class="sv-header"><span style="font-size: 9px">▾</span> Variables</div>
+        <div class="sv-body">
+          <div style="font-size: 10px; color: #6c7086; margin: 2px 0 3px">LOCALS — pour</div>
+          <div style="display: flex; gap: 8px; padding: 2px 0"><span class="sv-key mono" style="font-size: 11px">n</span><span style="flex: 1"></span><span class="mono num" style="font-size: 11px; color: #fab387">1</span></div>
+          <div style="display: flex; gap: 8px; padding: 2px 0; background: rgb(249 226 175 / 22%); border-radius: 3px"><span class="mono" style="font-size: 11px; color: #f9e2af">cost</span><span style="flex: 1"></span><span class="mono" style="font-size: 11px; color: #fab387">2</span></div>
+          <div style="font-size: 10px; color: #6c7086; margin: 8px 0 3px">GLOBALS</div>
+          <div style="display: flex; gap: 8px; padding: 2px 0"><span class="sv-key mono" style="font-size: 11px">gold</span><span style="flex: 1"></span><span class="mono" style="font-size: 11px; color: #fab387">12</span></div>
+        </div>
+      </div>
+      <!-- breakpoints -->
+      <div class="sv-section">
+        <div class="sv-header"><span style="font-size: 9px">▾</span> Breakpoints</div>
+        <div class="sv-body">
+          <div style="display: flex; align-items: center; gap: 7px; padding: 2px 0">
+            <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#f38ba8"></circle></svg>
+            <span class="mono" style="font-size: 11px">tavern.ink:5</span>
+            <span style="flex: 1"></span><span class="mono" style="font-size: 10px; color: #6c7086">pour</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; padding: 2px 0">
+            <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#f38ba8"></circle></svg>
+            <span class="mono" style="font-size: 11px">tavern.ink:14</span>
+            <span style="flex: 1"></span><span class="mono" style="font-size: 10px; color: #6c7086">tavern.order</span>
+          </div>
+        </div>
+      </div>
+      <!-- story (collapsed) -->
+      <div class="sv-section">
+        <div class="sv-header"><span style="font-size: 9px">▸</span> Story <span style="font-weight: 400; text-transform: none; letter-spacing: 0">— choices · visits · rng</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div style="height: 24px; background: #252536; border-top: 1px solid #45475a; display: flex; align-items: center; gap: 16px; padding: 0 12px; font-size: 11px; color: #6c7086">
+    <span style="display: inline-flex; align-items: center; gap: 6px; color: #f9e2af"><span style="width: 7px; height: 7px; border-radius: 50%; background: #f9e2af"></span>Paused — tavern.ink:5</span>
+    <span>0 problems</span>
+    <span style="flex: 1"></span>
+    <span>ln 5, col 3</span>
+    <span>tavern.ink</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

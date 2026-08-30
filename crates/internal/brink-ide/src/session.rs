@@ -104,10 +104,16 @@ pub struct IdeSession {
     conventions: Option<String>,
     /// D6/#3229: whether this session's compiles emit the `DebugInfo`
     /// section (`docs/debugger-spec.md` §1.2's ship policy). **Per-session,
-    /// not per-project** — ruled 2026-08-28: a studio turns it on for the
-    /// session it is about to debug and off again afterwards, so an
-    /// ordinary authoring session never pays the size/time cost, and no
-    /// `brink.toml` key makes it a property of the project.
+    /// not per-project** — no `brink.toml` key makes it a property of the
+    /// project. **Default ON since 2026-08-29** (`docs/decision-log.md`
+    /// "debug info on by default"; supersedes the 2026-08-28 default-off
+    /// consequence, mechanism unchanged): every studio compile carries the
+    /// section so breakpoints bind and stepping resolves mid-play with no
+    /// artifact switch; the App-settings opt-out calls
+    /// [`Self::set_emit_debug_info`]`(false)`. Release export is
+    /// unaffected — `AnalysisOptions::default()` (the CLI/release path)
+    /// stays `false`, and only `brink compile --debug-info` or a session
+    /// opts in there.
     ///
     /// Unlike `language_dialect`/`type_policy`/`lints`/`conventions` above,
     /// this is NOT an analysis input: it changes only what codegen emits.
@@ -132,7 +138,7 @@ impl IdeSession {
             type_policy: None,
             lints: LintPolicy::default(),
             conventions: None,
-            emit_debug_info: false,
+            emit_debug_info: true,
         }
     }
 
@@ -705,12 +711,12 @@ impl IdeSession {
             // not `..Default::default()` — see that note for why.
             lints: self.lints.clone(),
             // D6/#3229: the session's own per-session debug-compile flag
-            // (`set_emit_debug_info`). Off unless a host turned it on for
-            // this session — the ship-policy default (§1.2) every mount
-            // without an explicit debug compile still gets. This method's
-            // result is what `sync_db_options` writes into `ProjectDb`, so
-            // this field is the single thing standing between a studio
-            // session and a debuggable artifact.
+            // (`set_emit_debug_info`). ON by default since the 2026-08-29
+            // ruling (see the field's doc) — off only when a host's
+            // App-settings opt-out turned it off. This method's result is
+            // what `sync_db_options` writes into `ProjectDb`, so this
+            // field is the single thing standing between a studio session
+            // and a debuggable artifact.
             emit_debug_info: self.emit_debug_info,
             // `set_conventions` (issue #1880) — see the matching note on
             // `IdeSnapshot::analyze` above. This method's result is also

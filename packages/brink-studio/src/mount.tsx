@@ -79,7 +79,6 @@ import {
   documentKey,
   focusedTab,
   installStudioExtensions,
-  resolveQualifiedSymbol,
   type DocumentRef,
   type EditorGroupsState,
   type EditorGroupsStore,
@@ -130,6 +129,7 @@ import {
   StudioApiProvider,
   createStudioApi,
   inkFileRef,
+  loadDebugSettings,
   loadDiagnosticsSettings,
   loadEditorSettings,
   saveEditorSettings,
@@ -150,6 +150,7 @@ import {
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import { registerDebugCommands } from "./debug-commands.js";
+import { registerLocationResolvers } from "./location-resolvers.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -1207,15 +1208,12 @@ export async function mountStudio(
 
   // Navigation protocol (spec §6.1): resolvers translate Locations toward
   // source; editor.reveal opens the file (focusing an existing tab in any
-  // group per the §7.8 reveal policy) and scrolls to the span. The symbol
-  // resolver reads the latest compile outline; program/session resolvers
-  // land with their consumers (#91, State View links).
+  // group per the §7.8 reveal policy) and scrolls to the span. All three
+  // non-source spaces register here (W3/#3296): symbol over the compile
+  // outline, session → program over a position-shaped ref, program →
+  // source through the live provider's DebugInfo road, degraded-gated.
   const locations = new LocationResolvers();
-  locations.register("symbol", (location) =>
-    location.kind === "symbol"
-      ? resolveQualifiedSymbol(store.getState().outline, location.name)
-      : null,
-  );
+  registerLocationResolvers(locations, store);
   const revealSource = (target: SourceLocation): void => {
     // Reveal opens the file as the group's PREVIEW tab, not a pinned one.
     // `editor.reveal` is the shared destination of every navigation surface —
@@ -1466,6 +1464,13 @@ export async function mountStudio(
   // initialize applies it to the wasm session ahead of the first compile.
   store.getState().setExternalCheck(
     loadDiagnosticsSettings(window.localStorage).externalCheck,
+  );
+
+  // Restore a persisted debug-info opt-out the same way (W1/#3294: on by
+  // default; only an explicit opt-out changes anything, and it must land
+  // before the first compile so the first bytes already honour it).
+  store.getState().setDebugInfoEnabled(
+    loadDebugSettings(window.localStorage).emitDebugInfo,
   );
 
   // Bind handles, kick the initial compile, and open the entry file (the

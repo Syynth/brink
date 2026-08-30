@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    a { color: #89b4fa; } a:hover { color: #b4befe; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .tbtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+      background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; }
+    .tbtn.off { opacity: 0.35; }
+    .tbtn.active { border-color: #89b4fa; background: rgb(137 180 250 / 14%); }
+    /* transcript rows: full-width line units with zebra boundaries */
+    .trow { padding: 5px 12px; border-radius: 3px; margin: 0; }
+    .trow.alt { background: rgb(205 214 244 / 2.5%); }
+    .tag { display: inline-block; margin-left: 8px; padding: 0 6px; border: 1px solid #45475a; border-radius: 3px;
+      font-family: "JetBrains Mono", monospace; font-size: 10px; color: #6c7086; vertical-align: 2px; }
+  </style>
+</helmet>
+<div style="width: 560px; height: 680px; display: flex; flex-direction: column; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+
+  <!-- header: title + rebuilt toolbar (PLAYING state, auto ON — steps disabled, pause armed) -->
+  <div style="padding: 8px 12px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; justify-content: space-between">
+    <span style="font-size: 13px; font-weight: 600; color: #6c7086; letter-spacing: 0.5px; text-transform: uppercase">Story</span>
+    <div style="display: flex; align-items: center; gap: 6px">
+      <span class="tbtn" title="Run"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn" title="Restart (Shift-F5)"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="tbtn active" title="Auto reveal — paced (App settings)"><svg width="13" height="13" viewBox="0 0 13 13"><path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="#89b4fa"></path><path d="M6.5 2L11 6.5 6.5 11z" fill="#89b4fa"></path></svg></span>
+      <span style="width: 1px; height: 16px; background: #45475a; margin: 0 2px"></span>
+      <span class="tbtn" title="Pause (F6)"><svg width="11" height="11" viewBox="0 0 12 12"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="#cdd6f4"></path></svg></span>
+      <span class="tbtn off" title="Step over (F10) — pause first"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off" title="Step into (F11)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5v6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8 3 2.8-3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span class="tbtn off" title="Step out (Shift-F11)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 8.5v-6" stroke="#89b4fa" stroke-width="1.4"></path><path d="M4.2 5l2.8-3 2.8 3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11.5" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="width: 1px; height: 16px; background: #45475a; margin: 0 2px"></span>
+      <span class="tbtn active" title="Show line tags"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#89b4fa" stroke-width="1.3"><path d="M4 1.5L3 10.5M9 1.5L8 10.5M1.5 4h9.5M1 8h9.5"></path></svg></span>
+      <span class="tbtn" title="Maximize"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#cdd6f4" stroke-width="1.2"><path d="M1.5 3.5v-2h2M8.5 6.5v2h-2M6.5 1.5h2v2M3.5 8.5h-2v-2"></path></svg></span>
+    </div>
+  </div>
+
+  <!-- status strip under toolbar -->
+  <div style="padding: 4px 12px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; gap: 8px">
+    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #a6e3a1; border-radius: 10px; font-size: 11px; color: #a6e3a1">
+      <span style="width: 7px; height: 7px; border-radius: 50%; background: #a6e3a1"></span>
+      Playing
+    </span>
+    <span style="font-size: 11px; color: #6c7086">auto · paced · turn 3 · 2 breakpoints armed</span>
+  </div>
+
+  <!-- transcript: row-based line units (zebra = line boundaries), tags on, provenance hover -->
+  <div style="flex: 1; padding: 16px 16px; font-family: Georgia, 'Palatino Linotype', serif; font-size: 17px; line-height: 1.8; overflow: hidden">
+    <p class="trow">The tavern is loud tonight.<span class="tag">#scene: tavern</span></p>
+    <p class="trow alt" style="color: #6c7086; font-style: italic">&gt; Order an ale</p>
+
+    <!-- hovered row: full-width band + provenance tooltip -->
+    <p class="trow" style="background: rgb(137 180 250 / 8%); text-decoration: underline dotted rgb(137 180 250 / 55%); text-underline-offset: 4px">Spent 2 gold.<span class="tag">#coin</span></p>
+    <div class="mono" style="display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 2px 12px; padding: 3px 8px; background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; font-size: 10px; color: #6c7086; box-shadow: 0 2px 8px rgb(0 0 0 / 0.4)">
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#89b4fa" stroke-width="1.4"><path d="M5 2H2v8h8V7"></path><path d="M7 2h3v3M10 2L5.5 6.5"></path></svg>
+      tavern.ink:14 · ⌘-click to reveal
+    </div>
+
+    <p class="trow alt">The barkeep slides one over, foam catching the lamplight.<span class="tag">#music: tavern_theme</span></p>
+
+    <!-- next paced line arriving (auto · paced): fades in as its own row -->
+    <p class="trow" style="opacity: 0.35">A stranger watches from the corner booth.</p>
+
+    <!-- choices -->
+    <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 0 12px">
+      <button style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 6px; padding: 10px 16px; font-size: 16px; font-family: inherit; text-align: left">Order another</button>
+      <button style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 6px; padding: 10px 16px; font-size: 16px; font-family: inherit; text-align: left">Ask about the stranger</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

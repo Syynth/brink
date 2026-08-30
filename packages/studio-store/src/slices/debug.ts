@@ -85,18 +85,19 @@ export interface DebugSlice {
   debugStep(mode: StepMode, budgetCeiling?: number): void;
   /**
    * Whether this editor session compiles with the D6 `DebugInfo` section
-   * (#3229). **Off by default**, and the reason matters: without it, every
-   * source-position feature the debugger has — the current-line highlight,
-   * breakpoint→source mapping, the locals panel — resolves to nothing,
-   * however correct its code is.
+   * (#3229). **ON by default since 2026-08-29** (W1/#3294, "debug info on
+   * by default" — supersedes the earlier default-off consequence), and the
+   * reason matters: with it, every source-position feature the debugger
+   * has — the current-line highlight, breakpoint→source mapping, the
+   * locals panel — resolves from the studio's own bytes with no toggle
+   * touched. `false` only via the App-settings opt-out.
    */
   debugInfoEnabled: boolean;
   /**
    * Turn the debug-info compile on or off for this session and recompile
-   * (#3229, ruled 2026-08-28: per-session, not always-on and not a
-   * `brink.toml` key). Turn it on when entering a debugging context and off
-   * when leaving, so ordinary authoring never pays the extra compile size
-   * and time.
+   * (#3229's mechanism; per-session, never a `brink.toml` key). Since
+   * W1/#3294 the default is ON — this action's main caller is the
+   * App-settings opt-out (and bootstrap restoring a persisted opt-out).
    *
    * The recompile is not optional bookkeeping — the flag governs what the
    * NEXT compile emits, and the studio's live session runs on those bytes.
@@ -127,7 +128,8 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
   debugBreakpoints: [],
   debugLastOutcome: null,
   debugStatus: "none",
-  debugInfoEnabled: false,
+  // Mirrors the wasm session's own default, which is also true (W1/#3294).
+  debugInfoEnabled: true,
 
   setDebugInfoEnabled(enabled) {
     if (get().debugInfoEnabled === enabled) return;

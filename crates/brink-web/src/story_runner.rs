@@ -713,6 +713,48 @@ impl StoryRunner {
         serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Parity with `WebSession::resolve_source_line` (W2/#3295) — see it
+    /// for the contract. `line` is 0-based; `null` when unresolvable.
+    pub fn resolve_source_line(&self, file: &str, line: u32) -> Result<String, JsError> {
+        let resolved = self.program.resolve_source_line(file, line).map(|p| {
+            serde_json::json!({
+                "container_idx": p.container_idx,
+                "offset": p.offset,
+            })
+        });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Parity with `WebSession::has_debug_info` (W2/#3295) — see it for
+    /// why the discriminator exists.
+    #[must_use]
+    pub fn has_debug_info(&self) -> bool {
+        self.program.has_debug_info()
+    }
+
+    /// Parity with `WebSession::source_matches` (W2/#3295) — see it for
+    /// the tri-state contract (`true`/`false`/`null` = cannot tell).
+    pub fn source_matches(&self, file: &str, text: &str) -> Result<String, JsError> {
+        serde_json::to_string(&self.program.source_matches(file, text))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Parity with `WebSession::resolve_path_address` (W2/#3295) — see it
+    /// for the contract. Name-based addressing; no `DebugInfo` required.
+    pub fn resolve_path_address(&self, path: &str) -> Result<String, JsError> {
+        let resolved = self
+            .program
+            .definition_id_for_path(path)
+            .and_then(|id| self.program.resolve_address(id))
+            .map(|(container_idx, offset)| {
+                serde_json::json!({
+                    "container_idx": container_idx,
+                    "offset": offset,
+                })
+            });
+        serde_json::to_string(&resolved).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     // ── Debug control (D8, #3186 — the control-half wasm bridge, #3232) ──
     //
     // Parity with `WebSession`'s copy above — `LocalSessionProvider` drives

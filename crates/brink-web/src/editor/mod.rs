@@ -416,14 +416,18 @@ impl EditorSession {
     /// position, D6's tables, D7's locals and D9's program→source resolver
     /// all resolve to nothing, however correct they are.
     ///
-    /// **Per-session by ruling (2026-08-28), not always-on and not a
-    /// `brink.toml` key.** A host turns it on for the session it is about
-    /// to debug and off when that session ends, so ordinary authoring
-    /// never pays the size/time cost and debuggability never becomes a
-    /// property of the project. The caller must **recompile** for the flag
-    /// to take effect — it changes what the next `compile_project` emits,
-    /// not the artifact already produced. That recompile is codegen only:
-    /// diagnostics are byte-identical either way and stay memoized.
+    /// **Per-session by ruling, not a `brink.toml` key — and ON by
+    /// default since 2026-08-29** (`docs/decision-log.md` "debug info on
+    /// by default", superseding the 2026-08-28 default-off consequence;
+    /// the mechanism here is unchanged). Every studio compile carries the
+    /// section so breakpoints bind and stepping resolves mid-play with no
+    /// artifact switch; a host's App-settings opt-out calls this with
+    /// `false`. Release export is unaffected (the CLI/release path's
+    /// `AnalysisOptions::default()` stays off). The caller must
+    /// **recompile** for a change to take effect — it changes what the
+    /// next `compile_project` emits, not the artifact already produced.
+    /// That recompile is codegen only: diagnostics are byte-identical
+    /// either way and stay memoized.
     ///
     /// No-ops when unchanged, so calling it on every debug-session start
     /// is safe and does not invalidate an artifact already carrying the
@@ -6733,11 +6737,13 @@ mod tests {
     // actually carries to the studio, fed to the same `WebSession` the
     // studio's `LocalSessionProvider` constructs. Both states are pinned —
     // off resolving to nothing is as much the contract as on resolving to
-    // source, since "off" is what every ordinary authoring session gets.
+    // source. Since the 2026-08-29 "debug info on by default" ruling
+    // (W1/#3294), ON is what every studio session gets from birth and OFF
+    // is the App-settings opt-out — the tests below pin that orientation.
 
     /// The `story_bytes` a successful `compile_project` hands the studio.
-    fn compiled_story_bytes(s: &mut EditorSession) -> Vec<u8> {
-        let raw = s.compile_project("main.ink");
+    fn compiled_story_bytes_of(s: &mut EditorSession, entry: &str) -> Vec<u8> {
+        let raw = s.compile_project(entry);
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("compile JSON");
         assert_eq!(
             parsed["ok"],
@@ -6750,6 +6756,10 @@ mod tests {
             .iter()
             .map(|b| u8::try_from(b.as_u64().expect("byte")).expect("fits u8"))
             .collect()
+    }
+
+    fn compiled_story_bytes(s: &mut EditorSession) -> Vec<u8> {
+        compiled_story_bytes_of(s, "main.ink")
     }
 
     /// Resolve the flow's entry position through the same `WebSession` the
@@ -6772,32 +6782,26 @@ mod tests {
     }
 
     #[test]
-    fn debug_info_is_off_by_default_and_the_toggle_makes_the_studios_own_bytes_debuggable() {
+    fn debug_info_is_on_by_default_and_the_opt_out_strips_the_studios_own_bytes() {
         let src = "VAR x = 0\n~ x = 5\nhello\n-> END\n";
         let mut s = EditorSession::new();
         s.update_file("main.ink", src);
 
-        // Off by default — the ship-policy posture (§1.2) every ordinary
-        // authoring session keeps.
+        // ON by default — the 2026-08-29 ruling (W1/#3294): a fresh studio
+        // session's own bytes are debuggable with no toggle touched, which
+        // is what makes breakpoints bindable mid-play with no artifact
+        // switch. This is the assertion whose OLD inverse pinned #3229's
+        // gap; the orientation flipped with the ruling, the
+        // end-to-end-through-real-bytes discipline did not.
         assert!(
-            !s.debug_info_enabled(),
-            "a fresh session must not emit debug info"
+            s.debug_info_enabled(),
+            "a fresh session must emit debug info by default (W1/#3294)"
         );
-        assert_eq!(
-            resolve_entry_position(&compiled_story_bytes(&mut s)),
-            "null",
-            "without the toggle the studio's own bytes must carry no DebugInfo — \
-             this is the #3229 gap, pinned so it cannot silently return"
-        );
-
-        // On: same session, same source, recompiled.
-        s.set_debug_info_enabled(true);
-        assert!(s.debug_info_enabled(), "the toggle must stick");
 
         let resolved_json = resolve_entry_position(&compiled_story_bytes(&mut s));
         assert_ne!(
             resolved_json, "null",
-            "with the toggle on, a position from the studio's own compile must resolve"
+            "by default, a position from the studio's own compile must resolve"
         );
         let resolved: serde_json::Value = serde_json::from_str(&resolved_json).expect("valid JSON");
         assert_eq!(resolved["file"], serde_json::json!("main.ink"));
@@ -6872,6 +6876,120 @@ mod tests {
             "null",
             "and the next compile must still carry the section"
         );
+    }
+
+    // ── W2/#3295: the source→program bridge, over the studio's real bytes ──
+    //
+    // The proof the ticket asks for: `file:line` binds to a program address
+    // through the same `WebSession` the studio's `LocalSessionProvider`
+    // constructs, on BOTH surfaces, with honest nulls — plus the path
+    // resolver and the per-file staleness probe. The runtime semantics are
+    // pinned by the harness (`debug_source_resolve_3246.rs`); what matters
+    // here is that the wasm bridge actually carries them.
+
+    /// Drive `file:line` → address → back to source through one real
+    /// `WebSession`, asserting the round trip lands inside the named
+    /// 0-based line of `src`.
+    fn assert_line_binds(bytes: &[u8], file: &str, line0: u32, src: &str) {
+        let session =
+            crate::session::WebSession::new(bytes, None, None).expect("session constructs");
+        assert!(
+            session.has_debug_info(),
+            "W1's default means the studio's own bytes carry the section"
+        );
+
+        let addr_json = session
+            .resolve_source_line(file, line0)
+            .expect("resolver serializes");
+        let addr: serde_json::Value = serde_json::from_str(&addr_json).expect("valid JSON");
+        assert!(
+            addr.is_object(),
+            "{file}:{line0} holds executable code and must bind, got {addr_json}"
+        );
+        let container_idx =
+            u32::try_from(addr["container_idx"].as_u64().expect("container_idx")).expect("u32");
+        let offset = u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32");
+
+        // Round trip: the address the inverse resolver produced must
+        // resolve back to a range inside the very line asked about.
+        let back_json = session
+            .resolve_debug_position(container_idx, offset)
+            .expect("resolver serializes");
+        let back: serde_json::Value = serde_json::from_str(&back_json).expect("valid JSON");
+        assert_eq!(back["file"], serde_json::json!(file));
+        let start = usize::try_from(back["range_start"].as_u64().expect("range_start"))
+            .expect("fits usize");
+        let line_start: usize = src
+            .split_inclusive('\n')
+            .take(line0 as usize)
+            .map(str::len)
+            .sum();
+        let line_end = line_start
+            + src
+                .split_inclusive('\n')
+                .nth(line0 as usize)
+                .expect("line exists")
+                .len();
+        assert!(
+            (line_start..line_end).contains(&start),
+            "round trip landed at byte {start}, outside line {line0}'s span \
+             {line_start}..{line_end}"
+        );
+
+        // Honest nulls: an unknown file, and per-file staleness tri-state.
+        assert_eq!(
+            session
+                .resolve_source_line("no-such-file.ink", 0)
+                .expect("serializes"),
+            "null"
+        );
+        assert_eq!(
+            session.source_matches(file, src).expect("serializes"),
+            "true",
+            "the compiled-from text must match itself"
+        );
+        assert_eq!(
+            session
+                .source_matches(file, &format!("{src} "))
+                .expect("serializes"),
+            "false",
+            "any edit must read as stale for this file"
+        );
+    }
+
+    #[test]
+    fn source_to_program_resolvers_bind_file_line_on_the_ink_surface() {
+        let src = "VAR x = 0\n=== start ===\n~ x = 5\nhello\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        let bytes = compiled_story_bytes(&mut s);
+
+        // Line 2 (0-based) is `~ x = 5` — real executable code.
+        assert_line_binds(&bytes, "main.ink", 2, src);
+
+        // Name-based addressing: the knot path resolves with no DebugInfo
+        // consulted at all (it reads the container table).
+        let session =
+            crate::session::WebSession::new(&bytes, None, None).expect("session constructs");
+        let addr = session.resolve_path_address("start").expect("serializes");
+        assert_ne!(addr, "null", "the `start` knot must have an address");
+        assert_eq!(
+            session
+                .resolve_path_address("no.such.knot")
+                .expect("serializes"),
+            "null"
+        );
+    }
+
+    #[test]
+    fn source_to_program_resolvers_bind_file_line_on_the_native_surface() {
+        let src = "flow main() {\n  let x = 5;\n  Hello there.\n  -> END\n}\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", src);
+        let bytes = compiled_story_bytes_of(&mut s, "main.brink");
+
+        // Line 1 (0-based) is `let x = 5;` — the native code ground.
+        assert_line_binds(&bytes, "main.brink", 1, src);
     }
 
     // ── #1032 collapse follow-up: closure-scoped compile gate ───────────

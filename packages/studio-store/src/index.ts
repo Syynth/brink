@@ -168,6 +168,14 @@ export const createStudioStore = () =>
           project.getSession().setExternalCheck(externalCheck);
         }
 
+        // Apply a restored debug-info opt-out the same way (W1/#3294: the
+        // session defaults ON, so only an explicit persisted opt-out needs
+        // pushing — before the first compile, or the first bytes would
+        // carry the section the author turned off).
+        if (!get().debugInfoEnabled) {
+          project.getSession().setDebugInfoEnabled(false);
+        }
+
         // Trigger an initial compile to populate outline/diagnostics
         documents.triggerCompile();
       },

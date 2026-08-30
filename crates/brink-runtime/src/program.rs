@@ -222,7 +222,15 @@ impl Program {
     }
 
     /// Resolve a definition ID to `(container_idx, byte_offset)`.
-    #[cfg(feature = "testing")]
+    ///
+    /// Promoted from `#[cfg(feature = "testing")]` to real public API by
+    /// W2 (#3295): with [`Self::definition_id_for_path`] it is the
+    /// name-based half of source→program addressing ("break on
+    /// `tavern.order`"), which the wasm bridge composes as
+    /// `resolve_path_address`. A pure lookup over the container table —
+    /// nothing here touches the VM hot path, so the `step_once` promotion
+    /// warning (`docs/debugger-spec.md` §1.4) does not apply.
+    #[must_use]
     pub fn resolve_address(&self, id: DefinitionId) -> Option<(u32, usize)> {
         self.resolve_target(id)
     }

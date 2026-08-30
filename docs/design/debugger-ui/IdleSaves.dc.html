@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    a { color: #89b4fa; } a:hover { color: #b4befe; }
+    .mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .tbtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+      background: #2a2a3d; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; }
+    .tbtn.off { opacity: 0.35; }
+    /* landing recents-list vocabulary (packages/brink-desktop/index.html) */
+    .rlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+      border: 1px solid #45475a; border-radius: 7px; overflow: hidden; background: #1c1c2b; }
+    .rlist > div + div { border-top: 1px solid #2a2a3d; }
+    .rrow { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; }
+    .rrow:hover, .rrow.hot { background: #252536; }
+    .rbadge { font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 0.07em;
+      border: 1px solid #45475a; border-radius: 3px; padding: 2px 5px; flex-shrink: 0; color: #6c7086; }
+    .rbadge-knot { color: #cba6f7; border-color: #4a3d63; }
+    .rbadge-stitch { color: #89dceb; border-color: #3a5a6b; }
+    .rname { font-size: 12px; color: #cdd6f4; flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rdetail { font-size: 10.5px; color: #585b70; font-family: ui-monospace, "JetBrains Mono", monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  </style>
+</helmet>
+<div style="width: 560px; height: 700px; display: flex; flex-direction: column; background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; box-sizing: border-box; overflow: hidden">
+
+  <!-- header: idle — transport disabled, Ready chip -->
+  <div style="padding: 8px 12px; background: #252536; border-bottom: 1px solid #45475a; display: flex; align-items: center; justify-content: space-between">
+    <span style="font-size: 13px; font-weight: 600; color: #6c7086; letter-spacing: 0.5px; text-transform: uppercase">Story</span>
+    <div style="display: flex; align-items: center; gap: 6px">
+      <span class="tbtn" title="Run"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg></span>
+      <span class="tbtn off" title="Restart"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#cdd6f4" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.8"></path><path d="M9 1v2.5H6.5" stroke-linejoin="round"></path></svg></span>
+      <span class="tbtn" title="Auto reveal"><svg width="13" height="13" viewBox="0 0 13 13"><path d="M1.5 2l4.5 4.5-4.5 4.5z" fill="#cdd6f4"></path><path d="M6.5 2L11 6.5 6.5 11z" fill="#cdd6f4"></path></svg></span>
+      <span style="width: 1px; height: 16px; background: #45475a; margin: 0 2px"></span>
+      <span class="tbtn off"><svg width="11" height="11" viewBox="0 0 12 12"><path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="#cdd6f4"></path></svg></span>
+      <span class="tbtn off"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7a5 5 0 0 1 9-2.5" stroke="#89b4fa" stroke-width="1.4"></path><path d="M11.5 1.5v3.2H8.3" stroke="#89b4fa" stroke-width="1.4" stroke-linejoin="round"></path><circle cx="7" cy="11" r="1.6" fill="#89b4fa"></circle></svg></span>
+      <span style="flex: 1"></span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #45475a; border-radius: 10px; font-size: 11px; color: #6c7086; white-space: nowrap">
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #6c7086"></span>
+        Ready
+      </span>
+    </div>
+  </div>
+
+  <!-- idle body: the launcher -->
+  <div style="flex: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow: hidden">
+
+    <!-- start row: run from start + play-from typeahead -->
+    <div style="display: flex; align-items: center; gap: 8px">
+      <button style="display: inline-flex; align-items: center; gap: 8px; background: #2a2a3d; color: #a6e3a1; border: 1px solid #45475a; border-radius: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; white-space: nowrap">
+        <svg width="11" height="11" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="#a6e3a1"></path></svg>
+        Run from the start
+      </button>
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px; background: #2a2a3d; border: 1px solid #89b4fa; border-radius: 6px; padding: 7px 12px; font-size: 12px">
+        <svg width="12" height="12" viewBox="0 0 18 18" fill="none" stroke="#6c7086" stroke-width="1.5"><circle cx="8" cy="8" r="5"></circle><path d="M12 12l4 4"></path></svg>
+        <span class="mono">tav</span><span style="width: 1px; height: 13px; background: #cdd6f4"></span>
+        <span style="color: #585b70">play from a knot or stitch…</span>
+      </div>
+    </div>
+
+    <!-- typeahead results: recents-row vocabulary, kind chips + file context -->
+    <div class="rlist" style="margin-left: 166px">
+      <div class="rrow hot">
+        <span class="rbadge rbadge-knot">KNOT</span>
+        <span class="rname">tavern</span>
+        <span class="rdetail">tavern.ink</span>
+      </div>
+      <div class="rrow">
+        <span class="rbadge rbadge-stitch">STITCH</span>
+        <span class="rname">tavern.order</span>
+        <span class="rdetail">tavern.ink:11</span>
+      </div>
+      <div class="rrow">
+        <span class="rbadge rbadge-stitch">STITCH</span>
+        <span class="rname">market.tavern_gossip</span>
+        <span class="rdetail">market.brink:44</span>
+      </div>
+    </div>
+
+    <!-- saves: two stacked sections in the landing Recent-list style -->
+    <div style="display: flex; flex-direction: column; gap: 7px; margin-top: 4px">
+      <div style="font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #6c7086">Project</div>
+      <div class="rlist">
+        <div class="rrow hot">
+          <span class="rbadge">TURN 12</span>
+          <span class="rname">after_tavern_brawl</span>
+          <button title="Continue this save — Save state writes back to it" style="background: #2a2a3d; color: #89b4fa; border: 1px solid #45475a; border-radius: 4px; padding: 2px 9px; font-size: 10.5px; cursor: pointer">Load</button>
+          <button title="Branch from a copy — the next save picks a new slot" style="background: transparent; color: #6c7086; border: 1px solid #45475a; border-radius: 4px; padding: 2px 9px; font-size: 10.5px; cursor: pointer">Fork</button>
+          <span class="rdetail">tavern.order · 2h</span>
+        </div>
+        <div class="rrow">
+          <span class="rbadge">TURN 31</span>
+          <span class="rname">stranger_revealed</span>
+          <span class="rdetail">market.meeting · 1d</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 7px">
+      <div style="font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #6c7086">This computer</div>
+      <div class="rlist">
+        <div class="rrow" title="Older compile — loads with a report">
+          <span class="rbadge" style="color: #f9e2af; border-color: #6b5a3a">OLD</span>
+          <span class="rname" style="opacity: 0.85">act2_dawn</span>
+          <span class="rdetail">watch.dawn · turn 58 · 1w</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size: 10.5px; color: #585b70">New saves go to Project — change in App settings.</div>
+
+    <!-- LoadReport surfaced inline after loading a stale save -->
+    <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgb(249 226 175 / 10%); border: 1px solid rgb(249 226 175 / 40%); border-radius: 4px; font-size: 11px; color: #f9e2af">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#f9e2af" stroke-width="1.3"><path d="M6 1.5L11 10.5H1z" stroke-linejoin="round"></path><path d="M6 5v2.5M6 9v.5"></path></svg>
+      Loaded against a newer compile — 3 anonymous visit states dropped
+    </div>
+
+    <div style="flex: 1"></div>
+    <div style="font-size: 10px; color: #6c7086; border-top: 1px solid #45475a; padding-top: 8px">
+      Load attaches the session to the slot (Save state writes back); Fork copies — the next save picks a new slot. “Save state” captures visit counts, globals, position. Never internal runtime state.
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

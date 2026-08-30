@@ -234,46 +234,91 @@ describe("setDebugInfoEnabled (#3229)", () => {
     return { store, setDebugInfoEnabled, triggerCompile };
   }
 
-  it("is off by default — ordinary authoring must not pay the debug-compile cost", () => {
-    expect(createStudioStore().getState().debugInfoEnabled).toBe(false);
+  it("is ON by default — the W1/#3294 ruling, mirroring the wasm session's own default", () => {
+    expect(createStudioStore().getState().debugInfoEnabled).toBe(true);
   });
 
-  it("pushes the flag to the session AND recompiles", () => {
+  it("pushes the opt-out to the session AND recompiles", () => {
     const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
 
-    store.getState().setDebugInfoEnabled(true);
+    store.getState().setDebugInfoEnabled(false);
 
-    expect(store.getState().debugInfoEnabled).toBe(true);
-    expect(setDebugInfoEnabled).toHaveBeenCalledWith(true);
+    expect(store.getState().debugInfoEnabled).toBe(false);
+    expect(setDebugInfoEnabled).toHaveBeenCalledWith(false);
     // The recompile is the half that makes the toggle observable at all.
     expect(triggerCompile).toHaveBeenCalledTimes(1);
   });
 
-  it("turns back off again — the flag is not a one-way door", () => {
+  it("turns back on again — the opt-out is not a one-way door", () => {
     const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
 
-    store.getState().setDebugInfoEnabled(true);
     store.getState().setDebugInfoEnabled(false);
+    store.getState().setDebugInfoEnabled(true);
 
-    expect(store.getState().debugInfoEnabled).toBe(false);
-    expect(setDebugInfoEnabled).toHaveBeenLastCalledWith(false);
+    expect(store.getState().debugInfoEnabled).toBe(true);
+    expect(setDebugInfoEnabled).toHaveBeenLastCalledWith(true);
     expect(triggerCompile).toHaveBeenCalledTimes(2);
   });
 
   it("no-ops when unchanged, so a toggle can be driven without churning compiles", () => {
     const { store, setDebugInfoEnabled, triggerCompile } = storeWithProject();
 
+    // Setting the default value is a pure no-op — nothing pushed, nothing
+    // recompiled. This is what makes bootstrap's unconditional restore of
+    // the persisted setting free for the (default) opted-in case.
     store.getState().setDebugInfoEnabled(true);
-    store.getState().setDebugInfoEnabled(true);
-    store.getState().setDebugInfoEnabled(true);
+    expect(setDebugInfoEnabled).toHaveBeenCalledTimes(0);
+    expect(triggerCompile).toHaveBeenCalledTimes(0);
+
+    store.getState().setDebugInfoEnabled(false);
+    store.getState().setDebugInfoEnabled(false);
+    store.getState().setDebugInfoEnabled(false);
 
     expect(setDebugInfoEnabled).toHaveBeenCalledTimes(1);
     expect(triggerCompile).toHaveBeenCalledTimes(1);
   });
 
-  it("records the flag even with no project bound, so a later bind is not silently off", () => {
+  it("records the opt-out even with no project bound, so a later bind is not silently on", () => {
     const store = createStudioStore();
-    store.getState().setDebugInfoEnabled(true);
-    expect(store.getState().debugInfoEnabled).toBe(true);
+    store.getState().setDebugInfoEnabled(false);
+    expect(store.getState().debugInfoEnabled).toBe(false);
+  });
+
+  it("initialize applies a pre-seeded opt-out to the session before the first compile", () => {
+    // The bootstrap order (W1/#3294): mount restores the persisted setting
+    // pre-bind (state only — no project yet), then `initialize` pushes an
+    // explicit opt-out to the session ahead of the first compile, so the
+    // first bytes already honour it.
+    const store = createStudioStore();
+    store.getState().setDebugInfoEnabled(false);
+
+    const setDebugInfoEnabled = vi.fn();
+    const setExternalCheck = vi.fn();
+    const triggerCompile = vi.fn();
+    store.getState().initialize(
+      { getSession: () => ({ setDebugInfoEnabled, setExternalCheck }) } as never,
+      { triggerCompile } as never,
+    );
+
+    expect(setDebugInfoEnabled).toHaveBeenCalledWith(false);
+    // The push must precede the compile it exists to influence.
+    expect(setDebugInfoEnabled.mock.invocationCallOrder[0]).toBeLessThan(
+      triggerCompile.mock.invocationCallOrder[0] ?? Infinity,
+    );
+  });
+
+  it("initialize leaves the session's own default alone when not opted out", () => {
+    const store = createStudioStore();
+    const setDebugInfoEnabled = vi.fn();
+    const setExternalCheck = vi.fn();
+    const triggerCompile = vi.fn();
+    store.getState().initialize(
+      { getSession: () => ({ setDebugInfoEnabled, setExternalCheck }) } as never,
+      { triggerCompile } as never,
+    );
+    // No call at all: the wasm session already defaults ON, and pushing
+    // `true` would only churn the config generation for nothing.
+    expect(setDebugInfoEnabled).not.toHaveBeenCalled();
+    expect(triggerCompile).toHaveBeenCalledTimes(1);
   });
 });

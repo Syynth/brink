@@ -15,6 +15,7 @@
 import type { SettingsSection } from "./SettingsModal.js";
 import { SETTINGS_ICONS } from "./SettingsModal.js";
 import {
+  DebuggingSection,
   DiagnosticsSection,
   EditorSection,
   EditorViewSection,
@@ -102,6 +103,17 @@ export function settingsSections(groupId: string): SettingsSection[] {
       keywords: "keybinding shortcut chord override",
       icon: SETTINGS_ICONS.keymap,
       body: <KeymapSection />,
+    },
+    {
+      // W1/#3294: the debug-info opt-out (ruled 2026-08-29, "debug info on
+      // by default"). App scope — debuggability of *your* studio compiles
+      // is a machine preference, never a property of the project.
+      id: SETTINGS_SECTION_IDS.debugging,
+      scope: "app",
+      title: "Debugging",
+      keywords: "debug info breakpoints stepping compile section emit opt out",
+      icon: SETTINGS_ICONS.diagnostics,
+      body: <DebuggingSection />,
     },
     {
       // Split out of Diagnostics by the scope switch (#3174): the `[lints]`

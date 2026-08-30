@@ -1273,6 +1273,19 @@ export interface DebugSourceLocation {
   range_len: number;
 }
 
+/**
+ * A bytecode position — the source→program resolvers' answer (W2/#3295:
+ * `resolve_source_range`/`resolve_source_line`/`resolve_path_address`) and
+ * the same `(container_idx, offset)` currency `DebugState.position`, the
+ * breakpoint APIs, and `resolveDebugPosition` already use. The whole value
+ * is `null` when the lookup doesn't resolve (no `DebugInfo` section, no
+ * executable code on the span/line, unknown path).
+ */
+export interface ProgramAddress {
+  container_idx: number;
+  offset: number;
+}
+
 // ── Debug control (D8, #3186 — the wasm control-half bridge, #3232) ──
 //
 // Mirrors `brink_runtime::{Breakpoint, DebugRunOutcome, DebugStopReason,

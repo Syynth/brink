@@ -4003,3 +4003,375 @@
   reused because these panels are where an author goes to confirm an
   action elsewhere in the app worked, and two list surfaces that behave
   differently would undercut that.
+
+## Debugger UI: debug info on by default for studio compiles; pause is a first-class verb
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor pipeline (debugger epic #452 / D9, #3249, #3230)
+- **SCOPE:** architectural
+- **WHAT:** (1) **All studio compiles emit the `DebugInfo` section by
+  default.** The per-session mechanism #3229 built (`setDebugInfoEnabled`,
+  the salsa cutoff, recompile-on-toggle) stays exactly as built, but its
+  default flips to **on**; an App-settings toggle is the opt-out for
+  projects where the emission cost is noticed. Release export still omits
+  the section — the ship-policy ruling does not move. This SUPERSEDES the
+  #3229 consequence "not on by default" (the mechanism ruling stands; the
+  default does not). (2) Because the running story's bytes therefore
+  always carry debug info, **there is no "debug mode"**: #3249's
+  enter/leave lifecycle (recompile + consented restart) is moot. A gutter
+  click mid-play binds a breakpoint immediately; stepping can begin from
+  wherever the story is, with no artifact switch and no restart. (3)
+  **Pause/resume is a first-class Player verb**: a pause control and
+  breakpoints hit during normal play suspend the story into the debugger;
+  Continue resumes normal play. The interleaved play↔debug path
+  (transcript/choice coherence when mixing the production advance loop
+  with `debug_run`/`debug_step`) is REQUIRED proof for the drive-loop
+  work, not an optional scenario.
+- **WHY:** The maintainer's framing: the Player should compile with debug
+  info by default "so we can quickly/easily start debugging without
+  interrupting the play experience." The #3229 default-off ruling was
+  motivated by an asserted (never measured) per-keystroke cost; emission
+  is one linear LIR walk writing varints, compiles are debounced and on
+  the worker, and the first PR flipping the default must measure it in
+  the perf HUD. What default-on buys is structural: #3249's hard problem
+  ("enabling debug mid-playthrough produces a different artifact, so it
+  must restart") disappears, and "debug from here" — explicitly deferred
+  as too large — becomes free, because there is no artifact switch and
+  therefore no container-identity remapping. One-time cost: the editor
+  acceptance gate re-baselines in lockstep (#3230 names this).
+
+## Debugger UI: session-only debug state; breakpoints persist per project
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger epic #452 / D9, #3249)
+- **SCOPE:** moderate
+- **WHAT:** No debugger state beyond breakpoints survives a studio
+  reload: paused-ness, frame selection, and the run/step transcript are
+  session-ephemeral. **Breakpoints persist per project** (they are cheap,
+  inert markers), alongside the other per-project layout state. The
+  App-settings debug-emission opt-out persists as a setting, like any
+  other setting.
+- **WHY:** Answers #3249's second maintainer question. With debug info on
+  by default there is no mode to persist; breakpoints are the only state
+  an author would miss the next morning, and persisting them matches
+  every IDE convention while costing nothing when no session is running.
+
+## Debugger UI round = the Player half of #3199; StateView is replaced, not extended
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger epic #452 / D9, #3199)
+- **SCOPE:** architectural
+- **WHAT:** (1) This design round **folds the Player rebuild in**: the
+  Player is redesigned with debugging as its organizing feature, rather
+  than designing the debugger against today's Player and rebuilding it
+  again later. The Story Graph half of #3199 stays a separate, later
+  round — answering #3199's own "one round or two" question as two. (2)
+  The **State View is a redesign/replacement**, not a minor modification:
+  it is rebuilt as the debugger's inspection surface (interactive call
+  stack with frame selection, locals-first variables, a breakpoints
+  section), and the Player toolbar is rebuilt to carry the transport
+  (pause/resume/step) controls.
+- **WHY:** #3199 itself warns that a Player rebuild designed without
+  reference to the debugger "would likely be redesigned again
+  afterwards"; the maintainer chose to take that head-on rather than
+  design twice. The StateView call reflects that the existing component,
+  while already rendering call stack + locals (#3140), was built as a
+  passive inspector — frame selection, breakpoint management, and
+  stop-reason presentation are structural additions, not decorations.
+
+## Player rebuild: paced auto-reveal as a transport button; tag toggle; visible line rows
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (Player rebuild — debugger UI round, #452 D9 / #3199)
+- **SCOPE:** moderate
+- **WHAT:** (1) **Auto is a toggle button in the transport** (double-arrow
+  fast-forward icon, pressed state = on), replacing the checkbox. (2) An
+  **App setting governs auto-reveal pacing**: even when the runtime
+  delivers a turn's lines as a chunk, auto playback can reveal them **one
+  line at a time in rapid succession** rather than as a block — the pacing
+  is a playback concern in the Player, not a runtime delivery change.
+  (3) A **toggle shows the tags** delivered with each line
+  (`OutputLine.tags`), rendered as muted per-line chips. (4) The
+  transcript gets a **subtle row-based highlight** so the author can see
+  what constitutes a delivered line and where its boundaries are —
+  subtle but informative.
+- **WHY:** Maintainer direction on reviewing the first canvas. The pacing
+  point is explicitly about the *playback* of auto mode ("maybe the
+  runtime delivers in a big chunk, but the playback of auto mode should
+  still do one at a time") — the reading experience should keep line
+  rhythm even when the engine batches. Tags and line boundaries are
+  authoring visibility: a line is the runtime's delivery unit (and the
+  debugger's stepping unit), so the author needs to see its edges and
+  its metadata without leaving the Player.
+
+## Breakpoints share the play gutter's column
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (debugger UI round, #452 D9 / #3233)
+- **SCOPE:** moderate
+- **WHAT:** The breakpoint glyph renders **in the same gutter column as
+  the "play from here" ▶**, not in a separate host-gutter column. Their
+  placements rarely conflict — ▶ appears only on hovered *header* lines
+  (knot/stitch), breakpoints live on statement lines. Where both apply
+  (a breakpoint on a header line), the hover glyph stays ▶ and the
+  gutter's context menu carries "Set breakpoint here". The paused-here
+  execution arrow overlays the same column.
+- **WHY:** Maintainer reasoning: "a place where a breakpoint can go and
+  a 'play from here' don't overlap much." Avoids growing the gutter
+  column count, consistent with the detached-gutters ruling (#3119)
+  which preferred detaching gutters over thinning their content.
+  Implementation consequence: breakpoint markers merge into the play
+  gutter's column (extend `play-from-here.ts`'s gutter or point the
+  host-marker rendering at its slot) rather than mounting
+  `hostGutterExtension`'s parallel column; the host-gutter marker model
+  can still carry the data.
+
+## Play is stepping: no auto-start, and the editor tracks the live line while playing
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor-ui (debugger UI round, #452 D9 / #3199)
+- **SCOPE:** architectural
+- **WHAT:** (1) **The story does not play by default.** Opening the
+  studio/Player never starts a session; the Player opens idle ("ready")
+  and Run compiles and begins one. (2) **While a session is running, the
+  editor reflects it with the per-line treatment continuously** — the
+  execution highlight follows each delivered line as it is revealed
+  (paced or manual), not only when paused. Since playback advances one
+  line at a time anyway, "debugging" and "stepping through the story"
+  are ONE experience: auto mode is automatic stepping, Continue is a
+  step, pause/breakpoints just stop the advance — the visualization is
+  already live either way.
+- **WHY:** Maintainer direction on the canvas: "once the player is in
+  'play' mode and we have a live session running, the editor should
+  reflect that with the per line treatment... we can kind of unify the
+  'debugging' and 'stepping through the story' experience." This
+  collapses what would otherwise be two visual systems (a play mode with
+  no source feedback + a debug mode with highlights) into one, and makes
+  the always-on debug-info ruling pay off during ordinary playtesting,
+  not just at breakpoints. Color language: live line = success tint,
+  paused = warning tint + arrow, selected frame = accent tint + hollow
+  arrow, parked = info dashed. Degraded suppression applies to all of
+  them identically. The editor never auto-scrolls to follow playback by
+  default (typing while a story runs must stay hostile-free); clicking
+  the status chip reveals the current line — whether a follow-execution
+  toggle is wanted stays an open knob for the build.
+
+  The granularity ladder behind the unification (maintainer, same
+  session): "the author wants to debug their story and logic line by
+  line anyway, and the instruction and code level 'step line' is just
+  for even more granular and detailed investigation or when the
+  programmer needs to step in to help." Three tiers: (1) the **story
+  line** (delivered `OutputLine`) is the author's primary stepping unit
+  — the existing reveal-next IS the first-class step, and auto mode is
+  it self-advancing; (2) **source-statement** step into/over/out is the
+  deeper logic-investigation tier; (3) **instruction-level** `stepi` is
+  the programmer-assist tier — which is why it lives in the Program
+  Explorer, not the Player toolbar.
+
+## The Debugger panel owns the flow list, not the status bar
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (debugger UI round, #452 D9 / #3223)
+- **SCOPE:** moderate
+- **WHAT:** The list of open flows/sessions lives in the **Debugger
+  panel** as its own section (above Frames), not in the bottom
+  rail/status bar — the status bar's `SessionPicker` retires. Selecting
+  a flow scopes Frames/Variables and the transport to it; a parked flow
+  shows its "parked — resumes here" state in this list (and its Frames
+  view shows the resume frame), never as a pseudo-frame in another
+  flow's call stack. This is F12's selection surface answered: when
+  #3223 lands multi-flow runtime support, the panel's Flows section is
+  where the author picks the flow being debugged.
+- **WHY:** Maintainer direction. Flow selection is debugger context —
+  it belongs beside the call stack it scopes, not in global chrome; the
+  status bar keeps only the one-line story status. Call stacks are
+  per-flow, so the flow list is also the only honest home for a parked
+  flow's resume state.
+
+## Choice-point visualization, runtime-value hover, Player appearance settings
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + editor-ui + runtime seam (debugger UI round, #452 D9)
+- **SCOPE:** moderate
+- **WHAT:** (1) **The Player gets its own appearance settings**, starting
+  with font size — its own knob on the `--bs-editor-font-size` precedent
+  ("make the text bigger about the thing you read is a different request
+  from make the UI bigger"), separate from the app type scale. (2) **When
+  the story waits on a choice, the editor lights the choice point**:
+  every presented choice's line is highlighted, and authored choices
+  that were NOT added to the block render dimmed **with the reason**
+  (condition evaluated false, once-only exhausted) — driven by runtime
+  state, not editor-side guessing. This requires a new runtime/bridge
+  seam: a **choice presentation report** (per choice point: the
+  candidates evaluated, presented/rejected, and the rejection reason) —
+  filed as its own runtime ticket alongside #3223. (3) **Editor hover
+  shows runtime variable values during a live, in-sync session** —
+  globals always, frame locals while paused — layered onto the existing
+  hover, suppressed under `sessionDegraded`.
+- **WHY:** Maintainer direction on the canvas. Choice dimming turns the
+  commonest story-logic question — "why didn't my choice appear?" —
+  into something read off the source instead of debugged by
+  experiment; runtime hover makes play mode an inspection surface
+  without opening the panel. Both are the always-on-debug-info ruling
+  paying off during ordinary playtesting.
+- **NOTE (revised same session):** the "choice presentation report"
+  runtime seam in (2) is NOT needed — maintainer: "we can look at visit
+  counts." Rejection reasons derive by elimination from surfaces that
+  already exist: the presented set (`DebugState.choices`) + visit counts
+  (`DebugState.visits` — once-only exhaustion IS the body container's
+  visit count) + #3234's anonymous-container ids in the overlay
+  projection for the identity join. The only possible bridge change is
+  widening the visits snapshot if it filters out anonymous choice-body
+  containers — W11 verifies that first. The condition-failed label is
+  by-elimination (a catch-all); edge cases live in W11's proof list.
+
+## Runtime save/load for testing: idle-Player surface, location by App setting
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime consumer (debugger UI round, #452 D9 / #57)
+- **SCOPE:** architectural
+- **WHAT:** (1) The author can **save and load runtime state the way a
+  game would** — visit counts, globals, position: the story's durable
+  state, NOT internal/ephemeral runtime state — to get to a particular
+  place in the story and keep testing from there. The save payload is
+  the runtime's existing `SaveState` boundary, not a new format. (2)
+  The controls are a **separate surface in the Player, present when it
+  is idle**: the idle body shows Run-from-start plus the saves list
+  (load one to start there); saving the current session is available
+  while one runs. (3) **Where saves live is an App setting**: "keep
+  saves on my machine" (private app-data folder, per project) versus
+  "project saves" (inside the project tree, shareable/committable),
+  extensible to more locations later. (4) Loading against a newer
+  compile surfaces the runtime's `LoadReport` in the UI (e.g.
+  "3 anonymous visit states dropped") rather than loading silently —
+  the #3283/#3234 identity work is what makes these saves survive
+  ordinary editing at all.
+- **WHY:** Maintainer direction on the canvas: authors need
+  checkpoint-style iteration ("get into a particular place and keep
+  testing from there"), and the idle Player body is otherwise empty —
+  it becomes the natural launcher. This is the "newer, larger ask" #57
+  was already flagged to be re-scoped against; value *editing* stays
+  out of scope here. Machine-local is the proposed default location
+  (does not dirty the repo unasked) — flagged as a knob, not ruled.
+
+## Hot reload: edits during play reach the running Player
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime consumer (debugger UI round, #452 D9)
+- **SCOPE:** architectural
+- **WHAT:** Content edits made during play mode must be reflected in
+  the running Player as immediately as possible — "hot-reloading as
+  much as we possibly can by any means necessary." On every successful
+  studio compile, the live session **migrates to the new program
+  automatically**: snapshot the durable state (the same `SaveState`
+  boundary as F17), swap programs, reload the state, re-anchor
+  breakpoints, and surface the `LoadReport` inline when anything
+  dropped. Migration lands at turn boundaries (waiting on a choice,
+  paused, parked, between paced reveals); a failed compile keeps the
+  old program running with the error surfaced. The degraded
+  "out of sync" state becomes the **fallback** — compile failing, or a
+  migration that cannot preserve the current position — not the steady
+  state after every edit. This SUPERSEDES the live-inspector-spec §5
+  posture in which every edit degrades the session until restart.
+- **WHY:** Maintainer: "it's just a fact of how the player/editor need
+  to interact." The reason it doesn't happen today is design, not
+  accident — the studio was built to degrade honestly rather than
+  guess — but the pieces that make honest migration possible now
+  exist: the `SaveState` boundary, `LoadReport`'s explicit
+  dropped-state accounting, and the #3283/#3234 block-local identity
+  work whose whole point was shrinking the save-invalidation blast
+  radius of an edit. Hot reload composes them; where they can't
+  preserve state, the old degraded path remains the honest fallback.
+
+## Idle launcher: save-location doors + play-from-anywhere typeahead
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio (Player rebuild — debugger UI round, #452 D9)
+- **SCOPE:** moderate
+- **WHAT:** (1) The idle Player's saves present **exactly like the
+  landing screen's Recent list** (maintainer screenshot, this session):
+  two stacked sections, each an uppercase cap label over the bordered
+  recents-style row list — where the landing says "RECENT", the Player
+  says **"PROJECT"** (project saves) and **"THIS COMPUTER"** (machine
+  saves). Rows follow the recents anatomy: small mono chip, name,
+  right-aligned muted context. Both locations first-class and always
+  visible; the App setting picks the default target for new saves
+  rather than hiding a location.
+  (2) Next to "Run from the start" sits a **combobox/typeahead search
+  over knots and stitches, with file locations as context**, to "play
+  from there" — the launcher form of the existing play-from-here start
+  path (#186), reusing the symbol/outline query and the quickpick
+  idiom. (3) Each save offers **two actions: Load and Fork**. Load
+  attaches the session to the slot — "Save state" writes back to it,
+  like continuing a save file. Fork starts from a copy — the session is
+  not attached, and the next save picks a new location/slot, leaving
+  the checkpoint untouched.
+- **WHY:** Maintainer direction. Visual continuity: the launcher is the
+  Player's landing screen, so it borrows the landing's established door
+  vocabulary. The typeahead makes "get me to this scene" a typed
+  action instead of a hunt through gutters or the Binder — together
+  with saves it makes the idle Player the place testing starts from.
+  Load/fork separates the two testing motions: continuing a checkpoint
+  versus branching experiments off one without clobbering it.
+
+## Debugger panel: live value editing, Watch mini-REPL, break-on-write
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** studio + runtime bridge (debugger UI round, #452 D9 / #57 / #411)
+- **SCOPE:** moderate
+- **WHAT:** (1) **Locals and globals are editable from the Debugger
+  panel** — click the value, inline mono input, Enter commits, Esc
+  cancels, type-checked against the value's current type; **v1 edits
+  scalars only** (int/float/bool/string; lists and structs stay
+  read-only until a value-editor design of their own); **editing is
+  allowed only while paused**. Globals commit through the existing
+  `Story::set_variable` (needs wasm exposure); locals need a new
+  debug-seam set-temp-in-frame call. Edits must go through the
+  dirty-marking write path so watchpoints and parked-condition wake
+  checks observe them. No undo — F17's fork-a-save is the safety net.
+  (2) **A Watch section ships as the full mini-REPL**, not
+  expressions-only: arbitrary typed expressions AND divert/content
+  fragments with side-effect-proof transcript previews, re-evaluated at
+  each stop. Verified wired end-to-end, not a #411 build: F4.1–F4.3
+  (`Speculation`/`KindTieredHandler`, web `speculate()`) plus F5.1
+  tier-1 fragment evaluation (`compile_fragment` mechanism B, cached
+  per (checksum, fragment, kind)) are all landed with wasm tests
+  through the real `evaluate()` export — the maintainer's "check
+  again, i think you can do a full mini-repl easily" was correct, and
+  the scratch-eval-spec's "never landed" provenance note is stale for
+  everything this needs. (3) **Break-on-write** via the variable-row
+  context menu ("Break on write"), listed in the Breakpoints section
+  with a distinct glyph — D8's `WatchpointObserver`/
+  `debug_run_watching` already provide the runtime half.
+- **WHY:** Maintainer direction with explicit alignment round. This
+  re-scopes the editing half of #57 INTO the round (the save/restore
+  half landed as F17). Paused-only editing was chosen over
+  globals-anytime for the simpler mental model, accepting the loss of
+  live wake-condition poking while parked.
+
+## Parked/awaiting debug positions report the resume point and call site, tagged
+- **WHEN:** 2026-08-29
+- **PROJECT:** brink
+- **SYSTEM:** runtime (debugger epic #452 / #3225 — the ruling D9's W5 was blocked on)
+- **SCOPE:** moderate
+- **WHAT:** While a flow is **condition-parked** (`Step::Suspended`),
+  `Story::debug_position()` and the frame reads report the **resume
+  point** — `(continuation container_idx, offset 0)`, resolving just
+  past the park statement per `docs/debugger-spec.md` §2.6 — carried
+  with an **explicit parked tag**, never as a live position. While
+  **awaiting a deferred external** (`StepOutcome::AwaitingExternal`),
+  they report the **calling frame's call site** with a *distinct*
+  awaiting-external tag (resumption is host-driven, not
+  condition-driven; the External frame stays opaque). Rejected: the
+  pre-park position (lies about the future — that statement never runs
+  again) and "no position" (starves every consumer of the ruled
+  "parked — resumes here" treatment). The tag is API-level so no
+  consumer can honestly render "currently at". Implementation rides
+  with the #3215 `#[non_exhaustive]` hygiene fix (the shape change is
+  otherwise breaking), and sequences consciously against FS-3r (#980).
+  Recorded in `docs/debugger-spec.md` §4.1.
+- **WHY:** The split-at-park compilation model means "where the flow
+  stopped" and "where it resumes" are different containers — there is
+  no single honest current position, so the API reports the one
+  forward-looking consumers need and marks what it is. This unblocks
+  W5 (#3298)'s park presentation and closes #3225's design ask.

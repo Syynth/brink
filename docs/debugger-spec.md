@@ -863,6 +863,42 @@ stepping:
    genuine step-out (the loop's host-driven cancellation) is not an event
    the debugger can run to.
 
+### 4.1 Parked/awaiting position reporting (#3225 — RULED, maintainer 2026-08-29)
+
+The open question D8 shipped without deciding (what `Story::debug_position()`
+and the frame/call-stack reads report while nothing is executing) is now
+ruled, one answer per suspension kind:
+
+- **Condition-park (`Step::Suspended`)**: report the **resume point** —
+  `(continuation container_idx, offset 0)`, which resolves per §2.6 to the
+  source just *past* the park statement — **explicitly tagged as a parked
+  resume point**, never presented as a live position. The pre-park position
+  was rejected (it names a statement that already executed and will never
+  run again — a breakpoint set "here" would never hit on wake, and the
+  arrow would point at a line the flow has permanently left); "no
+  position" was rejected (it starves every consumer, which would have to
+  reach around the API into `FlowFrame` internals to draw the ruled
+  "parked — resumes here" treatment).
+- **Deferred external (`StepOutcome::AwaitingExternal`)**: report the
+  **calling frame's call site**, tagged with a *distinct*
+  awaiting-external marker — the stack is intact and resumption returns
+  exactly there; the `External` frame itself stays opaque per §4's
+  step-into rule. The tag is distinct from parked because resumption is
+  host-driven (`resolve_external`), not condition-driven — the two must
+  never be conflated in author-facing text (condition-park vocabulary,
+  §4).
+
+**The tag is API-level, not UI courtesy.** An untagged position would let
+a consumer honestly-mistakenly render "currently at"; the ruling requires
+the reported shape itself to make that impossible.
+
+**Implementation notes.** (1) `DebugSnapshot`/`DebugFrame`/`DebugPosition`
+lack `#[non_exhaustive]` (#3215), so this additive shape change is
+breaking today — land the hygiene fix in the same change. (2) FS-3r
+(#980, the runtime park/spill/resume slice) is still open: this section
+defines *reporting semantics* only, not the park machinery itself; the
+implementation sequences against #980 consciously, not by accident.
+
 ## 5. What D6 should emit once `lir::Expr` provenance exists
 
 Per the granularity ruling (§2.1): once #3183 delivers `lir::Expr`
