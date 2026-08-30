@@ -34,12 +34,13 @@ async function sessionOptionCount(page: Page): Promise<number> {
  *
  * The entry badge is the signal because it is written by the compile
  * fan-out itself (`landCompileResult` -> `setEntryFile` -> the Binder's
- * `entry` badge), and every project has exactly one entry — so this is not
+ * entry ICON, the brink mark that replaced the text badge), and every
+ * project has exactly one entry — so this is not
  * coupled to what the demo fixture happens to contain, the way waiting on
  * a warning count would be.
  */
 async function waitForFirstCompile(page: Page): Promise<void> {
-  await expect(page.locator(".brink-binder-badge-entry").first()).toBeVisible({
+  await expect(page.locator(".brink-file-icon-entry").first()).toBeVisible({
     timeout: 15000,
   });
 }
