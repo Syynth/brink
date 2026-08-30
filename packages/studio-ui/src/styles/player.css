@@ -308,9 +308,12 @@
   display: flex;
   gap: 10px;
   align-items: flex-start;
+  /* The dropdown anchors to the ROW, not the input — long knot names
+     grow it leftward up to the full launcher width (maintainer
+     feedback, W14). */
+  position: relative;
 }
 .brink-studio .pl-typeahead {
-  position: relative;
   flex: 1;
 }
 .brink-studio .pl-typeahead-input {
@@ -328,8 +331,10 @@
 .brink-studio .pl-typeahead-list {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
   right: 0;
+  width: max-content;
+  min-width: min(100%, 280px);
+  max-width: 100%;
   z-index: 30;
   list-style: none;
   margin: 0;
