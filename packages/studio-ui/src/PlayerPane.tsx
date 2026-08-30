@@ -195,6 +195,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // ever advances one line) — a visible control that does nothing is worse
   // than no control (#3011).
   const canAuto = useStudioStore((s) => s._provider?.capabilities.has("auto") ?? false);
+  // Transport (W5/#3298): render the debug cluster only for a debug-capable
+  // provider (disabled-not-hidden while running, hidden entirely for an
+  // observe-only provider — same posture as the Auto toggle above).
+  const debugCapable = useStudioStore((s) => s.debugCapable);
+  const paused = useStudioStore((s) => s.sessionPaused);
+  const pausedLocation = useStudioStore((s) => s.debugState?.current_location ?? null);
   const { commands } = useShell();
   const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
 
@@ -281,6 +287,81 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           <button className="btn-restart" onClick={handleRestart}>
             Restart
           </button>
+          {debugCapable && (
+            <span className="player-transport">
+              <span className="player-transport-sep" />
+              {paused ? (
+                <button
+                  className="player-transport-btn"
+                  title="Continue — run to the next breakpoint, choice, or end"
+                  aria-label="Continue"
+                  onClick={() => commands.dispatch("debug.run")}
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M1.5 2h1.6v8H1.5z" fill="currentColor" />
+                    <path d="M5 1.5l6 4.5-6 4.5z" fill="currentColor" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  className="player-transport-btn"
+                  title="Pause — stop at the current line; step from there"
+                  aria-label="Pause"
+                  disabled={status !== "running" && status !== "awaiting-choice"}
+                  onClick={() => commands.dispatch("debug.pause")}
+                >
+                  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2.5 1.5h2.4v9H2.5zM7.1 1.5h2.4v9H7.1z" fill="currentColor" />
+                  </svg>
+                </button>
+              )}
+              <button
+                className="player-transport-btn"
+                title="Step over — one line, calls run to completion"
+                aria-label="Step over"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepOver")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M2 7a5 5 0 0 1 9-2.5" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M11.5 1.5v3.2H8.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="player-transport-btn"
+                title="Step into — one line, descending into calls"
+                aria-label="Step into"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepInto")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1.5v6" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M4.2 5l2.8 3 2.8-3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="player-transport-btn"
+                title="Step out — run until the current frame returns"
+                aria-label="Step out"
+                disabled={!paused}
+                onClick={() => commands.dispatch("debug.stepOut")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 8.5v-6" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M4.2 5l2.8-3 2.8 3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                  <circle cx="7" cy="11.5" r="1.6" fill="currentColor" />
+                </svg>
+              </button>
+              {paused && (
+                <span className="player-status-chip paused" title="Paused by the debugger">
+                  <span className="player-status-dot" />
+                  {pausedLocation ? `Paused — ${pausedLocation}` : "Paused"}
+                </span>
+              )}
+            </span>
+          )}
           {canAuto && (
             <label
               className="player-auto"
@@ -313,7 +394,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           {text.map((line, i) => (
             <p key={i}>{renderLine(line)}</p>
           ))}
-          {ended && <div className="end-marker">{"\u2014 End \u2014"}</div>}
+          {ended && <div className="end-marker">{"— End —"}</div>}
         </div>
         {/* Choices win over Continue: whenever a choice list is present, show
             it and never the Continue button — so a transient status wobble at a

@@ -124,6 +124,8 @@ export interface DebugSlice {
   /** Step by one `StepMode` unit ("into" | "over" | "out"). Same
    * update/refresh contract as `debugRun`. */
   debugStep(mode: StepMode, budgetCeiling?: number): void;
+  /** Step by one SOURCE LINE (W5/#3298) — the transport's step verbs. */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): void;
   /**
    * Whether this editor session compiles with the D6 `DebugInfo` section
    * (#3229). **ON by default since 2026-08-29** (W1/#3294, "debug info on
@@ -411,6 +413,18 @@ export const createDebugSlice: StateCreator<StudioState, [], [], DebugSlice> = (
     const provider = get()._provider;
     if (!provider || !isDebugSessionProvider(provider)) return;
     const outcome = provider.debugStep(mode, budgetCeiling);
+    set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
+    get()._refreshDebugState();
+  },
+
+  debugStepLine(mode, budgetCeiling) {
+    // The author-tier step (W5/#3298, the granularity ladder's first
+    // debug tier): one source line, bounded by armed breakpoints. This is
+    // what the Player transport's Step Over/Into/Out drive; instruction
+    // stepping (`debugStep`) is the Program Explorer's verb.
+    const provider = get()._provider;
+    if (!provider || !isDebugSessionProvider(provider)) return;
+    const outcome = provider.debugStepLine(mode, budgetCeiling);
     set({ debugLastOutcome: outcome, debugStatus: statusOfOutcome(outcome) });
     get()._refreshDebugState();
   },

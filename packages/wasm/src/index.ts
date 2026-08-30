@@ -1980,6 +1980,14 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
+  /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
+   * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
+   * artifact carries no line index. Same journal-bypass contract as
+   * {@link debugStep}; the outcome carries the emitted-lines delta. */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.runner.debugStepLine(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
   // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
   // counts / rng (true ink flow semantics), each with its own call stack
@@ -2965,6 +2973,14 @@ export class StorySessionHandle {
    */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
     return JSON.parse(this.session.debugStep(mode, budgetCeiling)) as DebugRunOutcome;
+  }
+
+  /** Step to the next **source line** (#3264, W5/#3298) — the author-tier
+   * step, bounded by any armed breakpoint. Reason `noLineInfo` when the
+   * artifact carries no line index. Same journal-bypass contract as
+   * {@link debugStep}; the outcome carries the emitted-lines delta. */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome {
+    return JSON.parse(this.session.debugStepLine(mode, budgetCeiling)) as DebugRunOutcome;
   }
 
   // ── Shared flows (#200) ────────────────────────────────────────

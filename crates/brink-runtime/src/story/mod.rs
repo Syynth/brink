@@ -1604,6 +1604,50 @@ impl<R: StoryRng> Story<R> {
     // `vm::step_impl`; see `debug_control`'s module doc for the zero-cost
     // argument this depends on.
 
+    /// Drain every COMPLETED-but-undelivered line from the default flow's
+    /// output buffer — the exact cursor `continue_single` delivers from
+    /// (`advance_with_limit` step 1's `take_first_line`). The wasm debug
+    /// verbs call this before AND after stepping so the two drive roads
+    /// share ONE delivery stream (W5/#3298): the production line-buffered
+    /// path runs ahead of what it has handed out, so a line it already
+    /// completed must surface in the debug outcome exactly once — and,
+    /// because this consumes the same cursor, never again on a later
+    /// journaled continue. Suppressed segments are skipped exactly as the
+    /// production take does; partial (uncompleted) content stays buffered
+    /// untouched.
+    #[cfg(feature = "debug-hooks")]
+    pub fn debug_drain_buffered_lines(
+        &mut self,
+    ) -> alloc::vec::Vec<(String, alloc::vec::Vec<String>)> {
+        let resolver = self.resolver.as_deref();
+        let mut out = alloc::vec::Vec::new();
+        while self.default.flow.output.has_completed_line() {
+            let Some((text, tags, _element)) = self.default.flow.output.take_first_line(
+                &self.program,
+                &self.line_tables,
+                resolver,
+            ) else {
+                break;
+            };
+            out.push((text, tags));
+        }
+        // Mirror `advance_with_limit`'s step 2: at a yield point no more
+        // output is coming, so trailing (uncommitted-newline) content is
+        // flushed — this is how the line before a choice point is
+        // delivered on the production road, and it must be here too.
+        if self.default.status != StoryStatus::Active && self.default.flow.output.has_unread() {
+            for (text, tags, _element) in
+                self.default
+                    .flow
+                    .output
+                    .flush_lines(&self.program, &self.line_tables, resolver)
+            {
+                out.push((text, tags));
+            }
+        }
+        out
+    }
+
     /// The default flow's current execution position, or `None` when the
     /// innermost frame has an empty container stack — mirrors
     /// [`debug_snapshot`](Self::debug_snapshot)'s `position` field without

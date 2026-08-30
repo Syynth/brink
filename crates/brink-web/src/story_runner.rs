@@ -817,11 +817,17 @@ impl StoryRunner {
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // See `WebSession`'s copy for the shared-delivery-cursor contract.
+        let mut drained = story.debug_drain_buffered_lines();
         let outcome = story
             .debug_run(&breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(story.debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
@@ -837,11 +843,48 @@ impl StoryRunner {
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // See `WebSession`'s copy for the shared-delivery-cursor contract.
+        let mut drained = story.debug_drain_buffered_lines();
         let outcome = story
             .debug_step(step_mode, &breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(story.debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Parity with `WebSession::debug_step_line` (W5/#3298) — see it for
+    /// the contract. Returns JSON `DebugRunOutcome` with the emitted-lines
+    /// delta.
+    #[wasm_bindgen(js_name = debugStepLine)]
+    pub fn debug_step_line(
+        &self,
+        mode: &str,
+        budget_ceiling: Option<u32>,
+    ) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_step_line"))?;
+        let step_mode = crate::value_marshal::parse_step_mode(mode)?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        // See `WebSession`'s copy for the shared-delivery-cursor contract.
+        let mut drained = story.debug_drain_buffered_lines();
+        let outcome = story
+            .debug_step_line(step_mode, &breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        drained.extend(story.debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     // ── Shared flows (#200) ─────────────────────────────────────────

@@ -1300,6 +1300,14 @@ export interface ProgramAddress {
  *  `"out"` runs until the current frame returns to its caller. */
 export type StepMode = "into" | "over" | "out";
 
+/** One transcript line a debug advance emitted (W5/#3298) — the delta the
+ *  call appended to the story transcript, so lines produced while stepping
+ *  reach the Player instead of vanishing. */
+export interface DebugOutputLine {
+  text: string;
+  tags: string[];
+}
+
 /** One breakpoint: an unconditional halt at a `(container_idx, offset)`
  *  bytecode position, checked before that instruction executes. `id`
  *  addresses it for `debugBreakpointRemove`/`debugBreakpointSetEnabled`. */
@@ -1348,6 +1356,9 @@ export interface DebugRunOutcome {
   reason: DebugStopReason;
   position?: { container_idx: number; offset: number };
   depth: number;
+  /** The transcript delta this call produced (W5/#3298); empty when the
+   *  stop emitted nothing (a code step, an immediate breakpoint). */
+  lines: DebugOutputLine[];
 }
 
 // ── Program model (Program Explorer) ─────────────────────────────

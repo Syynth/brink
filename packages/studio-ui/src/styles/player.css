@@ -110,3 +110,58 @@
   margin: 0;
   cursor: pointer;
 }
+
+/* Transport cluster (W5/#3298) — pause/continue + line steps beside
+   Run/Restart, per the debugger-UI canvas (docs/design/debugger-ui/).
+   Steps disable-not-hide while running; the paused chip names where. */
+.brink-studio .player-pane .header .toolbar .player-transport {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .player-pane .header .toolbar .player-transport-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--bs-border);
+  margin: 0 2px;
+}
+.brink-studio .player-pane .header .toolbar .player-transport-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 2px 0;
+  color: var(--bs-accent);
+}
+.brink-studio .player-pane .header .toolbar .player-transport-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Continue"],
+.brink-studio .player-pane .header .toolbar .player-transport-btn[aria-label="Pause"] {
+  color: var(--bs-warning);
+}
+.brink-studio .player-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--bs-warning);
+  border-radius: 10px;
+  font-size: var(--bs-font-small);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--bs-warning);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .player-status-chip .player-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bs-warning);
+  flex-shrink: 0;
+}

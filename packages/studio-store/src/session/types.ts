@@ -113,6 +113,22 @@ export interface SessionSnapshot {
   /** The compiled program as `.inkt` text (#91). Compile-bound like the model. */
   programInkt: string | null;
   /**
+   * Paused by the debugger (W5/#3298): a breakpoint/watchpoint hit, an
+   * explicit step, or the pause verb. Orthogonal to `status` — a paused
+   * session is still `"running"` in lifecycle terms; this flag is what
+   * enables the step controls and the "Paused — file:line" chip. Cleared
+   * when a debug run resumes free-running or the session stops/restarts.
+   */
+  paused: boolean;
+  /**
+   * The most recent debug-advance outcome (W5/#3298), whether it came from
+   * an explicit step verb or the unified Player advance routing through
+   * the debug loop (armed breakpoints). `null` before any debug-driven
+   * advance this session. The Player's status chip reads the stop reason
+   * from here.
+   */
+  debugOutcome: DebugRunOutcome | null;
+  /**
    * Reveal mode (#3011). `false` — the default — advances ONE line per reveal;
    * `true` runs to the next pause. Mirrored into the slice so the Player's
    * "auto" checkbox reflects provider state rather than keeping its own copy
@@ -134,6 +150,8 @@ export const EMPTY_SNAPSHOT: SessionSnapshot = {
   programChecksum: null,
   programModel: null,
   programInkt: null,
+  paused: false,
+  debugOutcome: null,
   auto: false,
 };
 
@@ -245,6 +263,14 @@ export interface DebugSessionProvider extends SessionProvider {
   debugRun(budgetCeiling?: number): DebugRunOutcome;
   /** See `StorySessionHandle.debugStep`'s doc. */
   debugStep(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+  /** Step to the next source line (#3264, W5/#3298) — the author-tier step
+   * the transport's Step Over/Into/Out drive; bounded by armed
+   * breakpoints. Leaves the session paused (except at choices/terminal). */
+  debugStepLine(mode: StepMode, budgetCeiling?: number): DebugRunOutcome;
+  /** The pause verb (W5/#3298, ruled: pause/resume is first-class): the
+   * session enters the paused state at its current boundary — the next
+   * reveal advances one line and stays paused; `debugRun` resumes. */
+  pause(): void;
 }
 
 /** Narrow a bound `SessionProvider` to `DebugSessionProvider` — checks the

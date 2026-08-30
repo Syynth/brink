@@ -346,12 +346,20 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
         let outcome = session
             .story_mut()
             .debug_run(&breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Step the default flow by one unit — `mode` is `"into"` | `"over"` |
@@ -368,12 +376,58 @@ impl WebSession {
             .as_mut()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
         let outcome = session
             .story_mut()
             .debug_step(step_mode, &breakpoints, ceiling)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
-        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(outcome))
-            .map_err(|e| JsError::new(&format!("json error: {e}")))
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Step the default flow to the next **source line** (#3264, W5/#3298)
+    /// — the granularity every GDB-style debugger means by `step`/`next`,
+    /// and the unified Player advance when breakpoints are armed: one
+    /// visible line, bounded by any armed breakpoint, whichever comes
+    /// first. `mode` and budget as `debugStep`; same journal-bypass
+    /// contract. Returns JSON `DebugRunOutcome` (with the emitted-lines
+    /// delta), reason `noLineInfo` when the artifact carries no line index.
+    #[wasm_bindgen(js_name = debugStepLine)]
+    pub fn debug_step_line(
+        &self,
+        mode: &str,
+        budget_ceiling: Option<u32>,
+    ) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("debug_step_line"))?;
+        let step_mode = crate::value_marshal::parse_step_mode(mode)?;
+        let ceiling = budget_ceiling.map_or(brink_runtime::DEFAULT_DEBUG_BUDGET, u64::from);
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let breakpoints = self.breakpoints.borrow();
+        // Drain the shared delivery cursor around the advance (W5/#3298):
+        // lines the production lookahead already completed surface here
+        // exactly once, and lines this advance completes follow them.
+        let mut drained = session.story_mut().debug_drain_buffered_lines();
+        let outcome = session
+            .story_mut()
+            .debug_step_line(step_mode, &breakpoints, ceiling)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        drained.extend(session.story_mut().debug_drain_buffered_lines());
+        let lines = crate::value_marshal::drained_lines_to_js(drained);
+        serde_json::to_string(&crate::value_marshal::debug_run_outcome_to_js(
+            outcome, lines,
+        ))
+        .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// The compiled program rendered as `.inkt` text for the Program Explorer:
@@ -1123,6 +1177,166 @@ mod debug_control_tests {
 
     fn json(s: &str) -> serde_json::Value {
         serde_json::from_str(s).expect("valid JSON")
+    }
+
+    /// Append an outcome's non-empty emitted lines to a test transcript.
+    fn push_lines(transcript: &mut Vec<String>, outcome: &serde_json::Value) {
+        for line in outcome["lines"].as_array().expect("lines array") {
+            let text = line["text"].as_str().expect("text").trim_end();
+            if !text.is_empty() {
+                transcript.push(text.to_owned());
+            }
+        }
+    }
+
+    // ── W5/#3298: the interleaved play↔debug proof the ruling requires ──
+    //
+    // Play a line normally, hit a breakpoint via debugRun, step across the
+    // code line, run to the choice point, choose (journaled), and run to
+    // the end — asserting the TRANSCRIPT stays coherent: every text line
+    // arrives exactly once, in story order, whichever loop produced it.
+    // This is the wasm-level half; the provider's routing (which verb runs
+    // when) is pinned in `packages/brink-studio`'s vitest suite.
+    #[test]
+    fn interleaved_play_and_debug_keep_one_coherent_transcript() {
+        let src = "VAR gold = 12\n                   -> tavern\n                   === tavern ===\n                   The tavern is loud tonight.\n                   ~ gold = gold - 2\n                   Ale ordered.\n                   * [Order another] -> more\n                   * [Leave] -> END\n                   === more ===\n                   Another round.\n                   -> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let mut transcript: Vec<String> = Vec::new();
+
+        // 1. Ordinary play: the first prose line arrives on the journaled
+        // road. (The production line-buffered loop runs AHEAD of what it
+        // delivers — by now "Ale ordered." is already materialized in the
+        // buffer, undelivered. That lookahead is exactly why the debug
+        // verbs drain the shared delivery cursor.)
+        let first = json(&session.continue_single().expect("continue_single"));
+        let first_text = first["text"].as_str().expect("text").trim_end().to_owned();
+        transcript.push(first_text.clone());
+        assert_eq!(first_text, "The tavern is loud tonight.");
+
+        // 2. Arm a breakpoint on `Another round.` (0-based line 9) through
+        // the same source→program road the gutter uses (W2).
+        let addr = json(
+            &session
+                .resolve_source_line("main.ink", 9)
+                .expect("resolves"),
+        );
+        let bp = session.debug_breakpoint_add(
+            u32::try_from(addr["container_idx"].as_u64().expect("idx")).expect("u32"),
+            u32::try_from(addr["offset"].as_u64().expect("offset")).expect("u32"),
+            Some("more-entry".to_owned()),
+        );
+
+        // 3. Free-run to the choice point: the drained delivery cursor
+        // surfaces the looked-ahead "Ale ordered." exactly once, here.
+        let to_choices = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(to_choices["reason"]["type"], serde_json::json!("choices"));
+        push_lines(&mut transcript, &to_choices);
+        assert_eq!(
+            transcript,
+            vec![
+                "The tavern is loud tonight.".to_owned(),
+                "Ale ordered.".to_owned(),
+            ],
+        );
+
+        // 4. Choose on the JOURNALED road (choices stay journaled across
+        // the unification — that is what keeps restore/replay coherent),
+        // then free-run: halts at the breakpoint BEFORE the target knot's
+        // text emits.
+        session.choose(0).expect("choose");
+        let run = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(run["reason"]["type"], serde_json::json!("breakpoint"));
+        assert_eq!(run["reason"]["id"], serde_json::json!(bp));
+        push_lines(&mut transcript, &run);
+        assert!(
+            !transcript.iter().any(|l| l == "Another round."),
+            "stopping AT the breakpoint must not have emitted the line past it"
+        );
+
+        // 5. Line-step across it: the emitted text surfaces through the
+        // outcome's lines delta — the coherence hole W5 closes.
+        let mut steps = 0;
+        while !transcript.iter().any(|l| l == "Another round.") {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            push_lines(&mut transcript, &step);
+            steps += 1;
+            assert!(steps < 8, "line-stepping never surfaced the text line");
+        }
+
+        // 6. Free-run to the end.
+        let to_end = json(&session.debug_run(None).expect("debug_run"));
+        assert_eq!(to_end["reason"]["type"], serde_json::json!("terminal"));
+        push_lines(&mut transcript, &to_end);
+
+        // 7. Coherence: every text line exactly once, in story order,
+        // whichever loop produced it.
+        assert_eq!(
+            transcript,
+            vec![
+                "The tavern is loud tonight.".to_owned(),
+                "Ale ordered.".to_owned(),
+                "Another round.".to_owned(),
+            ],
+            "the interleaved loops must produce one coherent transcript"
+        );
+    }
+
+    // The drain consumes the SAME cursor the journaled road delivers from
+    // — a line surfaced by a debug advance must never be re-delivered by a
+    // later `continue_single` (the double-line half of the coherence bug).
+    #[test]
+    fn debug_drained_lines_are_never_redelivered_by_the_journaled_road() {
+        let src = "-> top\n=== top ===\nFirst line.\nSecond line.\nThird line.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+
+        let first = json(&session.continue_single().expect("continue_single"));
+        assert_eq!(first["text"], serde_json::json!("First line.\n"));
+
+        // Debug steps drain whatever the lookahead has COMMITTED — a text
+        // line commits only once the next non-whitespace output begins (or
+        // a yield), so it can surface one advance later than it was
+        // materialized. Step until it does.
+        let mut drained: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let step = json(
+                &session
+                    .debug_step_line("over", None)
+                    .expect("debug_step_line"),
+            );
+            drained.extend(
+                step["lines"]
+                    .as_array()
+                    .expect("lines")
+                    .iter()
+                    .map(|l| l["text"].as_str().expect("text").trim_end().to_owned())
+                    .filter(|t| !t.is_empty()),
+            );
+            if drained.contains(&"Second line.".to_owned()) {
+                break;
+            }
+        }
+        assert!(
+            drained.contains(&"Second line.".to_owned()),
+            "the looked-ahead line must surface through the debug outcomes: {drained:?}"
+        );
+        assert_eq!(
+            drained.iter().filter(|t| *t == "Second line.").count(),
+            1,
+            "and exactly once"
+        );
+
+        // The journaled road resumes AFTER everything the drain delivered —
+        // never re-delivering a drained line.
+        let next = json(&session.continue_single().expect("continue_single"));
+        let next_text = next["text"].as_str().unwrap_or("").trim_end();
+        assert_ne!(
+            next_text, "Second line.",
+            "a drained line must not be re-delivered by the journaled road"
+        );
     }
 
     #[test]
