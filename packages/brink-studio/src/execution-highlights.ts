@@ -11,13 +11,19 @@
  */
 
 import type { ExecutionHighlight } from "@brink-lang/editor";
+import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import {
   isDebugSessionProvider,
   sessionDegraded,
   type StudioState,
 } from "@brink/studio-store";
 
-/** All execution highlights for `path`, from the live session. */
+/** All execution highlights for `path`, from the live session.
+ *
+ * `projection` (W11/#3304) is the file's HIR overlay — when the session
+ * waits on a choice, presented choices light and their rejected siblings
+ * dim with reasons; without it (unopened doc, projection not landed) the
+ * choice point falls back to the single position band. */
 export function executionHighlightsFor(
   st: Pick<
     StudioState,
@@ -30,6 +36,7 @@ export function executionHighlightsFor(
     | "_provider"
   >,
   path: string,
+  projection?: HirProjection | null,
 ): ExecutionHighlight[] {
   if (sessionDegraded(st.programChecksum, st.compiledChecksum)) return [];
   if (
@@ -44,13 +51,33 @@ export function executionHighlightsFor(
   if (!pos || provider === null || !isDebugSessionProvider(provider)) return [];
   const line = provider.resolveDebugLine(pos.container_idx, pos.offset);
   const out: ExecutionHighlight[] = [];
+
+  // Choice-point visualization (W11/#3304, F14 RULED): presented choices
+  // ARE the live frontier — each lights; authored siblings not added dim
+  // with the by-elimination reason. Joins run on `def_id` (#3234).
+  const choiceBands =
+    st.sessionStatus === "awaiting-choice" && projection
+      ? choicePointHighlights(st.debugState, projection)
+      : [];
+
   if (line !== null && line.file === path) {
-    out.push({
-      line: line.line + 1,
-      kind: st.sessionPaused ? "paused" : "live",
-      rangeStart: line.range_start,
-      rangeLen: line.range_len,
-    });
+    const positionLine = line.line + 1;
+    // With the presented set lit, the single position band is redundant
+    // noise UNLESS paused (the paused band is the stop marker, F7) —
+    // and a choice band never doubles a line the paused band holds.
+    if (st.sessionPaused || choiceBands.length === 0) {
+      out.push({
+        line: positionLine,
+        kind: st.sessionPaused ? "paused" : "live",
+        rangeStart: line.range_start,
+        rangeLen: line.range_len,
+      });
+    }
+    for (const band of choiceBands) {
+      if (!(st.sessionPaused && band.line === positionLine)) out.push(band);
+    }
+  } else {
+    out.push(...choiceBands);
   }
   // A selected non-top stack frame (W8/#3301) coexists with the paused
   // band — the plural seam's second consumer: accent band + hollow arrow
@@ -78,6 +105,78 @@ export function executionHighlightsFor(
         });
       }
     }
+  }
+  return out;
+}
+
+/** The presented/rejected bands for the CURRENT choice point (W11/#3304).
+ *
+ * Presented = `pending_choices` (their `def_id` joins the projection's
+ * choice spans). Rejected = choice spans sharing a lit span's choice
+ * point — same parent container and weave depth — that were not
+ * presented; reason by elimination: a once-only whose anonymous body has
+ * a `visit_ids` count ≥ 1 is "once-only · used", anything else is the
+ * failing condition (a catch-all — the editor enriches it with the
+ * line's own `{…}` text). */
+function choicePointHighlights(
+  debugState: StudioState["debugState"],
+  projection: HirProjection,
+): ExecutionHighlight[] {
+  if (!debugState) return [];
+  const presented = new Set(
+    debugState.pending_choices
+      .map((c) => c.def_id)
+      .filter((id): id is string => id !== undefined && id !== ""),
+  );
+  if (presented.size === 0) return [];
+  const visitById = new Map(
+    (debugState.visit_ids ?? []).map((v) => [v.def_id, v.count]),
+  );
+
+  const spans = projection.spans;
+  const containers = spans.filter((sp) => sp.container);
+  // The innermost container strictly enclosing a span — the choice
+  // point's grouping key, paired with weave depth (an inline choice set
+  // inherits the surrounding weave's depth; the pair keeps nested sets
+  // apart). O(choices × containers), fine at file scale.
+  const parentOf = (sp: HirSpan): HirSpan | null => {
+    let best: HirSpan | null = null;
+    for (const c of containers) {
+      if (c === sp) continue;
+      const encloses =
+        (c.start_line < sp.start_line ||
+          (c.start_line === sp.start_line && c.start_char <= sp.start_char)) &&
+        (c.end_line > sp.end_line ||
+          (c.end_line === sp.end_line && c.end_char >= sp.end_char));
+      if (!encloses) continue;
+      if (best === null || c.depth > best.depth) best = c;
+    }
+    return best;
+  };
+  const groupKey = (sp: HirSpan): string => {
+    const parent = parentOf(sp);
+    return `${parent?.handle ?? "root"}|${sp.weave_depth ?? "?"}`;
+  };
+
+  const choiceSpans = spans.filter((sp) => sp.kind === "choice" && sp.def_id !== undefined);
+  const litKeys = new Set<string>();
+  const out: ExecutionHighlight[] = [];
+  for (const sp of choiceSpans) {
+    if (sp.def_id !== undefined && presented.has(sp.def_id)) {
+      litKeys.add(groupKey(sp));
+      out.push({ line: sp.start_line + 1, kind: "live" });
+    }
+  }
+  if (out.length === 0) return [];
+  for (const sp of choiceSpans) {
+    if (sp.def_id === undefined || presented.has(sp.def_id)) continue;
+    if (!litKeys.has(groupKey(sp))) continue;
+    const used = sp.sticky === false && (visitById.get(sp.def_id) ?? 0) >= 1;
+    out.push({
+      line: sp.start_line + 1,
+      kind: "rejected",
+      note: used ? "once-only · used" : "condition false",
+    });
   }
   return out;
 }

@@ -36,6 +36,7 @@ import { diagnosticsExtension } from "./diagnostics.js";
 import { brinkKeymap } from "./keybindings.js";
 import { completionsExtension } from "./completions.js";
 import { hoverExtension } from "./hover.js";
+import { augmentHoverWithRuntimeValue } from "./hover-runtime.js";
 import { gotoDefinitionExtension } from "./goto-definition.js";
 import { foldingExtension } from "./folding.js";
 import { inlayHintsExtension } from "./inlay-hints.js";
@@ -191,6 +192,12 @@ export interface BrinkStudioOptions {
     source: string,
     offset: number,
   ) => HoverInfo | null | Promise<HoverInfo | null>;
+  /** Runtime-value hover (W12/#3305): a markdown note for the identifier
+   *  under the cursor — its CURRENT runtime value — appended to the base
+   *  hover (or shown alone when no base hover exists). The host owns the
+   *  policy (globals always, frame locals while paused, degraded →
+   *  null). */
+  getRuntimeValueNote?: (name: string) => string | null;
   /** Sync or async (#3110). */
   gotoDefinition?: (
     source: string,
@@ -423,9 +430,21 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     );
   }
   if (options.getHover) {
+    const baseGetHover = options.getHover;
+    const { getRuntimeValueNote } = options;
+    // W12/#3305: merge the live session's value into the hover.
+    const getHover = getRuntimeValueNote
+      ? async (source: string, offset: number) =>
+          augmentHoverWithRuntimeValue(
+            source,
+            offset,
+            await baseGetHover(source, offset),
+            getRuntimeValueNote,
+          )
+      : baseGetHover;
     ideExtensions.push(
       hoverExtension({
-        getHover: options.getHover,
+        getHover,
         getArgumentWidgets: options.getArgumentWidgets,
         // The same hook goto-definition uses: a hover-card reference and a
         // goto both mean "take me to the declaration", and routing them

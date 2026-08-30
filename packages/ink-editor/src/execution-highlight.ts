@@ -23,10 +23,19 @@ import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 export interface ExecutionHighlight {
   /** 1-based line the band covers. */
   line: number;
-  /** live = the line being revealed during play (no gutter glyph);
+  /** live = the line being revealed during play (no gutter glyph) — also
+   *  every PRESENTED choice at a choice point (W11/#3304, the plural
+   *  case);
    *  paused = where the debugger halted (warning band + gutter arrow);
-   *  frame = a selected non-top stack frame (accent band + hollow arrow). */
-  kind: "live" | "paused" | "frame";
+   *  frame = a selected non-top stack frame (accent band + hollow arrow);
+   *  rejected = an authored choice NOT added to the block (dimmed, with
+   *  {@link ExecutionHighlight.note} rendered beside the line). */
+  kind: "live" | "paused" | "frame" | "rejected";
+  /** Why a `rejected` line was left out — rendered as a muted chip at
+   *  the line's end (e.g. "once-only · used", "condition false"). For
+   *  the by-elimination condition case, the extension enriches the
+   *  label with the line's own `{…}` condition text when present. */
+  note?: string;
   /**
    * The covering debug entry's exact byte range — reserved for
    * finer-than-line emphasis (expression-level entries, instruction
@@ -71,11 +80,21 @@ export function executionHighlightExtension(options: ExecutionHighlightOptions):
     const highlights = options.getExecutionHighlights();
     const decos = highlights
       .filter((h) => h.line >= 1 && h.line <= state.doc.lines)
-      .map((h) =>
-        Decoration.line({ class: `brink-exec-line brink-exec-${h.kind}` }).range(
-          state.doc.line(h.line).from,
-        ),
-      );
+      .map((h) => {
+        const line = state.doc.line(h.line);
+        let note = h.note;
+        if (h.kind === "rejected" && note === "condition false") {
+          // By-elimination enrichment (W11/#3304): show the line's own
+          // condition when the source carries one — `* {gold > 20} […]`
+          // reads as "gold > 20 = false".
+          const m = /^\s*[*+]\s*(?:\(\s*[\w.]+\s*\)\s*)?\{([^}]+)\}/.exec(line.text);
+          if (m) note = `${m[1].trim()} = false`;
+        }
+        return Decoration.line({
+          class: `brink-exec-line brink-exec-${h.kind}`,
+          attributes: note !== undefined ? { "data-brink-exec-note": note } : undefined,
+        }).range(line.from);
+      });
     // Decoration.set requires sorted ranges; hosts owe no ordering.
     return Decoration.set(decos, true);
   }
@@ -105,5 +124,19 @@ const executionHighlightTheme = EditorView.baseTheme({
   },
   ".brink-exec-frame": {
     backgroundColor: "rgb(var(--bs-accent-rgb, 59 130 246) / 10%)",
+  },
+  // Rejected choice (W11/#3304): dimmed line, reason chip at line end.
+  ".brink-exec-rejected": {
+    opacity: "0.55",
+  },
+  ".brink-exec-rejected::after": {
+    content: "attr(data-brink-exec-note)",
+    marginLeft: "12px",
+    padding: "0 5px",
+    fontSize: "85%",
+    fontStyle: "italic",
+    color: "var(--bs-fg-muted, #888)",
+    border: "1px solid var(--bs-border, #444)",
+    borderRadius: "3px",
   },
 });
