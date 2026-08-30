@@ -131,6 +131,87 @@ impl EditorSession {
         drafts
     }
 
+    /// JSON behind [`EditorSession::draft_glob_report`] —
+    /// `{ compiled, globs: [{ glob, drafts, in_story }] }`.
+    ///
+    /// [`Self::draft_paths`] answers "which files are drafts"; this answers
+    /// "what is each glob I wrote actually doing", which is the question the
+    /// settings list has to answer and cannot derive from the first. Two
+    /// things are invisible in a bare list of glob strings and both are
+    /// ordinary author mistakes:
+    ///
+    /// - a glob that matches **nothing** (a typo, or a folder since renamed)
+    ///   is indistinguishable from one that is working;
+    /// - a glob that matches a file the entry still reaches marks it in
+    ///   `in_story` rather than `drafts`, because of the "reachability wins"
+    ///   ruling (2026-08-27). The author wrote a glob and the file did not
+    ///   become a draft; without this split the settings view would show that
+    ///   glob as if it had taken effect.
+    ///
+    /// `compiled` is false before the first compile, when the closure is
+    /// empty and nothing is known to be unreachable yet — the same window
+    /// [`Self::draft_paths`] reports as empty. Every list is then empty too,
+    /// and a caller should say "not known yet" rather than "matches nothing":
+    /// those look identical in the data and mean opposite things.
+    ///
+    /// Globs come back in the order the author wrote them, and a file
+    /// matching two globs is listed under both — this is attribution, not a
+    /// partition.
+    pub(crate) fn draft_glob_report_json(&self) -> String {
+        serde_json::to_string(&self.draft_glob_report_inner()).unwrap_or_default()
+    }
+
+    fn draft_glob_report_inner(&self) -> DraftGlobReportJs {
+        let closure_paths = self.session.compilation_closure_paths();
+        let compiled = !closure_paths.is_empty();
+        // A set, not the `Vec` as returned: every glob tests every file
+        // against it, so a linear scan here would be cubic in the project.
+        let closure: std::collections::HashSet<&str> =
+            closure_paths.iter().map(String::as_str).collect();
+
+        // The author's own files, in one pass — every glob is tested against
+        // the same set. A mounted stdlib file is never the author's draft
+        // however the globs are spelled, matching `draft_path_list`.
+        let paths: Vec<&str> = if compiled {
+            self.session
+                .db()
+                .file_ids()
+                .filter(|id| !self.mounted_std_ids.contains(id))
+                .filter_map(|id| self.session.db().file_path(id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let globs = self
+            .draft_globs
+            .iter()
+            .map(|glob| {
+                let mut drafts = Vec::new();
+                let mut in_story = Vec::new();
+                for path in &paths {
+                    if !brink_project_config::globs::matches(path, glob) {
+                        continue;
+                    }
+                    if closure.contains(path) {
+                        in_story.push((*path).to_owned());
+                    } else {
+                        drafts.push((*path).to_owned());
+                    }
+                }
+                drafts.sort();
+                in_story.sort();
+                DraftGlobJs {
+                    glob: glob.clone(),
+                    drafts,
+                    in_story,
+                }
+            })
+            .collect();
+
+        DraftGlobReportJs { compiled, globs }
+    }
+
     fn project_outline_inner(&self) -> String {
         let db = self.session.db();
         let mut outline: Vec<FileOutlineJs> = Vec::new();
@@ -188,4 +269,23 @@ impl EditorSession {
 
         serde_json::to_string(&items).unwrap_or_default()
     }
+}
+
+/// One configured `[project] drafts` glob and what it currently matches.
+#[derive(serde::Serialize)]
+struct DraftGlobJs {
+    glob: String,
+    /// Files this glob makes drafts — matched and outside the compile closure.
+    drafts: Vec<String>,
+    /// Files it matches that the entry still reaches, so they are NOT drafts.
+    in_story: Vec<String>,
+}
+
+/// The report behind [`EditorSession::draft_glob_report`].
+#[derive(serde::Serialize)]
+struct DraftGlobReportJs {
+    /// False before the first compile — every list is empty because draft
+    /// status is not yet knowable, not because nothing matched.
+    compiled: bool,
+    globs: Vec<DraftGlobJs>,
 }

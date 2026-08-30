@@ -232,6 +232,32 @@ export interface EditSpan {
   insert: string;
 }
 
+/** What one `[project] drafts` glob currently matches (#3145). */
+export interface DraftGlobMatches {
+  /** The glob exactly as the author wrote it in `brink.toml`. */
+  glob: string;
+  /** Files this glob makes drafts — matched, and outside the compile closure. */
+  drafts: string[];
+  /**
+   * Files it matches that the entry still reaches, so they are NOT drafts
+   * ("reachability wins", 2026-08-27). A non-empty list here is a glob that
+   * looks like it took effect and did not.
+   */
+  inStory: string[];
+}
+
+/** See {@link EditorSessionHandle.getDraftGlobReport}. */
+export interface DraftGlobReport {
+  /**
+   * Whether a compile has happened. When false every list is empty because
+   * draft status is not yet knowable — which reads identically to "nothing
+   * matched" in the data and means the opposite.
+   */
+  compiled: boolean;
+  /** One entry per configured glob, in the order the author wrote them. */
+  globs: DraftGlobMatches[];
+}
+
 export class EditorSessionHandle {
   private session: WasmEditorSession;
   private mutationCount = 0;
@@ -1030,6 +1056,37 @@ export class EditorSessionHandle {
   getDraftPaths(): string[] {
     const json = this.session.draft_paths();
     return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Per-glob attribution for the `[project] drafts` list (#3145) — what
+   * each glob the author wrote is actually doing.
+   *
+   * {@link getDraftPaths} answers "which files are drafts"; this answers
+   * "did the glob I typed work", which a settings list has to show and
+   * cannot get from the first. Two ordinary mistakes are invisible without
+   * it: a glob that matches nothing (a typo) looks exactly like one that is
+   * working, and a glob matching a file the entry still reaches produces no
+   * draft at all under the "reachability wins" ruling — that file comes back
+   * in `inStory` instead, so the view can say why.
+   *
+   * `compiled` is false before the first compile, when every list is empty
+   * because nothing is known yet rather than because nothing matched.
+   */
+  getDraftGlobReport(): DraftGlobReport {
+    const json = this.session.draft_glob_report();
+    const raw = JSON.parse(json) as {
+      compiled: boolean;
+      globs: { glob: string; drafts: string[]; in_story: string[] }[];
+    };
+    return {
+      compiled: raw.compiled,
+      globs: raw.globs.map((g) => ({
+        glob: g.glob,
+        drafts: g.drafts,
+        inStory: g.in_story,
+      })),
+    };
   }
 
   /**

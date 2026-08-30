@@ -2167,6 +2167,27 @@ export class EditorSession {
   }
 
   /**
+   * Mock of `draft_glob_report` (#3145) — per-glob attribution for the
+   * Drafts settings view. Same conjunction as {@link draft_paths}, but kept
+   * per glob and with the reachable matches retained rather than dropped:
+   * `in_story` is exactly what the glob matched and did NOT make a draft.
+   */
+  draft_glob_report(): string {
+    const closure = new Set(JSON.parse(this.compilation_closure()) as string[]);
+    const compiled = closure.size > 0;
+    const paths = compiled
+      ? [...this.files.keys()].filter((path) => !this.readOnlyPaths.has(path))
+      : [];
+    const globs = this.draftGlobs.map((glob) => {
+      const matched = paths.filter((path) => matchesDraftGlob(path, [glob]));
+      const drafts = matched.filter((path) => !closure.has(path)).sort();
+      const inStory = matched.filter((path) => closure.has(path)).sort();
+      return { glob, drafts, in_story: inStory };
+    });
+    return JSON.stringify({ compiled, globs });
+  }
+
+  /**
    * Mock of `configured_entry` (issue #2331): the `[project] entry` value
    * from the most recently parsed `brink.toml`, or `undefined` if unset.
    */

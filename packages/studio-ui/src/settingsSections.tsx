@@ -25,6 +25,7 @@ import {
 import { LintSettings } from "./LintSettings.js";
 import { FormattingSettings } from "./FormattingSettings.js";
 import { ProseSettings } from "./ProseSettings.js";
+import { DraftSettings } from "./DraftSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 
 /**
@@ -39,9 +40,15 @@ export function settingsSections(groupId: string): SettingsSection[] {
       id: SETTINGS_SECTION_IDS.general,
       scope: "project",
       title: "General",
-      keywords: "brink.toml entry conventions dialect types indent drafts config project",
+      keywords:
+        "brink.toml entry conventions dialect types indent drafts draft scratch cut wip config project",
       icon: SETTINGS_ICONS.project,
-      body: <ProjectSection groupId={groupId} />,
+      body: (
+        <>
+          <DraftSettings />
+          <ProjectSection groupId={groupId} />
+        </>
+      ),
     },
     {
       id: SETTINGS_SECTION_IDS.formatting,
