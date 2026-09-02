@@ -48,6 +48,7 @@ function EditorTextMenu({
   const formGlyph = useStudioStore((s) => s.formGlyph);
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
   const showGutters = useStudioStore((s) => s.showGutters);
+  const showInlayHints = useStudioStore((s) => s.showInlayHints);
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
@@ -129,6 +130,7 @@ function EditorTextMenu({
           formGlyph,
           autoOpenForm,
           showGutters: !showGutters,
+          showInlayHints,
           fontSize: editorFontSize,
           appFontSize,
         });

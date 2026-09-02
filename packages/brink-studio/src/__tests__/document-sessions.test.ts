@@ -15,6 +15,7 @@ import {
   InMemoryFileProvider,
   documentHandleFacet,
   syncAnnotation,
+  DocHandle,
   type DocTarget,
   type DocumentCallbacks,
 } from "@brink-lang/editor";
@@ -762,6 +763,46 @@ describe("DocumentSessions", () => {
         ]);
       } finally {
         h.cleanup();
+      }
+    });
+  });
+
+  describe("inlay hints toggle across remount (#3350)", () => {
+    // `DocHandle.inlayHints` is stubbed to a fixed non-empty hint so this
+    // test pins the STATE-FIELD wiring (mount/unmount/setInlayHints) rather
+    // than depending on the real analyzer resolving a parameter hint — the
+    // mechanism under test is entirely in `inlayHintsEnabledField`'s
+    // on/off gate, not in what the callback returns.
+    const STUB_HINT = { offset: 0, label: "amount:", kind: "parameter", padding_right: true } as const;
+
+    function hintCount(view: EditorView): number {
+      return view.dom.querySelectorAll(".brink-inlay-hint").length;
+    }
+
+    it("a remounted CACHED view reflects the CURRENT setting, not the one it was unmounted with", async () => {
+      const stub = vi.spyOn(DocHandle.prototype, "inlayHints").mockReturnValue([STUB_HINT]);
+      try {
+        const mounted = harness.mount("main.ink", "group-1");
+        expect(hintCount(mounted.view)).toBeGreaterThan(0);
+
+        // Hide hints while the view is mounted (live push)...
+        harness.documents.setInlayHints(false);
+        expect(hintCount(mounted.view)).toBe(0);
+
+        // ...unmount (snapshots the OFF EditorState)...
+        mounted.dispose();
+
+        // ...then flip the setting back ON while the tab is backgrounded —
+        // there is no mounted view for the broadcast to reach.
+        harness.documents.setInlayHints(true);
+
+        // Remounting into a FRESH container reuses the cached (OFF) state
+        // (content is unchanged). The bug: mountView only ever pushed the
+        // OFF case, so a reused ON-turned-since-unmount state stayed hidden.
+        const again = harness.mount("main.ink", "group-1");
+        expect(hintCount(again.view)).toBeGreaterThan(0);
+      } finally {
+        stub.mockRestore();
       }
     });
   });

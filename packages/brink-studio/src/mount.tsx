@@ -1802,6 +1802,7 @@ export async function mountStudio(
     const editor = loadEditorSettings(window.localStorage);
     store.getState().setFormGlyph(editor.formGlyph);
     store.getState().setShowGutters(editor.showGutters);
+    store.getState().setShowInlayHints(editor.showInlayHints);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
     store.getState().setEditorFontSize(editor.fontSize);
     store.getState().setAppFontSize(editor.appFontSize);

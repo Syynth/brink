@@ -311,6 +311,9 @@ export interface EditorSettings {
   /** Editor gutters (line numbers, rails, fold/play). Default ON; also the
    *  interim WebKit latency escape hatch on large projects (#3119). */
   showGutters: boolean;
+  /** Inlay hints (`: string`-style type/name annotations, #3350). Default
+   *  ON (current behavior). */
+  showInlayHints: boolean;
   /** Editor text size in px (beta feedback 2026-08-25). Separate from any
    *  app-wide sizing: this is the prose you stare at, and authors want it
    *  bigger without inflating the chrome around it. */
@@ -324,6 +327,7 @@ const DEFAULT_EDITOR: EditorSettings = {
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
+  showInlayHints: true,
   fontSize: DEFAULT_EDITOR_FONT_SIZE,
   appFontSize: DEFAULT_APP_FONT_SIZE,
 };
@@ -347,6 +351,7 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     formGlyph?: unknown;
     autoOpenForm?: unknown;
     showGutters?: unknown;
+    showInlayHints?: unknown;
     fontSize?: unknown;
     appFontSize?: unknown;
   } | null;
@@ -356,6 +361,8 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     autoOpenForm: obj?.autoOpenForm === true,
     // Default ON: only an explicit false (a persisted opt-out) hides them.
     showGutters: obj?.showGutters !== false,
+    // Default ON (current behavior): only an explicit false hides hints.
+    showInlayHints: obj?.showInlayHints !== false,
     // Garbage, out-of-range, and absent all land on the default.
     fontSize: clampEditorFontSize(obj?.fontSize),
     appFontSize: clampAppFontSize(obj?.appFontSize),
@@ -710,6 +717,8 @@ export function EditorSection() {
   const setAutoOpenForm = useStudioStore((s) => s.setAutoOpenForm);
   const showGutters = useStudioStore((s) => s.showGutters);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
+  const showInlayHints = useStudioStore((s) => s.showInlayHints);
+  const setShowInlayHints = useStudioStore((s) => s.setShowInlayHints);
   const fontSize = useStudioStore((s) => s.editorFontSize);
   const setEditorFontSize = useStudioStore((s) => s.setEditorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
@@ -717,6 +726,7 @@ export function EditorSection() {
   const selectId = useId();
   const autoId = useId();
   const guttersId = useId();
+  const inlayHintsId = useId();
   const fontSizeId = useId();
   const appFontSizeId = useId();
 
@@ -726,6 +736,7 @@ export function EditorSection() {
       formGlyph: mode,
       autoOpenForm,
       showGutters,
+      showInlayHints,
       fontSize,
       appFontSize,
     });
@@ -736,6 +747,7 @@ export function EditorSection() {
       formGlyph,
       autoOpenForm: on,
       showGutters,
+      showInlayHints,
       fontSize,
       appFontSize,
     });
@@ -746,6 +758,18 @@ export function EditorSection() {
       formGlyph,
       autoOpenForm,
       showGutters: on,
+      showInlayHints,
+      fontSize,
+      appFontSize,
+    });
+  };
+  const onInlayHintsChange = (on: boolean): void => {
+    setShowInlayHints(on);
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm,
+      showGutters,
+      showInlayHints: on,
       fontSize,
       appFontSize,
     });
@@ -757,6 +781,7 @@ export function EditorSection() {
       formGlyph,
       autoOpenForm,
       showGutters,
+      showInlayHints,
       fontSize: next,
       appFontSize,
     });
@@ -768,6 +793,7 @@ export function EditorSection() {
       formGlyph,
       autoOpenForm,
       showGutters,
+      showInlayHints,
       fontSize,
       appFontSize: next,
     });
@@ -808,6 +834,22 @@ export function EditorSection() {
           description="Line numbers, structure rails, and the fold and play markers."
         >
           <SettingsToggle id={guttersId} checked={showGutters} onChange={onGuttersChange} />
+        </SettingsRow>
+        <SettingsRow
+          htmlFor={inlayHintsId}
+          title="Show inlay hints"
+          description={
+            <>
+              Inline type and name annotations (e.g. the <code>: string</code> after a
+              variable). Applies live to every open editor.
+            </>
+          }
+        >
+          <SettingsToggle
+            id={inlayHintsId}
+            checked={showInlayHints}
+            onChange={onInlayHintsChange}
+          />
         </SettingsRow>
         <SettingsRow
           title="Editor font size"
