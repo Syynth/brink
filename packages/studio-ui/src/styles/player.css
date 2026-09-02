@@ -915,7 +915,7 @@
 .brink-studio .player .player-line-row,
 .brink-studio .player .player-run-cue,
 .brink-studio .player .player-start-marker {
-  animation: player-row-in 240ms ease-out both;
+  animation: player-row-in 400ms ease-out both;
 }
 @media (prefers-reduced-motion: reduce) {
   .brink-studio .player .player-line-row,
