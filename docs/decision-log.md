@@ -4513,3 +4513,34 @@
   because several commands ship two or three defaults specifically to
   dodge browser-reserved chords (#107); flattening them in the editor
   would re-break what those alternates were added to fix.
+
+
+## Uninitialized `~ temp` reads play, and warn twice
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler+runtime
+- **SCOPE:** moderate
+- **WHAT:** A `~ temp` used on a path its declaration does not dominate is
+  handled in both halves of the pipeline, not one. (1) The compiler emits
+  `E193`, a warning-level, `[lints]`-overridable diagnostic naming the use
+  site and the declaration, for each of four shapes: a sibling choice
+  branch, a gather reached before the declaring branch, a read written
+  textually ahead of the declaration, and a stitch referencing a temp
+  declared at its knot's root. (2) The runtime reads an uninitialized temp
+  slot as the typed default (`0`, which is also `false`) and reports a
+  runtime warning through the diagnostics/output channel, instead of
+  pushing a `Null` that faults on the next operator. (3) Alongside those,
+  every such reference — textually-preceding reads and stitch references
+  included — resolves to the temp's own slot, never to a phantom global
+  that fails at link with `unresolved global` (issue #3362). The ruling is
+  recorded in `docs/compiler-spec.md` "Temp scope and definite assignment"
+  and `docs/runtime-spec.md` "Uninitialized temp reads".
+- **WHY:** What plays in Inky must play in brink — the C# reference prints
+  the line and warns (`Variable not found: 'n'. Using default value of 0
+  (false)…`), so an author who tests in Inky and then opens brink was
+  meeting a hard fault where the reference had a warning, which breaches
+  the ink-compat floor. The compile-time diagnostic is the primary fix
+  rather than the runtime fallback alone, because the author should learn
+  about the mistake before playing, and a warning that a `[lints]` entry
+  can turn down leaves a project that leans on the pattern deliberately
+  somewhere to go.

@@ -526,38 +526,59 @@ fn step_impl<R: crate::rng::StoryRng>(
                 .get(slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
-            match val {
-                Value::VariablePointer(target_id) => {
-                    let global_idx = program
-                        .resolve_global(target_id)
-                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                    let global_val = context.global(global_idx).clone();
-                    flow.value_stack.push(global_val);
-                }
-                Value::TempPointer {
-                    slot: target_slot,
-                    frame_depth,
-                } => {
-                    let thread = flow.current_thread();
-                    let target = thread
-                        .call_stack
-                        .get(frame_depth as usize)
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
-                    let target_val = target
-                        .temps
-                        .get(target_slot as usize)
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    flow.value_stack.push(target_val);
-                }
-                // T1e: a projection-bound `ref` parameter's read — same
-                // additive-only reasoning as `SetTemp`'s new arm above.
-                Value::Projection(p) => {
-                    let result = proj_ops::read(program, &*context, p.cell, &p.segments)?;
-                    flow.value_stack.push(result);
-                }
-                _ => {
-                    flow.value_stack.push(val);
+            // Issue #3354 (RULED 2026-09-01 option C): a slot that the
+            // declaring `~ temp` has not written yet — either past the end
+            // of this frame's `temps` (never touched) or still holding the
+            // `Value::Null` padding `SetTemp` grows the vector with — reads
+            // as ink's missing-variable default rather than as a `Null`
+            // that faults on the next operator. That fault is what made
+            // `#3354`'s repro die with `cannot apply Add to Null and Int`
+            // where the C# runtime prints the line and warns; matching the
+            // reference keeps the ink-compat floor honest. The warning is
+            // the author-facing half at runtime; `E193` is the one that
+            // fires at compile time, before they ever play.
+            //
+            // Deliberately only on this opcode: `GetTempRaw` exists to see
+            // a slot exactly as it is (pointers included), and `TakeTemp`
+            // leaves `Null` behind by design, so neither may substitute.
+            if matches!(val, Value::Null) {
+                let name = uninitialized_temp_name(flow, program, slot);
+                flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
+                flow.value_stack.push(Value::Int(0));
+            } else {
+                match val {
+                    Value::VariablePointer(target_id) => {
+                        let global_idx = program
+                            .resolve_global(target_id)
+                            .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                        let global_val = context.global(global_idx).clone();
+                        flow.value_stack.push(global_val);
+                    }
+                    Value::TempPointer {
+                        slot: target_slot,
+                        frame_depth,
+                    } => {
+                        let thread = flow.current_thread();
+                        let target = thread
+                            .call_stack
+                            .get(frame_depth as usize)
+                            .ok_or(RuntimeError::CallStackUnderflow)?;
+                        let target_val = target
+                            .temps
+                            .get(target_slot as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        flow.value_stack.push(target_val);
+                    }
+                    // T1e: a projection-bound `ref` parameter's read — same
+                    // additive-only reasoning as `SetTemp`'s new arm above.
+                    Value::Projection(p) => {
+                        let result = proj_ops::read(program, &*context, p.cell, &p.segments)?;
+                        flow.value_stack.push(result);
+                    }
+                    _ => {
+                        flow.value_stack.push(val);
+                    }
                 }
             }
         }
@@ -1575,6 +1596,29 @@ pub(crate) fn note_value_share(_val: &Value) {}
 // dereference time, to match the static analyzer's own call-site model).
 // No-op — the scope lookup itself compiles out — unless the `effect-trace`
 // feature is enabled.
+/// Author-facing name for a temp slot read before its declaring `~ temp`
+/// ran, for [`crate::RuntimeWarning::UninitializedTemp`] (issue #3354).
+///
+/// Resolved through the story's optional `DebugInfo` locals table
+/// (`docs/debugger-spec.md` §2.2) — the only place a compiled artifact
+/// pairs a slot number with the name the author wrote, since
+/// `Opcode::GetTemp` carries the slot alone. Debug info is opt-in at
+/// codegen (`brink_codegen_inkb::EmitOptions::emit_debug_info`), so a story
+/// built without it reports the slot instead. That is a rendering
+/// difference only: `E193`, the compile-time half of this rule, always
+/// names the variable, and it is the half an author is meant to read.
+fn uninitialized_temp_name(flow: &Flow, program: &Program, slot: u16) -> String {
+    if let Ok(pos) = current_position(flow)
+        && let Some(entry) = program
+            .scope_debug_locals(pos.container_idx)
+            .into_iter()
+            .find(|local| local.slot == slot)
+    {
+        return format!("'{}'", entry.name);
+    }
+    format!("temp slot {slot}")
+}
+
 #[cfg(feature = "effect-trace")]
 fn effect_trace_current_def(flow: &Flow, program: &Program) -> Option<DefinitionId> {
     let pos = current_position(flow).ok()?;
@@ -3341,6 +3385,7 @@ mod tests {
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
             pending_terminal: PendingTerminal::default(),
+            warnings: Vec::new(),
         }
     }
 

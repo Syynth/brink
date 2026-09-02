@@ -381,6 +381,17 @@ pub(crate) struct Flow {
     /// [`PendingTerminal`] for the invalidation invariant this type
     /// enforces.
     pub pending_terminal: PendingTerminal,
+    /// Non-fatal conditions this flow reported while running (issue #3354),
+    /// drained by the host through
+    /// [`FlowInstance::take_runtime_warnings`](crate::FlowInstance::take_runtime_warnings).
+    ///
+    /// Lives on the flow rather than on [`super::Stats`] because it is
+    /// execution *output*, not a counter, and because every VM site that
+    /// can raise one already holds `&mut Flow` — no new parameter has to be
+    /// threaded through `vm::step` for it. Capped at
+    /// [`crate::RUNTIME_WARNING_CAP`] entries between drains
+    /// ([`Self::warn`]).
+    pub warnings: Vec<crate::error::RuntimeWarning>,
 }
 
 /// A terminal computed for the current run but held back because its
@@ -463,6 +474,16 @@ pub(crate) struct PureCallbackState {
 }
 
 impl Flow {
+    /// Record a non-fatal runtime condition, up to
+    /// [`crate::RUNTIME_WARNING_CAP`] entries between drains. Beyond the
+    /// cap the warning is dropped rather than growing the list without
+    /// bound — the earlier entries already say what the author needs.
+    pub fn warn(&mut self, warning: crate::error::RuntimeWarning) {
+        if self.warnings.len() < crate::RUNTIME_WARNING_CAP {
+            self.warnings.push(warning);
+        }
+    }
+
     /// Returns a reference to the current (topmost) thread.
     ///
     /// # Panics

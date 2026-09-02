@@ -2055,6 +2055,23 @@ pub enum DiagnosticCode {
     /// `Warning`-tier: the file still compiles. The harm is that a
     /// suppression the author believes is in force is not.
     E192,
+
+    /// A `~ temp` is read on a path its declaration does not dominate
+    /// (#3354, RULED 2026-09-01 option C).
+    ///
+    /// The declaration and the read live in the same call frame, so the
+    /// read resolves to the temp's own slot — but nothing guarantees the
+    /// declaring statement ran first. The four shapes the ruling names are
+    /// a sibling choice branch, a gather reached from a branch that did not
+    /// declare, a read written textually ahead of the declaration, and a
+    /// stitch reading a temp declared at its knot's root.
+    ///
+    /// `Warning`-tier, `[lints]`-overridable: the story still runs. The
+    /// runtime reads an uninitialized slot as ink's missing-variable
+    /// default (`0`, which is also `false`) and warns — matching the C#
+    /// reference, so what plays in Inky plays in brink — and this
+    /// diagnostic is what tells the author before they play.
+    E193,
 }
 
 impl DiagnosticCode {
@@ -2259,6 +2276,7 @@ impl DiagnosticCode {
         Self::E190,
         Self::E191,
         Self::E192,
+        Self::E193,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2460,6 +2478,7 @@ impl DiagnosticCode {
             Self::E190 => "E190",
             Self::E191 => "E191",
             Self::E192 => "E192",
+            Self::E193 => "E193",
         }
     }
 
@@ -2792,6 +2811,7 @@ impl DiagnosticCode {
             Self::E192 => {
                 "unrecognized `brink-` directive comment — it suppresses nothing as written"
             }
+            Self::E193 => "`temp` read on a path its declaration does not dominate",
         }
     }
 
@@ -2863,7 +2883,14 @@ impl DiagnosticCode {
             // E192 (#3259): a directive that suppresses nothing is a
             // warning, not an error — the file still compiles, and the harm
             // is a suppression the author thinks is in force but is not.
-            | Self::E192 => Severity::Warning,
+            | Self::E192
+            // E193 (#3354, RULED 2026-09-01 option C): a temp read that its
+            // declaration does not dominate is a warning, not an error —
+            // the story still plays (the runtime reads ink's
+            // missing-variable default and warns), and the ruling asks
+            // specifically for a `[lints]`-overridable warning so a project
+            // that leans on the pattern deliberately can turn it down.
+            | Self::E193 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -3156,6 +3183,7 @@ impl DiagnosticCode {
             "E190" => Some(Self::E190),
             "E191" => Some(Self::E191),
             "E192" => Some(Self::E192),
+            "E193" => Some(Self::E193),
             _ => None,
         }
     }

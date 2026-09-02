@@ -89,7 +89,7 @@ The confusing part is that the declaration is still sitting right there in the s
 
 This mechanism is shared LIR lowering, reached from both source surfaces: ink's own `~ { … }` block syntax, and the native `.brink` surface's own code-ground logic blocks, which lower through the identical scope-tracking pass (see the native lowering's own cross-reference to this exact E082 arm in `hir::lower_native::body::mark_split_logic_block_scopes`'s doc comment, guarding a `> text` prose-line split against attributing a later read to the wrong block).
 
-**Plain classic temps behave differently.** A *classic* `temp` — one declared directly in a knot/stitch body, not inside a nested block — used before its own declaring statement is a genuine forward reference, and lowering treats it as inklecate-compat territory: it emits a hashed `GetGlobal`/`RefGlobal` id (matching how the converter's own hashing works) with **no compile diagnostic at all**, matching inklecate's own behavior of failing only at link/run time. A block-scoped temp read after its block closes gets the opposite treatment on purpose — it is unambiguously a real defect, not a forward-reference pattern inklecate ever tolerated, so it is refused at compile time instead of silently deferred to a runtime fault (the #680 root cause this diagnostic replaced)."#,
+**Plain classic temps behave differently.** A *classic* `temp` — one declared directly in a knot/stitch body, not inside a nested block — used before its own declaring statement is a forward reference on the flow graph, not a lexical-scope defect: it lives in the same call frame, so since issue #3362 it resolves to that frame's own slot (`temp_slot_raw`) and is reported as [E193](E193.md), a `[lints]`-overridable warning, while the runtime reads the still-unset slot as ink's missing-variable default. (Until #3362 it emitted a hashed `GetGlobal`/`RefGlobal` id — matching how the converter's own hashing works — with no compile diagnostic at all, which failed at link with `unresolved global`.) A block-scoped temp read after its block closes gets the opposite treatment on purpose — it is unambiguously a real defect, and one that was never expressible in inklecate at all, so it is refused at compile time instead of deferred to a runtime fault (the #680 root cause this diagnostic replaced)."#,
     ),
     (
         DiagnosticCode::E156,
@@ -441,5 +441,57 @@ The consequence nothing diagnosed before this code existed: a project that decla
 - **The generic heads** (`List`/`Array`/`Map`/`Option`/`Weighted`/`Handle`). These names are special-cased only inside `TypeExpr::Generic`'s own dispatch (`Array<T>`, with angle brackets) — a *bare* `Named` reference to a struct sharing one of those names (`f: Array`, no `<...>`) still falls through to the ordinary `names.structs.contains(name)` arm and resolves to the struct correctly. There is no real collision for `resolve` to have, so `E188` never fires for a `STRUCT Array = #{...}`-shaped declaration. (Structs are never generic, so there is no way to write `Array<T>` meaning "a struct named Array parameterized by T" in the first place — the collision the generic-head special case exists to arbitrate simply cannot arise for a struct.)
 - **`void`**. Unlike the scalar leaves, `resolve`'s `Named` arm has no explicit `"void"` case at all — an unmatched name falls straight through to the struct-lookup arm. A `STRUCT void = #{...}` therefore resolves fine through a bare annotation; `E188` never fires for it.
 - **Declared `LIST` names or registered `Handle<K>` kinds.** `names.lists`/`names.handles` are only ever consulted inside `List<L>`/`Handle<K>`'s own generic-argument position, never against a bare `Named` annotation — a different namespace from `names.structs` entirely, with nothing to collide."#,
+    ),
+    (
+        DiagnosticCode::E193,
+        r#"A classic `~ temp` belongs to its knot's **call frame**, not to a lexical
+block. Every read anywhere in that frame — the knot body, any choice branch,
+the gather, any of the knot's stitches — resolves to the same slot. What
+resolution alone cannot say is whether the declaring statement has *run* by
+the time a given read executes.
+
+`brink_analyzer::temp_dominance` answers that structurally, over the HIR
+block tree, with no control-flow graph:
+
+> a `~ temp` declaration `D` sitting directly in block `B` dominates exactly
+> those reads that lie inside `B`'s own subtree and start at or after `D`'s
+> end.
+
+Reaching any point in `B`'s subtree past `D` means executing `B`'s
+statements in order through `D` first, so nesting below `D` — a choice set,
+a conditional, a labeled gather — is still behind it. Everything else in the
+frame is a different block's subtree, which is what makes all four of the
+ruled shapes fall out of one rule:
+
+1. a sibling choice branch declares it, another one reads it;
+2. a gather is reached from a branch that did not declare it;
+3. the read is written textually ahead of the declaration;
+4. a stitch reads a temp declared at its knot's root.
+
+The rule deliberately does not model diverts. A `-> knot.stitch` that jumps
+over a declaration is shape 4 and is already covered; a divert that re-enters
+a gather inside the same frame *after* the declaration ran is not a defect
+and is not reported.
+
+**Why it is a warning and not an error.** The C# reference runtime prints
+`RUNTIME WARNING: Variable not found: 'n'. Using default value of 0 (false).
+This can happen with temporary variables if the declaration hasn't yet been
+hit.` and keeps playing, which is why the pattern reaches authors as "it
+works fine in Inky". Brink now plays it the same way — `Opcode::GetTemp`
+reads an unset slot as `0` and raises a `brink_runtime::RuntimeWarning`
+through the same channel — so the ink-compat floor stays honest, and this
+diagnostic is the half that arrives before the author ever presses play.
+(RULED 2026-09-01, option C on issue #3354; `docs/compiler-spec.md` "Temp
+scope and definite assignment" and `docs/runtime-spec.md` "Uninitialized temp
+reads".)
+
+**What does not fire.** A knot or stitch *parameter* is bound at call time,
+so a name that is also a parameter of its enclosing definition is never
+reported — matching `lir::lower::temps::alloc_temps`, which gives the
+parameter the slot and lets a same-named `~ temp` write through it. A plain
+assignment target (`~ n = 1`) is a write, not a read. A `temp` declared
+inside a `~ { … }` block is [`E082`](E082.md)'s subject — a lexical-scope
+defect, not a definite-assignment one. Reads inside a lambda body are skipped
+because the lambda's own parameters shadow the enclosing frame."#,
     ),
 ];

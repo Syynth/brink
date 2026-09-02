@@ -37,6 +37,7 @@ mod resolve;
 mod signature;
 mod strict;
 mod structs;
+mod temp_dominance;
 mod type_resolution;
 mod ufcs;
 mod validate;
@@ -803,6 +804,13 @@ pub fn per_file_diagnostics(
     // argument as `dialect_gate`: the resolution records consulted always
     // carry this file's own id.
     out.extend(option_rules::check(&files, file_resolutions));
+    // E193 (#3354, RULED 2026-09-01 option C): a classic `~ temp` read on a
+    // path its declaration does not dominate. Dialect- and
+    // surface-independent — the mistake is a property of the weave, and
+    // both frontends produce the same block tree for it. Per-file by
+    // construction: a temp lives in one knot's call frame, and a knot's
+    // body lives in exactly one file.
+    out.extend(temp_dominance::check(file, hir));
     // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected

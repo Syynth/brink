@@ -136,6 +136,7 @@ impl FlowInstance {
                 pure_callback: crate::story::PureCallbackState::default(),
                 next_block_id: 0,
                 pending_terminal: PendingTerminal::default(),
+                warnings: Vec::new(),
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -817,6 +818,17 @@ impl FlowInstance {
     #[must_use]
     pub fn stats(&self) -> &Stats {
         &self.stats
+    }
+
+    /// Take every non-fatal [`crate::RuntimeWarning`] this flow has raised
+    /// since the last drain, leaving the list empty (issue #3354).
+    ///
+    /// Draining rather than borrowing is deliberate: a host that prints
+    /// warnings as it plays wants each one once, and a host that ignores
+    /// them wants the list not to grow. Accumulation between drains is
+    /// capped at [`crate::RUNTIME_WARNING_CAP`].
+    pub fn take_runtime_warnings(&mut self) -> Vec<crate::RuntimeWarning> {
+        core::mem::take(&mut self.flow.warnings)
     }
 
     /// The full append-only transcript of all output parts produced so far.

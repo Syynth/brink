@@ -368,7 +368,8 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E188`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E193`, with
+`E177` reserved and unused) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -591,6 +592,41 @@ through the real native driver.
 | [`E186`](diagnostics/E186.md) | A `@[convention(…)]` declaration combines `block` and `attach = StructName` on the same handler — mutually exclusive clauses. |
 | [`E187`](diagnostics/E187.md) | A write to a `CONST` — plain/compound assignment, postfix `++`/`--`, an indexed/field/mutator write whose root is a `CONST`, or passing it by `ref`. Mirrors ink's own compile-time rejection of `CONST` reassignment. |
 | [`E188`](diagnostics/E188.md) | A declared `STRUCT`'s own name collides with a builtin leaf (`int`/`float`/`bool`/`string`/`content`/`divert`) or an NS-A8 tower kind — `annotations::resolve` checks those before consulting declared struct names, so a bare type annotation spelling the colliding name always resolves to the builtin/tower type, never the struct. Warning: the declaration still compiles and constructs normally. |
+| [`E193`](diagnostics/E193.md) | A classic `~ temp` (native `~ let`) is read on a path its declaration does not dominate — a sibling choice branch, a gather reached from a branch that did not declare it, a read written textually ahead of the declaration, or a stitch reading a temp declared at its knot's root. Warning, `[lints]`-overridable: the story compiles and plays, reading the unset slot as ink's missing-variable default. See "Temp scope and definite assignment" below. |
+
+## Temp scope and definite assignment
+
+RULED 2026-09-01 (issue #3354, option C; `docs/decision-log.md` "Uninitialized
+`~ temp` reads play, and warn twice"). This section owns the compile-time half;
+`docs/runtime-spec.md` "Uninitialized temp reads" owns the runtime half.
+
+A classic `~ temp` belongs to its knot's **call frame**, not to a lexical
+block. `lir::lower::temps::alloc_temps` walks the whole frame — the knot body
+plus every stitch body — before lowering begins, so the slot for a name exists
+regardless of where in the frame the declaring statement sits. Three
+consequences the compiler now honors uniformly:
+
+1. **Every reference in the frame names that slot** (issue #3362). A read
+   written textually ahead of the `~ temp`, an assignment to it, a `ref`
+   argument passing it, and a stitch referring to a temp declared at its knot's
+   root all resolve to the frame's slot via `LowerCtx::temp_slot_raw` — the
+   visibility-free lookup — rather than to a name-hashed `GlobalVar` id no
+   global table ever registers. That phantom id is what made such a program
+   compile clean and then die at its first step with `unresolved global: $02_…`.
+   The one remaining fallback to the hashed id is a lambda body's reference to
+   a name borrowed from the enclosing frame, which has no slot of its own in
+   the lambda's `TempMap`.
+2. **A reference the declaration does not dominate is `E193`**, a
+   `[lints]`-overridable warning naming both the read and the declaration.
+   Dominance is decided structurally, over the HIR block tree
+   (`brink_analyzer::temp_dominance`): a declaration `D` sitting directly in
+   block `B` dominates exactly the reads inside `B`'s own subtree that start at
+   or after `D`'s end. Parameters, plain assignment targets, block-scoped
+   (`~ { … }`) temps — [`E082`](diagnostics/E082.md)'s subject — and reads
+   inside lambda bodies are outside the rule; see `E193`'s own page.
+3. **The program still runs.** `E193` is a warning precisely because the
+   runtime now answers an unset slot the way the C# reference does, so what
+   plays in Inky plays in brink.
 
 ## Known limitations
 

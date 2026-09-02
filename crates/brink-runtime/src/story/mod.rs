@@ -819,6 +819,18 @@ impl<R: StoryRng> Story<R> {
         &self.default.stats
     }
 
+    /// Take every non-fatal [`crate::RuntimeWarning`] the default flow has
+    /// raised since the last drain (issue #3354) — the channel an
+    /// uninitialized-`~ temp` read reports through, matching the C#
+    /// reference's own `RUNTIME WARNING` line.
+    ///
+    /// Default flow only, mirroring [`Story::stats`]: a named or shared
+    /// flow is drained through its own
+    /// [`FlowInstance::take_runtime_warnings`].
+    pub fn take_runtime_warnings(&mut self) -> Vec<crate::RuntimeWarning> {
+        self.default.take_runtime_warnings()
+    }
+
     /// Returns `true` if the default flow has a pending external call
     /// (an `External` frame on top of the call stack).
     pub fn has_pending_external(&self) -> bool {
