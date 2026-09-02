@@ -61,12 +61,18 @@ fn brink_with_own_conventions(label: &str, source: &str) -> (brink_format::Story
         dir.display()
     );
     let wrote_source = std::fs::write(dir.join("story.brink"), source);
-    assert!(wrote_source.is_ok(), "write scratch source: {wrote_source:?}");
+    assert!(
+        wrote_source.is_ok(),
+        "write scratch source: {wrote_source:?}"
+    );
     let wrote_toml = std::fs::write(
         dir.join("brink.toml"),
         "[project]\nconventions = \"story.brink\"\n",
     );
-    assert!(wrote_toml.is_ok(), "write scratch brink.toml: {wrote_toml:?}");
+    assert!(
+        wrote_toml.is_ok(),
+        "write scratch brink.toml: {wrote_toml:?}"
+    );
     let result = compile_entry_to_inkb(&dir.join("story.brink"));
     std::fs::remove_dir_all(&dir).ok();
     assert!(result.is_ok(), "compile {label}/story.brink: {result:?}");
@@ -390,7 +396,10 @@ fn a_one_sided_fault_is_named_fault_asymmetry_not_a_bare_terminal_diff() {
     let (_, p) = ink("fault-kind-a", "~ temp z = 0\n~ temp y = 5 / z\n-> END\n");
     let (_, q) = ink("fault-kind-b", "~ temp z = 0\n~ temp y = 5\n-> END\n");
     let diff = diff_over_p_runs(&p, &q, &TraceConfig::default());
-    assert!(!diff.is_empty(), "expected a divergence, oracle reported {diff}");
+    assert!(
+        !diff.is_empty(),
+        "expected a divergence, oracle reported {diff}"
+    );
     let first = diff.first().expect("just asserted the diff is non-empty");
     assert!(
         matches!(first.kind, DivergenceKind::FaultAsymmetry { .. }),
