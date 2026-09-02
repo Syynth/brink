@@ -1475,24 +1475,12 @@
 }
 
 /* ── Conventions: teach by example (#3411) ───────────────────────────
-   Two columns — the lines you mark, and how the Player will read them —
-   then what the studio learned. The typeahead reuses the Player
-   launcher's `pl-typeahead` metrics so the two pickers are one control. */
-.brink-studio .conv-editor {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
-.brink-studio .conv-lines {
-  flex: 1 1 60%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
+   Stacked, in the order the author works (ruled 2026-09-02): the passage
+   you pick, the lines you mark, what the studio learned, then how it
+   reads in the Player. The typeahead reuses the Player launcher's
+   `pl-typeahead` metrics so the two pickers are one control. */
+.brink-studio .conv-lines,
 .brink-studio .conv-preview {
-  flex: 1 1 40%;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1510,15 +1498,44 @@
 .brink-studio .conv-picker .settings-preview-input {
   flex: 1;
 }
+/* The whole outline can be long: the list scrolls under the field. */
+.brink-studio .conv-picker .pl-typeahead-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
 .brink-studio .conv-line-count {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .conv-choices-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .conv-choices-toggle input {
+  accent-color: var(--bs-accent);
+  margin: 0;
+}
+.brink-studio .conv-line-badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  font-size: var(--bs-font-micro);
+  letter-spacing: 0.04em;
   color: var(--bs-fg-muted);
 }
 /* Bounded and scrolling (ruled 2026-09-02): the whole passage is here. */
 .brink-studio .conv-line-list {
   display: flex;
   flex-direction: column;
-  max-height: 232px;
+  max-height: 260px;
   overflow-y: auto;
   padding: 4px;
   background: var(--bs-editor-bg);

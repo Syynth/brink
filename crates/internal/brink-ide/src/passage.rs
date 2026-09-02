@@ -79,6 +79,9 @@ pub fn passage_lines(
 
     let mut out = Vec::new();
     let mut offset = 0usize;
+    // Depth of multi-line `{ cond: … }` blocks, counted over the logic
+    // lines that open and close them (never over inline `{x}` in prose).
+    let mut cond_depth = 0usize;
     for (line_no, raw) in source.split_inclusive('\n').enumerate() {
         let line_start = offset;
         offset += raw.len();
@@ -91,14 +94,30 @@ pub fn passage_lines(
         if ctx.block_comment {
             continue;
         }
+        let line = raw.trim_end_matches(['\n', '\r']);
+        if matches!(ctx.element, LineElement::Logic | LineElement::Blank) {
+            let opens = line.matches('{').count();
+            let closes = line.matches('}').count();
+            cond_depth = (cond_depth + opens).saturating_sub(closes);
+        }
         let origin = match ctx.element {
             LineElement::Narrative => PassageOrigin::Line,
             LineElement::Choice => PassageOrigin::Choice,
             LineElement::Gather => PassageOrigin::Gather,
             _ => continue,
         };
-        let line = raw.trim_end_matches(['\n', '\r']);
-        let (text, tags) = split_tags(strip_scaffolding(line, origin));
+        let mut stripped = strip_scaffolding(line, origin);
+        // Inside a multi-line conditional, a `- cond: text` / `- else: text`
+        // branch line is a header, not prose (ruled 2026-09-02): its
+        // condition is never dialogue, and its colon would tempt a
+        // `Name:` rule. Keep only the content after the colon.
+        if cond_depth > 0
+            && origin == PassageOrigin::Gather
+            && let Some((_, rest)) = stripped.split_once(':')
+        {
+            stripped = rest.trim();
+        }
+        let (text, tags) = split_tags(stripped);
         if text.is_empty() {
             continue;
         }
@@ -309,6 +328,26 @@ Nothing here.
     fn unknown_paths_resolve_to_none() {
         assert!(lines_for(SRC, "nave").is_none());
         assert!(lines_for(SRC, "chapel.nave").is_none());
+    }
+
+    #[test]
+    fn conditional_branch_headers_keep_only_their_content() {
+        let src = "=== k ===\nHello.\n{ golem_hp > 8:\n    It stands.\n- golem_hp > 4: A crack.\n- else: It falls.\n}\n{ seen:\n  - Yes.\n  - No.\n}\n- (after) Lisa: Well?\n";
+        let got = lines_for(src, "k").expect("knot resolves");
+        let texts: Vec<&str> = got.iter().map(|(t, ..)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Hello.",
+                "It stands.",
+                "A crack.",
+                "It falls.",
+                "Yes.",
+                "No.",
+                "Lisa: Well?"
+            ],
+            "branch conditions are never lines; a gather outside a conditional keeps its colon"
+        );
     }
 
     #[test]

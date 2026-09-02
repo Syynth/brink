@@ -70,11 +70,18 @@ export function ConventionsSettings() {
   const [version, bump] = useReducer((x: number) => x + 1, 0);
 
   const [query, setQuery] = useState("");
+  // Clicking into the field lists every knot and stitch before you type
+  // (maintainer, 2026-09-02); typing narrows.
+  const [listOpen, setListOpen] = useState(false);
   const [passage, setPassage] = useState<Passage | null>(null);
   const [pasting, setPasting] = useState(false);
   const [pasted, setPasted] = useState("");
   const [marks, setMarks] = useState<ReadonlyMap<number, Mark>>(new Map());
   const [replaceAsk, setReplaceAsk] = useState<DialogueSection | null>(null);
+  // Choice text is the player's options far more often than dialogue, so
+  // it is hidden by default (ruled 2026-09-02) — but reachable, because the
+  // ink docs' own sub-format puts the cue inside choice text.
+  const [includeChoices, setIncludeChoices] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const configPath = useMemo(
@@ -101,14 +108,15 @@ export function ConventionsSettings() {
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (q === "") return [];
-    return symbols.filter((s) => s.path.toLowerCase().includes(q)).slice(0, 8);
-  }, [symbols, query]);
+    if (q === "") return listOpen ? symbols : [];
+    return symbols.filter((s) => s.path.toLowerCase().includes(q));
+  }, [symbols, query, listOpen]);
 
   const pick = (hit: SymbolHit): void => {
     const project = storeApi.getState()._project;
     const lines = project?.passageLines(hit.path) ?? null;
     setQuery("");
+    setListOpen(false);
     setPasting(false);
     setMarks(new Map());
     setStatus(null);
@@ -132,18 +140,34 @@ export function ConventionsSettings() {
     setPasting(false);
   };
 
+  // Which passage lines are shown (and taught from): choice text only
+  // when asked for. Marks are keyed by the passage index, so toggling the
+  // choices does not shuffle them.
+  const visible: number[] = useMemo(
+    () =>
+      (passage?.lines ?? []).flatMap((l, i) =>
+        l.origin === "choice" && !includeChoices ? [] : [i],
+      ),
+    [passage, includeChoices],
+  );
+  const hiddenChoices = (passage?.lines.length ?? 0) - visible.length;
+
   const marked: MarkedLine[] = useMemo(
     () =>
-      (passage?.lines ?? []).map((l, i) => {
+      visible.map((i) => {
+        const l = passage!.lines[i];
         const mark = marks.get(i);
         return { text: l.text, tags: l.tags, origin: l.origin, ...(mark ? { mark } : {}) };
       }),
-    [passage, marks],
+    [passage, visible, marks],
   );
 
+  // Only marks on VISIBLE lines teach: a mark left on a hidden choice line
+  // must not keep the inference alive.
+  const taught = marked.some((l) => l.mark !== undefined);
   const inference: Inference | null = useMemo(
-    () => (marks.size === 0 ? null : inferDialect(marked)),
-    [marked, marks.size],
+    () => (taught ? inferDialect(marked) : null),
+    [marked, taught],
   );
 
   // Preview: the passage as the Player would fold it, under the proposed
@@ -155,9 +179,10 @@ export function ConventionsSettings() {
     // cue shows up as its own `<>` row under the speaker header.
     const lines: TranscriptLine[] = [];
     let carry: { text: string; tags: string[] } | null = null;
-    for (const l of passage?.lines ?? []) {
-      const text = carry === null ? l.text : carry.text + l.text;
-      const tags = carry === null ? l.tags : [...carry.tags, ...l.tags];
+    for (const i of visible) {
+      const l = passage!.lines[i];
+      const text: string = carry === null ? l.text : carry.text + l.text;
+      const tags: string[] = carry === null ? l.tags : [...carry.tags, ...l.tags];
       if (text.endsWith("<>")) {
         carry = { text: text.slice(0, -2), tags };
         continue;
@@ -167,13 +192,13 @@ export function ConventionsSettings() {
     }
     if (carry !== null) lines.push({ text: carry.text, kind: "line", tags: carry.tags });
     return foldPlayerRuns(lines, previewDialect);
-  }, [passage, previewDialect]);
+  }, [passage, visible, previewDialect]);
 
   const flagged = useMemo(() => {
     const set = new Set<number>();
-    for (const d of inference?.decisions ?? []) for (const i of d.lines) set.add(i);
+    for (const d of inference?.decisions ?? []) for (const i of d.lines) set.add(visible[i] ?? -1);
     return set;
-  }, [inference]);
+  }, [inference, visible]);
 
   const toggle = (index: number, mark: Mark): void => {
     setMarks((prev) => {
@@ -251,74 +276,101 @@ export function ConventionsSettings() {
         </SettingsRow>
       </SettingsGroup>
 
-      <div className="conv-editor">
-        <div className="conv-lines">
-          <div className="settings-group-label">Your lines</div>
-          <div className="conv-picker">
-            {pasting ? (
-              <textarea
-                className="settings-preview-input sv-mono"
-                rows={6}
-                value={pasted}
-                placeholder="Paste a few lines the way you write them"
-                aria-label="Pasted lines"
-                spellCheck={false}
-                onChange={(e) => setPasted(e.target.value)}
-              />
-            ) : (
-              <input
-                type="text"
-                className="pl-typeahead-input"
-                aria-label="Pull lines from a knot or stitch"
-                placeholder={passage === null ? "Pull lines from a knot or stitch…" : passage.label}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            )}
-            {pasting ? (
-              <button type="button" className="settings-apply" onClick={usePasted}>
-                Use these lines
-              </button>
-            ) : (
-              <button type="button" className="settings-apply" onClick={() => setPasting(true)}>
-                Paste instead
-              </button>
-            )}
-            {matches.length > 0 && !pasting && (
-              <ul className="pl-typeahead-list" role="listbox" aria-label="Matching knots and stitches">
-                {matches.map((m) => (
-                  <li key={m.path}>
-                    <button type="button" className="pl-typeahead-row" onClick={() => pick(m)}>
-                      <span
-                        className={
-                          "pl-typeahead-icon " +
-                          (m.kind === "knot" ? "brink-binder-icon-knot" : "brink-binder-icon-stitch")
-                        }
-                      >
-                        {m.kind === "knot" ? <KnotIcon /> : <StitchIcon />}
-                      </span>
-                      <span className="pl-typeahead-text">
-                        <span className="pl-save-name">{m.path}</span>
-                        <span className="pl-typeahead-file">{m.file}</span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          {passage !== null && (
-            <>
-              <div className="conv-line-count">
-                {passage.label} · {passage.lines.length} {passage.lines.length === 1 ? "line" : "lines"}
-              </div>
-              <div className="conv-line-list" role="list">
-                {passage.lines.map((l, i) => (
+      <div className="conv-lines">
+        <div className="settings-group-label">Your lines</div>
+        <div className="conv-picker">
+          {pasting ? (
+            <textarea
+              className="settings-preview-input sv-mono"
+              rows={6}
+              value={pasted}
+              placeholder="Paste a few lines the way you write them"
+              aria-label="Pasted lines"
+              spellCheck={false}
+              onChange={(e) => setPasted(e.target.value)}
+            />
+          ) : (
+            <input
+              type="text"
+              className="pl-typeahead-input"
+              aria-label="Pull lines from a knot or stitch"
+              placeholder={passage === null ? "Pull lines from a knot or stitch…" : passage.label}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setListOpen(true)}
+              // Rows use onMouseDown so a pick lands before this blur closes the list.
+              onBlur={() => setListOpen(false)}
+            />
+          )}
+          {pasting ? (
+            <button type="button" className="settings-apply" onClick={usePasted}>
+              Use these lines
+            </button>
+          ) : (
+            <button type="button" className="settings-apply" onClick={() => setPasting(true)}>
+              Paste instead
+            </button>
+          )}
+          {matches.length > 0 && !pasting && (
+            <ul className="pl-typeahead-list" role="listbox" aria-label="Matching knots and stitches">
+              {matches.map((m) => (
+                <li key={m.path}>
+                  <button
+                    type="button"
+                    className="pl-typeahead-row"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pick(m);
+                    }}
+                  >
+                    <span
+                      className={
+                        "pl-typeahead-icon " +
+                        (m.kind === "knot" ? "brink-binder-icon-knot" : "brink-binder-icon-stitch")
+                      }
+                    >
+                      {m.kind === "knot" ? <KnotIcon /> : <StitchIcon />}
+                    </span>
+                    <span className="pl-typeahead-text">
+                      <span className="pl-save-name">{m.path}</span>
+                      <span className="pl-typeahead-file">{m.file}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {passage !== null && (
+          <>
+            <div className="conv-line-count">
+              <span>
+                {passage.label} · {visible.length} {visible.length === 1 ? "line" : "lines"}
+                {hiddenChoices > 0 && !includeChoices
+                  ? ` · ${hiddenChoices.toString()} ${hiddenChoices === 1 ? "choice" : "choices"} hidden`
+                  : ""}
+              </span>
+              {passage.lines.some((l) => l.origin === "choice") && (
+                <label className="conv-choices-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeChoices}
+                    onChange={(e) => setIncludeChoices(e.target.checked)}
+                  />
+                  <span>Include choice text</span>
+                </label>
+              )}
+            </div>
+            <div className="conv-line-list" role="list">
+              {visible.map((i) => {
+                const l = passage.lines[i];
+                return (
                   <div
                     key={i}
                     role="listitem"
                     className={"conv-line" + (flagged.has(i) ? " is-flagged" : "")}
                   >
+                    {l.origin === "choice" && <span className="conv-line-badge">choice</span>}
                     <span className="conv-line-text sv-mono" title={l.text}>
                       {l.text}
                     </span>
@@ -337,56 +389,16 @@ export function ConventionsSettings() {
                       ))}
                     </div>
                   </div>
-                ))}
-              </div>
-              <p className="settings-group-hint">
-                Mark at least one of each kind you use. Lines you leave unmarked are checked
-                against the rules, not taught from.
-              </p>
-            </>
-          )}
-          {status !== null && <p className="conv-status">{status}</p>}
-        </div>
-
-        <div className="conv-preview">
-          <div className="settings-group-label">How it reads in the Player</div>
-          <div className="player settings-conv-player">
-            <div className="story-text">
-              {passage === null ? (
-                <p className="conv-preview-empty">Pick a passage to see it here.</p>
-              ) : (
-                groups.map((group, gi) => {
-                  const rows = group.rows.map((row) => {
-                    const text =
-                      row.segments.length === 0
-                        ? row.line.text
-                        : row.segments
-                            .filter((s, si) => !(si === 0 && group.speaker !== null && s.kind === group.kind))
-                            .map((s) => s.text)
-                            .join("");
-                    return (
-                      <div
-                        key={row.index}
-                        className={`player-line-row kind-line${row.kind ? ` dialect-${row.kind}` : ""}`}
-                      >
-                        <p>{text.trim() === "" ? " " : text}</p>
-                      </div>
-                    );
-                  });
-                  if (group.speaker === null) return rows;
-                  const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
-                  return (
-                    <div key={`g${gi.toString()}`} className={`player-run dialect-${group.kind ?? "run"}`}>
-                      <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
-                      {rows}
-                    </div>
-                  );
-                })
-              )}
+                );
+              })}
             </div>
-          </div>
-          {passage !== null && <p className="settings-group-hint">Updates as you mark lines.</p>}
-        </div>
+            <p className="settings-group-hint">
+              Mark at least one of each kind you use. Lines you leave unmarked are checked against
+              the rules, not taught from.
+            </p>
+          </>
+        )}
+        {status !== null && <p className="conv-status">{status}</p>}
       </div>
 
       {inference !== null && (
@@ -425,6 +437,44 @@ export function ConventionsSettings() {
             ))}
           </div>
         </SettingsGroup>
+      )}
+
+      {passage !== null && (
+        <div className="conv-preview">
+          <div className="settings-group-label">How it reads in the Player</div>
+          <div className="player settings-conv-player">
+            <div className="story-text">
+              {groups.map((group, gi) => {
+                const rows = group.rows.map((row) => {
+                  const text =
+                    row.segments.length === 0
+                      ? row.line.text
+                      : row.segments
+                          .filter((seg, si) => !(si === 0 && group.speaker !== null && seg.kind === group.kind))
+                          .map((seg) => seg.text)
+                          .join("");
+                  return (
+                    <div
+                      key={row.index}
+                      className={`player-line-row kind-line${row.kind ? ` dialect-${row.kind}` : ""}`}
+                    >
+                      <p>{text.trim() === "" ? " " : text}</p>
+                    </div>
+                  );
+                });
+                if (group.speaker === null) return rows;
+                const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
+                return (
+                  <div key={`g${gi.toString()}`} className={`player-run dialect-${group.kind ?? "run"}`}>
+                    <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
+                    {rows}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <p className="settings-group-hint">Updates as you mark lines.</p>
+        </div>
       )}
 
       {replaceAsk !== null && (

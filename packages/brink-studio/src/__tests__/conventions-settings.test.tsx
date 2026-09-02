@@ -36,6 +36,8 @@ const PASSAGE: PassageLine[] = [
   { text: "The lantern gutters.", tags: [], file: "act1/chapel.ink", line: 7, origin: "line" },
   { text: "@JUNO: <>", tags: [], file: "act1/chapel.ink", line: 8, origin: "line" },
   { text: "Then we go now.", tags: [], file: "act1/chapel.ink", line: 9, origin: "line" },
+  { text: "[Take the lantern]", tags: [], file: "act1/chapel.ink", line: 10, origin: "choice" },
+  { text: "Lisa: Where did he go?", tags: [], file: "act1/chapel.ink", line: 11, origin: "choice" },
 ];
 
 const CONFIG = `[project]\nentry = "main.ink" # keep\n`;
@@ -107,7 +109,7 @@ async function pickPassage() {
     "chapel.argumentact1/chapel.ink",
   ]);
   await act(async () => {
-    (rows[1] as HTMLButtonElement).click();
+    rows[1].dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   });
 }
 
@@ -129,11 +131,28 @@ async function markCanvasSample() {
 }
 
 describe("ConventionsSettings", () => {
+  it("focusing the field lists every knot and stitch before anything is typed", async () => {
+    await mount();
+    expect(container!.querySelector(".pl-typeahead-list")).toBeNull();
+    const input = $<HTMLInputElement>("input.pl-typeahead-input");
+    await act(async () => {
+      input.focus();
+    });
+    const rows = Array.from(container!.querySelectorAll("button.pl-typeahead-row")).map(
+      (r) => r.querySelector(".pl-save-name")?.textContent,
+    );
+    expect(rows).toEqual(["chapel", "chapel.argument"]);
+    await act(async () => {
+      input.blur();
+    });
+    expect(container!.querySelector(".pl-typeahead-list")).toBeNull();
+  });
+
   it("pulls a passage through the typeahead and lists every line with the mark control", async () => {
     await mount();
     await pickPassage();
     expect(container!.querySelectorAll(".conv-line").length).toBe(7);
-    expect($(".conv-line-count").textContent).toBe("chapel.argument · 7 lines");
+    expect($(".conv-line-count").textContent).toContain("chapel.argument · 7 lines · 2 choices hidden");
     // The preview shows the passage, plain until something is marked.
     expect($(".settings-conv-player").textContent).toContain("We don't have until morning.");
     expect(container!.querySelector(".player-run-cue")).toBeNull();
@@ -220,6 +239,30 @@ describe("ConventionsSettings", () => {
     expect(h.source()).toContain("# conventions-editor:");
     expect(h.source().startsWith(CONFIG)).toBe(true);
     expect(container!.querySelector(".conv-ask")).toBeNull();
+  });
+
+  it("choice text is hidden by default and comes back, markable, with the toggle", async () => {
+    await mount();
+    await pickPassage();
+    const toggle = $<HTMLInputElement>(".conv-choices-toggle input");
+    expect(toggle.checked).toBe(false);
+    expect(container!.querySelector(".conv-line-badge")).toBeNull();
+    await act(async () => {
+      toggle.click();
+    });
+    expect(container!.querySelectorAll(".conv-line").length).toBe(9);
+    expect(container!.querySelectorAll(".conv-line-badge").length).toBe(2);
+    expect($(".conv-line-count").textContent).not.toContain("hidden");
+    // A choice-text cue teaches the ink docs' `Name: text` shape.
+    await mark(9, "Cue");
+    const learned = Array.from(container!.querySelectorAll(".conv-learned-row")).map((r) => r.textContent);
+    expect(learned.some((t) => t?.includes("starts with a name and a colon"))).toBe(true);
+    // Hiding again keeps the mark keyed to its line and drops it from the inference.
+    await act(async () => {
+      toggle.click();
+    });
+    expect(container!.querySelectorAll(".conv-line").length).toBe(7);
+    expect(container!.querySelector(".conv-learned")).toBeNull();
   });
 
   it("pasted lines work without a project passage", async () => {
