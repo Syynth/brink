@@ -63,8 +63,14 @@ const inlayHintsEnabledField = StateField.define<boolean>({
 });
 
 /** Switch a view's inlay hints on/off live (the Settings toggle dispatches
- *  this) — broadcast across every open editor by `DocumentSessions.setInlayHints`. */
+ *  this) — broadcast across every open editor by `DocumentSessions.setInlayHints`.
+ *  A no-op when the view's field already agrees (including a view with no
+ *  inlay-hints extension mounted, where `field(f, false)` returns `undefined`
+ *  and never equals a boolean `on`) — this keeps `DocumentSessions.mountView`
+ *  free to push the desired state unconditionally on every mount without
+ *  forcing a redundant transaction on a view that already matches (#3350). */
 export function setInlayHints(view: EditorView, on: boolean): void {
+  if (view.state.field(inlayHintsEnabledField, false) === on) return;
   view.dispatch({ effects: setInlayHintsEnabledEffect.of(on) });
 }
 

@@ -760,7 +760,12 @@ export function EditorSection() {
         <SettingsRow
           htmlFor={inlayHintsId}
           title="Show inlay hints"
-          description="Inline type and name annotations (e.g. the `: string` after a variable). Applies live to every open editor."
+          description={
+            <>
+              Inline type and name annotations (e.g. the <code>: string</code> after a
+              variable). Applies live to every open editor.
+            </>
+          }
         >
           <SettingsToggle
             id={inlayHintsId}

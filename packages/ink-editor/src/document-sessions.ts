@@ -566,9 +566,14 @@ export class DocumentSessions {
     // A slot opened after a keymap rebind starts on the host's chords, not
     // the shipped defaults the baseline compartment carries.
     if (this.editorActionKeys !== null) setEditorActionKeys(view, this.editorActionKeys);
-    // A slot opened after the Settings toggle hid hints starts on the
-    // field's own default (on) otherwise — only push when it disagrees.
-    if (!this.inlayHintsOn) setInlayHints(view, false);
+    // Push the current Settings state unconditionally: a REUSED cached state
+    // (unmountSlot snapshots `slot.state = slot.view.state`, above) can carry
+    // whatever `inlayHintsOn` was true at the PREVIOUS mount, not the field's
+    // own default — pushing only the off case left a stale ON-cached state
+    // showing hints after the setting had since been turned off (#3350
+    // review). `setInlayHints` itself no-ops when the field already agrees,
+    // so this costs nothing on the common case of a fresh state.
+    setInlayHints(view, this.inlayHintsOn);
 
     if (this.focusedSlotId === id) {
       this.applyFocusSideEffects(slot);
