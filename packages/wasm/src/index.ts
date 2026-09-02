@@ -51,6 +51,8 @@ import type {
   Fix,
   ProjectFile,
   FileOutline,
+  PassageLine,
+  PassageOrigin,
   PerfCounters,
   StoryGraph,
   LineContext,
@@ -1100,6 +1102,18 @@ export class EditorSessionHandle {
    */
   perfCompileProbe(entry: string): [number, number] {
     return JSON.parse(this.session.perf_compile_probe(entry)) as [number, number];
+  }
+
+  /**
+   * The content lines of `path` (`knot` or `knot.stitch`) across the
+   * project (#3408), or `null` when nothing declares it. Feature-detected
+   * on the raw session: stubs that predate the query read as "no passage".
+   */
+  passageLines(path: string): PassageLine[] | null {
+    const raw = this.session as { passage_lines?: (path: string) => string };
+    if (typeof raw.passage_lines !== "function") return null;
+    const json = raw.passage_lines(path);
+    return json === "null" ? null : (JSON.parse(json) as PassageLine[]);
   }
 
   getProjectOutline(): FileOutline[] {

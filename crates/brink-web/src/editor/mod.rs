@@ -16,6 +16,7 @@ mod hints;
 mod hover;
 mod navigation;
 mod outline;
+mod passage;
 mod prose;
 mod refactor;
 mod spans;

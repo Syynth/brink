@@ -82,7 +82,21 @@ export function foldPlayerRuns(
     }
     if (current) groups.push(current);
   }
-  return groups;
+  // A speaker who keeps talking is one group, however the script cued it
+  // (ruled 2026-09-02): per-line cues, or a re-cue with nothing between,
+  // print the header once and the lines flow under it. Anything in
+  // between — an action, a choice echo, narration — already split the
+  // runs, so a genuine re-entrance keeps its own header.
+  const merged: PlayerGroup[] = [];
+  for (const g of groups) {
+    const last = merged[merged.length - 1];
+    if (last && g.speaker !== null && last.speaker === g.speaker && last.kind === g.kind) {
+      last.rows.push(...g.rows);
+    } else {
+      merged.push(g);
+    }
+  }
+  return merged;
 }
 
 /** Deterministic speaker colour: a stable palette index from the name, so
