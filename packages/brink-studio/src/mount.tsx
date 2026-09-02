@@ -686,9 +686,12 @@ export async function mountStudio(
     // the configured dialect at mount anyway.
     onProjectConfigApplied: () => {
       documentsForConfig?.refreshDialectFromProject();
+      // The Player folds lines into runs with the same artifact (#3389).
+      store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
     },
   });
   await project.initialize();
+  store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
   perfMark("studio.projectInitialized");
   // The perf bridge: the session planes the probe module itself can't
   // reach. Feature-detected throughout — injected sessions/mocks predate
