@@ -2444,6 +2444,7 @@ dependencies = [
  "brink-environment",
  "brink-format",
  "brink-ide",
+ "brink-intl",
  "brink-ir",
  "brink-project-config",
  "brink-runtime",
@@ -2455,6 +2456,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
