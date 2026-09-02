@@ -70,14 +70,47 @@ pub fn is_compile_error_case(case_dir: &Path) -> bool {
 /// Returns `None` when `metadata.toml` is missing, unreadable, not valid
 /// TOML, has no `[source]` table, or that table has no `expected_mismatch`
 /// key.
+///
+/// A parsed `metadata.toml` carrying `expected_mismatch` anywhere other than
+/// `[source]` as a string — a top-level key, a key under a different table
+/// (e.g. an append-to-end landing in `[classification]`), or a non-string
+/// value like a bare integer — fails loudly via `assert!` rather than
+/// silently returning `None`. Reverting to "unflagged" on a misplaced or
+/// mistyped flag is exactly the silent drift issue #3402 exists to kill.
 pub fn expected_mismatch_issue(case_dir: &Path) -> Option<String> {
     let meta_path = case_dir.join("metadata.toml");
-    let text = std::fs::read_to_string(meta_path).ok()?;
+    let text = std::fs::read_to_string(&meta_path).ok()?;
     let doc: toml::Value = toml::from_str(&text).ok()?;
-    doc.get("source")?
-        .get("expected_mismatch")?
-        .as_str()
-        .map(str::to_string)
+    let table = doc.as_table()?;
+
+    assert!(
+        !table.contains_key("expected_mismatch"),
+        "{}: `expected_mismatch` must live in `[source]`, not at the top level",
+        meta_path.display(),
+    );
+    for (table_name, value) in table {
+        if table_name == "source" {
+            continue;
+        }
+        let misplaced = value
+            .as_table()
+            .is_some_and(|sub| sub.contains_key("expected_mismatch"));
+        assert!(
+            !misplaced,
+            "{}: `expected_mismatch` must live in `[source]`, not `[{table_name}]`",
+            meta_path.display(),
+        );
+    }
+
+    let source = table.get("source").and_then(toml::Value::as_table)?;
+    let value = source.get("expected_mismatch")?;
+    let issue = value.as_str();
+    assert!(
+        issue.is_some(),
+        "{}: `[source] expected_mismatch` must be a quoted issue string like \"#3395\", not {value:?}",
+        meta_path.display(),
+    );
+    issue.map(str::to_string)
 }
 
 /// The oracle-conformance verdict for one case, once its
@@ -967,6 +1000,60 @@ mod expected_mismatch_tests {
         let scratch = ScratchCaseDir::new("malformed");
         scratch.write_metadata("this is not [ valid toml");
         assert_eq!(expected_mismatch_issue(scratch.path()), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "top level")]
+    fn panics_when_the_flag_is_at_top_level() {
+        let scratch = ScratchCaseDir::new("top-level-flag");
+        scratch.write_metadata(
+            "description = \"a case with a misplaced flag\"\n\
+             mode = \"runtime\"\n\
+             expected_mismatch = \"#1234\"\n\
+             \n\
+             [source]\n\
+             origin = \"brink\"\n\
+             original_id = \"top-level-flag\"\n",
+        );
+        let _ = expected_mismatch_issue(scratch.path());
+    }
+
+    #[test]
+    #[should_panic(expected = "[classification]")]
+    fn panics_when_the_flag_is_appended_into_the_wrong_table() {
+        // Mirrors the real failure mode: appending a line to the end of a
+        // metadata.toml whose `[source]` table is followed by
+        // `[classification]` lands the new key in the wrong table.
+        let scratch = ScratchCaseDir::new("wrong-table-flag");
+        scratch.write_metadata(
+            "description = \"a case with the flag appended to the end\"\n\
+             mode = \"runtime\"\n\
+             \n\
+             [source]\n\
+             origin = \"brink\"\n\
+             original_id = \"wrong-table-flag\"\n\
+             \n\
+             [classification]\n\
+             tier = 2\n\
+             expected_mismatch = \"#1234\"\n",
+        );
+        let _ = expected_mismatch_issue(scratch.path());
+    }
+
+    #[test]
+    #[should_panic(expected = "quoted issue string")]
+    fn panics_when_the_flag_value_is_not_a_string() {
+        let scratch = ScratchCaseDir::new("non-string-flag");
+        scratch.write_metadata(
+            "description = \"a case with a bare-integer flag\"\n\
+             mode = \"runtime\"\n\
+             \n\
+             [source]\n\
+             origin = \"brink\"\n\
+             original_id = \"non-string-flag\"\n\
+             expected_mismatch = 1234\n",
+        );
+        let _ = expected_mismatch_issue(scratch.path());
     }
 
     /// The real migration target (issue #3402): both `#3395` lift-order

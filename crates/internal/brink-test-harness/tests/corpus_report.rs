@@ -47,6 +47,26 @@ fn index_by_choice_path(episodes: &[Episode]) -> std::collections::HashMap<&[usi
         .collect()
 }
 
+/// Status of one `expected_mismatch`-flagged case in the backlog listing
+/// (Finding 1, PR #3432 review). Beyond the two ordinary oracle-comparison
+/// outcomes, a flagged case can also be skipped or fail to compile/link —
+/// those must still get a row, not silently vanish from the backlog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlaggedStatus {
+    /// Compared against the oracle and still mismatching or missing
+    /// episodes — the expected, steady state for a documented divergence.
+    StillMismatching,
+    /// Compared against the oracle and every episode now matches — the flag
+    /// must be removed and `RATCHET_EPISODE_COUNT` raised.
+    UnexpectedlyFixed,
+    /// The case was skipped this run (missing/empty source, or the oracle
+    /// couldn't be loaded) before any comparison happened.
+    Skipped,
+    /// The case failed to compile or link this run, before any comparison
+    /// happened.
+    CompileError,
+}
+
 #[derive(Default)]
 struct CategoryStats {
     cases_pass: usize,
@@ -75,6 +95,111 @@ fn progress_bar(pass: usize, total: usize, width: usize) -> String {
     }
     let filled = (width * pass) / total;
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+/// Compare one case against the oracle, updating `cat`'s per-category
+/// counters and (if the case carries an `expected_mismatch` flag) pushing
+/// its outcome onto `flagged`. Extracted from `corpus_report`'s scan loop so
+/// the same production logic backs both the real corpus report and
+/// `flagged_case_that_fails_to_compile_still_appears_in_the_backlog` below
+/// — a regression test must exercise the actual function, not a
+/// reimplementation of it.
+///
+/// The `expected_mismatch` lookup happens *before* any of the early
+/// returns below (skip, compile error, link error) so a flagged case that
+/// regresses into one of those states still gets a row in the backlog
+/// instead of silently disappearing from it (Finding 1, PR #3432 review).
+fn classify_case(
+    case_dir: &std::path::Path,
+    rel: &str,
+    config: &ExploreConfig,
+    cat: &mut CategoryStats,
+    flagged: &mut Vec<(String, String, FlaggedStatus)>,
+) {
+    let issue = expected_mismatch_issue(case_dir);
+    let mut push_flagged = |status: FlaggedStatus| {
+        if let Some(issue) = &issue {
+            flagged.push((rel.to_string(), issue.clone(), status));
+        }
+    };
+
+    let ink_path = case_dir.join("story.ink");
+    if !ink_path.exists() || has_empty_source(case_dir) || is_compile_error_case(case_dir) {
+        cat.cases_skip += 1;
+        push_flagged(FlaggedStatus::Skipped);
+        return;
+    }
+
+    let oracle_eps = match oracle::load_oracle_episodes(case_dir) {
+        Ok(eps) if eps.is_empty() => {
+            cat.cases_skip += 1;
+            push_flagged(FlaggedStatus::Skipped);
+            return;
+        }
+        Ok(eps) => eps,
+        Err(_) => {
+            cat.cases_skip += 1;
+            push_flagged(FlaggedStatus::Skipped);
+            return;
+        }
+    };
+
+    let (_story_data, actual) = match compile_and_explore_from_ink(&ink_path, config) {
+        Ok(pair) => pair,
+        Err(e) if e.starts_with("compile:") => {
+            cat.cases_compile_error += 1;
+            push_flagged(FlaggedStatus::CompileError);
+            return;
+        }
+        Err(e) if e.starts_with("link:") => {
+            cat.cases_link_error += 1;
+            push_flagged(FlaggedStatus::CompileError);
+            return;
+        }
+        Err(_) => {
+            cat.cases_compile_error += 1;
+            push_flagged(FlaggedStatus::CompileError);
+            return;
+        }
+    };
+
+    let actual_index = index_by_choice_path(&actual);
+    let mut case_ok = true;
+    let mut case_mismatch = 0usize;
+    let mut case_missing = 0usize;
+
+    for oracle_ep in &oracle_eps {
+        let Some(brink_ep) = actual_index.get(oracle_ep.choice_path.as_slice()) else {
+            cat.episodes_missing += 1;
+            case_missing += 1;
+            case_ok = false;
+            continue;
+        };
+        let d = oracle::diff_oracle(oracle_ep, brink_ep);
+        if d.matches {
+            cat.episodes_pass += 1;
+        } else {
+            cat.episodes_fail += 1;
+            case_mismatch += 1;
+            case_ok = false;
+        }
+    }
+
+    if let Some(issue) = issue {
+        let verdict = mismatch_flag_verdict(Some(&issue), case_mismatch, case_missing);
+        let status = if verdict == MismatchFlagVerdict::UnexpectedlyFixed {
+            FlaggedStatus::UnexpectedlyFixed
+        } else {
+            FlaggedStatus::StillMismatching
+        };
+        flagged.push((rel.to_string(), issue, status));
+    }
+
+    if case_ok {
+        cat.cases_pass += 1;
+    } else {
+        cat.cases_fail += 1;
+    }
 }
 
 #[test]
@@ -111,9 +236,12 @@ fn corpus_report() {
     // Issue #3402: cases carrying a `[source] expected_mismatch` flag in
     // their `metadata.toml`, so the residual documented-divergence backlog
     // is visible in this report rather than only living in a doc comment.
-    // `(rel_path, issue, unexpectedly_fixed)`, filled as each case is
-    // compared below.
-    let mut flagged: Vec<(String, String, bool)> = Vec::new();
+    // `(rel_path, issue, status)`, filled as each case is compared below —
+    // looked up *before* any of the `continue` paths so a flagged case that
+    // skips or fails to compile still gets a row instead of silently
+    // vanishing from the backlog (that silence would read identically to
+    // "the flag was removed").
+    let mut flagged: Vec<(String, String, FlaggedStatus)> = Vec::new();
 
     for case_dir in &cases {
         let rel = case_dir
@@ -131,74 +259,7 @@ fn corpus_report() {
         };
 
         let cat = stats.entry(key).or_default();
-
-        let ink_path = case_dir.join("story.ink");
-        if !ink_path.exists() || has_empty_source(case_dir) || is_compile_error_case(case_dir) {
-            cat.cases_skip += 1;
-            continue;
-        }
-
-        let oracle_eps = match oracle::load_oracle_episodes(case_dir) {
-            Ok(eps) if eps.is_empty() => {
-                cat.cases_skip += 1;
-                continue;
-            }
-            Ok(eps) => eps,
-            Err(_) => {
-                cat.cases_skip += 1;
-                continue;
-            }
-        };
-
-        let (_story_data, actual) = match compile_and_explore_from_ink(&ink_path, &config) {
-            Ok(pair) => pair,
-            Err(e) if e.starts_with("compile:") => {
-                cat.cases_compile_error += 1;
-                continue;
-            }
-            Err(e) if e.starts_with("link:") => {
-                cat.cases_link_error += 1;
-                continue;
-            }
-            Err(_) => {
-                cat.cases_compile_error += 1;
-                continue;
-            }
-        };
-
-        let actual_index = index_by_choice_path(&actual);
-        let mut case_ok = true;
-        let mut case_mismatch = 0usize;
-        let mut case_missing = 0usize;
-
-        for oracle_ep in &oracle_eps {
-            let Some(brink_ep) = actual_index.get(oracle_ep.choice_path.as_slice()) else {
-                cat.episodes_missing += 1;
-                case_missing += 1;
-                case_ok = false;
-                continue;
-            };
-            let d = oracle::diff_oracle(oracle_ep, brink_ep);
-            if d.matches {
-                cat.episodes_pass += 1;
-            } else {
-                cat.episodes_fail += 1;
-                case_mismatch += 1;
-                case_ok = false;
-            }
-        }
-
-        if let Some(issue) = expected_mismatch_issue(case_dir) {
-            let verdict = mismatch_flag_verdict(Some(&issue), case_mismatch, case_missing);
-            let unexpectedly_fixed = verdict == MismatchFlagVerdict::UnexpectedlyFixed;
-            flagged.push((rel.clone(), issue, unexpectedly_fixed));
-        }
-
-        if case_ok {
-            cat.cases_pass += 1;
-        } else {
-            cat.cases_fail += 1;
-        }
+        classify_case(case_dir, &rel, &config, cat, &mut flagged);
     }
 
     // --- Render report ---
@@ -314,7 +375,7 @@ fn corpus_report() {
     clippy::print_stdout,
     reason = "this is a diagnostic report, not production output"
 )]
-fn print_expected_mismatch_report(flagged: &[(String, String, bool)]) {
+fn print_expected_mismatch_report(flagged: &[(String, String, FlaggedStatus)]) {
     if flagged.is_empty() {
         return;
     }
@@ -323,11 +384,16 @@ fn print_expected_mismatch_report(flagged: &[(String, String, bool)]) {
     println!("============================================================");
     println!("  EXPECTED-MISMATCH CASES (issue #3402) — documented C#-oracle divergences");
     println!("============================================================");
-    for (rel, issue, unexpectedly_fixed) in flagged {
-        let marker = if *unexpectedly_fixed {
-            "⚠ NOW MATCHES THE ORACLE — remove the flag and raise RATCHET_EPISODE_COUNT"
-        } else {
-            "still mismatching, as expected"
+    for (rel, issue, status) in flagged {
+        let marker = match status {
+            FlaggedStatus::StillMismatching => "still mismatching, as expected",
+            FlaggedStatus::UnexpectedlyFixed => {
+                "⚠ NOW MATCHES THE ORACLE — remove the flag and raise RATCHET_EPISODE_COUNT"
+            }
+            FlaggedStatus::Skipped => "⚠ SKIPPED this run — flag status unverified, investigate",
+            FlaggedStatus::CompileError => {
+                "⚠ FAILS TO COMPILE/LINK this run — flag status unverified, investigate"
+            }
         };
         println!("  {rel}  ({issue})  {marker}");
     }
@@ -462,4 +528,127 @@ fn native_corpus_report() {
          separate from the OVERALL/EPISODES totals above and from the oracle ratchet."
     );
     println!("============================================================");
+}
+
+/// A synthetic, disk-backed corpus case in a scratch directory — isolated
+/// from the real `tests/` corpus (so it can never move `RATCHET_EPISODE_COUNT`
+/// or the corpus stats) but real enough to drive [`classify_case`] through
+/// its actual file-reading production functions (`expected_mismatch_issue`,
+/// `oracle::load_oracle_episodes`, `compile_and_explore_from_ink`).
+struct ScratchCorpusCase(PathBuf);
+
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture helper: panic on bad scratch I/O"
+)]
+impl ScratchCorpusCase {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "brink-test-harness-corpus-report-{name}-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(path.join("oracle")).expect("create scratch case dir");
+        Self(path)
+    }
+
+    fn write_story(&self, content: &str) {
+        std::fs::write(self.0.join("story.ink"), content).expect("write scratch story.ink");
+    }
+
+    fn write_metadata(&self, content: &str) {
+        std::fs::write(self.0.join("metadata.toml"), content).expect("write scratch metadata.toml");
+    }
+
+    fn write_oracle_episode(&self, content: &str) {
+        std::fs::write(self.0.join("oracle").join("e0.oracle.json"), content)
+            .expect("write scratch oracle episode");
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchCorpusCase {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A minimal, valid `.oracle.json` — a single-step, no-choice episode.
+/// Content doesn't matter here: this case is engineered to fail to compile
+/// before the oracle episode is ever compared against.
+const MINIMAL_ORACLE_EPISODE: &str = r#"{
+  "steps": [
+    {
+      "text": "irrelevant\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}
+"#;
+
+/// Regression for PR #3432 review Finding 1: `expected_mismatch_issue` used
+/// to be looked up only *after* the compile-error `continue`, so a flagged
+/// case that starts failing to compile silently vanished from
+/// `corpus_report`'s "EXPECTED-MISMATCH CASES" backlog instead of surfacing
+/// a row that needs attention. Reverting `classify_case` to look the flag up
+/// after the early returns makes this test fail: `flagged` comes back empty
+/// instead of carrying the `CompileError` row.
+#[test]
+fn flagged_case_that_fails_to_compile_still_appears_in_the_backlog() {
+    let scratch = ScratchCorpusCase::new("flagged-compile-error");
+    // Deliberately invalid ink syntax — an unterminated interpolation brace
+    // is a hard parse error, guaranteed to fail `brink_compiler::compile_path`
+    // with a "compile: ..." error.
+    scratch.write_story("Hello, {unterminated interpolation\n");
+    scratch.write_metadata(
+        "description = \"synthetic flagged case that fails to compile\"\n\
+         mode = \"runtime\"\n\
+         \n\
+         [source]\n\
+         origin = \"brink\"\n\
+         original_id = \"flagged-compile-error\"\n\
+         expected_mismatch = \"#9999\"\n",
+    );
+    scratch.write_oracle_episode(MINIMAL_ORACLE_EPISODE);
+
+    let config = ExploreConfig {
+        max_depth: 20,
+        max_episodes: 1000,
+    };
+    let mut cat = CategoryStats::default();
+    let mut flagged: Vec<(String, String, FlaggedStatus)> = Vec::new();
+
+    classify_case(
+        scratch.path(),
+        "synthetic/flagged-compile-error",
+        &config,
+        &mut cat,
+        &mut flagged,
+    );
+
+    assert_eq!(
+        cat.cases_compile_error, 1,
+        "the synthetic case's invalid source must actually fail to compile"
+    );
+    assert_eq!(
+        flagged,
+        vec![(
+            "synthetic/flagged-compile-error".to_string(),
+            "#9999".to_string(),
+            FlaggedStatus::CompileError,
+        )],
+        "a flagged case that fails to compile must still appear in the backlog"
+    );
 }
