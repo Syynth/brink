@@ -48,10 +48,16 @@ describe("tooltipPortalExtension", () => {
     container = null;
   });
 
-  it("reparents the tooltip into the .brink-studio root, out of .cm-editor", async () => {
+  it("reparents the tooltip into the .brink-tooltip-layer, out of .cm-editor", async () => {
     container = document.createElement("div");
     container.className = "brink-studio";
     container.setAttribute("data-theme", "mocha");
+    // The shell renders this layer inside `.brink-studio` (`App.tsx`) as the
+    // out-of-flow mount point — without it, `resolveTooltipParent` falls
+    // through to `document.body` (see the fallback test below).
+    const layer = document.createElement("div");
+    layer.className = "brink-tooltip-layer";
+    container.appendChild(layer);
     document.body.appendChild(container);
 
     view = new EditorView({
@@ -64,10 +70,13 @@ describe("tooltipPortalExtension", () => {
 
     await flushMicrotasks();
 
-    const tip = container.querySelector('[data-testid="probe-tooltip"]');
+    const tip = layer.querySelector('[data-testid="probe-tooltip"]');
     expect(tip).not.toBeNull();
     // Not inside `.cm-editor` (== `view.dom`) any more — that's the clip.
     expect(view.dom.contains(tip)).toBe(false);
+    // Mounted through the out-of-flow layer, not directly on the flex root
+    // (that was the layout-breaking shape the E2E regression caught).
+    expect(layer.contains(tip)).toBe(true);
     // Still inside the theme-scoped root, so `.brink-studio[data-theme]`
     // token selectors still match it.
     expect(tip?.closest(".brink-studio")).toBe(container);
@@ -96,19 +105,50 @@ describe("tooltipPortalExtension", () => {
     expect(view.dom.contains(tip)).toBe(false);
   });
 
-  it("does not mount the tooltip inside .cm-editor even before reparenting settles", () => {
-    // Sanity check on the starting extension (`tooltips()` with no parent
-    // configured yet) isn't meaningful to assert timing on synchronously —
-    // the point of this suite is the settled state above. This test instead
-    // guards the OTHER failure mode: a view built with no `.brink-studio`
-    // ancestor and no parent element at all (detached, as some unit tests
-    // build editors) must not throw when the microtask resolves.
+  it("falls back to .brink-studio's own root with no .brink-tooltip-layer inside it", async () => {
+    // A `.brink-studio` ancestor that doesn't render the layer div (a stale
+    // host, or a test harness building its own container) must not fall
+    // back to mounting directly on the `.brink-studio` flex root — that is
+    // the exact in-flow-flex-item shape that broke the shell layout. It
+    // falls all the way through to `document.body` instead.
+    container = document.createElement("div");
+    container.className = "brink-studio";
+    document.body.appendChild(container);
+
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "hello",
+        extensions: [tooltipPortalExtension(), tooltipExtension()],
+      }),
+      parent: container,
+    });
+
+    await flushMicrotasks();
+
+    const tip = document.body.querySelector('[data-testid="probe-tooltip"]');
+    expect(tip).not.toBeNull();
+    // Not a direct/eventual child of the bare `.brink-studio` root.
+    expect(container.contains(tip)).toBe(false);
+    expect(document.body.contains(tip)).toBe(true);
+  });
+
+  it("leaves no stray tooltip DOM when the view is destroyed before the microtask settles", async () => {
+    // Guards the failure mode #3266 worried about: a view destroyed (e.g. a
+    // fast unmount) before the deferred reparent has run. `EditorView.update`
+    // no-ops on `this.destroyed` (`@codemirror/view`), so the reconfigure
+    // dispatch below must be silently dropped rather than leaking a tooltip
+    // or a reparented container into `document.body`.
     view = new EditorView({
       state: EditorState.create({
         doc: "hello",
         extensions: [tooltipPortalExtension(), tooltipExtension()],
       }),
     });
-    expect(() => view?.destroy()).not.toThrow();
+    view.destroy();
+
+    await flushMicrotasks();
+
+    expect(document.body.querySelector('[data-testid="probe-tooltip"]')).toBeNull();
+    expect(document.body.querySelector(".cm-tooltip")).toBeNull();
   });
 });

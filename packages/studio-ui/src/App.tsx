@@ -78,6 +78,20 @@ function App({ children }: { children?: ReactNode }) {
       <ConflictMergeView />
       <NotificationStack />
       {children}
+      {/* Reparent mount for CM6 tooltips (#3349, #3357 review): CM6's own
+          tooltip container is `position: relative`, not `fixed`/`absolute`
+          (`tooltips({ parent })`, see `tooltip-portal.ts`), so it cannot
+          mount as a direct child of this flex root without becoming an
+          in-flow item that disrupts the shell's layout — that broke the
+          binder/single-file-view/drag-redock E2E suites. This layer is kept
+          out of flow (`position: absolute; width: 0; height: 0`,
+          `editor.css`) so `tooltip-portal.ts` has somewhere to mount that
+          stays inside the theme scope without touching flex flow. Must stay
+          a sibling of `children` (not inside it), and last in DOM order has
+          no significance — it never participates in layout or paint order
+          for anything but the fixed-positioned tooltips CM6 places inside
+          it. */}
+      <div className="brink-tooltip-layer" aria-hidden="true" />
     </div>
   );
 }
