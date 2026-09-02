@@ -189,6 +189,21 @@ enum StopOnLine {
     Yes,
 }
 
+/// The innermost named container a frame is executing in — the shared
+/// derivation behind [`Story::current_path`] and the debug snapshot's
+/// `current_location`.
+pub(crate) fn frame_path(program: &Program, frame: &CallFrame) -> Option<String> {
+    frame
+        .container_stack
+        .iter()
+        .rev()
+        .find_map(|cp| program.container_path(cp.container_idx))
+        // The root scope is addressed by the empty path: "no named
+        // container", not a name.
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+}
+
 impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program and its line tables.
     pub fn new(program: Arc<Program>, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
@@ -1248,15 +1263,9 @@ impl<R: StoryRng> Story<R> {
 
         let thread = flow.current_thread();
 
-        // Nearest named container the cursor is currently in (innermost-first).
-        let resolve_frame_location = |frame: &CallFrame| {
-            frame
-                .container_stack
-                .iter()
-                .rev()
-                .find_map(|cp| resolver.container_path(cp.container_idx))
-                .map(str::to_owned)
-        };
+        // Nearest named container the cursor is currently in (innermost-first)
+        // — the same derivation as the public `current_path` query.
+        let resolve_frame_location = |frame: &CallFrame| frame_path(&self.program, frame);
         // Precise `(container_idx, offset)` for a frame: the top of its
         // container stack — the next instruction that frame will execute
         // (`vm::step` always advances/reads this exact slot; see
@@ -1634,6 +1643,36 @@ impl<R: StoryRng> Story<R> {
     #[must_use]
     pub fn did_safe_exit(&self) -> bool {
         self.default.did_safe_exit()
+    }
+
+    /// The knot or `knot.stitch` the default flow is executing in, as the
+    /// author names it — ink's `state.currentPathString`, without the
+    /// weave indices. `None` before the first line, after the story ends,
+    /// or when the position is in no named container. A host that folds
+    /// lines into speaker runs uses a change here as a scene boundary
+    /// (#3389 follow-up, ruled 2026-09-02): a divert to another knot ends
+    /// the run no dialect rule could see.
+    ///
+    /// A query, not a per-line field — and, as in ink, it reports where
+    /// the story IS: after a delivered line the VM already sits at the start
+    /// of the next content, so the value is the coming line's location. To
+    /// know where a line comes from, read this BEFORE the continue that
+    /// delivers it (the first line of a run from the root reads `None`).
+    /// For a named flow use [`current_path_flow`](Self::current_path_flow).
+    #[must_use]
+    pub fn current_path(&self) -> Option<String> {
+        self.default.current_path(&self.program)
+    }
+
+    /// Like [`current_path`](Self::current_path), but for a named flow.
+    pub fn current_path_flow(&self, name: &str) -> Result<Option<String>, RuntimeError> {
+        if let Some(instance) = self.shared_instances.get(name) {
+            Ok(instance.current_path(&self.program))
+        } else if let Some((instance, _ctx, _local)) = self.instances.get(name) {
+            Ok(instance.current_path(&self.program))
+        } else {
+            Err(RuntimeError::UnknownFlow(name.to_owned()))
+        }
     }
 
     /// Like [`did_safe_exit`](Self::did_safe_exit), but for a named flow

@@ -258,6 +258,7 @@ pub fn link(
         globals,
         global_map,
         name_table,
+        container_paths: crate::program::container_paths_from(&address_by_path),
         address_by_path,
         root_idx,
         list_literals,

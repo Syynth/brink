@@ -32,6 +32,14 @@ pub struct Program {
     /// Built at link time from named scope containers; lets consumers
     /// spawn flows at named entry points without needing `DefinitionId`s.
     pub(crate) address_by_path: HashMap<String, PathTarget>,
+    /// `container_idx → shortest knot/stitch path` for every container that
+    /// is the offset-0 target of an author-facing path — the reverse of
+    /// `address_by_path`, built once at link time. Backs
+    /// [`Program::container_path`] and, through it, the runtime's
+    /// [`current_path`](crate::Story::current_path) query and the
+    /// debugger's location names. Deterministic on collision: the shortest
+    /// path, then the lexicographically smallest.
+    pub(crate) container_paths: HashMap<u32, String>,
     pub(crate) root_idx: u32,
     /// List literal values referenced by `PushList(idx)`.
     pub(crate) list_literals: Vec<ListValue>,
@@ -166,7 +174,40 @@ pub(crate) struct PathTarget {
     pub byte_offset: usize,
 }
 
+/// Build the `container_idx → path` index [`Program::container_paths`]
+/// holds: offset-0 targets only, shortest path (then lexicographically
+/// smallest) per container — independent of map iteration order.
+pub(crate) fn container_paths_from(
+    address_by_path: &HashMap<String, PathTarget>,
+) -> HashMap<u32, String> {
+    let mut rev: HashMap<u32, String> = HashMap::new();
+    for (path, target) in address_by_path {
+        if target.byte_offset != 0 {
+            continue;
+        }
+        let better = match rev.get(&target.container_idx) {
+            None => true,
+            Some(existing) => {
+                path.len() < existing.len()
+                    || (path.len() == existing.len() && path.as_str() < existing.as_str())
+            }
+        };
+        if better {
+            rev.insert(target.container_idx, path.clone());
+        }
+    }
+    rev
+}
+
 impl Program {
+    /// The knot or `knot.stitch` path a container names, if it names one.
+    /// The runtime's own vocabulary for "where am I" — see
+    /// [`Story::current_path`](crate::Story::current_path).
+    #[must_use]
+    pub fn container_path(&self, idx: u32) -> Option<&str> {
+        self.container_paths.get(&idx).map(String::as_str)
+    }
+
     /// Resolve any target (container or address) to `(container_idx, byte_offset)`.
     pub(crate) fn resolve_target(&self, id: DefinitionId) -> Option<(u32, usize)> {
         self.address_map.get(&id).copied()
@@ -1123,6 +1164,7 @@ mod find_address_tests {
             globals: Vec::new(),
             global_map: HashMap::new(),
             name_table: Vec::new(),
+            container_paths: container_paths_from(&address_by_path),
             address_by_path,
             root_idx: 0,
             list_literals: Vec::new(),
