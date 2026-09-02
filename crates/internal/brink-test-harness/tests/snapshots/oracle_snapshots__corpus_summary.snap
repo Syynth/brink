@@ -290,6 +290,7 @@ tier2/sequences/all-sequence-types: PASS (1/1 episodes)
 tier2/sequences/blanks-in-inline-sequences: PASS (1/1 episodes)
 tier2/sequences/empty-sequence-content: PASS (1/1 episodes)
 tier2/sequences/leading-newline-multiline-sequence: PASS (1/1 episodes)
+tier2/sequences/sequence-leads-multi-construct-line: FAIL (0/1 episodes, 1 mismatch)
 tier2/sequences/sequence-shared-across-lifted-branches: PASS (1/1 episodes)
 tier2/sequences/sequence-with-divert-branch: PASS (1/1 episodes)
 tier2/sequences/shuffle-stack-muddying: SKIP
