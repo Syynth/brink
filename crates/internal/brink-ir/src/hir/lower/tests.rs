@@ -1622,3 +1622,91 @@ Content.
     assert_eq!(full, vec!["TODO: top-level note", "TODO: knot note"]);
     assert_eq!(split, full, "db-road split must match whole-file lowering");
 }
+
+/// Issue #3353: a `TODO` line inside a multiline conditional's then-arm,
+/// `- else:` arm, or a nested block used to be lowered as ordinary branch
+/// prose — landing in the lowered `Block` as `Stmt::Content` text and never
+/// reaching `E189` — because `brink-syntax`'s `branchless_cond_body` and
+/// `multiline_branch_body` had no `TODO` recognition of their own (only
+/// weave-level `story::line` did). These assert both halves of the fix:
+/// the `E189` diagnostic fires, and the lowered `Block`'s `Debug` dump
+/// (the same content a story's `.inkt` lines table is built from — see
+/// `docs/format-spec.md`) carries no `"TODO"` substring anywhere.
+#[test]
+fn todo_inside_conditional_branch_emits_e189_and_no_prose_content() {
+    let source = "\
+VAR x = true
+{ x:
+    Then branch.
+    TODO: inside then branch
+- else:
+    TODO: inside else branch
+}
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+    let (hir, _manifest, diags) = crate::hir::lower(FileId(0), &tree);
+
+    let todos: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(
+        todos,
+        vec![
+            "TODO: inside then branch".to_owned(),
+            "TODO: inside else branch".to_owned(),
+        ],
+        "one E189 per TODO line, both branches: {diags:?}"
+    );
+
+    let dump = format!("{:#?}", hir.root_content);
+    assert!(
+        !dump.contains("TODO"),
+        "TODO prose leaked into the lowered Block content:\n{dump}"
+    );
+}
+
+/// The nested-block variant of the same issue: a `TODO` inside a block
+/// nested within another block's arm.
+#[test]
+fn todo_inside_nested_conditional_block_emits_e189_and_no_prose_content() {
+    let source = "\
+VAR x = true
+VAR y = false
+{ x:
+    { y:
+        Nested then.
+        TODO: inside nested then
+    - else:
+        TODO: inside nested else
+    }
+- else:
+    Outer else.
+}
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+    let (hir, _manifest, diags) = crate::hir::lower(FileId(0), &tree);
+
+    let todos: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(
+        todos,
+        vec![
+            "TODO: inside nested then".to_owned(),
+            "TODO: inside nested else".to_owned(),
+        ],
+        "one E189 per TODO line, nested block: {diags:?}"
+    );
+
+    let dump = format!("{:#?}", hir.root_content);
+    assert!(
+        !dump.contains("TODO"),
+        "TODO prose leaked into the lowered Block content:\n{dump}"
+    );
+}

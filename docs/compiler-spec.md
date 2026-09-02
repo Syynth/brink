@@ -591,6 +591,7 @@ through the real native driver.
 | [`E186`](diagnostics/E186.md) | A `@[convention(…)]` declaration combines `block` and `attach = StructName` on the same handler — mutually exclusive clauses. |
 | [`E187`](diagnostics/E187.md) | A write to a `CONST` — plain/compound assignment, postfix `++`/`--`, an indexed/field/mutator write whose root is a `CONST`, or passing it by `ref`. Mirrors ink's own compile-time rejection of `CONST` reassignment. |
 | [`E188`](diagnostics/E188.md) | A declared `STRUCT`'s own name collides with a builtin leaf (`int`/`float`/`bool`/`string`/`content`/`divert`) or an NS-A8 tower kind — `annotations::resolve` checks those before consulting declared struct names, so a bare type annotation spelling the colliding name always resolves to the builtin/tower type, never the struct. Warning: the declaration still compiles and constructs normally. |
+| [`E189`](diagnostics/E189.md) | An ink `TODO:` author note (issue #3050). Advisory, `Info` by default — surfaces the note's text for the Problems and TODO panels; the language's own dropped-work marker, not a defect. Recognized at weave level (top-level, knot, stitch body) and, since issue #3353, wherever branch content lines are parsed inside a multiline conditional's then-arm, `- else:` arm, or a nested block. |
 
 ## Known limitations
 
@@ -598,7 +599,7 @@ Issues that are documented here so they are not silently rediscovered. Each shou
 
 ### Silent data drops
 
-- **`AUTHOR_WARNING` / `TODO:` nodes** — silently dropped during HIR lowering. The `lower_body_children` match does not handle `AUTHOR_WARNING` syntax kind; it falls through to a `debug_assert!` that is a no-op in release builds. These should either be preserved as HIR nodes (for LSP display) or explicitly skipped with a comment.
+- **`AUTHOR_WARNING` / `TODO:` nodes** — RESOLVED as far as HIR lowering is concerned. Issue #3050 gave `AUTHOR_WARNING` an explicit `BodyChild::Structural` classification at weave level (`classify_body_child`) and surfaces every such node under a lowered body as an `E189` `Info` diagnostic (`emit_author_warnings`, `structure/mod.rs`) — no debug-assert fallthrough there. Issue #3353 closed the matching gap in branch content: `classify_branch_child` (used by `branchless_cond_body` and `multiline_branch_body`) now classifies `AUTHOR_WARNING` explicitly too, and the parser (`brink-syntax`'s `inline.rs`) recognizes a `TODO` line inside a multiline conditional's then-arm, `- else:` arm, and nested blocks — previously it fell through those paths' text catch-all and was parsed (and emitted) as ordinary prose.
 - **Const evaluation of binary expressions** — `eval_const_expr` in `decls.rs` returns `ConstValue::Null` for any expression that is not a literal, path, divert target, list literal, or prefix negation/not. This means `VAR x = 2 + 3` silently initializes `x` to `Null` instead of `5`. The catch-all `_ => Null` should at minimum emit a diagnostic.
 - **String interpolation in const context** — `hir::StringPart::Interpolation(_) => None` silently discards interpolation parts when evaluating const string values, producing a partial string. E030 is emitted as a warning.
 
