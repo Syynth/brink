@@ -328,6 +328,12 @@
 .brink-studio .player .player-line-row:hover {
   background: color-mix(in srgb, var(--bs-fg) 6%, transparent);
 }
+/* The row's padding is the ONLY spacing around the text — the prose
+   paragraph's own bottom margin would add to it below (feedback
+   2026-09-02: "more padding below the text"). */
+.brink-studio .player .player-line-row p {
+  margin: 0;
+}
 .brink-studio .player .player-line-row.kind-notice p span {
   color: var(--bs-error);
   font-style: normal;
