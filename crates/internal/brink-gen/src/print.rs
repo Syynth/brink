@@ -56,7 +56,13 @@ pub fn expr(e: &Expr) -> String {
             Expr::Neg(_) => format!("-({})", expr(inner)),
             _ => format!("-{}", expr(inner)),
         },
-        Expr::Not(inner) => format!("not {}", expr(inner)),
+        Expr::Not(inner) => match inner.as_ref() {
+            // `not not (a op b)` is rejected by inklecate (it reads `-> not`
+            // as a call target); one level of parentheses keeps the nesting
+            // unambiguous in both compilers, mirroring the `Neg` arm.
+            Expr::Not(_) => format!("not ({})", expr(inner)),
+            _ => format!("not {}", expr(inner)),
+        },
         Expr::Bin(l, op, r) => format!("({} {} {})", expr(l), binop(*op), expr(r)),
     }
 }
@@ -314,6 +320,28 @@ leaf
 
 ";
         assert_eq!(printed, expected);
+    }
+
+    #[test]
+    fn nested_unary_operators_keep_one_level_of_parentheses() {
+        let x = || Expr::Var("x".into());
+        let b = || Expr::Var("b".into());
+        assert_eq!(
+            expr(&Expr::Neg(Box::new(Expr::Neg(Box::new(x()))))),
+            "-(-x)"
+        );
+        assert_eq!(
+            expr(&Expr::Not(Box::new(Expr::Not(Box::new(b()))))),
+            "not (not b)"
+        );
+        assert_eq!(
+            expr(&Expr::Not(Box::new(Expr::Not(Box::new(Expr::Bin(
+                Box::new(b()),
+                BinOp::And,
+                Box::new(b())
+            )))))),
+            "not (not (b and b))"
+        );
     }
 
     #[test]

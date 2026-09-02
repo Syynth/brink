@@ -498,8 +498,9 @@ fn revoke_sharing_if_unclaimed<'a>(
 }
 
 /// The lifting construct's identity for [`lift_salt`]: a sequence's
-/// wrapper id, or `0` when the construct was never stamped (in-crate tests
-/// that normalize without stamping keep the bare-index derivation).
+/// wrapper id, or `0` when the construct was never stamped. An unstamped
+/// construct's clones carry no ids to re-derive, so the nonce is moot
+/// there; `0` just keeps the salt deterministic.
 fn nonce_of(id: Option<brink_format::DefinitionId>) -> u64 {
     id.map_or(0, brink_format::DefinitionId::to_raw)
 }
