@@ -791,7 +791,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
-        <div className="player-spine">
+        <div className={"player-spine" + (idle ? " is-idle" : "")}>
         {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
             the head of the rail, so the rail reads as a line of play from
             the first line, not as a bracket around whatever is on screen. */}

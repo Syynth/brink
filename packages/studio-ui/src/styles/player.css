@@ -594,6 +594,15 @@
   width: 2px;
   background: var(--bs-border);
 }
+/* Idle (the launcher is up): no timeline yet, so no rail and no node. */
+.brink-studio .player .player-spine.is-idle::before,
+.brink-studio .player .player-spine.is-idle .player-spine-start {
+  display: none;
+}
+.brink-studio .player .player-spine.is-idle {
+  flex: 0 0 auto;
+  padding-top: 0;
+}
 /* The head of the timeline: a filled node on the rail, above the first
    line. */
 .brink-studio .player .player-spine-start {
