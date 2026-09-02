@@ -10,6 +10,7 @@ pub mod document;
 pub mod effects;
 pub mod extract;
 pub mod file_rename;
+pub mod fix;
 pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;

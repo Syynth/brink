@@ -4740,3 +4740,84 @@
 - **SCOPE:** minor/local
 - **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
 - **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.
+||||||| 46916cbc5
+
+## A cloned stateful alternative shares one counter, not one body
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** compiler (HIR normalize/stamp, LIR lower, codegen)
+- **SCOPE:** moderate — amends the #3275 ruling's "sharing revoked" corner;
+  ruling (1) of #3275 (whole-line renderings for cloned lines) is
+  reaffirmed
+- **WHAT:** When lifting an inline construct clones a stateful alternative
+  into two or more branches, every clone still lifts into whole-line
+  renderings (one line-table entry, translation unit, and VO slot each),
+  and every clone keeps its own wrapper container — but the clones share
+  ONE visit-count state: clone 0 keeps the stamped id (its wrapper, or the
+  variant path's empty stub, carries the count), every other clone gets a
+  derived `container_id` and records the original as its `counter_id`,
+  and codegen selects that clone's branch by touching the original
+  container (`TouchVisit`, seeded for shuffles from the original's
+  `path_hash` via `ShuffleIndexOf`) instead of reading its own wrapper's
+  count. A claimed variant line whose alternative is a clone touches the
+  original too. The per-lift-level revocation — a clone in an unclaimable
+  branch getting its own counter — is removed.
+- **WHY:** #3401: revocation made `{c|d|e}` drift a view behind the C#
+  reference whenever a conditional or glue made its branch unclaimable
+  (`apc bpc bpd` vs `apc bpd bpe`; 93 of 512 probed shapes, one trigger).
+  Two shapes were on the table. Sharing the clone's BODY (keep the clone
+  inline, enter one container from every site) is ink's own container
+  model and also matches, but it moves those lines from whole-line units
+  to per-token fragments in the line table — `brink export-xliff` for
+  `{a|b}{true:p}{c|d|e}` went from twelve whole-line units to seven
+  fragments, orphaning translations and VO slots, which is exactly what
+  #3275's ruling (1) chose to protect. Sharing only the COUNTER keeps
+  both: the maintainer ruled for it (2026-09-02, "C: lift + shared
+  counter"). It is codegen-only — the variant path already touches shared
+  stubs this way — with no runtime or format change, and saves stay keyed
+  to the stamped id. Pinned by three C#-oracle cases
+  (`sequence-leads-multi-construct-line`,
+  `sequence-cloned-into-glued-line`,
+  `sequence-shared-across-mixed-claim-branches`); ratchet 5619 → 5622.
+
+
+## Conventions editor: teach-by-example is the design direction
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3392)
+- **SCOPE:** moderate
+- **WHAT:** The non-technical Conventions editor in Settings is built as "teach by example": the author pastes a few lines as they actually write them, marks each line (cue / dialogue / action / narration), the studio proposes the `[dialogue]` rules and shows them back as plain sentences with the lines that support each, and nothing is written to `brink.toml` until the author confirms. Chosen over three alternatives on the design canvas (recipe tiles, rule sentences, a guided wizard).
+- **WHY:** Maintainer: "clearly the best, by a long shot" — authors who already have pages should not have to describe their format, they should show it. The stated risk is implementation complexity (rule inference); the direction stands on the condition that inference is explainable and verified, not clever: propose from a small set of shapes and confirm by re-parsing the marked lines, surfacing anything the shapes cannot explain as a decision for the author rather than a guess. The inference tests cover the ink documentation's own suggested line formats (`Name: line`, cues with line tags, quoted prose with attribution) alongside the studio's presets — corpus recorded on #3392.
+
+## Conventions editor: sample lines come from a knot/stitch selector
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3392)
+- **SCOPE:** minor/local
+- **STATUS:** tentative
+- **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
+- **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project. The pulled passage is shown whole: the marked-lines list and the Player preview scroll for long runs rather than trimming to the first few lines.
+
+## Player look: provenance chip off the text, no row stripes, dialogue indented, choices link back, styling in Settings
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player
+- **SCOPE:** moderate
+- **WHAT:** (1) The provenance chip (`file:line` on hover) must never cover the line's text. (2) Transcript rows are not striped (no alternating row background). (3) Dialogue lines are indented a little under their speaker's header, so the speech reads as coming from the speaker. (4) A choice echo (`> Enough shopping`) links back to the choice's source the way a line does. (5) Player styling lives in Settings → Player (app scope): font family first — the desktop app enumerates the machine's fonts through the Tauri side; the web build offers a curated list plus a free-text family — with further knobs to follow.
+- **WHY:** Maintainer, reviewing the Player after the dialogue-run work: the chip "is covering the text"; "there's no reason it shouldn't link back to where it was"; indentation "to indicate it came from the speaker"; stripes read as a table, not prose; the font is a matter of taste, and taste is a setting — browsers cannot list installed fonts (fingerprinting), so enumeration is a desktop capability and the web gets a curated list.
+
+## Player look: design pass first; choice echoes carry their source marker; the editor follows the Player closely
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player, editor-ui
+- **SCOPE:** moderate
+- **WHAT:** (1) The Player gets a small design pass before more knobs are added — a better baseline (even padding on text rows, consistent rhythm) rather than fixes one at a time. (2) A choice echo in the transcript shows `*` or `+` to its left according to the choice's kind in the source (once-only vs sticky), marking it as the reader's pick. The two button-styling directions proposed (quiet buttons; echo as a "You" run) were both declined. (3) The editor's "follow the Player" behaviour is strengthened: the editor should track the Player's position much more closely as the story advances, not only on hover or ⌘-click. (4) The row highlight in the transcript runs the full width of the pane, not just the text block. (5) The pass aims at "a really strong and clear visual design for the player, something that really sells it" — directions are drawn on the canvas and one is chosen before implementation.
+- **WHY:** Maintainer: "we should absolutely have a better baseline to work from"; the marker "indicate[s] it was a choice from the user, based on what type it was in the source"; the existing follow "is not nearly strong enough, it should follow the player much more closely."
+
+## Player look: direction C ("Stage") chosen; provenance as a hanging icon button; hover links to the editor; tags shown
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player, editor-ui
+- **SCOPE:** moderate
+- **WHAT:** (1) The Player's reading surface follows direction C of the design pass — modern, colour-led: each speaker's block hangs off a rule in the speaker's palette colour with the name as a small label, asides inside the block, choices as cards carrying their `*`/`+` marker. Directions A (Manuscript) and B (Screenplay) are dropped. (2) The provenance affordance is a small icon button, absolutely positioned so it hangs below the row's edge over the next row, revealing `file:line` as a tooltip on hover — not a text chip in the row. (3) Hovering a transcript line highlights its source line in the editor (distinct from the follow band). (4) The transcript shows a line's tags. (5) Still open: a visual element that ties the choice cards to the transcript rows — "we're closer to good choices here, but I want something more." (6) Narration reads at full strength; action lines are the dimmed ones — "action is dimmed, narration isn't" (this reverses the Player's current italic-muted narration). (7) The provenance button is present only while its row is hovered. (8) The spine (the rail the speaker segments and choice nodes share — accepted: "that's neat") reacts to the line kind: solid coloured for a speaker, plain for narration, dotted along action text. The echo ring sits on the centre of its text line.
+- **WHY:** Maintainer, on the canvas: "C is pretty good. it's not quite there, but we can drop the other two from consideration"; the link "should be an icon button that when hovered reveals the filename:line"; "hovering the line should highlight in the editor, as well"; "i'd like to see tags in the example".

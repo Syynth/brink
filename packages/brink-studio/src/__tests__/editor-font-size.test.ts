@@ -91,6 +91,7 @@ describe("editor font size persistence", () => {
       formGlyph: "inline",
       autoOpenForm: true,
       showGutters: false,
+      showInlayHints: false,
       fontSize: 18,
       appFontSize: 12,
     });

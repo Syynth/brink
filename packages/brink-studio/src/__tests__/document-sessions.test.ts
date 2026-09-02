@@ -15,11 +15,12 @@ import {
   InMemoryFileProvider,
   documentHandleFacet,
   syncAnnotation,
+  DocHandle,
   type DocTarget,
   type DocumentCallbacks,
 } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
-import { EditorView } from "@codemirror/view";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -766,9 +767,84 @@ describe("DocumentSessions", () => {
     });
   });
 
+  describe("inlay hints toggle across remount (#3350)", () => {
+    // `DocHandle.inlayHints` is stubbed to a fixed non-empty hint so this
+    // test pins the STATE-FIELD wiring (mount/unmount/setInlayHints) rather
+    // than depending on the real analyzer resolving a parameter hint — the
+    // mechanism under test is entirely in `inlayHintsEnabledField`'s
+    // on/off gate, not in what the callback returns.
+    const STUB_HINT = { offset: 0, label: "amount:", kind: "parameter", padding_right: true } as const;
+
+    function hintCount(view: EditorView): number {
+      return view.dom.querySelectorAll(".brink-inlay-hint").length;
+    }
+
+    it("a remounted CACHED view reflects the CURRENT setting, not the one it was unmounted with", async () => {
+      const stub = vi.spyOn(DocHandle.prototype, "inlayHints").mockReturnValue([STUB_HINT]);
+      try {
+        const mounted = harness.mount("main.ink", "group-1");
+        expect(hintCount(mounted.view)).toBeGreaterThan(0);
+
+        // Hide hints while the view is mounted (live push)...
+        harness.documents.setInlayHints(false);
+        expect(hintCount(mounted.view)).toBe(0);
+
+        // ...unmount (snapshots the OFF EditorState)...
+        mounted.dispose();
+
+        // ...then flip the setting back ON while the tab is backgrounded —
+        // there is no mounted view for the broadcast to reach.
+        harness.documents.setInlayHints(true);
+
+        // Remounting into a FRESH container reuses the cached (OFF) state
+        // (content is unchanged). The bug: mountView only ever pushed the
+        // OFF case, so a reused ON-turned-since-unmount state stayed hidden.
+        const again = harness.mount("main.ink", "group-1");
+        expect(hintCount(again.view)).toBeGreaterThan(0);
+      } finally {
+        stub.mockRestore();
+      }
+    });
+  });
+
   describe("syncAnnotation export", () => {
     it("is defined (mirror transactions are annotated with it)", () => {
       expect(syncAnnotation).toBeDefined();
+    });
+  });
+
+  // #3384 review finding 1: `getFixes` used to add the fragment origin
+  // (`base + offset`) before calling `DocHandle.fixes`, which itself folds
+  // that same origin in on the wasm side (`to_absolute` adds `view.start`
+  // for a handle opened via `openFragment`) — double-counting it and
+  // resolving into the wrong file offset. The mock's `fixes_at_doc` ignores
+  // its `offset` argument entirely (synthetic — no analyzer to key fixes
+  // off), so it can't catch a wrong offset by its return value; this spies
+  // on `DocHandle.fixes` directly to assert the argument `getFixes` passes.
+  describe("auto-fixes on a fragment view (#3377/#3384)", () => {
+    it("passes the fragment-relative cursor straight through to fixes()", () => {
+      harness.documents.noteTarget(START_TARGET);
+      const { view } = harness.mount("main.ink::start", "group-1");
+      const handle = view.state.facet(documentHandleFacet)?.handle;
+      if (!handle) throw new Error("no handle on view");
+      expect(handle.fragmentRange()).not.toBeNull();
+
+      // A cursor position inside the fragment's OWN document — distinct from
+      // (and much smaller than) the fragment's file-absolute start offset,
+      // so a reintroduced `base + offset` is caught by the value, not just
+      // the call happening.
+      const relOffset = START_KNOT_TEXT.indexOf("Hello");
+      expect(relOffset).toBeGreaterThan(0);
+      view.dispatch({ selection: { anchor: relOffset } });
+
+      const spy = vi.spyOn(handle, "fixes");
+      const handled = runScopeHandlers(
+        view,
+        new KeyboardEvent("keydown", { key: ".", ctrlKey: true }),
+        "editor",
+      );
+      expect(handled).toBe(true);
+      expect(spy).toHaveBeenCalledWith(relOffset);
     });
   });
 });

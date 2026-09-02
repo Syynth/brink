@@ -40,6 +40,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type {
   CodeAction,
+  Fix,
   CompileResult,
   CompletionItem,
   DialogueDialect,
@@ -55,6 +56,7 @@ import { ClassifierSessionHandle, getTokenTypeNames } from "@brink-lang/web";
 import { brinkStudio, setDialect, type BrinkStudioOptions } from "./extensions.js";
 import { brinkBasicSetup } from "./setup.js";
 import { startInlineRename, type BreakageContext } from "./rename.js";
+import { setInlayHints } from "./inlay-hints.js";
 import {
   setFormGlyphMode,
   setFormAutoOpen,
@@ -378,6 +380,9 @@ export class DocumentSessions {
   private formGlyph: FormGlyphMode = DEFAULT_FORM_GLYPH_MODE;
   /** Auto-open the Form on accepting a function completion (Settings; default off). */
   private autoOpen = false;
+  /** Show inlay hints (#3350, Settings ▸ Editor). Default ON — a hidden
+   *  hint stream is the opt-in state, matching the issue's ruled default. */
+  private inlayHintsOn = true;
 
   constructor(
     project: ProjectSession,
@@ -447,6 +452,18 @@ export class DocumentSessions {
     this.autoOpen = on;
     for (const slot of this.slots.values()) {
       if (slot.view !== null) setFormAutoOpen(slot.view, on);
+    }
+  }
+
+  /**
+   * Show or hide inlay hints live across all open editors, and for every
+   * editor opened after this call (#3350, Settings ▸ Editor). Mirrors
+   * {@link setFormGlyph}'s broadcast shape; default ON (current behavior).
+   */
+  setInlayHints(on: boolean): void {
+    this.inlayHintsOn = on;
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) setInlayHints(slot.view, on);
     }
   }
 
@@ -563,6 +580,14 @@ export class DocumentSessions {
     // A slot opened after a keymap rebind starts on the host's chords, not
     // the shipped defaults the baseline compartment carries.
     if (this.editorActionKeys !== null) setEditorActionKeys(view, this.editorActionKeys);
+    // Push the current Settings state unconditionally: a REUSED cached state
+    // (unmountSlot snapshots `slot.state = slot.view.state`, above) can carry
+    // whatever `inlayHintsOn` was true at the PREVIOUS mount, not the field's
+    // own default — pushing only the off case left a stale ON-cached state
+    // showing hints after the setting had since been turned off (#3350
+    // review). `setInlayHints` itself no-ops when the field already agrees,
+    // so this costs nothing on the common case of a fresh state.
+    setInlayHints(view, this.inlayHintsOn);
 
     if (this.focusedSlotId === id) {
       this.applyFocusSideEffects(slot);
@@ -1401,6 +1426,35 @@ export class DocumentSessions {
             });
           }
         : undefined,
+      // Auto-fixes (docs/autofix-spec.md §7): the fixes for the diagnostics
+      // under the cursor. A `Fix` carries its own edits, so applying it is
+      // `applyFix` (which resolves those edits to the sources to write) and
+      // then the same host apply seam the code actions use.
+      getFixes: (offset) => {
+        const handle = slot.handle;
+        if (!handle) return [];
+        return handle.fixes(offset);
+      },
+      applyFix: this.callbacks.onApplyStructural
+        ? (fix: Fix) => {
+            const handle = slot.handle;
+            if (!handle) return;
+            this.callbacks.onApplyStructural?.({
+              path: slot.path,
+              description: fix.title,
+              result: handle.applyFix(fix),
+            });
+          }
+        : undefined,
+      // A Placeholder fix's hole is a (path, whole-file UTF-16 offset); only
+      // this slot knows its own path and fragment origin, so the mapping
+      // into view coordinates happens here and the menu does the dispatch.
+      resolveFixCaret: (fix: Fix) => {
+        const caret = fix.caret;
+        if (caret === undefined || caret.path !== slot.path) return null;
+        const base = slot.handle?.fragmentRange()?.start ?? 0;
+        return caret.offset - base;
+      },
       // Extract (#315 H): compute is side-effect-free — fold any fragment-view
       // origin into whole-file UTF-16 offsets, then call the matching wasm op.
       // Apply routes the (safe or forced) result through the host apply seam.

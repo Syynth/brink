@@ -726,10 +726,14 @@ fn stamp_inline_part(
 // clone arrives carrying its original's id; two containers must never
 // share one (#1673). The rules, per the 2026-08-29 #3275 ruling:
 //
-// * a cloned STATEFUL alternative (`ContentPart::InlineSequence`) keeps
-//   its id — and its whole subtree — in every clone: shared id = shared
-//   visit-count state, ink's "advances each time the line is viewed".
-//   LIR emits the shared container once (`LowerCtx::emitted_shared_ids`).
+// * a cloned STATEFUL alternative (`ContentPart::InlineSequence`) shares
+//   the original's visit-count STATE — ink's "advances each time the line
+//   is viewed" — without sharing its body: the clone's wrapper and branch
+//   ids re-derive like everything else, and `Sequence::counter_id` records
+//   the original, which codegen reads and advances (`TouchVisit`) to pick
+//   the clone's branch (#3401). Clone 0 keeps the original id, so exactly
+//   one container carries the counted state — a bodied wrapper when that
+//   site lifts, or the variant path's empty stub when it claims.
 // * everything else (a cloned stateless conditional's branches, cloned
 //   lambdas, anonymous containers inside cloned branch bodies) re-derives
 //   per clone from the original id + a salt that mixes the LIFTING
@@ -754,94 +758,79 @@ pub(crate) fn derive_id(base: DefinitionId, kind: &str, salt: u64) -> Definition
 }
 
 /// Re-derive every container/lambda id in a cloned run of content parts
-/// (see the module section comment above). `salt == 0` is a no-op.
-/// Stateful alternatives keep their ids (shared state) — the lift later
-/// revokes the sharing via [`rederive_block_all`] when any assembled
-/// branch fails to claim as a variant line, because a bodied inline
-/// container and an empty variant stub can never share one id.
+/// (see the module section comment above). `salt == 0` is a no-op. A
+/// cloned stateful alternative gets its own wrapper id like everything
+/// else, but remembers the original as its `counter_id` (#3401): its branch
+/// index is computed from the ORIGINAL container's visit count, so every
+/// clone advances one shared state while keeping a distinct body.
 pub(crate) fn rederive_cloned_parts(parts: &mut [hir::ContentPart], salt: u64) {
-    rederive_parts_inner(parts, salt, true);
+    rederive_parts_inner(parts, salt);
 }
 
-/// The sharing-revoked mode: re-derive EVERY id in a block, stateful
-/// alternatives included. Applied by `normalize.rs`'s lift to branches
-/// 1.. when not every assembled branch claims immediately as a variant
-/// line — the only regime in which a shared id is sound (empty identical
-/// stubs, deduped at emission). Authored (non-cloned) ids inside the
-/// branch re-derive too; that is accepted churn in this structural-mixed
-/// corner — uniqueness and determinism are preserved, which is what
-/// matters.
-pub(crate) fn rederive_block_all(block: &mut hir::Block, salt: u64) {
-    if salt == 0 {
-        return;
+/// The #3401 clone rule for a stateful alternative: a derived wrapper id
+/// (this clone's body is its own container), branch ids derived like any
+/// cloned block, and `counter_id` pinned to the ORIGINAL — a clone of a
+/// clone keeps the first original, never a derived intermediate.
+fn rederive_cloned_sequence(seq: &mut hir::Sequence, salt: u64) {
+    if let Some(id) = seq.container_id {
+        seq.counter_id.get_or_insert(id);
+        seq.container_id = Some(derive_id(id, "clone", salt));
     }
-    rederive_block_inner(block, salt, false);
+    for branch in &mut seq.branches {
+        if let Some(id) = branch.body.container_id {
+            branch.body.container_id = Some(derive_id(id, "clone", salt));
+        }
+        rederive_block_inner(&mut branch.body, salt);
+    }
 }
 
-fn rederive_parts_inner(parts: &mut [hir::ContentPart], salt: u64, share_stateful: bool) {
+fn rederive_parts_inner(parts: &mut [hir::ContentPart], salt: u64) {
     if salt == 0 {
         return;
     }
     for part in parts {
         match part {
-            // Stateful alternative: shared by ruling — the whole subtree
-            // keeps its ids so every clone is byte-identical and LIR can
-            // emit it once. In sharing-revoked mode the subtree re-derives
-            // like everything else.
-            hir::ContentPart::InlineSequence(seq) => {
-                if share_stateful {
-                    continue;
-                }
-                if let Some(id) = seq.container_id {
-                    seq.container_id = Some(derive_id(id, "clone", salt));
-                }
-                for branch in &mut seq.branches {
-                    if let Some(id) = branch.body.container_id {
-                        branch.body.container_id = Some(derive_id(id, "clone", salt));
-                    }
-                    rederive_block_inner(&mut branch.body, salt, share_stateful);
-                }
-            }
+            hir::ContentPart::InlineSequence(seq) => rederive_cloned_sequence(seq, salt),
             hir::ContentPart::InlineConditional(cond) => {
                 if let hir::CondKind::Switch(e) = &mut cond.kind {
-                    rederive_cloned_expr(e, salt, share_stateful);
+                    rederive_cloned_expr(e, salt);
                 }
                 for branch in &mut cond.branches {
                     if let Some(id) = branch.container_id {
                         branch.container_id = Some(derive_id(id, "clone", salt));
                     }
                     if let Some(c) = &mut branch.condition {
-                        rederive_cloned_expr(c, salt, share_stateful);
+                        rederive_cloned_expr(c, salt);
                     }
-                    rederive_block_inner(&mut branch.body, salt, share_stateful);
+                    rederive_block_inner(&mut branch.body, salt);
                 }
             }
-            hir::ContentPart::Interpolation(e) => rederive_cloned_expr(e, salt, share_stateful),
+            hir::ContentPart::Interpolation(e) => rederive_cloned_expr(e, salt),
             hir::ContentPart::Span(span) => {
-                rederive_parts_inner(&mut span.children, salt, share_stateful);
+                rederive_parts_inner(&mut span.children, salt);
             }
             hir::ContentPart::Text(_) | hir::ContentPart::Glue | hir::ContentPart::Spring => {}
         }
     }
 }
 
-fn rederive_block_inner(block: &mut hir::Block, salt: u64, share_stateful: bool) {
+fn rederive_block_inner(block: &mut hir::Block, salt: u64) {
     if let Some(id) = block.container_id {
         block.container_id = Some(derive_id(id, "clone", salt));
     }
     for stmt in &mut block.stmts {
-        rederive_stmt_inner(stmt, salt, share_stateful);
+        rederive_stmt_inner(stmt, salt);
     }
 }
 
-fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64, share_stateful: bool) {
+fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64) {
     match stmt {
-        hir::Stmt::ChoiceSet(cs) => rederive_choice_set(cs, salt, share_stateful),
+        hir::Stmt::ChoiceSet(cs) => rederive_choice_set(cs, salt),
         hir::Stmt::LabeledBlock(block) => {
             // A label-bearing construct is never cloned (`lift_index`
             // lifts it first) — this arm only sees anonymous blocks.
             for s in &mut block.stmts {
-                rederive_stmt_inner(s, salt, share_stateful);
+                rederive_stmt_inner(s, salt);
             }
         }
         hir::Stmt::Conditional(cond) => {
@@ -849,76 +838,61 @@ fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64, share_stateful: bool) {
                 if let Some(id) = branch.container_id {
                     branch.container_id = Some(derive_id(id, "clone", salt));
                 }
-                rederive_block_inner(&mut branch.body, salt, share_stateful);
+                rederive_block_inner(&mut branch.body, salt);
             }
         }
-        hir::Stmt::Sequence(seq) => {
-            // Stateful: shared by ruling in the default mode — see
-            // `rederive_cloned_parts`; re-derived wholesale when sharing
-            // is revoked.
-            if !share_stateful {
-                if let Some(id) = seq.container_id {
-                    seq.container_id = Some(derive_id(id, "clone", salt));
-                }
-                for branch in &mut seq.branches {
-                    if let Some(id) = branch.body.container_id {
-                        branch.body.container_id = Some(derive_id(id, "clone", salt));
-                    }
-                    rederive_block_inner(&mut branch.body, salt, share_stateful);
-                }
-            }
-        }
+        hir::Stmt::Sequence(seq) => rederive_cloned_sequence(seq, salt),
         hir::Stmt::Content(content) => {
-            rederive_parts_inner(&mut content.parts, salt, share_stateful);
+            rederive_parts_inner(&mut content.parts, salt);
             for tag in &mut content.tags {
-                rederive_parts_inner(&mut tag.parts, salt, share_stateful);
+                rederive_parts_inner(&mut tag.parts, salt);
             }
         }
         hir::Stmt::Divert(d) => {
             for a in &mut d.target.args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
         hir::Stmt::TunnelCall(t) => {
             for target in &mut t.targets {
                 for a in &mut target.args {
-                    rederive_cloned_expr(a, salt, share_stateful);
+                    rederive_cloned_expr(a, salt);
                 }
             }
         }
         hir::Stmt::ThreadStart(t) => {
             for a in &mut t.target.args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
         hir::Stmt::TempDecl(t) => {
             if let Some(e) = &mut t.value {
-                rederive_cloned_expr(e, salt, share_stateful);
+                rederive_cloned_expr(e, salt);
             }
         }
         hir::Stmt::Assignment(a) => {
-            rederive_cloned_expr(&mut a.target, salt, share_stateful);
-            rederive_cloned_expr(&mut a.value, salt, share_stateful);
+            rederive_cloned_expr(&mut a.target, salt);
+            rederive_cloned_expr(&mut a.value, salt);
         }
         hir::Stmt::Return(r) => {
             if let Some(e) = &mut r.value {
-                rederive_cloned_expr(e, salt, share_stateful);
+                rederive_cloned_expr(e, salt);
             }
             for a in &mut r.onwards_args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
         hir::Stmt::ExprStmt(e) | hir::Stmt::AttachElement(e) => {
-            rederive_cloned_expr(e, salt, share_stateful);
+            rederive_cloned_expr(e, salt);
         }
         hir::Stmt::LogicBlock(lb) => {
             for s in &mut lb.stmts {
-                rederive_cloned_block_stmt(s, salt, share_stateful);
+                rederive_cloned_block_stmt(s, salt);
             }
         }
         hir::Stmt::Await(a) => {
             if let Some(c) = &mut a.condition {
-                rederive_cloned_expr(c, salt, share_stateful);
+                rederive_cloned_expr(c, salt);
             }
         }
         hir::Stmt::EndOfLine | hir::Stmt::EndElementRun => {}
@@ -927,44 +901,44 @@ fn rederive_stmt_inner(stmt: &mut hir::Stmt, salt: u64, share_stateful: bool) {
 
 /// The `BlockStmt` half of the cloned-lambda walk: `BlockStmt` mints no
 /// container ids of its own, but its expressions can hold nested lambdas.
-fn rederive_cloned_block_stmt(stmt: &mut hir::BlockStmt, salt: u64, share_stateful: bool) {
+fn rederive_cloned_block_stmt(stmt: &mut hir::BlockStmt, salt: u64) {
     match stmt {
         hir::BlockStmt::TempDecl(t) => {
             if let Some(e) = &mut t.value {
-                rederive_cloned_expr(e, salt, share_stateful);
+                rederive_cloned_expr(e, salt);
             }
         }
         hir::BlockStmt::Assignment(a) => {
-            rederive_cloned_expr(&mut a.target, salt, share_stateful);
-            rederive_cloned_expr(&mut a.value, salt, share_stateful);
+            rederive_cloned_expr(&mut a.target, salt);
+            rederive_cloned_expr(&mut a.value, salt);
         }
         hir::BlockStmt::Return(r) => {
             if let Some(e) = &mut r.value {
-                rederive_cloned_expr(e, salt, share_stateful);
+                rederive_cloned_expr(e, salt);
             }
             for a in &mut r.onwards_args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
-        hir::BlockStmt::If(i) => rederive_cloned_if(i, salt, share_stateful),
+        hir::BlockStmt::If(i) => rederive_cloned_if(i, salt),
         hir::BlockStmt::While(w) => {
-            rederive_cloned_expr(&mut w.condition, salt, share_stateful);
+            rederive_cloned_expr(&mut w.condition, salt);
             for s in &mut w.body {
-                rederive_cloned_block_stmt(s, salt, share_stateful);
+                rederive_cloned_block_stmt(s, salt);
             }
         }
         hir::BlockStmt::For(f) => {
-            rederive_cloned_expr(&mut f.iterable, salt, share_stateful);
+            rederive_cloned_expr(&mut f.iterable, salt);
             for s in &mut f.body {
-                rederive_cloned_block_stmt(s, salt, share_stateful);
+                rederive_cloned_block_stmt(s, salt);
             }
         }
-        hir::BlockStmt::ExprStmt(e) => rederive_cloned_expr(e, salt, share_stateful),
+        hir::BlockStmt::ExprStmt(e) => rederive_cloned_expr(e, salt),
         _ => {}
     }
 }
 
-fn rederive_choice_set(cs: &mut hir::ChoiceSet, salt: u64, share_stateful: bool) {
+fn rederive_choice_set(cs: &mut hir::ChoiceSet, salt: u64) {
     if let Some(id) = cs.gather_id {
         let derived = derive_id(id, "clone", salt);
         cs.gather_id = Some(derived);
@@ -975,25 +949,25 @@ fn rederive_choice_set(cs: &mut hir::ChoiceSet, salt: u64, share_stateful: bool)
             choice.container_id = Some(derive_id(id, "clone", salt));
         }
         if let Some(c) = &mut choice.condition {
-            rederive_cloned_expr(c, salt, share_stateful);
+            rederive_cloned_expr(c, salt);
         }
-        rederive_block_inner(&mut choice.body, salt, share_stateful);
+        rederive_block_inner(&mut choice.body, salt);
     }
     for s in &mut cs.continuation.stmts {
-        rederive_stmt_inner(s, salt, share_stateful);
+        rederive_stmt_inner(s, salt);
     }
 }
 
-fn rederive_cloned_if(i: &mut hir::IfStmt, salt: u64, share_stateful: bool) {
-    rederive_cloned_expr(&mut i.condition, salt, share_stateful);
+fn rederive_cloned_if(i: &mut hir::IfStmt, salt: u64) {
+    rederive_cloned_expr(&mut i.condition, salt);
     for s in &mut i.body {
-        rederive_cloned_block_stmt(s, salt, share_stateful);
+        rederive_cloned_block_stmt(s, salt);
     }
     match &mut i.else_branch {
-        Some(hir::ElseBranch::ElseIf(nested)) => rederive_cloned_if(nested, salt, share_stateful),
+        Some(hir::ElseBranch::ElseIf(nested)) => rederive_cloned_if(nested, salt),
         Some(hir::ElseBranch::Else(stmts)) => {
             for s in stmts {
-                rederive_cloned_block_stmt(s, salt, share_stateful);
+                rederive_cloned_block_stmt(s, salt);
             }
         }
         None => {}
@@ -1004,77 +978,77 @@ fn rederive_cloned_if(i: &mut hir::IfStmt, salt: u64, share_stateful: bool) {
 /// [`stamp_lambdas_in_expr`]'s reachability, minus the structural walks a
 /// clone can't contain (a fragment's statements go through
 /// [`rederive_cloned_stmt`]).
-fn rederive_cloned_expr(expr: &mut hir::Expr, salt: u64, share_stateful: bool) {
+fn rederive_cloned_expr(expr: &mut hir::Expr, salt: u64) {
     match expr {
         hir::Expr::Lambda(l) => {
             if let Some(id) = l.container_id {
                 l.container_id = Some(derive_id(id, "clone", salt));
             }
             match &mut l.body {
-                hir::LambdaBody::Expr(e) => rederive_cloned_expr(e, salt, share_stateful),
+                hir::LambdaBody::Expr(e) => rederive_cloned_expr(e, salt),
                 hir::LambdaBody::Block { stmts, tail } => {
                     for s in stmts.iter_mut() {
-                        rederive_cloned_block_stmt(s, salt, share_stateful);
+                        rederive_cloned_block_stmt(s, salt);
                     }
                     if let Some(t) = tail {
-                        rederive_cloned_expr(t, salt, share_stateful);
+                        rederive_cloned_expr(t, salt);
                     }
                 }
             }
         }
         hir::Expr::Prefix(_, inner) | hir::Expr::Postfix(inner, _) => {
-            rederive_cloned_expr(inner, salt, share_stateful);
+            rederive_cloned_expr(inner, salt);
         }
         hir::Expr::Infix(ie) => {
-            rederive_cloned_expr(&mut ie.lhs, salt, share_stateful);
-            rederive_cloned_expr(&mut ie.rhs, salt, share_stateful);
+            rederive_cloned_expr(&mut ie.lhs, salt);
+            rederive_cloned_expr(&mut ie.rhs, salt);
         }
         hir::Expr::Call(_, args) => {
             for a in args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
         hir::Expr::ArrayLiteral(a) => {
             for e in &mut a.elements {
-                rederive_cloned_expr(e, salt, share_stateful);
+                rederive_cloned_expr(e, salt);
             }
         }
         hir::Expr::MapLiteral(m) => {
             for (k, v) in &mut m.entries {
-                rederive_cloned_expr(k, salt, share_stateful);
-                rederive_cloned_expr(v, salt, share_stateful);
+                rederive_cloned_expr(k, salt);
+                rederive_cloned_expr(v, salt);
             }
         }
         hir::Expr::Index(idx) => {
-            rederive_cloned_expr(&mut idx.base, salt, share_stateful);
-            rederive_cloned_expr(&mut idx.index, salt, share_stateful);
+            rederive_cloned_expr(&mut idx.base, salt);
+            rederive_cloned_expr(&mut idx.index, salt);
         }
         hir::Expr::Range(r) => {
-            rederive_cloned_expr(&mut r.start, salt, share_stateful);
-            rederive_cloned_expr(&mut r.end, salt, share_stateful);
+            rederive_cloned_expr(&mut r.start, salt);
+            rederive_cloned_expr(&mut r.end, salt);
         }
         hir::Expr::StructLiteral(sl) => {
             for (_, v) in &mut sl.fields {
-                rederive_cloned_expr(v, salt, share_stateful);
+                rederive_cloned_expr(v, salt);
             }
         }
-        hir::Expr::FieldAccess(fa) => rederive_cloned_expr(&mut fa.base, salt, share_stateful),
+        hir::Expr::FieldAccess(fa) => rederive_cloned_expr(&mut fa.base, salt),
         hir::Expr::FnLiteral(fl) => {
             for a in &mut fl.args {
-                rederive_cloned_expr(a, salt, share_stateful);
+                rederive_cloned_expr(a, salt);
             }
         }
-        hir::Expr::RefArg(ra) => rederive_cloned_expr(&mut ra.operand, salt, share_stateful),
+        hir::Expr::RefArg(ra) => rederive_cloned_expr(&mut ra.operand, salt),
         hir::Expr::String(s) => {
             for part in &mut s.parts {
                 if let hir::StringPart::Interpolation(inner) = part {
-                    rederive_cloned_expr(inner, salt, share_stateful);
+                    rederive_cloned_expr(inner, salt);
                 }
             }
         }
         hir::Expr::Fragment(stmts) => {
             for s in stmts {
-                rederive_stmt_inner(s, salt, share_stateful);
+                rederive_stmt_inner(s, salt);
             }
         }
         hir::Expr::Path(_)

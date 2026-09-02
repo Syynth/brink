@@ -1,0 +1,12 @@
+description = "A stateful sequence cloned into a lifted conditional's branches where one branch claims as a variant line and the other (glue-bearing) cannot: both must advance ONE counter (#3401)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "sequence-shared-across-mixed-claim-branches"
+notes = "Hand-minimized for the #3401 fix: the then-branch carries glue (lifts: a bodied wrapper under the stamped id), the else-branch is a plain line (claims: touches that same container); the oracle alternates xc, yd, xe, ye through one `{c|d|e}` count. Pins that a claimed clone site touches the original's container rather than stubbing its own."
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences", "lifted-branches", "conditional", "glue"]

@@ -41,6 +41,7 @@ impl LowerSequence for ast::SequenceWithAnnotation {
             kind,
             branches,
             container_id: None,
+            counter_id: None,
         })
     }
 }
@@ -61,6 +62,7 @@ impl LowerSequence for ast::ImplicitSequence {
             kind: SequenceType::STOPPING,
             branches,
             container_id: None,
+            counter_id: None,
         })
     }
 }
@@ -92,6 +94,7 @@ pub fn lower_block_sequence(
         kind,
         branches,
         container_id: None,
+        counter_id: None,
     }
 }
 

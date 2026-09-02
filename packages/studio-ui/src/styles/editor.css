@@ -447,6 +447,19 @@
   font-size: var(--bs-font-small);
 }
 
+/* Tooltip reparent mount (#3349, #3357 review): CM6's tooltip container
+   (`tooltips({ parent })`, `tooltip-portal.ts`) is `position: relative`, not
+   `fixed`/`absolute` — mounted straight on `.brink-studio` (a flex column,
+   `frame.css`) it becomes an in-flow flex item and disrupts the shell
+   layout, one item per mounted editor. Taking this layer out of flow with a
+   zero footprint keeps it from affecting any sibling's layout while CM6's
+   own `position: fixed` tooltip placement inside it is unaffected. */
+.brink-studio .brink-tooltip-layer {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
 /* CM6 lint panel overrides */
 .brink-studio .cm-panel.cm-panel-lint {
   background: var(--bs-surface-bg);
@@ -480,8 +493,20 @@
 
    `cm-tooltip-hover` is the right host: it carries the hover card and the
    lint tooltip, which are exactly the two floating explainers that share
-   this width. Autocomplete is `cm-tooltip-autocomplete` and sizes itself. */
-.brink-studio .cm-editor .cm-tooltip-hover {
+   this width. Autocomplete is `cm-tooltip-autocomplete` and sizes itself.
+
+   ⚠ Not `.brink-studio .cm-editor .cm-tooltip-hover` — `tooltip-portal.ts`
+   (#3349) reparents every tooltip out of `.cm-editor` so a sibling pane's
+   stacking context/overflow (the Player split) can't clip it. The node
+   still carries `.cm-tooltip-hover`; it just isn't inside `.cm-editor`
+   anymore, so a selector requiring that ancestor would silently stop
+   matching. `.brink-studio` alone is still required and still true: the
+   reparented node lands inside the `.brink-tooltip-layer` mount point
+   (below), which is itself a descendant of the real `.brink-studio` root
+   (or `document.body` for a headless embed with no theme scope to keep) —
+   `.brink-studio .cm-tooltip-hover` matches either way, since a descendant
+   selector doesn't care what sits in between. */
+.brink-studio .cm-tooltip-hover {
   max-width: var(--bs-tooltip-max-width);
 }
 .brink-studio .cm-tooltip-lint {
@@ -738,7 +763,10 @@
   border: 1px solid var(--bs-border);
   color: var(--bs-fg-muted);
 }
-.brink-studio .cm-editor .cm-tooltip {
+/* Not `.cm-editor .cm-tooltip` — see the `.cm-tooltip-hover` note above:
+   `tooltip-portal.ts` (#3349) reparents the whole tooltip layer (hover,
+   lint, AND this autocomplete list) out of `.cm-editor`. */
+.brink-studio .cm-tooltip {
   background: var(--bs-panel-bg);
   border: 1px solid var(--bs-border);
   border-radius: 8px;
@@ -746,15 +774,15 @@
   overflow: hidden;
   color: var(--bs-fg);
 }
-.brink-studio .cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+.brink-studio .cm-tooltip-autocomplete ul li[aria-selected] {
   background: var(--bs-list-active-bg);
   color: var(--bs-accent);
 }
-.brink-studio .cm-editor .cm-completionMatchedText {
+.brink-studio .cm-completionMatchedText {
   text-decoration: none;
   color: var(--bs-accent);
 }
-.brink-studio .cm-editor .cm-completionDetail {
+.brink-studio .cm-completionDetail {
   color: var(--bs-fg-muted);
 }
 

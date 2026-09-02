@@ -11,6 +11,7 @@ import type {
   SignatureInfo,
   FoldRange,
   CodeAction,
+  Fix,
   StructuralResult,
   AutoImportResult,
   DialogueDialect,
@@ -67,6 +68,7 @@ import { proseExtension } from "./prose.js";
 import type { ProseChecker, ProseLint } from "./prose.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 import { editorActionKeymap } from "./editor-actions.js";
+import { tooltipPortalExtension } from "./tooltip-portal.js";
 
 /**
  * The indent width when the project declares none — mirrors
@@ -255,6 +257,15 @@ export interface BrinkStudioOptions {
    * `getCodeActions`. Absent ⇒ the menu just dismisses (the pre-#315 behavior).
    */
   applyCodeAction?: (action: CodeAction) => void;
+  /** The auto-fixes for the diagnostics under the cursor — see
+   *  `CodeActionsOptions.getFixes`. Only wired alongside `getCodeActions`. */
+  getFixes?: (offset: number) => Fix[];
+  /** Apply a chosen fix through the host's apply seam — see
+   *  `CodeActionsOptions.applyFix`. */
+  applyFix?: (fix: Fix) => void;
+  /** Map a Placeholder fix's caret into this view — see
+   *  `CodeActionsOptions.resolveFixCaret`. */
+  resolveFixCaret?: (fix: Fix) => number | null;
   /**
    * Compute an extract (#315 H) `StructuralResult` for the current selection
    * (view coords) + name — side-effect-free. The host folds any fragment-view
@@ -536,6 +547,13 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     ideExtensions.push(
       codeActionsExtension({
         getCodeActions: options.getCodeActions,
+        // Diagnostic-keyed fixes (docs/autofix-spec.md §7) — their own
+        // currency, applied through the host's `applyFix` seam.
+        getFixes: options.getFixes,
+        applyFix: options.applyFix
+          ? (fix) => options.applyFix?.(fix)
+          : undefined,
+        resolveFixCaret: options.resolveFixCaret,
         // Extract entries appear only when the extract seam is wired.
         getSelectionActions: extractEnabled
           ? (view) => extractCodeActions(view.state)
@@ -648,6 +666,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     options.dialect === null ? [] : screenplayDecorations();
 
   return [
+    // Tooltips (#3349): reparent hover/lint/autocomplete out of `.cm-editor`
+    // so a sibling pane's stacking context or `overflow` (the Player split)
+    // never clips them. See `tooltip-portal.ts` for why this can't just be
+    // `tooltips({ parent: document.body })` inline.
+    tooltipPortalExtension(),
     // Viewport/scroll instrumentation (measure-first ruling, 2026-08-24).
     // Inert branches while the probe is disabled — the production state.
     perfViewportProbe(),

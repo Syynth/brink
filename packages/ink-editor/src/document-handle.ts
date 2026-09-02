@@ -22,6 +22,7 @@ import type {
   DialogueDialect,
   DocumentChangeSpec,
   DocumentId,
+  Fix,
   FoldRange,
   HirProjection,
   HoverInfo,
@@ -523,6 +524,24 @@ export class DocHandle {
    */
   resolveCodeAction(data: CodeActionData, offset: number): StructuralResult {
     return this.session.resolveCodeActionDoc(this.id, data, offset);
+  }
+
+  /**
+   * The auto-fixes for the diagnostics under `offset` (a whole-file UTF-16
+   * offset — the doc-handle variant folds any fragment origin).
+   * `docs/autofix-spec.md` §7.
+   */
+  fixes(offset: number): Fix[] {
+    return this.session.getFixesDoc(this.id, offset);
+  }
+
+  /**
+   * Turn a chosen {@link Fix} into the sources to write. Side-effect-free —
+   * the caller applies the returned `StructuralResult` through the host apply
+   * seam, exactly as for a resolved code action.
+   */
+  applyFix(fix: Fix): StructuralResult {
+    return this.session.applyFixDoc(this.id, fix);
   }
 
   /**

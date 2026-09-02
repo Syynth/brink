@@ -688,6 +688,52 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
         0,
       ),
   },
+  {
+    // #3377/#3384 review finding: this string reached the mock (it already
+    // said the right words) but was never driven off production, so nothing
+    // would have caught it drifting.
+    site: "apply_fix (fix carries no edits)",
+    error: productionMessage("apply_fix:no-edits"),
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).apply_fix(
+        JSON.stringify({ code: "E025", title: "t", applicability: "suggested", edits: [] }),
+      ),
+  },
+  {
+    site: "apply_fix (fix names a file that is not loaded)",
+    error: productionMessage("apply_fix:unloaded-file"),
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).apply_fix(
+        JSON.stringify({
+          code: "E025",
+          title: "t",
+          applicability: "suggested",
+          edits: [{ path: "ghost.ink", start: 0, end: 0, new_text: "" }],
+        }),
+      ),
+  },
+  {
+    // The panic finding on #3384: `TextRange::new` asserts `start <= end`, so
+    // `apply_fix` must refuse an inverted edit before building one — and the
+    // mock must refuse it the same way (added alongside this fixture update),
+    // or this string is unpinned vocabulary exactly like the other three.
+    site: "apply_fix (inverted edit range)",
+    error: productionMessage("apply_fix:inverted-range"),
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).apply_fix(
+        JSON.stringify({
+          code: "E025",
+          title: "t",
+          applicability: "suggested",
+          edits: [{ path: "main.ink", start: 5, end: 0, new_text: "" }],
+        }),
+      ),
+  },
+  {
+    site: "apply_fix_doc (unknown document handle)",
+    error: productionMessage("apply_fix_doc:unknown-handle"),
+    call: () => sessionWith({ "main.ink": MAIN }).apply_fix_doc(999, "{}"),
+  },
 ];
 
 /** The directory-move refusals, which answer `DirMoveResultJs` — a third Rust
@@ -764,6 +810,21 @@ const compileRefusals: Array<{ site: string; error: string; call: () => string }
     call: () => sessionWith({ "main.ink": MAIN }).compile_project("ghost.ink"),
   },
 ];
+
+/**
+ * `apply_fix:invalid-json` cannot join `structuralRefusals` above: unlike
+ * `resolve_code_action:unknown-variant`'s genuine truncation (a shared serde
+ * vocabulary, just cut short), production's serde_json parse error and the
+ * mock's V8 `JSON.parse` error describe the SAME failure in two engines that
+ * share no vocabulary at all — neither is a prefix of the other, so
+ * `mockAbbreviationOf`'s prefix assertion would be false, not just untested.
+ *
+ * `productionMessage` is called here, at module load, like every array
+ * literal above — not inside the `it` body below — so this key is marked
+ * CONSUMED (`consumedMessageKeys`) before the coverage assertion runs,
+ * exactly as those do.
+ */
+const APPLY_FIX_INVALID_JSON = productionMessage("apply_fix:invalid-json");
 
 /**
  * The ACCEPTANCE half (#2661) — the one every guard above is blind to.
@@ -1669,6 +1730,11 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
     // list is the ONLY hand-typed thing left about the messages — it names
     // Rust driver KEYS, never refusal wording.
     expect(Object.keys(fixture.messages).sort()).toEqual([
+      "apply_fix:invalid-json",
+      "apply_fix:inverted-range",
+      "apply_fix:no-edits",
+      "apply_fix:unloaded-file",
+      "apply_fix_doc:unknown-handle",
       "auto_import_apply_include_doc:read-only-mount",
       "auto_import_apply_include_doc:unknown-handle",
       "auto_import_include_doc:unknown-handle",
@@ -1763,6 +1829,19 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
       expect(JSON.parse(call()) as unknown).toEqual(refusalShape("CompileResult", error));
     });
   }
+
+  // The invariant that survives the language boundary is narrower than exact
+  // wording (see `APPLY_FIX_INVALID_JSON`'s own doc comment): both sides
+  // refuse, and both name the fix as the problem.
+  it("apply_fix (malformed JSON): mock and production both refuse, wording necessarily differs", () => {
+    expect(APPLY_FIX_INVALID_JSON).toContain("invalid fix");
+
+    const mockResult = JSON.parse(
+      sessionWith({ "main.ink": MAIN }).apply_fix("not json"),
+    ) as { ok: boolean; error?: string };
+    expect(mockResult.ok).toBe(false);
+    expect(mockResult.error).toContain("invalid fix");
+  });
 });
 
 describe("a refused structural op is indistinguishable from an unsafe one (#2568)", () => {

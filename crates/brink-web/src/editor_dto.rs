@@ -448,6 +448,39 @@ pub(crate) struct CodeActionJs {
     pub(crate) data: serde_json::Value,
 }
 
+/// One minimal text edit of an auto-fix, in **UTF-16 file-absolute**
+/// coordinates (the editor boundary convention) against the file at `path`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileEditJs {
+    pub(crate) path: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) new_text: String,
+}
+
+/// Where a [`Applicability::Placeholder`](brink_ide::fix::Applicability) fix
+/// leaves the caret — the hole the author fills.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct FixCaretJs {
+    pub(crate) path: String,
+    pub(crate) offset: u32,
+}
+
+/// An offered auto-fix (`docs/autofix-spec.md` §7's wasm DTO). `edits` is the
+/// whole fix — it may span files (§4). Hand the object straight back to
+/// `apply_fix` to compute the sources to write.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct FixJs {
+    /// The diagnostic code this fix discharges, e.g. `"E025"`.
+    pub(crate) code: String,
+    pub(crate) title: String,
+    /// `"safe"` | `"suggested"` | `"placeholder"`.
+    pub(crate) applicability: String,
+    pub(crate) edits: Vec<FileEditJs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) caret: Option<FixCaretJs>,
+}
+
 #[derive(Serialize)]
 pub(crate) struct TokenJs {
     pub(crate) line: u32,

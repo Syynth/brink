@@ -128,6 +128,16 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
     }
 }
 
+/// A sequence wrapper counts its own visits unless it is a lift clone
+/// counting on its original (#3401), whose own count nothing reads.
+pub(super) fn sequence_counting_flags(seq: &hir::Sequence) -> CountingFlags {
+    if seq.counter_id.is_some() {
+        CountingFlags::empty()
+    } else {
+        CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY
+    }
+}
+
 /// Lower an inline sequence into a wrapper container and return `EnterSequence`.
 fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::ContentPart {
     // Count existing pending children to derive a unique sequence index.
@@ -144,6 +154,15 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
     let wrapper_id = seq
         .container_id
         .unwrap_or_else(|| ctx.alloc_sequence_id(seq_idx));
+
+    // #3401: the container that carries this sequence's counted state is
+    // the one under the stamped id — this wrapper, unless the sequence is
+    // a lift clone counting on its original. Recording bodied emissions
+    // lets the variant path skip its stub for an id a wrapper already
+    // owns (`try_lower_variant_line`).
+    if seq.container_id.is_some() && seq.counter_id.is_none() {
+        ctx.ids.mark_bodied_emitted(wrapper_id);
+    }
 
     let branches = seq
         .branches
@@ -167,11 +186,12 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
             lir::StmtKind::Sequence(lir::Sequence {
                 kind: seq.kind,
                 branches,
+                counter: seq.counter_id,
             }),
             provenance,
         )],
         children: Vec::new(),
-        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        counting_flags: sequence_counting_flags(seq),
         temp_slot_count: 0,
         labeled: false,
         inline: false,

@@ -1,6 +1,6 @@
 import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
-import type { CodeAction } from "@brink/wasm-types";
+import type { CodeAction, Fix } from "@brink/wasm-types";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import { registerDismissible } from "./dismiss-registry.js";
 import { editorActionRunners } from "./editor-actions.js";
@@ -12,6 +12,29 @@ export interface CodeActionsOptions {
    *  while it was in flight; a rejected pull contributes no actions
    *  (selection-derived extract actions still show). */
   getCodeActions: (source: string, offset: number) => CodeAction[] | Promise<CodeAction[]>;
+  /**
+   * The auto-fixes for the diagnostics under the cursor
+   * (`docs/autofix-spec.md` §7). Every tier is listed; one click applies one
+   * fix through {@link applyFix}. Synchronous on purpose — a fix is pulled
+   * off the already-computed diagnostics, not re-analyzed.
+   *
+   * Listed after the selection-derived extract entries and before the
+   * structural code actions.
+   */
+  getFixes?: (offset: number) => Fix[];
+  /**
+   * Apply one chosen fix. The host turns the fix's edits into the sources to
+   * write and routes them through its own apply seam (toast + Undo). Only
+   * wired alongside `getFixes`; absent ⇒ choosing a fix just dismisses.
+   */
+  applyFix?: (fix: Fix, view: EditorView) => void;
+  /**
+   * Where a `placeholder` fix's `caret` lands **in this view** — a document
+   * offset, or `null` when the hole is in another file (or this view shows a
+   * fragment that does not contain it). Only the host knows the view's path
+   * and fragment origin, so it does the mapping; the menu does the dispatch.
+   */
+  resolveFixCaret?: (fix: Fix) => number | null;
   /**
    * Extra, selection-derived actions merged ahead of `getCodeActions` — the
    * synthetic "Extract to knot/function" entries (#315 H) when there is a
@@ -31,6 +54,16 @@ export interface CodeActionsOptions {
 }
 
 /**
+ * One row of the menu. Auto-fixes and code actions are different currencies
+ * (`docs/autofix-spec.md` §2) but the same menu, so each entry carries its
+ * own invoke closure rather than the menu switching on a union.
+ */
+interface MenuEntry {
+  title: string;
+  invoke: () => void;
+}
+
+/**
  * Owns the code-actions popup menu and its dismiss listeners so both are
  * torn down in `destroy()` — otherwise an open menu (and its `document`
  * listeners) would leak when the editor unmounts.
@@ -42,12 +75,9 @@ class CodeActionsMenu {
   private navKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private unregisterDismiss: (() => void) | null = null;
 
-  constructor(
-    private readonly view: EditorView,
-    private readonly onSelect?: (action: CodeAction, view: EditorView) => void,
-  ) {}
+  constructor(private readonly view: EditorView) {}
 
-  open(actions: CodeAction[], pos: number): void {
+  open(entries: MenuEntry[], pos: number): void {
     this.close();
     ensureStructuralStyles();
 
@@ -72,13 +102,13 @@ class CodeActionsMenu {
     }
 
     const items: HTMLButtonElement[] = [];
-    for (const action of actions) {
+    for (const entry of entries) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "brink-code-action-item";
       item.setAttribute("role", "menuitem");
-      item.textContent = action.title;
-      item.addEventListener("click", () => this.select(action));
+      item.textContent = entry.title;
+      item.addEventListener("click", () => this.select(entry));
       menu.appendChild(item);
       items.push(item);
     }
@@ -142,10 +172,10 @@ class CodeActionsMenu {
     document.body.appendChild(menu);
   }
 
-  private select(action: CodeAction): void {
+  private select(entry: MenuEntry): void {
     // Close first so a name-prompt widget the handler mounts can take focus.
     this.close();
-    this.onSelect?.(action, this.view);
+    entry.invoke();
   }
 
   private close(): void {
@@ -175,9 +205,18 @@ class CodeActionsMenu {
 }
 
 export function codeActionsExtension(options: CodeActionsOptions): Extension {
-  const codeActionsMenu = ViewPlugin.define(
-    (view) => new CodeActionsMenu(view, options.onSelect),
-  );
+  const codeActionsMenu = ViewPlugin.define((view) => new CodeActionsMenu(view));
+
+  /** Apply a chosen fix, then move the caret into a Placeholder's hole. */
+  const chooseFix = (fix: Fix, view: EditorView): void => {
+    options.applyFix?.(fix, view);
+    if (fix.caret === undefined) return;
+    const at = options.resolveFixCaret?.(fix);
+    if (at === undefined || at === null) return;
+    const clamped = Math.max(0, Math.min(view.state.doc.length, at));
+    view.dispatch({ selection: { anchor: clamped } });
+    view.focus();
+  };
 
   return [
     codeActionsMenu,
@@ -190,20 +229,44 @@ export function codeActionsExtension(options: CodeActionsOptions): Extension {
           const pos = view.state.selection.main.head;
           const source = view.state.doc.toString();
 
-          const actions: CodeAction[] = [];
+          const entries: MenuEntry[] = [];
           // Selection-derived (extract) actions head the list.
           if (options.getSelectionActions) {
             try {
-              actions.push(...options.getSelectionActions(view));
+              for (const action of options.getSelectionActions(view)) {
+                entries.push({
+                  title: action.title,
+                  invoke: () => options.onSelect?.(action, view),
+                });
+              }
             } catch {
               // ignore — fall through to cursor actions
             }
           }
 
+          // Then the fixes for the diagnostics under the cursor.
+          if (options.getFixes) {
+            try {
+              for (const fix of options.getFixes(pos)) {
+                entries.push({
+                  title: fix.title,
+                  invoke: () => chooseFix(fix, view),
+                });
+              }
+            } catch {
+              // ignore — a failed fix pull contributes no entries
+            }
+          }
+
           const open = (wasmActions: CodeAction[]): boolean => {
-            actions.push(...wasmActions);
-            if (actions.length === 0) return false;
-            view.plugin(codeActionsMenu)?.open(actions, pos);
+            for (const action of wasmActions) {
+              entries.push({
+                title: action.title,
+                invoke: () => options.onSelect?.(action, view),
+              });
+            }
+            if (entries.length === 0) return false;
+            view.plugin(codeActionsMenu)?.open(entries, pos);
             return true;
           };
 
