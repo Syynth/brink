@@ -4,6 +4,7 @@ pub mod code_actions;
 pub mod color;
 mod completion;
 pub mod creation_site_fix;
+pub mod dialect_config;
 pub mod dir_rename;
 pub mod document;
 pub mod effects;

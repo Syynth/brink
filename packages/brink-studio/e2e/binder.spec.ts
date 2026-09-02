@@ -50,6 +50,26 @@ async function getFileLabels(page: Page) {
   return page.locator(".brink-binder-file-row .brink-binder-label").allTextContents();
 }
 
+/**
+ * Close every tab in the editor group (`.brink-tab-close`, one at a time —
+ * closing shifts indices, so re-querying each time is required).
+ *
+ * #3356 (RULED 2026-09-01): bootstrap always opens the entry file pinned
+ * (mount.tsx), and a symbol NAVIGATION click reveals in place when its
+ * file is already open rather than minting a fragment tab. A handful of
+ * "tab pinning" specs below are about generic preview/pin behavior, not
+ * about that reveal — they use this helper first so their knot clicks land
+ * in the "file not open anywhere" case, which still mints a fresh unpinned
+ * fragment tab exactly as before this PR.
+ */
+async function closeAllTabs(page: Page) {
+  const closeButton = editorGroup(page).locator(".brink-tab-close").first();
+  while (await closeButton.count()) {
+    await closeButton.click();
+  }
+  await expect(editorGroup(page).locator(".brink-tab")).toHaveCount(0);
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test.describe("binder", () => {
@@ -102,41 +122,55 @@ test.describe("binder → tab opening", () => {
     await waitForBinder(page);
   });
 
-  test("single-click on knot opens unpinned symbol tab", async ({ page }) => {
-    // Click the "start" knot
+  // #3356 (RULED 2026-09-01): a single click is a NAVIGATION (pinned ===
+  // false) open. The screenplay fixture is deliberately single-file (see
+  // `SCREENPLAY_FIXTURE`'s comment in main.tsx) and bootstrap always opens
+  // the entry file pinned (mount.tsx), so `main.ink` is already open before
+  // any binder click here — the ruled behavior is to reveal the knot in
+  // place inside that tab rather than mint a `opening (main.ink)` fragment
+  // tab. A pinned (double-click) open is unaffected — see the "double-click
+  // on knot opens pinned tab" test below — because it is excluded from this
+  // reveal (`openSymbolTarget` in mount.tsx).
+  test("single-click on knot reveals in place when its file is already open", async ({ page }) => {
+    // Bootstrap: only the pinned entry-file tab, nothing else.
+    expect(await getTabLabels(page)).toEqual(["main.ink"]);
+
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "opening" }).click();
 
-    // Wait for the click timer (200ms) + tab switch
-    await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toBeVisible({ timeout: 2000 });
+    // Wait for the click timer (200ms) + the reveal to land.
+    await expect(editorGroup(page).locator(".cm-activeLine")).toContainText("opening", {
+      timeout: 2000,
+    });
 
-    // Should be unpinned (italic)
-    const unpinned = await isActiveTabUnpinned(page);
-    expect(unpinned).toBe(true);
+    // No fragment tab was minted — still just the one, still pinned.
+    expect(await getTabLabels(page)).toEqual(["main.ink"]);
+    expect(await getActiveTabLabel(page)).toBe("main.ink");
+    expect(await isActiveTabUnpinned(page)).toBe(false);
 
-    // Editor should show knot content, not the full file
+    // The reveal scrolls/selects within the WHOLE file (no narrowed focused
+    // view) — both knots remain visible.
     const content = await getEditorContent(page);
     expect(content).toContain("=== opening ===");
-    expect(content).toContain("The lights dim.");
-    // Should NOT contain the story knot (focused view)
-    expect(content).not.toContain("=== interrogation ===");
+    expect(content).toContain("=== interrogation ===");
   });
 
-  test("single-click on different knot replaces unpinned tab", async ({ page }) => {
-    // Click "start"
+  test("single-click on a different knot updates the reveal, still in the same tab", async ({ page }) => {
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "opening" }).click();
-    await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toBeVisible({ timeout: 2000 });
+    await expect(editorGroup(page).locator(".cm-activeLine")).toContainText("opening", {
+      timeout: 2000,
+    });
 
-    // Click "story"
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "interrogation" }).click();
-    await expect(page.locator(".brink-tab", { hasText: "interrogation (main.ink)" })).toBeVisible({ timeout: 2000 });
+    await expect(editorGroup(page).locator(".cm-activeLine")).toContainText("interrogation", {
+      timeout: 2000,
+    });
 
-    // "start" tab should be gone (replaced)
-    await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toHaveCount(0);
-
-    // Editor shows story content
+    // Still exactly one tab throughout — no fragment tab appeared for
+    // either click.
+    expect(await getTabLabels(page)).toEqual(["main.ink"]);
     const content = await getEditorContent(page);
+    expect(content).toContain("=== opening ===");
     expect(content).toContain("=== interrogation ===");
-    expect(content).not.toContain("=== opening ===");
   });
 
   test("double-click on knot opens pinned tab", async ({ page }) => {
@@ -186,6 +220,11 @@ test.describe("tab pinning", () => {
   });
 
   test("double-click on unpinned tab pins it", async ({ page }) => {
+    // #3356: main.ink is already open (pinned) at bootstrap, so close it
+    // first — a knot click while its file is already open reveals in place
+    // rather than minting the fragment tab this test is about.
+    await closeAllTabs(page);
+
     // Single-click to create unpinned
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "opening" }).click();
     await expect(page.locator(".brink-tab.unpinned")).toBeVisible({ timeout: 2000 });
@@ -198,6 +237,9 @@ test.describe("tab pinning", () => {
   });
 
   test("editing in unpinned tab auto-pins it", async ({ page }) => {
+    // #3356: see the previous test's comment.
+    await closeAllTabs(page);
+
     // Single-click to create unpinned
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "opening" }).click();
     await expect(page.locator(".brink-tab.unpinned")).toBeVisible({ timeout: 2000 });
@@ -211,6 +253,11 @@ test.describe("tab pinning", () => {
   });
 
   test("pinned tab survives when another unpinned tab opens", async ({ page }) => {
+    // #3356: close main.ink first — otherwise it being already open would
+    // make the "interrogation" click below reveal in place instead of
+    // opening the unpinned fragment tab this test checks survives.
+    await closeAllTabs(page);
+
     // Pin start
     await page.locator(".brink-binder-knot .brink-binder-label", { hasText: "opening" }).dblclick();
     await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toBeVisible({ timeout: 2000 });
@@ -222,9 +269,10 @@ test.describe("tab pinning", () => {
     // Start tab should still exist
     await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toBeVisible();
 
-    // Should have 3 tabs: main.ink, start, story
+    // Should have 2 tabs: opening (pinned) and interrogation (unpinned) —
+    // main.ink itself was closed above, so it is not a third tab here.
     const labels = await getTabLabels(page);
-    expect(labels).toHaveLength(3);
+    expect(labels).toHaveLength(2);
   });
 });
 

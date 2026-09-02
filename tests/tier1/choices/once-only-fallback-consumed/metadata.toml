@@ -1,0 +1,11 @@
+description = "A nested once-only fallback choice (`* -> b`) is itself consumed on its second use, so a third visit runs out of content (generator finding)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "once-only-fallback-consumed"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices", "fallback-choice", "once-only", "runtime-error"]

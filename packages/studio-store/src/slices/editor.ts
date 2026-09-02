@@ -5,7 +5,7 @@
  */
 
 import type { StateCreator } from "zustand";
-import type { FormGlyphMode, LineInfo } from "@brink-lang/editor";
+import type { DialogueDialect, FormGlyphMode, LineInfo } from "@brink-lang/editor";
 import type { StudioState } from "../index.js";
 import { clampAppFontSize, clampEditorFontSize } from "@brink-lang/editor";
 import type { KeyHint } from "../types.js";
@@ -14,6 +14,13 @@ export interface EditorSlice {
   cursor: { line: number; col: number };
   currentLineInfo: LineInfo | null;
   currentLineHints: KeyHint[];
+  /** The project's resolved dialogue dialect (#3387/#3389, RULED
+   *  2026-08-30) — `brink.toml [dialogue]` after preset merge, or `null`
+   *  when the project declares none. Mirrored here from the session at
+   *  every config apply so the Player folds delivered lines into runs
+   *  with the SAME artifact the editor classifies with. */
+  projectDialect: DialogueDialect | null;
+  setProjectDialect(dialect: DialogueDialect | null): void;
   /** Inline argument-form glyph mode (Settings; applied live to all editors). */
   formGlyph: FormGlyphMode;
   /** Auto-open the Form on accepting a function completion (Settings). */
@@ -53,6 +60,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   cursor: { line: 1, col: 1 },
   currentLineInfo: null,
   currentLineHints: [],
+  projectDialect: null,
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
@@ -66,6 +74,10 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
 
   setLineInfo(info, hints) {
     set({ currentLineInfo: info, currentLineHints: hints });
+  },
+
+  setProjectDialect(dialect) {
+    set({ projectDialect: dialect });
   },
 
   setFormGlyph(mode) {

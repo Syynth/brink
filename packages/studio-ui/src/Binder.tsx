@@ -303,6 +303,11 @@ interface RowProps {
   onContextMenu: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: () => void;
+  /** WebKit (Tauri/Safari, #3351) requires `preventDefault()` on BOTH
+   *  `dragenter` and `dragover` for an element to remain a valid drop
+   *  target — Chromium tolerates `dragover` alone. Callers wire this to
+   *  the same accept/reject logic as `onDragOver`. */
+  onDragEnter: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
 }
@@ -343,6 +348,7 @@ export function BinderRow({
   onContextMenu,
   onDragStart,
   onDragEnd,
+  onDragEnter,
   onDragOver,
   onDrop,
 }: RowProps) {
@@ -415,6 +421,7 @@ export function BinderRow({
         draggable={draggable}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
+        onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -1688,6 +1695,7 @@ function BinderInner() {
         onContextMenu={(e) => handleContextMenu(e, row)}
         onDragStart={(e) => handleDragStart(e, row)}
         onDragEnd={handleDragEnd}
+        onDragEnter={(e) => handleDragOver(e, row)}
         onDragOver={(e) => handleDragOver(e, row)}
         onDrop={(e) => handleDrop(e, row)}
       />
@@ -1745,6 +1753,7 @@ function BinderInner() {
           onContextMenu={(e) => handleContextMenu(e, row)}
           onDragStart={(e) => handleDragStart(e, row)}
           onDragEnd={handleDragEnd}
+          onDragEnter={(e) => handleDragOver(e, row)}
           onDragOver={(e) => handleDragOver(e, row)}
           onDrop={(e) => handleDrop(e, row)}
         />
@@ -1849,6 +1858,7 @@ function BinderInner() {
           onContextMenu={(e) => (fileRow ? handleContextMenu(e, fileRow) : e.preventDefault())}
           onDragStart={(e) => fileRow && handleDragStart(e, fileRow)}
           onDragEnd={handleDragEnd}
+          onDragEnter={(e) => fileRow && handleDragOver(e, fileRow)}
           onDragOver={(e) => fileRow && handleDragOver(e, fileRow)}
           onDrop={(e) => fileRow && handleDrop(e, fileRow)}
         />
@@ -1901,6 +1911,7 @@ function BinderInner() {
           onContextMenu={(e) => (folderRow ? handleContextMenu(e, folderRow) : e.preventDefault())}
           onDragStart={(e) => folderRow && handleDragStart(e, folderRow)}
           onDragEnd={handleDragEnd}
+          onDragEnter={(e) => folderRow && handleDragOver(e, folderRow)}
           onDragOver={(e) => folderRow && handleDragOver(e, folderRow)}
           onDrop={(e) => folderRow && handleDrop(e, folderRow)}
         />
@@ -1961,6 +1972,7 @@ function BinderInner() {
           onContextMenu={(e) => e.preventDefault()}
           onDragStart={(e) => e.preventDefault()}
           onDragEnd={() => {}}
+          onDragEnter={(e) => e.preventDefault()}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => e.preventDefault()}
         />
@@ -1995,6 +2007,7 @@ function BinderInner() {
         onContextMenu={(e) => e.preventDefault()}
         onDragStart={(e) => e.preventDefault()}
         onDragEnd={() => {}}
+        onDragEnter={(e) => e.preventDefault()}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => e.preventDefault()}
       />
@@ -2146,6 +2159,7 @@ function BinderInner() {
             onContextMenu={(e) => e.preventDefault()}
             onDragStart={(e) => e.preventDefault()}
             onDragEnd={() => {}}
+            onDragEnter={(e) => e.preventDefault()}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => e.preventDefault()}
           />
@@ -2155,6 +2169,7 @@ function BinderInner() {
       {dragState?.sourceKind === "file" && dragState.sourceKeys.some((k) => k.includes("/")) && (
         <div
           className={"brink-binder-root-drop" + (rootDropActive ? " active" : "")}
+          onDragEnter={handleRootDragOver}
           onDragOver={handleRootDragOver}
           onDragLeave={() => setRootDropActive(false)}
           onDrop={handleRootDrop}

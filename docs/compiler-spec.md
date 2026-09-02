@@ -368,7 +368,8 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E188`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E194`, with
+`E177` reserved and unused) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -591,6 +592,115 @@ through the real native driver.
 | [`E186`](diagnostics/E186.md) | A `@[convention(…)]` declaration combines `block` and `attach = StructName` on the same handler — mutually exclusive clauses. |
 | [`E187`](diagnostics/E187.md) | A write to a `CONST` — plain/compound assignment, postfix `++`/`--`, an indexed/field/mutator write whose root is a `CONST`, or passing it by `ref`. Mirrors ink's own compile-time rejection of `CONST` reassignment. |
 | [`E188`](diagnostics/E188.md) | A declared `STRUCT`'s own name collides with a builtin leaf (`int`/`float`/`bool`/`string`/`content`/`divert`) or an NS-A8 tower kind — `annotations::resolve` checks those before consulting declared struct names, so a bare type annotation spelling the colliding name always resolves to the builtin/tower type, never the struct. Warning: the declaration still compiles and constructs normally. |
+| [`E189`](diagnostics/E189.md) | An ink `TODO:` author note (issue #3050). Advisory, `Info` by default — surfaces the note's text for the Problems and TODO panels; the language's own dropped-work marker, not a defect. Recognized at weave level (top-level, knot, stitch body) and, since issue #3353, wherever branch content lines are parsed inside a multiline conditional's then-arm, `- else:` arm, or a nested block. |
+| [`E193`](diagnostics/E193.md) | A classic `~ temp` (native `~ let`) is read on a path its declaration does not dominate — a sibling choice branch, a gather reached from a branch that did not declare it, or a read written textually ahead of the declaration. Warning, `[lints]`-overridable: the story compiles and plays, reading the unset slot as ink's missing-variable default. See "Temp scope and definite assignment" below. |
+| [`E194`](diagnostics/E194.md) | A knot's `~ temp` (native `~ let`) is read from one of that knot's stitches — brink plays it correctly (one shared call frame), but inklecate rejects the identical program (`Unresolved variable`). The **compat-deny** tier's first member: `Error` by default, `[lints]`-overridable all the way to `allow`. See "Compat-deny diagnostics" below. |
+
+## Compat-deny diagnostics
+
+RULED 2026-09-01 (issue #3373). A named diagnostic tier for one specific
+shape: **brink accepts a construct at a point where the official ink
+compiler (inklecate) rejects it, and the resulting brink program actually
+works.** Not "brink is more lenient" in general — every other divergence
+from ink stays whatever severity it already was — but a closed, discoverable
+set of *specific* superset points, each with its own code, so an ink-compat
+project can choose, per code, whether leaning on brink's superset is
+acceptable for that project.
+
+**Why a tier, not a one-off severity choice.** Brink accepts a superset of
+ink at more than one point, and each such point where the official compiler
+rejects the program but brink produces a working one deserves the same
+treatment. A named, closed tier keeps them consistent (same mechanics, same
+`[lints]` reach, same discoverability) rather than each one re-deriving its
+own severity story from scratch.
+
+**Mechanics:**
+
+- Default severity is `Error` — inklecate rejects the program, so brink does
+  too until a project opts in. Membership is
+  `DiagnosticCode::is_compat_deny` (`crates/internal/brink-ir/src/hir/diagnostics.rs`);
+  it is what widens `DiagnosticCode::is_overridable` to return `true` for
+  these `Error`-default codes specifically — every other `Error`-default
+  code stays non-overridable, per issue #1160's original "conservative
+  overridable set" (`brink_analyzer::strict::effective_severity`'s
+  hard-error exemption now reads "`Error` base **and not** a compat-deny
+  member" rather than "`Error` base", full stop).
+- `[lints]` reaches all the way to `allow`, not just `warn` — the ruling's
+  own wording: "we should allow it to be turned off if the user wants, it's
+  annoying." The CLI's `--warn`/`--allow`/`--deny`/`-D warnings` flags reach
+  the same codes the same way, through the identical
+  `validate_lint_code`/`apply_lint_overrides` gate every other overridable
+  code goes through — no separate mechanism for the tier.
+- A project's `[lints]` entry travels with the project: a host consumer
+  running `brink compile` (a game build, `bevy-brink`'s asset pipeline) gets
+  exactly the permissiveness the studio does. There is no studio-only
+  switch.
+- The lint settings UI (`packages/studio-ui/src/LintSettings.tsx`) lists
+  overridable codes from `getDiagnosticRegistry().overridable`
+  (`crates/brink-web/src/editor_dto.rs`'s `diagnostic_registry`) — a tier
+  member appears there automatically once `is_overridable` says so, with no
+  UI-side special case for "`Error`-default but configurable." Each member
+  still needs a `CATEGORIES` entry there (`every_overridable_code_has_a_category`)
+  like any other overridable code.
+
+**Admission invariant (must be tested):** a code may sit in this tier only
+if brink produces a *working* program when the code is downgraded — every
+compat-deny code needs a fixture that compiles under `allow` and plays
+correctly. Anything that would fail at link or fault at runtime is NOT
+admissible and stays a hard, non-overridable error. This is the check that
+keeps the tier from becoming a way to silence a real defect: "the program
+still runs" is a fact about the compiler and runtime, verified by a test,
+not a judgment call made once at admission time and never re-checked.
+
+**Members:**
+
+- [`E194`](diagnostics/E194.md) — a knot's `~ temp` is not visible from its
+  stitches in ink (split out of `E193`'s former shape 4, PR #3369's review):
+  brink's `lir::lower::temps::alloc_temps` shares one call frame across a
+  knot and its stitches, so the program plays (`Stitch sees 7.`); inklecate
+  rejects it (`Unresolved variable: n`).
+
+## Temp scope and definite assignment
+
+RULED 2026-09-01 (issue #3354, option C; `docs/decision-log.md` "Uninitialized
+`~ temp` reads play, and warn twice"). This section owns the compile-time half;
+`docs/runtime-spec.md` "Uninitialized temp reads" owns the runtime half.
+
+A classic `~ temp` belongs to its knot's **call frame**, not to a lexical
+block. `lir::lower::temps::alloc_temps` walks the whole frame — the knot body
+plus every stitch body — before lowering begins, so the slot for a name exists
+regardless of where in the frame the declaring statement sits. Three
+consequences the compiler now honors uniformly:
+
+1. **Every reference in the frame names that slot** (issue #3362). A read
+   written textually ahead of the `~ temp`, an assignment to it, a `ref`
+   argument passing it, and a stitch referring to a temp declared at its knot's
+   root all resolve to the frame's slot via `LowerCtx::temp_slot_raw` — the
+   visibility-free lookup — rather than to a name-hashed `GlobalVar` id no
+   global table ever registers. That phantom id is what made such a program
+   compile clean and then die at its first step with `unresolved global: $02_…`.
+   The one remaining fallback to the hashed id is a lambda body's reference to
+   a name borrowed from the enclosing frame, which has no slot of its own in
+   the lambda's `TempMap`.
+2. **A reference the declaration does not dominate is `E193`**, a
+   `[lints]`-overridable warning naming both the read and the declaration.
+   Dominance is decided structurally, over the HIR block tree
+   (`brink_analyzer::temp_dominance`): a declaration `D` sitting directly in
+   block `B` dominates exactly the reads inside `B`'s own subtree that start at
+   or after `D`'s end. Each of a knot's root body and every one of its stitch
+   bodies is its own region for this rule — a declaration in one is never
+   consulted for a read in another, since a stitch reading its knot root's
+   temp is a *different* question ([`E194`](diagnostics/E194.md), "Compat-deny
+   diagnostics" above) from whether a declaration dominates reads *within*
+   the region it sits in. Parameters, plain assignment targets, block-scoped
+   (`~ { … }`) temps — [`E082`](diagnostics/E082.md)'s subject — and reads
+   inside lambda bodies are outside the rule; see `E193`'s own page.
+3. **The program still runs.** `E193` is a warning precisely because the
+   runtime now answers an unset slot the way the C# reference does, so what
+   plays in Inky plays in brink. A stitch reading its knot root's temp also
+   still runs — that is `E194`'s own admission invariant — but is reported
+   through the compat-deny tier rather than as an `E193` warning, since
+   inklecate rejects it outright rather than warning on it.
 
 ## Known limitations
 
@@ -598,7 +708,7 @@ Issues that are documented here so they are not silently rediscovered. Each shou
 
 ### Silent data drops
 
-- **`AUTHOR_WARNING` / `TODO:` nodes** — silently dropped during HIR lowering. The `lower_body_children` match does not handle `AUTHOR_WARNING` syntax kind; it falls through to a `debug_assert!` that is a no-op in release builds. These should either be preserved as HIR nodes (for LSP display) or explicitly skipped with a comment.
+- **`AUTHOR_WARNING` / `TODO:` nodes** — RESOLVED as far as HIR lowering is concerned. Issue #3050 gave `AUTHOR_WARNING` an explicit `BodyChild::Structural` classification at weave level (`classify_body_child`) and surfaces every such node under a lowered body as an `E189` `Info` diagnostic (`emit_author_warnings`, `structure/mod.rs`) — no debug-assert fallthrough there. Issue #3353 closed the matching gap in branch content: `classify_branch_child` (used by `branchless_cond_body` and `multiline_branch_body`) now classifies `AUTHOR_WARNING` explicitly too, and the parser (`brink-syntax`'s `inline.rs`) recognizes a `TODO` line inside a multiline conditional's then-arm, `- else:` arm, and nested blocks — previously it fell through those paths' text catch-all and was parsed (and emitted) as ordinary prose.
 - **Const evaluation of binary expressions** — `eval_const_expr` in `decls.rs` returns `ConstValue::Null` for any expression that is not a literal, path, divert target, list literal, or prefix negation/not. This means `VAR x = 2 + 3` silently initializes `x` to `Null` instead of `5`. The catch-all `_ => Null` should at minimum emit a diagnostic.
 - **String interpolation in const context** — `hir::StringPart::Interpolation(_) => None` silently discards interpolation parts when evaluating const string values, producing a partial string. E030 is emitted as a warning.
 

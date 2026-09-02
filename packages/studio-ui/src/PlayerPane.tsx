@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
   EDITOR_REVEAL_COMMAND_ID,
@@ -19,6 +19,7 @@ import {
   type TranscriptLine,
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
@@ -97,97 +98,38 @@ export function openPlayerSplit(editorGroups: EditorGroupsStore): void {
   editorGroups.getState().focusGroup(entryGroupId);
 }
 
-// ── Character colors ────────────────────────────────────────────
+// ── Line rendering (#3389, RULED 2026-08-30) ─────────────────────────
+//
+// Delivered lines render from the PROJECT's dialogue dialect — the same
+// resolved artifact the editor classifies with — folded into runs by
+// `foldPlayerRuns` (a cue header once, its spoken lines beneath, action and
+// narrative outside). No dialect ⇒ plain lines. Nothing about any one
+// convention is hardcoded here any more: the previous `@NAME:` regex and
+// the demo cast's colour table are gone; speakers get a deterministic
+// palette index from their name.
 
-// Cast colors route through the semantic theme tokens (spec §7.4) so the
-// screenplay styling stays legible in every theme — no hardcoded hex.
-const RAINBOW = [
-  "var(--bs-error)",
-  "var(--bs-syn-number)",
-  "var(--bs-syn-enum)",
-  "var(--bs-success)",
-  "var(--bs-accent)",
-  "var(--bs-syn-keyword)",
-];
+const SPEAKER_PALETTE_SIZE = 6;
 
-const CHARACTER_COLORS: Record<string, string | "rainbow"> = {
-  // The Toppled Temple cast
-  GRISWOLD: "var(--bs-syn-enum)", // gold — the sardonic merchant
-  SPECTRE: "var(--bs-info)", // pale cyan — the riddling ghost
-  GRIK: "var(--bs-success)", // green — the nervous goblin
-  WARDEN: "var(--bs-fg-muted)", // stone grey — the golem
-};
-
-/** Render a name with each letter in a cycling rainbow. */
-function rainbowName(name: string): ReactNode {
+/** A row's body: the cue's own text is dropped from a `character` row's
+ *  first line (the header carries it); a parenthetical segment renders
+ *  in its own style; everything else is the segment text as delivered. */
+function renderRowBody(row: PlayerRow): ReactNode {
+  if (row.segments.length === 0) return row.line.text;
   return (
-    <span style={{ fontWeight: 700 }}>
-      {name.split("").map((ch, i) => (
-        <span key={i} style={{ color: RAINBOW[i % RAINBOW.length] }}>{ch}</span>
-      ))}
-    </span>
+    <>
+      {row.segments.map((seg, i) => {
+        if (i === 0 && seg.kind === "character") return null;
+        if (seg.kind === "parenthetical") {
+          return (
+            <span key={i} className="player-run-paren">
+              {seg.text}
+            </span>
+          );
+        }
+        return <Fragment key={i}>{seg.text}</Fragment>;
+      })}
+    </>
   );
-}
-
-/** Render a character name with its color. */
-function renderName(name: string): ReactNode {
-  const upper = name.toUpperCase();
-  const colorDef = CHARACTER_COLORS[upper];
-  if (colorDef === "rainbow") {
-    return rainbowName(name);
-  }
-  const color = colorDef ?? "var(--bs-fg)";
-  return <span style={{ fontWeight: 700, color }}>{name}</span>;
-}
-
-/**
- * Parse a story line and return styled content.
- *
- * The compiled output from screenplay sigils looks like:
- *   @NAME:(parenthetical)Dialogue text here.
- *   @NAME:Dialogue text here.
- *
- * We split these into colored name, italic parenthetical, and dialogue.
- */
-function renderLine(line: string): ReactNode {
-  // Choice echo: "> text"
-  if (line.startsWith("> ")) {
-    return <span style={{ color: "var(--bs-accent)" }}>{line}</span>;
-  }
-
-  // Screenplay line: @NAME:(paren)dialogue  or  @NAME:dialogue
-  const screenplayMatch = line.match(/^@([^:]+):(.*)/);
-  if (screenplayMatch) {
-    const name = screenplayMatch[1].trim();
-    const rest = screenplayMatch[2];
-
-    const parts: ReactNode[] = [<Fragment key="name">{renderName(name)}</Fragment>];
-
-    // Check if rest starts with a parenthetical: (text)remainder
-    const parenMatch = rest.match(/^\(([^)]*)\)(.*)/);
-    if (parenMatch) {
-      parts.push(
-        <br key="br1" />,
-        <span key="paren" style={{ fontStyle: "italic", color: "var(--bs-fg-muted)" }}>
-          ({parenMatch[1]})
-        </span>,
-      );
-      const dialogue = parenMatch[2].trim();
-      if (dialogue) {
-        parts.push(<br key="br2" />, <span key="dialogue">{dialogue}</span>);
-      }
-    } else {
-      const dialogue = rest.trim();
-      if (dialogue) {
-        parts.push(<br key="br1" />, <span key="dialogue">{dialogue}</span>);
-      }
-    }
-
-    return <>{parts}</>;
-  }
-
-  // Narrator text — italic, slightly dimmer
-  return <span style={{ fontStyle: "italic", color: "var(--bs-fg-muted)" }}>{line}</span>;
 }
 
 // ── Tags toggle persistence (W7/#3300 F13 — off by default, persisted) ──
@@ -308,6 +250,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // future SessionProvider (#127) can back it without rework.
   const status = useStudioStore((s) => s.sessionStatus);
   const lines = useStudioStore((s) => s.sessionLines);
+  const projectDialect = useStudioStore((s) => s.projectDialect);
+  const groups = useMemo(() => foldPlayerRuns(lines, projectDialect), [lines, projectDialect]);
   // Out-of-sync gate (spec §5): degraded suppresses provenance and the
   // chip goes warning — suppressed, never stale.
   const degraded = useStudioStore((s) =>
@@ -794,48 +738,68 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
         <div className="story-text">
-          {lines.map((line, i) => {
-            const point =
-              i === hoverIdx && !degraded && line.source && resolveSourceBytes
-                ? resolveSourceBytes(
-                    line.source.file,
-                    line.source.range_start,
-                    line.source.range_end,
-                  )
-                : null;
+          {groups.map((group, gi) => {
+            const renderRow = (row: PlayerRow): ReactNode => {
+              const { line, index: i } = row;
+              const point =
+                i === hoverIdx && !degraded && line.source && resolveSourceBytes
+                  ? resolveSourceBytes(
+                      line.source.file,
+                      line.source.range_start,
+                      line.source.range_end,
+                    )
+                  : null;
+              return (
+                <div
+                  key={i}
+                  className={
+                    `player-line-row kind-${line.kind}` +
+                    (row.kind !== null ? ` dialect-${row.kind}` : "")
+                  }
+                  onMouseEnter={() => setHoverIdx(i)}
+                  onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
+                  onClick={(e) => {
+                    // ⌘/Ctrl-click anywhere on the row jumps to source (F9).
+                    if (e.metaKey || e.ctrlKey) revealSource(line);
+                  }}
+                >
+                  <p>{renderRowBody(row)}</p>
+                  {showTags && line.tags.length > 0 && (
+                    <span className="player-line-tags">
+                      {line.tags.map((tag, ti) => (
+                        <code key={ti} className="player-tag-chip">
+                          #{tag}
+                        </code>
+                      ))}
+                    </span>
+                  )}
+                  {point !== null && line.source && (
+                    <button
+                      className="player-provenance-chip"
+                      title="Reveal in editor (⌘-click the line works too)"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        revealSource(line);
+                      }}
+                    >
+                      {baseName(line.source.file)}:{point.line + 1}
+                    </button>
+                  )}
+                </div>
+              );
+            };
+            if (group.speaker === null) {
+              return <Fragment key={`g${gi.toString()}`}>{group.rows.map(renderRow)}</Fragment>;
+            }
+            const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
             return (
               <div
-                key={i}
-                className={`player-line-row kind-${line.kind}`}
-                onMouseEnter={() => setHoverIdx(i)}
-                onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
-                onClick={(e) => {
-                  // ⌘/Ctrl-click anywhere on the row jumps to source (F9).
-                  if (e.metaKey || e.ctrlKey) revealSource(line);
-                }}
+                key={`g${gi.toString()}`}
+                className={`player-run dialect-${group.kind ?? "run"}`}
+                data-speaker={group.speaker}
               >
-                <p>{renderLine(line.text)}</p>
-                {showTags && line.tags.length > 0 && (
-                  <span className="player-line-tags">
-                    {line.tags.map((tag, ti) => (
-                      <code key={ti} className="player-tag-chip">
-                        #{tag}
-                      </code>
-                    ))}
-                  </span>
-                )}
-                {point !== null && line.source && (
-                  <button
-                    className="player-provenance-chip"
-                    title="Reveal in editor (⌘-click the line works too)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      revealSource(line);
-                    }}
-                  >
-                    {baseName(line.source.file)}:{point.line + 1}
-                  </button>
-                )}
+                <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
+                {group.rows.map(renderRow)}
               </div>
             );
           })}

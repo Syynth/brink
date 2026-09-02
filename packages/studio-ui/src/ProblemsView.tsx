@@ -226,10 +226,11 @@ const BUCKETS: ProblemSeverityBucket[] = ["error", "warning", "info", "prose", "
 function useAllDiagnostics(): readonly Diagnostic[] {
   const compiled = useStudioStore((s) => s.diagnosticsList);
   const prose = useStudioStore((s) => s.proseDiagnostics);
+  const dialect = useStudioStore((s) => s.dialectDiagnostics);
   return useMemo(() => {
-    const extra = Object.values(prose).flat();
+    const extra = [...Object.values(prose).flat(), ...Object.values(dialect).flat()];
     return extra.length === 0 ? compiled : [...compiled, ...extra];
-  }, [compiled, prose]);
+  }, [compiled, prose, dialect]);
 }
 
 /**

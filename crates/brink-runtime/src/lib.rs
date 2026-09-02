@@ -85,7 +85,7 @@ pub use debug_control::{
     Breakpoint, BreakpointId, BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugRunOutcome,
     DebugStopReason, StepMode, WatchHit, WatchpointObserver,
 };
-pub use error::{RanOutOfContentCause, RuntimeError};
+pub use error::{RUNTIME_WARNING_CAP, RanOutOfContentCause, RuntimeError, RuntimeWarning};
 pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};
 pub use iter::ValueIter;
 pub use linker::link;

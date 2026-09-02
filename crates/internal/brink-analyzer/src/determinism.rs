@@ -27,22 +27,29 @@
 /// `dialect_gate::check`'s `resolved` set (already-resolved reference
 /// sites, queried by `.contains()` only), `structs::check_literal_duplicates`'s
 /// `seen` set (duplicate-field guard walked alongside the field `Vec`,
-/// which is what actually orders the emitted diagnostics), and
+/// which is what actually orders the emitted diagnostics),
 /// `admission`'s reference-range/name-bucket sets (B0.3, issue #1172 —
 /// membership tests only, built once per file so a per-node manifest scan
-/// stays O(n) instead of O(n^2)).
+/// stays O(n) instead of O(n^2)), and `temp_dominance`'s/
+/// `compat_deny::knot_temp_from_stitch`'s (#3354/#3373) dominated-range and
+/// discounted-write-range sets, plus the `ReadCollector` visitor both
+/// passes share — every one queried by `.contains()` only, never iterated
+/// (the diagnostics both passes emit are already ordered by the `Vec` of
+/// reads/reads-per-stitch they walk, not by set order).
 #[expect(
     clippy::disallowed_types,
     reason = "the crate's audited allow-list — see module doc"
 )]
 pub(crate) type LookupSet<T> = std::collections::HashSet<T>;
 
-/// A hashed map used only for keyed lookups (`.get()`/`.insert()`) —
-/// never iterated (no `.values()`/`.keys()`/`for (k, v) in`). Current use:
-/// `admission::check_is_function_sentinel` (B0.3, issue #1172) — a
-/// name→`DeclaredSymbol` index built once per file so the per-knot
-/// sentinel check stays O(n) instead of the O(n^2) a `Vec::iter().find()`
-/// per knot would give.
+/// A hashed map used only for keyed lookups (`.get()`/`.insert()`/
+/// `.contains_key()`) — never iterated (no `.values()`/`.keys()`/
+/// `for (k, v) in`). Current uses: `admission::check_is_function_sentinel`
+/// (B0.3, issue #1172) — a name→`DeclaredSymbol` index built once per file
+/// so the per-knot sentinel check stays O(n) instead of the O(n^2) a
+/// `Vec::iter().find()` per knot would give — and `temp_dominance`'s/
+/// `compat_deny::knot_temp_from_stitch`'s (#3354/#3373) name→`DeclSite`
+/// declaration maps, keyed lookups only.
 #[expect(
     clippy::disallowed_types,
     reason = "the crate's audited allow-list — see module doc"

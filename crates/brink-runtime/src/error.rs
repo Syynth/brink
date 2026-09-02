@@ -595,3 +595,54 @@ pub enum RuntimeError {
         ceiling: u64,
     },
 }
+
+/// A non-fatal condition the VM reported while a story was running (issue
+/// #3354, RULED 2026-09-01 option C).
+///
+/// Warnings never interrupt play — that is the point of the ruling: what
+/// plays in Inky plays in brink. They accumulate on the flow that produced
+/// them and are drained by the host
+/// ([`crate::Story::take_runtime_warnings`],
+/// [`crate::FlowInstance::take_runtime_warnings`]), which decides whether to
+/// print them (the CLI player does), surface them in a panel (the studio
+/// does), or ignore them (a shipped game).
+///
+/// Accumulation is capped at [`RUNTIME_WARNING_CAP`] per flow between
+/// drains: a loop that reads an unset temp on every iteration would
+/// otherwise grow this list without bound.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RuntimeWarning {
+    /// A `~ temp` slot was read before its declaring statement ran, so the
+    /// read produced ink's missing-variable default instead of faulting on
+    /// the next operator.
+    ///
+    /// The compile-time half of the same story is
+    /// `brink_ir::DiagnosticCode::E193`, which names the read and the
+    /// declaration in the editor *before* the author plays. Message text
+    /// mirrors the C# reference's own wording, since matching what an
+    /// author already recognizes from Inky is the point.
+    #[error(
+        "Variable not found: {name}. Using default value of 0 (false). This can happen \
+         with temporary variables if the declaration hasn't yet been hit."
+    )]
+    UninitializedTemp {
+        /// The call frame's temp slot that was read.
+        slot: u16,
+        /// The variable as the author spelled it, already quoted (`'n'`)
+        /// when the story carries a `DebugInfo` section to resolve the slot
+        /// through; `temp slot 3` when it does not (debug info is opt-in at
+        /// codegen — `EmitOptions::emit_debug_info`).
+        name: String,
+    },
+}
+
+/// How many [`RuntimeWarning`]s one flow accumulates between drains before
+/// it stops recording them.
+///
+/// A cap rather than unbounded growth, per this project's standing rule
+/// that any accumulating loop needs a limit: an unset temp read inside a
+/// `while` loop is exactly the shape that would otherwise grow forever.
+/// Dropping the overflow is right for a warning — the first ones already
+/// say everything the author needs.
+pub const RUNTIME_WARNING_CAP: usize = 64;

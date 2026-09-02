@@ -816,11 +816,10 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 lir::ExprKind::VisitCount(info.id).at(ctx.current_stmt_provenance)
             }
             // Temps not caught by temp_slot above are either (a) a classic
-            // (non-block) temp used before its declaring statement — a
-            // genuine forward reference, matching inklecate's own behavior
-            // of emitting a get_global that fails at link time (reproduced
-            // below by hashing the name the same way the converter does:
-            // DefaultHasher on the name string → GlobalVar tag) — or (b) a
+            // (non-block) temp used before its declaring statement, or from
+            // a stitch whose knot root declares it — a forward reference on
+            // the flow graph, which since #3362 resolves to the frame's own
+            // slot (see the `SymbolKind::Temp` arm below) — or (b) a
             // T1b block-scoped temp (`~ { … }`) referenced after its
             // `push_block_scope`/`pop_block_scope` bracket has already
             // closed (#680 RCA: this is the actual defect — see E082).
@@ -843,14 +842,43 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 });
                 lir::ExprKind::Null.at(ctx.current_stmt_provenance)
             }
+            // Issue #3362: a classic temp read from a position its
+            // declaration has not run at — written textually ahead of the
+            // `~ temp`, or from a stitch whose knot root declares it —
+            // still names this call frame's own slot. `alloc_temps` walks
+            // the whole frame (knot body plus every stitch body) before
+            // lowering starts, so the slot exists whether or not
+            // `visible_temps` has caught up with source order yet, and
+            // `temp_slot_raw` is exactly that visibility-free lookup.
+            //
+            // Until #3362 this arm hashed the *name* into a `GlobalVar` id
+            // that no global table ever registered, reproducing what the
+            // converter's hashing does — a program that compiled clean and
+            // then died at its first step with `unresolved global:
+            // $02_…`, with no diagnostic anywhere. The read is now a real
+            // slot read (uninitialized until the declaration runs, which
+            // `Opcode::GetTemp` answers with ink's missing-variable
+            // default), and `E193` reports it at compile time.
+            //
+            // The `temp_slot_raw` miss is not dead: a lambda body
+            // (`lower::lambda`) builds a `TempMap` from the lambda's own
+            // params alone, so a name borrowed from the enclosing frame
+            // resolves to `Temp` here with no slot of its own. That case
+            // keeps the pre-#3362 emission rather than silently acquiring a
+            // new meaning from this fix.
             SymbolKind::Temp => {
-                use brink_format::DefinitionTag;
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                name.hash(&mut hasher);
-                let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
-                lir::ExprKind::GetGlobal(global_id).at(ctx.current_stmt_provenance)
+                if let Some(slot) = ctx.temp_slot_raw(&name) {
+                    let name_id = ctx.names.intern(&name);
+                    lir::ExprKind::GetTemp(slot, name_id).at(ctx.current_stmt_provenance)
+                } else {
+                    use brink_format::DefinitionTag;
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    name.hash(&mut hasher);
+                    let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
+                    lir::ExprKind::GetGlobal(global_id).at(ctx.current_stmt_provenance)
+                }
             }
             // Params should already be caught by temp_slot above; externals
             // used as values are meaningless; a bare `Expr::Path` never
@@ -2391,6 +2419,18 @@ fn lower_ref_path_call_arg(
         // choke-point enumeration.
         if super::stmts::reject_const_write(info, path.range, ctx) {
             return lir::CallArg::Value(lir::ExprKind::Null.at(ctx.current_stmt_provenance));
+        }
+        // Issue #3362, the `ref`-argument half (`expr::lower_path` is the
+        // read half, `stmts::lower_assign_target` the write half): a classic
+        // temp passed by `ref` from a position its declaration has not run
+        // at resolved to a `LocalVar`-tagged id, which `RefGlobal` then
+        // failed to link. The frame's slot exists — hand the callee a
+        // pointer to it, exactly as the visible case above does.
+        if info.kind == SymbolKind::Temp
+            && let Some(slot) = ctx.temp_slot_raw(&name)
+        {
+            let name_id = ctx.names.intern(&name);
+            return lir::CallArg::RefTemp(slot, name_id);
         }
         let id = if info.kind == SymbolKind::List {
             list_def_to_global_var(info.id)

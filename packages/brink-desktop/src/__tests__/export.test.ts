@@ -6,7 +6,11 @@ import { defaultExportName, exportStoryToInkb, type ExportApi } from "../export.
  * microtask later — exactly how `landCompileResult` replaces it in the
  * real store — which is the signal `exportStoryToInkb` awaits before
  * reading the bytes. */
-function stubApi(storyBytes: Uint8Array | null, diagnostics = { errors: 0, warnings: 0 }): {
+function stubApi(
+  storyBytes: Uint8Array | null,
+  diagnostics = { errors: 0, warnings: 0 },
+  projectDialect: unknown = null,
+): {
   api: ExportApi;
   notify: ReturnType<typeof vi.fn>;
   dispatch: ReturnType<typeof vi.fn>;
@@ -22,7 +26,7 @@ function stubApi(storyBytes: Uint8Array | null, diagnostics = { errors: 0, warni
   const api: ExportApi = {
     dispatch,
     getStoryBytes: () => storyBytes,
-    select: (sel) => sel({ diagnostics: current } as never),
+    select: (sel) => sel({ diagnostics: current, projectDialect } as never),
     notify,
   };
   return { api, notify, dispatch };
@@ -39,6 +43,24 @@ describe("defaultExportName", () => {
 });
 
 describe("exportStoryToInkb", () => {
+  it("writes the resolved dialect beside the story only when the project declares one (#3393)", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const dialect = { version: 1, name: "at-cue", elements: [] };
+    const { api } = stubApi(bytes, undefined, dialect);
+    const saveDialog = vi.fn<(name: string, bytes: Uint8Array) => Promise<string | null>>(
+      async () => "/tmp/x",
+    );
+    await exportStoryToInkb(api, "/p/my-story", saveDialog);
+    expect(saveDialog).toHaveBeenCalledTimes(2);
+    expect(saveDialog.mock.calls[1][0]).toBe("my-story.dialect.json");
+    expect(JSON.parse(new TextDecoder().decode(saveDialog.mock.calls[1][1]))).toEqual(dialect);
+
+    const none = stubApi(bytes);
+    const onlyStory = vi.fn(async () => "/tmp/x");
+    await exportStoryToInkb(none.api, "/p/my-story", onlyStory);
+    expect(onlyStory).toHaveBeenCalledTimes(1);
+  });
+
   it("compiles via compile.run, then hands the bytes to the save dialog", async () => {
     const bytes = new Uint8Array([1, 2, 3]);
     const { api, dispatch, notify } = stubApi(bytes);

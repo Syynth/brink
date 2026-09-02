@@ -416,6 +416,7 @@ describe("the scan's roots are derived from pnpm-workspace.yaml, not hand-mainta
       [
         "brink-desktop",
         "brink-studio",
+        "dialect",
         "ink-editor",
         "ink-operations",
         "studio-shell",

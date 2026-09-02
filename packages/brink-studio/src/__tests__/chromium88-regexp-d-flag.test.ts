@@ -130,11 +130,11 @@ describe("no unconditional RegExp `d`-flag construction anywhere in workspace bu
   it("scans a plausible file set (sanity check on the glob)", () => {
     const paths = Object.keys(SOURCES);
     expect(paths.length).toBeGreaterThan(50);
-    expect(paths.some((p) => p.endsWith("ink-editor/src/dialect.ts"))).toBe(true);
+    expect(paths.some((p) => p.endsWith("dialect/src/index.ts"))).toBe(true);
   });
 
-  it("dialect.ts's own feature-detect probe is present, unique, and carries the allow marker", () => {
-    const entry = Object.entries(SOURCES).find(([p]) => p.endsWith("ink-editor/src/dialect.ts"));
+  it("the dialect package's own feature-detect probe is present, unique, and carries the allow marker", () => {
+    const entry = Object.entries(SOURCES).find(([p]) => p.endsWith("dialect/src/index.ts"));
     expect(entry).toBeTruthy();
     const [, source] = entry!;
     const hits = findDFlagCalls(blankComments(source));

@@ -139,6 +139,30 @@ Emitted grammars are positionally constrained: non-reserved-prefix shapes (paren
 only after a reserved-prefix segment (cue) — never from arbitrary prose. Negative fixtures prove
 `@channel: hello` prose and `(aside)` prose do NOT parse as cue/parenthetical.
 
+## `run_ends_at` — the emitted-side run rule (#3388, RULED 2026-08-30)
+
+The chain rule's source-side break ("blank ALWAYS breaks") has no
+counterpart in the runtime stream: ink swallows blank lines on output, so a
+cue-less dialogue line delivered after a cue is unattributable to any
+consumer of emitted text (the studio Player, a game engine importing the
+resolved dialect). A chain rule therefore carries an emitted-side facet:
+
+```jsonc
+"chain": [{ "after": ["character", "parenthetical", "dialogue"], "is": ["narrative"],
+            "becomes": "dialogue", "carry": ["speaker"],
+            "run_ends_at": ["character", "action", "choices"] }]
+```
+
+`run_ends_at` lists the kinds whose appearance ENDS the active run, plus the
+reserved `"choices"` turn boundary. Validated like `after`/`becomes`
+(declared OR reserved-structural kinds, or `"choices"`). A new triggering
+kind — one of `after` with its own `emitted` shape — always starts a fresh
+run regardless; an empty list means only a new cue ends a run. Consumers
+apply it through ONE shared run-state helper (`runsOf` in
+`@brink-lang/editor`'s `DialectParser` surface) so the Player and an engine
+never disagree. In `brink.toml` it is `[dialogue] run-ends-at = [...]`,
+applied to every chain rule of the resolved dialect.
+
 ## Unblocks
 
 - **#365** (fold kinds/pills): builds against `nature` from Rust classification; pill cast-names

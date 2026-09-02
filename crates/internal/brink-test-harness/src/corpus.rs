@@ -286,6 +286,55 @@ pub fn compile_via_environment(entry_path: &Path) -> Result<brink_format::StoryD
     Ok(output.data)
 }
 
+/// Compile an entry from disk (`.ink` or `.brink`) and return both the
+/// compiled story and its `.inkb` bytes — the pair the equivalence oracle
+/// (`crate::trace`) takes: bytes for [`crate::trace::trace_diff`], the
+/// [`brink_format::StoryData`] for
+/// [`crate::trace::line_identity_diff`].
+///
+/// Goes through [`native_analysis_options`] exactly like
+/// [`run_native_transcript`], so a fixture with a co-located `brink.toml`
+/// compiles the same way here as everywhere else in this module.
+pub fn compile_entry_to_inkb(entry: &Path) -> Result<(brink_format::StoryData, Vec<u8>), String> {
+    let options = native_analysis_options(entry)?;
+    let output = brink_compiler::compile_path_with_options(entry, options)
+        .map_err(|e| format!("compile {}: {e}", entry.display()))?;
+    let bytes = crate::trace::to_inkb(&output.data);
+    Ok((output.data, bytes))
+}
+
+/// Write `source` to a scratch file named `file_name` and compile it with
+/// [`compile_entry_to_inkb`].
+///
+/// A real file on disk, not an in-memory `read_file` callback: native
+/// (`.brink`) discovery reads through `RealFs` and bypasses any virtual
+/// source entry point (see `tier1_native.rs`'s own scratch-file note), so
+/// one helper that works for both surfaces has to go through disk.
+///
+/// The scratch directory is unique per process and per call, and is removed
+/// before returning whether or not the compile succeeded.
+pub fn compile_source_to_inkb(
+    label: &str,
+    file_name: &str,
+    source: &str,
+) -> Result<(brink_format::StoryData, Vec<u8>), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink-trace-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch dir: {e}"))?;
+    let path = dir.join(file_name);
+    let written = std::fs::write(&path, source).map_err(|e| format!("write scratch source: {e}"));
+    let result = written.and_then(|()| compile_entry_to_inkb(&path));
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
 /// The [`compile_via_environment`] analogue of [`compile_and_explore_from_ink`]
 /// — compiles through the real production path, links, and explores.
 pub fn compile_and_explore_via_environment(

@@ -1,0 +1,11 @@
+description = "A {a|b|c} sequence sharing a line with an inline-conditional divert branch, revoked corner of #3275"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "sequence-with-divert-branch"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences", "lifted-branches", "divert"]
