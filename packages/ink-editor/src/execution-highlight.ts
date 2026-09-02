@@ -30,7 +30,7 @@ export interface ExecutionHighlight {
    *  frame = a selected non-top stack frame (accent band + hollow arrow);
    *  rejected = an authored choice NOT added to the block (dimmed, with
    *  {@link ExecutionHighlight.note} rendered beside the line). */
-  kind: "live" | "paused" | "frame" | "rejected";
+  kind: "live" | "paused" | "frame" | "rejected" | "follow" | "hover";
   /** Why a `rejected` line was left out — rendered as a muted chip at
    *  the line's end (e.g. "once-only · used", "condition false"). For
    *  the by-elimination condition case, the extension enriches the
@@ -124,6 +124,18 @@ const executionHighlightTheme = EditorView.baseTheme({
   },
   ".brink-exec-frame": {
     backgroundColor: "rgb(var(--bs-accent-rgb, 59 130 246) / 10%)",
+  },
+  // Follow (#3437): the line the Player just revealed — a full-width band
+  // with an inset accent bar, so the eye finds it without a gutter scan.
+  ".brink-exec-follow": {
+    backgroundColor: "rgb(var(--bs-accent-rgb, 59 130 246) / 16%)",
+    boxShadow: "inset 3px 0 0 var(--bs-accent, #3b82f6)",
+  },
+  // Hover (#3437): the transcript row under the pointer — a neutral band,
+  // never mistaken for where play is.
+  ".brink-exec-hover": {
+    backgroundColor: "rgb(var(--bs-fg-rgb, 205 214 244) / 8%)",
+    boxShadow: "inset 3px 0 0 var(--bs-fg-muted, #6c7086)",
   },
   // Rejected choice (W11/#3304): dimmed line, reason chip at line end.
   ".brink-exec-rejected": {

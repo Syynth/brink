@@ -1938,6 +1938,44 @@ mod debug_control_tests {
         );
     }
 
+    /// #3435: a choice carries `sticky` (as written) and `source` on both
+    /// the journaled road (`Step::Choices`) and the debug road (snapshot).
+    #[test]
+    fn choices_carry_kind_and_source_on_both_roads() {
+        let src = "-> top\n=== top ===\nPick.\n* [Once only] -> top\n+ [Sticky one] -> top\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let _ = json(&session.continue_single().expect("the line"));
+        let stop = json(&session.continue_single().expect("the choices"));
+        assert_eq!(stop["type"], serde_json::json!("choices"), "{stop}");
+        let choices = stop["choices"].as_array().expect("choices");
+        assert_eq!(choices.len(), 2);
+        assert_eq!(
+            choices[0]["sticky"],
+            serde_json::json!(false),
+            "`*` is once-only: {stop}"
+        );
+        assert_eq!(
+            choices[1]["sticky"],
+            serde_json::json!(true),
+            "`+` is sticky: {stop}"
+        );
+        for (c, label) in choices.iter().zip(["Once only", "Sticky one"]) {
+            let s = c["source"]["range_start"].as_u64().expect("range_start");
+            let e = c["source"]["range_end"].as_u64().expect("range_end");
+            let at = &src[usize::try_from(s).expect("usize")..usize::try_from(e).expect("usize")];
+            assert!(
+                at.contains(label),
+                "source must cover the choice's own text, got {at:?}"
+            );
+        }
+
+        let snap = json(&session.debug_snapshot().expect("snapshot"));
+        let pending = snap["pending_choices"].as_array().expect("pending_choices");
+        assert_eq!(pending[0]["sticky"], serde_json::json!(false));
+        assert_eq!(pending[1]["sticky"], serde_json::json!(true));
+        assert_eq!(pending[1]["source"]["file"], serde_json::json!("main.ink"));
+    }
+
     // ── W16/#3309: live value editing ───────────────────────────────────
     //
     // The issue's proof items: an edit is visible when the story

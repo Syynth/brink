@@ -20,6 +20,7 @@ import {
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
+import { loadPlayerSettings, savePlayerSettings } from "./SettingsDocument.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
@@ -180,6 +181,27 @@ function StepOutIcon() {
     </svg>
   );
 }
+/** Follow — lines with an arrow: the editor tracks the Player. */
+function FollowIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 6h16M4 12h9M4 18h16" />
+      <path d="M17 9l3 3-3 3" />
+    </svg>
+  );
+}
+
 function FastForwardIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
@@ -249,6 +271,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // the component must never hold or receive the wasm runner handle, so a
   // future SessionProvider (#127) can back it without rework.
   const status = useStudioStore((s) => s.sessionStatus);
+  const followInEditor = useStudioStore((s) => s.followInEditor);
+  const followPaused = useStudioStore((s) => s.followPaused);
+  const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
+  const setSessionHoverSource = useStudioStore((s) => s.setSessionHoverSource);
+  const showProvenance = useStudioStore((s) => s.showProvenance);
+  const showChoiceMarkers = useStudioStore((s) => s.showChoiceMarkers);
   const lines = useStudioStore((s) => s.sessionLines);
   const projectDialect = useStudioStore((s) => s.projectDialect);
   const groups = useMemo(() => foldPlayerRuns(lines, projectDialect), [lines, projectDialect]);
@@ -528,6 +556,32 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           >
             <FastForwardIcon />
           </button>
+          <button
+            className={
+              "player-transport-btn player-auto-btn player-follow-btn" +
+              (followInEditor ? " active" : "") +
+              (followInEditor && followPaused ? " is-paused" : "")
+            }
+            title={
+              followInEditor
+                ? followPaused
+                  ? "Follow in editor — paused while you edit; click to resume (Run or Restart resumes too)"
+                  : "Follow in editor — the editor scrolls to each revealed line (click to stop)"
+                : "Follow in editor — off (click to follow the story in the editor)"
+            }
+            aria-label="Follow in editor"
+            aria-pressed={followInEditor}
+            onClick={() => {
+              const next = !(followInEditor && !followPaused);
+              setFollowInEditor(next);
+              savePlayerSettings(window.localStorage, {
+                ...loadPlayerSettings(window.localStorage),
+                followInEditor: next,
+              });
+            }}
+          >
+            <FollowIcon />
+          </button>
           {debugCapable && collapse < 1 && (
             <span className="player-transport">
               <span className="player-transport-sep" />
@@ -737,6 +791,11 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
+        <div className="player-spine">
+        {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
+            the head of the rail, so the rail reads as a line of play from
+            the first line, not as a bracket around whatever is on screen. */}
+        <div className="player-spine-start" aria-hidden="true" />
         <div className="story-text">
           {groups.map((group, gi) => {
             const renderRow = (row: PlayerRow): ReactNode => {
@@ -749,21 +808,38 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                       line.source.range_end,
                     )
                   : null;
+              // A choice echo whose kind the wire knows (#3435) draws its
+              // `*`/`+` as a ring on the spine and drops the textual `> `.
+              const echoKind = line.kind === "marker" ? line.choiceKind : undefined;
+              const point1 = point !== null && line.source ? point.line + 1 : null;
               return (
                 <div
                   key={i}
                   className={
                     `player-line-row kind-${line.kind}` +
-                    (row.kind !== null ? ` dialect-${row.kind}` : "")
+                    (row.kind !== null ? ` dialect-${row.kind}` : "") +
+                    (echoKind !== undefined ? ` is-echo echo-${echoKind}` : "")
                   }
-                  onMouseEnter={() => setHoverIdx(i)}
-                  onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
+                  onMouseEnter={() => {
+                    setHoverIdx(i);
+                    // Hover → editor (#3437): band the row's source line.
+                    setSessionHoverSource(line.source ?? null);
+                  }}
+                  onMouseLeave={() => {
+                    setHoverIdx((cur) => (cur === i ? -1 : cur));
+                    setSessionHoverSource(null);
+                  }}
                   onClick={(e) => {
                     // ⌘/Ctrl-click anywhere on the row jumps to source (F9).
                     if (e.metaKey || e.ctrlKey) revealSource(line);
                   }}
                 >
-                  <p>{renderRowBody(row)}</p>
+                  {echoKind !== undefined && showChoiceMarkers && (
+                    <span className="player-echo-ring" aria-hidden="true">
+                      {echoKind === "sticky" ? "+" : "*"}
+                    </span>
+                  )}
+                  <p>{echoKind !== undefined ? line.text.replace(/^>\s*/, "") : renderRowBody(row)}</p>
                   {showTags && line.tags.length > 0 && (
                     <span className="player-line-tags">
                       {line.tags.map((tag, ti) => (
@@ -773,16 +849,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                       ))}
                     </span>
                   )}
-                  {point !== null && line.source && (
+                  {showProvenance && point1 !== null && line.source && (
                     <button
-                      className="player-provenance-chip"
-                      title="Reveal in editor (⌘-click the line works too)"
+                      className="player-provenance"
+                      title={`${baseName(line.source.file)}:${point1.toString()} · ⌘-click to open`}
+                      aria-label={`Open ${baseName(line.source.file)}:${point1.toString()} in the editor`}
                       onClick={(e) => {
                         e.stopPropagation();
                         revealSource(line);
                       }}
                     >
-                      {baseName(line.source.file)}:{point.line + 1}
+                      <GoToSourceIcon />
                     </button>
                   )}
                 </div>
@@ -795,7 +872,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             return (
               <div
                 key={`g${gi.toString()}`}
-                className={`player-run dialect-${group.kind ?? "run"}`}
+                className={`player-run dialect-${group.kind ?? "run"} speaker-${palette.toString()}`}
                 data-speaker={group.speaker}
               >
                 <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
@@ -811,18 +888,53 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         {choices.length > 0 ? (
           <div className="choices">
             {choices.map((choice) => (
-              <button key={choice.index} onClick={() => handleChoice(choice.index)}>
-                {choice.text}
+              <button
+                key={choice.index}
+                className={
+                  "player-choice" +
+                  (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
+                }
+                onClick={() => handleChoice(choice.index)}
+              >
+                {choice.sticky !== undefined && showChoiceMarkers && (
+                  <span className="player-choice-mark" aria-hidden="true">
+                    {choice.sticky ? "+" : "*"}
+                  </span>
+                )}
+                <span className="player-choice-text">{choice.text}</span>
               </button>
             ))}
           </div>
         ) : hasPending ? (
           <div className="choices">
-            <button onClick={handleContinue}>Continue</button>
+            <button className="player-choice player-continue" onClick={handleContinue}>
+              <span className="player-choice-text">Continue</span>
+            </button>
           </div>
         ) : null}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** The provenance button's glyph — text with an arrow out of it. */
+function GoToSourceIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M14 4h6v6M20 4l-8 8M11 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
+    </svg>
   );
 }
 

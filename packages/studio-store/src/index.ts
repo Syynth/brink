@@ -425,3 +425,5 @@ export {
 } from "./slices/problems.js";
 export { conflictPaths } from "./slices/conflict.js";
 export type { ConflictSlice } from "./slices/conflict.js";
+// Player reading knobs (#3438): the font-family guard, for the settings UI.
+export { sanitizeFontFamily } from "./slices/session.js";

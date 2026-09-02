@@ -176,6 +176,12 @@ export interface Choice {
   index: number;
   text: string;
   tags: string[];
+  /** `+` (sticky) vs `*` (once-only), as written (#3435). Always sent by
+   *  the wasm; optional for older fixtures/hosts. */
+  sticky?: boolean;
+  /** Where the choice's text came from in the author's source (#3435);
+   *  absent when the runtime cannot say. */
+  source?: SourceLocation;
 }
 
 // ── Save / load ─────────────────────────────────────────────────
@@ -1311,6 +1317,10 @@ export interface DebugVisitId {
 export interface DebugChoice {
   text: string;
   target?: string;
+  /** `+` (sticky) vs `*` (once-only), as written (#3435). */
+  sticky?: boolean;
+  /** The choice text's source (#3435). */
+  source?: SourceLocation;
   /** The choice's own container id (`DefinitionId` display form) —
    *  string-equal to the overlay projection's `def_id` for the choice
    *  span (W11/#3304): the presented-choice ↔ source join. Always sent

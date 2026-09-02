@@ -25,7 +25,14 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice, DebugState, LinesTable, ProgramModel, SizeReport } from "@brink/wasm-types";
+import type {
+  Choice,
+  DebugState,
+  LinesTable,
+  ProgramModel,
+  SizeReport,
+  SourceLocation,
+} from "@brink/wasm-types";
 import type { ExternalValue } from "@brink-lang/web";
 
 import {
@@ -66,6 +73,15 @@ export { FlowSessionProvider } from "../session/flow-provider.js";
 
 // ── Slice ───────────────────────────────────────────────────────────
 
+/** A CSS `font-family` list, or "" when it is not one: family names, quotes,
+ *  commas, hyphens and spaces only — never a `;`, `{`, `}` or `url(` that
+ *  could turn a setting into a stylesheet. Exported for the settings UI. */
+export function sanitizeFontFamily(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "") return "";
+  return /^[A-Za-z0-9 _'",\-]+$/.test(trimmed) ? trimmed : "";
+}
+
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
@@ -85,6 +101,40 @@ export interface SessionSlice {
   sessionPacedMs: number;
   /** Set the paced cadence (Settings) — pushes through to the provider. */
   setSessionPaced(delayMs: number): void;
+  /** Follow in editor (#3437, ruled 2026-09-02 "it should follow the player
+   *  much more closely"): while on, every line the Player reveals scrolls
+   *  the editor to its source and bands it. App-scope, persisted with the
+   *  Player settings. */
+  followInEditor: boolean;
+  setFollowInEditor(on: boolean): void;
+  /** Follow pauses when the author edits the followed document; Run /
+   *  Restart or flipping the toggle resumes it. */
+  followPaused: boolean;
+  setFollowPaused(paused: boolean): void;
+  /** The source of the transcript row under the pointer (#3437): the
+   *  editor bands it with the hover band, distinct from the follow band. */
+  sessionHoverSource: SourceLocation | null;
+  setSessionHoverSource(source: SourceLocation | null): void;
+  /** Player reading knobs (#3438, app scope, persisted with the Player
+   *  settings). Empty string / 0 = the theme's default; the CSS variable
+   *  stays unset so player.css's fallback applies. */
+  playerFontFamily: string;
+  setPlayerFontFamily(family: string): void;
+  /** Line spacing as a multiple of the font size, ×10 (12–22); 0 = default. */
+  playerLineHeight: number;
+  setPlayerLineHeight(tenths: number): void;
+  /** Measure in `ch` (48–96); 0 = default. */
+  playerMeasure: number;
+  setPlayerMeasure(ch: number): void;
+  /** Reading aids (#3438). */
+  showProvenance: boolean;
+  setShowProvenance(on: boolean): void;
+  showChoiceMarkers: boolean;
+  setShowChoiceMarkers(on: boolean): void;
+  /** The host's font list (#3439 — the desktop app enumerates the machine's
+   *  fonts); `null` = the curated list. */
+  hostFonts: readonly string[] | null;
+  setHostFonts(fonts: readonly string[] | null): void;
   /**
    * The Player's prose size in px (W13/#3306, RULED — the reading
    * surface's size is not the UI's size, the `--bs-editor-font-size`
@@ -290,7 +340,16 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionText: [],
     sessionLines: [],
     sessionPacedMs: 150,
+    followInEditor: true,
+    followPaused: false,
+    sessionHoverSource: null,
     playerFontSize: 0,
+    playerFontFamily: "",
+    playerLineHeight: 0,
+    playerMeasure: 0,
+    showProvenance: true,
+    showChoiceMarkers: true,
+    hostFonts: null,
     sessionReloadedAt: null,
     _resolveSourceBytes: null,
     sessionChoices: [],
@@ -339,6 +398,53 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       const ms = Math.max(0, delayMs);
       set({ sessionPacedMs: ms });
       get()._provider?.setPacedReveal?.(ms);
+    },
+
+    setFollowInEditor(on) {
+      // Flipping the toggle is an explicit "follow now": it also lifts a
+      // pause an edit put in place.
+      set({ followInEditor: on, followPaused: false });
+    },
+
+    setFollowPaused(paused) {
+      if (get().followPaused !== paused) set({ followPaused: paused });
+    },
+
+    setSessionHoverSource(source) {
+      const cur = get().sessionHoverSource;
+      if (cur === source) return;
+      if (
+        cur !== null &&
+        source !== null &&
+        cur.file === source.file &&
+        cur.range_start === source.range_start &&
+        cur.range_end === source.range_end
+      ) {
+        return;
+      }
+      set({ sessionHoverSource: source });
+    },
+
+    setPlayerFontFamily(family) {
+      set({ playerFontFamily: sanitizeFontFamily(family) });
+    },
+    setPlayerLineHeight(tenths) {
+      // 0 resets; otherwise 1.2–2.2 in tenths.
+      const v = tenths <= 0 ? 0 : Math.min(22, Math.max(12, Math.round(tenths)));
+      set({ playerLineHeight: v });
+    },
+    setPlayerMeasure(ch) {
+      const v = ch <= 0 ? 0 : Math.min(96, Math.max(48, Math.round(ch)));
+      set({ playerMeasure: v });
+    },
+    setShowProvenance(on) {
+      set({ showProvenance: on });
+    },
+    setShowChoiceMarkers(on) {
+      set({ showChoiceMarkers: on });
+    },
+    setHostFonts(fonts) {
+      set({ hostFonts: fonts === null ? null : [...fonts] });
     },
 
     setPlayerFontSize(px) {

@@ -34,6 +34,69 @@ export function executionHighlightsFor(
     | "debugState"
     | "selectedFrameIdx"
     | "_provider"
+    | "sessionLines"
+    | "followInEditor"
+    | "followPaused"
+    | "sessionHoverSource"
+    | "_resolveSourceBytes"
+  >,
+  path: string,
+  projection?: HirProjection | null,
+): ExecutionHighlight[] {
+  const out = coreHighlights(st, path, projection);
+  // Follow (#3437): the last revealed line's source, banded, while the
+  // Player plays and follow is on and not paused by an edit. Not while
+  // paused — the paused band already says where play is.
+  const playing = st.sessionStatus === "running" || st.sessionStatus === "awaiting-choice";
+  const resolve = st._resolveSourceBytes;
+  if (
+    st.followInEditor &&
+    !st.followPaused &&
+    !st.sessionPaused &&
+    playing &&
+    resolve &&
+    !sessionDegraded(st.programChecksum, st.compiledChecksum)
+  ) {
+    const last = lastLineWithSource(st.sessionLines);
+    if (last?.source && last.source.file === path) {
+      const point = resolve(last.source.file, last.source.range_start, last.source.range_end);
+      if (point !== null && !out.some((h) => h.line === point.line + 1)) {
+        out.push({ line: point.line + 1, kind: "follow" });
+      }
+    }
+  }
+  // Hover (#3437): the transcript row under the pointer.
+  const hover = st.sessionHoverSource;
+  if (hover !== null && hover.file === path && resolve) {
+    const point = resolve(hover.file, hover.range_start, hover.range_end);
+    if (point !== null && !out.some((h) => h.line === point.line + 1)) {
+      out.push({ line: point.line + 1, kind: "hover" });
+    }
+  }
+  return out;
+}
+
+/** The newest transcript line that knows where it came from. */
+export function lastLineWithSource(
+  lines: readonly { source?: { file: string; range_start: number; range_end: number } }[],
+): { source: { file: string; range_start: number; range_end: number } } | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (l.source) return { source: l.source };
+  }
+  return null;
+}
+
+function coreHighlights(
+  st: Pick<
+    StudioState,
+    | "programChecksum"
+    | "compiledChecksum"
+    | "sessionStatus"
+    | "sessionPaused"
+    | "debugState"
+    | "selectedFrameIdx"
+    | "_provider"
   >,
   path: string,
   projection?: HirProjection | null,

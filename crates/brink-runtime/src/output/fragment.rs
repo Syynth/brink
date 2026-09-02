@@ -81,6 +81,32 @@ impl OutputBuffer {
         self.fragments.get(idx as usize).map(|f| f.parts.as_slice())
     }
 
+    /// Where a fragment's text came from (#3435): the FIRST `LineRef`'s
+    /// line-table `source_location` — the same "first wins" rule a
+    /// delivered line uses in `flush_lines`, through the same scope-table
+    /// selection (`scope_table_idx`, never `line_tables` directly).
+    pub fn fragment_source(
+        &self,
+        idx: u32,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+    ) -> Option<brink_format::SourceLocation> {
+        self.fragment(idx)?.iter().find_map(|part| match part {
+            OutputPart::LineRef {
+                container_idx,
+                line_idx,
+                ..
+            } => {
+                let scope_idx = program.scope_table_idx(*container_idx) as usize;
+                line_tables
+                    .get(scope_idx)
+                    .and_then(|t| t.get(*line_idx as usize))
+                    .and_then(|entry| entry.source_location.clone())
+            }
+            _ => None,
+        })
+    }
+
     /// Resolve a fragment's parts against the current line tables.
     pub fn resolve_fragment(
         &self,

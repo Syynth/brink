@@ -187,7 +187,18 @@ function choicesFromDebugState(
     index: c.index,
     text: c.text,
     tags: [],
+    ...(c.sticky === undefined ? {} : { sticky: c.sticky }),
+    ...(c.source === undefined ? {} : { source: c.source }),
   }));
+}
+
+/** The transcript's echo of a taken choice (#3435): the text as before,
+ *  plus how it was written and where it came from, when the wire says. */
+function choiceEcho(text: string, chosen: Choice | undefined): TranscriptLine {
+  const line: TranscriptLine = { text: `> ${text}`, kind: "marker", tags: [] };
+  if (chosen?.sticky !== undefined) line.choiceKind = chosen.sticky ? "sticky" : "once";
+  if (chosen?.source !== undefined) line.source = chosen.source;
+  return line;
 }
 
 export class LocalSessionProvider implements DebugSessionProvider {
@@ -537,7 +548,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
     const session = this.session;
     if (!session) return;
 
-    const choiceText = this.choices.find((c) => c.index === index)?.text;
+    const chosen = this.choices.find((c) => c.index === index);
+    const choiceText = chosen?.text;
 
     try {
       session.choose(index);
@@ -552,8 +564,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
 
     // Append the chosen text as a marker, clear choices.
-    if (choiceText)
-      this.transcript = [...this.transcript, { text: `> ${choiceText}`, kind: "marker", tags: [] } satisfies TranscriptLine];
+    if (choiceText) this.transcript = [...this.transcript, choiceEcho(choiceText, chosen)];
     this.choices = [];
 
     // Reveal the next section (emits). The journal-dirty hook handles
@@ -1390,8 +1401,8 @@ export class LocalSessionProvider implements DebugSessionProvider {
           return;
         }
 
-        const choiceText = offered.find((c) => c.index === savedChoice)?.text;
-        if (choiceText) allText.push({ text: `> ${choiceText}`, kind: "marker", tags: [] });
+        const chosenSaved = offered.find((c) => c.index === savedChoice);
+        if (chosenSaved?.text) allText.push(choiceEcho(chosenSaved.text, chosenSaved));
         choiceIdx += 1;
         continue;
       }
