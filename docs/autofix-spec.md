@@ -368,6 +368,52 @@ anything.
   buffers by the same road a rename does. `resolve_code_action` stays for
   structural refactors.
 
+*As built (#3420, milestone 5):* the studio half of this section — the
+Problems panel's per-row **Fix** and header **Fix all safe (N)**, the row's
+context-menu fix entries, the editor context menu's fix group plus "Fix all
+safe in this file", the palette's two `fix.allSafe*` commands, and fix on
+save. Six decisions the sketch left open, decided here:
+
+- **The header's `N` is `collect().len()`, not a `max_applicability` tally.**
+  The sketch's "from `max_applicability` counts" would count a diagnostic's
+  *potential*; the button promises what pressing it does. `fix_count` runs
+  the batch's own `collect` — the policy's `admits` gate applied, identical
+  fixes collapsed — so the number and the action cannot disagree.
+- **The Problems panel makes ONE fix query per compile, not one per row.**
+  `fix_offers(select)` answers every OFFERED fix of the selection paired
+  with its diagnostic's `(path, start, end, code)`, and each row looks
+  itself up. A per-row query would be one wasm call per visible diagnostic
+  on every render. "Offered" is `FixPolicy::offers` (everything except a
+  code the project turned `"off"`), and each entry carries `batchable` —
+  `FixPolicy::admits` — so a surface can tell "you may click this" from
+  "the batch will take this" without a second query.
+- **`fix_all` over wasm leaves the session unchanged.** The loop must
+  rewrite sources to re-analyze between rounds (§5), but they are restored
+  before it returns and the report carries `files` instead: every path whose
+  text changed, with its full new source. That is not cosmetic symmetry with
+  `apply_fix` — the studio's apply seam snapshots each file for undo *as it
+  writes*, so a session left holding the fixed text would snapshot the fixed
+  text and make Undo a no-op.
+- **The report's sites carry no offsets.** `Report::applied`'s ranges are
+  positions in the revision the round that took them saw, and later rounds
+  rewrote that source; resolving them against the current text would report
+  positions that never existed. `FixSiteJs` is `{ code, path }`.
+- **`apply_fix_at_path` exists because a Problems row names its own file.**
+  `apply_fix` reports its result against the *active* file, which for a row
+  in an unopened file is the wrong primary.
+- **§6.2's app setting is `off | safe | project`, default off, and it
+  resolves as a CEILING rather than a tier filter.** "Safe only" is the
+  ceiling `"ask"`: at that ceiling a Safe fix keeps its `auto` tier default
+  and a Suggested fix — promoted by the project or not — resolves to `ask`
+  and is not batched. Both roads go through
+  `ProjectConfig::effective_fix_policy`, so the still-tentative ceiling
+  relationship stays in one place. The setting lives with the other
+  app-scope editor settings (`brink-studio.editor.v1`); an unrecognized
+  persisted value lands on off. On-save runs after the editor's text is
+  flushed into the session and before the write, and deliberately does NOT
+  push an undo entry or a toast of its own — an implicit action on every
+  Ctrl-S would make both noise.
+
 ## 8. `brink fix` — RULED
 
 Its own subcommand (not a `--fix` flag on `compile`): it needs its own

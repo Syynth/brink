@@ -1396,6 +1396,18 @@ export class EditorSessionHandle {
   }
 
   /**
+   * `applyFix` for a named file rather than the active one. The result's
+   * `path`/`new_source` describe THAT file — which is what a Problems row
+   * needs, since the row's diagnostic names its own file and the active
+   * editor may be showing something else entirely.
+   */
+  applyFixInFile(path: string, fix: Fix): StructuralResult {
+    this.bump();
+    const json = this.session.apply_fix_at_path(path, JSON.stringify(fix));
+    return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
    * Every auto-fix OFFERED for the diagnostics of a selection
    * (`docs/autofix-spec.md` §7), paired with the diagnostic site it
    * discharges. One call per compile feeds every Problems row; `{}` selects
@@ -1422,10 +1434,10 @@ export class EditorSessionHandle {
   /**
    * Run the batch to a fixpoint (`docs/autofix-spec.md` §5).
    *
-   * **Mutates the session**: the loop rewrites sources and re-analyzes
-   * between rounds. The host still owns the write — push each `files` entry
-   * through its own apply seam (re-applying is idempotent; the session
-   * already holds that text).
+   * The session is left exactly as it was found — the loop's intermediate
+   * rewrites are rolled back before this returns, so the host's apply seam
+   * still snapshots the PRE-fix text for undo. Push each `files` entry
+   * through that seam to actually write.
    */
   fixAll(select: FixSelect = {}): FixReport {
     this.bump();

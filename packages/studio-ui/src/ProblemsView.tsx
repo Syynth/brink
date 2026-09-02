@@ -12,14 +12,28 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
 import { lineColAt } from "@brink-lang/editor";
 import { isProseDiagnostic, type ProblemSeverityBucket } from "@brink/studio-store";
-import type { Diagnostic } from "@brink/wasm-types";
-import { useStudioStore } from "./StoreContext.js";
+import type { Diagnostic, FixOffer } from "@brink/wasm-types";
+import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { TODO_DIAGNOSTIC_CODE } from "./TodosView.js";
 import { ChevronIcon, FilterIcon, GroupByFileIcon } from "./icons.js";
 import {
   ProblemsContextMenu,
   type ProblemsMenuTarget,
 } from "./ProblemsContextMenu.js";
+import {
+  applyOfferedFix,
+  countFixes,
+  fixAllSafeLabel,
+  fixButtonTitle,
+  indexFixOffers,
+  offersForDiagnostic,
+  pullFixOffers,
+  runFixAll,
+  safeSelect,
+  tierLabel,
+  type FixProject,
+  type FixStoreState,
+} from "./fixActions.js";
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────────
 
@@ -234,6 +248,25 @@ function useAllDiagnostics(): readonly Diagnostic[] {
 }
 
 /**
+ * Every auto-fix the compilation currently offers, indexed by diagnostic
+ * identity (`docs/autofix-spec.md` §7).
+ *
+ * ONE wasm call per compile, not one per row: `diagnostics` is the compile
+ * slice's own array, whose identity changes exactly when a compile lands, so
+ * the memo re-pulls then and never on a re-render. `project` is in the deps
+ * because opening a different project replaces the session under it.
+ */
+function useFixOfferIndex(
+  diagnostics: readonly Diagnostic[],
+): ReadonlyMap<string, FixOffer[]> {
+  const project = useStudioStore((s) => s._project);
+  return useMemo(
+    () => indexFixOffers(pullFixOffers(project as FixProject | null)),
+    [project, diagnostics],
+  );
+}
+
+/**
  * Problems controls, rendered by the shell in the panel's chrome header
  * (`ToolWindowDescriptor.actions`). Subscribes to the studio store
  * directly — same contract as {@link ProblemsBadge}.
@@ -243,6 +276,15 @@ function useAllDiagnostics(): readonly Diagnostic[] {
  */
 function ProblemsActionsInner() {
   const diagnostics = useAllDiagnostics();
+  const storeApi = useStudioStoreApi();
+  const project = useStudioStore((s) => s._project);
+  // "Fix all safe (N)" — `N` from `countFixes`, the batch's OWN count
+  // (identical fixes collapsed, the policy's batching gate applied), so the
+  // button never promises more than pressing it will do.
+  const safeCount = useMemo(
+    () => countFixes(project as FixProject | null, safeSelect()),
+    [project, diagnostics],
+  );
   const severities = useStudioStore((s) => s.problemsSeverities);
   const filterOpen = useStudioStore((s) => s.problemsFilterOpen);
   const grouped = useStudioStore((s) => s.problemsGrouped);
@@ -276,6 +318,25 @@ function ProblemsActionsInner() {
           </button>
         );
       })}
+      {safeCount > 0 && (
+        <>
+          <span className="problems-actions-sep" aria-hidden="true" />
+          <button
+            type="button"
+            className="problems-fix-all"
+            title="Apply every safe fix in the project"
+            onClick={() => {
+              void runFixAll(
+                storeApi.getState() as unknown as FixStoreState,
+                safeSelect(),
+                "Fix all safe",
+              );
+            }}
+          >
+            {fixAllSafeLabel(safeCount)}
+          </button>
+        </>
+      )}
       <span className="problems-actions-sep" aria-hidden="true" />
       <button
         type="button"
@@ -310,12 +371,17 @@ export const ProblemsActions = memo(ProblemsActionsInner);
 function ProblemRowItem({
   row,
   showFile,
+  offers,
   onReveal,
+  onFix,
   onContextMenu,
 }: {
   row: ProblemRow;
   showFile: boolean;
+  /** The auto-fixes offered for THIS diagnostic; empty ⇒ no Fix button. */
+  offers: readonly FixOffer[];
   onReveal: (row: ProblemRow) => void;
+  onFix: (offer: FixOffer) => void;
   onContextMenu: (row: ProblemRow, x: number, y: number) => void;
 }) {
   const d = row.diagnostic;
@@ -323,8 +389,13 @@ function ProblemRowItem({
   const label = bucket === "error" ? "Error" : bucket === "info" ? "Info" : "Warning";
   // Inside a group the file prefix is redundant: "file.ink:12:5" -> "12:5".
   const shown = showFile ? row.location : row.location.slice(d.file.length + 1);
+  // The first offer is the button; the row's context menu lists them all.
+  const primary = offers[0];
   return (
-    <li>
+    // The Fix button is a SIBLING of the row button, not nested in it: a
+    // button inside a button is invalid HTML and the inner one's click
+    // would still reveal the row.
+    <li className="problems-item">
       <button
         type="button"
         className="problems-row"
@@ -341,6 +412,20 @@ function ProblemRowItem({
         <span className="problems-message">{d.message}</span>
         <span className="problems-location">{shown}</span>
       </button>
+      {primary !== undefined && (
+        <button
+          type="button"
+          className={`problems-fix is-${primary.fix.applicability}`}
+          // Tier-labelled (§3): how far this fix goes is the one thing an
+          // author needs before pressing it, and it differs per row.
+          title={fixButtonTitle(primary)}
+          data-tier={primary.fix.applicability}
+          onClick={() => onFix(primary)}
+        >
+          Fix
+          <span className="problems-fix-tier">{tierLabel(primary.fix.applicability)}</span>
+        </button>
+      )}
     </li>
   );
 }
@@ -355,6 +440,8 @@ function ProblemsViewInner() {
   }, []);
 
   const diagnostics = useAllDiagnostics();
+  const storeApi = useStudioStoreApi();
+  const fixOffers = useFixOfferIndex(diagnostics);
   const project = useStudioStore((s) => s._project);
   const severities = useStudioStore((s) => s.problemsSeverities);
   const filter = useStudioStore((s) => s.problemsFilter);
@@ -391,6 +478,10 @@ function ProblemsViewInner() {
 
   const reveal = (row: ProblemRow): void => {
     commands.dispatch(EDITOR_REVEAL_COMMAND_ID, diagnosticLocation(row.diagnostic));
+  };
+
+  const fix = (offer: FixOffer): void => {
+    void applyOfferedFix(storeApi.getState() as unknown as FixStoreState, offer);
   };
 
   // The filter row is part of the panel body, not the header: the chrome
@@ -460,7 +551,9 @@ function ProblemsViewInner() {
                         key={`${row.location}:${i}`}
                         row={row}
                         showFile={false}
+                        offers={offersForDiagnostic(fixOffers, row.diagnostic)}
                         onReveal={reveal}
+                        onFix={fix}
                         onContextMenu={openMenu}
                       />
                     ))}
@@ -477,7 +570,9 @@ function ProblemsViewInner() {
               key={`${row.location}:${i}`}
               row={row}
               showFile
+              offers={offersForDiagnostic(fixOffers, row.diagnostic)}
               onReveal={reveal}
+              onFix={fix}
               onContextMenu={openMenu}
             />
           ))}

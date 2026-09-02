@@ -21,12 +21,16 @@
 //! ceiling relationship lives, so this module never re-derives the
 //! intersection itself.
 //!
-//! **`fix_all` mutates the session.** Re-analysis is a mutation (§5, "as
-//! built"), so the loop rewrites the session's own sources. The report
-//! therefore carries `files`: every path whose text actually changed, with
-//! its full new source, so the host can push each through the same apply
-//! seam a rename uses. Writing them back is idempotent — the session already
-//! holds that text.
+//! **`fix_all` is side-effect-free from outside.** Re-analysis is a mutation
+//! (§5, "as built"), so the loop necessarily rewrites the session's own
+//! sources round over round — but the sources are **restored** before this
+//! returns, and the report carries `files` instead: every path whose text
+//! changed, with its full new source. That keeps the wasm API the same shape
+//! as `apply_fix` ("compute the sources to write; the caller applies through
+//! its own seam"), and it is load-bearing rather than cosmetic: the studio's
+//! apply seam snapshots each file for undo *as it writes*, so a session left
+//! holding the fixed text would snapshot the fixed text and make Undo a
+//! no-op.
 
 use std::collections::BTreeMap;
 
@@ -274,9 +278,11 @@ impl EditorSession {
     /// Run the batch to a fixpoint (`docs/autofix-spec.md` §5) and return the
     /// `Report` as JSON, plus every file whose text changed.
     ///
-    /// Mutates the session: the loop rewrites sources and re-analyzes between
-    /// rounds. The host still owns the write — push each `files` entry
-    /// through its own apply seam.
+    /// The session is left exactly as it was found — the loop's intermediate
+    /// rewrites are rolled back before this returns. The host owns the write:
+    /// push each `files` entry through its own apply seam, the same way
+    /// [`apply_fix`](Self::apply_fix)'s result is applied. See this module's
+    /// doc for why the rollback is load-bearing.
     pub fn fix_all(&mut self, select_json: &str) -> String {
         let (select, policy) = match self.parse_fix_request(select_json) {
             FixRequest::Run(select, policy) => (select, policy),
@@ -291,28 +297,50 @@ impl EditorSession {
             brink_ide::fix::DEFAULT_MAX_ROUNDS,
         );
 
-        let db = self.session.db();
-        let site = |s: &brink_ide::fix::FixSite| FixSiteJs {
-            code: s.code.as_str().to_owned(),
-            path: db.file_path(s.file).unwrap_or_default().to_owned(),
-        };
-        let mut files = Vec::new();
-        for (id, old) in &before {
-            let (Some(now), Some(path)) = (db.source(*id), db.file_path(*id)) else {
-                continue;
+        // Everything read off the post-loop session happens here, while the
+        // borrow is alive; the rollback below needs `&mut self.session`.
+        let (applied, remaining, files, rollback) = {
+            let db = self.session.db();
+            let site = |s: &brink_ide::fix::FixSite| FixSiteJs {
+                code: s.code.as_str().to_owned(),
+                path: db.file_path(s.file).unwrap_or_default().to_owned(),
             };
-            if now != old {
-                files.push(FixFileJs {
-                    path: path.to_owned(),
-                    new_source: now.to_owned(),
-                });
+            let mut files = Vec::new();
+            let mut rollback = Vec::new();
+            for (id, old) in &before {
+                let (Some(now), Some(path)) = (db.source(*id), db.file_path(*id)) else {
+                    continue;
+                };
+                if now != old {
+                    files.push(FixFileJs {
+                        path: path.to_owned(),
+                        new_source: now.to_owned(),
+                    });
+                    rollback.push((path.to_owned(), old.clone()));
+                }
             }
+            (
+                report.applied.iter().map(site).collect::<Vec<_>>(),
+                report.remaining.iter().map(site).collect::<Vec<_>>(),
+                files,
+                rollback,
+            )
+        };
+
+        // Roll the session back to what the caller handed us. `before` is a
+        // snapshot of every loaded file, so this covers a file an edit landed
+        // in that the selection never named (§4).
+        if !rollback.is_empty() {
+            for (path, source) in rollback {
+                self.session.update_source(&path, source);
+            }
+            self.session.refresh_analysis();
         }
 
         let js = FixReportJs {
-            applied: report.applied.iter().map(site).collect(),
+            applied,
             skipped_overlap: u32::try_from(report.skipped_overlap).unwrap_or(u32::MAX),
-            remaining: report.remaining.iter().map(site).collect(),
+            remaining,
             rounds: report.rounds,
             cap_hit: report.cap_hit,
             files,
@@ -507,9 +535,41 @@ flow start() {
             files[0]["new_source"],
             format!("use story::market::barter::haggle;\n{MAIN}")
         );
-        // The session itself now holds the fixed text, and the diagnostic
-        // it discharged is gone — the §3 obligation, seen from the surface.
-        assert_eq!(session.fix_offers("{}"), "[]");
+    }
+
+    /// The rollback: `fix_all` computes the sources to write and leaves the
+    /// session exactly as it found it, so the host's apply seam still
+    /// snapshots the PRE-fix text for undo.
+    #[test]
+    fn fix_all_leaves_the_session_untouched() {
+        let mut session = session();
+        promote_e025(&mut session);
+        let report = parse(&session.fix_all("{}"));
+        assert_eq!(
+            report["files"].as_array().expect("files").len(),
+            1,
+            "the fixture must actually produce a write: {report:?}"
+        );
+        assert_eq!(parse(&session.get_file_source("main.brink")), MAIN);
+        // …and the diagnostic is still there to be fixed again.
+        assert_eq!(session.fix_count("{}"), 1);
+    }
+
+    /// Applying one row's fix names the ROW's file as the primary, not
+    /// whichever file happens to be active.
+    #[test]
+    fn apply_fix_at_path_reports_the_rows_own_file() {
+        let mut session = session();
+        assert!(session.set_active_file("market/barter.brink"));
+        let offers = parse(&session.fix_offers("{}"));
+        let chosen = serde_json::to_string(&offers[0]["fix"]).expect("re-serialize");
+        let applied = parse(&session.apply_fix_at_path("main.brink", &chosen));
+        assert_eq!(applied["ok"], true, "{applied:?}");
+        assert_eq!(applied["path"], "main.brink", "{applied:?}");
+        assert_eq!(
+            applied["new_source"],
+            format!("use story::market::barter::haggle;\n{MAIN}")
+        );
     }
 
     /// With nothing admitted, `fix_all` is a no-op that says so — and writes

@@ -198,6 +198,7 @@ export type {
   TextMenuRequest,
   IdentityMenuSection,
   LineMenuAction,
+  FixMenuAction,
   BreakpointGutterMarker,
 } from "./play-from-here.js";
 

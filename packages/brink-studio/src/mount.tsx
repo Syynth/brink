@@ -157,6 +157,7 @@ import {
   settingsSections,
   isConfigPath,
   registerStoryGraphCommand,
+  type FixStoreState,
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
@@ -171,6 +172,7 @@ import { runtimeValueNote } from "./runtime-hover.js";
 import { localStorageSaveStore, type SaveStore } from "@brink/studio-store";
 import { CONFIG_FILE, configDiagnostics, malformedCueDiagnostics } from "./dialect-diagnostics.js";
 import { registerFileCommands } from "./file-commands.js";
+import { registerFixCommands } from "./fix-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 import { studioProseChecker } from "./prose-checker.js";
@@ -1246,6 +1248,21 @@ export async function mountStudio(
     project,
     documents,
     notify: (n) => void notifications.notify(n),
+    // Read fresh per save (docs/autofix-spec.md §6.2) — changing the
+    // setting takes effect on the next Ctrl-S, not the next reload.
+    fixOnSave: () => store.getState().fixOnSave,
+  });
+
+  // Auto-fix batch commands (docs/autofix-spec.md §7): "Fix all safe in
+  // project" / "…in this file". `activeDocKey` is the focused group's ink
+  // tab; a symbol tab's key is "path::symbol", so the file is the prefix.
+  registerFixCommands(commands, {
+    getState: () => store.getState() as unknown as FixStoreState,
+    activePath: () => {
+      const key = store.getState().activeDocKey;
+      return key === "" ? null : (key.split("::")[0] ?? null);
+    },
+    notify: (n) => void notifications.notify(n),
   });
   documentsRef = documents;
 
@@ -1806,6 +1823,7 @@ export async function mountStudio(
     store.getState().setAutoOpenForm(editor.autoOpenForm);
     store.getState().setEditorFontSize(editor.fontSize);
     store.getState().setAppFontSize(editor.appFontSize);
+    store.getState().setFixOnSave(editor.fixOnSave);
   }
   // Problems panel view preferences (ruled 2026-08-25: grouped by default,
   // and the toggles persist). The filter text deliberately does not.

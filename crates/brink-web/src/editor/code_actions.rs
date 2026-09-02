@@ -71,6 +71,16 @@ impl EditorSession {
         self.apply_fix_impl(&self.active_path, fix_json)
     }
 
+    /// [`apply_fix`](Self::apply_fix) for a named file rather than the active
+    /// one — the Problems panel's per-row road, where the row's diagnostic
+    /// names its own file and that file is the one the result should call
+    /// `path` (`docs/autofix-spec.md` §7). Applying a row's fix through
+    /// `apply_fix` instead would report the fix's edits against whichever
+    /// file happens to be open.
+    pub fn apply_fix_at_path(&self, path: &str, fix_json: &str) -> String {
+        self.apply_fix_impl(path, fix_json)
+    }
+
     /// Document-handle variant of [`apply_fix`](Self::apply_fix).
     pub fn apply_fix_doc(&self, doc: u32, fix_json: &str) -> String {
         let Some(d) = self.docs.get(&doc) else {

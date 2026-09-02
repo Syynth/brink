@@ -53,6 +53,11 @@ import {
 } from "./SettingsRow.js";
 import { DEFAULT_SETTINGS_SECTION } from "./settingsSectionIds.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
+import {
+  DEFAULT_FIX_ON_SAVE,
+  parseFixOnSave,
+  type FixOnSaveMode,
+} from "./fixActions.js";
 import { LintSettings } from "./LintSettings.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { InkFileDocument, inkFileRef } from "./InkFileDocument.js";
@@ -319,6 +324,10 @@ export interface EditorSettings {
   /** App-wide UI text size in px — the base the whole type scale derives
    *  from. The other half of the two-knob ruling. */
   appFontSize: number;
+  /** How far auto-fix may go on save (`docs/autofix-spec.md` §6.2, #3420).
+   *  App-scope on purpose: it is a personal ceiling over the project's own
+   *  `[fix]` table, never a second copy of it. Default OFF. */
+  fixOnSave: FixOnSaveMode;
 }
 
 const DEFAULT_EDITOR: EditorSettings = {
@@ -328,6 +337,7 @@ const DEFAULT_EDITOR: EditorSettings = {
   showInlayHints: true,
   fontSize: DEFAULT_EDITOR_FONT_SIZE,
   appFontSize: DEFAULT_APP_FONT_SIZE,
+  fixOnSave: DEFAULT_FIX_ON_SAVE,
 };
 
 /** Load persisted editor settings. Never throws; defaults on garbage. */
@@ -352,6 +362,7 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     showInlayHints?: unknown;
     fontSize?: unknown;
     appFontSize?: unknown;
+    fixOnSave?: unknown;
   } | null;
   const glyph = obj?.formGlyph === "hover" || obj?.formGlyph === "inline" ? obj.formGlyph : "off";
   return {
@@ -364,6 +375,10 @@ export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSet
     // Garbage, out-of-range, and absent all land on the default.
     fontSize: clampEditorFontSize(obj?.fontSize),
     appFontSize: clampAppFontSize(obj?.appFontSize),
+    // Absent, garbage, and an unknown spelling all land on OFF — the one
+    // direction a persisted-settings fallback may take for a setting that
+    // rewrites files.
+    fixOnSave: parseFixOnSave(obj?.fixOnSave),
   };
 }
 
@@ -652,7 +667,10 @@ export function EditorSection() {
   const setEditorFontSize = useStudioStore((s) => s.setEditorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
   const setAppFontSize = useStudioStore((s) => s.setAppFontSize);
+  const fixOnSave = useStudioStore((s) => s.fixOnSave);
+  const setFixOnSave = useStudioStore((s) => s.setFixOnSave);
   const selectId = useId();
+  const fixOnSaveId = useId();
   const autoId = useId();
   const guttersId = useId();
   const inlayHintsId = useId();
@@ -668,6 +686,7 @@ export function EditorSection() {
       showInlayHints,
       fontSize,
       appFontSize,
+      fixOnSave,
     });
   };
   const onAutoChange = (on: boolean): void => {
@@ -679,6 +698,7 @@ export function EditorSection() {
       showInlayHints,
       fontSize,
       appFontSize,
+      fixOnSave,
     });
   };
   const onGuttersChange = (on: boolean): void => {
@@ -690,6 +710,7 @@ export function EditorSection() {
       showInlayHints,
       fontSize,
       appFontSize,
+      fixOnSave,
     });
   };
   const onInlayHintsChange = (on: boolean): void => {
@@ -701,6 +722,7 @@ export function EditorSection() {
       showInlayHints: on,
       fontSize,
       appFontSize,
+      fixOnSave,
     });
   };
   const onFontSizeChange = (px: number): void => {
@@ -713,6 +735,7 @@ export function EditorSection() {
       showInlayHints,
       fontSize: next,
       appFontSize,
+      fixOnSave,
     });
   };
   const onAppFontSizeChange = (px: number): void => {
@@ -725,11 +748,50 @@ export function EditorSection() {
       showInlayHints,
       fontSize,
       appFontSize: next,
+      fixOnSave,
+    });
+  };
+
+  const onFixOnSaveChange = (mode: FixOnSaveMode): void => {
+    setFixOnSave(mode);
+    saveEditorSettings(window.localStorage, {
+      formGlyph,
+      autoOpenForm,
+      showGutters,
+      showInlayHints,
+      fontSize,
+      appFontSize,
+      fixOnSave: mode,
     });
   };
 
   return (
     <section className="settings-section">
+      <SettingsGroup title="Saving">
+        <SettingsRow
+          htmlFor={fixOnSaveId}
+          title="Fix on save"
+          description={
+            <>
+              Apply auto-fixes when a file is saved. This is a personal ceiling over the
+              project&rsquo;s own <code>[fix]</code> policy in <code>brink.toml</code> — it can
+              only be more conservative than the project, never more aggressive.
+            </>
+          }
+        >
+          <select
+            id={fixOnSaveId}
+            className="settings-select"
+            value={fixOnSave}
+            onChange={(event) => onFixOnSaveChange(parseFixOnSave(event.target.value))}
+          >
+            <option value="off">Off</option>
+            <option value="safe">Safe fixes only</option>
+            <option value="project">Everything the project allows</option>
+          </select>
+        </SettingsRow>
+      </SettingsGroup>
+
       <SettingsGroup title="Arguments">
         <SettingsRow
           htmlFor={selectId}

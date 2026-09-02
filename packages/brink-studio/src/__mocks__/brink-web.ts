@@ -2010,6 +2010,43 @@ export class EditorSession {
     return d ? this.mockFix(d.path) : "[]";
   }
 
+  /** Path-addressed variant of {@link fixes_at}. Same synthetic entry, for
+   *  the named file rather than the active one. */
+  fixes_at_path(path: string, _offset: number): string {
+    return this.files.has(path) ? this.mockFix(path) : "[]";
+  }
+
+  /**
+   * The batch road (`docs/autofix-spec.md` §5).
+   *
+   * ⚠ UNMODELLED, and deliberately so: `fix_offers` / `fix_count` /
+   * `fix_all` walk the compilation's DIAGNOSTICS, and the mock has no
+   * analyzer, so there is nothing here to key a batch off. They answer the
+   * empty/no-op shapes — a project with no fixable diagnostics — which is a
+   * real production answer, not an invented one. A test that needs the
+   * batch to DO something stubs `_project` directly (see
+   * `problems-fix.test.tsx`); one that needs it to be real uses the Rust
+   * road (`crates/brink-web/src/editor/fix_batch.rs`).
+   */
+  fix_offers(_selectJson: string): string {
+    return "[]";
+  }
+
+  fix_count(_selectJson: string): number {
+    return 0;
+  }
+
+  fix_all(_selectJson: string): string {
+    return JSON.stringify({
+      applied: [],
+      skipped_overlap: 0,
+      remaining: [],
+      rounds: 0,
+      cap_hit: false,
+      files: [],
+    });
+  }
+
   /**
    * Resolve a chosen fix's edits to the sources to write.
    *
@@ -2020,6 +2057,12 @@ export class EditorSession {
    */
   apply_fix(fixJson: string): string {
     return this.applyFixImpl(this.activePath, fixJson);
+  }
+
+  /** Path-addressed variant of {@link apply_fix} — the Problems row's road,
+   *  where the primary file is the DIAGNOSTIC's, not the active one. */
+  apply_fix_at_path(path: string, fixJson: string): string {
+    return this.applyFixImpl(path, fixJson);
   }
 
   /** Document-handle variant of {@link apply_fix}. */

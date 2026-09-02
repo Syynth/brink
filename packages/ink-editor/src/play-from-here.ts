@@ -12,7 +12,7 @@
 
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
-import type { Location } from "@brink/wasm-types";
+import type { Applicability, Fix, Location } from "@brink/wasm-types";
 import { foldEffect, foldable, foldedRanges, unfoldEffect } from "@codemirror/language";
 import { navigateToLocation } from "./goto-definition.js";
 import { findReferencesAt } from "./references.js";
@@ -38,6 +38,14 @@ export interface PlayFromHereOptions {
    *  + Cut/Copy/Paste/Select All bound to this view). When provided, the
    *  native context menu never appears inside the editor. */
   onTextContextMenu?: (request: TextMenuRequest) => void;
+  /** The auto-fixes for the diagnostics under the pointer
+   *  (`docs/autofix-spec.md` §7's editor-context-menu surface). The SAME two
+   *  seams the code-actions menu already uses, passed through rather than
+   *  duplicated — so a fix offered by Mod-. and a fix offered by right-click
+   *  are the same fix, computed once in `brink-ide`. */
+  getFixes?: (offset: number) => Fix[];
+  /** Apply one chosen fix, through the host's own apply seam. */
+  applyFix?: (fix: Fix) => void;
   /** Identity resolution for the menu's Navigate/Rename group — the same
    *  callbacks the cmd-click / Shift-Alt-F / F2 surfaces use. */
   gotoDefinition?: (source: string, offset: number) => Location | null | Promise<Location | null>;
@@ -336,6 +344,12 @@ export interface TextMenuRequest {
   /** Editor-side line-context items (context-menu spec, structural rows):
    *  Open File on INCLUDEs, Fold/Unfold on foldable regions. */
   lineActions?: LineMenuAction[];
+  /** The auto-fixes for the diagnostics under the pointer
+   *  (`docs/autofix-spec.md` §7). Each entry applies one fix through the
+   *  host's seam; `tier` is the fix's `applicability`, so the host can label
+   *  how far it goes. Absent when the host wired no `getFixes`, empty when
+   *  the pointer is not on a diagnostic that has one. */
+  fixActions?: FixMenuAction[];
   /** Present when the click landed on an identity-bearing token (a divert
    *  target, VAR/CONST/list/label/param/EXTERNAL reference or declaration —
    *  the test is "goto-definition resolves here"). Actions are bound to the
@@ -347,6 +361,40 @@ export interface TextMenuRequest {
 export interface LineMenuAction {
   label: string;
   run: () => void;
+}
+
+/** One auto-fix menu item, bound to the raising view. */
+export interface FixMenuAction extends LineMenuAction {
+  /** The diagnostic code the fix discharges, e.g. `"E025"`. */
+  code: string;
+  /** How far this fix goes (`docs/autofix-spec.md` §3). */
+  tier: Applicability;
+}
+
+/**
+ * The fix entries for the diagnostics under `pos`.
+ *
+ * `getFixes` is the same per-slot seam the code-actions menu pulls, so the
+ * offsets are already in this view's coordinate space and the offered set is
+ * identical between the two surfaces. A pull that throws contributes no
+ * entries — a failed fix query must never take the context menu down with
+ * it, exactly as in `code-actions.ts`.
+ */
+function fixActionsAt(pos: number, options: PlayFromHereOptions): FixMenuAction[] {
+  const { getFixes, applyFix } = options;
+  if (!getFixes || !applyFix) return [];
+  let fixes: Fix[];
+  try {
+    fixes = getFixes(pos);
+  } catch {
+    return [];
+  }
+  return fixes.map((fix) => ({
+    label: fix.title,
+    code: fix.code,
+    tier: fix.applicability,
+    run: () => applyFix(fix),
+  }));
 }
 
 /** The identity group of the editor context menu (context-menu spec: the
@@ -495,6 +543,7 @@ async function buildTextMenuRequest(
     identity: pos == null ? undefined : await identitySectionAt(view, pos, options),
     lineType: lineInfo?.type,
     lineActions: pos == null ? undefined : lineActionsAt(view, pos, options),
+    fixActions: pos == null ? undefined : fixActionsAt(pos, options),
     x,
     y,
     hasSelection,
