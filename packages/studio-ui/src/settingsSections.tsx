@@ -15,6 +15,7 @@
 import type { SettingsSection } from "./SettingsModal.js";
 import { SETTINGS_ICONS } from "./SettingsModal.js";
 import {
+  ConventionsSection,
   DebuggingSection,
   PlayerSection,
   DiagnosticsSection,
@@ -127,6 +128,20 @@ export function settingsSections(groupId: string): SettingsSection[] {
       // whether *your* studio compiles carry debug info are machine
       // preferences, never properties of the project (ruled 2026-08-29,
       // "debug info on by default"; W7/#3300 F13).
+      id: SETTINGS_SECTION_IDS.conventions,
+      scope: "project",
+      title: "Conventions",
+      keywords:
+        "conventions dialogue dialect cue cues character speaker parenthetical action " +
+        "screenplay preset at-cue brink.toml run",
+      icon: SETTINGS_ICONS.diagnostics,
+      body: (
+        <SettingsGroup title="Dialogue conventions">
+          <ConventionsSection />
+        </SettingsGroup>
+      ),
+    },
+    {
       id: SETTINGS_SECTION_IDS.player,
       scope: "app",
       title: "Player",

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Ink;
 using Ink.Runtime;
 
 namespace InkOracle;
@@ -17,11 +18,41 @@ public class Explorer
     private readonly List<string> _containerPaths;
     private readonly List<OracleEpisode> _episodes = new();
 
-    public Explorer(Story story, ExploreConfig? config = null)
+    // Opt-in only (see `warnAndContinue` below): when set, a `Story.onError`
+    // handler is attached so that runtime WARNINGS (e.g. reading a `~ temp`
+    // before its declaration executes) do not escalate to a fatal
+    // `StoryException`. Without a handler attached, `Story.Continue()`
+    // throws when either an error OR a warning is pending (see
+    // ink-engine-runtime/Story.cs, ~line 536-580) -- that's a property of
+    // "no host is listening", not of ink's warn/error semantics, and it is
+    // what previously made I010-temp-not-found's golden encode a STOP where
+    // real ink (and brink) warn-and-continue. Genuine runtime ERRORs still
+    // terminate the episode in this mode -- only WARNINGs are swallowed.
+    private readonly bool _warnAndContinue;
+    private readonly List<string> _pendingErrors = new();
+
+    public Explorer(Story story, ExploreConfig? config = null, bool warnAndContinue = false)
     {
         _story = story;
         _config = config ?? new ExploreConfig();
         _containerPaths = CollectContainerPaths(story.mainContentContainer, "");
+        _warnAndContinue = warnAndContinue;
+
+        if (_warnAndContinue)
+        {
+            _story.onError += OnStoryError;
+        }
+    }
+
+    private void OnStoryError(string message, ErrorType type)
+    {
+        if (type == ErrorType.Error)
+        {
+            _pendingErrors.Add(message);
+        }
+        // Warnings are intentionally not recorded as terminal conditions:
+        // attaching this handler is exactly what makes ink's runtime
+        // continue past a warning instead of throwing (see Story.cs).
     }
 
     public List<OracleEpisode> Explore()
@@ -220,11 +251,26 @@ public class Explorer
                 // Snapshot state before this Continue().
                 var visitsBefore = SnapshotVisitCounts();
                 variableChanges.Clear();
+                _pendingErrors.Clear();
 
                 _story.Continue();
 
-                // Check for errors after Continue().
-                if (_story.hasError)
+                // Check for errors after Continue(). When `_warnAndContinue`
+                // has an `onError` handler attached, the runtime itself
+                // resets `hasError`/`hasWarning` before Continue() returns
+                // (see Story.cs), so the only way to see a genuine ERROR is
+                // via what `OnStoryError` captured above; a WARNING was
+                // already swallowed and the story kept running.
+                if (_warnAndContinue)
+                {
+                    if (_pendingErrors.Count > 0)
+                    {
+                        RemoveAllObservers(OnVariableChanged);
+                        var errors = string.Join("; ", _pendingErrors);
+                        return (steps, new TerminalError(errors));
+                    }
+                }
+                else if (_story.hasError)
                 {
                     RemoveAllObservers(OnVariableChanged);
                     var errors = string.Join("; ", _story.currentErrors);

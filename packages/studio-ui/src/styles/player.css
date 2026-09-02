@@ -503,3 +503,48 @@
 .brink-studio .pl-save-row:hover .pl-save-actions {
   visibility: visible;
 }
+
+/* ── Dialogue runs (#3389, RULED 2026-08-30) — rendered from the project
+   dialect, not a hardcoded cue regex. A run = the cue header once, then its
+   spoken lines; action/narrative sit outside. Speaker colours are a
+   deterministic palette index from the name (no roster needed). */
+.brink-studio .player .player-run {
+  margin: 0 0 6px;
+}
+.brink-studio .player .player-run-cue {
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.02em;
+  margin: 8px 0 2px;
+}
+.brink-studio .player .player-run .player-line-row p {
+  font-style: normal;
+  color: var(--bs-fg);
+}
+.brink-studio .player .player-line-row.dialect-action p {
+  font-style: italic;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-line-row.kind-marker p {
+  color: var(--bs-accent);
+}
+.brink-studio .player .player-run-paren {
+  font-style: italic;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .speaker-0 { color: var(--bs-syn-enum); }
+.brink-studio .player .speaker-1 { color: var(--bs-info); }
+.brink-studio .player .speaker-2 { color: var(--bs-success); }
+.brink-studio .player .speaker-3 { color: var(--bs-accent); }
+.brink-studio .player .speaker-4 { color: var(--bs-syn-keyword); }
+.brink-studio .player .speaker-5 { color: var(--bs-warning); }
+/* Narrative outside any run keeps the narrator voice (italic, muted) the
+   Player always had; the parenthetical sits on its own line, screenplay
+   style, the way the old renderer broke it. */
+.brink-studio .player .story-text > .player-line-row.kind-line p {
+  font-style: italic;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-run-paren {
+  display: block;
+}

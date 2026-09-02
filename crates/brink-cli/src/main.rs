@@ -99,15 +99,19 @@ enum Commands {
         #[arg(long, value_enum)]
         types: Option<TypesArg>,
         /// Deny a diagnostic code, promoting it to a hard compile error
-        /// (issue #1373). Repeatable. Only codes whose *default* severity is
-        /// `Warning` are overridable (#1160) — an unrecognized or
-        /// non-overridable code is ignored with a warning through the usual
-        /// channel, never silently. The special code `warnings` (`-D
-        /// warnings`, mirroring rustc) is `deny-warnings`: promote every
-        /// diagnostic that would otherwise resolve to `Warning` up to
-        /// `Error`, the CLI equivalent of `[lints] deny-warnings = true`.
-        /// Always wins over the same code in a discovered `brink.toml`'s
-        /// `[lints]` table (#1005 `CLI/API > file > default` precedence).
+        /// (issue #1373). Repeatable. A code is overridable when its
+        /// *default* severity is not `Error` (#1160) — every
+        /// `Warning`/`Info`/`Hint`-default code, plus the **compat-deny**
+        /// tier (issue #3373): specific `Error`-default codes, like
+        /// `E194`, where inklecate rejects the program but brink can run
+        /// it. An unrecognized or non-overridable code is ignored with a
+        /// warning through the usual channel, never silently. The special
+        /// code `warnings` (`-D warnings`, mirroring rustc) is
+        /// `deny-warnings`: promote every diagnostic that would otherwise
+        /// resolve to `Warning` up to `Error`, the CLI equivalent of
+        /// `[lints] deny-warnings = true`. Always wins over the same code
+        /// in a discovered `brink.toml`'s `[lints]` table (#1005 CLI/API >
+        /// file > default precedence).
         #[arg(short = 'D', long = "deny", value_name = "CODE")]
         deny: Vec<String>,
         /// Force a diagnostic code to `Warning`, promotable back to `Error`
@@ -116,9 +120,13 @@ enum Commands {
         /// precedence as `--deny`.
         #[arg(long = "warn", value_name = "CODE")]
         warn: Vec<String>,
-        /// Never escalate a diagnostic code past `Warning`, even under `-D
-        /// warnings`/`deny-warnings` (issue #1373). Repeatable; same
-        /// overridability rules and precedence as `--deny`.
+        /// Suppress a diagnostic code entirely — it is not reported and
+        /// does not affect whether the compile succeeds, even under `-D
+        /// warnings`/`deny-warnings` (issue #1373; issue #3173 made `allow`
+        /// mean suppression rather than a no-op). Repeatable; same
+        /// overridability rules and precedence as `--deny` — this is also
+        /// how a project opts a **compat-deny** code (e.g. `E194`) down
+        /// from its `Error` default to nothing at all.
         #[arg(long = "allow", value_name = "CODE")]
         allow: Vec<String>,
         /// D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): emit the
@@ -582,6 +590,15 @@ fn run_compile(
         brink_format::write_inkb(&data, &mut buf);
         if let Some(path) = output {
             std::fs::write(path, &buf)?;
+            // The RESOLVED dialogue dialect beside the story (#3393, RULED
+            // 2026-08-30): a derived product like the `.inkb` — never the
+            // `brink.toml` source declaration — that an engine reads with
+            // `@brink-lang/dialect`. Only when the project declares one.
+            if let Some(json) = resolved_dialect_json(input)? {
+                let sidecar = path.with_extension("dialect.json");
+                std::fs::write(&sidecar, json)?;
+                tracing::info!("wrote {}", sidecar.display());
+            }
         } else {
             std::io::stdout().lock().write_all(&buf)?;
         }
@@ -599,6 +616,54 @@ fn run_compile(
     }
 
     Ok(())
+}
+
+/// The project's resolved dialogue dialect as JSON (#3393): discover the
+/// entry's `brink.toml` through the same source-tree road `compile_entry`
+/// uses, resolve `[dialogue]` (preset merged, affix sugar expanded, the
+/// file form read relative to the config), and serialize. `None` when no
+/// `brink.toml` is found or it declares no `[dialogue]`.
+///
+/// # Errors
+/// A `brink.toml` that parses but whose `[dialogue]` cannot resolve — the
+/// resolver's own readable message, so a broken declaration fails the
+/// compile loudly rather than shipping a story without its conventions.
+fn resolved_dialect_json(
+    entry: &std::path::Path,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let (root, _warnings) = brink_driver::native_source_root_with_warnings(entry);
+    let tree = brink_driver::RealFs::new(&root);
+    let entry_key = brink_driver::relative_key(&root, entry);
+    resolved_dialect_json_in_tree(&tree, &entry_key)
+}
+
+/// [`resolved_dialect_json`] over any source tree — the testable half.
+fn resolved_dialect_json_in_tree(
+    tree: &impl brink_source_tree::SourceTree,
+    entry_key: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Some(config_key) = brink_project_config::discover_from_entry_in_tree(tree, entry_key)?
+    else {
+        return Ok(None);
+    };
+    let text = brink_source_tree::SourceTree::read(tree, &config_key)?;
+    let (config, _warnings) = brink_project_config::parse_str_at(config_key.clone(), &text)?;
+    let Some(dialogue) = config.dialogue.as_ref() else {
+        return Ok(None);
+    };
+    let config_dir = config_key.rfind('/').map(|i| config_key[..i].to_owned());
+    let read_file = |path: &str| -> Option<String> {
+        let candidates = match config_dir.as_deref() {
+            Some(d) => vec![format!("{d}/{path}"), path.to_owned()],
+            None => vec![path.to_owned()],
+        };
+        candidates
+            .iter()
+            .find_map(|key| brink_source_tree::SourceTree::read(tree, key).ok())
+    };
+    let dialect = brink_ide::dialect_config::resolve_dialogue_config(dialogue, &read_file)
+        .map_err(|message| format!("brink.toml [dialogue]: {message}"))?;
+    Ok(Some(serde_json::to_string_pretty(&dialect)?))
 }
 
 /// A linked program plus the per-file line tables `link` returns beside it
@@ -1060,4 +1125,72 @@ fn discover_inkl_files(story_path: &std::path::Path) -> Vec<PathBuf> {
         .collect();
     paths.sort();
     paths
+}
+
+#[cfg(test)]
+mod dialect_output_tests {
+    use super::resolved_dialect_json_in_tree;
+    use std::collections::BTreeMap;
+
+    fn tree(files: &[(&str, &str)]) -> brink_source_tree::InMemory {
+        brink_source_tree::InMemory::new(
+            files
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    #[test]
+    fn no_config_or_no_dialogue_means_no_sidecar() {
+        let t = tree(&[("main.ink", "Hello.\n")]);
+        assert!(
+            resolved_dialect_json_in_tree(&t, "main.ink")
+                .expect("ok")
+                .is_none()
+        );
+        let t = tree(&[
+            ("main.ink", "Hello.\n"),
+            ("brink.toml", "[project]\nentry = \"main.ink\"\n"),
+        ]);
+        assert!(
+            resolved_dialect_json_in_tree(&t, "main.ink")
+                .expect("ok")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_declared_dialogue_resolves_to_the_merged_artifact() {
+        let t = tree(&[
+            ("game/main.ink", "Hello.\n"),
+            (
+                "game/brink.toml",
+                "[dialogue]\npreset = \"at-cue\"\n\n[[dialogue.elements]]\nkind = \"action\"\nprefix = \">\"\n",
+            ),
+        ]);
+        let json = resolved_dialect_json_in_tree(&t, "game/main.ink")
+            .expect("ok")
+            .expect("declared");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("json");
+        let kinds: Vec<&str> = v["elements"]
+            .as_array()
+            .expect("elements")
+            .iter()
+            .filter_map(|e| e["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["character", "parenthetical", "dialogue", "action"]);
+        // Sugar is EXPANDED in the derived product — an engine sees patterns.
+        assert!(v["elements"][3]["emitted"]["pattern"].is_string(), "{json}");
+    }
+
+    #[test]
+    fn a_broken_declaration_fails_the_compile_loudly() {
+        let t = tree(&[
+            ("main.ink", "Hello.\n"),
+            ("brink.toml", "[dialogue]\npreset = \"fountain\"\n"),
+        ]);
+        let err = resolved_dialect_json_in_tree(&t, "main.ink").expect_err("refused");
+        assert!(err.to_string().contains("unknown dialogue preset"), "{err}");
+    }
 }

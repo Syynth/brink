@@ -4511,6 +4511,66 @@
   dodge browser-reserved chords (#107); flattening them in the editor
   would re-break what those alternates were added to fix.
 
+## Probe-found edge cases become permanent C#-oracle corpus cases
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-corpus
+- **SCOPE:** moderate
+- **WHAT:** Every hand-minimized edge case found by the gen-expressions
+  generator, or by reference-differential probing against the C# ink
+  runtime, gets turned into a permanent case under `tests/` with a real
+  C#-oracle golden (`oracle/*.oracle.json`, generated via `tools/ink-oracle`
+  — never hand-written), not just fixed and forgotten. This applies both to
+  cases brink already handles correctly (which raise
+  `RATCHET_EPISODE_COUNT`) and to cases brink is known to mismatch (which
+  are added anyway, documented as expected mismatches, and excluded from the
+  ratchet delta until fixed).
+- **WHY:** Maintainer directive: "for these weird edge cases, we absolutely
+  super need to create new oracle tests that fully cover this forever." A
+  fix without a locking regression test is not durable — the next
+  refactor of the lowering/codegen layers these edge cases exercise (nested
+  gathers and their fallback choices, #3383; multi-conditional lifting,
+  #3386; sequence sharing across lifted branches, #3275; evaluation-order
+  of lifted function calls, #3395) can silently reintroduce the bug with
+  nothing in CI to catch it.
+
+
+## Uninitialized `~ temp` reads play, and warn twice
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler+runtime
+- **SCOPE:** moderate
+- **WHAT:** A `~ temp` used on a path its declaration does not dominate is
+  handled in both halves of the pipeline, not one. (1) The compiler emits
+  `E193`, a warning-level, `[lints]`-overridable diagnostic naming the use
+  site and the declaration, for each of three shapes: a sibling choice
+  branch, a gather reached before the declaring branch, and a read written
+  textually ahead of the declaration. (A fourth shape this entry originally
+  listed here — a stitch referencing a temp declared at its knot's root —
+  turned out, on PR #3369's review, not to be a dominance question at all:
+  see "Compat-deny diagnostic tier" below, which supersedes this entry for
+  that one shape.) (2) The runtime reads an uninitialized temp slot as the
+  typed default (`0`, which is also `false`) and reports a runtime warning
+  through the diagnostics/output channel, instead of pushing a `Null` that
+  faults on the next operator. (3) Alongside those, every such reference —
+  textually-preceding reads and stitch references included — resolves to
+  the temp's own slot, never to a phantom global that fails at link with
+  `unresolved global` (issue #3362; this resolution behavior is unaffected
+  by the compat-deny split — a stitch's reference to its knot's temp still
+  resolves to the real slot, it is just reported through a different code
+  now). The ruling is recorded in `docs/compiler-spec.md` "Temp scope and
+  definite assignment" and `docs/runtime-spec.md` "Uninitialized temp
+  reads".
+- **WHY:** What plays in Inky must play in brink — the C# reference prints
+  the line and warns (`Variable not found: 'n'. Using default value of 0
+  (false)…`), so an author who tests in Inky and then opens brink was
+  meeting a hard fault where the reference had a warning, which breaches
+  the ink-compat floor. The compile-time diagnostic is the primary fix
+  rather than the runtime fallback alone, because the author should learn
+  about the mistake before playing, and a warning that a `[lints]` entry
+  can turn down leaves a project that leans on the pattern deliberately
+  somewhere to go.
+
 ## Knot/stitch navigation click reveals in place when its file is already open
 - **WHEN:** 2026-09-01
 - **PROJECT:** brink
@@ -4518,6 +4578,46 @@
 - **SCOPE:** moderate
 - **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
 - **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
+
+## Compat-deny diagnostic tier
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler
+- **SCOPE:** architectural
+- **WHAT:** A new diagnostic class, **compat-deny**: "inklecate rejects
+  this; brink can run it; you must opt in." Default severity `Error`;
+  overridable per project through the existing `[lints]` table — to `warn`,
+  or all the way to `allow` ("we should allow it to be turned off if the
+  user wants, it's annoying"). The CLI's `--warn`/`-D` flags gain the same
+  reach. A project's `[lints]` entry travels with the project, so a host
+  consumer running `brink compile` (bevy, a game build) gets exactly the
+  permissiveness the studio does — there is no studio-only switch.
+  Mechanically: `DiagnosticCode::severity()` stays `Error` and
+  `DiagnosticCode::is_overridable()` returns `true` for tier members (widened
+  specifically for this tier — every other `Error`-default code stays
+  non-overridable, issue #1160's original rule); `effective_severity` and
+  `validate_lint_code` both defer to `is_overridable`/`is_compat_deny` rather
+  than re-deriving "not Error" so the two definitions cannot drift apart.
+  **Admission invariant (must be tested):** a code may sit in this tier only
+  if brink produces a *working* program when the code is downgraded — every
+  compat-deny code needs a fixture that compiles under `allow` and plays
+  correctly; anything that would fail at link or fault at runtime is NOT
+  admissible and stays a hard, non-overridable error. **First member:**
+  `E194` — "a knot's `~ temp` is not visible from its stitches in ink",
+  split out of `E193` shape 4 during PR #3369's review: brink plays the
+  program (`Stitch sees 7.`), inklecate rejects it (`Unresolved variable:
+  n`). Recorded in `docs/compiler-spec.md` "Compat-deny diagnostics".
+- **WHY:** Brink accepts a superset of ink at several points, and each such
+  point where the official compiler rejects the program but brink produces
+  a working one needs the same treatment — a named tier keeps them
+  consistent and discoverable rather than each one inventing its own
+  severity story. Defaulting to `Error` keeps an ink-compat project honest
+  by default (the same wall Inky would show it); making it overridable all
+  the way to `allow`, not just `warn`, was a deliberate maintainer call
+  against #1160's usual "hard errors are never downgradable" posture,
+  because the admission invariant already guarantees the downgraded program
+  genuinely works — there is no real defect left to protect the author
+  from once they opt in.
 
 ## Observable runtime semantics: the host-facing trace
 - **WHEN:** 2026-09-01
@@ -4567,3 +4667,60 @@
 - **STATUS:** tentative
 - **WHAT:** `brink.toml` gains a `[fix]` table shaped like `[lints]`: per code `auto` (promote a Suggested fix to batch), `ask` (default), `off` (never offer). It travels with the project and applies identically to `brink fix`, LSP `fixAll`, the Problems "Fix all", and on-save; it is edited from the existing lints table in Settings as a Fix column. The app-scope "Fix on save" setting is a personal ceiling — Off / Safe only / Everything the project allows — and the effective on-save policy is the intersection with the project policy: the editor can only be more conservative than the project. Explicit actions (`brink fix --suggested E033`, a row click) may widen per run; the implicit save only narrows. Entry points RULED: Problems panel (row + header), editor context menu, code actions, command palette, `brink fix` as its own subcommand with `--dry-run`/`--diff`/`--suggested`/`--code`.
 - **WHY:** Maintainer ruled the `[fix]` knob ("yes, it can even go in the existing diagnostics UI"), the save setting plus the three entry points, and the subcommand ("it can generate patches, dry-run, etc."), and named the app-setting ↔ `brink.toml` relationship as the one point of uncertainty — hence tentative. The ceiling-∩-policy shape keeps a team decision (promote E033) from being silently re-decided per editor while never letting an editor exceed what the project admitted.
+
+## The equivalence oracle is its own trace type, not an extended `Episode`
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-harness (`docs/observable-semantics-spec.md` §3/§3.1, #3376)
+- **SCOPE:** moderate
+- **WHAT:** Tier 0 of the guarantee ladder ships as `brink_test_harness::trace` — a `Trace`/`RunSpec`/`trace_diff` triple that records exactly `docs/observable-semantics-spec.md` §2's list and nothing else — rather than as new fields on `Episode`. `Episode` stays the C# oracle's record. Programs are `.inkb` bytes at the `trace_diff` boundary; `differential(pre, post, config)` is the pre-vs-post entry point later consumers (auto-fix's `assert_safe_fix`, the optimizer) point at. Translation identity (§2.2) is a separate result computed from the real `brink_intl::export_lines`. Mutation sensitivity (§4 tier 3a) only counts a mutant as a survivor when it is **grounded** — the baseline trace demonstrably exercised the site the mutation edits.
+- **WHY:** `Episode` records visit counts and RNG writes, which §2 explicitly calls unobservable; folding the definition into it would smuggle internals into the definition, and adding fields would change the on-disk golden-episode schema the ink ratchet reads. Grounding is what makes the tier 3a number mean anything: without it a mutant in an unexplored knot "survives" because the exploration never looked, which says nothing about the definition and would make a 0% survivor rate unreachable for reasons unrelated to the oracle's quality.
+
+## A module-private native global is not host-readable, so it is outside item 3
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-harness / native surface (`docs/observable-semantics-spec.md` §2.3, #3376)
+- **SCOPE:** moderate
+- **WHAT:** The oracle reads host-readable state through the host's own road (`Story::variable`, i.e. `getVar`), which honours `#@private`. Because the native surface is always a declared module and therefore defaults private (`docs/modules-spec.md`), a `.brink` `var` without `pub` is absent from §2 item 3's capture, and two programs differing only in such a global are reported observably equivalent. Recorded in §2.3 next to the `#@internal` escape hatch, and pinned by a test in both directions (`pub` covered, private not).
+- **WHY:** Item 3 says *host-readable*, and a private global genuinely is not: the host is outside every module. Left undocumented this would look like an oracle bug the first time someone hit it; documented, it is the escape hatch §2.3 contemplates, already present in fact on the native surface — which an optimizer's designer needs to know before assuming every global write is protected.
+
+## Project-declared dialogue dialect lives in brink.toml
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / project-config (dialogue dialect, #368)
+- **SCOPE:** moderate — REVISES the 2026-07-05 #368 ruling's "no project file in v1 (mount-time config only)"; that spec filed the project-file home as the expected follow-up, and this is it.
+- **WHAT:** A project declares its dialogue dialect in `brink.toml`: a `[dialect]` table (`preset = "…"` plus `[[dialect.elements]]` overlays using the spec's affix sugar, and the run rule below) is the PRIMARY authoring form; `dialect = "path.json"` remains as the escape hatch for a full hand-written artifact. Both resolve to one `DialogueDialect`; `mountStudio({ dialect })` stays as the embedder override. Tracked as #3387.
+- **NOTE (2026-08-30, implementation):** the table is spelled `[dialogue]`, not `[dialect]` — `[project] dialect` already names the SOURCE surface (`strict-ink`/`brink`) and `[prose] dialect` the spell-check English; `[dialogue]` is the DialogueDialect's own noun. The file form is `[dialogue] file = "path.json"` (a bare top-level `dialogue = "…"` string only parses before any table header in TOML).
+- **WHY:** The dialect is "how this project's text works," which is exactly `brink.toml`'s charter (it already hosts `prose_dialect` and `conventions`); the common case is tiny (a preset plus a kind or two) and reads as TOML with the affix sugar, and a second file you must know to reference is friction for ten lines. Brink cannot bake every author's format into the app — the artifact is the capability, the project owns the format.
+
+## No dialect by default
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / player
+- **SCOPE:** moderate
+- **WHAT:** A project that declares no `[dialect]` gets none: the Player prints plain lines (the Inky posture) and the editor applies no cue form. The shipped `at-cue` preset becomes opt-in. Tracked under #3387; the Player half is #3389.
+- **WHY:** Nothing is assumed about a project's conventions; presets are offered, never imposed. This is what makes "not baking one user's format into the app" true by construction, and it keeps the plain-ink experience identical to Inky for anyone who wants exactly that.
+
+## Dialects declare what ends a dialogue run in the emitted stream
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / dialect artifact
+- **SCOPE:** minor/local
+- **WHAT:** The chain rule gains an emitted-side facet, `run_ends_at` — the list of declared kinds (and the reserved `"choices"` boundary) whose appearance ends the active speaker's run in RUNTIME-EMITTED text. Consumers of emitted text (the Player, an engine importing the resolved dialect) apply it through one shared run-state helper. Tracked as #3388.
+- **WHY:** The source-side chain rule has a hard break the emitted stream lacks — "blank ALWAYS breaks" — and ink swallows blank lines on output, so a cue-less dialogue line after a cue is unattributable downstream unless the dialect says when a run ends. Declaring it (rather than hardcoding a guess) keeps the Player and the author's own engine reading the same answer from the same artifact.
+
+## Engines consume the RESOLVED dialect as a compile output
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** cli / packaging
+- **SCOPE:** moderate
+- **WHAT:** `brink compile` (and the studio's export) emits `dialect.json` beside the compiled story — the project's dialect with the preset merged and affix sugar expanded. A game engine reads that derived product plus the parser, never the `brink.toml` source declaration. The parser/validator/types move to a tiny pure-TS `@brink-lang/dialect` package (re-exported by `@brink-lang/editor`). Tracked as #3393.
+- **WHY:** Single truth without drift: the source is authored once in TOML and the JSON is generated, so there is no hand-edited copy to diverge, and the engine needs no preset-resolution logic. A game codebase should not have to depend on an editor package (CodeMirror and all) to read a JSON schema.
+
+## Program generator: typed model + corpus mutation, inkjs as the reference harness, a capture tier
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-harness / brink-gen (`docs/program-generator-spec.md`)
+- **SCOPE:** architectural
+- **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
+- **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.

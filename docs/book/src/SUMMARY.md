@@ -61,6 +61,7 @@
 - [Web & WASM](./integrations/web/index.md)
   - [The Editor](./integrations/web/editor.md)
   - [Playground](./integrations/web/playground.md)
+  - [Conventions for Your Engine](./integrations/web/conventions.md)
 - [Studio](./integrations/studio/index.md)
 
 # Contributing

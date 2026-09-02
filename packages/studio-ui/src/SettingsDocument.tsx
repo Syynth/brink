@@ -43,6 +43,8 @@ import {
   MAX_EDITOR_FONT_SIZE,
   MIN_EDITOR_FONT_SIZE,
   clampEditorFontSize,
+  DialectParser,
+  runsOf,
 } from "@brink-lang/editor";
 import { useStudioStore } from "./StoreContext.js";
 import {
@@ -549,6 +551,82 @@ export function DebuggingSection() {
       >
         <SettingsToggle id={debugInfoId} checked={debugInfoEnabled} onChange={onChange} />
       </SettingsRow>
+    </div>
+  );
+}
+
+/**
+ * Conventions preview (#3391): paste a few lines and see how the
+ * PROJECT's dialect reads them — the source-side classification the
+ * editor applies, and, treating the same lines as your engine's emitted
+ * text, the runs the Player would fold them into. The place an author
+ * discovers a missing run-break rule before their engine does.
+ */
+export function ConventionsSection() {
+  const dialect = useStudioStore((s) => s.projectDialect);
+  const [sample, setSample] = useState(
+    "@ALICE: <>\nA line with the cue attached.\nA second line, still Alice.\n> An action paragraph.\n",
+  );
+  const preview = useMemo(() => {
+    if (dialect === null) return null;
+    const parser = new DialectParser(dialect);
+    const source = parser.parseSource(sample).map((l) => l.kind ?? "narrative");
+    const lines = sample.split("\n").filter((t, i, all) => !(i === all.length - 1 && t === ""));
+    const emitted = lines.map((text) => ({ segments: parser.parseEmitted(text) }));
+    const runs = runsOf(emitted, dialect);
+    return { source, lines, runs };
+  }, [dialect, sample]);
+  return (
+    <div className="settings-section">
+      <SettingsRow
+        title="Project dialect"
+        description={
+          dialect === null
+            ? "This project declares no [dialogue] in brink.toml — lines print as plain text. Add a preset (e.g. at-cue) to opt in."
+            : `Resolved from brink.toml: ${dialect.name} — ${(dialect.elements ?? []).map((e) => e.kind).join(", ")}`
+        }
+      >
+        <span className="settings-value sv-mono">{dialect === null ? "none" : dialect.name}</span>
+      </SettingsRow>
+      <SettingsRow
+        title="Preview"
+        description="Paste sample lines. Left: how the editor classifies them as SOURCE. Right: treating the same lines as your engine's EMITTED text, the runs the Player folds them into (who is speaking)."
+      >
+        <textarea
+          className="settings-preview-input sv-mono"
+          rows={6}
+          value={sample}
+          onChange={(e) => setSample(e.target.value)}
+          spellCheck={false}
+        />
+      </SettingsRow>
+      {preview && (
+        <div className="settings-preview-grid">
+          <div>
+            <div className="settings-group-label">as source</div>
+            {preview.lines.map((text, i) => (
+              <div key={i} className="settings-preview-row">
+                <code className="sv-mono">{preview.source[i] ?? "narrative"}</code>
+                <span>{text}</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="settings-group-label">as emitted → Player</div>
+            {preview.runs.map((run, i) => (
+              <div key={i} className="settings-preview-run">
+                <code className="sv-mono">
+                  {run.kind ?? "narrative"}
+                  {run.attrs.speaker ? ` · ${run.attrs.speaker}` : ""}
+                </code>
+                {run.lines.map((li) => (
+                  <span key={li}>{preview.lines[li]}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

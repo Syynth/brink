@@ -95,20 +95,100 @@ letting a later optimizer eliminate dead stores to it. Nothing here
 depends on it; it is recorded so the optimizer's designer knows the
 door exists.
 
-## 3. The mechanical oracle
+**One door is already open, by accident of visibility** (measured
+while building the oracle, #3376). Item 3 says *host-readable*
+state, and the oracle reads it through the host's own road
+(`Story::variable`, i.e. `getVar`), which honours `#@private`. The
+native surface is always a *declared* module and therefore defaults
+**private** (`docs/modules-spec.md`, "Defaults — declaration flips
+them"): a `.brink` `var` without `pub` is not host-readable, so it is
+**not** in item 3's capture, and two programs differing only in such
+a global are observably equivalent. That is the correct answer under
+this definition — the host genuinely cannot see it — and it means a
+future optimizer may already dead-store-eliminate module-private
+native globals without an escape hatch being ruled. `pub` globals,
+and every ink `VAR` in an undeclared stem module, stay fully covered.
+Pinned by
+`crates/internal/brink-test-harness/tests/trace_oracle.rs::a_module_private_native_global_is_not_host_readable_and_so_is_not_in_the_trace`,
+so it cannot silently flip either way.
 
-The definition is executable. The episode harness
-(`crates/internal/brink-test-harness`: `explorer.rs`, `diff.rs`)
-already explores choice trees under fixed seeds with stubbed externals
-and step limits, recording output and choices. Extended with items 2–4
-of §2 it computes the full trace, and
+## 3. The mechanical oracle — SHIPPED (tier 0, #3376)
+
+The definition is executable, and now executed:
+`brink_test_harness::trace`
+(`crates/internal/brink-test-harness/src/trace.rs`). A `Trace` is §2's
+list and nothing else; `RunSpec` is §2's run (start point, seed, choice
+sequence, external stubs, plus the host-invoked function probes of item
+4); and
 
     trace_diff(P, Q, runs)
 
-over the same explored runs is the equivalence check. Bounded
-exploration cannot *prove* equivalence for an unbounded program; the
-oracle has coverage, not completeness — the same standing as the C#
-oracle ratchet, and the honest bar. Tracked at #3371.
+replays the same runs on two programs and reports the first divergence
+per run — which run, which turn, which observable. `P` and `Q` are
+`.inkb` bytes, so both compile roads and any future optimizer output
+plug in unchanged. `differential(pre, post, config)` is the
+pre-vs-post entry point: it explores `pre`'s run set and replays it on
+`post`.
+
+Deliberately **not** built on `Episode`: that type is the C# oracle's
+record and carries visit counts and RNG writes, which §2 calls
+unobservable. Folding the definition into it would smuggle internals
+into the definition and would change the on-disk golden-episode schema
+the ink ratchet reads. The two harnesses are independent, and
+`RATCHET_EPISODE_COUNT` is untouched by anything here.
+
+**Item 4's second half is not captured today — a gap, not a definition
+amendment.** The clause reads "together with any output such a call
+emits." Measured while building the oracle (#3376):
+`Story::call_function` (`crates/brink-runtime/src/story/mod.rs:512`)
+returns `Result<Value, RuntimeError>` and its own doc states the call's
+output is isolated — the visible story is untouched — so no host road
+exposes that output as text at all. `TraceEvent::Probe` therefore
+captures the returned value only; there is nothing for it to capture on
+the output half, because brink has no host-facing API that surfaces it.
+Item 4 stays as written — the day a `call_function` variant returns its
+emitted text, the oracle must capture it too — but until then this is a
+known gap in the mechanical oracle, not a claim that the clause is
+satisfied.
+
+The targets:
+
+- `tests/trace_oracle.rs` — one test per observable in §2, each a pair
+  of programs differing *only* in that observable. Deleting a capture
+  from `trace.rs` turns exactly the matching test red.
+- `tests/trace_corpus_selfcheck.rs` — tier 0's corpus differential:
+  `trace_diff(compile(story), compile(story))` over `tests/tier1`–
+  `tier3` and `tests/tier1-native/` must be empty, with the line-table
+  identity of §2.2 diffed in the same sweep. Two *independent* compiles
+  per case, so compiler nondeterminism fails it too.
+- `tests/trace_mutation_study.rs` — tier 3a, below.
+
+Bounded exploration cannot *prove* equivalence for an unbounded
+program; the oracle has coverage, not completeness — the same standing
+as the C# oracle ratchet, and the honest bar. Tracked at #3371.
+
+### 3.1 Grounding — what makes a surviving mutant mean something
+
+A mutant whose site no explored run ever reaches survives because the
+exploration never looked there. That is a coverage bound, not a blind
+spot in the definition, and counting it as a survivor would make the
+tier 3a number meaningless. So the corpus mutators emit a mutant only
+where the *baseline trace* demonstrably exercised the site: a dropped
+line must be one the baseline printed, a choice swap must be of two
+choices the baseline presented side by side, a changed literal must
+belong to a global the baseline could read. The classes no mechanical
+text mutator can ground that way — flipping a condition, reordering a
+`LIST`, removing an unused draw — are covered by purpose-built
+fixtures where the grounding is by construction.
+
+Note the consequence for `LIST` reordering, which §1 names as a
+transformation byte-identity wrongly rejects: a reorder is *not*
+detected through item 3 alone, because a list value stores item
+`DefinitionId`s (name-derived, stable under renumbering) rather than
+item numbers. It is detected through what the story does with the
+numbering — `LIST_VALUE`, printed ordering. A reorder that no run's
+output depends on is genuinely unobservable, exactly as §1 says it
+should be.
 
 ## 4. The guarantee ladder — RULED
 
@@ -119,10 +199,10 @@ label *safe* / *correct* by passing every tier that exists for it.
 
 | Tier | What | Catches | Status |
 |---|---|---|---|
-| 0 | Corpus differential: `trace_diff` pre vs post over tier1–3 + native goldens | regressions in shapes someone already wrote down | #3371 |
+| 0 | Corpus differential: `trace_diff` pre vs post over tier1–3 + native goldens | regressions in shapes someone already wrote down | **SHIPPED** — #3376, `tests/trace_corpus_selfcheck.rs` |
 | 1 | Property testing over **generated** programs (proptest, story-level generator; shrinking to a minimal counterexample story) | bugs in shapes nobody wrote down | #3370 |
 | 2 | Pass-level metamorphic properties (idempotence `opt(opt(P)) = opt(P)`, commutation where the pass spec says so, "never removes a write to a host-visible global") | bugs that global equivalence hides behind luck | with the optimizer |
-| 3a | **Mutation sensitivity of the oracle itself**: semantic mutants of corpus programs (swap two choices, drop a line, flip a condition, reorder a `LIST`, change a literal, remove an unused draw) must each be detected by `trace_diff` | blind spots in the definition or its instrumentation | #3371 — ships **before** anything is built on the oracle |
+| 3a | **Mutation sensitivity of the oracle itself**: semantic mutants of corpus programs (swap two choices, drop a line, flip a condition, reorder a `LIST`, change a literal, remove an unused draw) must each be detected by `trace_diff` | blind spots in the definition or its instrumentation | **SHIPPED** — #3376, `tests/trace_mutation_study.rs`; grounding rule in §3.1 |
 | 3b | `cargo-mutants` over the optimizer crate: every mutant killed by tiers 0–2 | tests that don't constrain the code | with the optimizer |
 | 4 | Runtime fuzz targets pointed at optimized output | bytecode the VM rejects; step-limit violations | with the optimizer |
 

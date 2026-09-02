@@ -172,6 +172,7 @@ mod tests {
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
             pending_terminal: PendingTerminal::default(),
+            warnings: Vec::new(),
         }
     }
 

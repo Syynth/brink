@@ -803,6 +803,35 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Drain the non-fatal runtime warnings raised since the last call, as a
+    /// JSON array of already-rendered message strings (issue #3354).
+    ///
+    /// Today's only source is a `~ temp` read on a path its declaration had
+    /// not run on — the runtime substitutes ink's missing-variable default
+    /// and keeps playing, exactly as the C# reference does, so the story
+    /// never faults and the host has to ask for the warning to learn about
+    /// it. The studio's Problems panel already gets the compile-time half of
+    /// the same story as `E193`.
+    ///
+    /// Draining, not borrowing: a caller that polls after each step wants
+    /// each warning once, and a caller that never polls must not let the
+    /// list grow (the runtime caps it independently at
+    /// `brink_runtime::RUNTIME_WARNING_CAP`).
+    #[wasm_bindgen(js_name = takeRuntimeWarnings)]
+    pub fn take_runtime_warnings(&self) -> Result<String, JsError> {
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let warnings: Vec<String> = session
+            .story_mut()
+            .take_runtime_warnings()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        serde_json::to_string(&warnings).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Advance to the next pause. Returns a JSON array of `Line`; the last
     /// element is always terminal (`done` / `choices` / `end`).
     pub fn continue_to_pause(&self) -> Result<String, JsError> {

@@ -1,0 +1,11 @@
+description = "Control case for #3395: an inline conditional lifted ahead of the function-call side effect it does NOT depend on; this order is expected to match the C# oracle already"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "lift-order-cond-then-fn"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation", "lift-order", "function", "conditional"]

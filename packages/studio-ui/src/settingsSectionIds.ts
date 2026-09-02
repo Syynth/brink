@@ -24,6 +24,7 @@ export const SETTINGS_SECTION_IDS = {
   external: "external",
   debugging: "debugging",
   player: "player",
+  conventions: "conventions",
 } as const;
 
 /** Where a door with no preference of its own lands. */

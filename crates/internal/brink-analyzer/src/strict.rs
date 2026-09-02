@@ -167,14 +167,17 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    policy-independent and comes straight from
 ///    [`brink_ir::DiagnosticCode::severity`].
 /// 2. **Hard-error exemption** (issue #1160): if the base severity is
-///    already `Error`, `lints` is never consulted — a code that is a hard
-///    error by default can never be downgraded by `[lints]`. This is the
-///    "conservative overridable set" #1160 asks for: rather than inventing
-///    a policy for which `Error`-default codes are "safe" to relax, none of
-///    them are reachable through this table at all. Everything else (a
-///    `Warning`-base code, or — since issue #1674 — an `Info`/`Hint`-base
-///    one) *is* reachable; the exemption is specifically about `Error`, not
-///    about `Warning` being the only overridable base.
+///    already `Error` AND the code is not a **compat-deny** tier member
+///    (issue #3373, RULED 2026-09-01 — [`brink_ir::DiagnosticCode::is_compat_deny`]),
+///    `lints` is never consulted — a code that is a hard error by default
+///    can never be downgraded by `[lints]`. This is the "conservative
+///    overridable set" #1160 asks for: rather than inventing a policy for
+///    which `Error`-default codes are "safe" to relax, none of them are
+///    reachable through this table at all. Everything else (a `Warning`-base
+///    code, an `Info`/`Hint`-base one since issue #1674, or an
+///    `Error`-base **compat-deny** member since issue #3373) *is* reachable;
+///    the exemption is specifically about an `Error`-default code that is
+///    NOT a compat-deny member.
 /// 3. **`[lints]` per-code override**: `Deny` → `Error`; `Allow` → `None`,
 ///    the diagnostic is SUPPRESSED and callers must drop it (#3173);
 ///    `Info`/`Hint` (issue #1162) →
@@ -214,10 +217,13 @@ pub fn effective_severity(
         code.severity()
     };
 
-    if base == brink_ir::Severity::Error {
+    if base == brink_ir::Severity::Error && !code.is_compat_deny() {
         // A hard error is never suppressible — `validate_lint_code` refuses
         // an override for it in the first place, so reaching this with an
         // `allow` in hand means the override was already rejected upstream.
+        // The one exception is the compat-deny tier (#3373, RULED
+        // 2026-09-01): those codes fall through to the same `[lints]`
+        // lookup every `Warning`/`Info`/`Hint`-base code already uses below.
         return Some(base);
     }
 
@@ -4673,6 +4679,87 @@ mod tests {
             effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
             None,
             "an Info-base code set to allow is suppressed, not left at Info"
+        );
+    }
+
+    // ── effective_severity: compat-deny tier (issue #3373) ──────────
+    //
+    // `E194` is `Error`-default (matches inklecate's own rejection) yet
+    // `[lints]`-overridable — the one exception to the hard-error exemption
+    // above. These pin that `effective_severity` actually reaches the
+    // `[lints]` lookup for it, mirroring the `Warning`/`Info`-base coverage
+    // above rather than trusting `is_overridable`/`validate_lint_code`
+    // alone to prove it end to end.
+
+    #[test]
+    fn compat_deny_code_defaults_to_error_with_no_lints() {
+        assert_eq!(
+            DiagnosticCode::E194.severity(),
+            brink_ir::Severity::Error,
+            "the compat-deny tier keeps inklecate's own rejection as the default"
+        );
+        assert_eq!(
+            effective_severity(
+                DiagnosticCode::E194,
+                TypePolicy::Gradual,
+                &LintPolicy::default()
+            ),
+            Some(brink_ir::Severity::Error)
+        );
+    }
+
+    #[test]
+    fn compat_deny_code_can_be_downleveled_to_warn() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E194".to_owned(), LintLevel::Warn)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E194, TypePolicy::Gradual, &lints),
+            Some(brink_ir::Severity::Warning)
+        );
+    }
+
+    #[test]
+    fn compat_deny_code_can_be_downleveled_all_the_way_to_allow() {
+        // The ruling's own wording: "we should allow it to be turned off if
+        // the user wants, it's annoying" — `allow` must suppress it, not
+        // merely warn it down.
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E194".to_owned(), LintLevel::Allow)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E194, TypePolicy::Gradual, &lints),
+            None,
+            "allow must suppress a compat-deny code entirely"
+        );
+    }
+
+    #[test]
+    fn compat_deny_code_downleveled_to_warn_is_still_escalated_by_deny_warnings() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E194".to_owned(), LintLevel::Warn)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E194, TypePolicy::Gradual, &lints),
+            Some(brink_ir::Severity::Error)
+        );
+    }
+
+    #[test]
+    fn compat_deny_code_is_immune_to_deny_warnings_when_unconfigured() {
+        // Unconfigured, it is already `Error` — `deny-warnings` promoting
+        // `Warning` bases must not somehow read as "also re-derive this
+        // one", since it was never `Warning` to begin with.
+        let lints = LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E194, TypePolicy::Gradual, &lints),
+            Some(brink_ir::Severity::Error)
         );
     }
 

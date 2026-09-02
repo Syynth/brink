@@ -242,14 +242,16 @@ pub fn compile_affix(affix: &AffixShape) -> PatternShape {
         template.push_str(prefix);
     }
 
-    let _ = write!(pattern, "(?<{role}>[^");
-    // Content stops before the first character of the suffix (or end of
-    // line when there's no suffix), matching the affix model: the content
-    // slot is "everything up to the reserved suffix".
+    // Content stops before the first character of the suffix, matching
+    // the affix model: the content slot is "everything up to the reserved
+    // suffix". With NO suffix it runs to the end of the line — `[^]*`, the
+    // empty negated class the previous form produced, is not a valid
+    // regex (latent until the first suffix-less affix, #3387's `>` action).
     if let Some(first) = suffix.chars().next() {
-        pattern.push_str(&regex_escape_class_char(first));
+        let _ = write!(pattern, "(?<{role}>[^{}]*)", regex_escape_class_char(first));
+    } else {
+        let _ = write!(pattern, "(?<{role}>.*)");
     }
-    pattern.push_str("]*)");
     let _ = write!(template, "${{{role}}}");
 
     if !suffix.is_empty() {
@@ -331,6 +333,17 @@ pub struct ChainRule {
     /// `data-speaker` on every line in the run).
     #[serde(default)]
     pub carry: Vec<String>,
+    /// The emitted-side run rule (#3388, RULED 2026-08-30 "Dialects declare
+    /// what ends a dialogue run in the emitted stream"): kinds whose
+    /// appearance ENDS the active run in RUNTIME-EMITTED text — plus the
+    /// reserved `"choices"` boundary. Source-side classification has a hard
+    /// break the emitted stream lacks ("blank ALWAYS breaks", and ink
+    /// swallows blank lines on output), so without this a cue-less dialogue
+    /// line after a cue is unattributable downstream. A new triggering kind
+    /// (one of `after` with its own emitted shape) always starts a fresh
+    /// run regardless. Empty = only a new cue ends the run.
+    #[serde(default)]
+    pub run_ends_at: Vec<String>,
 }
 
 fn default_chain_is() -> Vec<String> {
@@ -550,6 +563,13 @@ pub fn validate(dialect: &DialogueDialect) -> Result<(), Vec<DialectError>> {
         }
         if !declared_kinds.contains(&rule.becomes) {
             errors.push(DialectError::ChainBecomesUndeclared(rule.becomes.clone()));
+        }
+        // `run_ends_at` (#3388): declared kinds, reserved-structural kinds,
+        // or the reserved `"choices"` turn boundary.
+        for k in &rule.run_ends_at {
+            if k != "choices" && !is_known(k) {
+                errors.push(DialectError::ChainUndeclaredKind(k.clone()));
+            }
         }
     }
 
@@ -966,6 +986,7 @@ pub fn at_cue_preset() -> DialogueDialect {
             is: vec!["narrative".to_owned()],
             becomes: "dialogue".to_owned(),
             carry: vec!["speaker".to_owned()],
+            run_ends_at: Vec::new(),
         }],
         transitions: Vec::new(),
         templates: Templates {
@@ -984,6 +1005,121 @@ pub fn at_cue_preset() -> DialogueDialect {
                 },
             ],
         },
+    }
+}
+
+// ─── Presets, overlays, and affix elements (RULED 2026-08-30) ─────────
+//
+// The project-declared dialect (`brink.toml [dialogue]`, #3387) is
+// AUTHORED as "a shipped preset plus overlay elements written in affix
+// sugar" and RESOLVED here into one `DialogueDialect`. These are the three
+// pieces that resolution needs and that nothing else in this module had:
+// a preset registry, a Rust overlay (mirroring `@brink-lang/editor`'s
+// `extendDialect` — same replace-by-kind / append semantics, so the two
+// roads cannot disagree), and the emitted-side half of the affix sugar
+// (`compile_affix` derives only the source shape).
+
+/// The shipped preset names — the only conventions brink itself "knows",
+/// and every one of them opt-in (no dialect by default, RULED).
+pub const PRESET_NAMES: &[&str] = &["at-cue"];
+
+/// Look a shipped preset up by name.
+#[must_use]
+pub fn preset_by_name(name: &str) -> Option<DialogueDialect> {
+    match name {
+        "at-cue" => Some(at_cue_preset()),
+        _ => None,
+    }
+}
+
+/// Overlay `overrides` onto `base` without forking the whole object: an
+/// element replaces a same-`kind` element or appends; chain rules and
+/// transition rows append; template entries replace same-`kind` or append.
+/// Mirrors `extendDialect` in `packages/ink-editor/src/dialect.ts` exactly
+/// — one overlay semantics, two implementations that must agree.
+#[must_use]
+pub fn extend_dialect(base: &DialogueDialect, overrides: &DialogueDialect) -> DialogueDialect {
+    let mut elements = base.elements.clone();
+    for el in &overrides.elements {
+        if let Some(existing) = elements.iter_mut().find(|e| e.kind == el.kind) {
+            *existing = el.clone();
+        } else {
+            elements.push(el.clone());
+        }
+    }
+    let mut entries = base.templates.entries.clone();
+    for entry in &overrides.templates.entries {
+        if let Some(existing) = entries.iter_mut().find(|e| e.kind == entry.kind) {
+            *existing = entry.clone();
+        } else {
+            entries.push(entry.clone());
+        }
+    }
+    let mut chain = base.chain.clone();
+    chain.extend(overrides.chain.iter().cloned());
+    let mut transitions = base.transitions.clone();
+    transitions.extend(overrides.transitions.iter().cloned());
+    DialogueDialect {
+        version: base.version,
+        name: if overrides.name.is_empty() {
+            base.name.clone()
+        } else {
+            overrides.name.clone()
+        },
+        elements,
+        chain,
+        transitions,
+        templates: Templates { entries },
+    }
+}
+
+/// The emitted-side shape an affix element implies — the other half of
+/// the ONE derivation site (`compile_affix` covers source). Post-glue, the
+/// runtime prints the prefix, the content, and the suffix MINUS its glue
+/// (`<>` never survives output). A non-empty prefix makes the kind
+/// reserved-prefix (it cannot begin ordinary prose); a suffix-only affix
+/// is not, and peels only after a reserved segment, per the emitted
+/// hardening.
+#[must_use]
+pub fn emitted_for_affix(affix: &AffixShape) -> EmittedShape {
+    use std::fmt::Write as _;
+
+    let prefix = affix.prefix.as_deref().unwrap_or("");
+    let suffix = affix.suffix.as_deref().unwrap_or("");
+    let role = affix.content_role.as_str();
+
+    let mut pattern = String::from("^");
+    if !prefix.is_empty() {
+        pattern.push_str(&regex_escape_literal(prefix));
+        pattern.push_str(r"\s*");
+    }
+    if suffix.is_empty() {
+        // The content runs to the end of the line.
+        let _ = write!(pattern, "(?<{role}>.*)$");
+    } else {
+        let first = suffix.chars().next().unwrap_or(' ');
+        let _ = write!(pattern, "(?<{role}>[^{}]*)", regex_escape_class_char(first));
+        pattern.push_str(&regex_escape_literal(suffix));
+        pattern.push_str(r"\s*");
+    }
+    EmittedShape {
+        pattern,
+        content_group: Some(role.to_owned()),
+        reserved_prefix: !prefix.is_empty(),
+    }
+}
+
+/// Build a complete element from affix sugar: source shape via
+/// [`compile_affix`], emitted shape via [`emitted_for_affix`], no malformed
+/// rules (a project can add them through the file form).
+#[must_use]
+pub fn affix_element(kind: &str, nature: ElementNature, affix: AffixShape) -> DialectElement {
+    DialectElement {
+        kind: kind.to_owned(),
+        nature,
+        emitted: Some(emitted_for_affix(&affix)),
+        source: Some(SourceShape::Affix(affix)),
+        malformed: Vec::new(),
     }
 }
 
@@ -1205,5 +1341,88 @@ mod tests {
         // "dialogue" is chain-only; classify() never matches it directly
         // since it has no compiled pattern to test against.
         assert!(d.classify("dialogue", 0).is_none());
+    }
+
+    // ── Presets / overlay / affix elements (RULED 2026-08-30) ──
+
+    #[test]
+    fn preset_registry_knows_at_cue_and_nothing_else() {
+        assert_eq!(PRESET_NAMES, &["at-cue"]);
+        assert_eq!(
+            preset_by_name("at-cue").map(|d| d.name),
+            Some("at-cue".to_owned())
+        );
+        assert!(preset_by_name("fountain").is_none());
+    }
+
+    #[test]
+    fn extend_replaces_same_kind_and_appends_new_kinds() {
+        let base = at_cue_preset();
+        let action = affix_element(
+            "action",
+            ElementNature::Narrative,
+            AffixShape {
+                prefix: Some(">".to_owned()),
+                suffix: None,
+                glued: false,
+                content_role: "content".to_owned(),
+            },
+        );
+        let mut replaced_dialogue = base.elements[2].clone();
+        replaced_dialogue.nature = ElementNature::Machinery;
+        let overlay = DialogueDialect {
+            version: 1,
+            name: String::new(),
+            elements: vec![action, replaced_dialogue],
+            chain: Vec::new(),
+            transitions: Vec::new(),
+            templates: Templates::default(),
+        };
+        let merged = extend_dialect(&base, &overlay);
+        assert_eq!(
+            merged.name, "at-cue",
+            "empty overlay name keeps the base name"
+        );
+        assert_eq!(
+            merged.elements.len(),
+            4,
+            "action appended, dialogue replaced in place"
+        );
+        assert_eq!(merged.elements[2].kind, "dialogue");
+        assert_eq!(merged.elements[2].nature, ElementNature::Machinery);
+        assert_eq!(merged.elements[3].kind, "action");
+        assert_eq!(merged.chain.len(), 1, "base chain kept");
+        validate(&merged).expect("the merged dialect validates");
+        ResolvedDialect::compile(&merged).expect("and compiles");
+    }
+
+    #[test]
+    fn affix_element_derives_both_source_and_emitted_shapes() {
+        let el = affix_element(
+            "action",
+            ElementNature::Narrative,
+            AffixShape {
+                prefix: Some(">".to_owned()),
+                suffix: None,
+                glued: false,
+                content_role: "content".to_owned(),
+            },
+        );
+        let src = el.source.as_ref().expect("source").resolve();
+        assert_eq!(src.pattern, r"^(?<lead>>)(?<content>.*)$");
+        assert_eq!(src.template, ">${content}");
+        let em = el.emitted.as_ref().expect("emitted");
+        assert_eq!(em.pattern, r"^>\s*(?<content>.*)$");
+        assert!(em.reserved_prefix, "a prefix makes the kind reserved");
+
+        // Glue never survives output: the emitted suffix drops `<>`.
+        let cue = emitted_for_affix(&AffixShape {
+            prefix: Some("@".to_owned()),
+            suffix: Some(":".to_owned()),
+            glued: true,
+            content_role: "speaker".to_owned(),
+        });
+        assert_eq!(cue.pattern, r"^@\s*(?<speaker>[^:]*):\s*");
+        assert!(cue.reserved_prefix);
     }
 }

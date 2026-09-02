@@ -51,6 +51,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@brink-lang/web": resolve(__dirname, "src/__mocks__/brink-web-stub.ts"),
+      // The dialect core moved to its own pure-TS package (#3393); this
+      // suite resolves it to SOURCE, like the studio's alias map does.
+      "@brink-lang/dialect": resolve(__dirname, "../dialect/src/index.ts"),
     },
   },
 });

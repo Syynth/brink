@@ -49,7 +49,30 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 /// episode is not attributed — 391 merges landed between this constant last
 /// being set (2026-07-26) and the measurement, and bisecting that range was
 /// not worth the compute.
-const RATCHET_EPISODE_COUNT: usize = 5608;
+///
+/// Raised 5608 -> 5619 on 2026-09-02 (maintainer directive: hand-minimized
+/// edge cases found by the gen-expressions generator or by reference-
+/// differential probing become permanent C#-oracle corpus cases). Eleven new
+/// episodes pass and are attributed exactly, one per new case:
+///   tier1/gather/nested-gather-divert (#3383)
+///   tier1/gather/nested-gather-divert-text (#3383)
+///   tier1/gather/nested-gather-authored-done (#3383)
+///   tier1/gather/empty-nested-gather-falls-out (#3383)
+///   tier2/conditional/three-inline-conditionals (#3386)
+///   tier2/conditional/four-inline-conditionals (#3386)
+///   tier2/conditional/three-inline-conditionals-in-gather-choice (#3386)
+///   tier2/sequences/sequence-shared-across-lifted-branches (#3275)
+///   tier2/sequences/sequence-with-divert-branch (#3275 revoked corner)
+///   tier1/choices/once-only-fallback-consumed (generator finding)
+///   tier2/evaluation/lift-order-cond-then-fn (#3395 control case)
+/// Two more new cases (tier2/evaluation/lift-order-fn-then-cond and
+/// tier2/evaluation/lift-order-seq-fn-cond, both #3395) were added in the
+/// same batch as EXPECTED MISMATCHES against the C# oracle — they document a
+/// known lift-order divergence and deliberately do NOT count toward this
+/// floor. Measured on the same freshly-cleaned `CARGO_TARGET_DIR` discipline
+/// as the prior raise: CASES 377 pass / 10 fail / 411 total, EPISODES 5619
+/// pass / 1012 mismatch / 2 missing.
+const RATCHET_EPISODE_COUNT: usize = 5619;
 
 #[test]
 #[expect(clippy::too_many_lines)]

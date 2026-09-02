@@ -732,9 +732,11 @@ fn stamp_inline_part(
 //   LIR emits the shared container once (`LowerCtx::emitted_shared_ids`).
 // * everything else (a cloned stateless conditional's branches, cloned
 //   lambdas, anonymous containers inside cloned branch bodies) re-derives
-//   per clone from the original id + the host branch index — clone
-//   bodies differ (different spliced text), so they must be distinct
-//   containers.
+//   per clone from the original id + a salt that mixes the LIFTING
+//   construct's own identity with the host branch index
+//   (`normalize.rs`'s `lift_salt`) — clone bodies differ (different
+//   spliced text), so they must be distinct containers, and the salt must
+//   not compose commutatively across lift levels (issue #3386).
 // * clone 0 keeps original ids (`salt == 0` is the identity), so the
 //   stamped id stays live on exactly one container and derivation only
 //   touches genuine duplicates.

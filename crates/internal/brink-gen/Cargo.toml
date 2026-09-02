@@ -1,0 +1,23 @@
+[package]
+name = "brink-gen"
+description = "Story-level program generator: a typed story model, an .ink printer, and proptest strategies over the model (docs/program-generator-spec.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Test tooling, like brink-test-harness: never published.
+publish = false
+
+[dependencies]
+proptest.workspace = true
+
+[dev-dependencies]
+# `test-util` (issue #2168): the smoke properties compile generated source
+# inline through the legacy closure entry point, exactly as the harness does.
+brink-compiler = { workspace = true, features = ["test-util"] }
+brink-format = { workspace = true }
+brink-runtime = { workspace = true }
+brink-test-harness = { workspace = true }
+
+[lints]
+workspace = true

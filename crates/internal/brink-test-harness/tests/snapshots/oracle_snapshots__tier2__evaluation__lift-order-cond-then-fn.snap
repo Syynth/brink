@@ -1,0 +1,11 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/evaluation/lift-order-cond-then-fn
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "no1\n" [Ended]
+outcome: Ended

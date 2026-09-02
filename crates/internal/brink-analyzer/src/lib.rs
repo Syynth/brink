@@ -11,6 +11,7 @@ mod anonymous_stateful;
 mod await_purity;
 mod coalesce;
 mod comparator_contract;
+mod compat_deny;
 mod contains_domain;
 mod conventions_confinement;
 mod conversions;
@@ -37,6 +38,7 @@ mod resolve;
 mod signature;
 mod strict;
 mod structs;
+mod temp_dominance;
 mod type_resolution;
 mod ufcs;
 mod validate;
@@ -128,7 +130,7 @@ pub mod test_support {
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DiagnosticCode, DocBlock, HirFile, HostManifest, ManifestExternal, SemanticTypeDef,
-    Severity, SymbolIndex, SymbolKind, SymbolManifest,
+    SymbolIndex, SymbolKind, SymbolManifest,
 };
 use brink_project_config::ConfigWarning;
 
@@ -466,17 +468,24 @@ impl AnalysisOptions {
 /// surface, keeping the wording byte-identical regardless of which tier the
 /// code came from.
 ///
-/// Overridable means "not `Error`-by-default" — originally just the
-/// `Warning`-base set (#1160's "conservative overridable set": a hard error
-/// can never be downgraded by `[lints]`, so it is never even looked up).
-/// Issue #1674 widens this past `Warning` to `Info`/`Hint`-base codes too
-/// (today, only `E157`): the exemption `effective_severity` actually
+/// Overridable is [`DiagnosticCode::is_overridable`] itself now, not a
+/// restated copy of it — originally this checked "not `Error`-by-default"
+/// directly (#1160's "conservative overridable set": a hard error can never
+/// be downgraded by `[lints]`, so it is never even looked up). Issue #1674
+/// widened the codes this accepts past `Warning`-base to `Info`/`Hint`-base
+/// too (today, only `E157`): the exemption `effective_severity` actually
 /// enforces is about `Error`, never reachable through `[lints]` regardless of
 /// what this function allows, not about `Warning` being the only overridable
-/// base — see that function's own doc for the resolution order this mirrors.
+/// base. Issue #3373 widens it again, past "base severity" entirely: the
+/// **compat-deny** tier keeps `severity() == Error` (inklecate rejects the
+/// program, so brink does too by default) while still being overridable —
+/// deferring to [`DiagnosticCode::is_overridable`] rather than re-deriving
+/// "not Error" here is what lets that tier's members through without this
+/// function drifting out of sync with the predicate `effective_severity`
+/// also now consults.
 fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
     match DiagnosticCode::from_str_code(code) {
-        Some(parsed) if parsed.severity() != Severity::Error => Ok(()),
+        Some(parsed) if parsed.is_overridable() => Ok(()),
         Some(_) => Err(ConfigWarning(format!(
             "[lints] `{code}` is not overridable (its default severity is `Error`); ignored"
         ))),
@@ -803,6 +812,20 @@ pub fn per_file_diagnostics(
     // argument as `dialect_gate`: the resolution records consulted always
     // carry this file's own id.
     out.extend(option_rules::check(&files, file_resolutions));
+    // E193 (#3354, RULED 2026-09-01 option C): a classic `~ temp` read on a
+    // path its declaration does not dominate. Dialect- and
+    // surface-independent — the mistake is a property of the weave, and
+    // both frontends produce the same block tree for it. Per-file by
+    // construction: a temp lives in one knot's call frame, and a knot's
+    // body lives in exactly one file.
+    out.extend(temp_dominance::check(file, hir, is_native));
+    // E194 (#3373, RULED 2026-09-01): the compat-deny tier's first member —
+    // a knot's `~ temp` read from one of its stitches. Split out of
+    // `E193`'s former shape 4; same dialect/surface independence and
+    // per-file locality argument as above.
+    out.extend(compat_deny::knot_temp_from_stitch::check(
+        file, hir, is_native,
+    ));
     // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected

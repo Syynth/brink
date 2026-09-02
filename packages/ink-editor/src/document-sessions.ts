@@ -53,7 +53,7 @@ import type {
 } from "@brink/wasm-types";
 import type { ExtractKind } from "./extract-actions.js";
 import { ClassifierSessionHandle, getTokenTypeNames } from "@brink-lang/web";
-import { brinkStudio, type BrinkStudioOptions } from "./extensions.js";
+import { brinkStudio, setDialect, type BrinkStudioOptions } from "./extensions.js";
 import { brinkBasicSetup } from "./setup.js";
 import { startInlineRename, type BreakageContext } from "./rename.js";
 import {
@@ -394,6 +394,19 @@ export class DocumentSessions {
 
   getProject(): ProjectSession {
     return this.project;
+  }
+
+  /**
+   * Re-push the project's resolved dialogue dialect to every mounted view
+   * (#3387): called by the host from `onProjectConfigApplied`, so editing
+   * `brink.toml [dialogue]` reclassifies live instead of on next mount.
+   * Same precedence as `slotOptions`.
+   */
+  refreshDialectFromProject(): void {
+    const dialect = this.project.getConfiguredDialogueDialect() ?? this.options.dialect;
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) setDialect(slot.view, dialect);
+    }
   }
 
   /** Switch the inline form-glyph mode live across all open editors (Settings). */
@@ -1195,7 +1208,16 @@ export class DocumentSessions {
       // Editing `[project] indent` therefore takes effect on the next
       // mount (or reload), not mid-keystroke.
       indent: this.project.getConfiguredIndent() ?? this.options.indent,
-      dialect: this.options.dialect,
+      // The project-declared dialogue dialect wins (#3387, RULED
+      // 2026-08-30): `brink.toml [dialogue]` first, the embedder's
+      // mount-time option only for a project that declares nothing, and
+      // otherwise NONE — no dialect by default. Read live like `indent`;
+      // `refreshDialectFromProject` re-pushes it to mounted views when the
+      // file changes.
+      // (An ABSENT result stays `undefined`, never coerced to `null`: `null`
+      // is the embedder's explicit headless teardown of the whole
+      // screenplay layer, which also carries the structural line attrs.)
+      dialect: this.project.getConfiguredDialogueDialect() ?? this.options.dialect,
       compile: (source) => {
         slot.handle?.pushSource(source);
         project.notifyFileChanged(slot.path);
