@@ -219,9 +219,12 @@ policies, least to most aggressive:
 
 Same dependency-free split as `[lints]`: `brink-project-config` validates
 the *value* (a wrong TOML type, or a spelling outside the three above, is a
-compile error — never a panic) but not the *code* — an unrecognized code
-parses fine here and is a downstream crate's diagnostic to raise, the same
-as an unrecognized `[lints]` code.
+compile error — never a panic) but not the *code*. For `[lints]`, a
+downstream crate raises that diagnostic (`validate_lint_code`, in
+`brink-analyzer`); `[fix]` still owes the same diagnostic but doesn't
+raise it yet — tracked in issue #3447, to land when #3418's fix-policy
+engine first reads `ProjectConfig::fix`. Until then, an unrecognized
+`[fix]` code is accepted and silently ignored.
 
 An app (the Studio, an embedder) may pass its own *ceiling* — a personal
 "how far may fix-on-save go" setting, in the same three-way space — which

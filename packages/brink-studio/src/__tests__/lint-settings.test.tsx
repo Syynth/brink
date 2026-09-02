@@ -338,4 +338,54 @@ describe("the Fix column beside severity", () => {
     expect(fake.getSource()).not.toContain("E999");
     expect(fake.applied).toHaveLength(1);
   });
+
+  // A code known to the compiler, not in [lints], but non-overridable or
+  // off-surface — the row selection cannot key on the [lints]-only gates
+  // (`overridable`, `surfaces`) alone or these entries render nowhere:
+  // not `configured` (no [lints] key), not `unknown` (the compiler DOES
+  // know the code). Adversarial review on #3419/PR #3443.
+
+  it("shows a [fix] entry for a known, non-overridable code even though [lints] can never set it", () => {
+    // E001 is overridable: false — pins the overridable gate specifically.
+    mount(INK_PROJECT, `[project]\nentry = "main.ink"\n\n[fix]\nE001 = "off"\n`);
+    const row = rowFor("E001");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".fix-level.on")?.textContent).toBe("off");
+  });
+
+  it("shows a [fix] entry for a code whose surface this project doesn't produce", () => {
+    // E164 is surfaces: ["native"]; INK_PROJECT has no .brink file — pins
+    // the surface gate independently of the overridable gate above.
+    mount(INK_PROJECT, `[project]\nentry = "main.ink"\n\n[fix]\nE164 = "auto"\n`);
+    const row = rowFor("E164");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".fix-level.on")?.textContent).toBe("auto");
+  });
+
+  it("offers no [lints] Configure affordance for a [fix]-only non-overridable code", () => {
+    // The row is visible (previous test), but [lints] genuinely cannot act
+    // on a non-overridable code — Configure must not be offered for it.
+    mount(INK_PROJECT, `[project]\nentry = "main.ink"\n\n[fix]\nE001 = "off"\n`);
+    expect(rowFor("E001")?.querySelector(".lint-configure")).toBeNull();
+  });
+
+  it("still offers [lints] Configure for an ordinary unconfigured code", () => {
+    // Control for the case above: an overridable, on-surface code with no
+    // [fix] entry keeps its Configure button.
+    mount(INK_PROJECT, CONFIG);
+    expect(rowFor("E033")?.querySelector(".lint-configure")).not.toBeNull();
+  });
+
+  it("clicking the active fix level again clears it", () => {
+    const fake = mount(INK_PROJECT, CONFIG_WITH_FIX);
+    const offButton = [
+      ...(rowFor("E014")?.querySelectorAll<HTMLButtonElement>(".fix-level") ?? []),
+    ].find((b) => b.textContent === "off");
+    expect(offButton?.classList.contains("on")).toBe(true);
+    act(() => offButton?.click());
+    expect(fake.getSource()).not.toContain('[fix]\nE014 = "off"');
+    expect(rowFor("E014")?.querySelector(".fix-level.on")).toBeNull();
+    // [lints] is untouched by clearing [fix].
+    expect(fake.getSource()).toContain('E014 = "deny"');
+  });
 });

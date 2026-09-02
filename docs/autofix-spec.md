@@ -173,7 +173,12 @@ way `[lints]`'s value is (`"off" | "ask" | "auto"`, a wrong TOML type
 or an unrecognized spelling is a `ConfigError`, never a panic; an
 unrecognized *code* is accepted here regardless — this crate stays
 dependency-free of the real `DiagnosticCode` set, same split
-`validate_lint_code` uses). `ProjectConfig::effective_fix_policy(code,
+`validate_lint_code` uses). The diagnostic `[lints]` raises for an
+unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
+still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to
+hang it off, so it's tracked as a follow-up rather than built here
+(#3447, to land when #3418's fix-policy engine first reads the table).
+`ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix
