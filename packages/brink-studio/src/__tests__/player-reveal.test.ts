@@ -75,24 +75,27 @@ describe("reveal mode (#3011)", () => {
   });
 
   it("runs to the next pause once auto is on", () => {
+    const feed: Line[] = [
+      { type: "text", text: "one\n", tags: [] },
+      { type: "text", text: "two\n", tags: [] },
+      { type: "end", text: "", tags: [] },
+    ];
+    let i = 0;
     const session = fakeSession({
-      continueSingle: vi.fn((): Line => ({ type: "text", text: "one\n", tags: [] })),
-      continueToPause: vi.fn((): Line[] => [
-        { type: "text", text: "one\n", tags: [] },
-        { type: "text", text: "two\n", tags: [] },
-        { type: "end", text: "", tags: [] },
-      ]),
+      continueSingle: vi.fn((): Line => feed[Math.min(i++, feed.length - 1)]),
+      continueToPause: vi.fn((): Line[] => feed),
     });
     const store = storeWithSession(session);
     store.getState().setSessionAuto(true);
-    // This pin is about the BATCH road ("all at once") — the W7 paced
-    // default (F13) would pump line-by-line instead; see
-    // paced-reveal.test.ts for that mode's own pins.
+    // This pin is about the "all at once" road — the W7 paced default (F13)
+    // would pump on a timer instead; see paced-reveal.test.ts for that
+    // mode's own pins. Since 2026-09-02 ("TS steps single lines") the road
+    // steps continueSingle to the stop in one call, never the wasm batch.
     store.getState().setSessionPaced(0);
     store.getState().revealNext();
 
-    expect(session.continueToPause).toHaveBeenCalledTimes(1);
-    expect(session.continueSingle).not.toHaveBeenCalled();
+    expect(session.continueToPause).not.toHaveBeenCalled();
+    expect(session.continueSingle).toHaveBeenCalledTimes(3);
     expect(store.getState().sessionText).toEqual(["one", "two"]);
   });
 
