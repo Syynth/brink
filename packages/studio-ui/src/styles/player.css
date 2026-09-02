@@ -59,7 +59,7 @@
      it's just the size of the Continue button"). */
   display: flex;
   flex-direction: column;
-  padding: 24px 40px;
+  padding: 16px var(--player-pad-x);
   /* Reading knobs (#3438): measure and face from Settings › Player;
      unset = these defaults. */
   /* Bounded and centred (feedback 2026-09-02): an explicit width, because
@@ -92,7 +92,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-right: 28px;
+  margin-right: 0;
   padding: 10px 14px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
@@ -322,8 +322,8 @@
    spine gutter. ── */
 .brink-studio .player .player-line-row {
   position: relative;
-  padding: 8px 40px 8px var(--player-text-x);
-  margin: 0 -40px 0 calc(-1 * var(--player-text-x));
+  padding: 8px var(--player-pad-x) 8px var(--player-text-x);
+  margin: 0 calc(-1 * var(--player-pad-x)) 0 calc(-1 * var(--player-text-x));
 }
 .brink-studio .player .player-line-row:hover {
   background: color-mix(in srgb, var(--bs-fg) 6%, transparent);
@@ -352,7 +352,7 @@
    tooltip; ⌘-click on the row does the same jump. */
 .brink-studio .player .player-provenance {
   position: absolute;
-  right: 54px;
+  right: calc(var(--player-pad-x) + 14px);
   bottom: -11px;
   z-index: 2;
   width: 22px;
@@ -579,14 +579,18 @@
    choice (a ring carrying its `*`/`+`) and the choices on offer (cards
    with a connector each). Rows and cards are one line of play. */
 .brink-studio .player {
-  --player-spine-x: 30px; /* from the .player padding edge */
+  /* Tightened (feedback 2026-09-02: "a lot of padding around the
+     timeline"): pane padding 20px, rail 14px in, text 22px past it —
+     56px from the pane edge to the text, down from 92. */
+  --player-pad-x: 20px;
+  --player-spine-x: 14px; /* from the .player padding edge */
   --player-spine-gap: 22px; /* rail → text */
-  --player-text-x: calc(40px + var(--player-spine-x) + var(--player-spine-gap));
+  --player-text-x: calc(var(--player-pad-x) + var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine {
   position: relative;
   flex: 1 0 auto;
-  padding-top: 14px;
+  padding-top: 8px;
   padding-left: calc(var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine::before {
@@ -631,7 +635,7 @@
 .brink-studio .player .player-line-row.dialect-action::before {
   content: "";
   position: absolute;
-  left: calc(40px + var(--player-spine-x) - 1px);
+  left: calc(var(--player-pad-x) + var(--player-spine-x) - 1px);
   top: 4px;
   bottom: 4px;
   width: 0;
@@ -650,7 +654,7 @@
 }
 .brink-studio .player .player-echo-ring {
   position: absolute;
-  left: calc(40px + var(--player-spine-x) - 9.5px);
+  left: calc(var(--player-pad-x) + var(--player-spine-x) - 9.5px);
   top: calc(12px + 0.85 * var(--bs-player-font-size, var(--bs-font-prose)) - 9.5px);
   width: 19px;
   height: 19px;
