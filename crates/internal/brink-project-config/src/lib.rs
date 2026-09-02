@@ -266,6 +266,54 @@ impl ProseDialect {
 /// No longer `Copy` (issue #1160): `lints` is a `BTreeMap`, which isn't
 /// `Copy`. Every construction site now needs `.clone()` where it used to
 /// rely on an implicit copy.
+/// `[dialogue]` — the project's dialogue dialect declaration (RULED
+/// 2026-08-30, "Project-declared dialogue dialect lives in brink.toml").
+/// The **authoring** form of `docs/dialect-spec.md`'s `DialogueDialect`:
+/// a shipped preset name plus overlay elements written in the spec's affix
+/// sugar, or a path to a full hand-written artifact. Resolution into a
+/// `DialogueDialect` (preset merged, sugar compiled) happens above this
+/// crate (`brink-ide`), which knows the presets; this crate only parses.
+///
+/// `Option<DialogueConfig>` on [`ProjectConfig`]: `None` = the file
+/// declares no `[dialogue]` at all, which per the "No dialect by default"
+/// ruling means NO dialect — plain lines — not "the preset".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DialogueConfig {
+    /// `[dialogue] preset`, a shipped preset name (`"at-cue"`), if set.
+    pub preset: Option<String>,
+    /// The string form `dialogue = "path.json"` — a full artifact relative
+    /// to `brink.toml`. Mutually exclusive with the table form.
+    pub file: Option<String>,
+    /// `[[dialogue.elements]]` overlay declarations, in file order
+    /// (classification precedence is author-controlled — a `Vec`, never a
+    /// map).
+    pub elements: Vec<DialogueElementConfig>,
+    /// `[dialogue] run-ends-at` — the emitted-side run rule (#3388): kinds
+    /// whose appearance ends the active speaker's run. Parsed here so the
+    /// schema is complete; consumed by the resolver once #3388 lands.
+    pub run_ends_at: Vec<String>,
+}
+
+/// One `[[dialogue.elements]]` row: the affix-sugar form of a kind
+/// (`prefix`/`suffix`/`glued`/`content-role`) or, for the unusual case, an
+/// explicit `pattern` + `template`. Which form it is is decided by the
+/// resolver; this crate keeps every key it recognizes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DialogueElementConfig {
+    pub kind: String,
+    /// `nature`: `"narrative"` (default) | `"machinery"` | `"structural"`.
+    pub nature: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub glued: Option<bool>,
+    /// `content-role` — the named content group (`"content"` by default).
+    pub content_role: Option<String>,
+    /// Explicit pattern form (`pattern` + `template`), for kinds the affix
+    /// sugar can't express.
+    pub pattern: Option<String>,
+    pub template: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectConfig {
     /// `[project] dialect`, if set.
@@ -369,6 +417,9 @@ pub struct ProjectConfig {
     /// parsing uses only this field; there is no separate `elements` field
     /// to keep in sync.
     pub conventions: Option<String>,
+    /// `[dialogue]` (or the string form `dialogue = "path.json"`), if the
+    /// file declares one — see [`DialogueConfig`]. `None` = no dialect.
+    pub dialogue: Option<DialogueConfig>,
     /// `[project] entry`, if set (issue #2331, ruled 2026-08-07 "`[project]
     /// entry` beats `mountStudio`'s `entryFile`"): a project-relative path
     /// naming the project's entry file (e.g. `"story.ink"`,
@@ -406,6 +457,7 @@ impl ProjectConfig {
             && self.prose_dialect.is_none()
             && self.prose_enable.is_none()
             && self.prose_dictionary.is_empty()
+            && self.dialogue.is_none()
     }
 }
 
@@ -612,6 +664,27 @@ pub fn parse_str_at(
                 }
             };
             parse_prose_table(&path, prose, &mut config, &mut warnings)?;
+        } else if key == "dialogue" {
+            match value {
+                Value::Table(t) => {
+                    let mut cfg = DialogueConfig::default();
+                    parse_dialogue_table(&path, t, &mut cfg, &mut warnings)?;
+                    config.dialogue = Some(cfg);
+                }
+                Value::String(file) => {
+                    config.dialogue = Some(DialogueConfig {
+                        file: Some(file.clone()),
+                        ..DialogueConfig::default()
+                    });
+                }
+                other => {
+                    return Err(ConfigError::WrongType {
+                        path,
+                        key: "dialogue".to_owned(),
+                        found: value_type_name(other),
+                    });
+                }
+            }
         } else if key == "lints" {
             let lints = match value {
                 Value::Table(t) => t,
@@ -754,6 +827,121 @@ fn parse_project_table(
 /// rather than an error, matching how `indent` treats an out-of-range width:
 /// a typo in one key must not fail the whole config and take the project's
 /// entry point down with it.
+/// Parse the `[dialogue]` table (RULED 2026-08-30): `preset`,
+/// `run-ends-at`, and the `[[dialogue.elements]]` array of affix-sugar /
+/// pattern rows. Unknown keys warn (forward compat); wrong types error,
+/// like every other table here.
+fn parse_dialogue_table(
+    path: &str,
+    table: &toml::map::Map<String, Value>,
+    cfg: &mut DialogueConfig,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<(), ConfigError> {
+    for (dkey, dvalue) in table {
+        match dkey.as_str() {
+            "preset" => {
+                cfg.preset = Some(
+                    dvalue
+                        .as_str()
+                        .ok_or_else(|| ConfigError::WrongType {
+                            path: path.to_owned(),
+                            key: format!("dialogue.{dkey}"),
+                            found: value_type_name(dvalue),
+                        })?
+                        .to_owned(),
+                );
+            }
+            "file" => {
+                cfg.file = Some(
+                    dvalue
+                        .as_str()
+                        .ok_or_else(|| ConfigError::WrongType {
+                            path: path.to_owned(),
+                            key: format!("dialogue.{dkey}"),
+                            found: value_type_name(dvalue),
+                        })?
+                        .to_owned(),
+                );
+            }
+            "run-ends-at" => {
+                cfg.run_ends_at = parse_string_list(path, &format!("dialogue.{dkey}"), dvalue)?;
+            }
+            "elements" => {
+                let rows = dvalue.as_array().ok_or_else(|| ConfigError::WrongType {
+                    path: path.to_owned(),
+                    key: format!("dialogue.{dkey}"),
+                    found: value_type_name(dvalue),
+                })?;
+                for (i, row) in rows.iter().enumerate() {
+                    let t = row.as_table().ok_or_else(|| ConfigError::NotATable {
+                        path: path.to_owned(),
+                        key: format!("dialogue.elements[{i}]"),
+                        found: value_type_name(row),
+                    })?;
+                    cfg.elements
+                        .push(parse_dialogue_element(path, i, t, warnings)?);
+                }
+            }
+            _ => warnings.push(ConfigWarning(format!(
+                "unknown key `dialogue.{dkey}` in {CONFIG_FILE_NAME} (ignored)"
+            ))),
+        }
+    }
+    Ok(())
+}
+
+/// One `[[dialogue.elements]]` row. `kind` is required; everything else is
+/// optional and typed. Keys are kebab-case like the rest of the file
+/// (`content-role`).
+fn parse_dialogue_element(
+    path: &str,
+    index: usize,
+    t: &toml::map::Map<String, Value>,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<DialogueElementConfig, ConfigError> {
+    let mut el = DialogueElementConfig::default();
+    let key_of = |k: &str| format!("dialogue.elements[{index}].{k}");
+    let str_at = |k: &str, v: &Value| -> Result<String, ConfigError> {
+        v.as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| ConfigError::WrongType {
+                path: path.to_owned(),
+                key: key_of(k),
+                found: value_type_name(v),
+            })
+    };
+    for (k, v) in t {
+        match k.as_str() {
+            "kind" => el.kind = str_at(k, v)?,
+            "nature" => el.nature = Some(str_at(k, v)?),
+            "prefix" => el.prefix = Some(str_at(k, v)?),
+            "suffix" => el.suffix = Some(str_at(k, v)?),
+            "content-role" => el.content_role = Some(str_at(k, v)?),
+            "pattern" => el.pattern = Some(str_at(k, v)?),
+            "template" => el.template = Some(str_at(k, v)?),
+            "glued" => {
+                el.glued = Some(v.as_bool().ok_or_else(|| ConfigError::WrongType {
+                    path: path.to_owned(),
+                    key: key_of(k),
+                    found: value_type_name(v),
+                })?);
+            }
+            _ => warnings.push(ConfigWarning(format!(
+                "unknown key `{}` in {CONFIG_FILE_NAME} (ignored)",
+                key_of(k)
+            ))),
+        }
+    }
+    if el.kind.is_empty() {
+        return Err(ConfigError::WrongType {
+            path: path.to_owned(),
+            key: key_of("kind"),
+            found: "missing (every element needs a `kind`)",
+        });
+    }
+    Ok(el)
+}
+
 fn parse_prose_table(
     path: &str,
     prose: &toml::map::Map<String, Value>,
@@ -2560,5 +2748,79 @@ mod tests {
         assert!(discovery_warnings.is_empty(), "got: {discovery_warnings:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── [dialogue] (RULED 2026-08-30, project-declared dialogue dialect) ──
+
+    #[test]
+    fn dialogue_is_none_when_the_file_declares_nothing() {
+        let (config, _) = parse_str("[project]\nentry = \"story.ink\"\n").expect("valid");
+        assert_eq!(
+            config.dialogue, None,
+            "no [dialogue] = no dialect, never a preset"
+        );
+        assert!(!config.is_empty() || config.dialogue.is_none());
+    }
+
+    #[test]
+    fn dialogue_table_parses_preset_overlay_elements_and_run_rule() {
+        let toml = r#"
+[dialogue]
+preset = "at-cue"
+run-ends-at = ["character", "action"]
+
+[[dialogue.elements]]
+kind = "action"
+nature = "narrative"
+prefix = ">"
+
+[[dialogue.elements]]
+kind = "aside"
+pattern = "^\\[(?<content>[^\\]]*)\\]$"
+template = "[${content}]"
+content-role = "content"
+glued = false
+"#;
+        let (config, warnings) = parse_str(toml).expect("valid");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let d = config.dialogue.expect("declared");
+        assert_eq!(d.preset.as_deref(), Some("at-cue"));
+        assert_eq!(d.file, None);
+        assert_eq!(d.run_ends_at, vec!["character", "action"]);
+        assert_eq!(d.elements.len(), 2);
+        assert_eq!(d.elements[0].kind, "action");
+        assert_eq!(d.elements[0].prefix.as_deref(), Some(">"));
+        assert_eq!(d.elements[0].nature.as_deref(), Some("narrative"));
+        assert_eq!(
+            d.elements[1].pattern.as_deref(),
+            Some(r"^\[(?<content>[^\]]*)\]$")
+        );
+        assert_eq!(d.elements[1].glued, Some(false));
+    }
+
+    #[test]
+    fn dialogue_string_form_is_the_file_escape_hatch() {
+        let (config, _) = parse_str("dialogue = \"dialect.json\"\n").expect("valid");
+        let d = config.dialogue.expect("declared");
+        assert_eq!(d.file.as_deref(), Some("dialect.json"));
+        assert_eq!(d.preset, None);
+        assert!(d.elements.is_empty());
+    }
+
+    #[test]
+    fn dialogue_unknown_keys_warn_and_wrong_types_error() {
+        let (_, warnings) =
+            parse_str("[dialogue]\npreset = \"at-cue\"\ncolour = \"x\"\n").expect("valid");
+        assert!(
+            warnings.iter().any(|w| w.0.contains("dialogue.colour")),
+            "{warnings:?}"
+        );
+        let err = parse_str("[dialogue]\npreset = 3\n").expect_err("wrong type");
+        assert!(matches!(err, ConfigError::WrongType { .. }), "{err:?}");
+        let err = parse_str("dialogue = 3\n").expect_err("wrong type at the top level");
+        assert!(matches!(err, ConfigError::WrongType { .. }), "{err:?}");
+        let err =
+            parse_str("[[dialogue.elements]]\nprefix = \">\"\n").expect_err("kind is required");
+        assert!(matches!(err, ConfigError::WrongType { .. }), "{err:?}");
     }
 }

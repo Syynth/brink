@@ -5,6 +5,7 @@ Two packages publish to npm under the `@brink-lang` org
 
 | Package | Workspace dir | Contents |
 |---|---|---|
+| `@brink-lang/dialect` | `packages/dialect` | the dialogue-dialect artifact, validator, parser and run rule — pure TS, no runtime deps; what a game engine imports beside its compiled `dialect.json` (#3393) |
 | `@brink-lang/web` | `packages/wasm` | wasm compiler/IDE/runtime + TS wrappers; `@brink/wasm-types` rolled into its declarations |
 | `@brink-lang/studio` | `packages/brink-studio` | `mountStudio` IDE surface; bundles the private `@brink/*` internals; depends on `@brink-lang/web`; react/react-dom peers |
 

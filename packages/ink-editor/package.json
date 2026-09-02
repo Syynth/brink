@@ -47,6 +47,7 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
+    "@brink-lang/dialect": "workspace:^",
     "@brink-lang/web": "workspace:^",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.11.0",

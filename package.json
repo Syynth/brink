@@ -1,7 +1,7 @@
 {
   "packageManager": "pnpm@10.34.5",
   "scripts": {
-    "release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
+    "release": "pnpm --filter @brink-lang/dialect build && pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/editor build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
     "check:grammar-drift": "node scripts/check-grammar-drift.mjs",
     "check:no-nul-bytes": "node scripts/check-no-nul-bytes.mjs",
     "check:pnpm-pin": "node scripts/check-pnpm-pin.mjs",

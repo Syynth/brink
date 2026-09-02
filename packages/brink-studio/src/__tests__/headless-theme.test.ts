@@ -12,13 +12,15 @@ import { EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CodeAction, InlayHint } from "@brink/wasm-types";
-import { brinkStudio, brinkTheme, ensureStructuralStyles } from "@brink-lang/editor";
+import { AT_CUE_DIALECT, brinkStudio, brinkTheme, ensureStructuralStyles } from "@brink-lang/editor";
 import { colorWidget } from "../../../ink-editor/src/color-widget.js";
 import { mountColorPicker } from "../../../ink-editor/src/color-picker-ui.js";
 
 const STYLE_ID = "brink-editor-structural-styles";
 
 const minimal = {
+  // The at-cue preset, opted into (no dialect by default, RULED 2026-08-30).
+  dialect: AT_CUE_DIALECT,
   compile: () => ({ ok: true, diagnostics: [] }) as never,
   getSemanticTokens: () => [],
   getTokenTypeNames: () => [],

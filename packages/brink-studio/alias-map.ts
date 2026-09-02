@@ -82,6 +82,7 @@ function same(path: string): AliasEntry {
 export const STUDIO_PACKAGE_ALIASES: Readonly<Record<string, AliasEntry>> = {
   "@brink/wasm-types": same("../wasm-types/src/index.ts"),
   "@brink/ink-operations": same("../ink-operations/src/index.ts"),
+  "@brink-lang/dialect": same("../dialect/src/index.ts"),
   "@brink-lang/editor": same("../ink-editor/src/index.ts"),
   "@brink/studio-shell": same("../studio-shell/src/index.ts"),
   "@brink/studio-store": same("../studio-store/src/index.ts"),

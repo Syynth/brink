@@ -651,6 +651,34 @@ export class EditorSessionHandle {
   }
 
   /**
+   * `[dialogue]` from the applied `brink.toml`, RESOLVED (#3387, RULED
+   * 2026-08-30 "Project-declared dialogue dialect lives in brink.toml"):
+   * the shipped preset merged with the file's affix-sugar overlays — the
+   * one `DialogueDialect` every editor view and the Player read. `null`
+   * when the project declares none: "no dialect by default" — plain
+   * lines, never the preset.
+   */
+  /** Why `[dialogue]` did not resolve (#3391) — the resolver's readable
+   * message — or `null` when it resolved or the project declares none.
+   * State, not a one-shot warning: config warnings are a delta against
+   * the previous apply, and a Problems panel needs the current truth. */
+  getConfiguredDialogueError(): string | null {
+    const raw = this.session as { configured_dialogue_error?: () => string | undefined };
+    if (typeof raw.configured_dialogue_error !== "function") return null;
+    return raw.configured_dialogue_error() ?? null;
+  }
+
+  getConfiguredDialogueDialect(): DialogueDialect | null {
+    // Feature-detected on the raw session too: `session` is an injection
+    // seam and stubs that predate this accessor must read as "declares
+    // nothing", not throw at view mount.
+    const raw = this.session as { configured_dialogue_dialect?: () => string | undefined };
+    if (typeof raw.configured_dialogue_dialect !== "function") return null;
+    const json = raw.configured_dialogue_dialect();
+    return json === undefined || json === null ? null : (JSON.parse(json) as DialogueDialect);
+  }
+
+  /**
    * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
