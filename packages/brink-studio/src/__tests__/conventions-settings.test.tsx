@@ -288,5 +288,7 @@ describe("ConventionsSettings", () => {
     const learned = Array.from(container!.querySelectorAll(".conv-learned-row")).map((r) => r.textContent);
     expect(learned.some((t) => t?.includes("in capitals on its own"))).toBe(true);
     expect(learned.some((t) => t?.includes("is a parenthetical"))).toBe(true);
+    // The preview renders the aside the way the Player does: its own italic line.
+    expect($(".settings-conv-player .player-run-paren").textContent).toBe("(quietly)");
   });
 });

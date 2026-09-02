@@ -60,6 +60,22 @@ describe("foldPlayerRuns (#3389)", () => {
     expect(action.rows[0].line.kind).toBe("line");
   });
 
+  it("a speaker who keeps talking is one group, however the script cued it (per-line cues merge)", () => {
+    const lines = [
+      line("@Griswold: Pointy end goes in the monster."),
+      line("@Griswold: (lowering his voice) Old temple silver."),
+      line("@Griswold: Please."),
+      line("> He counts the coin."),
+      line("@Griswold: Pleasure."),
+    ];
+    const groups = foldPlayerRuns(lines, DIALECT);
+    expect(groups.map((g) => [g.speaker, g.rows.length])).toEqual([
+      ["Griswold", 3],
+      [null, 1],
+      ["Griswold", 1],
+    ]);
+  });
+
   it("no dialect: every row is a plain group — nothing is parsed", () => {
     const groups = foldPlayerRuns([line("@CUE1: One."), line("> text")], null);
     expect(groups.map((g) => [g.kind, g.rows[0].segments.length])).toEqual([[null, 0], [null, 0]]);

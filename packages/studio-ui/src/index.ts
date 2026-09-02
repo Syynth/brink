@@ -47,6 +47,7 @@ export { FormattingSettings } from "./FormattingSettings.js";
 export { ProseSettings } from "./ProseSettings.js";
 export { DraftSettings } from "./DraftSettings.js";
 export { ConventionsSettings } from "./ConventionsSettings.js";
+export { renderRowBody } from "./PlayerPane.js";
 export { KeymapSettings } from "./KeymapSettings.js";
 export { ThemePicker } from "./ThemePicker.js";
 export {

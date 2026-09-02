@@ -4732,3 +4732,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** (1) Choice-text lines are hidden from the marking list by default, behind an "Include choice text" toggle; hidden lines are not taught from. (2) Conditional branch header lines (`- cond: text`, `- else: text` inside a multi-line `{ … }`) are never passage lines — only the content after the colon is. (3) The section is stacked in working order: the passage you pick, the lines you mark, what the studio learned, then the Player preview — not two columns. (4) Clicking into "Your lines" lists every knot and stitch before anything is typed; typing narrows.
 - **WHY:** Maintainer, on seeing it run: choice lines are the player's options far more often than dialogue and crowd the list ("cut out choice lines, or add that as an option"), but the ink docs' own sub-format puts a cue inside choice text, so they stay reachable rather than gone. Branch headers carry a condition and a colon — never dialogue, and a `Name:` false positive waiting to happen. Two columns squeezed the line text beside a five-way control; stacking gives each step the width.
+
+## Player: a speaker who keeps talking is one run, however the script cued it
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player (dialogue runs, #3389; Conventions preview #3411)
+- **SCOPE:** minor/local
+- **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
+- **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.

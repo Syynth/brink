@@ -35,6 +35,7 @@ import { isConfigPath } from "./ConfigFormPanel.js";
 import { SettingsGroup, SettingsRow } from "./SettingsRow.js";
 import { KnotIcon, PasteIcon, StitchIcon } from "./icons.js";
 import { foldPlayerRuns, speakerPaletteIndex } from "./player-runs.js";
+import { renderRowBody } from "./PlayerPane.js";
 
 interface SymbolHit {
   path: string;
@@ -453,23 +454,17 @@ export function ConventionsSettings() {
           <div className="player settings-conv-player">
             <div className="story-text">
               {groups.map((group, gi) => {
-                const rows = group.rows.map((row) => {
-                  const text =
-                    row.segments.length === 0
-                      ? row.line.text
-                      : row.segments
-                          .filter((seg, si) => !(si === 0 && group.speaker !== null && seg.kind === group.kind))
-                          .map((seg) => seg.text)
-                          .join("");
-                  return (
-                    <div
-                      key={row.index}
-                      className={`player-line-row kind-line${row.kind ? ` dialect-${row.kind}` : ""}`}
-                    >
-                      <p>{text.trim() === "" ? " " : text}</p>
-                    </div>
-                  );
-                });
+                // The Player's own row renderer: a character row drops its
+                // cue segment (the header carries it), a parenthetical gets
+                // its own italic line, everything else prints as delivered.
+                const rows = group.rows.map((row) => (
+                  <div
+                    key={row.index}
+                    className={`player-line-row kind-line${row.kind ? ` dialect-${row.kind}` : ""}`}
+                  >
+                    <p>{renderRowBody(row)}</p>
+                  </div>
+                ));
                 if (group.speaker === null) return rows;
                 const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
                 return (
