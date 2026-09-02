@@ -36,7 +36,11 @@ npm install @brink-lang/dialect
 
 Then parse each line your story runtime emits and fold the lines into runs:
 
-```ts
+<!-- ts,no-check: `@brink-lang/dialect` reaches npm with the release that
+     ships this chapter; the book's type-check installs PUBLISHED packages, and
+     the snippet also stands in `choicesWerePresentedBefore` for the host's own
+     turn tracking. -->
+```ts,no-check
 import { DialectParser, runsOf, type DialogueDialect } from "@brink-lang/dialect";
 import raw from "./story.dialect.json";
 
