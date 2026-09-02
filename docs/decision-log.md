@@ -4518,3 +4518,27 @@
 - **SCOPE:** moderate
 - **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
 - **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
+
+## Observable runtime semantics: the host-facing trace
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** cross-system — runtime / compiler / test-harness (`docs/observable-semantics-spec.md`)
+- **SCOPE:** architectural
+- **WHAT:** Two programs are observably equivalent iff every run (start point, RNG seed, choice sequence, fixed external results) yields the same trace: output steps in order (lines with text/tags/element data; choice sets compared **by order**; terminal kind), external calls in order with arguments, **host-readable global state at every turn boundary** (in, not out), and host-invoked function results. Bytecode layout, step counts, timing, compile diagnostics, runtime warnings, temps, stacks, visit counts as internals, and RNG state as such are unobservable. A second, separate invariant binds source-level tools: translation identity (line-table scope ids / text hashes) must be unchanged for every line the tool did not edit. A future `#@internal`-style marker to take a global out of the host-visible set is noted, not built.
+- **WHY:** Maintainer: the bar for a "safe" transformation "is not byte-identical in the compiled output, it's more like identical in observable runtime semantics, which is a notion we probably need when we work on the optimizer anyway." One definition shared by auto-fix, fmt, respell, incremental lowering and the optimizer, instead of five private ones. Globals are in because hosts read them regardless of whether the story does; choices are ordered because hosts pick by index; translation identity is separate because it is not runtime-observable but an author with a shipped locale would rightly call breaking it unsafe.
+
+## Safe auto-fix means observably equivalent — and the oracle harness is not enough on its own
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** cross-system — auto-fix / optimizer testing (`docs/observable-semantics-spec.md` §4–§5)
+- **SCOPE:** architectural
+- **WHAT:** A *Safe* fix (batchable: fix-all, CLI, fix-on-save) is one that satisfies the observable-equivalence definition plus translation identity — nothing weaker. Fixes that change meaning or lose text require positive author intent and never batch. Correctness for the optimizer is the same relation, and "optimized and non-optimized programs must be observably identical in all cases"; the guarantee ladder is corpus differential (tier 0), property testing over generated programs (1), pass-level metamorphic properties (2), mutation sensitivity of the oracle itself plus `cargo-mutants` on the optimizer (3), and runtime fuzzing of optimized output (4). Tier 0 and the oracle-sensitivity study ship first.
+- **WHY:** Maintainer: "we'll need a stronger guarantee than the oracle harness, it's got plenty of stuff, but not nearly enough, we'll need something more like mutation testing, or property testing or similar to test the optimizer properly." The corpus only covers shapes someone already wrote down; an optimizer's bugs live in the shapes nobody did. Mutation-testing the oracle first is what proves the definition is complete before anything rests on it.
+
+## Story-level program generator is its own epic; `.ink` first; native via both direct generation and respell
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** test-harness (`docs/observable-semantics-spec.md` §4.1, #3370)
+- **SCOPE:** moderate
+- **WHAT:** The proptest story-level generator is a standalone epic (#3370), prerequisite to the optimizer and immediately useful to auto-fix, fmt, respell and incremental lowering. Its first deliverable is the **`.ink` grammar**; the native grammar follows. The native half is built **both** ways — direct `.brink` generation and routing generated `.ink` through `brink-respell` — and the respell route is itself one more equivalence property, `trace(P) = trace(respell(P))`.
+- **WHY:** Maintainer: "i need regular .ink support more urgently than native syntax right now"; and on the native half, "we'll need to do both, but we should include the respell as another form of test, because we should define the equivalence properties" first. Defining the properties before the generator keeps every consumer stating the same claim against the same oracle.
