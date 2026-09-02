@@ -4513,3 +4513,11 @@
   because several commands ship two or three defaults specifically to
   dodge browser-reserved chords (#107); flattening them in the editor
   would re-break what those alternates were added to fix.
+
+## Knot/stitch navigation click reveals in place when its file is already open
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** studio-shell / editor-ui
+- **SCOPE:** moderate
+- **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
+- **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
