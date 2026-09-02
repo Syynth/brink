@@ -21,6 +21,17 @@
  * Severity glyphs are the Problems panel's own, showing each code's
  * EFFECTIVE level — so a row reads the same here as the problem it will
  * produce.
+ *
+ * A Fix column sits beside severity on every row (issue #3419,
+ * `docs/autofix-spec.md` §6.1): `off | ask | auto`, written into `[fix]`
+ * through the same generic TOML write path (`setTomlString`) `[lints]`
+ * already uses. `[fix]` and `[lints]` are independent tables keyed by the
+ * same diagnostic code — a code's Fix policy is not gated on whether it is
+ * also `[lints]`-configured. Concretely: a code with a `[fix]` entry is
+ * listed even when the `overridable`/`surfaces` gates above would
+ * otherwise hide it entirely — it just does not get the `[lints]`
+ * Configure affordance in that case, since `[lints]` genuinely cannot act
+ * on it.
  */
 
 import { useMemo, useReducer, useState } from "react";
@@ -42,6 +53,18 @@ type Level = (typeof LEVELS)[number];
 
 const isLevel = (v: string | null): v is Level =>
   v !== null && (LEVELS as readonly string[]).includes(v);
+
+/**
+ * The `[fix]` policies (`docs/autofix-spec.md` §6.1, issue #3419), least to
+ * most aggressive. Written into the SAME `brink.toml`, through the same
+ * generic `setTomlString` write path `[lints]` already uses — `[fix]` is
+ * just a different table name, keyed by the same diagnostic code.
+ */
+const FIX_LEVELS = ["off", "ask", "auto"] as const;
+type FixLevel = (typeof FIX_LEVELS)[number];
+
+const isFixLevel = (v: string | null): v is FixLevel =>
+  v !== null && (FIX_LEVELS as readonly string[]).includes(v);
 
 /** The Problems panel's own glyphs (`BUCKET_GLYPH` in ProblemsView). */
 const GLYPH = { error: "●", warning: "▲", info: "ℹ" } as const;
@@ -96,6 +119,33 @@ function LevelPicker({
   );
 }
 
+function FixPicker({
+  value,
+  onPick,
+}: {
+  value: FixLevel | null;
+  onPick: (level: FixLevel | null) => void;
+}) {
+  return (
+    <div className="fix-levels" role="group" aria-label="Fix policy">
+      {FIX_LEVELS.map((level) => (
+        <button
+          key={level}
+          type="button"
+          className={"fix-level" + (value === level ? ` on is-${level}` : "")}
+          aria-pressed={value === level}
+          // Clicking the already-active button clears it — the same
+          // toggle-off `[lints]`'s own remove button gives a configured
+          // row, so a `[fix]` value isn't permanent once set (#3419 review).
+          onClick={() => onPick(value === level ? null : level)}
+        >
+          {level}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** One row in either list. */
 function LintRow({
   info,
@@ -103,6 +153,8 @@ function LintRow({
   onPick,
   onConfigure,
   onRemove,
+  fixLevel,
+  onFixPick,
 }: {
   info: DiagnosticInfo;
   /** The level written in `brink.toml`, or null when unconfigured. */
@@ -110,6 +162,14 @@ function LintRow({
   onPick?: (level: Level) => void;
   onConfigure?: () => void;
   onRemove?: () => void;
+  /**
+   * The `[fix]` policy written for this code, or null when `[fix]` doesn't
+   * mention it (which resolves to "ask" — `effective_fix_policy`'s default —
+   * but nothing is shown selected, the same convention `level` uses for an
+   * unconfigured `[lints]` code).
+   */
+  fixLevel?: FixLevel | null;
+  onFixPick?: (level: FixLevel | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const configured = level !== null;
@@ -136,6 +196,12 @@ function LintRow({
         <SeverityGlyph bucket={bucketFor(level, info.default_severity)} />
         <span className="lint-code">{info.code}</span>
         <span className="lint-title">{info.title}</span>
+        {onFixPick && (
+          <span className="lint-fix" title="When a fixer for this code may run">
+            <span className="lint-fix-label">Fix</span>
+            <FixPicker value={fixLevel ?? null} onPick={onFixPick} />
+          </span>
+        )}
         {configured ? (
           <>
             <span className="lint-default">default {info.default_severity}</span>
@@ -155,12 +221,14 @@ function LintRow({
         ) : (
           <>
             <span className="lint-default">{info.default_severity}</span>
-            <button type="button" className="lint-configure" onClick={onConfigure}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 19V5M6 11l6-6 6 6" />
-              </svg>
-              Configure
-            </button>
+            {onConfigure && (
+              <button type="button" className="lint-configure" onClick={onConfigure}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 19V5M6 11l6-6 6 6" />
+                </svg>
+                Configure
+              </button>
+            )}
           </>
         )}
       </div>
@@ -257,6 +325,16 @@ export function LintSettings() {
     write(setTomlString(source, "lints", code, level));
   };
 
+  /**
+   * Writes `[fix]`, the same generic `setTomlString` write path as
+   * `setLevel` above — `[fix]` and `[lints]` are two tables in the same
+   * file, keyed by the same diagnostic code (`docs/autofix-spec.md` §6.1).
+   */
+  const setFixLevel = (code: string, level: FixLevel | null): void => {
+    if (source === null) return;
+    write(setTomlString(source, "fix", code, level));
+  };
+
   const denyWarnings = source === null ? null : getTomlBool(source, "lints", "deny-warnings");
 
   /** Codes named in `[lints]`, excluding the policy key. */
@@ -265,25 +343,51 @@ export function LintSettings() {
     [source],
   );
 
+  /** Codes named in `[fix]` — independent of whether the same code is also
+   * `[lints]`-configured, since the two tables are unrelated. */
+  const fixCodes = useMemo(
+    () => (source === null ? [] : tomlTableKeys(source, "fix")),
+    [source],
+  );
+
   const byCode = useMemo(
     () => new Map(registry.map((r) => [r.code, r])),
     [registry],
-  );
-
-  const applicable = useMemo(
-    () => registry.filter((r) => r.surfaces.some((s) => surfaces.has(s))),
-    [registry, surfaces],
   );
 
   const configured = configuredCodes
     .map((code) => byCode.get(code))
     .filter((r): r is DiagnosticInfo => r !== undefined);
 
-  /** Codes in the file this compiler does not know — kept, never dropped. */
-  const unknown = configuredCodes.filter((code) => !byCode.has(code));
+  /**
+   * Codes in the file this compiler does not know — kept, never dropped.
+   * A code can land here via `[lints]`, `[fix]`, or both; either is reason
+   * enough to keep it visible rather than silently discarding a newer
+   * compiler's setting.
+   */
+  const unknown = Array.from(
+    new Set([
+      ...configuredCodes.filter((code) => !byCode.has(code)),
+      ...fixCodes.filter((code) => !byCode.has(code)),
+    ]),
+  );
 
-  const unconfigured = applicable.filter(
-    (r) => r.overridable && !configuredCodes.includes(r.code),
+  /**
+   * A code lands here if it's `[lints]`-configurable in this project
+   * (`overridable`, and applicable to the surfaces this project actually
+   * produces) — OR if it already carries a `[fix]` entry, regardless of
+   * either gate. Without the union, a `[fix]` entry for a non-overridable
+   * or off-surface code renders nowhere: not `configured` (no `[lints]`
+   * key), not `unknown` (the compiler DOES know the code) — it would sit in
+   * `brink.toml`, invisible and uneditable (#3419 review). A `[fix]`-only
+   * row that bypassed the `overridable` gate this way still must not offer
+   * the `[lints]` Configure affordance — see the `onConfigure` guard below.
+   */
+  const unconfigured = registry.filter(
+    (r) =>
+      !configuredCodes.includes(r.code) &&
+      (fixCodes.includes(r.code) ||
+        (r.overridable && r.surfaces.some((s) => surfaces.has(s)))),
   );
 
   const needle = query.trim().toLowerCase();
@@ -310,7 +414,8 @@ export function LintSettings() {
   return (
     <section className="settings-section lint-settings">
       <p className="settings-section-hint">
-        Written to <code>[lints]</code> in <code>{configPath}</code>.
+        Written to <code>[lints]</code> (and <code>[fix]</code>, the Fix column) in{" "}
+        <code>{configPath}</code>.
       </p>
 
       <label className="lint-policy">
@@ -343,6 +448,7 @@ export function LintSettings() {
               <div className="lint-group-head">{category}</div>
               {rows.map((info) => {
                 const raw = getTomlString(source, "lints", info.code);
+                const fixRaw = getTomlString(source, "fix", info.code);
                 return (
                   <LintRow
                     key={info.code}
@@ -350,6 +456,8 @@ export function LintSettings() {
                     level={isLevel(raw) ? raw : null}
                     onPick={(level) => setLevel(info.code, level)}
                     onRemove={() => setLevel(info.code, null)}
+                    fixLevel={isFixLevel(fixRaw) ? fixRaw : null}
+                    onFixPick={(level) => setFixLevel(info.code, level)}
                   />
                 );
               })}
@@ -358,28 +466,44 @@ export function LintSettings() {
           {unknown.length > 0 && (
             <div className="lint-group">
               <div className="lint-group-head">Unknown to this compiler</div>
-              {unknown.map((code) => (
-                <div key={code} className="lint-row is-unknown">
-                  <div className="lint-row-main">
-                    <span className="lint-disclose is-empty" aria-hidden="true" />
-                    <span className="lint-sev is-warning">{GLYPH.warning}</span>
-                    <span className="lint-code">{code}</span>
-                    <span className="lint-title">
-                      Kept — it may belong to a newer compiler.
-                    </span>
-                    <button
-                      type="button"
-                      className="lint-move"
-                      aria-label={`Remove ${code}`}
-                      onClick={() => setLevel(code, null)}
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M12 5v14M6 13l6 6 6-6" />
-                      </svg>
-                    </button>
+              {unknown.map((code) => {
+                const fixRaw = getTomlString(source, "fix", code);
+                return (
+                  <div key={code} className="lint-row is-unknown">
+                    <div className="lint-row-main">
+                      <span className="lint-disclose is-empty" aria-hidden="true" />
+                      <span className="lint-sev is-warning">{GLYPH.warning}</span>
+                      <span className="lint-code">{code}</span>
+                      <span className="lint-title">
+                        Kept — it may belong to a newer compiler.
+                      </span>
+                      {fixRaw !== null && (
+                        <span className="lint-fix" title="This compiler doesn't know this code's fixer">
+                          <span className="lint-fix-label">Fix</span>
+                          <span className="fix-level is-unknown">{fixRaw}</span>
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="lint-move"
+                        aria-label={`Remove ${code}`}
+                        onClick={() => {
+                          // A single write carrying both removals: two
+                          // separate `write()` calls here would each derive
+                          // `next` from the same pre-click `source`, so the
+                          // second call would silently undo the first.
+                          if (source === null) return;
+                          write(setTomlString(setTomlString(source, "lints", code, null), "fix", code, null));
+                        }}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 5v14M6 13l6 6 6-6" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -403,26 +527,42 @@ export function LintSettings() {
         {grouped(matches).map(([category, rows]) => (
           <div key={category} className="lint-group">
             <div className="lint-group-head">{category}</div>
-            {rows.map((info) => (
-              <LintRow
-                key={info.code}
-                info={info}
-                level={null}
-                // Writes the key at its CURRENT default, so the first click
-                // brings the code under the project's control without
-                // changing what the build does.
-                onConfigure={() =>
-                  setLevel(
-                    info.code,
-                    info.default_severity === "error"
-                      ? "deny"
-                      : info.default_severity === "warning"
-                        ? "warn"
-                        : "hint",
-                  )
-                }
-              />
-            ))}
+            {rows.map((info) => {
+              const fixRaw = getTomlString(source, "fix", info.code);
+              // A row can land in this list purely because it carries a
+              // `[fix]` entry, bypassing the `overridable`/surface gates
+              // that decide whether `[lints]` can say anything about it
+              // (see the `unconfigured` comment above). Such a row must
+              // not offer Configure — clicking it would write a `[lints]`
+              // key the compiler can never act on.
+              const canConfigureLints =
+                info.overridable && info.surfaces.some((s) => surfaces.has(s));
+              return (
+                <LintRow
+                  key={info.code}
+                  info={info}
+                  level={null}
+                  // Writes the key at its CURRENT default, so the first click
+                  // brings the code under the project's control without
+                  // changing what the build does.
+                  onConfigure={
+                    canConfigureLints
+                      ? () =>
+                          setLevel(
+                            info.code,
+                            info.default_severity === "error"
+                              ? "deny"
+                              : info.default_severity === "warning"
+                                ? "warn"
+                                : "hint",
+                          )
+                      : undefined
+                  }
+                  fixLevel={isFixLevel(fixRaw) ? fixRaw : null}
+                  onFixPick={(level) => setFixLevel(info.code, level)}
+                />
+              );
+            })}
           </div>
         ))}
         {matches.length === 0 && (

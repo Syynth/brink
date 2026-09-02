@@ -288,6 +288,28 @@ leaving to callers: `FixPolicy::admits` refuses `Placeholder` unconditionally,
 so promoting a Placeholder code to `"auto"` still does not batch it (§3,
 "Batchable: never"). `"off"` withdraws a code from both batching and offering.
 
+*As built (#3419, milestone 4):* the *source* side. `[fix]` parses into
+`ProjectConfig::fix: BTreeMap<String, FixPolicy>` — note this is a
+different, unrelated `FixPolicy`: a plain `Off < Ask < Auto` enum in
+`brink-project-config`, not milestone 3's `brink_ide::fix::policy::FixPolicy`
+struct; wiring one into the other (an override map keyed by the project's
+per-code entries) is not built yet. Validated the same way `[lints]`'s value
+is (`"off" | "ask" | "auto"`, a wrong TOML type or an unrecognized spelling
+is a `ConfigError`, never a panic; an unrecognized *code* is accepted here
+regardless — this crate stays dependency-free of the real `DiagnosticCode`
+set, same split `validate_lint_code` uses). The diagnostic `[lints]` raises
+for an unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
+still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to hang
+it off, so it's tracked as a follow-up rather than built here (#3447, to
+land when a fix-policy engine first reads the table and reconciles it with
+milestone 3's type). `ProjectConfig::effective_fix_policy(code,
+app_ceiling: Option<FixPolicy>)` is the one function this section and
+§6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
+so the intersection is just `project.min(ceiling)`. The studio's Fix
+column writes `[fix]` through the exact same generic `setTomlString`
+call `[lints]` already used (`packages/studio-store/src/toml-edit.ts`)
+— a different table name, nothing else.
+
 ### 6.2 The app setting — personal, a ceiling — TENTATIVE
 
 An app-scope setting, like format-on-save, saying *when* the editor
