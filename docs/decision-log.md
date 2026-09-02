@@ -4583,3 +4583,35 @@
 - **SCOPE:** moderate
 - **WHAT:** The oracle reads host-readable state through the host's own road (`Story::variable`, i.e. `getVar`), which honours `#@private`. Because the native surface is always a declared module and therefore defaults private (`docs/modules-spec.md`), a `.brink` `var` without `pub` is absent from §2 item 3's capture, and two programs differing only in such a global are reported observably equivalent. Recorded in §2.3 next to the `#@internal` escape hatch, and pinned by a test in both directions (`pub` covered, private not).
 - **WHY:** Item 3 says *host-readable*, and a private global genuinely is not: the host is outside every module. Left undocumented this would look like an oracle bug the first time someone hit it; documented, it is the escape hatch §2.3 contemplates, already present in fact on the native surface — which an optimizer's designer needs to know before assuming every global write is protected.
+
+## Project-declared dialogue dialect lives in brink.toml
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / project-config (dialogue dialect, #368)
+- **SCOPE:** moderate — REVISES the 2026-07-05 #368 ruling's "no project file in v1 (mount-time config only)"; that spec filed the project-file home as the expected follow-up, and this is it.
+- **WHAT:** A project declares its dialogue dialect in `brink.toml`: a `[dialect]` table (`preset = "…"` plus `[[dialect.elements]]` overlays using the spec's affix sugar, and the run rule below) is the PRIMARY authoring form; `dialect = "path.json"` remains as the escape hatch for a full hand-written artifact. Both resolve to one `DialogueDialect`; `mountStudio({ dialect })` stays as the embedder override. Tracked as #3387.
+- **WHY:** The dialect is "how this project's text works," which is exactly `brink.toml`'s charter (it already hosts `prose_dialect` and `conventions`); the common case is tiny (a preset plus a kind or two) and reads as TOML with the affix sugar, and a second file you must know to reference is friction for ten lines. Brink cannot bake every author's format into the app — the artifact is the capability, the project owns the format.
+
+## No dialect by default
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / player
+- **SCOPE:** moderate
+- **WHAT:** A project that declares no `[dialect]` gets none: the Player prints plain lines (the Inky posture) and the editor applies no cue form. The shipped `at-cue` preset becomes opt-in. Tracked under #3387; the Player half is #3389.
+- **WHY:** Nothing is assumed about a project's conventions; presets are offered, never imposed. This is what makes "not baking one user's format into the app" true by construction, and it keeps the plain-ink experience identical to Inky for anyone who wants exactly that.
+
+## Dialects declare what ends a dialogue run in the emitted stream
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / dialect artifact
+- **SCOPE:** minor/local
+- **WHAT:** The chain rule gains an emitted-side facet, `run_ends_at` — the list of declared kinds (and the reserved `"choices"` boundary) whose appearance ends the active speaker's run in RUNTIME-EMITTED text. Consumers of emitted text (the Player, an engine importing the resolved dialect) apply it through one shared run-state helper. Tracked as #3388.
+- **WHY:** The source-side chain rule has a hard break the emitted stream lacks — "blank ALWAYS breaks" — and ink swallows blank lines on output, so a cue-less dialogue line after a cue is unattributable downstream unless the dialect says when a run ends. Declaring it (rather than hardcoding a guess) keeps the Player and the author's own engine reading the same answer from the same artifact.
+
+## Engines consume the RESOLVED dialect as a compile output
+- **WHEN:** 2026-08-30
+- **PROJECT:** brink
+- **SYSTEM:** cli / packaging
+- **SCOPE:** moderate
+- **WHAT:** `brink compile` (and the studio's export) emits `dialect.json` beside the compiled story — the project's dialect with the preset merged and affix sugar expanded. A game engine reads that derived product plus the parser, never the `brink.toml` source declaration. The parser/validator/types move to a tiny pure-TS `@brink-lang/dialect` package (re-exported by `@brink-lang/editor`). Tracked as #3393.
+- **WHY:** Single truth without drift: the source is authored once in TOML and the JSON is generated, so there is no hand-edited copy to diverge, and the engine needs no preset-resolution logic. A game codebase should not have to depend on an editor package (CodeMirror and all) to read a JSON schema.
