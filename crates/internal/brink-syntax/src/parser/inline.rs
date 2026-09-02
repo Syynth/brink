@@ -466,11 +466,14 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
             }
             // `TODO: text` (issue #3353) — an author note, only recognized
             // when it starts a line, exactly like `HASH`/tags above.
-            // `super::story::author_warning` consumes its own trailing
-            // newline, same as `tag_line`, so the same post-call
-            // `skip_ws` strips the next line's leading indentation.
+            // `super::story::author_warning_in_branch` consumes its own
+            // trailing newline, same as `tag_line`, so the same post-call
+            // `skip_ws` strips the next line's leading indentation. It
+            // stops at an unmatched `R_BRACE` too, so `TODO: fix }` on the
+            // block's last line doesn't swallow the closing brace (PR
+            // #3367 review).
             KW_TODO if at_line_start => {
-                super::story::author_warning(p);
+                super::story::author_warning_in_branch(p);
                 p.skip_ws();
                 at_line_start = true;
             }
@@ -571,6 +574,11 @@ fn at_multiline_branch_start(p: &Parser<'_, '_>) -> bool {
 /// out of the body loop (same as a branch separator).
 fn multiline_branch_body(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCH_BODY);
+    // Track whether we're at the logical start of a line, mirroring
+    // `branchless_cond_body`'s `at_line_start` — needed so `KW_TODO` below
+    // can be gated on it (PR #3367 review): a mid-line `TODO` word is prose,
+    // not a note.
+    let mut at_line_start = true;
     loop {
         // Strip leading indentation at the start of each line so it doesn't
         // leak into text content (inklecate strips it at parse time too).
@@ -586,37 +594,49 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                     break;
                 }
                 p.bump();
+                at_line_start = true;
             }
             STAR | PLUS => {
                 // Choices participate in the outer weave structure.
+                // `choice()` always consumes its trailing newline, leaving
+                // us at the start of the next line.
                 super::choice::choice(p);
+                at_line_start = true;
             }
             HASH => {
+                // A mid-line `#` genuinely starts a tag in ink (unlike
+                // `TODO` below), so this arm stays ungated. `tag_line`
+                // consumes its trailing newline.
                 super::tag::tag_line(p);
+                at_line_start = true;
             }
             // `TODO: text` (issue #3353) — same author-note recognition as
             // `HASH` above, shared with `branchless_cond_body` via
-            // `super::story::author_warning`. The preceding `p.skip_ws()`
-            // at the top of this loop already strips indentation, so
-            // `current()` only lands on `KW_TODO` here at the start of a
-            // (possibly indented) line — a mid-content `TODO` word is
-            // already absorbed into `TEXT` by `multiline_branch_text`,
-            // which doesn't stop on `KW_TODO`.
-            KW_TODO => {
-                super::story::author_warning(p);
+            // `super::story::author_warning_in_branch`. Gated on
+            // `at_line_start`: a mid-line `TODO` word is ordinary prose (it
+            // is NOT already absorbed into `TEXT` by `multiline_branch_text`
+            // on its own — `multiline_branch_text` doesn't stop on
+            // `KW_TODO` — so without this guard the arm fires mid-sentence
+            // too; the guard, not the text scanner, is what keeps it out).
+            KW_TODO if at_line_start => {
+                super::story::author_warning_in_branch(p);
+                at_line_start = true;
             }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);
+                at_line_start = true;
             }
             L_BRACE => {
                 inline_logic(p);
+                at_line_start = false;
             }
             GLUE => {
                 p.skip_ws();
                 p.start_node(GLUE_NODE);
                 p.bump();
                 p.finish_node();
+                at_line_start = false;
             }
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
@@ -630,9 +650,11 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                     p.bump(); // escaped char
                     p.finish_node();
                 }
+                at_line_start = false;
             }
             DIVERT | TUNNEL_ONWARDS | THREAD => {
                 super::divert::divert(p);
+                at_line_start = false;
             }
             _ => {
                 let before = p.pos();
@@ -660,6 +682,7 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                         break;
                     }
                 }
+                at_line_start = false;
             }
         }
     }

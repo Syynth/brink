@@ -37,6 +37,16 @@ fn collect_author_warnings(node: &SyntaxNode) -> Vec<String> {
     out
 }
 
+/// Find a `KNOT_DEF` named `name` anywhere under `node`.
+fn find_knot_named(node: &SyntaxNode, name: &str) -> Option<ast::KnotDef> {
+    if let Some(knot) = ast::KnotDef::cast(node.clone())
+        && knot.header().and_then(|h| h.name()).as_deref() == Some(name)
+    {
+        return Some(knot);
+    }
+    node.children().find_map(|child| find_knot_named(&child, name))
+}
+
 /// `TODO:` in the then-arm of an explicit `- cond:` branch (`MULTILINE_BRANCH_BODY`).
 #[test]
 fn todo_in_then_arm() {
@@ -209,5 +219,121 @@ fn todo_only_branchless_body() {
                 }
             }
         }),
+    );
+}
+
+// ── PR #3367 review: blocking findings ──────────────────────────────
+//
+// Two follow-up bugs surfaced in review of the fix above, both already
+// covered by the tests in this module for a `TODO` recognized cleanly on
+// its own line, but not for a `}` sharing the note's line, or a `TODO`
+// word landing mid-sentence.
+
+/// A branch's closing `}` sharing the same line as a `TODO` note (via
+/// `branchless_cond_body`, the `{ x: …` form) must not be swallowed into
+/// the note — the block must still close there, and content after it must
+/// still parse as ordinary story structure (here, a real `KNOT_DEF`).
+///
+/// Before the fix, `story::author_warning`'s plain `NEWLINE`-only scan
+/// consumed the `}` as note text, so the block never closed and the rest
+/// of the file — including `=== later ===` — was absorbed as conditional
+/// prose.
+#[test]
+fn todo_with_brace_on_same_line_closes_block_branchless() {
+    let src = "VAR x = true\n{ x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
+    let parsed = parse(src);
+    let root = parsed.syntax();
+
+    assert_eq!(
+        collect_author_warnings(&root),
+        vec!["fix".to_owned()],
+        "the closing brace must not be absorbed into the note text"
+    );
+
+    let later = find_knot_named(&root, "later");
+    assert!(
+        later.is_some(),
+        "`=== later ===` must lower to a real KNOT_DEF, not conditional prose; tree: {root:#?}"
+    );
+}
+
+/// Same as above, through `multiline_branch_body` (the `{\n- x: …` form).
+#[test]
+fn todo_with_brace_on_same_line_closes_block_multiline() {
+    let src =
+        "VAR x = true\n{\n- x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
+    let parsed = parse(src);
+    let root = parsed.syntax();
+
+    assert_eq!(
+        collect_author_warnings(&root),
+        vec!["fix".to_owned()],
+        "the closing brace must not be absorbed into the note text"
+    );
+
+    let later = find_knot_named(&root, "later");
+    assert!(
+        later.is_some(),
+        "`=== later ===` must lower to a real KNOT_DEF, not conditional prose; tree: {root:#?}"
+    );
+}
+
+/// A `TODO` word landing mid-line after an `INLINE_LOGIC` interpolation, a
+/// `GLUE_NODE`, or an `ESCAPE`, inside an explicit `- cond:` arm
+/// (`multiline_branch_body`), must stay ordinary prose — not misfire as an
+/// `AUTHOR_WARNING`. Before the fix, `multiline_branch_body`'s `KW_TODO`
+/// arm was unconditional (unlike its `branchless_cond_body` sibling, which
+/// gates the same arm on `at_line_start`), so it fired anywhere the
+/// position happened to land on `KW_TODO` — including mid-sentence.
+#[test]
+fn todo_mid_line_after_inline_logic_is_not_misfired() {
+    let src = "{\n- x:\n  Value is {y} TODO fix this later\n}\n";
+    let parsed = parse(src);
+    let root = parsed.syntax();
+
+    assert!(
+        collect_author_warnings(&root).is_empty(),
+        "a mid-line TODO must not become an AUTHOR_WARNING; tree: {root:#?}"
+    );
+    let joined = collect_text_nodes(&root).concat();
+    assert!(
+        joined.contains("TODO fix this later"),
+        "prose must survive intact: {joined:?}"
+    );
+}
+
+/// Same as above, with the `TODO` landing right after a `GLUE_NODE` (`<>`).
+#[test]
+fn todo_mid_line_after_glue_is_not_misfired() {
+    let src = "{\n- x:\n  Hello <> TODO not a note\n}\n";
+    let parsed = parse(src);
+    let root = parsed.syntax();
+
+    assert!(
+        collect_author_warnings(&root).is_empty(),
+        "a mid-line TODO must not become an AUTHOR_WARNING; tree: {root:#?}"
+    );
+    let joined = collect_text_nodes(&root).concat();
+    assert!(
+        joined.contains("TODO not a note"),
+        "prose must survive intact: {joined:?}"
+    );
+}
+
+/// Same as above, with the `TODO` landing right after an `ESCAPE` (`\*`).
+#[test]
+fn todo_mid_line_after_escape_is_not_misfired() {
+    let src = "{\n- x:\n  Hello \\* TODO not a note\n}\n";
+    let parsed = parse(src);
+    let root = parsed.syntax();
+
+    assert!(
+        collect_author_warnings(&root).is_empty(),
+        "a mid-line TODO must not become an AUTHOR_WARNING; tree: {root:#?}"
+    );
+    let joined = collect_text_nodes(&root).concat();
+    assert!(
+        joined.contains("TODO not a note"),
+        "prose must survive intact: {joined:?}"
     );
 }
