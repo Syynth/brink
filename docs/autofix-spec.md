@@ -393,8 +393,12 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
   `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
   E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
-  (the discarded args were already being ignored); empty choice
-  `* []` → `* ->` (#3365).
+  (issue #3428 — the classic call/divert convention these two codes
+  cover binds the **trailing** supplied argument, not the leading one
+  "over-supplied args" suggests, so the fixer deletes the **leading**
+  excess and keeps the trailing `expected` — see
+  `crates/internal/brink-ide/src/arity_trim_fix.rs`'s module doc for the
+  empirical proof); empty choice `* []` → `* ->` (#3365).
 - **Suggested**: E026 duplicate list item → delete (changes host state);
   E033 unreachable after divert → delete; E035/E054/E188 shadowing or
   colliding name → rename (rides the rename machinery, cross-file);
