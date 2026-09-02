@@ -4724,3 +4724,20 @@
 - **SCOPE:** architectural
 - **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
 - **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.
+
+## Conventions editor: teach-by-example is the design direction
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3392)
+- **SCOPE:** moderate
+- **WHAT:** The non-technical Conventions editor in Settings is built as "teach by example": the author pastes a few lines as they actually write them, marks each line (cue / dialogue / action / narration), the studio proposes the `[dialogue]` rules and shows them back as plain sentences with the lines that support each, and nothing is written to `brink.toml` until the author confirms. Chosen over three alternatives on the design canvas (recipe tiles, rule sentences, a guided wizard).
+- **WHY:** Maintainer: "clearly the best, by a long shot" — authors who already have pages should not have to describe their format, they should show it. The stated risk is implementation complexity (rule inference); the direction stands on the condition that inference is explainable and verified, not clever: propose from a small set of shapes and confirm by re-parsing the marked lines, surfacing anything the shapes cannot explain as a decision for the author rather than a guess. The inference tests cover the ink documentation's own suggested line formats (`Name: line`, cues with line tags, quoted prose with attribution) alongside the studio's presets — corpus recorded on #3392.
+
+## Conventions editor: sample lines come from a knot/stitch selector
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3392)
+- **SCOPE:** minor/local
+- **STATUS:** tentative
+- **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
+- **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project. The pulled passage is shown whole: the marked-lines list and the Player preview scroll for long runs rather than trimming to the first few lines.
