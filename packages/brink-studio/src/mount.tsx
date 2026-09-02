@@ -1813,9 +1813,12 @@ export async function mountStudio(
         kind: "program",
         address: encodeProgramAddress(containerIdx, offset),
       }),
-    // Follow (#3437): open the source as a preview tab if it is not open,
-    // then scroll to the line WITHOUT focus — the Player is driving. No
-    // takeover dismissal either: following must not close a Story Graph.
+    // Follow (#3437): scroll every open view of the source to the line,
+    // WITHOUT focus and WITHOUT opening anything — the Player is driving,
+    // and opening the file would land it over the Player's own document
+    // in a single-group layout (caught by the player-document e2e). A
+    // file that is not open is simply not followed; a pause/breakpoint
+    // still reveals-and-opens as before.
     followSource: (source) => {
       const point = store.getState()._resolveSourceBytes?.(
         source.file,
@@ -1823,7 +1826,6 @@ export async function mountStudio(
         source.range_end,
       );
       if (!point) return;
-      store.getState().openTarget({ kind: "file", path: source.file }, false);
       documents.scrollTo(source.file, point.start);
     },
   });
