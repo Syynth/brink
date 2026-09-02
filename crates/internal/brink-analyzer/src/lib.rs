@@ -810,7 +810,7 @@ pub fn per_file_diagnostics(
     // both frontends produce the same block tree for it. Per-file by
     // construction: a temp lives in one knot's call frame, and a knot's
     // body lives in exactly one file.
-    out.extend(temp_dominance::check(file, hir));
+    out.extend(temp_dominance::check(file, hir, is_native));
     // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected

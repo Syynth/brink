@@ -49,9 +49,12 @@
 //!   reported — matching `brink_ir::lir::lower::temps::alloc_temps`, which
 //!   gives the parameter the slot and lets a same-named `~ temp` write
 //!   through it.
-//! - **Assignment targets.** `~ n = 1` writes; it does not read. Compound
-//!   assignment (`~ n += 1`) and `~ n++` do read, and are left to their own
-//!   ruling — this pass reports reads in expression position only.
+//! - **Plain assignment targets.** `~ n = 1` writes; it does not read, so
+//!   `ReadCollector::enter_stmt` discounts an `AssignOp::Set` target by
+//!   range. Compound assignment (`~ n += 1`) and `~ n++` DO read their
+//!   target before writing it back, and this pass already reaches them —
+//!   `enter_stmt` only discounts `Set`, so a non-`Set` target is walked and
+//!   reported like any other read when undominated.
 //! - **Block-scoped (T1b) temps.** A `temp` declared inside `~ { … }` is
 //!   [`brink_ir::DiagnosticCode::E082`]'s subject, a lexical-scope defect
 //!   rather than a definite-assignment one; only `Stmt::TempDecl` (the
@@ -88,22 +91,31 @@ struct Read {
 ///
 /// Frames are the unit: a knot (its own body plus every stitch body — they
 /// share one call frame and one `TempMap`) and the file's root content.
-pub fn check(file: FileId, hir: &HirFile) -> Vec<Diagnostic> {
+///
+/// `is_native` picks the message's vocabulary to match what the author
+/// actually wrote (issue #3369 review: the message previously said
+/// `` `~ temp n` `` and "knot" unconditionally, even for a native `.brink`
+/// file spelling the same declaration `~ let n` inside a `flow`) — the
+/// same flag `per_file_diagnostics` already threads to every other
+/// surface-aware check.
+pub fn check(file: FileId, hir: &HirFile, is_native: bool) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     check_frame(
         file,
         &[(&hir.root_content, "the file's root content")],
         &[],
+        is_native,
         &mut out,
     );
     for knot in &hir.knots {
-        check_knot(file, knot, &mut out);
+        check_knot(file, knot, is_native, &mut out);
     }
     out
 }
 
-fn check_knot(file: FileId, knot: &Knot, out: &mut Vec<Diagnostic>) {
-    let knot_owner = format!("knot `{}`", knot.name.text);
+fn check_knot(file: FileId, knot: &Knot, is_native: bool, out: &mut Vec<Diagnostic>) {
+    let knot_noun = if is_native { "flow" } else { "knot" };
+    let knot_owner = format!("{knot_noun} `{}`", knot.name.text);
     let mut regions: Vec<(&Block, String)> = vec![(&knot.body, knot_owner)];
     for stitch in &knot.stitches {
         regions.push((
@@ -121,7 +133,7 @@ fn check_knot(file: FileId, knot: &Knot, out: &mut Vec<Diagnostic>) {
         params.extend(stitch.params.iter().map(|p| p.name.text.as_str()));
     }
 
-    check_frame(file, &borrowed, &params, out);
+    check_frame(file, &borrowed, &params, is_native, out);
 }
 
 /// The shared frame check: `regions` are the blocks that share one call
@@ -130,8 +142,10 @@ fn check_frame(
     file: FileId,
     regions: &[(&Block, &str)],
     params: &[&str],
+    is_native: bool,
     out: &mut Vec<Diagnostic>,
 ) {
+    let decl_keyword = if is_native { "let" } else { "temp" };
     // Every classic `~ temp` this frame declares, keyed by name. The first
     // declaration wins the message's declaration half — a second one of the
     // same name reuses the same slot (`alloc_temps` inserts once).
@@ -181,8 +195,8 @@ fn check_frame(
             file,
             range: read.range,
             message: format!(
-                "{}: `{name}` is read here, but the `~ temp {name}` that declares it \
-                 (in {owner}) {when} — so the slot may still be unset, and an unset \
+                "{}: `{name}` is read here, but the `~ {decl_keyword} {name}` that declares \
+                 it (in {owner}) {when} — so the slot may still be unset, and an unset \
                  temp reads as `0`",
                 DiagnosticCode::E193.title(),
             ),

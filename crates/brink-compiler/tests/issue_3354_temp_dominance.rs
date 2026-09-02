@@ -434,3 +434,79 @@ fn temp_declared_from_a_void_returning_function_does_not_compare_as_zero() {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
 }
+
+/// `ReadCollector::enter_stmt` only adds `AssignOp::Set` targets to
+/// `skipped` — a compound target (`~ n += 1`) reads `n` before writing it
+/// back, and this pass already reports that read when undominated. This
+/// pins the module doc's corrected claim (it previously said compound
+/// assignment and `~ n++` were "left to their own ruling", i.e. not
+/// reached yet — false, verified here) against the actual behavior: the
+/// target read fires, and a later, dominated read of the same name stays
+/// quiet.
+#[test]
+fn compound_assignment_target_is_a_read_the_pass_already_reports() {
+    let msgs = e193("-> k\n=== k ===\n~ n += 1\n~ temp n = 0\nSaw {n}.\n-> END\n");
+    assert_eq!(
+        msgs.len(),
+        1,
+        "the `+=` target is read before the declaration; the later, \
+         dominated `Saw {{n}}` must stay quiet: {msgs:?}"
+    );
+}
+
+/// Same shape for `~ n++` — the prefix/postfix increment desugars to the
+/// same read-before-write target, not a plain `Set`.
+#[test]
+fn increment_target_is_a_read_the_pass_already_reports() {
+    let msgs = e193("-> k\n=== k ===\n~ n++\n~ temp n = 0\nSaw {n}.\n-> END\n");
+    assert_eq!(
+        msgs.len(),
+        1,
+        "the `++` target is read before the declaration; the later, \
+         dominated `Saw {{n}}` must stay quiet: {msgs:?}"
+    );
+}
+
+/// The native surface spells the declaration `~ let`, inside a `flow` — not
+/// `~ temp` inside a `knot`. `per_file_diagnostics` already receives
+/// `is_native` (`crates/internal/brink-analyzer/src/lib.rs`) and now passes
+/// it to `temp_dominance::check`, so the message an author reads matches
+/// the syntax they actually wrote, on a real `.brink` file compiled through
+/// the production `compile_path` entry point (native discovery reads off
+/// disk, unlike the in-memory `.ink` fixtures the rest of this file uses).
+#[test]
+fn native_surface_message_says_let_and_flow_not_temp_and_knot() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-e193-native-vocabulary-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Before is {m}.\n  ~ let m = 1\n  After is {m}.\n  -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    let out = result.expect("compile should succeed");
+    let msgs: Vec<&String> = out
+        .warnings
+        .iter()
+        .filter(|w| w.code == DiagnosticCode::E193)
+        .map(|w| &w.message)
+        .collect();
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert!(
+        msgs[0].contains("`~ let m`"),
+        "must name the declaration the author actually wrote: {msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("flow `main`"),
+        "must name the enclosing definition kind the author actually wrote: {msgs:?}"
+    );
+    assert!(
+        !msgs[0].contains("~ temp") && !msgs[0].contains("knot `main`"),
+        "must not speak ink vocabulary on the native surface: {msgs:?}"
+    );
+}
