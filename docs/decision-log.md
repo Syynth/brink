@@ -4732,3 +4732,12 @@
 - **SCOPE:** moderate
 - **WHAT:** The non-technical Conventions editor in Settings is built as "teach by example": the author pastes a few lines as they actually write them, marks each line (cue / dialogue / action / narration), the studio proposes the `[dialogue]` rules and shows them back as plain sentences with the lines that support each, and nothing is written to `brink.toml` until the author confirms. Chosen over three alternatives on the design canvas (recipe tiles, rule sentences, a guided wizard).
 - **WHY:** Maintainer: "clearly the best, by a long shot" — authors who already have pages should not have to describe their format, they should show it. The stated risk is implementation complexity (rule inference); the direction stands on the condition that inference is explainable and verified, not clever: propose from a small set of shapes and confirm by re-parsing the marked lines, surfacing anything the shapes cannot explain as a decision for the author rather than a guess.
+
+## Conventions editor: sample lines come from a knot/stitch selector
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3392)
+- **SCOPE:** minor/local
+- **STATUS:** tentative
+- **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
+- **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project.
