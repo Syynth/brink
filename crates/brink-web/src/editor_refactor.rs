@@ -745,6 +745,10 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 0,
             ),
         );
+        // `apply_fix_doc` checks the handle before it ever parses `fix_json`
+        // (`editor/code_actions.rs`), so any string reaches this refusal.
+        let apply_fix_doc =
+            refusal_message("apply_fix_doc", &session.apply_fix_doc(UNKNOWN_DOC, "{}"));
 
         // The read-only-mount fence (#2621). `EditorSession::new()` mounts the
         // stdlib, so its first key is read-only in a session nobody shadowed —
@@ -767,6 +771,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "auto_import_apply_include_doc:unknown-handle": apply_include_doc,
             "auto_import_apply_include_doc:read-only-mount": apply_read_only,
             "resolve_code_action_doc:unknown-handle": code_action_doc,
+            "apply_fix_doc:unknown-handle": apply_fix_doc,
         })
     }
 
@@ -788,7 +793,56 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             driven_file_and_symbol_messages(),
             driven_outline_messages(),
             driven_mock_fidelity_messages(),
+            driven_fix_messages(),
         ])
+    }
+
+    /// `apply_fix`'s refusal vocabulary (#3377, review finding on #3384): the
+    /// fixture at that PR's head carried zero `apply_fix`/`fixes_at` entries
+    /// even though the PR introduced four new production refusal strings —
+    /// exactly the #2603 drift class, since `packages/brink-studio/src/
+    /// __mocks__/brink-web.ts`'s `applyFixImpl` hand-types three of them with
+    /// nothing comparing them to production. `apply_fix_doc`'s own
+    /// unknown-handle refusal is driven in [`driven_doc_handle_messages`]
+    /// instead, alongside the other doc-handle ops it shares wording with.
+    fn driven_fix_messages() -> serde_json::Value {
+        let session = session_with(&[("main.ink", MAIN)]);
+
+        let suggested_fix = |edits: serde_json::Value| {
+            serde_json::json!({
+                "code": "E025",
+                "title": "t",
+                "applicability": "suggested",
+                "edits": edits,
+            })
+            .to_string()
+        };
+
+        let invalid_json =
+            refusal_message("apply_fix (malformed JSON)", &session.apply_fix("not json"));
+        let no_edits = refusal_message(
+            "apply_fix (fix carries no edits)",
+            &session.apply_fix(&suggested_fix(serde_json::json!([]))),
+        );
+        let unloaded_file = refusal_message(
+            "apply_fix (fix names a file that is not loaded)",
+            &session.apply_fix(&suggested_fix(serde_json::json!([
+                { "path": "ghost.ink", "start": 0, "end": 0, "new_text": "" }
+            ]))),
+        );
+        let inverted_range = refusal_message(
+            "apply_fix (inverted edit range)",
+            &session.apply_fix(&suggested_fix(serde_json::json!([
+                { "path": "main.ink", "start": 5, "end": 0, "new_text": "" }
+            ]))),
+        );
+
+        serde_json::json!({
+            "apply_fix:invalid-json": invalid_json,
+            "apply_fix:no-edits": no_edits,
+            "apply_fix:unloaded-file": unloaded_file,
+            "apply_fix:inverted-range": inverted_range,
+        })
     }
 
     /// The three gaps #2620's sweep left behind (#2634 / #2635 / #2641).

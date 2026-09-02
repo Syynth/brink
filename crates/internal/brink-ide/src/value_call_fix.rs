@@ -14,9 +14,11 @@
 //! rewrite: `got` argument(s) supplied where the callee's known type takes
 //! fewer (`ArityMismatch`) or has fewer remaining (`OverBind`). "Remove
 //! extra argument(s)" trims the call site's trailing args back to the
-//! known-good count — always safe, since the excess args are simply
-//! discarded and the kept prefix was already accepted by the same
-//! per-position check the diagnostic itself ran.
+//! known-good count — the excess args were simply discarded at runtime and
+//! the kept prefix was already accepted by the same per-position check the
+//! diagnostic itself ran. That still deletes author-written text, so the
+//! fixer declares `Suggested`, not `Safe` (`docs/autofix-spec.md` §3 —
+//! `Safe` is what the observable-semantics oracle certifies, #3371).
 //!
 //! `NotCallable`/`UnknownCallee`/`ConflictedCallee`/`ArgMismatch` have no
 //! offered fix: none of them has a mechanical rewrite (the callee's actual
@@ -35,96 +37,131 @@
 use brink_analyzer::ValueCallKind;
 use brink_db::ProjectDb;
 use brink_format::DefinitionId;
-use brink_ir::{FileId, SymbolKind};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, SymbolKind};
 use brink_syntax::ast::{AstNode as _, FunctionCall, SourceFile};
 use rowan::{TextRange, TextSize};
 
-use crate::code_actions::{CodeAction, CodeActionData, CodeActionKind};
+use crate::fix::{Applicability, Fix, FixCx, Fixer};
+use crate::rename::FileEdit;
 
-/// Collect "remove extra argument(s)" quick-fixes for a `call(...)`/
-/// `bind(...)` over-arity site at `offset` in `file_id`. Empty unless the
-/// cursor sits inside such a call and its recorded [`ValueCallFact`] is an
+/// The `E063` over-supply fixer for `call(f, args…)`/`bind(f, args…)`: trim
+/// the call's trailing arguments back to what the callee's known type
+/// accepts.
+///
+/// Offers nothing unless the site's recorded [`ValueCallFact`] is an
 /// over-supply shape (`ArityMismatch`/`OverBind` with `got` exceeding what
-/// the callee's known type accepts).
+/// the callee accepts) — `E063`'s other shapes have no mechanical rewrite.
 ///
 /// [`ValueCallFact`]: brink_analyzer::ValueCallFact
-#[must_use]
-pub fn value_call_actions(db: &ProjectDb, file_id: FileId, offset: u32) -> Vec<CodeAction> {
-    if db.is_native(file_id) {
-        // See module doc: native `.brink` call()/bind() sites are a tracked
-        // follow-up, not covered by this CST-level fix.
-        return Vec::new();
-    }
-    let Some(source) = db.source(file_id) else {
-        return Vec::new();
-    };
-    let at = TextSize::from(offset);
+pub struct ValueCallArityFixer;
 
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-    let root = tree.syntax().clone();
-
-    let Some(fc) = root
-        .descendants()
-        .filter_map(FunctionCall::cast)
-        .filter(|fc| matches!(fc.name().as_deref(), Some("call" | "bind")))
-        .filter(|fc| fc.syntax().text_range().contains_inclusive(at))
-        .min_by_key(|fc| fc.syntax().text_range().len())
-    else {
-        return Vec::new();
-    };
-    let Some(verb) = fc.name() else {
-        return Vec::new();
-    };
-    let Some(ident_range) = fc.identifier().map(|id| id.syntax().text_range()) else {
-        return Vec::new();
-    };
-
-    let Some(def) = enclosing_def_at(db, file_id, &tree, at) else {
-        return Vec::new();
-    };
-    let Some(body) = db.infer_body(def) else {
-        return Vec::new();
-    };
-    let Some(fact) = body.value_calls.iter().find(|f| f.range == ident_range) else {
-        return Vec::new();
-    };
-
-    let keep = match &fact.kind {
-        ValueCallKind::ArityMismatch { expected, got } if got > expected => *expected,
-        ValueCallKind::OverBind { available, got } if got > available => *available,
-        _ => return Vec::new(),
-    };
-
-    // Only offer the fix when the analyzer actually reported it as a
-    // diagnostic (strict mode) — under gradual types `value_calls` is
-    // recorded but never surfaced, and there is nothing to "fix" if the
-    // author sees no error.
-    let node_range = fc.syntax().text_range();
-    let has_e063 = db.diagnostics(file_id).is_some_and(|diags| {
-        diags
-            .iter()
-            .any(|d| d.code == brink_ir::DiagnosticCode::E063 && node_range.contains_range(d.range))
-    });
-    if !has_e063 {
-        return Vec::new();
+impl Fixer for ValueCallArityFixer {
+    fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::E063
     }
 
-    let Some(occurrence) = function_call_occurrence(&root, &verb, node_range) else {
-        return Vec::new();
-    };
+    /// The discarded arguments were already being ignored at runtime, but
+    /// deleting author-written text is a §3 `Suggested` change until the
+    /// observable-semantics oracle (#3371) can certify it.
+    fn max_applicability(&self) -> Applicability {
+        Applicability::Suggested
+    }
 
-    vec![CodeAction {
-        title: format!(
-            "Remove extra argument(s) — `{verb}` accepts {keep} argument(s) after the callee here"
-        ),
-        kind: CodeActionKind::QuickFix,
-        data: CodeActionData::TrimValueCallArgs {
-            verb,
-            occurrence,
-            keep,
-        },
-    }]
+    fn fixes(&self, cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
+        let db = cx.db;
+        let file_id = d.file;
+        if db.is_native(file_id) {
+            // See module doc: native `.brink` call()/bind() sites are a
+            // tracked follow-up, not covered by this CST-level fix.
+            return Vec::new();
+        }
+        let Some(source) = db.source(file_id) else {
+            return Vec::new();
+        };
+        let at = d.range.start();
+
+        let parse = brink_syntax::parse(source);
+        let tree = parse.tree();
+        let root = tree.syntax().clone();
+
+        let Some(fc) = root
+            .descendants()
+            .filter_map(FunctionCall::cast)
+            .filter(|fc| matches!(fc.name().as_deref(), Some("call" | "bind")))
+            .filter(|fc| fc.syntax().text_range().contains_inclusive(at))
+            .min_by_key(|fc| fc.syntax().text_range().len())
+        else {
+            return Vec::new();
+        };
+        let Some(verb) = fc.name() else {
+            return Vec::new();
+        };
+        let Some(ident_range) = fc.identifier().map(|id| id.syntax().text_range()) else {
+            return Vec::new();
+        };
+
+        let Some(def) = enclosing_def_at(db, file_id, &tree, at) else {
+            return Vec::new();
+        };
+        let Some(body) = db.infer_body(def) else {
+            return Vec::new();
+        };
+        let Some(fact) = body.value_calls.iter().find(|f| f.range == ident_range) else {
+            return Vec::new();
+        };
+
+        let keep = match &fact.kind {
+            ValueCallKind::ArityMismatch { expected, got } if got > expected => *expected,
+            ValueCallKind::OverBind { available, got } if got > available => *available,
+            _ => return Vec::new(),
+        };
+
+        let Some(range) = trailing_args_range(&fc, keep) else {
+            return Vec::new();
+        };
+
+        vec![Fix {
+            code: DiagnosticCode::E063,
+            title: format!(
+                "Remove extra argument(s) — `{verb}` accepts {keep} argument(s) after the callee here"
+            ),
+            applicability: Applicability::Suggested,
+            edits: vec![FileEdit {
+                file: file_id,
+                range,
+                new_text: String::new(),
+            }],
+            caret: None,
+        }]
+    }
+}
+
+/// The byte range covering every argument after the callee plus the first
+/// `keep` — the span the trim deletes.
+///
+/// `keep` is the count of args *after* the callee (matching `ValueCallFact`'s
+/// own `args[1..]` convention); the callee itself (`args[0]`) always stays.
+///
+/// `None` when the site is already at or under the kept count, or when the
+/// parser never consumed a `)`. `ARG_LIST` never includes the surrounding
+/// parens (`divert::arg_list` starts after `(` and stops before `)`), and the
+/// `FUNCTION_CALL` node's own last byte is only `)` when the parser actually
+/// found and consumed one — re-locate the real closing `)` instead of
+/// assuming it, since parse-error recovery (an unterminated call) can leave
+/// the node closed without one. See [`crate::text::closing_paren_offset`].
+fn trailing_args_range(fc: &FunctionCall, keep: usize) -> Option<TextRange> {
+    let arg_list = fc.arg_list()?;
+    let args: Vec<_> = arg_list.args().collect();
+    let total_keep = keep.checked_add(1)?;
+    if args.len() <= total_keep {
+        return None;
+    }
+    let last_kept_end = args.get(total_keep - 1)?.syntax().text_range().end();
+    let close_paren = crate::text::closing_paren_offset(fc.syntax())?;
+    Some(TextRange::new(
+        last_kept_end,
+        TextSize::from(u32::try_from(close_paren).unwrap_or(u32::MAX)),
+    ))
 }
 
 /// The enclosing knot/stitch [`DefinitionId`] for source position `at`,
@@ -176,74 +213,10 @@ fn enclosing_def_at(
         .min()
 }
 
-/// The 0-based index of the `verb(...)` call at `node_range` among every
-/// `FunctionCall` in the file named `verb`, in source order — the
-/// disambiguating key [`CodeActionData::TrimValueCallArgs`] carries instead
-/// of a byte range (same convention as
-/// `crate::creation_site_fix::fn_literal_occurrence`).
-fn function_call_occurrence(
-    root: &brink_syntax::SyntaxNode,
-    verb: &str,
-    node_range: TextRange,
-) -> Option<usize> {
-    root.descendants()
-        .filter_map(FunctionCall::cast)
-        .filter(|fc| fc.name().as_deref() == Some(verb))
-        .position(|fc| fc.syntax().text_range() == node_range)
-}
-
-/// Resolve a [`CodeActionData::TrimValueCallArgs`] action: a pure source
-/// rewrite, re-locating the `occurrence`-th `verb(...)` call fresh from
-/// `source`.
-#[must_use]
-pub fn resolve_value_call_action(source: &str, data: &CodeActionData) -> Option<String> {
-    let CodeActionData::TrimValueCallArgs {
-        verb,
-        occurrence,
-        keep,
-    } = data
-    else {
-        return None;
-    };
-
-    let parse = brink_syntax::parse(source);
-    let root = parse.tree().syntax().clone();
-    let fc = root
-        .descendants()
-        .filter_map(FunctionCall::cast)
-        .filter(|fc| fc.name().as_deref() == Some(verb.as_str()))
-        .nth(*occurrence)?;
-    let arg_list = fc.arg_list()?;
-    let args: Vec<_> = arg_list.args().collect();
-    // `keep` is the count of args *after* the callee (matching
-    // `ValueCallFact`'s own `args[1..]` convention); the callee itself
-    // (`args[0]`) always stays.
-    let total_keep = keep.checked_add(1)?;
-    if args.len() <= total_keep {
-        // Already at or under the kept count — nothing to trim (stale
-        // offer).
-        return None;
-    }
-
-    let last_kept_end: usize = args[total_keep - 1].syntax().text_range().end().into();
-    // `ARG_LIST` never includes the surrounding parens (`divert::arg_list`
-    // starts after `(` and stops before `)`), and the `FUNCTION_CALL`
-    // node's own last byte is only `)` when the parser actually found and
-    // consumed one — re-locate the real closing `)` token instead of
-    // assuming it, since parse-error recovery (an unterminated call) can
-    // leave the node closed without one. See
-    // `crate::text::closing_paren_offset`.
-    let close_paren = crate::text::closing_paren_offset(fc.syntax())?;
-
-    let mut out = String::with_capacity(source.len());
-    out.push_str(source.get(..last_kept_end)?);
-    out.push_str(source.get(close_paren..)?);
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fix::fixes_at;
     use crate::session::IdeSession;
 
     fn strict_session_with(src: &str) -> IdeSession {
@@ -255,6 +228,21 @@ mod tests {
         session
     }
 
+    /// Apply a fix's edits to `src`. The logic under test is the fixer's;
+    /// this only splices.
+    fn applied(src: &str, fix: &Fix) -> String {
+        let mut out = src.to_owned();
+        let mut edits: Vec<&FileEdit> = fix.edits.iter().collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+        for e in edits {
+            out.replace_range(
+                usize::from(e.range.start())..usize::from(e.range.end()),
+                &e.new_text,
+            );
+        }
+        out
+    }
+
     const HEAL: &str = "=== function heal(hp, amount) ===\n~ return hp + amount\n\n";
 
     #[test]
@@ -264,75 +252,70 @@ mod tests {
         );
         let session = strict_session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
-        let off = u32::try_from(src.find("3)").expect("cursor site")).expect("fits");
-        let actions = value_call_actions(session.db(), file, off);
-        let titles: Vec<&String> = actions.iter().map(|a| &a.title).collect();
-        assert_eq!(actions.len(), 1, "{titles:?}");
-        assert!(actions[0].title.contains("Remove extra argument"));
-        assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::TrimValueCallArgs { verb, occurrence: 0, keep: 2 }
-                    if verb == "call"
-            ),
-            "{:?}",
-            actions[0].data
-        );
-    }
-
-    #[test]
-    fn trim_resolves_and_reanalysis_clears_e063() {
-        let src = format!(
-            "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp r = call(f, 1, 2, 3)\n-> DONE\n"
-        );
-        let fixed = resolve_value_call_action(
-            &src,
-            &CodeActionData::TrimValueCallArgs {
-                verb: "call".to_owned(),
-                occurrence: 0,
-                keep: 2,
-            },
-        )
-        .expect("resolves");
+        let off = u32::try_from(src.find("(f, 1, 2, 3)").expect("cursor site") - 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        let titles: Vec<&String> = fixes.iter().map(|f| &f.title).collect();
+        assert_eq!(fixes.len(), 1, "{titles:?}");
+        assert_eq!(fixes[0].code, DiagnosticCode::E063);
+        assert_eq!(fixes[0].applicability, Applicability::Suggested);
         assert_eq!(
-            fixed,
+            fixes[0].title,
+            "Remove extra argument(s) — `call` accepts 2 argument(s) after the callee here"
+        );
+        assert_eq!(
+            applied(&src, &fixes[0]),
             format!(
                 "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp r = call(f, 1, 2)\n-> DONE\n"
             )
         );
+    }
 
-        let mut session = IdeSession::new();
-        session.set_language_dialect(brink_analyzer::Dialect::Brink);
-        session.set_type_policy(brink_analyzer::TypePolicy::Strict);
-        session.update_and_analyze("test.ink", fixed);
+    #[test]
+    fn trim_edit_reanalysis_clears_e063() {
+        let src = format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp r = call(f, 1, 2, 3)\n-> DONE\n"
+        );
+        let session = strict_session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
-        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let off = u32::try_from(src.find("(f, 1, 2, 3)").expect("cursor site") - 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(&src, &fixes[0]);
+
+        let after = strict_session_with(&patched);
+        let file = after.file_id("test.ink").expect("file id");
+        let diags = after.db().diagnostics(file).expect("diagnostics");
         assert!(
-            diags
-                .iter()
-                .all(|d| d.code != brink_ir::DiagnosticCode::E063),
+            diags.iter().all(|d| d.code != DiagnosticCode::E063),
             "{diags:?}"
         );
     }
 
     #[test]
-    fn resolve_returns_none_when_closing_paren_is_missing() {
+    fn no_edit_when_closing_paren_is_missing() {
         // Unterminated `call(...)` — same parse-error-recovery hazard as
-        // `creation_site_fix::trim_fn_literal_args`: the FUNCTION_CALL node
-        // never gets an `R_PAREN` token, so assuming `text_range().end() -
-        // 1` is `)` would silently fuse "3" with whatever follows.
+        // `creation_site_fix`: the FUNCTION_CALL node never gets an
+        // `R_PAREN` token, so assuming `text_range().end() - 1` is `)` would
+        // silently fuse "3" with whatever follows.
         let src = format!(
             "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp r = call(f, 1, 2, 3\n-> DONE\n"
         );
-        let fixed = resolve_value_call_action(
-            &src,
-            &CodeActionData::TrimValueCallArgs {
-                verb: "call".to_owned(),
-                occurrence: 0,
-                keep: 2,
-            },
+        let session = strict_session_with(&src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let e063 = diags.iter().find(|d| d.code == DiagnosticCode::E063);
+        assert!(
+            e063.is_some(),
+            "fixture must still carry an E063 to fix: {diags:?}"
         );
-        assert_eq!(fixed, None);
+        let cx = FixCx::new(session.db());
+        assert!(
+            ValueCallArityFixer
+                .fixes(&cx, e063.expect("just asserted above"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -342,18 +325,17 @@ mod tests {
         );
         let session = strict_session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
-        let off = u32::try_from(src.find("3)").expect("cursor site")).expect("fits");
-        let actions = value_call_actions(session.db(), file, off);
-        let titles: Vec<&String> = actions.iter().map(|a| &a.title).collect();
-        assert_eq!(actions.len(), 1, "{titles:?}");
-        assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::TrimValueCallArgs { verb, occurrence: 0, keep: 2 }
-                    if verb == "bind"
-            ),
-            "{:?}",
-            actions[0].data
+        let off = u32::try_from(src.find("(f, 1, 2, 3)").expect("cursor site") - 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        let titles: Vec<&String> = fixes.iter().map(|f| &f.title).collect();
+        assert_eq!(fixes.len(), 1, "{titles:?}");
+        assert!(fixes[0].title.contains("`bind`"), "{}", fixes[0].title);
+        assert_eq!(
+            applied(&src, &fixes[0]),
+            format!(
+                "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp g = bind(f, 1, 2)\n-> DONE\n"
+            )
         );
     }
 
@@ -373,8 +355,9 @@ mod tests {
         session.update_source("test.ink", src.clone());
         session.update_and_analyze("test.ink", src.clone());
         let file = session.file_id("test.ink").expect("file id");
-        let off = u32::try_from(src.find("3)").expect("cursor site")).expect("fits");
-        assert!(value_call_actions(session.db(), file, off).is_empty());
+        let off = u32::try_from(src.find("(f, 1, 2, 3)").expect("cursor site") - 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 
     #[test]
@@ -384,7 +367,8 @@ mod tests {
         );
         let session = strict_session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
-        let off = u32::try_from(src.find("2)").expect("cursor site")).expect("fits");
-        assert!(value_call_actions(session.db(), file, off).is_empty());
+        let off = u32::try_from(src.find("(f, 1, 2)").expect("cursor site") - 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 }
