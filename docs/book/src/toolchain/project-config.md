@@ -50,6 +50,13 @@ E014 = "deny"          # per-code severity override:
                        # "allow" | "warn" | "deny" | "info" | "hint"
                        # ("info"/"hint" down-level to an advisory tier below
                        # Warning — issue #1162)
+
+[fix]
+E033 = "auto"   # promote a Suggested fixer to batch (fix-all, on-save) for
+                # this project — see "Fix policy" below (issue #3419)
+E014 = "off"    # never offer this code's fixer here
+                # absent ⇒ "ask": offered per click only (Suggested) /
+                # already batchable (Safe)
 ```
 
 `[project] elements` is a deprecated alias for `conventions` (issue #2180):
@@ -196,6 +203,38 @@ below):
   `EditorSessionHandle.setLintOverrides(json)`/
   `.setDenyWarningsOverride(bool)`/`.clearDenyWarningsOverride()` — see
   [Per mount](#per-mount) below.
+
+## Fix policy
+
+`[fix]` (`docs/autofix-spec.md` §6.1, issue #3419) is shaped exactly like
+`[lints]`: each key names a diagnostic code, mapped to one of three
+policies, least to most aggressive:
+
+- `off` — never offer or batch a fixer for this code in this project.
+- `ask` — the code's ordinary behavior when `[fix]` doesn't mention it: a
+  *Safe* fixer is batchable (fix-all, `brink fix`, on-save); a *Suggested*
+  fixer is offered only per explicit click.
+- `auto` — promote a *Suggested* fixer to batchable here too. (A *Safe*
+  fixer is already batchable regardless of `[fix]`.)
+
+Same dependency-free split as `[lints]`: `brink-project-config` validates
+the *value* (a wrong TOML type, or a spelling outside the three above, is a
+compile error — never a panic) but not the *code* — an unrecognized code
+parses fine here and is a downstream crate's diagnostic to raise, the same
+as an unrecognized `[lints]` code.
+
+An app (the Studio, an embedder) may pass its own *ceiling* — a personal
+"how far may fix-on-save go" setting, in the same three-way space — which
+only ever **narrows** the project's `[fix]` entry, never widens it: a team
+promoting `E033` to `auto` in `brink.toml` does not force it onto an author
+whose app ceiling says `ask`, and an author's `auto` ceiling cannot make a
+project-`off` code run. `ProjectConfig::effective_fix_policy(code,
+app_ceiling)` is the one function both the project entry and the ceiling
+resolve through.
+
+Edited in the Studio's Settings → Diagnostics section as a **Fix** column
+beside severity, through the same write path the severity picker already
+uses for `[lints]` — a different table, same file, same code.
 
 ## Discovery
 

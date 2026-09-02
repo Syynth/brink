@@ -263,3 +263,79 @@ describe("a project with no brink.toml", () => {
     expect(container!.querySelector(".lint-list")).toBeNull();
   });
 });
+
+// ── the Fix column (#3419, docs/autofix-spec.md §6.1) ─────────────────────
+//
+// `[fix]` and `[lints]` are independent tables keyed by the same code, so
+// these assertions exercise the Fix column across both the `[lints]`-
+// configured and unconfigured rows, and confirm it never touches `[lints]`.
+
+const CONFIG_WITH_FIX = `[project]
+entry = "main.ink"
+
+[lints]
+E014 = "deny"
+
+[fix]
+E014 = "off"
+E033 = "auto"
+`;
+
+describe("the Fix column beside severity", () => {
+  it("reads a configured code's fix policy from [fix]", () => {
+    mount(INK_PROJECT, CONFIG_WITH_FIX);
+    expect(rowFor("E014")?.querySelector(".fix-level.on")?.textContent).toBe("off");
+  });
+
+  it("reads an unconfigured (in [lints]) code's fix policy from [fix] too", () => {
+    // E033 has no [lints] entry (it's in the "Not configured" list) but does
+    // have a [fix] entry — the two tables are independent.
+    mount(INK_PROJECT, CONFIG_WITH_FIX);
+    expect(rowFor("E033")?.querySelector(".fix-level.on")?.textContent).toBe("auto");
+  });
+
+  it("shows no fix level selected when [fix] doesn't mention the code", () => {
+    mount(INK_PROJECT, CONFIG);
+    expect(rowFor("E014")?.querySelector(".fix-level.on")).toBeNull();
+  });
+
+  it("picking a fix level writes [fix], not [lints]", () => {
+    const fake = mount(INK_PROJECT, CONFIG);
+    const autoButton = [
+      ...(rowFor("E014")?.querySelectorAll<HTMLButtonElement>(".fix-level") ?? []),
+    ].find((b) => b.textContent === "auto");
+    act(() => autoButton?.click());
+    expect(fake.getSource()).toContain('[fix]\nE014 = "auto"');
+    // The existing [lints] entry is untouched.
+    expect(fake.getSource()).toContain('E014 = "deny"');
+  });
+
+  it("picking a fix level for an unconfigured code does not add it to [lints]", () => {
+    const fake = mount(INK_PROJECT, CONFIG);
+    const offButton = [
+      ...(rowFor("E033")?.querySelectorAll<HTMLButtonElement>(".fix-level") ?? []),
+    ].find((b) => b.textContent === "off");
+    act(() => offButton?.click());
+    expect(fake.getSource()).toContain('[fix]\nE033 = "off"');
+    // E033 must still be in the unconfigured list, not the [lints]-configured one.
+    const [configured] = lists();
+    expect(configured).not.toContain("E033");
+  });
+
+  it("keeps an unknown-to-the-compiler code's fix policy visible", () => {
+    const WITH_UNKNOWN_FIX = `[project]\nentry = "main.ink"\n\n[fix]\nE999 = "auto"\n`;
+    mount(INK_PROJECT, WITH_UNKNOWN_FIX);
+    expect(rowFor("E999")).not.toBeNull();
+    expect(rowFor("E999")?.textContent).toContain("auto");
+  });
+
+  it("removing an unknown code clears both [lints] and [fix] in one edit", () => {
+    const WITH_BOTH = `[project]\nentry = "main.ink"\n\n[lints]\nE999 = "deny"\n\n[fix]\nE999 = "auto"\n`;
+    const fake = mount(INK_PROJECT, WITH_BOTH);
+    act(() => {
+      rowFor("E999")?.querySelector<HTMLButtonElement>(".lint-move")?.click();
+    });
+    expect(fake.getSource()).not.toContain("E999");
+    expect(fake.applied).toHaveLength(1);
+  });
+});

@@ -57,6 +57,21 @@
 //! ```
 //!
 //! ```toml
+//! [fix]
+//! E033 = "auto"   # promote a Suggested fix to batch for this project
+//! E014 = "off"    # never offer this fixer here
+//! # absent ⇒ "ask": offered per click only (Suggested) / batchable (Safe)
+//! ```
+//!
+//! `[fix]` (`docs/autofix-spec.md` §6.1, issue #3419) maps a diagnostic code
+//! to a [`FixPolicy`]. Shaped exactly like `[lints]` — same dependency-free
+//! split (this crate validates the *value*; validating the *code* against
+//! the real `DiagnosticCode` set is a downstream crate's job, the same as
+//! `[lints]`'s `validate_lint_code`) — and resolved by
+//! [`ProjectConfig::effective_fix_policy`], the `[fix]`-table analog of
+//! `[lints]`'s `effective_severity`.
+//!
+//! ```toml
 //! [project]
 //! unprune-dirs = ["node_modules"]  # directory names discovery must NOT
 //!                                  # prune, on top of the standing
@@ -215,6 +230,45 @@ pub enum LintLevel {
     /// exactly the case where even an `Info` squiggle is too loud.
     Hint,
 }
+
+/// A `[fix]` table entry's policy (`docs/autofix-spec.md` §6, issue #3419):
+/// whether a fixer for this diagnostic code may be batched, offered only per
+/// instance, or never offered here at all.
+///
+/// Declared `Off < Ask < Auto` — least aggressive to most — so the derived
+/// [`Ord`] IS the aggressiveness ordering [`ProjectConfig::effective_fix_policy`]
+/// intersects on (`docs/autofix-spec.md` §6.2's ceiling, TENTATIVE ruling):
+/// `a.min(b)` is always the more conservative of the two. Don't reorder the
+/// variants without checking that call site.
+///
+/// Defined here for the same reason as [`LintLevel`]: a project-policy type
+/// this crate parses but doesn't interpret against the real fixer/code sets
+/// (kept dependency-free, #1234).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum FixPolicy {
+    /// Never offer or batch a fixer for this code in this project.
+    Off,
+    /// The code's ordinary behavior when `[fix]` doesn't mention it: a Safe
+    /// fixer is batchable, a Suggested fixer is offered only per explicit
+    /// click.
+    #[default]
+    Ask,
+    /// Promote a Suggested fixer to batchable for this project too (a Safe
+    /// fixer is already batchable regardless of `[fix]`).
+    Auto,
+}
+
 use thiserror::Error;
 use toml::Value;
 
@@ -329,6 +383,14 @@ pub struct ProjectConfig {
     pub lints: BTreeMap<String, LintLevel>,
     /// `[lints] deny-warnings`, if set.
     pub deny_warnings: Option<bool>,
+    /// `[fix]` per-code policy overrides (`docs/autofix-spec.md` §6.1, issue
+    /// #3419), keyed by the raw code string as written in the file — this
+    /// crate doesn't validate codes against the real `DiagnosticCode` set,
+    /// same as [`Self::lints`]. A code absent from this map resolves to
+    /// [`FixPolicy::Ask`] via [`Self::effective_fix_policy`], never to a
+    /// default invented at the call site. Sorted (`BTreeMap`) for
+    /// deterministic iteration.
+    pub fix: BTreeMap<String, FixPolicy>,
     /// `[project] unprune-dirs`, if set: directory names discovery must not
     /// prune, layered on top of the standing
     /// [`brink_source_tree::IGNORED_DIR_NAMES`] policy (issue #1407's escape
@@ -450,6 +512,7 @@ impl ProjectConfig {
             && self.types.is_none()
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
+            && self.fix.is_empty()
             && self.unprune_dirs.is_empty()
             && self.indent.is_none()
             && self.conventions.is_none()
@@ -458,6 +521,32 @@ impl ProjectConfig {
             && self.prose_enable.is_none()
             && self.prose_dictionary.is_empty()
             && self.dialogue.is_none()
+    }
+
+    /// The effective `[fix]` policy for `code` (`docs/autofix-spec.md` §6,
+    /// issue #3419): the project's own `[fix]` entry (or [`FixPolicy::Ask`]
+    /// when it doesn't mention `code`), narrowed by an optional app-scope
+    /// `app_ceiling` (§6.2, TENTATIVE ruling) — a personal "how far may the
+    /// editor go on save" setting the host passes in, kept in the same
+    /// [`FixPolicy`] space.
+    ///
+    /// `app_ceiling` only LOWERS the result, never raises it past what the
+    /// project allows: `None` means "no app opinion", so the project entry
+    /// alone decides. This is the one function §6.2 asks to keep singular so
+    /// the still-tentative ceiling relationship can change in one place.
+    ///
+    /// This crate doesn't validate `code` against the real `DiagnosticCode`
+    /// set (dependency-free, #1234, same split as [`Self::lints`]) — an
+    /// unknown code resolves through the same default/ceiling math as a real
+    /// one here; surfacing "this code doesn't exist" as a diagnostic is a
+    /// downstream crate's job, the same as `[lints]`'s `validate_lint_code`.
+    #[must_use]
+    pub fn effective_fix_policy(&self, code: &str, app_ceiling: Option<FixPolicy>) -> FixPolicy {
+        let project = self.fix.get(code).copied().unwrap_or_default();
+        match app_ceiling {
+            Some(ceiling) => project.min(ceiling),
+            None => project,
+        }
     }
 }
 
@@ -705,6 +794,8 @@ pub fn parse_str_at(
                         .insert(lkey.clone(), parse_lint_level(&path, lkey, lvalue)?);
                 }
             }
+        } else if key == "fix" {
+            parse_fix_table(&path, value, &mut config)?;
         } else {
             warnings.push(ConfigWarning(format!(
                 "unknown top-level key `{key}` in {CONFIG_FILE_NAME} (ignored)"
@@ -713,6 +804,33 @@ pub fn parse_str_at(
     }
 
     Ok((config, warnings))
+}
+
+/// Parse the whole `[fix]` table entry — table-shape check plus every
+/// per-code value (issue #3419) — into `config.fix`. Split out of
+/// [`parse_str_at`] for the same reason [`parse_project_table`] is: keeping
+/// the caller under clippy's `too_many_lines`.
+fn parse_fix_table(
+    path: &str,
+    value: &Value,
+    config: &mut ProjectConfig,
+) -> Result<(), ConfigError> {
+    let fix = match value {
+        Value::Table(t) => t,
+        other => {
+            return Err(ConfigError::NotATable {
+                path: path.to_owned(),
+                key: "fix".to_owned(),
+                found: value_type_name(other),
+            });
+        }
+    };
+    for (fkey, fvalue) in fix {
+        config
+            .fix
+            .insert(fkey.clone(), parse_fix_policy(path, fkey, fvalue)?);
+    }
+    Ok(())
 }
 
 /// Parse the `[project]` table's keys into `config`/`warnings` — the body
@@ -1117,6 +1235,29 @@ fn parse_lint_level(path: &str, key: &str, value: &Value) -> Result<LintLevel, C
             path: path.to_owned(),
             key: format!("lints.{key}"),
             expected: &["allow", "warn", "deny", "info", "hint"],
+            found: other.to_owned(),
+        }),
+    }
+}
+
+/// Parse one `[fix]` entry's value (issue #3419). Mirrors [`parse_lint_level`]
+/// exactly: a wrong TOML type is [`ConfigError::WrongType`], a syntactically
+/// fine string outside the three recognized spellings is
+/// [`ConfigError::InvalidValue`] — never a panic either way.
+fn parse_fix_policy(path: &str, key: &str, value: &Value) -> Result<FixPolicy, ConfigError> {
+    let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
+        key: format!("fix.{key}"),
+        found: value_type_name(value),
+    })?;
+    match s {
+        "off" => Ok(FixPolicy::Off),
+        "ask" => Ok(FixPolicy::Ask),
+        "auto" => Ok(FixPolicy::Auto),
+        other => Err(ConfigError::InvalidValue {
+            path: path.to_owned(),
+            key: format!("fix.{key}"),
+            expected: &["off", "ask", "auto"],
             found: other.to_owned(),
         }),
     }
@@ -2214,6 +2355,135 @@ mod tests {
     fn non_table_lints_is_an_error() {
         let err = parse_str("lints = 1\n").unwrap_err();
         assert!(matches!(err, ConfigError::NotATable { .. }));
+    }
+
+    // ── [fix] (issue #3419) ──────────────────────────────────────────────
+
+    #[test]
+    fn parses_per_code_fix_policies() {
+        let (config, warnings) = parse_str(
+            r#"
+            [fix]
+            E033 = "auto"
+            E014 = "off"
+            E022 = "ask"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.fix.get("E033"), Some(&FixPolicy::Auto));
+        assert_eq!(config.fix.get("E014"), Some(&FixPolicy::Off));
+        assert_eq!(config.fix.get("E022"), Some(&FixPolicy::Ask));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn absent_fix_table_is_empty_config() {
+        let (config, _) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
+        assert!(config.fix.is_empty());
+    }
+
+    #[test]
+    fn invalid_fix_policy_value_is_an_error_not_a_panic() {
+        let err = parse_str("[fix]\nE033 = \"sideways\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn wrong_type_fix_policy_is_an_error_not_a_panic() {
+        let err = parse_str("[fix]\nE033 = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn non_table_fix_is_an_error_not_a_panic() {
+        let err = parse_str("fix = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::NotATable { .. }));
+    }
+
+    /// An unknown-to-the-compiler code in `[fix]` (this crate doesn't
+    /// validate against the real `DiagnosticCode` set, #1234) must still
+    /// parse cleanly — never a panic — the same as an unknown `[lints]` code.
+    #[test]
+    fn unrecognized_fix_code_parses_fine_here() {
+        let (config, warnings) = parse_str("[fix]\nE9999 = \"auto\"\n").unwrap();
+        assert_eq!(config.fix.get("E9999"), Some(&FixPolicy::Auto));
+        assert!(warnings.is_empty());
+    }
+
+    // ── ProjectConfig::effective_fix_policy — ceiling truth table ────────
+
+    #[test]
+    fn effective_fix_policy_defaults_to_ask_when_unset() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.effective_fix_policy("E033", None), FixPolicy::Ask);
+    }
+
+    #[test]
+    fn effective_fix_policy_with_no_ceiling_is_the_project_entry() {
+        let (config, _) = parse_str("[fix]\nE033 = \"auto\"\n").unwrap();
+        assert_eq!(config.effective_fix_policy("E033", None), FixPolicy::Auto);
+    }
+
+    /// The full 3x3 (plus "no ceiling") truth table: the ceiling only ever
+    /// lowers the effective policy, never raises it past the project entry.
+    #[test]
+    fn effective_fix_policy_ceiling_truth_table() {
+        let cases: &[(FixPolicy, Option<FixPolicy>, FixPolicy)] = &[
+            // project entry, app ceiling, expected effective policy
+            (FixPolicy::Auto, None, FixPolicy::Auto),
+            (FixPolicy::Auto, Some(FixPolicy::Auto), FixPolicy::Auto),
+            (FixPolicy::Auto, Some(FixPolicy::Ask), FixPolicy::Ask),
+            (FixPolicy::Auto, Some(FixPolicy::Off), FixPolicy::Off),
+            (FixPolicy::Ask, None, FixPolicy::Ask),
+            (FixPolicy::Ask, Some(FixPolicy::Auto), FixPolicy::Ask),
+            (FixPolicy::Ask, Some(FixPolicy::Ask), FixPolicy::Ask),
+            (FixPolicy::Ask, Some(FixPolicy::Off), FixPolicy::Off),
+            (FixPolicy::Off, None, FixPolicy::Off),
+            (FixPolicy::Off, Some(FixPolicy::Auto), FixPolicy::Off),
+            (FixPolicy::Off, Some(FixPolicy::Ask), FixPolicy::Off),
+            (FixPolicy::Off, Some(FixPolicy::Off), FixPolicy::Off),
+        ];
+        for (project_entry, ceiling, expected) in cases.iter().copied() {
+            let mut config = ProjectConfig::default();
+            config.fix.insert("E033".to_owned(), project_entry);
+            let effective = config.effective_fix_policy("E033", ceiling);
+            assert_eq!(
+                effective, expected,
+                "project={project_entry:?} ceiling={ceiling:?}: expected {expected:?}, got \
+                 {effective:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_fix_policy_ceiling_never_raises_past_off() {
+        // A project that turned a fixer off entirely must stay off even
+        // under the most permissive app ceiling — the ceiling can only
+        // narrow, an absent project entry (or an explicit "off") is not
+        // something a ceiling can widen back out.
+        let (config, _) = parse_str("[fix]\nE014 = \"off\"\n").unwrap();
+        assert_eq!(
+            config.effective_fix_policy("E014", Some(FixPolicy::Auto)),
+            FixPolicy::Off
+        );
+    }
+
+    /// Round-trip through the settings write path (`edit::ConfigDocument`,
+    /// the same generic `set_string` the studio's `[lints]` UI already uses)
+    /// — write, re-parse, and confirm `effective_fix_policy` sees it.
+    #[test]
+    fn fix_policy_round_trips_through_the_edit_write_path() {
+        let mut doc = crate::edit::ConfigDocument::parse("[project]\nentry = \"main.ink\"\n")
+            .expect("valid toml");
+        doc.set_string("fix", "E033", "auto").expect("edit");
+        let text = doc.to_toml_string();
+
+        let (config, warnings) = parse_str(&text).expect("round-tripped text still parses");
+        assert!(warnings.is_empty());
+        assert_eq!(config.fix.get("E033"), Some(&FixPolicy::Auto));
+        assert_eq!(config.effective_fix_policy("E033", None), FixPolicy::Auto);
+        // The write path is a targeted edit, not a whole-file rewrite.
+        assert!(text.contains("entry = \"main.ink\""));
     }
 
     // ── discovery ─────────────────────────────────────────────────────

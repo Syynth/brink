@@ -167,6 +167,20 @@ lints table (`packages/studio-ui/src/LintSettings.tsx`) as a **Fix**
 column beside severity — RULED "it can even go in the existing
 diagnostics UI".
 
+*As built (#3419, milestone 4):* `[fix]` parses into
+`ProjectConfig::fix: BTreeMap<String, FixPolicy>`, validated the same
+way `[lints]`'s value is (`"off" | "ask" | "auto"`, a wrong TOML type
+or an unrecognized spelling is a `ConfigError`, never a panic; an
+unrecognized *code* is accepted here regardless — this crate stays
+dependency-free of the real `DiagnosticCode` set, same split
+`validate_lint_code` uses). `ProjectConfig::effective_fix_policy(code,
+app_ceiling: Option<FixPolicy>)` is the one function this section and
+§6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
+so the intersection is just `project.min(ceiling)`. The studio's Fix
+column writes `[fix]` through the exact same generic `setTomlString`
+call `[lints]` already used (`packages/studio-store/src/toml-edit.ts`)
+— a different table name, nothing else.
+
 ### 6.2 The app setting — personal, a ceiling — TENTATIVE
 
 An app-scope setting, like format-on-save, saying *when* the editor

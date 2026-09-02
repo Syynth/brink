@@ -344,6 +344,54 @@
   background: color-mix(in srgb, var(--bs-fg-muted) 24%, transparent);
 }
 
+/* The `[fix]` column (#3419, docs/autofix-spec.md §6.1) — beside severity,
+   independent of a row's `[lints]` configured/unconfigured state. */
+.brink-studio .lint-fix {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.brink-studio .lint-fix-label {
+  font-size: var(--bs-font-micro);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .fix-levels {
+  display: flex;
+  height: 22px;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.brink-studio .fix-level {
+  padding: 0 7px;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: var(--bs-font-micro);
+  cursor: pointer;
+}
+.brink-studio .fix-level + .fix-level {
+  border-left: 1px solid var(--bs-border);
+}
+.brink-studio .fix-level.on.is-auto {
+  color: var(--bs-accent);
+  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
+}
+.brink-studio .fix-level.on.is-ask {
+  color: var(--bs-fg);
+  background: color-mix(in srgb, var(--bs-fg-muted) 24%, transparent);
+}
+.brink-studio .fix-level.on.is-off {
+  color: var(--bs-fg-muted);
+  background: color-mix(in srgb, var(--bs-fg-muted) 16%, transparent);
+}
+.brink-studio .fix-level.is-unknown {
+  color: var(--bs-warning);
+  font-size: var(--bs-font-micro);
+}
+
 .brink-studio .lint-move,
 .brink-studio .lint-configure {
   display: flex;
