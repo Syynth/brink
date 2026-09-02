@@ -22,6 +22,12 @@ export {
   type StudioPublicState,
 } from "./StudioApi.js";
 export { App } from "./App.js";
+export {
+  foldPlayerRuns,
+  speakerPaletteIndex,
+  type PlayerGroup,
+  type PlayerRow,
+} from "./player-runs.js";
 export { Binder, BinderRow, computeReorder, buildBinderTree, LIBRARY_ROW_KEY } from "./Binder.js";
 export { fileMarks, symbolMarks, filterOutline, type RowMarks } from "./Binder.js";
 export type { FolderNode } from "./Binder.js";

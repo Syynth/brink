@@ -19,6 +19,7 @@ import {
   brinkStudio,
   elementTypeField,
   type DialogueDialect,
+  AT_CUE_DIALECT,
 } from "@brink-lang/editor";
 
 let view: EditorView | undefined;
@@ -192,6 +193,8 @@ describe("machinery/narrative summary pills — class-addressable, zero inline s
 
 describe("narrative pill cast — via dialect speaker attr, not characterName()", () => {
   const minimal = {
+    // The at-cue preset, opted into (no dialect by default, RULED 2026-08-30).
+    dialect: AT_CUE_DIALECT,
     compile: () => ({ ok: true, diagnostics: [] }) as never,
     getSemanticTokens: () => [],
     getTokenTypeNames: () => [],
@@ -280,6 +283,8 @@ describe("narrative pill cast — via dialect speaker attr, not characterName()"
 
 describe("narrative pill — choice-body anchor + sigil-stripped snippet (#417)", () => {
   const minimal = {
+    // The at-cue preset, opted into (no dialect by default, RULED 2026-08-30).
+    dialect: AT_CUE_DIALECT,
     compile: () => ({ ok: true, diagnostics: [] }) as never,
     getSemanticTokens: () => [],
     getTokenTypeNames: () => [],

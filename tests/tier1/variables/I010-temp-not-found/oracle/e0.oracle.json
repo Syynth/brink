@@ -1,8 +1,23 @@
 {
-  "steps": [],
-  "outcome": {
-    "Error": "Ink had 1 warning. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME WARNING: '/Users/syynth/code/rs/brink/tests/tier1/variables/I010-temp-not-found/story.ink' line 1: Variable not found: 'x'. Using default value of 0 (false). This can happen with temporary variables if the declaration hasn't yet been hit. Globals are always given a default value on load if a value doesn't exist in the save state."
-  },
+  "steps": [
+    {
+      "text": "0\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "hello\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
   "choice_path": [],
   "initial_state": {
     "variables": {},

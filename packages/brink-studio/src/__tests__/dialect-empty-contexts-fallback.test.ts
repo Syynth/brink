@@ -23,6 +23,7 @@ import {
   DocumentSessions,
   InMemoryFileProvider,
   ProjectSession,
+  AT_CUE_DIALECT,
 } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { EditorView } from "@codemirror/view";
@@ -45,9 +46,10 @@ async function mount(): Promise<Harness> {
   const provider = new InMemoryFileProvider({ "main.ink": MAIN });
   const project = new ProjectSession({ provider, entryFile: "main.ink" });
   await project.initialize();
-  // No `dialect` option: `DocumentSessions` defaults to `AT_CUE_DIALECT`,
+  // The at-cue preset is opted into explicitly (RULED 2026-08-30: no
+  // dialect by default — a host that never overrides now gets NONE),
   // matching a real host that never overrides the dialect.
-  const documents = new DocumentSessions(project);
+  const documents = new DocumentSessions(project, {}, [], { dialect: AT_CUE_DIALECT });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const dispose = documents.mountView("main.ink", "g1", container);

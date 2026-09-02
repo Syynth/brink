@@ -3017,6 +3017,7 @@ mod tower_tests {
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
             pending_terminal: crate::story::PendingTerminal::default(),
+            warnings: Vec::new(),
         };
         flow.value_stack
             .push(Value::array(vec![v2(1.0, 2.0), v2(3.0, 4.0)]));

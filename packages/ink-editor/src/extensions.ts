@@ -162,9 +162,12 @@ export interface BrinkStudioOptions {
 
   /**
    * The dialogue dialect (#368) driving screenplay classification,
-   * decorations, transitions, and conversions. Defaults to `AT_CUE_DIALECT`
-   * (byte-identical to the pre-#368 hardcoded `@Name:<>` behavior). Pass
-   * `null` to tear down the ENTIRE screenplay layer — classification,
+   * decorations, transitions, and conversions. **No dialect by default**
+   * (RULED 2026-08-30): absent or `null` ⇒ plain lines with the entire
+   * screenplay layer torn down; a project opts in through
+   * `brink.toml [dialogue]` (the studio reads the resolved artifact via
+   * `ProjectSession.getConfiguredDialogueDialect()`), or an embedder passes
+   * `AT_CUE_DIALECT` explicitly. `null` still tears down — classification,
    * decorations (hidden sigils, atomic ranges, the edit guard), the dialect
    * transition rows, and the dialect-specific keybinding behaviors — for
    * true headless composition (pair with `theme: false`, #363). The
@@ -381,13 +384,16 @@ function resolveDialectOption(
   dialect: DialogueDialect | null | undefined,
   handleSlot: DocumentHandleSlot | undefined,
 ): ResolvedDialect | null {
-  if (dialect === null) {
+  // No dialect by default (RULED 2026-08-30): absent and `null` both mean
+  // NONE — plain lines, the screenplay layer torn down. The at-cue preset
+  // is opt-in (`brink.toml [dialogue] preset = "at-cue"`, or an embedder
+  // passing `AT_CUE_DIALECT` explicitly).
+  if (dialect === null || dialect === undefined) {
     handleSlot?.handle?.clearDialect();
     return null;
   }
-  const resolved = dialect ?? AT_CUE_DIALECT;
-  handleSlot?.handle?.setDialect(resolved);
-  return ResolvedDialect.compile(resolved);
+  handleSlot?.handle?.setDialect(dialect);
+  return ResolvedDialect.compile(dialect);
 }
 
 /**
@@ -409,10 +415,12 @@ function resolveDialectOption(
  */
 export function setDialect(
   view: EditorView,
-  dialect: DialogueDialect | null,
+  dialect: DialogueDialect | null | undefined,
 ): void {
   const handleSlot = view.state.facet(documentHandleFacet);
   const resolved = resolveDialectOption(dialect, handleSlot ?? undefined);
+  // `undefined` = no dialect but the layer stays mounted (the ruled
+  // default; structural line attrs live in it); `null` = headless teardown.
   const screenplayLayer: Extension =
     dialect === null ? [] : screenplayDecorations();
   view.dispatch({
@@ -610,9 +618,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   const theme: Extension =
     options.theme === false ? [] : (options.theme ?? brinkTheme);
 
-  // Dialect (#368): `dialect: null` tears down the screenplay-specific layer
-  // (decorations/keybindings); absent ⇒ the at-cue preset (byte-identical
-  // default); an explicit dialect ⇒ that dialect. Resolved once here and
+  // Dialect (#368): `dialect: null` OR absent ⇒ NO dialect (RULED
+  // 2026-08-30 "no dialect by default" — the screenplay layer is torn
+  // down; the at-cue preset is opt-in); an explicit dialect ⇒ that
+  // dialect. Resolved once here and
   // provided via `dialectFacet` (its own compartment, so `setDialect` can
   // reconfigure it independent of the screenplay bundle) — scoped to THIS
   // state/view, not a module global, so two views with different dialects
@@ -631,6 +640,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     options.dialect,
     options.handleSlot,
   );
+  // Only an EXPLICIT `null` tears the screenplay layer down (headless
+  // embedding). The layer also carries the interpreter-owned structural
+  // line attrs (choice depth, option paths), so "no dialect" — the ruled
+  // default — keeps it mounted; with no dialect facet the classifier
+  // simply never yields a dialect kind, so no cue decoration ever renders.
   const screenplayLayer: Extension =
     options.dialect === null ? [] : screenplayDecorations();
 

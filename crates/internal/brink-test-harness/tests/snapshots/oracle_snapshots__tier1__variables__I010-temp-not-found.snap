@@ -7,4 +7,6 @@ oracle: 1, brink: 1, matched: 1
 passing: 1/1
 
 === episode [] === PASS
-outcome: Error
+> "0\n" [Continue]
+> "hello\n" [Done]
+outcome: Done

@@ -167,9 +167,19 @@ pub fn classify_branch_child(
                     BranchChild::Trivia
                 }
             }
+            // `TODO:` author note (issue #3353) — the parser now recognizes
+            // one wherever branch content lines are parsed (a multiline
+            // conditional's then/else arms, nested blocks), matching the
+            // weave-level `AUTHOR_WARNING => BodyChild::Structural` case
+            // above. It produces no HIR here either: `emit_author_warnings`
+            // (`structure/mod.rs`) walks the whole subtree via
+            // `descendants()` and surfaces every `AUTHOR_WARNING`, nested or
+            // not, as its own `E189` diagnostic — so skipping it from
+            // content is the entire lowering this construct needs.
+            //
             // Error-recovery nodes appear on malformed input (the parser has
             // already diagnosed them); skip rather than panic.
-            SyntaxKind::ERROR => BranchChild::Trivia,
+            SyntaxKind::AUTHOR_WARNING | SyntaxKind::ERROR => BranchChild::Trivia,
             other if other.is_token() => BranchChild::Trivia,
             other => {
                 debug_assert!(

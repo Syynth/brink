@@ -1,0 +1,11 @@
+description = "Three inline conditionals on one line, first false and eliding its text (#3386)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "three-inline-conditionals"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = ["conditional", "inline", "lifted-branches"]

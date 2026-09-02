@@ -60,6 +60,7 @@ import {
   withDictionaryWord,
   toProseDiagnostics,
   type StudioStore,
+  type TabTarget,
 } from "@brink/studio-store";
 import {
   CommandRegistry,
@@ -81,11 +82,14 @@ import {
   loadEditorSnapshot,
   reconcileEditorSnapshot,
   documentKey,
+  findTab,
   focusedTab,
   installStudioExtensions,
   type DocumentRef,
+  type EditorGroup,
   type EditorGroupsState,
   type EditorGroupsStore,
+  type EditorTab,
   type ShellLayoutStore,
   type Location as ShellLocation,
   type SourceLocation,
@@ -165,6 +169,7 @@ import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
 import { runtimeValueNote } from "./runtime-hover.js";
 import { localStorageSaveStore, type SaveStore } from "@brink/studio-store";
+import { CONFIG_FILE, configDiagnostics, malformedCueDiagnostics } from "./dialect-diagnostics.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -525,6 +530,60 @@ function Root({
   );
 }
 
+/**
+ * #3356 (RULED 2026-09-01): where a knot/stitch (symbol) navigation target
+ * should land — the existing whole-file tab for `path`, if one is open in
+ * ANY group, or `null` to fall through to the normal fragment-tab open. A
+ * symbol target's `documentKey` (`"path::name"`) never matches a plain
+ * file tab's (`"path"`), so without this check the open-document road
+ * (which only reveals an EXISTING tab by exact key) always minted a new
+ * `path::name` tab — even when `path` was already open as a whole file,
+ * the common case of browsing structure while editing. Exported standalone
+ * (pure over `EditorGroup[]`, no wasm/DocumentSessions) so the decision is
+ * unit-testable without booting the full studio.
+ */
+export function resolveSymbolFileTab(
+  groups: readonly EditorGroup[],
+  path: string,
+): { group: EditorGroup; tab: EditorTab } | null {
+  return findTab(groups, documentKey(inkFileRef({ kind: "file", path })));
+}
+
+/**
+ * #3356 (RULED 2026-09-01): handles a symbol (knot/stitch) navigation open
+ * by revealing the target's already-open whole-file tab in place, when one
+ * exists. Gated to `pinned === false` (a plain click, never the pinned
+ * double-click): the ruling is about a NAVIGATION open losing your place
+ * when its file is already open elsewhere, not about the pinned/focused-view
+ * road — docs/studio-shell-spec.md §7.8 names the symbol document as its
+ * own first-class tab ("Fragment⇄file overlaps"), and a pinned open must
+ * keep minting/focusing that fragment tab exactly as before this fix.
+ *
+ * Returns `true` when it handled the open (the caller must not also call
+ * `openDocument`); `false` when the caller should fall through to the
+ * normal fragment-tab open — `pinned` is `true`, or the target's file
+ * isn't open as a whole-file tab anywhere.
+ *
+ * Exported standalone — over the real `EditorGroupsStore` and a `revealAt`
+ * callback, no wasm/DocumentSessions needed — so `setDocumentOpener`'s
+ * production branch and its regression test call the exact same function
+ * rather than the test re-implementing it.
+ */
+export function openSymbolTarget(
+  groups: EditorGroupsStore,
+  target: Extract<TabTarget, { kind: "symbol" }>,
+  pinned: boolean,
+  revealAt: (path: string, offset: number) => void,
+): boolean {
+  if (pinned) return false;
+  const existing = resolveSymbolFileTab(groups.getState().groups, target.path);
+  if (existing === null) return false;
+  const fileKey = documentKey(existing.tab.ref);
+  groups.getState().setActiveTab(existing.group.id, fileKey);
+  revealAt(target.path, target.start);
+  return true;
+}
+
 // ── Mount ──────────────────────────────────────────────────────────
 
 export async function mountStudio(
@@ -567,6 +626,31 @@ export async function mountStudio(
   // assignment below has run.
   let documentsRef: DocumentSessions | null = null;
 
+  // Late-bound for `onProjectConfigApplied` (#3387) — see that callback.
+  let documentsForConfig: DocumentSessions | null = null;
+  // #3391: the dialect's `malformed` near-miss rules over every story
+  // file — re-run on each config apply and each compile (cheap: one regex
+  // pass per narrative line, project sizes here are small; a persistent
+  // per-file cache can come with the worker road if it ever shows up).
+  const runMalformedCuePass = (): void => {
+    const dialect = project.getConfiguredDialogueDialect();
+    let session: ReturnType<typeof project.getSession>;
+    try {
+      session = project.getSession();
+    } catch {
+      return;
+    }
+    for (const f of session.listFiles()) {
+      if (f.mounted || f.path === CONFIG_FILE) continue;
+      const source = session.getFileSource(f.path);
+      store
+        .getState()
+        .setDialectDiagnostics(
+          f.path,
+          dialect === null || source === null ? [] : malformedCueDiagnostics(f.path, source, dialect),
+        );
+    }
+  };
   const project = new ProjectSession({
     provider,
     entryFile,
@@ -619,9 +703,31 @@ export async function mountStudio(
     // channel as the warnings above instead.
     onProjectConfigError: (message) => {
       store.getState().appendOutput("compile", `brink.toml: ${message}`);
+      // A malformed brink.toml is a Problems-panel error too (#3391).
+      store.getState().setDialectDiagnostics(CONFIG_FILE, configDiagnostics([], message));
+    },
+    // #3387: a `brink.toml [dialogue]` edit reclassifies mounted views
+    // live. `documents` is constructed after the first discovery fires
+    // (inside `initialize()`), so this guards; views mounted later read
+    // the configured dialect at mount anyway.
+    onProjectConfigApplied: () => {
+      documentsForConfig?.refreshDialectFromProject();
+      // The Player folds lines into runs with the same artifact (#3389).
+      store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
+      // #3391: the declaration's CURRENT state as Problems rows on
+      // brink.toml (an unresolvable [dialogue] is a real error), and the
+      // dialect's malformed-cue near-misses on every story file.
+      store
+        .getState()
+        .setDialectDiagnostics(
+          CONFIG_FILE,
+          configDiagnostics([], project.getConfiguredDialogueError()),
+        );
+      runMalformedCuePass();
     },
   });
   await project.initialize();
+  store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
   perfMark("studio.projectInitialized");
   // The perf bridge: the session planes the probe module itself can't
   // reach. Feature-detected throughout — injected sessions/mocks predate
@@ -881,6 +987,7 @@ export async function mountStudio(
   // Run's compile→start handshake (W7/#3300 no-auto-start ruling).
   let pendingStart = false;
   const handleCompileResult = (result: CompileResult): void => {
+    runMalformedCuePass();
     // W2d (docs/editor-worker-spec.md): the three panel pulls ride the
     // async session facade at background priority with per-panel coalesce
     // keys, and the store fan-out lands when they resolve — in the same
@@ -1118,6 +1225,7 @@ export async function mountStudio(
     proseChecker: studioProseChecker,
     onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
+  documentsForConfig = documents;
 
   // The keymap overrides service, created here rather than defaulted inside
   // ShellProvider: the editor-action sync below and the Settings ▸ Keymap
@@ -1203,11 +1311,24 @@ export async function mountStudio(
       store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
-        if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
       editorGroups
         .getState()
         .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
       documents.revealAt(target.path, target.start);
+      return;
+    }
+    // #3356: same-file-as-active-tab (and same-file-open-elsewhere) jump in
+    // place instead of opening a new fragment tab, for a navigation
+    // (pinned === false) open only — see `openSymbolTarget`'s doc comment
+    // for why a pinned open is excluded and for why the plain open-document
+    // road can't already do this for a symbol target.
+    if (
+      target.kind === "symbol" &&
+      openSymbolTarget(editorGroups, target, pinned, (path, offset) =>
+        documents.revealAt(path, offset),
+      )
+    ) {
       return;
     }
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });

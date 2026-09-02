@@ -273,6 +273,21 @@ the only thing rendered, nothing to restore):
   one (a collapsing source can never equal the target, since
   `fromGroupId === toGroupId` is a no-op).
 
+**Named exception: `setActiveTab`.** #3356's `openSymbolTarget` (`mount.tsx`)
+moves `focusedGroupId` through `EditorGroupsState.setActiveTab`
+(`editor-groups.ts`) directly, not through either action above — so it does
+NOT clear `maximizedGroupId`, and the "no target can be added later without
+inheriting the protection" claim above is true only of `openDocument` and
+`moveTabToGroup`, not of every focus-moving action in the store. This is
+unreachable today, not safe by construction: `setActiveTab`'s only caller is
+the Binder's symbol-click routing, and every open dock (the Binder's home)
+collapses while a group is maximized (`regions.tsx` gates
+`showLeftDock`/`showRightDock`/`showBottomDock` on `!groupMaximized`), so
+there is currently no way to trigger it while maximized. If `setActiveTab`
+grows a second caller reachable while maximized (a future Quick-Open-style
+surface, say), it must add the same resolved-target clear the two actions
+above use, or the invariant breaks silently.
+
 **Not yet covered: `editor.focusNextGroup`.** Its `when` clause
 (`groups.length > 1`) stays true while a group is maximized, so the command
 still runs and can park focus in a hidden sibling group with nothing in this
@@ -1424,7 +1439,18 @@ groups, the focused group, per-group active tab, pin state, splitter sizes.
   `editor.reveal`) focuses an existing tab *wherever it lives* — a document is
   open at most once unless the user explicitly asks for more. Duplicates come
   only from explicit actions: `editor.split` and opening into an explicit
-  target group. `editor.reveal` then scrolls/flashes in that view.
+  target group. `editor.reveal` then scrolls/flashes in that view. The match
+  is normally by exact `documentKey` — a knot/stitch's fragment tab
+  (`"path::name"`) is a different key from its file's whole-file tab
+  (`"path"`), so the two do not reveal each other by this rule alone. **One
+  exception (#3356, RULED 2026-09-01):** a symbol NAVIGATION open (a plain,
+  unpinned click — `pinned === false`) additionally checks for the target's
+  file already open as a whole-file tab *anywhere*, and reveals inside that
+  tab in place rather than minting a fragment tab, when found
+  (`openSymbolTarget` in `mount.tsx`). A PINNED open of the same symbol
+  (double-click) is excluded from this exception and always mints/focuses the
+  fragment tab — see the Fragment⇄file overlap bullet below, which this
+  exception does not touch.
 - **Split duplicates (VS Code exact).** `editor.split` (Mod-\) duplicates the
   focused group's active tab into a new group immediately to its right and
   focuses it. Two views of one text document live-mirror via the CM6

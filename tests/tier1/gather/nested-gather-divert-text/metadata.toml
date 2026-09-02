@@ -1,0 +1,11 @@
+description = "Nested-gather divert with gathered text before the outer divert (#3383)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "nested-gather-divert-text"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = ["gather", "nested-choice", "divert", "gathered-text"]

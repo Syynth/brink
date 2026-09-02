@@ -115,6 +115,13 @@ export interface ProblemsSlice {
    * to avoid, one layer up.
    */
   proseDiagnostics: Readonly<Record<string, readonly Diagnostic[]>>;
+  /** Dialogue-dialect findings per file (#3391): `brink.toml [dialogue]`
+   *  validation errors keyed to the config file, and the dialect's own
+   *  `malformed` near-miss diagnostics on story lines. Real severities
+   *  (error/warning), not a source bucket — a broken convention
+   *  declaration is a real problem, and it must never hide silently in
+   *  the Player. */
+  dialectDiagnostics: Readonly<Record<string, readonly Diagnostic[]>>;
 
   toggleProblemSeverity(bucket: ProblemSeverityBucket): void;
   setProblemsFilter(query: string): void;
@@ -125,6 +132,8 @@ export interface ProblemsSlice {
   toggleProblemsFileCollapsed(file: string): void;
   /** Replace one file's prose findings. An empty array clears them. */
   setProseDiagnostics(file: string, diagnostics: readonly Diagnostic[]): void;
+  /** Replace one file's dialect findings (empty = clear). */
+  setDialectDiagnostics(file: string, diagnostics: readonly Diagnostic[]): void;
   /** Apply persisted preferences at boot (mount.tsx). */
   applyProblemsPrefs(prefs: ProblemsPrefs): void;
   /** Injected persistence sink; null until the app binds it. Keeps the
@@ -210,6 +219,7 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
   problemsGrouped: true,
   problemsCollapsedFiles: {},
   proseDiagnostics: {},
+  dialectDiagnostics: {},
 
   _persistProblemsPrefs: null,
 
@@ -219,6 +229,17 @@ export const createProblemsSlice: StateCreator<StudioState, [], [], ProblemsSlic
 
   applyProblemsPrefs(prefs) {
     set({ problemsSeverities: prefs.severities, problemsGrouped: prefs.grouped });
+  },
+
+  setDialectDiagnostics(file, diagnostics) {
+    const current = get().dialectDiagnostics;
+    if (diagnostics.length === 0) {
+      if (!(file in current)) return;
+      const { [file]: _dropped, ...rest } = current;
+      set({ dialectDiagnostics: rest });
+      return;
+    }
+    set({ dialectDiagnostics: { ...current, [file]: diagnostics } });
   },
 
   setProseDiagnostics(file, diagnostics) {

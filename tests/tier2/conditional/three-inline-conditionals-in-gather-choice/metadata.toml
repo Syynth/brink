@@ -1,0 +1,11 @@
+description = "Three inline conditionals inside a choice body reached via a gather (#3386)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "three-inline-conditionals-in-gather-choice"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = ["conditional", "inline", "lifted-branches", "choice-body"]
