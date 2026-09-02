@@ -652,6 +652,44 @@ flow start() {
         assert_eq!(fixes[0]["code"], "E025");
     }
 
+    /// The **ink** surface reaches the same road, and the fix it writes is
+    /// ink's own `IMPORT`, not the native `use`.
+    ///
+    /// Both surfaces matter here: `ImportFixer` branches on the dialect
+    /// (#1590), so a batch road exercised only over `.brink` would leave the
+    /// `.ink` half of the studio's Problems panel unproven.
+    #[test]
+    fn the_ink_surface_batches_through_the_same_road() {
+        const QUEST: &str = "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n";
+        const TOWN: &str = "#@module(town)\n== square ==\nHi\n-> ambush\n";
+        let mut session = EditorSession::new();
+        session.update_file("quest.ink", QUEST);
+        session.update_file("town.ink", TOWN);
+        assert!(session.set_active_file("town.ink"));
+        promote_e025(&mut session);
+
+        let offers = parse(&session.fix_offers("{}"));
+        let offers = offers.as_array().expect("array");
+        assert_eq!(offers.len(), 1, "{offers:?}");
+        assert_eq!(offers[0]["code"], "E025");
+        assert_eq!(offers[0]["path"], "town.ink");
+        assert_eq!(offers[0]["batchable"], true);
+
+        let report = parse(&session.fix_all("{}"));
+        let files = report["files"].as_array().expect("files");
+        assert_eq!(files.len(), 1, "{report:?}");
+        assert_eq!(files[0]["path"], "town.ink");
+        let written = files[0]["new_source"].as_str().unwrap_or_default();
+        assert!(
+            written.contains("IMPORT { ambush } FROM quest"),
+            "the ink surface must get ink's own IMPORT line: {written:?}"
+        );
+        assert!(
+            !written.contains("use "),
+            "…and never the native `use` form: {written:?}"
+        );
+    }
+
     /// A `[fix]` entry removed from `brink.toml` must stop applying — the
     /// wholesale-replace rule every other configured field follows.
     #[test]
