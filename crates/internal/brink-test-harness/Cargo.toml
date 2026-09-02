@@ -74,6 +74,11 @@ brink-intl = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `corpus::expected_mismatch_issue` (issue #3402): reads a case's
+# `metadata.toml` `[source] expected_mismatch` field so the oracle harness
+# can pin known, permanent divergences mechanically instead of by a prose
+# doc comment.
+toml = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
