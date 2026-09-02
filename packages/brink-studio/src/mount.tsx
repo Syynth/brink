@@ -81,11 +81,14 @@ import {
   loadEditorSnapshot,
   reconcileEditorSnapshot,
   documentKey,
+  findTab,
   focusedTab,
   installStudioExtensions,
   type DocumentRef,
+  type EditorGroup,
   type EditorGroupsState,
   type EditorGroupsStore,
+  type EditorTab,
   type ShellLayoutStore,
   type Location as ShellLocation,
   type SourceLocation,
@@ -523,6 +526,25 @@ function Root({
       </StoreProvider>
     </ShellProvider>
   );
+}
+
+/**
+ * #3356 (RULED 2026-09-01): where a knot/stitch (symbol) navigation target
+ * should land — the existing whole-file tab for `path`, if one is open in
+ * ANY group, or `null` to fall through to the normal fragment-tab open. A
+ * symbol target's `documentKey` (`"path::name"`) never matches a plain
+ * file tab's (`"path"`), so without this check the open-document road
+ * (which only reveals an EXISTING tab by exact key) always minted a new
+ * `path::name` tab — even when `path` was already open as a whole file,
+ * the common case of browsing structure while editing. Exported standalone
+ * (pure over `EditorGroup[]`, no wasm/DocumentSessions) so the decision is
+ * unit-testable without booting the full studio.
+ */
+export function resolveSymbolFileTab(
+  groups: readonly EditorGroup[],
+  path: string,
+): { group: EditorGroup; tab: EditorTab } | null {
+  return findTab(groups, documentKey(inkFileRef({ kind: "file", path })));
 }
 
 // ── Mount ──────────────────────────────────────────────────────────
@@ -1203,12 +1225,28 @@ export async function mountStudio(
       store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
-        if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
       editorGroups
         .getState()
         .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
       documents.revealAt(target.path, target.start);
       return;
+    }
+    // #3356: same-file-as-active-tab (and same-file-open-elsewhere) jump in
+    // place instead of opening a new fragment tab — see
+    // `resolveSymbolFileTab`'s doc comment for why the plain open-document
+    // road can't already do this for a symbol target.
+    if (target.kind === "symbol") {
+      const existing = resolveSymbolFileTab(editorGroups.getState().groups, target.path);
+      if (existing !== null) {
+        const fileKey = documentKey(existing.tab.ref);
+        editorGroups.getState().setActiveTab(existing.group.id, fileKey);
+        if (pinned && !existing.tab.pinned) {
+          editorGroups.getState().pinTab(existing.group.id, fileKey);
+        }
+        documents.revealAt(target.path, target.start);
+        return;
+      }
     }
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });
   });

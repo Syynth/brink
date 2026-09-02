@@ -22,7 +22,7 @@
  * statement false.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import type { DocumentRef, DocumentViewProps } from "@brink/studio-shell";
 import { docKeyFor, docTitleFor, type TabTarget } from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
@@ -121,7 +121,7 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
     entryFile.endsWith(".ink") &&
     entryFile !== path;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const documents = storeApi.getState()._documents;
     const container = containerRef.current;
     if (!documents || !container) return;
