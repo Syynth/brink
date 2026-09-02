@@ -3278,8 +3278,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** `demo.yml` loses its `pull_request` trigger — the compound-demo build no longer runs (even advisorily) on PRs. The weekly scheduled run and `workflow_dispatch` remain the demo's health check.
 - **WHY:** Maintainer, while merging the perf stack with only DEMO_GATE outstanding: "the demo is silly" as a per-PR gate — it delays merges for signal that the weekly run provides just as well; it was never in the required-checks list, so a red demo could only ever slow a human down, not protect main.
-||||||| parent of 9f4d6cc48 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
-||||||| parent of 9a82a9bb6 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
 
 ## Option A goes total: the off-db analyzer composition is DELETED, LSP included
 - **WHEN:** 2026-08-24
@@ -4487,7 +4485,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** "Reveal in Program Explorer" (and by extension any context-menu item whose action can only work under a live session) is *omitted* from the menu when no session can answer, rather than shown and failing with a notification on click. Implemented as a per-open presence predicate (`canRevealInstructions`) the host wires to session state.
 - **WHY:** The source→address resolver runs through the live session's program; with no session the item is a guaranteed dead end. An item that can never work is worse than no item.
-||||||| 226dcb2ef
 
 ## A rebound key displaces the old owner, and says so
 - **WHEN:** 2026-08-30
