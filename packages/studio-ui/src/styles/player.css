@@ -969,9 +969,9 @@
 .brink-studio .player .player-line-row,
 .brink-studio .player .player-run-cue,
 .brink-studio .player .player-start-marker {
-  /* Delayed past the choices block's slide (480ms in PlayerPane), so the
+  /* Delayed past the choices block's slide (240ms in PlayerPane), so the
      text fades in where the block has ALREADY left — never under it. */
-  animation: player-row-in 400ms ease-out 480ms both;
+  animation: player-row-in 400ms ease-out 240ms both;
 }
 @media (prefers-reduced-motion: reduce) {
   .brink-studio .player .player-line-row,
