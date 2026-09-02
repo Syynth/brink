@@ -1109,10 +1109,14 @@ export async function mountStudio(
     onProseLints: (path, lints) => {
       store.getState().setProseDiagnostics(path, toProseDiagnostics(path, lints));
     },
-    onDocEdited: (docKey, groupId) =>
+    onDocEdited: (docKey, groupId) => {
       editorGroups
         .getState()
-        .pinTab(groupId, documentKey({ typeId: INK_FILE_TYPE_ID, docId: docKey })),
+        .pinTab(groupId, documentKey({ typeId: INK_FILE_TYPE_ID, docId: docKey }));
+      // An edit pauses follow (#3437): the author took the wheel. Run /
+      // Restart or the toggle resumes it.
+      if (store.getState().followInEditor) store.getState().setFollowPaused(true);
+    },
     onViewFocused: (_docKey, groupId) => editorGroups.getState().focusGroup(groupId),
     onFocusedViewChange: (view) => {
       (window as unknown as Record<string, unknown>).__brinkView = view ?? undefined;
@@ -1709,6 +1713,7 @@ export async function mountStudio(
     store.getState().setSessionPaced(player.pacedRevealMs);
     store.getState().setPlayerFontSize(player.fontSize);
     store.getState().setSaveLocationDefault(player.saveLocation);
+    store.getState().setFollowInEditor(player.followInEditor);
   }
 
   // Checkpoint stores (W14/#3307): the embedder/desktop host may supply
@@ -1793,6 +1798,19 @@ export async function mountStudio(
         kind: "program",
         address: encodeProgramAddress(containerIdx, offset),
       }),
+    // Follow (#3437): open the source as a preview tab if it is not open,
+    // then scroll to the line WITHOUT focus — the Player is driving. No
+    // takeover dismissal either: following must not close a Story Graph.
+    followSource: (source) => {
+      const point = store.getState()._resolveSourceBytes?.(
+        source.file,
+        source.range_start,
+        source.range_end,
+      );
+      if (!point) return;
+      store.getState().openTarget({ kind: "file", path: source.file }, false);
+      documents.scrollTo(source.file, point.start);
+    },
   });
 
   // Restore the persisted editor settings (Settings → Editor). After initialize,

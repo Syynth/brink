@@ -20,6 +20,7 @@ import {
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
+import { loadPlayerSettings, savePlayerSettings } from "./SettingsDocument.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
 
 // ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
@@ -180,6 +181,27 @@ function StepOutIcon() {
     </svg>
   );
 }
+/** Follow — lines with an arrow: the editor tracks the Player. */
+function FollowIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 6h16M4 12h9M4 18h16" />
+      <path d="M17 9l3 3-3 3" />
+    </svg>
+  );
+}
+
 function FastForwardIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
@@ -249,6 +271,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // the component must never hold or receive the wasm runner handle, so a
   // future SessionProvider (#127) can back it without rework.
   const status = useStudioStore((s) => s.sessionStatus);
+  const followInEditor = useStudioStore((s) => s.followInEditor);
+  const followPaused = useStudioStore((s) => s.followPaused);
+  const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
+  const setSessionHoverSource = useStudioStore((s) => s.setSessionHoverSource);
   const lines = useStudioStore((s) => s.sessionLines);
   const projectDialect = useStudioStore((s) => s.projectDialect);
   const groups = useMemo(() => foldPlayerRuns(lines, projectDialect), [lines, projectDialect]);
@@ -528,6 +554,32 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           >
             <FastForwardIcon />
           </button>
+          <button
+            className={
+              "player-transport-btn player-auto-btn player-follow-btn" +
+              (followInEditor ? " active" : "") +
+              (followInEditor && followPaused ? " is-paused" : "")
+            }
+            title={
+              followInEditor
+                ? followPaused
+                  ? "Follow in editor — paused while you edit; click to resume (Run or Restart resumes too)"
+                  : "Follow in editor — the editor scrolls to each revealed line (click to stop)"
+                : "Follow in editor — off (click to follow the story in the editor)"
+            }
+            aria-label="Follow in editor"
+            aria-pressed={followInEditor}
+            onClick={() => {
+              const next = !(followInEditor && !followPaused);
+              setFollowInEditor(next);
+              savePlayerSettings(window.localStorage, {
+                ...loadPlayerSettings(window.localStorage),
+                followInEditor: next,
+              });
+            }}
+          >
+            <FollowIcon />
+          </button>
           {debugCapable && collapse < 1 && (
             <span className="player-transport">
               <span className="player-transport-sep" />
@@ -762,8 +814,15 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                     (row.kind !== null ? ` dialect-${row.kind}` : "") +
                     (echoKind !== undefined ? ` is-echo echo-${echoKind}` : "")
                   }
-                  onMouseEnter={() => setHoverIdx(i)}
-                  onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
+                  onMouseEnter={() => {
+                    setHoverIdx(i);
+                    // Hover → editor (#3437): band the row's source line.
+                    setSessionHoverSource(line.source ?? null);
+                  }}
+                  onMouseLeave={() => {
+                    setHoverIdx((cur) => (cur === i ? -1 : cur));
+                    setSessionHoverSource(null);
+                  }}
                   onClick={(e) => {
                     // ⌘/Ctrl-click anywhere on the row jumps to source (F9).
                     if (e.metaKey || e.ctrlKey) revealSource(line);

@@ -386,6 +386,35 @@ describe("PlayerPane as a document view", () => {
     expect(el.querySelector(".player-provenance")).toBeNull();
   });
 
+  it("Follow in editor (#3437): the toolbar toggle flips the store and persists; hovering a row sets the hover source", () => {
+    const commands = new CommandRegistry();
+    const store = createStudioStore();
+    const src = { file: "main.ink", range_start: 1, range_end: 5 };
+    store.setState({
+      sessionStatus: "running",
+      sessionText: ["The lights dim."],
+      sessionLines: [{ text: "The lights dim.", kind: "line" as const, tags: [], source: src }],
+    } as never);
+    const el = mount(commands, store, playerView("group-1"));
+    const follow = el.querySelector<HTMLButtonElement>(".player-follow-btn")!;
+    expect(follow.getAttribute("aria-pressed")).toBe("true");
+    act(() => follow.click());
+    expect(store.getState().followInEditor).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem("brink-studio.player.v1") ?? "{}").followInEditor).toBe(false);
+    act(() => follow.click());
+    expect(store.getState().followInEditor).toBe(true);
+
+    const row = el.querySelector<HTMLDivElement>(".player-line-row")!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(store.getState().sessionHoverSource).toEqual(src);
+    act(() => {
+      row.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    });
+    expect(store.getState().sessionHoverSource).toBeNull();
+  });
+
   it("two instances render the same session; choices dispatch story.choose", () => {
     const commands = new CommandRegistry();
     const chosen: unknown[] = [];

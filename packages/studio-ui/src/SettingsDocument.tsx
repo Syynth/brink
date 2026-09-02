@@ -244,12 +244,15 @@ export interface PlayerSettings {
   /** Default target for NEW saves (W14/#3307); both stores stay
    * visible regardless. */
   saveLocation: "local" | "project";
+  /** Follow in editor (#3437): scroll the editor to each revealed line. */
+  followInEditor: boolean;
 }
 
 const DEFAULT_PLAYER: PlayerSettings = {
   pacedRevealMs: 150,
   fontSize: 0,
   saveLocation: "local",
+  followInEditor: true,
 };
 
 /** Load persisted player settings. Never throws; defaults on garbage. */
@@ -271,6 +274,7 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
     pacedRevealMs?: unknown;
     fontSize?: unknown;
     saveLocation?: unknown;
+    followInEditor?: unknown;
   } | null;
   const ms = obj?.pacedRevealMs;
   const px = obj?.fontSize;
@@ -284,6 +288,7 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
         ? Math.round(px)
         : DEFAULT_PLAYER.fontSize,
     saveLocation: obj?.saveLocation === "project" ? "project" : "local",
+    followInEditor: obj?.followInEditor !== false,
   };
 }
 
@@ -645,16 +650,24 @@ export function PlayerSection() {
   const setPlayerFontSize = useStudioStore((s) => s.setPlayerFontSize);
   const saveLocation = useStudioStore((s) => s.saveLocationDefault);
   const setSaveLocationDefault = useStudioStore((s) => s.setSaveLocationDefault);
+  const followInEditor = useStudioStore((s) => s.followInEditor);
+  const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
   const pacedId = useId();
   const saveLocId = useId();
+  const followId = useId();
 
   const persist = (over: Partial<PlayerSettings>): void => {
     savePlayerSettings(window.localStorage, {
       pacedRevealMs: pacedMs,
       fontSize: playerFontSize,
       saveLocation,
+      followInEditor,
       ...over,
     });
+  };
+  const onFollowChange = (on: boolean): void => {
+    setFollowInEditor(on);
+    persist({ followInEditor: on });
   };
   const onModeChange = (paced: boolean): void => {
     const ms = paced ? 150 : 0;
@@ -678,6 +691,13 @@ export function PlayerSection() {
         htmlFor={pacedId}
       >
         <SettingsToggle id={pacedId} checked={pacedMs > 0} onChange={onModeChange} />
+      </SettingsRow>
+      <SettingsRow
+        title="Follow in editor"
+        description="As the story plays, the editor scrolls to each revealed line's source and bands it. Pauses while you are editing; Run or Restart resumes it."
+        htmlFor={followId}
+      >
+        <SettingsToggle id={followId} checked={followInEditor} onChange={onFollowChange} />
       </SettingsRow>
       <SettingsRow
         title="Player font size"

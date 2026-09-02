@@ -332,6 +332,7 @@ function slotId(docKey: string, groupId: string): string {
  */
 type PendingReveal =
   | { kind: "reveal"; offset: number }
+  | { kind: "scroll"; offset: number }
   | { kind: "restore"; anchor: number; head: number; scrollTop: number };
 
 /**
@@ -769,6 +770,14 @@ export class DocumentSessions {
    */
   revealAt(docKey: string, offset: number): void {
     this.pendingReveals.set(docKey, { kind: "reveal", offset });
+    this.applyToMountedView(docKey);
+  }
+
+  /** Scroll a document's view to `offset` WITHOUT taking focus or moving
+   *  the selection (#3437 follow): the Player is driving; the author's
+   *  cursor stays where it is. */
+  scrollTo(docKey: string, offset: number): void {
+    this.pendingReveals.set(docKey, { kind: "scroll", offset });
     this.applyToMountedView(docKey);
   }
 
@@ -1758,6 +1767,12 @@ export class DocumentSessions {
         effects: EditorView.scrollIntoView(offset, { y: "center" }),
       });
       view.focus();
+      return;
+    }
+    if (pending.kind === "scroll") {
+      view.dispatch({
+        effects: EditorView.scrollIntoView(clamp(pending.offset), { y: "center" }),
+      });
       return;
     }
     // restore (#347): full selection + pixel scroll, no focus steal.

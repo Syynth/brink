@@ -25,7 +25,14 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice, DebugState, LinesTable, ProgramModel, SizeReport } from "@brink/wasm-types";
+import type {
+  Choice,
+  DebugState,
+  LinesTable,
+  ProgramModel,
+  SizeReport,
+  SourceLocation,
+} from "@brink/wasm-types";
 import type { ExternalValue } from "@brink-lang/web";
 
 import {
@@ -85,6 +92,20 @@ export interface SessionSlice {
   sessionPacedMs: number;
   /** Set the paced cadence (Settings) — pushes through to the provider. */
   setSessionPaced(delayMs: number): void;
+  /** Follow in editor (#3437, ruled 2026-09-02 "it should follow the player
+   *  much more closely"): while on, every line the Player reveals scrolls
+   *  the editor to its source and bands it. App-scope, persisted with the
+   *  Player settings. */
+  followInEditor: boolean;
+  setFollowInEditor(on: boolean): void;
+  /** Follow pauses when the author edits the followed document; Run /
+   *  Restart or flipping the toggle resumes it. */
+  followPaused: boolean;
+  setFollowPaused(paused: boolean): void;
+  /** The source of the transcript row under the pointer (#3437): the
+   *  editor bands it with the hover band, distinct from the follow band. */
+  sessionHoverSource: SourceLocation | null;
+  setSessionHoverSource(source: SourceLocation | null): void;
   /**
    * The Player's prose size in px (W13/#3306, RULED — the reading
    * surface's size is not the UI's size, the `--bs-editor-font-size`
@@ -290,6 +311,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionText: [],
     sessionLines: [],
     sessionPacedMs: 150,
+    followInEditor: true,
+    followPaused: false,
+    sessionHoverSource: null,
     playerFontSize: 0,
     sessionReloadedAt: null,
     _resolveSourceBytes: null,
@@ -339,6 +363,31 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       const ms = Math.max(0, delayMs);
       set({ sessionPacedMs: ms });
       get()._provider?.setPacedReveal?.(ms);
+    },
+
+    setFollowInEditor(on) {
+      // Flipping the toggle is an explicit "follow now": it also lifts a
+      // pause an edit put in place.
+      set({ followInEditor: on, followPaused: false });
+    },
+
+    setFollowPaused(paused) {
+      if (get().followPaused !== paused) set({ followPaused: paused });
+    },
+
+    setSessionHoverSource(source) {
+      const cur = get().sessionHoverSource;
+      if (cur === source) return;
+      if (
+        cur !== null &&
+        source !== null &&
+        cur.file === source.file &&
+        cur.range_start === source.range_start &&
+        cur.range_end === source.range_end
+      ) {
+        return;
+      }
+      set({ sessionHoverSource: source });
     },
 
     setPlayerFontSize(px) {

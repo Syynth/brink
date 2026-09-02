@@ -689,3 +689,15 @@
 .brink-studio .player .player-run-cue.speaker-5 {
   color: var(--speaker-color);
 }
+
+/* Follow in editor (#3437): a toggle beside fast-forward; paused-by-edit
+   keeps the accent but dims it, so "on but not moving" reads as such. */
+.brink-studio .player-pane .header .toolbar .player-follow-btn.is-paused {
+  opacity: 0.55;
+}
+
+/* Follow in editor (#3437): a toggle beside fast-forward; paused-by-edit
+   keeps the accent but dims it, so "on but not moving" reads as such. */
+.brink-studio .player-pane .header .toolbar .player-follow-btn.is-paused {
+  opacity: 0.55;
+}
