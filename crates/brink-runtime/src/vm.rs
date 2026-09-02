@@ -539,11 +539,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Deliberately only on this opcode: `GetTempRaw` exists to see
             // a slot exactly as it is (pointers included), and `TakeTemp`
             // leaves `Null` behind by design, so neither may substitute.
-            if !frame.is_temp_written(slot as usize) {
-                let name = uninitialized_temp_name(flow, program, slot);
-                flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
-                flow.value_stack.push(Value::Int(0));
-            } else {
+            if frame.is_temp_written(slot as usize) {
                 match val {
                     Value::VariablePointer(target_id) => {
                         let global_idx = program
@@ -578,6 +574,10 @@ fn step_impl<R: crate::rng::StoryRng>(
                         flow.value_stack.push(val);
                     }
                 }
+            } else {
+                let name = uninitialized_temp_name(flow, program, slot);
+                flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
+                flow.value_stack.push(Value::Int(0));
             }
         }
         Opcode::GetTempRaw(slot) => {
@@ -2613,6 +2613,12 @@ fn call_effectful_callback<R: crate::rng::StoryRng>(
     clippy::too_many_arguments,
     reason = "the VM environment (the step signature) plus the verb, callee, argument row and \
               the output-capture switch"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "issue #3354's temps_written bitmap added one field to the CallFrame literal this \
+              function pushes, crossing the threshold; the body is one linear call sequence, \
+              not a candidate for splitting"
 )]
 fn call_callback<R: crate::rng::StoryRng>(
     flow: &mut Flow,
