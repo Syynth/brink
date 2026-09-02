@@ -4780,3 +4780,11 @@
 - **STATUS:** tentative
 - **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
 - **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project. The pulled passage is shown whole: the marked-lines list and the Player preview scroll for long runs rather than trimming to the first few lines.
+
+## Player look: provenance chip off the text, no row stripes, dialogue indented, choices link back, styling in Settings
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player
+- **SCOPE:** moderate
+- **WHAT:** (1) The provenance chip (`file:line` on hover) must never cover the line's text. (2) Transcript rows are not striped (no alternating row background). (3) Dialogue lines are indented a little under their speaker's header, so the speech reads as coming from the speaker. (4) A choice echo (`> Enough shopping`) links back to the choice's source the way a line does. (5) Player styling lives in Settings → Player (app scope): font family first — the desktop app enumerates the machine's fonts through the Tauri side; the web build offers a curated list plus a free-text family — with further knobs to follow.
+- **WHY:** Maintainer, reviewing the Player after the dialogue-run work: the chip "is covering the text"; "there's no reason it shouldn't link back to where it was"; indentation "to indicate it came from the speaker"; stripes read as a table, not prose; the font is a matter of taste, and taste is a setting — browsers cannot list installed fonts (fingerprinting), so enumeration is a desktop capability and the web gets a curated list.
