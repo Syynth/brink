@@ -460,18 +460,23 @@ block tree, with no control-flow graph:
 Reaching any point in `B`'s subtree past `D` means executing `B`'s
 statements in order through `D` first, so nesting below `D` — a choice set,
 a conditional, a labeled gather — is still behind it. Everything else in the
-frame is a different block's subtree, which is what makes all four of the
+region is a different block's subtree, which is what makes both of the
 ruled shapes fall out of one rule:
 
 1. a sibling choice branch declares it, another one reads it;
 2. a gather is reached from a branch that did not declare it;
-3. the read is written textually ahead of the declaration;
-4. a stitch reads a temp declared at its knot's root.
+3. the read is written textually ahead of the declaration.
 
-The rule deliberately does not model diverts. A `-> knot.stitch` that jumps
-over a declaration is shape 4 and is already covered; a divert that re-enters
-a gather inside the same frame *after* the declaration ran is not a defect
-and is not reported.
+Each of a knot's root body and every one of its stitch bodies is checked as
+its own independent region: a `~ temp` declared in one is never looked up
+for a read in another. (A fourth shape this page used to enumerate — a
+stitch reading a temp declared at its knot's root — turned out not to be a
+dominance question at all: it fires unconditionally, dominance aside, and
+inklecate rejects the identical program outright rather than warning on it.
+The 2026-09-01 follow-up ruling on #3373 moved it into its own compat-deny
+code, [`E194`](E194.md).) The rule deliberately does not model diverts
+within a region either — a divert that re-enters a gather inside the same
+block *after* the declaration ran is not a defect and is not reported.
 
 **Why it is a warning and not an error.** The C# reference runtime prints
 `RUNTIME WARNING: Variable not found: 'n'. Using default value of 0 (false).
@@ -493,5 +498,60 @@ assignment target (`~ n = 1`) is a write, not a read. A `temp` declared
 inside a `~ { … }` block is [`E082`](E082.md)'s subject — a lexical-scope
 defect, not a definite-assignment one. Reads inside a lambda body are skipped
 because the lambda's own parameters shadow the enclosing frame."#,
+    ),
+    (
+        DiagnosticCode::E194,
+        r#"`brink_ir::lir::lower::temps::alloc_temps` walks a knot's own body plus
+every one of its stitch bodies before lowering begins and gives each `~
+temp` name one slot in that shared frame — so, mechanically, nothing stops
+a stitch from reading a name only the knot's root declares. The program
+compiles and plays.
+
+Ink's own compiler does not extend a knot's `~ temp` visibility into its
+stitches at all. A stitch is, for `~ temp` purposes, a separate scope from
+its knot's root content — referencing the knot's temp from inside a stitch
+is `Unresolved variable` in inklecate, full stop, independent of whether
+the divert that entered the stitch happened to run the declaration first:
+
+```ink,fires(E194)
+-> k
+=== k ===
+~ temp n = 7
+-> s
+= s
+Stitch sees {n}.
+-> END
+```
+
+By default this does not compile at all (`E194` is `Error`-tier); once
+downgraded (see "Fixing it" below) it plays `Stitch sees 7.` in brink,
+while inklecate rejects it outright — the declaration having already run
+when the divert reaches `s` makes no difference to ink's compiler. That is
+what separates this from
+[`E193`](E193.md): `E193` is a genuine dominance question (did the
+declaring statement run *on this path* before the read?) that the runtime
+resolves the same way ink's runtime does, by substituting a default and
+warning. This is not a runtime question at all — ink's compiler refuses the
+reference regardless of the runtime path, so there is no runtime fallback
+to lean on the way `E193`'s has.
+
+**Why compat-deny, not a plain warning.** `docs/compiler-spec.md`
+"Compat-deny diagnostics" (issue #3373, RULED 2026-09-01) names the tier:
+"inklecate rejects this; brink can run it; you must opt in." Defaulting to
+`Error` matches inklecate's own hard rejection, so an ink-compat project
+sees the same wall Inky would show it. What makes the tier different from
+an ordinary hard error is the admission invariant: brink genuinely produces
+a *working* program once a project opts in, so the code stays
+`[lints]`-overridable rather than staying a permanent, non-negotiable
+error — the ruling's own words: "we should allow it to be turned off if the
+user wants, it's annoying."
+
+**What does not fire.** A stitch parameter of the same name is bound at
+call time and is never reported. A stitch that declares its *own* `~ temp`
+of the same name shadows the knot's for that stitch's reads entirely — that
+is [`E193`](E193.md)'s question (does the stitch's own declaration dominate
+its own reads?), not this one. A read inside the knot's own root body, or
+inside another stitch that itself declares the name, is untouched by this
+check."#,
     ),
 ];

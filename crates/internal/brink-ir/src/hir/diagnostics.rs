@@ -2061,10 +2061,15 @@ pub enum DiagnosticCode {
     ///
     /// The declaration and the read live in the same call frame, so the
     /// read resolves to the temp's own slot — but nothing guarantees the
-    /// declaring statement ran first. The four shapes the ruling names are
+    /// declaring statement ran first. The three shapes the ruling names are
     /// a sibling choice branch, a gather reached from a branch that did not
-    /// declare, a read written textually ahead of the declaration, and a
-    /// stitch reading a temp declared at its knot's root.
+    /// declare, and a read written textually ahead of the declaration. (A
+    /// fourth shape the ruling originally enumerated — a stitch reading a
+    /// temp declared at its knot's root — is not a dominance question at
+    /// all: the PR #3369 review found it warns on a knot/stitch divert that
+    /// runs the declaration and then plays correctly, and the 2026-09-01
+    /// follow-up ruling on #3373 moved it out of `E193` entirely into its
+    /// own compat-deny code, [`Self::E194`].)
     ///
     /// `Warning`-tier, `[lints]`-overridable: the story still runs. The
     /// runtime reads an uninitialized slot as ink's missing-variable
@@ -2072,6 +2077,26 @@ pub enum DiagnosticCode {
     /// reference, so what plays in Inky plays in brink — and this
     /// diagnostic is what tells the author before they play.
     E193,
+
+    /// A knot's `~ temp` (native `~ let`) is read from one of that knot's
+    /// stitches (#3373, RULED 2026-09-01) — split out of [`Self::E193`]'s
+    /// former shape 4 during PR #3369's review.
+    ///
+    /// Brink's `lir::lower::temps::alloc_temps` treats a knot and every one
+    /// of its stitches as one shared call frame with one `TempMap`, so a
+    /// stitch's reference to a name the knot's root declares resolves to
+    /// that same slot and the story plays correctly. Ink's own compiler
+    /// does not extend a knot's `~ temp` visibility into its stitches at
+    /// all — the identical program is a compile-time
+    /// `Unresolved variable` error in inklecate. This is brink accepting a
+    /// strict superset of ink, not a defect in either compiler, which makes
+    /// it the first member of the **compat-deny** tier (`docs/compiler-spec.md`
+    /// "Compat-deny diagnostics"): `Error` by default (inklecate rejects
+    /// the program, so brink does too until a project opts in) but, unlike
+    /// every other `Error`-default code, `[lints]`-overridable — all the
+    /// way to `allow` — because the admission invariant that tier requires
+    /// is met: downgraded, brink produces a working program.
+    E194,
 }
 
 impl DiagnosticCode {
@@ -2277,6 +2302,7 @@ impl DiagnosticCode {
         Self::E191,
         Self::E192,
         Self::E193,
+        Self::E194,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2479,6 +2505,7 @@ impl DiagnosticCode {
             Self::E191 => "E191",
             Self::E192 => "E192",
             Self::E193 => "E193",
+            Self::E194 => "E194",
         }
     }
 
@@ -2812,6 +2839,7 @@ impl DiagnosticCode {
                 "unrecognized `brink-` directive comment — it suppresses nothing as written"
             }
             Self::E193 => "`temp` read on a path its declaration does not dominate",
+            Self::E194 => "a knot's temp is not visible from its stitches",
         }
     }
 
@@ -2902,8 +2930,32 @@ impl DiagnosticCode {
             // definition — the same `Info`-default posture, tierable via
             // `[lints]` like every other code.
             Self::E157 | Self::E189 => Severity::Info,
+            // E194 (#3373, RULED 2026-09-01) falls through to the `Error`
+            // default below like every other hard error: inklecate rejects
+            // the program, so brink does too until a project opts in. What
+            // makes it different from every other `Error`-default code is
+            // [`Self::is_overridable`], not `severity` — see that method
+            // and [`Self::is_compat_deny`].
             _ => Severity::Error,
         }
+    }
+
+    /// Whether this code is a member of the **compat-deny** tier (#3373,
+    /// RULED 2026-09-01): "inklecate rejects this; brink can run it; you
+    /// must opt in." `docs/compiler-spec.md` "Compat-deny diagnostics" owns
+    /// the tier's admission invariant — a code may join only when brink
+    /// produces a *working* program with the code downgraded, so every
+    /// member needs its own fixture proving that.
+    ///
+    /// This is the one predicate [`Self::is_overridable`] widens past its
+    /// old "not `Error`-by-default" rule for: every compat-deny code keeps
+    /// `severity() == Error` (matching ink's own hard rejection) while
+    /// still being `[lints]`-overridable, all the way to `allow` — the
+    /// ruling's explicit ask ("we should allow it to be turned off if the
+    /// user wants, it's annoying").
+    #[must_use]
+    pub fn is_compat_deny(self) -> bool {
+        matches!(self, Self::E194)
     }
 
     /// Whether this code can only ever arise on the NATIVE (`.brink`)
@@ -2975,13 +3027,22 @@ impl DiagnosticCode {
     /// `Info`-default code from the settings surface; the analyzer would
     /// have accepted them all along.
     ///
+    /// It also INCLUDES the **compat-deny** tier (#3373, RULED 2026-09-01):
+    /// [`Self::is_compat_deny`] members keep `severity() == Error` — brink
+    /// rejects the program by default, exactly as inklecate does — but stay
+    /// `[lints]`-overridable specifically because the ruling's admission
+    /// invariant requires each member to produce a *working* program once
+    /// downgraded. This is the one deliberate exception to "a hard error
+    /// can never be downgraded"; every other `Error`-default code stays
+    /// non-overridable.
+    ///
     /// `agrees_with_the_analyzers_own_gate` in `brink-analyzer` pins this
     /// against `apply_lint_overrides` itself rather than against a restated
     /// rule — the earlier mistake survived a test that compared this
     /// predicate to its own implementation.
     #[must_use]
     pub fn is_overridable(self) -> bool {
-        !matches!(self.severity(), Severity::Error)
+        !matches!(self.severity(), Severity::Error) || self.is_compat_deny()
     }
 
     /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
@@ -3184,6 +3245,7 @@ impl DiagnosticCode {
             "E191" => Some(Self::E191),
             "E192" => Some(Self::E192),
             "E193" => Some(Self::E193),
+            "E194" => Some(Self::E194),
             _ => None,
         }
     }
@@ -3333,7 +3395,17 @@ mod registry_tests {
         // the settings surface for exactly that reason.
         for code in DiagnosticCode::ALL {
             match code.severity() {
-                Severity::Error => assert!(!code.is_overridable(), "{}", code.as_str()),
+                // #3373's compat-deny tier is the one deliberate exception:
+                // `Error`-default AND overridable, exactly the members
+                // `is_compat_deny` names. Every other `Error`-default code
+                // must stay non-overridable.
+                Severity::Error => assert_eq!(
+                    code.is_overridable(),
+                    code.is_compat_deny(),
+                    "{}: an Error-default code is overridable only when it is a \
+                     compat-deny tier member",
+                    code.as_str()
+                ),
                 Severity::Warning | Severity::Info | Severity::Hint => {
                     assert!(code.is_overridable(), "{}", code.as_str());
                 }
@@ -3342,6 +3414,11 @@ mod registry_tests {
         assert!(
             DiagnosticCode::E189.is_overridable(),
             "the ink TODO: note must be configurable (ruled 2026-08-27)"
+        );
+        assert!(
+            DiagnosticCode::E194.is_overridable() && DiagnosticCode::E194.is_compat_deny(),
+            "the compat-deny tier's first member must be Error-default yet overridable \
+             (ruled 2026-09-01, #3373)"
         );
         let overridable = DiagnosticCode::ALL
             .iter()
@@ -3353,5 +3430,26 @@ mod registry_tests {
              {overridable} of {}",
             DiagnosticCode::ALL.len()
         );
+    }
+
+    #[test]
+    fn compat_deny_tier_is_error_default_and_overridable() {
+        // The tier's own invariant, stated directly against every current
+        // member rather than folded into the general hard-error test above
+        // — so a future member that gets `is_compat_deny` right but
+        // `severity` wrong (or vice versa) fails here with a name attached.
+        for code in DiagnosticCode::ALL.iter().filter(|c| c.is_compat_deny()) {
+            assert_eq!(
+                code.severity(),
+                Severity::Error,
+                "{}: a compat-deny member's default must match inklecate's rejection",
+                code.as_str()
+            );
+            assert!(
+                code.is_overridable(),
+                "{}: a compat-deny member must be [lints]-overridable",
+                code.as_str()
+            );
+        }
     }
 }

@@ -13,9 +13,11 @@ died at its first step with `unresolved global`.
 
 - **E193**, a new warning-level, `[lints]`-overridable diagnostic, names the
   read and the declaration in the Problems panel — before the story is played.
-  It covers all four shapes: a sibling choice branch, a gather reached from a
-  branch that did not declare it, a read textually ahead of the declaration,
-  and a stitch reading a temp declared at its knot's root.
+  It covers three shapes: a sibling choice branch, a gather reached from a
+  branch that did not declare it, and a read textually ahead of the
+  declaration. (A fourth shape — a stitch reading a temp declared at its
+  knot's root — turned out to be a different, stricter question: see the
+  companion compat-deny changeset.)
 - Reads, writes, and `ref` arguments that precede the declaration now resolve
   to the frame's own slot instead of a phantom global that could not link.
 - An unset slot reads as ink's missing-variable default (`0`) with a runtime

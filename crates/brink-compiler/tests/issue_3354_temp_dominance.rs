@@ -5,12 +5,17 @@
 //! through the production pipeline:
 //!
 //! 1. **`E193`** — the compile-time warning, naming the read site and the
-//!    declaration, for each of the four shapes the ruling enumerates.
+//!    declaration, for each of the three shapes the ruling enumerates. (A
+//!    fourth shape this file used to pin here — a stitch reading a temp
+//!    declared at its knot's root — moved to its own compat-deny code,
+//!    `E194`, during PR #3369's review; see `issue_3373_compat_deny.rs`.)
 //! 2. **#3362 resolution** — a read written textually ahead of its
 //!    declaration, and a stitch reading a temp declared at its knot's root,
 //!    must lower to the temp's own slot. Before the fix they lowered to a
 //!    phantom hashed `GetGlobal` that no link step could resolve, so the
-//!    story died with `unresolved global: $02_…` at the first step.
+//!    story died with `unresolved global: $02_…` at the first step. The
+//!    stitch shape now additionally needs `E194` allowed to compile at all
+//!    (issue #3373) — the resolution behavior itself is unchanged.
 //! 3. **Runtime fallback** — an uninitialized temp slot reads as ink's
 //!    missing-variable default (`0`), with a `RuntimeWarning`, instead of a
 //!    `Null` that faults on the next operator. The C# reference prints
@@ -22,14 +27,54 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use brink_analyzer::LintLevel;
 use brink_compiler::{AnalysisOptions, DiagnosticCode, Dialect};
 use brink_runtime::{DotNetRng, Step, Story};
 
 fn compile(source: &str) -> brink_compiler::CompileOutput {
     compile_with_debug_info(source, false)
+}
+
+/// Like [`compile`], but with one or more `[lints]`-equivalent overrides
+/// applied first — the CLI/API tier
+/// (`AnalysisOptions::apply_lint_overrides`), the same gate `--allow`/
+/// `--warn`/`--deny` go through. Panics (via `.expect`) if any override is
+/// rejected, since every call site here names a real, overridable code —
+/// see this file's crate-level `#![allow(clippy::expect_used)]`.
+fn compile_allowing(
+    source: &str,
+    overrides: &[(&str, LintLevel)],
+) -> brink_compiler::CompileOutput {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let mut options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let map: BTreeMap<String, LintLevel> = overrides
+        .iter()
+        .map(|(code, level)| ((*code).to_owned(), *level))
+        .collect();
+    let warnings = options.apply_lint_overrides(&map, None);
+    assert!(
+        warnings.is_empty(),
+        "an override this test named was rejected: {warnings:?}"
+    );
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+    .expect("compile should succeed once the compat-deny code is allowed")
 }
 
 fn compile_with_debug_info(source: &str, emit_debug_info: bool) -> brink_compiler::CompileOutput {
@@ -140,7 +185,38 @@ fn play(source: &str, picks: &[usize]) -> (Vec<String>, Vec<String>) {
     (lines, warnings)
 }
 
-// ─── E193: the four ruled shapes ────────────────────────────────────
+/// Like [`play`], but compiling through [`compile_allowing`] rather than
+/// [`compile`] — for a source that needs a `[lints]` override just to
+/// compile at all (a compat-deny code left at its `Error` default).
+fn play_allowing(
+    source: &str,
+    overrides: &[(&str, LintLevel)],
+    picks: &[usize],
+) -> (Vec<String>, Vec<String>) {
+    let output = compile_allowing(source, overrides);
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut lines = Vec::new();
+    let mut picks = picks.iter();
+    loop {
+        match story.continue_single().expect("no runtime fault") {
+            Step::Line(line) => lines.push(line.text),
+            Step::Choices(_) => {
+                let Some(&pick) = picks.next() else { break };
+                story.choose(pick).expect("choice in range");
+            }
+            Step::Done | Step::End | Step::Suspended => break,
+        }
+    }
+    let warnings = story
+        .take_runtime_warnings()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    (lines, warnings)
+}
+
+// ─── E193: the three ruled shapes (a fourth moved to E194, #3373) ───
 
 /// Shape 3 — the read is written textually ahead of the declaration.
 /// This is #3362's own repro.
@@ -186,12 +262,25 @@ fn gather_after_declaring_branch_is_warned() {
     assert_eq!(msgs.len(), 1, "exactly the gather's read: {msgs:?}");
 }
 
-/// Shape 4 — a stitch reads a temp declared at its knot's root.
+/// The former shape 4 — a stitch reads a temp declared at its knot's root —
+/// no longer fires `E193` at all (issue #3373: it moved to its own
+/// compat-deny code, `E194`, since it fires unconditionally rather than by
+/// dominance). Compiled with `E194` allowed, since by default this source
+/// no longer compiles at all — see `issue_3373_compat_deny.rs` for that
+/// coverage and for this exact program's `E194` behavior.
 #[test]
-fn stitch_reading_knot_root_temp_is_warned() {
-    let msgs = e193("-> k.s\n=== k ===\n~ temp n = 7\n-> END\n= s\nStitch sees {n}.\n-> END\n");
-    assert_eq!(msgs.len(), 1, "exactly the stitch's read: {msgs:?}");
-    assert!(msgs[0].contains("knot `k`"), "{msgs:?}");
+fn stitch_reading_knot_root_temp_is_not_e193() {
+    let source = "-> k.s\n=== k ===\n~ temp n = 7\n-> END\n= s\nStitch sees {n}.\n-> END\n";
+    let msgs: Vec<String> = compile_allowing(source, &[("E194", LintLevel::Allow)])
+        .warnings
+        .into_iter()
+        .filter(|w| w.code == DiagnosticCode::E193)
+        .map(|w| w.message)
+        .collect();
+    assert!(
+        msgs.is_empty(),
+        "moved to E194 (issue #3373), must not also fire E193: {msgs:?}"
+    );
 }
 
 /// A conditional branch declares it; the read after the conditional is not
@@ -313,8 +402,14 @@ fn the_runtime_warning_names_the_variable_when_debug_info_is_emitted() {
 /// entered directly. Also a phantom global before the fix.
 #[test]
 fn stitch_read_of_a_knot_root_temp_resolves_to_the_temp_slot_and_plays() {
-    let (lines, warnings) = play(
+    // Also `E194`'s subject since #3373 (a stitch reading its knot root's
+    // temp) — allowed here because this test is about the *resolution*
+    // behavior (issue #3362), not the diagnostic tier; see
+    // `issue_3373_compat_deny.rs` for the tier's own coverage of this exact
+    // program.
+    let (lines, warnings) = play_allowing(
         "-> k.s\n=== k ===\n~ temp n = 7\n-> END\n= s\nStitch sees {n}.\n-> END\n",
+        &[("E194", LintLevel::Allow)],
         &[],
     );
     assert_eq!(lines.join(""), "Stitch sees 0.\n");

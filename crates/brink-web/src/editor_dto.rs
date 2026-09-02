@@ -660,6 +660,35 @@ mod diagnostic_to_js_tests {
         assert_eq!(overridden.severity, "Error");
     }
 
+    /// #3373: the Problems panel for a compat-deny code (`E194` — `Error`
+    /// by default) must show it at `Error` with no override, and must drop
+    /// it from the list entirely (`diagnostic_to_js` returning `None`, not
+    /// an `Allow`-severity row) once a project sets `[lints] E194 =
+    /// "allow"` — the same suppression contract every other overridable
+    /// code already gets, now reachable for an `Error`-default code.
+    #[test]
+    fn diagnostic_to_js_suppresses_a_compat_deny_code_set_to_allow() {
+        let d = diag(brink_ir::DiagnosticCode::E194);
+        let no_override = diagnostic_to_js(
+            &d,
+            "x",
+            brink_analyzer::TypePolicy::Gradual,
+            &brink_analyzer::LintPolicy::default(),
+        )
+        .expect("Error by default — not suppressed with no [lints] entry");
+        assert_eq!(no_override.severity, "Error");
+
+        let mut lints = brink_analyzer::LintPolicy::default();
+        lints
+            .overrides
+            .insert("E194".to_owned(), brink_analyzer::LintLevel::Allow);
+        assert!(
+            diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &lints).is_none(),
+            "an Error-default compat-deny code set to allow must vanish from the Problems panel, \
+             not merely change severity"
+        );
+    }
+
     /// #1162: a `[lints] E014 = "info"`/`"hint"` override must render the
     /// new advisory tiers through the wasm boundary, not just error/warning —
     /// `diagnostic_to_js` renders `effective_severity` via `{:?}`, so this
@@ -1261,6 +1290,12 @@ const CATEGORIES: &[(&str, &str)] = &[
     // never valid (`// brink-disable-fil E027`), and grouping by "how the
     // author got it wrong" would put those two in different places.
     ("E192", "Suppression directives"),
+    // The compat-deny tier (#3373): brink accepts a construct inklecate
+    // rejects outright. Its own group rather than folded into "Logic" or
+    // "Names & shadowing": what unites current and future members is not
+    // what kind of mistake it is (there may be none — the program plays
+    // correctly) but that ink's own compiler draws a line brink doesn't.
+    ("E194", "Ink compatibility"),
 ];
 
 /// One diagnostic code, as the settings UI needs it (#3169).
@@ -1409,19 +1444,31 @@ mod diagnostic_registry_tests {
         // analyzer will refuse. It said `== "warning"` until #3173, which
         // hid every advisory code — `E189`, the ink TODO note — from the
         // settings surface even though the analyzer accepted them.
+        //
+        // #3373's compat-deny tier is the one deliberate exception past
+        // that: `Error`-default AND overridable. Checked against the real
+        // predicate (`is_compat_deny`) rather than a hand-picked code list,
+        // so a future tier member is covered automatically.
         for r in rows() {
+            let parsed = brink_ir::hir::DiagnosticCode::from_str_code(&r.code);
+            assert!(parsed.is_some(), "{} is not a known code", r.code);
+            let code = parsed.expect("just asserted above");
+            let expected = r.default_severity != "error" || code.is_compat_deny();
             assert_eq!(
-                r.overridable,
-                r.default_severity != "error",
+                r.overridable, expected,
                 "{} overridable={} severity={}",
-                r.code,
-                r.overridable,
-                r.default_severity
+                r.code, r.overridable, r.default_severity
             );
         }
         assert!(
             rows().iter().any(|r| r.code == "E189" && r.overridable),
             "the ink TODO: note must be configurable"
+        );
+        assert!(
+            rows()
+                .iter()
+                .any(|r| r.code == "E194" && r.overridable && r.default_severity == "error"),
+            "the compat-deny tier's first member must be Error-default yet overridable"
         );
     }
 

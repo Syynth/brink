@@ -4,15 +4,15 @@
 //!
 //! # The mistake
 //!
-//! A classic `~ temp` lives in its knot's call frame, so a read anywhere in
-//! that frame resolves to the temp's own slot — lexically correct. What
-//! resolution cannot say is whether the *declaring statement* has run by
-//! the time the read does. The four shapes the ruling names:
+//! A classic `~ temp` lives in its own definition's block tree, so a read
+//! anywhere in that block resolves to the temp's own slot — lexically
+//! correct. What resolution cannot say is whether the *declaring
+//! statement* has run by the time the read does. The three shapes the
+//! ruling names:
 //!
 //! 1. a sibling choice branch declares it, another one reads it;
 //! 2. a gather is reached from a branch that did not declare it;
-//! 3. the read is written textually ahead of the declaration;
-//! 4. a stitch reads a temp declared at its knot's root.
+//! 3. the read is written textually ahead of the declaration.
 //!
 //! In every one of these the C# reference prints
 //! `RUNTIME WARNING: Variable not found: 'n'. Using default value of 0
@@ -20,6 +20,20 @@
 //! as "it works fine in Inky". Brink now plays it the same way
 //! (`brink_runtime::vm`'s `GetTemp` uninitialized-slot arm) — this pass is
 //! the half that tells the author *before* they play.
+//!
+//! A fourth shape the ruling originally enumerated here — a stitch reading
+//! a temp declared at its knot's root — is not a dominance question at
+//! all: PR #3369's review found this pass warned on a knot/stitch divert
+//! that runs the declaration and then plays correctly (`-> k`, `~ temp n =
+//! 7`, `-> s`, `= s`, `Stitch sees {n}.` plays `Stitch sees 7.` — no
+//! defect), and the 2026-09-01 follow-up ruling on #3373 moved that shape
+//! out of `E193` entirely into its own compat-deny code, `E194`
+//! (`brink_analyzer::compat_deny::knot_temp_from_stitch`,
+//! `docs/compiler-spec.md` "Compat-deny diagnostics") — every read in a
+//! knot's stitch of a name that knot's own root declares, regardless of
+//! whether the divert into the stitch ran the declaration first, since ink
+//! itself never extends a knot's `~ temp` visibility into its stitches at
+//! all.
 //!
 //! # How dominance is decided
 //!
@@ -32,15 +46,18 @@
 //! That is sound because reaching any point in `B`'s subtree past `D`
 //! means executing `B`'s statements in order through `D` first — nesting
 //! (a choice set, a conditional, a labeled gather) inside `B` after `D` is
-//! still behind `D`. And it is what makes all four shapes fall out of one
-//! rule: a sibling choice body, the gather continuation, and every stitch
-//! body are each a *different* block's subtree, so a declaration in one
-//! never dominates a read in another.
+//! still behind `D`. And it is what makes both remaining shapes fall out
+//! of one rule: a sibling choice body and the gather continuation are each
+//! a *different* block's subtree, so a declaration in one never dominates
+//! a read in another.
 //!
-//! It deliberately does **not** model diverts. A `-> knot.stitch` that
-//! jumps over a declaration is shape 4, already covered; a divert that
-//! re-enters a gather inside the same frame after the declaration ran is
-//! not a defect and is not reported.
+//! Each of a knot's root body and every one of its stitch bodies is
+//! checked as its own independent region: a `~ temp` declared in one
+//! region is never looked up for a read in another (that cross-region
+//! case is `E194`'s subject, not this pass's). It deliberately does
+//! **not** model diverts within a region either — a divert that re-enters
+//! a gather inside the same block after the declaration ran is not a
+//! defect and is not reported.
 //!
 //! # What is deliberately not flagged
 //!
@@ -71,26 +88,31 @@ use rowan::TextRange;
 
 use crate::determinism::{LookupMap, LookupSet};
 
-/// Where a frame temp was declared, for the message's declaration half.
-struct DeclSite {
+/// Where a temp was declared, for the message's declaration half.
+pub(crate) struct DeclSite {
     /// Source range of the declaring `~ temp` statement.
-    range: TextRange,
-    /// The definition the declaration sits in, already spelled the way the
+    pub(crate) range: TextRange,
+    /// The definition the declaration sits in, already spelled the way a
     /// message wants it — "knot `k`", "stitch `k.s`", or "the file's root
     /// content".
-    owner: String,
+    pub(crate) owner: String,
 }
 
-/// One bare-name read collected from a frame's block tree.
-struct Read {
-    name: String,
-    range: TextRange,
+/// One bare-name read collected from a block tree.
+pub(crate) struct Read {
+    pub(crate) name: String,
+    pub(crate) range: TextRange,
 }
 
 /// Run the E193 definite-assignment check over one file.
 ///
-/// Frames are the unit: a knot (its own body plus every stitch body — they
-/// share one call frame and one `TempMap`) and the file's root content.
+/// Each region — a knot's own root body, one of its stitch bodies, or the
+/// file's root content — is checked independently: a `~ temp` declared in
+/// one region is never looked up for a read in another. (Runtime-wise a
+/// knot and its stitches DO share one call frame and one `TempMap` —
+/// `lir::lower::temps::alloc_temps` walks the whole thing — but a
+/// cross-region reference is `E194`'s subject, issue #3373, not this
+/// pass's: see the module doc's account of the shape this used to cover.)
 ///
 /// `is_native` picks the message's vocabulary to match what the author
 /// actually wrote (issue #3369 review: the message previously said
@@ -102,7 +124,8 @@ pub fn check(file: FileId, hir: &HirFile, is_native: bool) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     check_frame(
         file,
-        &[(&hir.root_content, "the file's root content")],
+        &hir.root_content,
+        "the file's root content",
         &[],
         is_native,
         &mut out,
@@ -116,63 +139,56 @@ pub fn check(file: FileId, hir: &HirFile, is_native: bool) -> Vec<Diagnostic> {
 fn check_knot(file: FileId, knot: &Knot, is_native: bool, out: &mut Vec<Diagnostic>) {
     let knot_noun = if is_native { "flow" } else { "knot" };
     let knot_owner = format!("{knot_noun} `{}`", knot.name.text);
-    let mut regions: Vec<(&Block, String)> = vec![(&knot.body, knot_owner)];
+    let knot_params: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
+    check_frame(file, &knot.body, &knot_owner, &knot_params, is_native, out);
+
     for stitch in &knot.stitches {
-        regions.push((
+        let stitch_owner = format!("stitch `{}.{}`", knot.name.text, stitch.name.text);
+        let stitch_params: Vec<&str> = stitch.params.iter().map(|p| p.name.text.as_str()).collect();
+        check_frame(
+            file,
             &stitch.body,
-            format!("stitch `{}.{}`", knot.name.text, stitch.name.text),
-        ));
+            &stitch_owner,
+            &stitch_params,
+            is_native,
+            out,
+        );
     }
-    let borrowed: Vec<(&Block, &str)> = regions
-        .iter()
-        .map(|(b, owner)| (*b, owner.as_str()))
-        .collect();
-
-    let mut params: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
-    for stitch in &knot.stitches {
-        params.extend(stitch.params.iter().map(|p| p.name.text.as_str()));
-    }
-
-    check_frame(file, &borrowed, &params, is_native, out);
 }
 
-/// The shared frame check: `regions` are the blocks that share one call
-/// frame, each paired with the prose naming the definition it belongs to.
+/// The per-region check: `block` is one definition's root body (a knot's,
+/// one of its stitches', or the file's root content), `owner` names it the
+/// way a message wants it.
 fn check_frame(
     file: FileId,
-    regions: &[(&Block, &str)],
+    block: &Block,
+    owner: &str,
     params: &[&str],
     is_native: bool,
     out: &mut Vec<Diagnostic>,
 ) {
     let decl_keyword = if is_native { "let" } else { "temp" };
-    // Every classic `~ temp` this frame declares, keyed by name. The first
+    // Every classic `~ temp` this region declares, keyed by name. The first
     // declaration wins the message's declaration half — a second one of the
     // same name reuses the same slot (`alloc_temps` inserts once).
     let mut decls: LookupMap<String, DeclSite> = LookupMap::new();
-    for (block, owner) in regions {
-        collect_decls(block, owner, &mut decls);
-    }
+    collect_decls(block, owner, &mut decls);
     if decls.is_empty() {
         return;
     }
 
     // Reads the declarations do dominate, by source range.
     let mut dominated: LookupSet<TextRange> = LookupSet::new();
-    for (block, _) in regions {
-        mark_dominated(block, &mut dominated);
-    }
+    mark_dominated(block, &mut dominated);
 
     let mut reads = Vec::new();
     let mut skipped = LookupSet::new();
-    for (block, _) in regions {
-        let mut v = ReadCollector {
-            reads: &mut reads,
-            skipped: &mut skipped,
-            lambda_depth: 0,
-        };
-        visit::walk_block(block, &mut v);
-    }
+    let mut v = ReadCollector {
+        reads: &mut reads,
+        skipped: &mut skipped,
+        lambda_depth: 0,
+    };
+    visit::walk_block(block, &mut v);
 
     for read in &reads {
         if dominated.contains(&read.range) || skipped.contains(&read.range) {
@@ -205,11 +221,14 @@ fn check_frame(
     }
 }
 
-/// Collect this frame's classic `~ temp` declarations, mirroring
+/// Collect this region's classic `~ temp` declarations, mirroring
 /// `brink_ir::lir::lower::temps`'s own collection (choice bodies and
 /// continuation, conditional and sequence branches, labeled blocks) so the
-/// set of names matches the set of slots exactly.
-fn collect_decls(block: &Block, owner: &str, out: &mut LookupMap<String, DeclSite>) {
+/// set of names matches the set of slots exactly. Shared with
+/// `brink_analyzer::compat_deny::knot_temp_from_stitch` (issue #3373),
+/// which needs the identical "what counts as a declaration in this block"
+/// answer for a knot's root and for a stitch's own body.
+pub(crate) fn collect_decls(block: &Block, owner: &str, out: &mut LookupMap<String, DeclSite>) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::TempDecl(decl) => {
@@ -302,11 +321,14 @@ fn child_blocks(block: &Block) -> Vec<&Block> {
 
 /// Collects bare single-segment path reads, plus the ranges that must be
 /// discounted from them: plain assignment targets (writes, not reads) and
-/// anything inside a lambda body.
-struct ReadCollector<'a> {
-    reads: &'a mut Vec<Read>,
-    skipped: &'a mut LookupSet<TextRange>,
-    lambda_depth: u32,
+/// anything inside a lambda body. `pub(crate)` for
+/// `brink_analyzer::compat_deny::knot_temp_from_stitch` (issue #3373),
+/// which needs the identical "what counts as a read" answer over a
+/// stitch's own body.
+pub(crate) struct ReadCollector<'a> {
+    pub(crate) reads: &'a mut Vec<Read>,
+    pub(crate) skipped: &'a mut LookupSet<TextRange>,
+    pub(crate) lambda_depth: u32,
 }
 
 impl HirVisitor for ReadCollector<'_> {
