@@ -3278,8 +3278,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** `demo.yml` loses its `pull_request` trigger — the compound-demo build no longer runs (even advisorily) on PRs. The weekly scheduled run and `workflow_dispatch` remain the demo's health check.
 - **WHY:** Maintainer, while merging the perf stack with only DEMO_GATE outstanding: "the demo is silly" as a per-PR gate — it delays merges for signal that the weekly run provides just as well; it was never in the required-checks list, so a red demo could only ever slow a human down, not protect main.
-||||||| parent of 9f4d6cc48 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
-||||||| parent of 9a82a9bb6 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
 
 ## Option A goes total: the off-db analyzer composition is DELETED, LSP included
 - **WHEN:** 2026-08-24
@@ -4487,7 +4485,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** "Reveal in Program Explorer" (and by extension any context-menu item whose action can only work under a live session) is *omitted* from the menu when no session can answer, rather than shown and failing with a notification on click. Implemented as a per-open presence predicate (`canRevealInstructions`) the host wires to session state.
 - **WHY:** The source→address resolver runs through the live session's program; with no session the item is a guaranteed dead end. An item that can never work is worse than no item.
-||||||| 226dcb2ef
 
 ## A rebound key displaces the old owner, and says so
 - **WHEN:** 2026-08-30
@@ -4544,3 +4541,11 @@
   about the mistake before playing, and a warning that a `[lints]` entry
   can turn down leaves a project that leans on the pattern deliberately
   somewhere to go.
+
+## Knot/stitch navigation click reveals in place when its file is already open
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** studio-shell / editor-ui
+- **SCOPE:** moderate
+- **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
+- **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
