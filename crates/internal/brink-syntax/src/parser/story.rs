@@ -176,7 +176,13 @@ fn annotation_line(p: &mut Parser<'_, '_>) {
 }
 
 /// Parse `TODO: text\n`.
-fn author_warning(p: &mut Parser<'_, '_>) {
+///
+/// Shared with the conditional-branch content parsers (`brink-syntax`'s
+/// `inline.rs`) so a `TODO` line inside a `{ cond: … }` block, an `- else:`
+/// arm, or a nested block is recognized the same way it is at weave level
+/// (issue #3353) — before this, those paths fell through to their
+/// catch-all text arm and swallowed the `TODO` as prose.
+pub(crate) fn author_warning(p: &mut Parser<'_, '_>) {
     p.start_node(AUTHOR_WARNING);
     p.bump(); // KW_TODO
     // Consume everything until newline

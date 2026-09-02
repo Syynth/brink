@@ -2,8 +2,8 @@ use crate::SyntaxKind::{
     AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCHLESS_COND_BODY, COLON,
     CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, ESCAPE, GLUE, GLUE_NODE, HASH,
     IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC, INNER_EXPRESSION,
-    KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN, LINE_COMMENT, MINUS,
-    MULTILINE_BLOCK, MULTILINE_BRANCH_BODY, MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ,
+    KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, KW_TODO, L_BRACE, L_PAREN, LINE_COMMENT,
+    MINUS, MULTILINE_BLOCK, MULTILINE_BRANCH_BODY, MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ,
     MULTILINE_BRANCHES_COND, MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, PLUS,
     R_BRACE, R_PAREN, SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION,
     SEQUENCE_WORD_ANNOTATION, STAR, TAG, TAGS, TEXT, THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
@@ -464,6 +464,16 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 p.skip_ws();
                 at_line_start = true;
             }
+            // `TODO: text` (issue #3353) — an author note, only recognized
+            // when it starts a line, exactly like `HASH`/tags above.
+            // `super::story::author_warning` consumes its own trailing
+            // newline, same as `tag_line`, so the same post-call
+            // `skip_ws` strips the next line's leading indentation.
+            KW_TODO if at_line_start => {
+                super::story::author_warning(p);
+                p.skip_ws();
+                at_line_start = true;
+            }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);
@@ -583,6 +593,17 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
             }
             HASH => {
                 super::tag::tag_line(p);
+            }
+            // `TODO: text` (issue #3353) — same author-note recognition as
+            // `HASH` above, shared with `branchless_cond_body` via
+            // `super::story::author_warning`. The preceding `p.skip_ws()`
+            // at the top of this loop already strips indentation, so
+            // `current()` only lands on `KW_TODO` here at the start of a
+            // (possibly indented) line — a mid-content `TODO` word is
+            // already absorbed into `TEXT` by `multiline_branch_text`,
+            // which doesn't stop on `KW_TODO`.
+            KW_TODO => {
+                super::story::author_warning(p);
             }
             TILDE => {
                 p.skip_ws();
