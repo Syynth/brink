@@ -15,15 +15,29 @@
 //! registry test in this module can enumerate every fixer to enforce the §3
 //! test obligations on all of them at once.
 //!
-//! Batching (`apply_round`/`fix_all`, §5), the `[fix]` policy (§6), the
-//! Problems panel, `brink fix` (§8) and the LSP `fixAll` road are later
-//! milestones of #3374 — deliberately absent here.
+//! Batching (§5) and the policy the batch reads (§6.1) live in [`batch`] and
+//! [`policy`]: [`Select`] picks the diagnostics, [`apply_round`] turns them
+//! into one non-overlapping edit set, and [`fix_all`] runs rounds to a
+//! fixpoint. The Problems panel, `brink fix` (§8) and the LSP `fixAll` road
+//! are callers of those, and are later milestones of #3374 — as is where the
+//! [`FixPolicy`] comes *from* (`brink.toml`'s `[fix]` table, #3419); this
+//! module takes one as an input.
 
 use brink_db::ProjectDb;
 use brink_ir::{Diagnostic, DiagnosticCode, FileId};
 use rowan::TextSize;
 
 use crate::rename::FileEdit;
+
+pub mod batch;
+pub mod policy;
+pub mod select;
+
+pub use batch::{
+    Candidate, DEFAULT_MAX_ROUNDS, FixSite, Report, Round, apply_round, collect, fix_all, plan,
+};
+pub use policy::{FixMode, FixPolicy};
+pub use select::Select;
 
 /// How far a surface may go with a fix without asking the author — the tier
 /// (`docs/autofix-spec.md` §3). Each tier names the test that backs it; see
@@ -235,7 +249,10 @@ pub(crate) mod obligations;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obligations::{FixFixture, assert_fix_discharges, assert_safe_fix};
+    use obligations::{
+        FixFixture, assert_fix_discharges, assert_fixture_matches_fixer,
+        assert_safe_fixture_present,
+    };
     use std::collections::BTreeSet;
 
     /// One discharge fixture per registered fixer (§3's Suggested/Placeholder
@@ -248,14 +265,6 @@ mod tests {
             (DiagnosticCode::E081, obligations::e081_fixture()),
             (DiagnosticCode::E063, obligations::e063_fixture()),
         ]
-    }
-
-    /// §3's Safe obligation: every `Safe`-max fixer must have a fixture that
-    /// `assert_safe_fix` can run. None of the migrated three is `Safe`-max,
-    /// so this table is empty today — the first Safe fixer's PR fills it and
-    /// the registry test below is what forces it to.
-    fn safe_fixtures() -> Vec<(DiagnosticCode, FixFixture)> {
-        Vec::new()
     }
 
     #[test]
@@ -300,32 +309,67 @@ mod tests {
         }
     }
 
-    /// §3: a `Safe`-max fixer owes the stronger obligation. The table is
-    /// empty until the first Safe fixer lands; the loop is what makes it
-    /// non-optional then.
+    /// §3: a `Safe`-max fixer owes the stronger obligation, and this is the
+    /// half `brink-ide` can enforce on its own — the fixture must be on disk
+    /// at `tests/fix/<code>/`.
+    ///
+    /// The other half — actually compiling both sides, replaying the pre-fix
+    /// program's run set on the post-fix one, and diffing the line tables —
+    /// is `brink_test_harness::fix::assert_safe_fix`, run over this same
+    /// registry by that crate's `tests/fix_safe_obligations.rs`. It cannot be
+    /// called from here: `brink-test-harness` depends on `brink-ide`, so the
+    /// dependency only runs one way. Neither half is optional; see
+    /// [`obligations`]'s module doc.
+    ///
+    /// No fixer declares `Safe` today (all four migrated ones are
+    /// `Suggested`), so the loop below is currently empty — which is why
+    /// `the_safe_fixture_path_resolves` and `every_fixture_matches_its_fixer`
+    /// sit beside it: without a live fixture to resolve, a typo in the
+    /// fixture path would make this obligation silently unenforceable the day
+    /// the first Safe fixer lands.
     #[test]
     fn every_safe_max_fixer_has_a_safe_fixture() {
-        let fixtures: BTreeSet<&str> = safe_fixtures()
-            .iter()
-            .map(|(code, _)| code.as_str())
-            .collect();
         for fixer in FIXERS {
             if fixer.max_applicability() == Applicability::Safe {
-                assert!(
-                    fixtures.contains(fixer.code().as_str()),
-                    "{} declares max_applicability = Safe but has no Safe fixture",
-                    fixer.code().as_str()
-                );
+                // Subsumes the existence check: `assert_fixture_matches_fixer`
+                // loads the same directory and fails first if it is absent.
+                assert_fixture_matches_fixer(*fixer);
             }
         }
-        for (code, fixture) in safe_fixtures() {
-            let fixer = FIXERS
-                .iter()
-                .find(|f| f.code() == code)
-                .copied()
-                .expect("fixture names a registered fixer");
-            assert_safe_fix(fixer, &fixture);
+    }
+
+    /// The fixture path must name the real fixture tree. `E014` is the one
+    /// fixture that exists ahead of its fixer (`docs/autofix-spec.md` §9's
+    /// first-wave Safe candidate — delete the bare `~`), and it is what keeps
+    /// this path honest while the loop above has nothing to iterate.
+    #[test]
+    fn the_safe_fixture_path_resolves() {
+        assert_safe_fixture_present("E014");
+    }
+
+    /// A fixture's `expected.*` must be **exactly** what its fixer writes.
+    ///
+    /// This is the join between the two halves of §3: the harness's
+    /// `assert_safe_fix` compares `before.*` against `expected.*` as two
+    /// source files and knows nothing about fixers, so a hand-written
+    /// `expected.*` would be certified observably equivalent while proving
+    /// nothing about the fix. Every registered fixer that has a fixture is
+    /// checked here regardless of its tier — which is what gives the four
+    /// migrated `Suggested` fixers real coverage today, ahead of the first
+    /// `Safe` one.
+    #[test]
+    fn every_fixture_matches_its_fixer() {
+        let mut checked = 0usize;
+        for fixer in FIXERS {
+            if obligations::safe_fixture_dir(fixer.code().as_str()).is_dir() {
+                assert_fixture_matches_fixer(*fixer);
+                checked += 1;
+            }
         }
+        assert!(
+            checked > 0,
+            "no registered fixer has a tests/fix/ fixture — this test proves nothing"
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod inferred_types;
 pub mod inlay_hints;
 pub mod line_convert;
 pub mod navigation;
+pub mod passage;
 pub mod rename;
 pub mod rename_detection;
 pub mod semantic_tokens;

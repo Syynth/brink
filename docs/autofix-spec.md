@@ -80,6 +80,19 @@ Decisions folded into the shape (RULED as the defaults, 2026-09-01):
   `brink-test-harness`; `Safe` fixtures in an integration-test crate
   that sees both.
 
+*As built (#3417, milestone 2):* the `Safe` helper is
+`brink_test_harness::fix::assert_safe_fix`
+(`crates/internal/brink-test-harness/src/fix.rs`), where the spec put it, and
+the fixtures are on disk at `tests/fix/<code>/{before,expected}.{ink,brink}`
+rather than in an integration-test crate. §3's `Safe` obligation is **split
+across two crates and neither half is optional**: `brink-test-harness`
+depends on `brink-ide`, so the registry test cannot call the oracle, and the
+oracle's sweep cannot be the only enforcement without silently letting a
+`Safe` fixer ship with no fixture at all. `brink_ide::fix`'s registry test
+demands the fixture exists and is well-formed; the harness's own
+`tests/fix_safe_obligations.rs` enumerates the same `FIXERS` registry and
+runs each `Safe` fixer's fixture through `assert_safe_fix`.
+
 *As built (#3377, milestone 1):* the model lives in `brink_ide::fix`
 (`Applicability`, `Fix`, `FixCx`, `Fixer`, `FIXERS`, `fixes_for`) with one
 addition the surfaces needed — `fixes_at(cx, file, offset)`, the
@@ -107,6 +120,41 @@ therefore Suggested, not Safe. Deleting unreachable code cannot pass
 the trace check by construction — that is why it cannot be Safe
 however sensible.
 
+### 3.1 A Safe fixer discharges a non-blocking diagnostic — by construction
+
+*Measured while building `assert_safe_fix` (#3417), and a consequence of
+§2's definition rather than a new rule.* Observable equivalence compares
+**two programs**. If the pre-fix source does not compile there is no
+program on the left, so §2 says nothing about the transformation and no
+amount of fixture work can make it say something. `assert_safe_fix`
+reports that as its own verdict (`NoPreImage`) rather than as a passing
+or failing comparison.
+
+So a `Safe` fixer's diagnostic must be one compilation survives — in
+practice `Warning` or `Info` severity, or a code a project has turned
+down. Every code on §9's Safe list already is. The four **migrated**
+fixers are the counterexample that makes the rule concrete: E025, E063,
+E080 and E081 all block compilation (E063's base severity is
+`types`-policy-dependent, and the policy under which it fires at all,
+`types = "strict"`, is the one that makes it an error), so all four record
+`NoPreImage` and could not declare `Safe` even if someone wanted them to.
+They already declare `Suggested`; this is the mechanical confirmation.
+The fixtures and their recorded verdicts live in `tests/fix/` — see that
+directory's `README.md`.
+
+Two further properties of the helper, both load-bearing:
+
+- **Translation identity is allowance-based, not all-or-nothing.** §2.2
+  asks for identity "for every line the transformation did not itself
+  edit", so a fixture declares the units its fix necessarily rewrites in
+  a `rewrites.txt`; every other reported change fails. The rewritten
+  units are reported either way.
+- **A vacuous comparison is not a pass.** Two programs that both run out
+  of content immediately agree on everything. The helper counts the
+  pre-fix program's *content* events (lines, choice presentations,
+  external calls, probe results) across the whole explored run set and
+  refuses to call an empty one equivalent.
+
 ## 4. Scope is the compilation, not the file — RULED
 
 `FixCx` *is* the compilation (`ProjectDb`: for ink the entry's INCLUDE
@@ -129,6 +177,34 @@ apply to those buffers and mark them dirty (the road rename already
 uses — nothing is written the author has not seen); the CLI and LSP
 `fixAll` write every touched file, as `cargo fix` does.
 
+*As built (#3418, milestone 3):* `Select` is a **filter**, not the enum
+sketched above — `Select { codes: Option<Vec<DiagnosticCode>>, tiers:
+Option<Vec<Applicability>>, range: Option<(FileId, Option<TextRange>)> }`, per
+the milestone's own shape. The enum's arms are its constructors: `Select::all()`
+is `All`, `.in_file(file)` is `InFile` (the *inner* `None` — no `&ProjectDb`
+needed to construct it), `.at_offset(file, offset)` is `AtOffset` (an empty
+range, matched inclusively — the same narrowing `fixes_at` does),
+`.with_codes(…)` is `Codes`. `One(DiagnosticId)` has no equivalent: there is no
+`DiagnosticId` in the tree to name one with. `tiers` is the new half the enum
+had nowhere to put — it filters on the *offered fix's* tier, which is why it
+cannot be decided before `fixes_for` runs.
+
+`.in_file`'s range is deliberately not resolved to a byte span at construction
+time: `files`/`matches` re-derive "the whole file" from the file's *current*
+length on every call instead. A fix's own length is not stable across a
+`fix_all` fixpoint — round one's insertion grows the file, shifting every
+diagnostic after it — so a length frozen at `.in_file(file)`'s call site would
+go stale after the very first round and silently strand any diagnostic that
+shifted past it. `.at_offset`, by contrast, freezes an explicit `TextRange`
+(an empty range at one offset): that selection is documented single-round —
+the cursor-menu shape `fixes_at` already is — and is not carried across
+`fix_all` rounds by any caller today.
+
+`Select::files` is where "scope is the compilation" is cashed out:
+`ProjectDb::compilation_closure` when an entry is set, and every loaded file
+(id-ordered) when one is not — the shape an editor session without a
+discovered `brink.toml` has.
+
 ## 5. Batching — one algorithm for every batch surface
 
 ```rust
@@ -147,6 +223,40 @@ Dropping overlaps (never merging) is the load-bearing simplification:
 no two fixes reason about each other; the fixpoint loop resolves
 collisions a round later on fresh analysis, and the round cap is the
 guard against unbounded growth (a standing repo rule).
+
+*As built (#3418, milestone 3):* in `brink_ide::fix::batch`, with step 1 and
+step 2 split into `collect` and `plan` so each is testable on its own;
+`apply_round` is the two composed. Four points the sketch left open, decided
+here:
+
+- **Overlap is *touching*, not just intersecting.** Two edits of one file
+  collide when their byte ranges meet at all — adjacent ranges included, and
+  two pure insertions at the same offset included. That last case is not
+  exotic: it is exactly what two `E025` auto-imports into one file produce.
+- **The unit of dropping is the fix, not the edit.** A fix's edits are one
+  atomic change and may span files (§4); applying half of one would leave the
+  compilation in a state no fixer intended. A candidate any of whose edits
+  touches an already-kept edit is deferred whole. "Earliest range wins" orders
+  candidates by their earliest edit — `(file, start, end)`, then code and
+  title as a stable tiebreak — so the same input always yields the same edit
+  order.
+- **`fix_all` takes the session, not `FixCx`.** `FixCx` is a read-only
+  borrow of the `ProjectDb`, and re-analysis is a mutation, so the fixpoint
+  loop takes the `IdeSession` that owns the db.
+- **The cap is reported by re-running the selection.** After the loop,
+  `fix_all` collects once more without applying: whatever the policy still
+  admits is `Report::remaining`, and `Report::cap_hit` says the loop ran out
+  of rounds instead of converging. A fixer that fails to discharge its own
+  diagnostic therefore surfaces as a cap breach naming that diagnostic —
+  reported, not looped on, exactly as this section requires.
+
+`Report { applied: Vec<FixSite>, skipped_overlap: usize, remaining:
+Vec<FixSite>, rounds: u8, cap_hit: bool }`, where `FixSite { code, file,
+range }` is the *diagnostic's* site (the file an edit lands in may differ,
+§4) and `skipped_overlap` counts deferrals summed across rounds. A batch
+never fixes a suppressed diagnostic: `collect` runs
+`brink_ir::suppressions::apply_suppressions` first, so it sees what the
+Problems panel sees.
 
 ## 6. Policy — what is batchable, and when the editor acts
 
@@ -167,18 +277,32 @@ lints table (`packages/studio-ui/src/LintSettings.tsx`) as a **Fix**
 column beside severity — RULED "it can even go in the existing
 diagnostics UI".
 
-*As built (#3419, milestone 4):* `[fix]` parses into
-`ProjectConfig::fix: BTreeMap<String, FixPolicy>`, validated the same
-way `[lints]`'s value is (`"off" | "ask" | "auto"`, a wrong TOML type
-or an unrecognized spelling is a `ConfigError`, never a panic; an
-unrecognized *code* is accepted here regardless — this crate stays
-dependency-free of the real `DiagnosticCode` set, same split
-`validate_lint_code` uses). The diagnostic `[lints]` raises for an
-unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
-still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to
-hang it off, so it's tracked as a follow-up rather than built here
-(#3447, to land when #3418's fix-policy engine first reads the table).
-`ProjectConfig::effective_fix_policy(code,
+*As built (#3418, milestone 3):* the *type* the batch reads is
+`brink_ide::fix::policy::{FixPolicy, FixMode}` — `FixMode { Auto, Ask, Off }`
+plus per-code overrides over the tier defaults (`Safe → auto`,
+`Suggested → ask`, `Placeholder → off`). Milestone 3 takes a `FixPolicy` as an
+**input**; where it comes from — the `[fix]` table, `effective_fix_policy` in
+`brink-project-config`, and the studio's Fix column — is #3419's, and nothing
+about the source is decided here. One rule the type enforces rather than
+leaving to callers: `FixPolicy::admits` refuses `Placeholder` unconditionally,
+so promoting a Placeholder code to `"auto"` still does not batch it (§3,
+"Batchable: never"). `"off"` withdraws a code from both batching and offering.
+
+*As built (#3419, milestone 4):* the *source* side. `[fix]` parses into
+`ProjectConfig::fix: BTreeMap<String, FixPolicy>` — note this is a
+different, unrelated `FixPolicy`: a plain `Off < Ask < Auto` enum in
+`brink-project-config`, not milestone 3's `brink_ide::fix::policy::FixPolicy`
+struct; wiring one into the other (an override map keyed by the project's
+per-code entries) is not built yet. Validated the same way `[lints]`'s value
+is (`"off" | "ask" | "auto"`, a wrong TOML type or an unrecognized spelling
+is a `ConfigError`, never a panic; an unrecognized *code* is accepted here
+regardless — this crate stays dependency-free of the real `DiagnosticCode`
+set, same split `validate_lint_code` uses). The diagnostic `[lints]` raises
+for an unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
+still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to hang
+it off, so it's tracked as a follow-up rather than built here (#3447, to
+land when a fix-policy engine first reads the table and reconciles it with
+milestone 3's type). `ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix

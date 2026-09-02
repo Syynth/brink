@@ -1097,3 +1097,17 @@ export function detectCast(lines: readonly SourceLine[], dialect: DialogueDialec
   }
   return cast;
 }
+
+// ── The `[dialogue]` table and rule inference (#3409) ─────────────────
+export {
+  affixElement,
+  canonicalDialectJson,
+  dialectFromConfig,
+  emittedForAffix,
+  PRESET_NAMES,
+  presetByName,
+  toDialogueConfig,
+} from "./config.js";
+export type { DialogueConfig, DialogueElementConfig } from "./config.js";
+export { inferDialect } from "./infer.js";
+export type { Decision, Inference, Learned, Mark, MarkedLine } from "./infer.js";

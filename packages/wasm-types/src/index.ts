@@ -1048,6 +1048,28 @@ export interface FileOutline {
   mounted?: boolean;
 }
 
+// ── Passage lines (#3408) ───────────────────────────────────────
+
+/** Where a {@link PassageLine} sits in the weave. */
+export type PassageOrigin = "line" | "choice" | "gather";
+
+/**
+ * One content line of a knot/stitch, as an author would mark it in the
+ * Conventions editor: the source line with weave scaffolding and tags
+ * removed. Glue (`<>`), inline logic and choice brackets stay — they are
+ * part of the shape being taught.
+ */
+export interface PassageLine {
+  text: string;
+  /** The line's tags, without `#`; never part of `text`. */
+  tags: string[];
+  /** Project-relative path of the declaring file. */
+  file: string;
+  /** One-based source line. */
+  line: number;
+  origin: PassageOrigin;
+}
+
 // ── Story graph types (studio-shell spec §4.1) ──────────────────
 
 export type StoryGraphNodeKind = "knot" | "stitch" | "end" | "done";

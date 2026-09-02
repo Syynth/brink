@@ -76,7 +76,7 @@ export function getTomlString(source: string, table: string, key: string): strin
 }
 
 /** TOML basic-string encode (the two escapes simple values can need). */
-function tomlString(value: string): string {
+export function tomlString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 

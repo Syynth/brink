@@ -4725,6 +4725,23 @@
 - **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
 - **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.
 
+## Conventions editor: choice text hidden by default, branch headers never lines, sections stacked
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3411, #3408)
+- **SCOPE:** minor/local
+- **WHAT:** (1) Choice-text lines are hidden from the marking list by default, behind an "Include choice text" toggle; hidden lines are not taught from. (2) Conditional branch header lines (`- cond: text`, `- else: text` inside a multi-line `{ … }`) are never passage lines — only the content after the colon is. (3) The section is stacked in working order: the passage you pick, the lines you mark, what the studio learned, then the Player preview — not two columns. (4) Clicking into "Your lines" lists every knot and stitch before anything is typed; typing narrows.
+- **WHY:** Maintainer, on seeing it run: choice lines are the player's options far more often than dialogue and crowd the list ("cut out choice lines, or add that as an option"), but the ink docs' own sub-format puts a cue inside choice text, so they stay reachable rather than gone. Branch headers carry a condition and a colon — never dialogue, and a `Name:` false positive waiting to happen. Two columns squeezed the line text beside a five-way control; stacking gives each step the width.
+
+## Player: a speaker who keeps talking is one run, however the script cued it
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player (dialogue runs, #3389; Conventions preview #3411)
+- **SCOPE:** minor/local
+- **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
+- **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.
+||||||| 46916cbc5
+
 ## A cloned stateful alternative shares one counter, not one body
 - **WHEN:** 2026-09-02
 - **PROJECT:** brink
@@ -4780,6 +4797,14 @@
 - **STATUS:** tentative
 - **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
 - **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project. The pulled passage is shown whole: the marked-lines list and the Player preview scroll for long runs rather than trimming to the first few lines.
+
+## A Safe auto-fix must have a pre-image: `assert_safe_fix` cannot certify a fixer whose diagnostic blocks compilation
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-harness / auto-fix (`docs/autofix-spec.md` §3.1, `docs/observable-semantics-spec.md` §5, #3417)
+- **SCOPE:** moderate
+- **WHAT:** `brink_test_harness::fix::assert_safe_fix` ships as the executable form of the `Safe` tier: it compiles a `tests/fix/<code>/{before,expected}` pair through the production road, explores the pre-fix program's run set, replays exactly those runs on the post-fix program (`trace_diff`), and diffs the exported line tables, tolerating only the units the fixture's `rewrites.txt` declares. Three consequences are recorded rather than designed around. (1) A fixer whose diagnostic **prevents compilation** has no pre-image, so §2's definition is inapplicable, not merely unsatisfied — the verdict is `NoPreImage` and such a code can never be `Safe`. Measured on all four migrated fixers (E025, E063, E080, E081), all four of which already declare `Suggested`. (2) An empty trace diff over a baseline that produced no content is not evidence — the helper counts the pre-fix program's line/choice/external/probe events and refuses to certify a run set with none. (3) The obligation is split across two crates, because `brink-test-harness` depends on `brink-ide` and the dependency only runs one way: `brink_ide::fix`'s registry test demands the fixture exists, the harness's `tests/fix_safe_obligations.rs` enumerates the same registry and runs it.
+- **WHY:** `Safe` is what licenses an unattended batch edit (§5's fix-all, `brink fix`, on-save), so the tier has to name a test that would actually fail. Two of the three findings are ways the test could have passed while proving nothing — a comparison with one program in it, and a comparison of two stories that both do nothing — and both were reached by accident while writing the first fixtures, not hypothesised. Splitting the obligation rather than duplicating the oracle keeps one implementation of the definition; enforcing only the harness half would let a `Safe` fixer ship with no fixture at all, and enforcing only the `brink-ide` half would let it ship with a fixture nobody ran.
 
 ## Player look: provenance chip off the text, no row stripes, dialogue indented, choices link back, styling in Settings
 - **WHEN:** 2026-09-02
