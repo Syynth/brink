@@ -150,11 +150,22 @@ export function ConventionsSettings() {
   // dialect (or the project's current one until something is marked).
   const previewDialect = inference?.dialect ?? projectDialect;
   const groups = useMemo(() => {
-    const lines: TranscriptLine[] = (passage?.lines ?? []).map((l) => ({
-      text: l.text,
-      kind: "line",
-      tags: l.tags,
-    }));
+    // The Player sees EMITTED lines, so apply what the runtime would: a
+    // line ending in glue (`<>`) joins the next one. Without this a glued
+    // cue shows up as its own `<>` row under the speaker header.
+    const lines: TranscriptLine[] = [];
+    let carry: { text: string; tags: string[] } | null = null;
+    for (const l of passage?.lines ?? []) {
+      const text = carry === null ? l.text : carry.text + l.text;
+      const tags = carry === null ? l.tags : [...carry.tags, ...l.tags];
+      if (text.endsWith("<>")) {
+        carry = { text: text.slice(0, -2), tags };
+        continue;
+      }
+      carry = null;
+      lines.push({ text, kind: "line", tags });
+    }
+    if (carry !== null) lines.push({ text: carry.text, kind: "line", tags: carry.tags });
     return foldPlayerRuns(lines, previewDialect);
   }, [passage, previewDialect]);
 

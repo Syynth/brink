@@ -1484,14 +1484,14 @@
   align-items: flex-start;
 }
 .brink-studio .conv-lines {
-  flex: 1 1 55%;
+  flex: 1 1 60%;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .brink-studio .conv-preview {
-  flex: 1 1 45%;
+  flex: 1 1 40%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1528,8 +1528,8 @@
 .brink-studio .conv-line {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 8px;
+  gap: 8px;
+  padding: 4px 6px;
   border-radius: 4px;
 }
 .brink-studio .conv-line.is-flagged {
@@ -1553,7 +1553,7 @@
   flex-shrink: 0;
 }
 .brink-studio .conv-mark {
-  padding: 0 7px;
+  padding: 0 5px;
   background: transparent;
   border: none;
   color: var(--bs-fg-muted);
