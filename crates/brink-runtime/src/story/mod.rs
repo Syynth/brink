@@ -198,10 +198,14 @@ pub(crate) fn frame_path(program: &Program, frame: &CallFrame) -> Option<String>
         .iter()
         .rev()
         .find_map(|cp| program.container_path(cp.container_idx))
-        // The root scope is addressed by the empty path: "no named
-        // container", not a name.
-        .filter(|path| !path.is_empty())
         .map(str::to_owned)
+}
+
+/// The root scope is addressed by the empty path — for the PUBLIC query
+/// that is "no named container", not a name (the debugger keeps the empty
+/// string: it renders the unnamed root frame as `<root>`).
+fn named_path(path: Option<String>) -> Option<String> {
+    path.filter(|p| !p.is_empty())
 }
 
 impl<R: StoryRng> Story<R> {
@@ -1661,15 +1665,15 @@ impl<R: StoryRng> Story<R> {
     /// For a named flow use [`current_path_flow`](Self::current_path_flow).
     #[must_use]
     pub fn current_path(&self) -> Option<String> {
-        self.default.current_path(&self.program)
+        named_path(self.default.current_path(&self.program))
     }
 
     /// Like [`current_path`](Self::current_path), but for a named flow.
     pub fn current_path_flow(&self, name: &str) -> Result<Option<String>, RuntimeError> {
         if let Some(instance) = self.shared_instances.get(name) {
-            Ok(instance.current_path(&self.program))
+            Ok(named_path(instance.current_path(&self.program)))
         } else if let Some((instance, _ctx, _local)) = self.instances.get(name) {
-            Ok(instance.current_path(&self.program))
+            Ok(named_path(instance.current_path(&self.program)))
         } else {
             Err(RuntimeError::UnknownFlow(name.to_owned()))
         }

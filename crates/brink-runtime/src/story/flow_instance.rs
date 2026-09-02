@@ -825,6 +825,8 @@ impl FlowInstance {
             .call_stack
             .last()
             .and_then(|frame| super::frame_path(program, frame))
+            // The root scope's empty path is "no named container".
+            .filter(|path| !path.is_empty())
     }
 
     /// Runtime statistics (instructions, materialization counts, etc.)
