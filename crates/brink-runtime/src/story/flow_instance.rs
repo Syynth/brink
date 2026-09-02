@@ -1673,10 +1673,18 @@ fn collect_choices(
             let display_text = display_text
                 .trim_matches(|c: char| c == ' ' || c == '\t')
                 .to_string();
+            let source = match &pc.display {
+                ChoiceDisplay::Fragment(idx) => {
+                    flow.output.fragment_source(*idx, program, line_tables)
+                }
+                ChoiceDisplay::Text(_) => None,
+            };
             Choice {
                 text: display_text,
                 index: i,
                 tags: pc.tags.clone(),
+                sticky: !pc.flags.once_only,
+                source,
             }
         })
         .collect()

@@ -219,6 +219,16 @@ pub struct Choice {
     pub text: String,
     pub index: usize,
     pub tags: Vec<String>,
+    /// `+` (sticky, offered again) vs `*` (once-only) in the source — the
+    /// bytecode's `ChoiceFlags::once_only`, inverted. A host that echoes the
+    /// taken choice can mark it the way it was written (#3435).
+    pub sticky: bool,
+    /// Where the choice's text came from in the author's source (#3435) —
+    /// the first `LineRef` of the choice's display fragment, the same rule
+    /// [`OutputLine::source`] uses. `None` when the display is not a
+    /// fragment (a constant string, an empty label) or the line table
+    /// carries no location.
+    pub source: Option<brink_format::SourceLocation>,
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────────

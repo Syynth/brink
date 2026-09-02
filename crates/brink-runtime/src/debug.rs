@@ -244,6 +244,12 @@ pub struct DebugVisitId {
 /// A pending choice and the knot it targets.
 pub struct DebugChoice {
     pub text: String,
+    /// `+` (sticky) vs `*` (once-only), as written (#3435) — see
+    /// [`Choice::sticky`](crate::story::Choice::sticky).
+    pub sticky: bool,
+    /// The choice text's source location (#3435) — see
+    /// [`Choice::source`](crate::story::Choice::source).
+    pub source: Option<brink_format::SourceLocation>,
     pub target: Option<String>,
     /// The choice target's `DefinitionId` display form (W11/#3304) —
     /// string-equal to the overlay projection's `def_id` for the choice's
