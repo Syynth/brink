@@ -627,14 +627,21 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
   height: 20px;
   margin: 0 0 8px;
+  /* The rule runs the whole column, centred on the row; the label sits
+     on it with the page colour behind it — the end marker's twin. */
+  background: linear-gradient(var(--bs-border), var(--bs-border)) center / 100% 1px no-repeat;
   font-family: system-ui, -apple-system, sans-serif;
   font-size: var(--bs-font-small);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-start-label {
+  padding: 0 10px;
+  background: var(--bs-editor-bg);
 }
 .brink-studio .player .player-start-marker::before {
   content: "";
@@ -647,12 +654,7 @@
   background: var(--bs-fg-muted);
   box-shadow: 0 0 0 2px var(--bs-editor-bg);
 }
-.brink-studio .player .player-start-marker::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--bs-border);
-}
+
 /* Narration reads at full strength; ACTION is the dimmed one (ruled). */
 .brink-studio .player .story-text > .player-line-row.kind-line p {
   font-style: normal;
