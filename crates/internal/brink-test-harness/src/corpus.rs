@@ -51,6 +51,74 @@ pub fn is_compile_error_case(case_dir: &Path) -> bool {
     })
 }
 
+/// The GitHub issue number (as written in `metadata.toml`, e.g. `"#3395"`)
+/// backing this case's known, permanent divergence from the C# oracle —
+/// `[source] expected_mismatch = "#NNNN"`.
+///
+/// Before issue #3402, a case deliberately added to lock in a documented
+/// mismatch (e.g. the two `#3395` lift-order cases) was excluded from
+/// `oracle_snapshots.rs`'s `RATCHET_EPISODE_COUNT` only by a prose doc
+/// comment enumerating which cases those were — nothing
+/// asserted *which* cases were the expected failures, so a case silently
+/// swapping places (one fixed, an unrelated one regressing) could leave the
+/// totals looking flat. `oracle_snapshots.rs` and `corpus_report.rs` both
+/// read this field instead: paired with [`mismatch_flag_verdict`], a flagged
+/// case whose episodes all now match the oracle is reported as
+/// unexpectedly fixed (remove the flag, raise the ratchet) rather than
+/// silently absorbed.
+///
+/// Returns `None` when `metadata.toml` is missing, unreadable, not valid
+/// TOML, has no `[source]` table, or that table has no `expected_mismatch`
+/// key.
+pub fn expected_mismatch_issue(case_dir: &Path) -> Option<String> {
+    let meta_path = case_dir.join("metadata.toml");
+    let text = std::fs::read_to_string(meta_path).ok()?;
+    let doc: toml::Value = toml::from_str(&text).ok()?;
+    doc.get("source")?
+        .get("expected_mismatch")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// The oracle-conformance verdict for one case, once its
+/// [`expected_mismatch_issue`] flag (if any) is folded in — the single
+/// definition shared by `oracle_snapshots.rs`'s ratchet-arithmetic assertion
+/// and `corpus_report.rs`'s expected-mismatch backlog listing, so
+/// "unexpectedly fixed" cannot drift into two different meanings between
+/// the two (issue #3402).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MismatchFlagVerdict {
+    /// No `expected_mismatch` flag on this case — ordinary pass/fail
+    /// accounting applies, unchanged from before #3402.
+    Unflagged,
+    /// Flagged, and still mismatching or missing episodes against the
+    /// oracle — the expected, steady state for a case pinning a known,
+    /// unfixed divergence.
+    ExpectedAndStillMismatching,
+    /// Flagged, but every one of its episodes now matches the oracle: the
+    /// underlying bug is fixed. The flag must be removed from
+    /// `metadata.toml` and `RATCHET_EPISODE_COUNT` raised in the same
+    /// change — this case's episodes are not yet counted toward the floor.
+    UnexpectedlyFixed,
+}
+
+/// Compute a case's [`MismatchFlagVerdict`] from its flag state and episode
+/// counts. Pure and side-effect-free so both harness tests can call it
+/// directly instead of each re-deriving the same three-way branch by hand.
+pub fn mismatch_flag_verdict(
+    expected_mismatch: Option<&str>,
+    episodes_mismatch: usize,
+    episodes_missing: usize,
+) -> MismatchFlagVerdict {
+    match expected_mismatch {
+        None => MismatchFlagVerdict::Unflagged,
+        Some(_) if episodes_mismatch == 0 && episodes_missing == 0 => {
+            MismatchFlagVerdict::UnexpectedlyFixed
+        }
+        Some(_) => MismatchFlagVerdict::ExpectedAndStillMismatching,
+    }
+}
+
 /// True when `case_dir`'s `story.ink` is missing or empty/whitespace-only —
 /// a case with nothing to compile, skipped for the same reason as
 /// [`is_compile_error_case`] and by the same callers.
@@ -810,5 +878,156 @@ mod golden_transcript_tests {
         let content = load_golden_transcript(scratch.path(), "real-case")
             .expect("a genuinely non-empty golden must load successfully");
         assert_eq!(content, "Total cost: 12\n");
+    }
+}
+
+#[cfg(test)]
+mod expected_mismatch_tests {
+    //! Pins issue #3402: a case's `[source] expected_mismatch` flag must be
+    //! read from real `metadata.toml` files (not reimplemented ad hoc by a
+    //! caller), and the pass/flag verdict must treat "flagged but still
+    //! mismatching" and "flagged and now fixed" as genuinely different
+    //! outcomes.
+    use super::{MismatchFlagVerdict, expected_mismatch_issue, mismatch_flag_verdict};
+    use std::path::PathBuf;
+
+    /// A unique scratch directory under the system temp dir, holding a
+    /// hand-written `metadata.toml` — removed on drop. Mirrors this module's
+    /// existing `ScratchFile` pattern (see `golden_transcript_tests` above)
+    /// rather than depending on a real corpus fixture for the synthetic
+    /// cases below.
+    struct ScratchCaseDir(PathBuf);
+
+    impl ScratchCaseDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "brink-test-harness-expected-mismatch-{name}-{}",
+                std::process::id(),
+            ));
+            std::fs::create_dir_all(&path).expect("create scratch case dir");
+            Self(path)
+        }
+
+        fn write_metadata(&self, content: &str) {
+            std::fs::write(self.0.join("metadata.toml"), content)
+                .expect("write scratch metadata.toml");
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchCaseDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn reads_the_field_from_the_source_table() {
+        let scratch = ScratchCaseDir::new("flagged");
+        scratch.write_metadata(
+            "description = \"a flagged case\"\n\
+             mode = \"runtime\"\n\
+             \n\
+             [source]\n\
+             origin = \"brink\"\n\
+             original_id = \"flagged\"\n\
+             expected_mismatch = \"#3395\"\n",
+        );
+        assert_eq!(
+            expected_mismatch_issue(scratch.path()),
+            Some("#3395".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_the_field_is_absent() {
+        let scratch = ScratchCaseDir::new("unflagged");
+        scratch.write_metadata(
+            "description = \"an ordinary case\"\n\
+             mode = \"runtime\"\n\
+             \n\
+             [source]\n\
+             origin = \"brink\"\n\
+             original_id = \"unflagged\"\n",
+        );
+        assert_eq!(expected_mismatch_issue(scratch.path()), None);
+    }
+
+    #[test]
+    fn returns_none_when_metadata_toml_is_missing() {
+        let scratch = ScratchCaseDir::new("no-metadata");
+        assert_eq!(expected_mismatch_issue(scratch.path()), None);
+    }
+
+    #[test]
+    fn returns_none_when_metadata_toml_is_malformed() {
+        let scratch = ScratchCaseDir::new("malformed");
+        scratch.write_metadata("this is not [ valid toml");
+        assert_eq!(expected_mismatch_issue(scratch.path()), None);
+    }
+
+    /// The real migration target (issue #3402): both `#3395` lift-order
+    /// fixtures must carry the flag after migration, and their control case
+    /// (no known mismatch) must not.
+    #[test]
+    fn the_real_3395_fixtures_carry_the_flag_and_the_control_case_does_not() {
+        let tests_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("tier2")
+            .join("evaluation");
+
+        assert_eq!(
+            expected_mismatch_issue(&tests_root.join("lift-order-seq-fn-cond")),
+            Some("#3395".to_string()),
+            "lift-order-seq-fn-cond's metadata.toml must carry expected_mismatch = \"#3395\""
+        );
+        assert_eq!(
+            expected_mismatch_issue(&tests_root.join("lift-order-fn-then-cond")),
+            Some("#3395".to_string()),
+            "lift-order-fn-then-cond's metadata.toml must carry expected_mismatch = \"#3395\""
+        );
+        assert_eq!(
+            expected_mismatch_issue(&tests_root.join("lift-order-cond-then-fn")),
+            None,
+            "the #3395 control case must NOT be flagged — it already matches the oracle"
+        );
+    }
+
+    #[test]
+    fn verdict_is_unflagged_when_there_is_no_flag() {
+        assert_eq!(
+            mismatch_flag_verdict(None, 0, 0),
+            MismatchFlagVerdict::Unflagged
+        );
+        assert_eq!(
+            mismatch_flag_verdict(None, 3, 1),
+            MismatchFlagVerdict::Unflagged
+        );
+    }
+
+    #[test]
+    fn verdict_is_expected_when_flagged_and_still_mismatching() {
+        assert_eq!(
+            mismatch_flag_verdict(Some("#1234"), 1, 0),
+            MismatchFlagVerdict::ExpectedAndStillMismatching
+        );
+        assert_eq!(
+            mismatch_flag_verdict(Some("#1234"), 0, 1),
+            MismatchFlagVerdict::ExpectedAndStillMismatching
+        );
+    }
+
+    #[test]
+    fn verdict_is_unexpectedly_fixed_when_flagged_but_clean() {
+        assert_eq!(
+            mismatch_flag_verdict(Some("#1234"), 0, 0),
+            MismatchFlagVerdict::UnexpectedlyFixed
+        );
     }
 }

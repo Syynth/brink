@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use brink_test_harness::corpus::{collect_oracle_cases, compile_and_explore_from_ink};
+use brink_test_harness::corpus::{
+    MismatchFlagVerdict, collect_oracle_cases, compile_and_explore_from_ink,
+    expected_mismatch_issue, mismatch_flag_verdict,
+};
 use brink_test_harness::oracle;
 use brink_test_harness::{Episode, ExploreConfig};
 
@@ -105,6 +108,13 @@ fn corpus_report() {
     // Accumulate stats per "tier/category" key.
     let mut stats: BTreeMap<String, CategoryStats> = BTreeMap::new();
 
+    // Issue #3402: cases carrying a `[source] expected_mismatch` flag in
+    // their `metadata.toml`, so the residual documented-divergence backlog
+    // is visible in this report rather than only living in a doc comment.
+    // `(rel_path, issue, unexpectedly_fixed)`, filled as each case is
+    // compared below.
+    let mut flagged: Vec<(String, String, bool)> = Vec::new();
+
     for case_dir in &cases {
         let rel = case_dir
             .strip_prefix(&root)
@@ -158,10 +168,13 @@ fn corpus_report() {
 
         let actual_index = index_by_choice_path(&actual);
         let mut case_ok = true;
+        let mut case_mismatch = 0usize;
+        let mut case_missing = 0usize;
 
         for oracle_ep in &oracle_eps {
             let Some(brink_ep) = actual_index.get(oracle_ep.choice_path.as_slice()) else {
                 cat.episodes_missing += 1;
+                case_missing += 1;
                 case_ok = false;
                 continue;
             };
@@ -170,8 +183,15 @@ fn corpus_report() {
                 cat.episodes_pass += 1;
             } else {
                 cat.episodes_fail += 1;
+                case_mismatch += 1;
                 case_ok = false;
             }
+        }
+
+        if let Some(issue) = expected_mismatch_issue(case_dir) {
+            let verdict = mismatch_flag_verdict(Some(&issue), case_mismatch, case_missing);
+            let unexpectedly_fixed = verdict == MismatchFlagVerdict::UnexpectedlyFixed;
+            flagged.push((rel.clone(), issue, unexpectedly_fixed));
         }
 
         if case_ok {
@@ -278,7 +298,40 @@ fn corpus_report() {
     println!("  EPISODES — {grand_episodes_pass}/{grand_episodes_total} passing ({ep_pct}%)");
     println!("============================================================");
 
+    print_expected_mismatch_report(&flagged);
+
     native_corpus_report();
+}
+
+/// Issue #3402: list every case pinning a `[source] expected_mismatch`
+/// flag in `metadata.toml`, with the issue it documents and whether it is
+/// still in its expected (mismatching) state — making the residual
+/// documented-divergence backlog visible here instead of only in a
+/// `RATCHET_EPISODE_COUNT` doc comment. Sorted by `rel_path`: `flagged` is
+/// built in `collect_oracle_cases`' own sorted order, so this is a stable
+/// sort with no `HashMap` involved.
+#[expect(
+    clippy::print_stdout,
+    reason = "this is a diagnostic report, not production output"
+)]
+fn print_expected_mismatch_report(flagged: &[(String, String, bool)]) {
+    if flagged.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("============================================================");
+    println!("  EXPECTED-MISMATCH CASES (issue #3402) — documented C#-oracle divergences");
+    println!("============================================================");
+    for (rel, issue, unexpectedly_fixed) in flagged {
+        let marker = if *unexpectedly_fixed {
+            "⚠ NOW MATCHES THE ORACLE — remove the flag and raise RATCHET_EPISODE_COUNT"
+        } else {
+            "still mismatching, as expected"
+        };
+        println!("  {rel}  ({issue})  {marker}");
+    }
+    println!("============================================================");
 }
 
 /// Describe a `native_corpus_report` output mismatch with enough detail to

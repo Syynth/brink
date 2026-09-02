@@ -4,7 +4,8 @@ mode = "runtime"
 [source]
 origin = "brink"
 original_id = "lift-order-seq-fn-cond"
-notes = "Expected to mismatch brink today (#3395) — added to lock in the C#-oracle-correct behavior as a permanent regression target, not counted toward RATCHET_EPISODE_COUNT until fixed."
+expected_mismatch = "#3395"
+notes = "Locks in the C#-oracle-correct behavior as a permanent regression target for #3395. See `expected_mismatch` above — the oracle harness (issue #3402) reads that field, not this note, to exclude this case's episodes from RATCHET_EPISODE_COUNT until it passes."
 
 [classification]
 tier = 2
