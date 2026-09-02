@@ -78,21 +78,26 @@
   font-size: var(--bs-player-font-size, var(--bs-font-prose));
   letter-spacing: 0.01em;
 }
-/* ── Choices (#3436): cards hanging off the spine, each with a connector
-   and a node on the rail, carrying its `*`/`+` as written. The taken one
-   comes back as an echo ring on the rail (below). ── */
+/* ── Choices (#3436; flip + stagger, feedback 2026-09-02): cards hanging
+   off the spine. The first card is a two-faced flip — Continue on the
+   front, the first choice on the back — turning over when choices arrive
+   and back after the pick; the rest slide out one by one behind it. Each
+   card's node on the rail is a ring, like the echo ring, so the rail runs
+   INTO it rather than under a dot. ── */
 .brink-studio .player .choices {
   margin: 14px 0 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  perspective: 1100px;
 }
 .brink-studio .player .player-choice {
   position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-right: 0;
+  width: 100%;
+  margin: 0;
   padding: 10px 14px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
@@ -104,24 +109,43 @@
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.brink-studio .player .player-choice::before {
+/* The node + connector live on the element that sits on the rail: the
+   flip container for the first card, the card itself for the rest. */
+.brink-studio .player .player-spine-node {
+  position: relative;
+}
+.brink-studio .player .player-spine-node::before {
   content: "";
   position: absolute;
-  left: calc(-1 * var(--player-spine-gap));
+  left: calc(-1 * var(--player-spine-gap) + 5px);
   top: 50%;
-  width: var(--player-spine-gap);
+  width: calc(var(--player-spine-gap) - 5px);
   height: 2px;
+  margin-top: -1px;
   background: var(--bs-border);
 }
-.brink-studio .player .player-choice::after {
+.brink-studio .player .player-spine-node::after {
   content: "";
   position: absolute;
-  left: calc(-1 * var(--player-spine-gap) - 4px);
-  top: calc(50% - 4px);
-  width: 8px;
-  height: 8px;
+  left: calc(-1 * var(--player-spine-gap) - 5.5px);
+  top: calc(50% - 5.5px);
+  width: 11px;
+  height: 11px;
+  box-sizing: border-box;
   border-radius: 50%;
-  background: var(--bs-border);
+  border: 2px solid var(--bs-border);
+  background: var(--bs-editor-bg);
+}
+.brink-studio .player .player-spine-node:hover::before,
+.brink-studio .player .player-spine-node:hover::after,
+.brink-studio .player .player-spine-node:focus-within::before,
+.brink-studio .player .player-spine-node:focus-within::after {
+  border-color: var(--bs-accent);
+  background-color: var(--bs-accent);
+}
+.brink-studio .player .player-spine-node:hover::after,
+.brink-studio .player .player-spine-node:focus-within::after {
+  background-color: var(--bs-editor-bg);
 }
 .brink-studio .player .player-choice:hover,
 .brink-studio .player .player-choice:focus-visible {
@@ -130,11 +154,41 @@
   color: var(--bs-accent);
   outline: none;
 }
-.brink-studio .player .player-choice:hover::before,
-.brink-studio .player .player-choice:hover::after,
-.brink-studio .player .player-choice:focus-visible::before,
-.brink-studio .player .player-choice:focus-visible::after {
-  background: var(--bs-accent);
+/* The flip: both faces in one grid cell, the back pre-turned; the
+   container turns 180° about its horizontal axis when choices arrive. */
+.brink-studio .player .player-flip {
+  display: grid;
+  transform-style: preserve-3d;
+  transition: transform 560ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.brink-studio .player .player-flip > .player-flip-face {
+  grid-area: 1 / 1;
+  backface-visibility: hidden;
+}
+.brink-studio .player .player-flip > .is-back {
+  transform: rotateX(180deg);
+}
+.brink-studio .player .player-flip.is-choices {
+  transform: rotateX(180deg);
+}
+/* A mirror face is decoration: never a target. */
+.brink-studio .player .player-flip > div.player-flip-face {
+  pointer-events: none;
+}
+/* The other choices slide out one by one after the flip (delay per card
+   is set inline). */
+@keyframes player-choice-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brink-studio .player .player-choice-extra {
+  animation: player-choice-in 320ms ease-out both;
 }
 .brink-studio .player .player-choice-mark {
   width: 14px;
@@ -926,5 +980,11 @@
   .brink-studio .player .choices {
     transition: none !important;
     transform: none !important;
+  }
+  .brink-studio .player .player-flip {
+    transition: none;
+  }
+  .brink-studio .player .player-choice-extra {
+    animation: none;
   }
 }

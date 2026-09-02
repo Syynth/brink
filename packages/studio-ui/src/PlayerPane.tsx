@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
@@ -29,6 +30,7 @@ import {
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
+import type { Choice } from "@brink/wasm-types";
 import { loadPlayerSettings, savePlayerSettings } from "./SettingsDocument.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
 
@@ -408,6 +410,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // smooth scroll above does not count as movement.
   const choicesRef = useRef<HTMLDivElement>(null);
   const choicesTop = useRef<number | null>(null);
+  // The back face keeps the last first-choice text while it turns back to
+  // Continue, so the flip-back shows what was there rather than a blank.
+  const lastFirstChoice = useRef<string>("");
+  if (choices.length > 0) lastFirstChoice.current = choices[0]?.text ?? "";
   useLayoutEffect(() => {
     const el = choicesRef.current;
     const pane = playerRef.current;
@@ -936,36 +942,94 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         {/* Choices win over Continue: whenever a choice list is present, show
             it and never the Continue button — so a transient status wobble at a
             choice point can't flicker the two against each other (#273). */}
-        {choices.length > 0 ? (
+        {/* The choices block (feedback 2026-09-02): the first card is a
+            two-faced FLIP — Continue on the front, the first choice on the
+            back — that turns over when choices arrive and turns back after
+            the pick; the remaining choices slide out one by one behind it.
+            Only the live face is a <button>; the other is a plain mirror,
+            so `.choices button` still counts exactly what can be pressed. */}
+        {choices.length > 0 || hasPending ? (
           <div className="choices" ref={choicesRef}>
-            {choices.map((choice) => (
-              <button
+            <div
+              className={
+                "player-flip player-spine-node" + (choices.length > 0 ? " is-choices" : "")
+              }
+            >
+              {choices.length > 0 ? (
+                <div className="player-choice player-continue player-flip-face is-front" aria-hidden="true">
+                  <span className="player-choice-text">Continue</span>
+                </div>
+              ) : (
+                <button
+                  className="player-choice player-continue player-flip-face is-front"
+                  onClick={handleContinue}
+                >
+                  <span className="player-choice-text">Continue</span>
+                </button>
+              )}
+              {choices.length > 0 ? (
+                <ChoiceCard
+                  choice={choices[0]}
+                  showMarker={showChoiceMarkers}
+                  className="player-flip-face is-back"
+                  onPick={handleChoice}
+                />
+              ) : (
+                <div className="player-choice player-flip-face is-back" aria-hidden="true">
+                  <span className="player-choice-text">{lastFirstChoice.current}</span>
+                </div>
+              )}
+            </div>
+            {choices.slice(1).map((choice, i) => (
+              <ChoiceCard
                 key={choice.index}
-                className={
-                  "player-choice" +
-                  (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
-                }
-                onClick={() => handleChoice(choice.index)}
-              >
-                {choice.sticky !== undefined && showChoiceMarkers && (
-                  <span className="player-choice-mark" aria-hidden="true">
-                    {choice.sticky ? "+" : "*"}
-                  </span>
-                )}
-                <span className="player-choice-text">{choice.text}</span>
-              </button>
+                choice={choice}
+                showMarker={showChoiceMarkers}
+                className="player-spine-node player-choice-extra"
+                style={{ animationDelay: `${(420 + i * 90).toString()}ms` }}
+                onPick={handleChoice}
+              />
             ))}
-          </div>
-        ) : hasPending ? (
-          <div className="choices" ref={choicesRef}>
-            <button className="player-choice player-continue" onClick={handleContinue}>
-              <span className="player-choice-text">Continue</span>
-            </button>
           </div>
         ) : null}
         </div>
       </div>
     </div>
+  );
+}
+
+/** One offered choice as a card on the rail: its `*`/`+` as written, then
+ *  the text. `style` carries the stagger delay for the slide-out. */
+function ChoiceCard({
+  choice,
+  showMarker,
+  className,
+  style,
+  onPick,
+}: {
+  choice: Choice;
+  showMarker: boolean;
+  className: string;
+  style?: CSSProperties;
+  onPick: (index: number) => void;
+}) {
+  return (
+    <button
+      className={
+        "player-choice " +
+        className +
+        (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
+      }
+      style={style}
+      onClick={() => onPick(choice.index)}
+    >
+      {choice.sticky !== undefined && showMarker && (
+        <span className="player-choice-mark" aria-hidden="true">
+          {choice.sticky ? "+" : "*"}
+        </span>
+      )}
+      <span className="player-choice-text">{choice.text}</span>
+    </button>
   );
 }
 
