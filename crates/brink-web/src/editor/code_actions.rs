@@ -148,36 +148,51 @@ impl EditorSession {
         };
         let abs_offset = self.to_absolute(path, view, offset);
         let cx = brink_ide::fix::FixCx::new(self.session.db());
+        // Resolve every edit fallibly, and drop the WHOLE fix if any edit
+        // names a file with no loaded source/path — cross-file edits are the
+        // reason `Fix::edits` exists (docs/autofix-spec.md §4), so a partial
+        // resolution here would offer a fix that `apply_fix` can only apply
+        // incompletely (review finding on #3384).
         let items: Vec<FixJs> = brink_ide::fix::fixes_at(&cx, file_id, abs_offset)
             .iter()
-            .map(|fix| FixJs {
-                code: fix.code.as_str().to_owned(),
-                title: fix.title.clone(),
-                applicability: fix.applicability.as_str().to_owned(),
-                edits: fix
-                    .edits
-                    .iter()
-                    .filter_map(|e| {
-                        let src = self.session.source(e.file)?;
-                        Some(FileEditJs {
-                            path: self.session.file_path(e.file)?.to_owned(),
-                            start: byte_to_utf16(src, e.range.start().into()),
-                            end: byte_to_utf16(src, e.range.end().into()),
-                            new_text: e.new_text.clone(),
-                        })
-                    })
-                    .collect(),
-                caret: fix.caret.and_then(|(file, at)| {
-                    let src = self.session.source(file)?;
-                    Some(FixCaretJs {
-                        path: self.session.file_path(file)?.to_owned(),
-                        offset: byte_to_utf16(src, at.into()),
-                    })
-                }),
-            })
+            .filter_map(|fix| self.fix_to_js(fix))
             .collect();
 
         serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Resolve one [`brink_ide::fix::Fix`] to its `FixJs` wire shape, or
+    /// `None` if any of its edits names a file with no loaded source/path.
+    /// Split out of [`fixes_at_impl`](Self::fixes_at_impl) so the
+    /// drop-the-whole-fix behavior is unit-testable without a fixer that
+    /// actually produces a cross-file edit (none does today).
+    fn fix_to_js(&self, fix: &brink_ide::fix::Fix) -> Option<FixJs> {
+        let edits: Vec<FileEditJs> = fix
+            .edits
+            .iter()
+            .map(|e| {
+                let src = self.session.source(e.file)?;
+                Some(FileEditJs {
+                    path: self.session.file_path(e.file)?.to_owned(),
+                    start: byte_to_utf16(src, e.range.start().into()),
+                    end: byte_to_utf16(src, e.range.end().into()),
+                    new_text: e.new_text.clone(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(FixJs {
+            code: fix.code.as_str().to_owned(),
+            title: fix.title.clone(),
+            applicability: fix.applicability.as_str().to_owned(),
+            edits,
+            caret: fix.caret.and_then(|(file, at)| {
+                let src = self.session.source(file)?;
+                Some(FixCaretJs {
+                    path: self.session.file_path(file)?.to_owned(),
+                    offset: byte_to_utf16(src, at.into()),
+                })
+            }),
+        })
     }
 
     fn apply_fix_impl(&self, path: &str, fix_json: &str) -> String {
@@ -200,6 +215,14 @@ impl EditorSession {
             };
             let start = utf16_to_byte(src, e.start);
             let end = utf16_to_byte(src, e.end);
+            // `TextRange::new` asserts `start <= end` and panics otherwise —
+            // `apply_fix`/`apply_fix_doc` are `#[wasm_bindgen]` entry points
+            // taking arbitrary caller JSON, so an inverted edit must be
+            // refused here rather than reaching that assert (review finding
+            // on #3384).
+            if start > end {
+                return error_json("fix has an inverted edit range");
+            }
             edits.push(brink_ide::rename::FileEdit {
                 file,
                 range: rowan::TextRange::new(start.into(), end.into()),
@@ -330,6 +353,55 @@ flow start() {
         assert!(
             !json.contains("Import `haggle`"),
             "code_actions must not carry the E025 fix: {json}"
+        );
+    }
+
+    /// Review finding on #3384: `apply_fix`/`apply_fix_doc` are
+    /// `#[wasm_bindgen]` entry points taking arbitrary caller JSON. A `FixJs`
+    /// with `end < start` used to reach `rowan::TextRange::new`, which
+    /// panics on an inverted range — this must refuse instead of aborting the
+    /// wasm session, exactly like every other malformed-input branch here.
+    #[test]
+    fn apply_fix_refuses_an_inverted_edit_range() {
+        let session = session();
+        let malformed = serde_json::json!({
+            "code": "E025",
+            "title": "malformed",
+            "applicability": "suggested",
+            "edits": [{ "path": "main.brink", "start": 10, "end": 0, "new_text": "" }],
+        });
+        let result = session.apply_fix(&malformed.to_string());
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("result JSON");
+        assert_eq!(parsed["ok"], false, "{result}");
+        assert_eq!(parsed["error"], "fix has an inverted edit range", "{result}");
+    }
+
+    /// Review finding on #3384: an edit naming a file with no loaded
+    /// source/path used to be silently dropped from `fixes_at`'s DTO while
+    /// the rest of the fix was still offered, so `apply_fix` would apply a
+    /// partial rewrite. `fix_to_js` — the exact mapping `fixes_at_impl` calls
+    /// — must drop the whole fix instead. No fixer produces a genuinely
+    /// unresolvable cross-file edit today (§4's currency is unreachable that
+    /// way until a multi-file fixer lands), so this constructs the `Fix` by
+    /// hand and calls the production mapping function directly.
+    #[test]
+    fn fix_to_js_drops_the_whole_fix_when_an_edit_names_an_unloaded_file() {
+        let session = session();
+        let fix = brink_ide::fix::Fix {
+            code: brink_ir::DiagnosticCode::E025,
+            title: "hand-built cross-file fix".to_owned(),
+            applicability: brink_ide::fix::Applicability::Suggested,
+            edits: vec![brink_ide::rename::FileEdit {
+                // A `FileId` this session never loaded a source for.
+                file: brink_ir::FileId(999_999),
+                range: rowan::TextRange::new(0.into(), 0.into()),
+                new_text: String::new(),
+            }],
+            caret: None,
+        };
+        assert!(
+            session.fix_to_js(&fix).is_none(),
+            "a fix with an unresolvable edit must be dropped entirely, not offered partially"
         );
     }
 }
