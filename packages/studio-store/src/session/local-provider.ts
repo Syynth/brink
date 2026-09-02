@@ -192,6 +192,16 @@ function choicesFromDebugState(
   }));
 }
 
+/** The runtime's line limit per turn (`FlowInstance::LINE_LIMIT`), mirrored
+ *  as the cap on the single-line stepping loops — guard against unbounded
+ *  growth on this side too. */
+const STEP_LINE_LIMIT = 10_000;
+
+/** `currentPath()` where the session has it; `null` on older stubs/hosts. */
+function currentPathOf(session: { currentPath?: () => string | null }): string | null {
+  return typeof session.currentPath === "function" ? session.currentPath() : null;
+}
+
 /** The transcript's echo of a taken choice (#3435): the text as before,
  *  plus how it was written and where it came from, when the wire says. */
 function choiceEcho(text: string, chosen: Choice | undefined): TranscriptLine {
@@ -656,9 +666,7 @@ export class LocalSessionProvider implements DebugSessionProvider {
       if (this.debugDriven()) {
         this.advanceDebug("run", false);
       } else {
-        const lines = session.continueToPause();
-        this.appendLines(lines);
-        const last = lines.at(-1);
+        const last = this.stepToPause(session);
         this.status = last ? statusOfLine(last.type) : this.status;
         this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
       }
@@ -671,6 +679,26 @@ export class LocalSessionProvider implements DebugSessionProvider {
     }
     this.refreshDebug();
     this.emit();
+  }
+
+  /**
+   * The journaled batch road, one line at a time (ruled 2026-09-02, "TS
+   * steps single lines"): each line is stamped with the knot/stitch the
+   * runtime reported BEFORE the continue that delivered it — where the
+   * line comes from (`currentPath()` is where the story IS, like ink's
+   * `currentPathString`). Stops at the first non-text line, and at the
+   * runtime's own line limit, so a runaway story cannot spin here.
+   * Returns the last line delivered.
+   */
+  private stepToPause(session: StorySessionHandle): SessionLine | undefined {
+    let last: SessionLine | undefined;
+    for (let i = 0; i < STEP_LINE_LIMIT; i++) {
+      const path = currentPathOf(session);
+      last = session.continueSingle();
+      this.appendLines([last], path);
+      if (last.type !== "text") break;
+    }
+    return last;
   }
 
   continue(): void {
@@ -1110,9 +1138,14 @@ export class LocalSessionProvider implements DebugSessionProvider {
         // itself restorable.
         this.advanceDebug(this.auto && !this.paused ? "run" : "line", stayPaused);
       } else {
-        const lines = this.auto ? session.continueToPause() : [session.continueSingle()];
-        this.appendLines(lines);
-        const last = lines.at(-1);
+        let last: SessionLine | undefined;
+        if (this.auto) {
+          last = this.stepToPause(session);
+        } else {
+          const path = currentPathOf(session);
+          last = session.continueSingle();
+          this.appendLines([last], path);
+        }
         this.status = last ? statusOfLine(last.type) : this.status;
         this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
       }
@@ -1141,8 +1174,9 @@ export class LocalSessionProvider implements DebugSessionProvider {
       if (this.debugDriven()) {
         this.advanceDebug("line", false);
       } else {
+        const path = currentPathOf(session);
         const line = session.continueSingle();
-        this.appendLines([line]);
+        this.appendLines([line], path);
         this.status = statusOfLine(line.type);
         this.choices = line.type === "choices" ? (line.choices ?? []) : [];
       }
@@ -1157,13 +1191,13 @@ export class LocalSessionProvider implements DebugSessionProvider {
     this.emit();
   }
 
-  private appendLines(lines: SessionLine[]): void {
+  private appendLines(lines: SessionLine[], path: string | null = null): void {
     for (const line of lines) {
       const text = line.text.replace(/\n$/, "");
       if (text)
         this.transcript = [
           ...this.transcript,
-          transcriptLine(text, line.tags, line.source),
+          transcriptLine(text, line.tags, line.source, path),
         ];
     }
   }
@@ -1195,23 +1229,41 @@ export class LocalSessionProvider implements DebugSessionProvider {
   private advanceDebug(kind: "run" | "line", stayPaused: boolean): void {
     const session = this.session;
     if (!session) return;
-    const outcome =
-      kind === "run" ? session.debugRun() : session.debugRunToLine();
-    this.applyDebugOutcome(outcome, stayPaused);
+    // One line per wasm call on the "run" road too (ruled 2026-09-02), so
+    // every row is stamped with the knot/stitch it came from — the path
+    // the runtime reports BEFORE the call that delivers it. A run ends at
+    // the first stop that is not "landed on the next line" (`step`) —
+    // breakpoint, choices, terminal, … — or at the line limit.
+    let outcome: DebugRunOutcome;
+    const rows: TranscriptLine[] = [];
+    let steps = 0;
+    do {
+      const path = currentPathOf(session);
+      outcome = session.debugRunToLine();
+      for (const line of outcome.lines) {
+        const text = line.text.replace(/\n$/, "");
+        if (text) rows.push(transcriptLine(text, line.tags, line.source, path));
+      }
+      steps += 1;
+    } while (kind === "run" && outcome.reason.type === "step" && steps < STEP_LINE_LIMIT);
+    this.applyDebugOutcome(outcome, stayPaused, rows);
   }
 
   /** Fold a debug outcome into the mirrored session state: transcript
    *  delta, paused-ness, status, choices. */
-  private applyDebugOutcome(outcome: DebugRunOutcome, stayPaused: boolean): void {
+  private applyDebugOutcome(
+    outcome: DebugRunOutcome,
+    stayPaused: boolean,
+    rows?: TranscriptLine[],
+  ): void {
     this.lastOutcome = outcome;
-    for (const line of outcome.lines) {
-      const text = line.text.replace(/\n$/, "");
-      if (text)
-        this.transcript = [
-          ...this.transcript,
-          transcriptLine(text, line.tags, line.source),
-        ];
-    }
+    const stamped =
+      rows ??
+      outcome.lines.flatMap((line) => {
+        const text = line.text.replace(/\n$/, "");
+        return text ? [transcriptLine(text, line.tags, line.source)] : [];
+      });
+    if (stamped.length > 0) this.transcript = [...this.transcript, ...stamped];
     this.refreshDebug();
     switch (outcome.reason.type) {
       case "breakpoint":
