@@ -603,7 +603,9 @@
   content: "";
   position: absolute;
   left: calc(var(--player-spine-x) - 0.5px);
-  top: 0;
+  /* The rail begins AT the start node's centre (spine padding-top + half
+     the start row), never above it. */
+  top: calc(4px + 10px);
   bottom: 0;
   width: 2px;
   background: var(--bs-border);
