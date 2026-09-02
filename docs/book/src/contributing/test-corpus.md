@@ -50,3 +50,7 @@ Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/s
 ## GitHub corpus
 
 The `tests_github/` directory contains real-world `.ink` files from open-source projects. These are used for parser smoke tests (zero panics on any input) and lossless roundtrip validation.
+
+## Probe-found edge cases
+
+Per maintainer directive (2026-09-02, `docs/decision-log.md`), a hand-minimized edge case discovered by the gen-expressions generator or by reference-differential probing against the C# ink runtime becomes a permanent corpus case, not a one-off fix. Cases added this way carry `origin = "brink"` in `metadata.toml`; a case documenting a *known* mismatch (brink diverges from the C# oracle) is still added with a real oracle golden and a `notes` field explaining the gap, and is called out separately so it is excluded from `RATCHET_EPISODE_COUNT` until fixed. The first batch of these covers nested-gather fallback-choice semantics (#3383), multi-conditional lifting (#3386), sequence sharing across lifted branches (#3275), and lift-order of function-call side effects (#3395).

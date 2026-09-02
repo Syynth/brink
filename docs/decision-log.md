@@ -4513,3 +4513,26 @@
   because several commands ship two or three defaults specifically to
   dodge browser-reserved chords (#107); flattening them in the editor
   would re-break what those alternates were added to fix.
+
+## Probe-found edge cases become permanent C#-oracle corpus cases
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-corpus
+- **SCOPE:** moderate
+- **WHAT:** Every hand-minimized edge case found by the gen-expressions
+  generator, or by reference-differential probing against the C# ink
+  runtime, gets turned into a permanent case under `tests/` with a real
+  C#-oracle golden (`oracle/*.oracle.json`, generated via `tools/ink-oracle`
+  — never hand-written), not just fixed and forgotten. This applies both to
+  cases brink already handles correctly (which raise
+  `RATCHET_EPISODE_COUNT`) and to cases brink is known to mismatch (which
+  are added anyway, documented as expected mismatches, and excluded from the
+  ratchet delta until fixed).
+- **WHY:** Maintainer directive: "for these weird edge cases, we absolutely
+  super need to create new oracle tests that fully cover this forever." A
+  fix without a locking regression test is not durable — the next
+  refactor of the lowering/codegen layers these edge cases exercise (nested
+  gathers and their fallback choices, #3383; multi-conditional lifting,
+  #3386; sequence sharing across lifted branches, #3275; evaluation-order
+  of lifted function calls, #3395) can silently reintroduce the bug with
+  nothing in CI to catch it.

@@ -1,0 +1,11 @@
+description = "Empty nested gather falls straight out to the enclosing outer gather (#3383)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "empty-nested-gather-falls-out"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = ["gather", "nested-choice", "empty-gather"]

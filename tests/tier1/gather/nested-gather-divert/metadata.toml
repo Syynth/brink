@@ -1,0 +1,11 @@
+description = "Nested-gather divert: top-level fallback choice stays invisible while a real choice is presented (#3383)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "nested-gather-divert"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = ["gather", "nested-choice", "divert", "fallback-choice"]

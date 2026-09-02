@@ -1,0 +1,11 @@
+description = "A {a|b|c} sequence shared across lifted inline-conditional branches on repeated visits (#3275)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "sequence-shared-across-lifted-branches"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences", "lifted-branches", "conditional"]

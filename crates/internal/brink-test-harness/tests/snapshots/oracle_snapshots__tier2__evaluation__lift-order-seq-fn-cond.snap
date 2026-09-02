@@ -1,0 +1,34 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/evaluation/lift-order-seq-fn-cond
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === FAIL
+> "" [Choices: "again" (0) -> 0]
+> "a1small\n" [Choices: "again" (0) -> 0]
+> "b2small\n" [Choices: "again" (0) -> 0]
+> "c3big\n" [Choices: "again" (0) -> 0]
+> "c4big\n" [Choices: "again" (0) -> 0]
+> "c5big\n" [Choices: "again" (0) -> 0]
+> "c6big\n" [Choices: "again" (0) -> 0]
+> "c7big\n" [Choices: "again" (0) -> 0]
+> "c8big\n" [Choices: "again" (0) -> 0]
+> "c9big\n" [Choices: "again" (0) -> 0]
+> "c10big\n" [Choices: "again" (0) -> 0]
+> "c11big\n" [Choices: "again" (0) -> 0]
+> "c12big\n" [Choices: "again" (0) -> 0]
+> "c13big\n" [Choices: "again" (0) -> 0]
+> "c14big\n" [Choices: "again" (0) -> 0]
+> "c15big\n" [Choices: "again" (0) -> 0]
+> "c16big\n" [Choices: "again" (0) -> 0]
+> "c17big\n" [Choices: "again" (0) -> 0]
+> "c18big\n" [Choices: "again" (0) -> 0]
+> "c19big\n" [Choices: "again" (0) -> 0]
+> "c20big\n" [Choices: "again" (0) -> 0]
+outcome: InputsExhausted
+  step 2: text differs
+    oracle: "b2big\n"
+    brink:  "b2small\n"

@@ -1,0 +1,11 @@
+description = "Nested-gather with an authored -> DONE inside the innermost gather; the outer gather text must never run (#3383)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "nested-gather-authored-done"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = ["gather", "nested-choice", "done", "fallback-choice"]

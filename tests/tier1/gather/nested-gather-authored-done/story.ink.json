@@ -1,0 +1,1 @@
+{"inkVersion":21,"root":[[{"->":"a"},["done",{"#n":"g-0"}],null],"done",{"a":[["ev","str","^q7","/str","/ev",{"*":".^.c-0","flg":20},{"c-0":["\n",["ev","str","^a6med","/str","/ev",{"*":".^.c-0","flg":4},{"c-0":["\n",{"->":".^.^.g-0"},null],"g-0":["^inner done","\n","done",{"->":"a.0.g-0"},null]}],{"#f":5}],"g-0":["^outer gather","\n","end",null]}],null]}],"listDefs":{}}
