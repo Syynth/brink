@@ -4788,3 +4788,11 @@
 - **SCOPE:** moderate
 - **WHAT:** (1) The provenance chip (`file:line` on hover) must never cover the line's text. (2) Transcript rows are not striped (no alternating row background). (3) Dialogue lines are indented a little under their speaker's header, so the speech reads as coming from the speaker. (4) A choice echo (`> Enough shopping`) links back to the choice's source the way a line does. (5) Player styling lives in Settings → Player (app scope): font family first — the desktop app enumerates the machine's fonts through the Tauri side; the web build offers a curated list plus a free-text family — with further knobs to follow.
 - **WHY:** Maintainer, reviewing the Player after the dialogue-run work: the chip "is covering the text"; "there's no reason it shouldn't link back to where it was"; indentation "to indicate it came from the speaker"; stripes read as a table, not prose; the font is a matter of taste, and taste is a setting — browsers cannot list installed fonts (fingerprinting), so enumeration is a desktop capability and the web gets a curated list.
+
+## Player look: design pass first; choice echoes carry their source marker; the editor follows the Player closely
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player, editor-ui
+- **SCOPE:** moderate
+- **WHAT:** (1) The Player gets a small design pass before more knobs are added — a better baseline (even padding on text rows, consistent rhythm) rather than fixes one at a time. (2) A choice echo in the transcript shows `*` or `+` to its left according to the choice's kind in the source (once-only vs sticky), marking it as the reader's pick. The two button-styling directions proposed (quiet buttons; echo as a "You" run) were both declined. (3) The editor's "follow the Player" behaviour is strengthened: the editor should track the Player's position much more closely as the story advances, not only on hover or ⌘-click.
+- **WHY:** Maintainer: "we should absolutely have a better baseline to work from"; the marker "indicate[s] it was a choice from the user, based on what type it was in the source"; the existing follow "is not nearly strong enough, it should follow the player much more closely."
