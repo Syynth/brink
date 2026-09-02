@@ -15,15 +15,29 @@
 //! registry test in this module can enumerate every fixer to enforce the §3
 //! test obligations on all of them at once.
 //!
-//! Batching (`apply_round`/`fix_all`, §5), the `[fix]` policy (§6), the
-//! Problems panel, `brink fix` (§8) and the LSP `fixAll` road are later
-//! milestones of #3374 — deliberately absent here.
+//! Batching (§5) and the policy the batch reads (§6.1) live in [`batch`] and
+//! [`policy`]: [`Select`] picks the diagnostics, [`apply_round`] turns them
+//! into one non-overlapping edit set, and [`fix_all`] runs rounds to a
+//! fixpoint. The Problems panel, `brink fix` (§8) and the LSP `fixAll` road
+//! are callers of those, and are later milestones of #3374 — as is where the
+//! [`FixPolicy`] comes *from* (`brink.toml`'s `[fix]` table, #3419); this
+//! module takes one as an input.
 
 use brink_db::ProjectDb;
 use brink_ir::{Diagnostic, DiagnosticCode, FileId};
 use rowan::TextSize;
 
 use crate::rename::FileEdit;
+
+pub mod batch;
+pub mod policy;
+pub mod select;
+
+pub use batch::{
+    Candidate, DEFAULT_MAX_ROUNDS, FixSite, Report, Round, apply_round, collect, fix_all, plan,
+};
+pub use policy::{FixMode, FixPolicy};
+pub use select::Select;
 
 /// How far a surface may go with a fix without asking the author — the tier
 /// (`docs/autofix-spec.md` §3). Each tier names the test that backs it; see
