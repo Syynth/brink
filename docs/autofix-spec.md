@@ -80,6 +80,19 @@ Decisions folded into the shape (RULED as the defaults, 2026-09-01):
   `brink-test-harness`; `Safe` fixtures in an integration-test crate
   that sees both.
 
+*As built (#3417, milestone 2):* the `Safe` helper is
+`brink_test_harness::fix::assert_safe_fix`
+(`crates/internal/brink-test-harness/src/fix.rs`), where the spec put it, and
+the fixtures are on disk at `tests/fix/<code>/{before,expected}.{ink,brink}`
+rather than in an integration-test crate. §3's `Safe` obligation is **split
+across two crates and neither half is optional**: `brink-test-harness`
+depends on `brink-ide`, so the registry test cannot call the oracle, and the
+oracle's sweep cannot be the only enforcement without silently letting a
+`Safe` fixer ship with no fixture at all. `brink_ide::fix`'s registry test
+demands the fixture exists and is well-formed; the harness's own
+`tests/fix_safe_obligations.rs` enumerates the same `FIXERS` registry and
+runs each `Safe` fixer's fixture through `assert_safe_fix`.
+
 *As built (#3377, milestone 1):* the model lives in `brink_ide::fix`
 (`Applicability`, `Fix`, `FixCx`, `Fixer`, `FIXERS`, `fixes_for`) with one
 addition the surfaces needed — `fixes_at(cx, file, offset)`, the
@@ -106,6 +119,41 @@ Deleting a duplicate `LIST` item changes host-readable state and is
 therefore Suggested, not Safe. Deleting unreachable code cannot pass
 the trace check by construction — that is why it cannot be Safe
 however sensible.
+
+### 3.1 A Safe fixer discharges a non-blocking diagnostic — by construction
+
+*Measured while building `assert_safe_fix` (#3417), and a consequence of
+§2's definition rather than a new rule.* Observable equivalence compares
+**two programs**. If the pre-fix source does not compile there is no
+program on the left, so §2 says nothing about the transformation and no
+amount of fixture work can make it say something. `assert_safe_fix`
+reports that as its own verdict (`NoPreImage`) rather than as a passing
+or failing comparison.
+
+So a `Safe` fixer's diagnostic must be one compilation survives — in
+practice `Warning` or `Info` severity, or a code a project has turned
+down. Every code on §9's Safe list already is. The four **migrated**
+fixers are the counterexample that makes the rule concrete: E025, E063,
+E080 and E081 all block compilation (E063's base severity is
+`types`-policy-dependent, and the policy under which it fires at all,
+`types = "strict"`, is the one that makes it an error), so all four record
+`NoPreImage` and could not declare `Safe` even if someone wanted them to.
+They already declare `Suggested`; this is the mechanical confirmation.
+The fixtures and their recorded verdicts live in `tests/fix/` — see that
+directory's `README.md`.
+
+Two further properties of the helper, both load-bearing:
+
+- **Translation identity is allowance-based, not all-or-nothing.** §2.2
+  asks for identity "for every line the transformation did not itself
+  edit", so a fixture declares the units its fix necessarily rewrites in
+  a `rewrites.txt`; every other reported change fails. The rewritten
+  units are reported either way.
+- **A vacuous comparison is not a pass.** Two programs that both run out
+  of content immediately agree on everything. The helper counts the
+  pre-fix program's *content* events (lines, choice presentations,
+  external calls, probe results) across the whole explored run set and
+  refuses to call an empty one equivalent.
 
 ## 4. Scope is the compilation, not the file — RULED
 

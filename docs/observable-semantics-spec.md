@@ -162,6 +162,11 @@ The targets:
   identity of §2.2 diffed in the same sweep. Two *independent* compiles
   per case, so compiler nondeterminism fails it too.
 - `tests/trace_mutation_study.rs` — tier 3a, below.
+- `tests/fix_safe_obligations.rs` — the first *consumer* of the oracle
+  (#3417): `brink_test_harness::fix::assert_safe_fix` compiles a
+  `tests/fix/<code>/` pre-fix/post-fix pair, explores the pre-fix
+  program's run set, replays it on the post-fix program, and diffs the
+  line tables. It is what backs `docs/autofix-spec.md` §3's *Safe* tier.
 
 Bounded exploration cannot *prove* equivalence for an unbounded
 program; the oracle has coverage, not completeness — the same standing
@@ -238,6 +243,22 @@ text — deleting unreachable code, renaming a shadowing temp — are not
 Safe however sensible; the auto-fix spec gives them their own tier that
 requires positive intent from the author. Deleting a duplicate `LIST`
 item changes item 3's values and is therefore not Safe either.
+
+**There must be two programs.** §2 compares runs of `P` and `Q`; a
+transformation whose input does not compile has no `P`, so the definition
+is not merely unsatisfied but inapplicable — the honest report is "no
+pre-image", not "not equivalent". Measured while building the auto-fix
+helper (#3417) and consequential there: a fixer whose diagnostic prevents
+compilation can never be *Safe*, whatever its edit does
+(`docs/autofix-spec.md` §3.1). It is vacuous for `brink fmt` and
+`brink-respell`, which only ever run on source that already compiles.
+
+**Nor is a vacuous comparison a pass.** Two programs that both run out of
+content immediately agree on every observable. Any consumer of the oracle
+that turns an empty diff into a claim owes a check that the baseline
+actually produced something; `assert_safe_fix` counts the pre-fix
+program's line, choice, external-call and probe events across the whole
+explored run set and refuses to certify a run set with none.
 
 ## 6. Not covered
 

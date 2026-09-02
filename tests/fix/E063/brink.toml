@@ -1,0 +1,3 @@
+[project]
+dialect = "brink"
+types = "strict"

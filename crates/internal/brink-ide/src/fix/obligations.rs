@@ -2,13 +2,27 @@
 //! curated fixtures the registry test runs them over.
 //!
 //! `docs/autofix-spec.md` §2 places the *trace* helper in
-//! `brink-test-harness` and the `Safe` fixtures in an integration-test crate.
-//! As built (#3377) both helpers live here instead, because the registry test
-//! that enforces them is `brink-ide`'s own and the trace half has nothing to
-//! delegate to yet: [`assert_safe_fix`] is a stub until #3371's observable-
-//! semantics oracle lands, at which point it moves to the harness in place.
+//! `brink-test-harness` and the `Safe` fixtures on disk. As of #3417 that is
+//! where the `Safe` half lives: `brink_test_harness::fix::assert_safe_fix`
+//! compiles a `tests/fix/<code>/` fixture's two sides, replays the pre-fix
+//! program's run set on the post-fix one, and diffs the line tables.
+//!
+//! It cannot be *called* from here — `brink-test-harness` depends on
+//! `brink-ide`, so the dependency only runs one way — so §3's `Safe`
+//! obligation is split. This module owns the half that can be checked
+//! without the oracle: the fixture must **exist** and be well-formed
+//! ([`safe_fixture_dir`], enforced by the registry test in
+//! [`super`]). The harness's own
+//! `crates/internal/brink-test-harness/tests/fix_safe_obligations.rs`
+//! enumerates the same [`super::FIXERS`] registry and runs each fixture
+//! through the oracle. Neither half is optional, and neither can be
+//! satisfied by the other.
+//!
+//! The `Suggested`/`Placeholder` obligation ([`assert_fix_discharges`]) stays
+//! here in full: it needs a live [`IdeSession`], not a compiled program.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use brink_analyzer::{Dialect, TypePolicy};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, Severity};
@@ -179,14 +193,201 @@ pub(crate) fn assert_fix_discharges(fixer: &dyn Fixer, fixture: &FixFixture) {
     );
 }
 
-/// §3's `Safe` obligation — **stub**. Today it runs the discharge check only;
-/// the trace-equivalence half (compile → apply → recompile → empty
-/// `trace_diff` → line-table identity for untouched lines) is upgraded in
-/// place when #3371's observable-semantics oracle lands. Nothing declares
-/// `max_applicability = Safe` yet, so no fixer is currently under-tested by
-/// the gap.
-pub(crate) fn assert_safe_fix(fixer: &dyn Fixer, fixture: &FixFixture) {
-    assert_fix_discharges(fixer, fixture);
+/// Where a code's `Safe` fixture lives: `tests/fix/<code>/`, resolved from
+/// this crate's manifest so it works from any working directory.
+///
+/// The same path `brink_test_harness::fix::fix_fixtures_root` resolves; the
+/// registry test below pins them together by requiring a real fixture there.
+pub(crate) fn safe_fixture_dir(code: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fix")
+        .join(code)
+}
+
+/// The half of §3's `Safe` obligation this crate can check: the fixture for
+/// `code` exists and carries both sides on the same surface.
+///
+/// Running it — compile, replay, diff — is
+/// `brink_test_harness::fix::assert_safe_fix`'s job; see this module's doc
+/// for why the check is split rather than duplicated.
+pub(crate) fn assert_safe_fixture_present(code: &str) {
+    let _ = load_disk_fixture(code);
+}
+
+/// A `tests/fix/<code>/` fixture as this crate reads it. The harness reads
+/// the same directory its own way; what is shared is the layout, not a type.
+struct DiskFixture {
+    /// The entry's file name, `story.ink` or `story.brink` — the name both
+    /// sides compile under in the harness, so the same name is used here.
+    entry_name: String,
+    /// `before.*`.
+    before: String,
+    /// `expected.*`.
+    expected: String,
+    /// Other files beside the entry, in name order.
+    support: Vec<(String, String)>,
+    /// The fixture's `brink.toml`, if it has one.
+    config: Option<String>,
+}
+
+/// Read `tests/fix/<code>/`, asserting the layout `docs/autofix-spec.md` §3
+/// requires.
+fn load_disk_fixture(code: &str) -> DiskFixture {
+    let dir = safe_fixture_dir(code);
+    assert!(
+        dir.is_dir(),
+        "{code} has no Safe fixture at {} — docs/autofix-spec.md §3 requires one per Safe fixer",
+        dir.display()
+    );
+
+    let read = std::fs::read_dir(&dir);
+    assert!(read.is_ok(), "read {}: {:?}", dir.display(), read.err());
+    let mut paths: Vec<std::path::PathBuf> = read
+        .expect("just asserted above")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+
+    let mut before: Option<(String, String)> = None;
+    let mut expected: Option<String> = None;
+    let mut support: Vec<(String, String)> = Vec::new();
+    let mut config: Option<String> = None;
+    for path in paths {
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_ok(), "read {}: {:?}", path.display(), text.err());
+        let text = text.expect("just asserted above");
+        match name.as_str() {
+            "before.ink" => before = Some(("story.ink".to_owned(), text)),
+            "before.brink" => before = Some(("story.brink".to_owned(), text)),
+            "expected.ink" | "expected.brink" => expected = Some(text),
+            "brink.toml" => config = Some(text),
+            "rewrites.txt" | "README.md" => {}
+            _ => support.push((name, text)),
+        }
+    }
+
+    assert!(
+        before.is_some() && expected.is_some(),
+        "{} must hold before.ink + expected.ink (or the .brink pair)",
+        dir.display()
+    );
+    let (entry_name, before) = before.expect("just asserted above");
+    DiskFixture {
+        entry_name,
+        before,
+        expected: expected.expect("just asserted above"),
+        support,
+        config,
+    }
+}
+
+/// The bridge between a fixture on disk and the fixer that owns it: applying
+/// the fixer's own [`Fix`](super::Fix) to `before.*` must reproduce
+/// `expected.*` **exactly**.
+///
+/// Without this the two halves of §3's obligation would never meet.
+/// `assert_safe_fix` in the harness compares `before.*` against `expected.*`
+/// as two source files; nothing in it knows a fixer exists, so a
+/// hand-written `expected.*` the fixer does not actually produce would be
+/// certified observably equivalent and prove nothing about the fix.
+pub(crate) fn assert_fixture_matches_fixer(fixer: &dyn Fixer) {
+    let code = fixer.code();
+    let fixture = load_disk_fixture(code.as_str());
+
+    // The same seam a real project reaches the analyzer through: sources
+    // first, then the `brink.toml`-resolved `AnalysisOptions` (issue #2885 —
+    // a bare session defaults to `Dialect::StrictInk`, which is not what any
+    // of these fixtures runs under), then one analyze pass per file.
+    let mut session = IdeSession::new();
+    for (name, text) in &fixture.support {
+        session.update_source(name, text.clone());
+    }
+    let entry = session.update_source(&fixture.entry_name, fixture.before.clone());
+    let mut options = brink_analyzer::AnalysisOptions::default();
+    if let Some(toml) = &fixture.config {
+        let parsed = brink_project_config::parse_str(toml);
+        assert!(
+            parsed.is_ok(),
+            "{}'s brink.toml must parse: {:?}",
+            code.as_str(),
+            parsed.err()
+        );
+        let (config, _warnings) = parsed.expect("just asserted above");
+        let _ = options.apply_project_config(&config, false, false);
+    }
+    session.apply_analysis_options(&options);
+    for (name, text) in &fixture.support {
+        session.update_and_analyze(name, text.clone());
+    }
+    session.update_and_analyze(&fixture.entry_name, fixture.before.clone());
+
+    let target = {
+        let diagnostics = session.db().diagnostics(entry);
+        assert!(
+            diagnostics.is_some(),
+            "{}'s before.* produced no diagnostics at all",
+            code.as_str()
+        );
+        let diagnostics = diagnostics.expect("just asserted above");
+        let found = diagnostics.iter().find(|d| d.code == code);
+        assert!(
+            found.is_some(),
+            "{}'s before.* must actually carry a {} — it reported {diagnostics:?}",
+            code.as_str(),
+            code.as_str()
+        );
+        found.expect("just asserted above").clone()
+    };
+
+    let cx = FixCx::new(session.db());
+    let offered = fixes_for(&cx, &target);
+    assert!(
+        !offered.is_empty(),
+        "{} offers no fix for its own disk fixture",
+        code.as_str()
+    );
+    let fix = &offered[0];
+    assert!(
+        !fix.edits.is_empty(),
+        "{} produced a fix with no edits",
+        code.as_str()
+    );
+
+    let mut edits: Vec<&crate::rename::FileEdit> = fix.edits.iter().collect();
+    for edit in &edits {
+        assert!(
+            edit.file == entry,
+            "{}'s fix edits a file other than the entry — the on-disk fixture format \
+             carries one before/expected pair",
+            code.as_str()
+        );
+    }
+    // Splice from the end so earlier offsets stay valid.
+    edits.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+    let mut produced = fixture.before.clone();
+    for edit in edits {
+        produced.replace_range(
+            usize::from(edit.range.start())..usize::from(edit.range.end()),
+            &edit.new_text,
+        );
+    }
+
+    assert_eq!(
+        produced,
+        fixture.expected,
+        "{}'s fixer does not produce its own expected.* — \
+         tests/fix/{}/expected.* must be exactly what the fix writes",
+        code.as_str(),
+        code.as_str()
+    );
 }
 
 // ── The curated fixtures ─────────────────────────────────────────────
