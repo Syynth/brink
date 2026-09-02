@@ -50,6 +50,7 @@ describe("gutter visibility toggle", () => {
       formGlyph: "hover",
       autoOpenForm: true,
       showGutters: false,
+      showInlayHints: false,
       fontSize: 14,
       appFontSize: 12,
     });
@@ -58,6 +59,7 @@ describe("gutter visibility toggle", () => {
       formGlyph: "hover",
       autoOpenForm: true,
       showGutters: false,
+      showInlayHints: false,
       fontSize: 14,
       appFontSize: 12,
     });

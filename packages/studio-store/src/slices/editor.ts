@@ -25,6 +25,10 @@ export interface EditorSlice {
    *  scales with visible gutter elements (#3119), so it doubles as the
    *  interim latency escape hatch on large projects in the desktop app. */
   showGutters: boolean;
+  /** Inlay hints (`: string`-style type/name annotations) — Settings.
+   *  Applied live to all editors, and to editors opened after (#3350).
+   *  Default ON (current behavior). */
+  showInlayHints: boolean;
   /** Editor text size in px (beta feedback 2026-08-25). Mirrored onto the
    *  studio root as `--bs-editor-font-size`, which the CM6 theme reads. */
   editorFontSize: number;
@@ -37,6 +41,7 @@ export interface EditorSlice {
   setFormGlyph(mode: FormGlyphMode): void;
   setAutoOpenForm(on: boolean): void;
   setShowGutters(on: boolean): void;
+  setShowInlayHints(on: boolean): void;
   /** Set an absolute size (clamped to the usable range). */
   setEditorFontSize(px: number): void;
   /** Step the size by `delta` px (clamped) — the zoom in/out commands. */
@@ -51,6 +56,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
+  showInlayHints: true,
   editorFontSize: 14,
   appFontSize: 12,
 
@@ -74,6 +80,11 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
 
   setShowGutters(on) {
     set({ showGutters: on });
+  },
+
+  setShowInlayHints(on) {
+    set({ showInlayHints: on });
+    get()._documents?.setInlayHints(on);
   },
 
   setEditorFontSize(px) {

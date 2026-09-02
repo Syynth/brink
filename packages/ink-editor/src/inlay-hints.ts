@@ -45,9 +45,34 @@ export interface InlayHintsOptions {
 
 const refreshInlayHintsEffect = StateEffect.define<void>();
 
+/**
+ * Live on/off switch (#3350, Settings ▸ Editor "Show inlay hints"): a
+ * StateField + effect, the same shape `argument-widgets.ts` uses for
+ * `formGlyph`/`autoOpen` — the extension stays mounted either way, so no
+ * compartment reconfiguration is needed, and a view whose baseline predates
+ * this field simply ignores the effect (matches `setEditorActionKeys`'s
+ * no-op-on-a-stale-view contract). Default true: hidden state is opt-in.
+ */
+const setInlayHintsEnabledEffect = StateEffect.define<boolean>();
+const inlayHintsEnabledField = StateField.define<boolean>({
+  create: () => true,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setInlayHintsEnabledEffect)) return e.value;
+    return value;
+  },
+});
+
+/** Switch a view's inlay hints on/off live (the Settings toggle dispatches
+ *  this) — broadcast across every open editor by `DocumentSessions.setInlayHints`. */
+export function setInlayHints(view: EditorView, on: boolean): void {
+  view.dispatch({ effects: setInlayHintsEnabledEffect.of(on) });
+}
+
 export function inlayHintsExtension(options: InlayHintsOptions): Extension {
   const build = (state: EditorState): DecorationSet =>
-    perfTime("cm.inlayHints.decorations", () => buildInlayDecorations(state, options));
+    state.field(inlayHintsEnabledField)
+      ? perfTime("cm.inlayHints.decorations", () => buildInlayDecorations(state, options))
+      : Decoration.none;
   // #3064 C2 adaptive deferral: hints are advisory paint — in a LARGE
   // document a doc change maps the existing widgets through the edit and
   // the content refreshes once the burst ends; small documents rebuild
@@ -57,7 +82,9 @@ export function inlayHintsExtension(options: InlayHintsOptions): Extension {
       return build(state);
     },
     update(value, tr: Transaction) {
-      if (tr.effects.some((e) => e.is(refreshInlayHintsEffect))) return build(tr.state);
+      if (tr.effects.some((e) => e.is(refreshInlayHintsEffect) || e.is(setInlayHintsEnabledEffect))) {
+        return build(tr.state);
+      }
       if (!tr.docChanged) return value;
       if (tr.newDoc.lines >= DEFER_LINE_THRESHOLD) return value.map(tr.changes);
       return build(tr.state);
@@ -65,6 +92,7 @@ export function inlayHintsExtension(options: InlayHintsOptions): Extension {
     provide: (f) => EditorView.decorations.from(f),
   });
   return [
+    inlayHintsEnabledField,
     field,
     deferredRefresh(
       refreshInlayHintsEffect,

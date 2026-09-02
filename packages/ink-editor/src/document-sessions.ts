@@ -55,6 +55,7 @@ import { ClassifierSessionHandle, getTokenTypeNames } from "@brink-lang/web";
 import { brinkStudio, type BrinkStudioOptions } from "./extensions.js";
 import { brinkBasicSetup } from "./setup.js";
 import { startInlineRename, type BreakageContext } from "./rename.js";
+import { setInlayHints } from "./inlay-hints.js";
 import {
   setFormGlyphMode,
   setFormAutoOpen,
@@ -378,6 +379,9 @@ export class DocumentSessions {
   private formGlyph: FormGlyphMode = DEFAULT_FORM_GLYPH_MODE;
   /** Auto-open the Form on accepting a function completion (Settings; default off). */
   private autoOpen = false;
+  /** Show inlay hints (#3350, Settings ▸ Editor). Default ON — a hidden
+   *  hint stream is the opt-in state, matching the issue's ruled default. */
+  private inlayHintsOn = true;
 
   constructor(
     project: ProjectSession,
@@ -434,6 +438,18 @@ export class DocumentSessions {
     this.autoOpen = on;
     for (const slot of this.slots.values()) {
       if (slot.view !== null) setFormAutoOpen(slot.view, on);
+    }
+  }
+
+  /**
+   * Show or hide inlay hints live across all open editors, and for every
+   * editor opened after this call (#3350, Settings ▸ Editor). Mirrors
+   * {@link setFormGlyph}'s broadcast shape; default ON (current behavior).
+   */
+  setInlayHints(on: boolean): void {
+    this.inlayHintsOn = on;
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) setInlayHints(slot.view, on);
     }
   }
 
@@ -550,6 +566,9 @@ export class DocumentSessions {
     // A slot opened after a keymap rebind starts on the host's chords, not
     // the shipped defaults the baseline compartment carries.
     if (this.editorActionKeys !== null) setEditorActionKeys(view, this.editorActionKeys);
+    // A slot opened after the Settings toggle hid hints starts on the
+    // field's own default (on) otherwise — only push when it disagrees.
+    if (!this.inlayHintsOn) setInlayHints(view, false);
 
     if (this.focusedSlotId === id) {
       this.applyFocusSideEffects(slot);
