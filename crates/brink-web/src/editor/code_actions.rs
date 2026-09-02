@@ -1,7 +1,7 @@
 use wasm_bindgen::prelude::*;
 
-use super::{EditorSession, ViewContext};
-use crate::editor_dto::{CodeActionJs, code_action_kind_str};
+use super::{EditorSession, ViewContext, byte_to_utf16, utf16_to_byte};
+use crate::editor_dto::{CodeActionJs, FileEditJs, FixCaretJs, FixJs, code_action_kind_str};
 use crate::editor_refactor::{error_json, gated_move_json, move_result_json_simple};
 
 #[wasm_bindgen]
@@ -41,6 +41,43 @@ impl EditorSession {
         };
         self.resolve_code_action_impl(&d.path, d.view.as_ref(), data_json, offset)
     }
+
+    /// The auto-fixes offered for the diagnostics under `offset`
+    /// (`docs/autofix-spec.md` §7). Returns a JSON `FixJs[]`.
+    ///
+    /// Distinct from [`code_actions`](Self::code_actions), which offers
+    /// structural refactors keyed off the *syntax* at the cursor: a fix is
+    /// keyed off a *diagnostic* and carries its own minimal edits, which may
+    /// land in other files (§4).
+    pub fn fixes_at(&self, offset: u32) -> String {
+        self.fixes_at_impl(&self.active_path, self.view.as_ref(), offset)
+    }
+
+    /// Document-handle variant of [`fixes_at`](Self::fixes_at).
+    pub fn fixes_at_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.fixes_at_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Turn a chosen fix (a `FixJs` from [`fixes_at`](Self::fixes_at), passed
+    /// back verbatim) into the sources to write, as `StructuralResult`-shaped
+    /// JSON: `new_source` for `path` plus a `cross_file_edits` entry per other
+    /// file the fix touches.
+    ///
+    /// Side-effect-free — the caller applies through its own apply seam.
+    pub fn apply_fix(&self, fix_json: &str) -> String {
+        self.apply_fix_impl(&self.active_path, fix_json)
+    }
+
+    /// Document-handle variant of [`apply_fix`](Self::apply_fix).
+    pub fn apply_fix_doc(&self, doc: u32, fix_json: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return error_json("unknown document handle");
+        };
+        self.apply_fix_impl(&d.path, fix_json)
+    }
 }
 
 impl EditorSession {
@@ -53,31 +90,11 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        let mut actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
-
-        // Auto-import quick-fix (M-4, modules-spec §2/§9): a cursor on an
-        // out-of-scope module reference (`E025`) offers an `AddImport` action.
-        // Session-aware (needs the whole-project module view), so it is merged
-        // here rather than in the source-only `code_actions` path; it resolves
-        // through the same `resolve_code_action` seam as a pure source rewrite.
-        actions.extend(brink_ide::import_fix::import_actions(
-            self.session.db(),
-            file_id,
-            abs_offset,
-        ));
-
-        // T1c creation-site + call()/bind() strict quick-fixes (issue #744):
-        // same session-aware merge posture as the auto-import offer above.
-        actions.extend(brink_ide::creation_site_fix::fn_value_actions(
-            self.session.db(),
-            file_id,
-            abs_offset,
-        ));
-        actions.extend(brink_ide::value_call_fix::value_call_actions(
-            self.session.db(),
-            file_id,
-            abs_offset,
-        ));
+        // Diagnostic-keyed quick-fixes are NOT merged here (#3377): they are
+        // `Fix`es with their own `Vec<FileEdit>` currency, pulled through
+        // `fixes_at` / applied through `apply_fix`. This road stays the
+        // structural-refactor road (`docs/autofix-spec.md` §2).
+        let actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
 
         let items: Vec<CodeActionJs> = actions
             .iter()
@@ -123,5 +140,196 @@ impl EditorSession {
             Some(new_source) => move_result_json_simple(new_source, path),
             None => error_json("code action produced no change"),
         }
+    }
+
+    fn fixes_at_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let abs_offset = self.to_absolute(path, view, offset);
+        let cx = brink_ide::fix::FixCx::new(self.session.db());
+        let items: Vec<FixJs> = brink_ide::fix::fixes_at(&cx, file_id, abs_offset)
+            .iter()
+            .map(|fix| FixJs {
+                code: fix.code.as_str().to_owned(),
+                title: fix.title.clone(),
+                applicability: fix.applicability.as_str().to_owned(),
+                edits: fix
+                    .edits
+                    .iter()
+                    .filter_map(|e| {
+                        let src = self.session.source(e.file)?;
+                        Some(FileEditJs {
+                            path: self.session.file_path(e.file)?.to_owned(),
+                            start: byte_to_utf16(src, e.range.start().into()),
+                            end: byte_to_utf16(src, e.range.end().into()),
+                            new_text: e.new_text.clone(),
+                        })
+                    })
+                    .collect(),
+                caret: fix.caret.and_then(|(file, at)| {
+                    let src = self.session.source(file)?;
+                    Some(FixCaretJs {
+                        path: self.session.file_path(file)?.to_owned(),
+                        offset: byte_to_utf16(src, at.into()),
+                    })
+                }),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn apply_fix_impl(&self, path: &str, fix_json: &str) -> String {
+        let fix: FixJs = match serde_json::from_str(fix_json) {
+            Ok(f) => f,
+            Err(e) => return error_json(&format!("invalid fix: {e}")),
+        };
+        if fix.edits.is_empty() {
+            return error_json("fix carries no edits");
+        }
+
+        // Back to brink-ide's currency: file-absolute *byte* ranges.
+        let mut edits: Vec<brink_ide::rename::FileEdit> = Vec::with_capacity(fix.edits.len());
+        for e in &fix.edits {
+            let Some(file) = self.session.file_id(&e.path) else {
+                return error_json("fix names a file that is not loaded");
+            };
+            let Some(src) = self.session.source(file) else {
+                return error_json("fix names a file that is not loaded");
+            };
+            let start = utf16_to_byte(src, e.start);
+            let end = utf16_to_byte(src, e.end);
+            edits.push(brink_ide::rename::FileEdit {
+                file,
+                range: rowan::TextRange::new(start.into(), end.into()),
+                new_text: e.new_text.clone(),
+            });
+        }
+
+        let Some(primary) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(primary) else {
+            return error_json("no source");
+        };
+        let primary_edits: Vec<(usize, usize, String)> = edits
+            .iter()
+            .filter(|e| e.file == primary)
+            .map(|e| {
+                (
+                    usize::from(e.range.start()),
+                    usize::from(e.range.end()),
+                    e.new_text.clone(),
+                )
+            })
+            .collect();
+
+        // A fix is offered only where the analyzer already reports a problem
+        // and is pinned by §3's discharge obligation, so it applies directly:
+        // `safe` with an empty breakage report, exactly as the three
+        // diagnostic-keyed quick-fixes behaved before #3377.
+        let result = brink_ide::structural_result::StructuralResult {
+            new_source: Some(crate::editor_refactor::apply_edits(source, primary_edits)),
+            cross_file_edits: edits,
+            safe: true,
+            introduced: Vec::new(),
+        };
+        crate::editor_refactor::structural_result_json(&self.session, &result, path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorSession;
+
+    /// The definition side: a `pub` flow in its own native module.
+    const BARTER: &str = "\
+pub flow haggle() {
+  You haggle over the price.
+}
+";
+
+    /// The reference side, with **no** `use` — the `E025` import-required
+    /// shape the `ImportFixer` discharges.
+    const MAIN: &str = "\
+flow start() {
+  The market is busy.
+  -> haggle
+}
+";
+
+    fn session() -> EditorSession {
+        let mut session = EditorSession::new();
+        session.update_file("market/barter.brink", BARTER);
+        session.update_file("main.brink", MAIN);
+        assert!(session.set_active_file("main.brink"));
+        session
+    }
+
+    fn haggle_reference_offset() -> u32 {
+        let at = MAIN.find("haggle\n}");
+        assert!(at.is_some(), "fixture must carry the divert target");
+        u32::try_from(at.expect("just asserted above")).expect("offset")
+    }
+
+    /// The `@brink-lang/web` fix road end to end: a cursor on the `E025`
+    /// squiggle offers the `FixJs` the studio menu renders, carrying its own
+    /// minimal edit rather than a `resolveCodeAction` payload.
+    #[test]
+    fn fixes_at_offers_the_import_fix_over_the_wasm_boundary() {
+        let session = session();
+        let json = session.fixes_at(haggle_reference_offset());
+        let fixes: serde_json::Value = serde_json::from_str(&json).expect("fixes JSON");
+        let fixes = fixes.as_array().expect("array");
+        assert_eq!(fixes.len(), 1, "{json}");
+        assert_eq!(fixes[0]["code"], "E025");
+        assert_eq!(fixes[0]["applicability"], "suggested");
+        assert_eq!(
+            fixes[0]["title"],
+            "Import `haggle` from `story::market::barter`"
+        );
+        let edits = fixes[0]["edits"].as_array().expect("edits");
+        assert_eq!(edits.len(), 1, "{json}");
+        assert_eq!(edits[0]["path"], "main.brink");
+        assert_eq!(edits[0]["new_text"], "use story::market::barter::haggle;\n");
+    }
+
+    /// Handing the chosen fix straight back produces the sources to write —
+    /// the `StructuralResult` shape the studio's existing apply seam takes.
+    #[test]
+    fn apply_fix_returns_the_new_source_for_the_chosen_fix() {
+        let session = session();
+        let json = session.fixes_at(haggle_reference_offset());
+        let fixes: serde_json::Value = serde_json::from_str(&json).expect("fixes JSON");
+        let chosen = serde_json::to_string(&fixes[0]).expect("re-serialize");
+
+        let applied = session.apply_fix(&chosen);
+        let result: serde_json::Value = serde_json::from_str(&applied).expect("result JSON");
+        assert_eq!(result["ok"], true, "{applied}");
+        assert_eq!(result["safe"], true, "{applied}");
+        assert_eq!(result["path"], "main.brink");
+        assert_eq!(
+            result["new_source"],
+            format!("use story::market::barter::haggle;\n{MAIN}")
+        );
+        assert_eq!(
+            result["cross_file_edits"].as_array().expect("array").len(),
+            0,
+            "a single-file fix touches no other file: {applied}"
+        );
+    }
+
+    /// The structural-refactor road no longer carries diagnostic-keyed
+    /// quick-fixes (#3377): `code_actions` offers only the syntax-keyed
+    /// entries, and the import fix is reachable through `fixes_at` alone.
+    #[test]
+    fn code_actions_no_longer_merge_the_import_quick_fix() {
+        let session = session();
+        let json = session.code_actions(haggle_reference_offset());
+        assert!(
+            !json.contains("Import `haggle`"),
+            "code_actions must not carry the E025 fix: {json}"
+        );
     }
 }

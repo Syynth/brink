@@ -2591,7 +2591,7 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let (source, is_native, import_actions, fn_value_actions, value_call_actions) = {
+        let (source, is_native, fix_actions) = {
             let projects = lock_db(&self.db);
             let Some(db) = projects.project_for_path(&path) else {
                 return Ok(Some(vec![]));
@@ -2606,23 +2606,13 @@ impl LanguageServer for Backend {
             let offset: u32 = idx
                 .offset(params.range.start.line, params.range.start.character)
                 .into();
-            // Auto-import quick-fix (M-4): session-aware, so it reads the
-            // module-qualified db while the lock is held, then merges into the
-            // same code-action list as the source-only actions below.
-            let import_actions = brink_ide::import_fix::import_actions(db, file_id, offset);
-            // T1c creation-site + call()/bind() strict quick-fixes (issue
-            // #744): same session-aware merge posture.
-            let fn_value_actions =
-                brink_ide::creation_site_fix::fn_value_actions(db, file_id, offset);
-            let value_call_actions =
-                brink_ide::value_call_fix::value_call_actions(db, file_id, offset);
-            (
-                source,
-                db.is_native(file_id),
-                import_actions,
-                fn_value_actions,
-                value_call_actions,
-            )
+            // Diagnostic-keyed auto-fixes (`docs/autofix-spec.md` §7): the
+            // fixes for the diagnostics under the cursor. Session-aware, so
+            // they are pulled while the lock is held and their edits resolved
+            // to a `WorkspaceEdit` here — a `Fix` carries its own edits, so
+            // there is nothing left to `code_action_resolve`.
+            let fix_actions = fix_code_actions(db, file_id, offset);
+            (source, db.is_native(file_id), fix_actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -2639,33 +2629,28 @@ impl LanguageServer for Backend {
         // one — the exact "gate explicitly, don't rely on the coincidence"
         // lesson PRs #2286/#2358 already applied to `sort_knots_in_source`
         // and `convert_element` in `crates/brink-web`'s `EditorSession`.
-        let mut domain_actions = if is_native {
+        let domain_actions = if is_native {
             Vec::new()
         } else {
             brink_ide::code_actions::code_actions(&source, cursor_offset)
         };
-        domain_actions.extend(import_actions);
-        domain_actions.extend(fn_value_actions);
-        domain_actions.extend(value_call_actions);
 
         let uri = params.text_document.uri.as_str();
-        let lsp_actions = domain_actions
-            .into_iter()
-            .map(|a| {
-                let kind = match a.kind {
-                    brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
-                    brink_ide::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
-                    brink_ide::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
-                };
-                let data = code_action_data_to_json(&a.data, uri);
-                tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(CodeAction {
-                    title: a.title,
-                    kind: Some(kind),
-                    data: Some(data),
-                    ..Default::default()
-                })
+        let mut lsp_actions: Vec<tower_lsp::lsp_types::CodeActionOrCommand> = fix_actions;
+        lsp_actions.extend(domain_actions.into_iter().map(|a| {
+            let kind = match a.kind {
+                brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
+                brink_ide::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
+                brink_ide::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+            };
+            let data = code_action_data_to_json(&a.data, uri);
+            tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(CodeAction {
+                title: a.title,
+                kind: Some(kind),
+                data: Some(data),
+                ..Default::default()
             })
-            .collect();
+        }));
 
         Ok(Some(lsp_actions))
     }
@@ -3416,52 +3401,64 @@ fn code_action_data_to_json(
                 "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
             })
         }
-        brink_ide::code_actions::CodeActionData::AddImport {
-            module,
-            name,
-            native,
-        } => {
-            serde_json::json!({
-                "kind": "add_import", "uri": uri, "module": module, "name": name,
-                "native": native,
-            })
-        }
-        brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
-            target,
-            occurrence,
-            keep,
-        } => serde_json::json!({
-            "kind": "trim_fn_literal_args", "uri": uri,
-            "target": target, "occurrence": occurrence, "keep": keep,
-        }),
-        brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
-            target,
-            occurrence,
-            vars,
-        } => serde_json::json!({
-            "kind": "bind_fn_literal_ref_args", "uri": uri,
-            "target": target, "occurrence": occurrence, "vars": vars,
-        }),
-        brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
-            verb,
-            occurrence,
-            keep,
-        } => serde_json::json!({
-            "kind": "trim_value_call_args", "uri": uri,
-            "verb": verb, "occurrence": occurrence, "keep": keep,
-        }),
     }
 }
 
-/// Read `data[field]` as a JSON u64 and narrow it to `usize`, clamping
-/// (never wrapping) on a lossy platform/value combination — this data only
-/// ever carries small in-file occurrence/argument counts, but a malformed or
-/// tampered `data` payload must not silently truncate into a wrong index.
-fn json_u64_as_usize(data: &serde_json::Value, field: &str) -> usize {
-    data.get(field)
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .unwrap_or(usize::MAX)
+/// The diagnostic-keyed auto-fixes offered at `offset`, as LSP quick-fix
+/// code actions (`docs/autofix-spec.md` §7).
+///
+/// A [`Fix`](brink_ide::fix::Fix) carries its own `Vec<FileEdit>`, so the
+/// `WorkspaceEdit` is built here and the action needs no
+/// `code_action_resolve` round-trip. Cross-file edits (§4) are carried
+/// through — the fix's edits are grouped by file, each resolved against that
+/// file's own line index.
+///
+/// The full §7 LSP surface (`CodeAction.diagnostics`, `source.fixAll.brink`)
+/// is a later milestone of #3374; this keeps the three migrated fixers
+/// reachable over LSP on the new currency.
+fn fix_code_actions(
+    db: &brink_db::ProjectDb,
+    file_id: brink_ir::FileId,
+    offset: u32,
+) -> Vec<tower_lsp::lsp_types::CodeActionOrCommand> {
+    let cx = brink_ide::fix::FixCx::new(db);
+    let mut out = Vec::new();
+    for fix in brink_ide::fix::fixes_at(&cx, file_id, offset) {
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        let mut resolvable = true;
+        for edit in &fix.edits {
+            let (Some(edit_path), Some(edit_source)) =
+                (db.file_path(edit.file), db.source(edit.file))
+            else {
+                resolvable = false;
+                break;
+            };
+            let Ok(uri) = Url::from_file_path(edit_path) else {
+                resolvable = false;
+                break;
+            };
+            let idx = LineIndex::new(edit_source);
+            changes.entry(uri).or_default().push(TextEdit {
+                range: convert::to_lsp_range(edit.range, &idx),
+                new_text: edit.new_text.clone(),
+            });
+        }
+        if !resolvable || changes.is_empty() {
+            continue;
+        }
+        out.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+            CodeAction {
+                title: fix.title,
+                kind: Some(CodeActionKind::QUICKFIX),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
+    }
+    out
 }
 
 /// Decode a `code_action_resolve` request's `data` payload (the `kind`
@@ -3506,67 +3503,6 @@ fn code_action_data_from_json(
             brink_ide::code_actions::CodeActionData::FormatStitch {
                 knot: knot_name.to_owned(),
                 stitch: stitch_name.to_owned(),
-            }
-        }
-        Some("add_import") => {
-            let module = data
-                .get("module")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let name = data
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let native = data
-                .get("native")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            brink_ide::code_actions::CodeActionData::AddImport {
-                module: module.to_owned(),
-                name: name.to_owned(),
-                native,
-            }
-        }
-        Some("trim_fn_literal_args") => {
-            let target = data
-                .get("target")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
-                target: target.to_owned(),
-                occurrence: json_u64_as_usize(data, "occurrence"),
-                keep: json_u64_as_usize(data, "keep"),
-            }
-        }
-        Some("bind_fn_literal_ref_args") => {
-            let target = data
-                .get("target")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let vars = data
-                .get("vars")
-                .and_then(serde_json::Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
-                target: target.to_owned(),
-                occurrence: json_u64_as_usize(data, "occurrence"),
-                vars,
-            }
-        }
-        Some("trim_value_call_args") => {
-            let verb = data
-                .get("verb")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
-                verb: verb.to_owned(),
-                occurrence: json_u64_as_usize(data, "occurrence"),
-                keep: json_u64_as_usize(data, "keep"),
             }
         }
         _ => return None,

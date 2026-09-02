@@ -3,7 +3,7 @@
 //! `brink_analyzer::fn_values`, docs/t1c-spec.md §2):
 //!
 //! - **E081** (over-binding): the bound args are longer than the target's
-//!   declared param row — [`fn_value_actions`] offers "remove extra
+//!   declared param row — [`TrimFnLiteralArgsFixer`] offers "remove extra
 //!   argument(s)", trimming the creation site back to the declared prefix.
 //! - **E080** (unbound `ref` param): a `ref` param has no bound argument at
 //!   all (`fl.args.len() <= param index`) — offered only when *every*
@@ -28,135 +28,226 @@
 //! (the fix ranges from "declare the target as a function" to "the caller
 //! meant a different name entirely"), so it is left as a diagnostic only.
 //!
-//! Both fixes gate on the analyzer's own diagnostic being present at the
-//! cursor (`brink_db::ProjectDb::diagnostics`) before doing any of their own
-//! structural work — same posture as [`crate::import_fix`]'s E025 gate: the
-//! diagnostic pass, not this module, owns the rule.
+//! Both fixers key off the analyzer's own diagnostic (they are dispatched
+//! from [`crate::fix::fixes_for`] on `d.code`, and anchor their structural
+//! search at `d.range.start()`) — same posture as [`crate::import_fix`]'s
+//! E025 fixer: the diagnostic pass, not this module, owns the rule.
 //!
 //! `#fn(...)` is ink-frontend-only syntax (there is no native-dialect
 //! spelling — `brink_ir::hir::lower_native` never lowers a `FnLiteral`), so
 //! this module parses with `brink_syntax` unconditionally and skips native
 //! files via [`brink_db::ProjectDb::is_native`], mirroring the dialect
-//! branch [`crate::import_fix::insert_import`] takes for the same reason.
+//! branch [`crate::import_fix::import_edit`] takes for the same reason.
 //!
-//! Session-aware structural facts (the target's declared param row, from
-//! [`brink_db::ProjectDb::symbol_index`]/`resolve`) are captured into the
-//! [`CodeActionData`] payload at offer time; resolution
-//! ([`resolve_fn_value_action`]) is then a pure source rewrite keyed by the
-//! target name + its occurrence index among same-named `#fn(...)` sites in
-//! the file (never a stored byte range, which could go stale against an
-//! intervening edit — the same convention
-//! [`crate::code_actions::CodeActionData::SortStitches`]/`FormatStitch`
-//! already follow, keyed by name rather than position).
+//! Both fixes are expressed as minimal [`FileEdit`]s over the located
+//! `#fn(...)` site — the one fix currency (`docs/autofix-spec.md` §2).
 
 use brink_db::ProjectDb;
-use brink_ir::{DiagnosticCode, FileId, SymbolIndex, SymbolKind};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, SymbolIndex, SymbolInfo, SymbolKind};
 use brink_syntax::ast::{AstNode as _, FnLiteral};
-use rowan::TextSize;
+use rowan::{TextRange, TextSize};
 
-use crate::code_actions::{CodeAction, CodeActionData, CodeActionKind};
+use crate::fix::{Applicability, Fix, FixCx, Fixer};
+use crate::rename::FileEdit;
 
-/// Collect `#fn(...)` creation-site quick-fixes applicable at `offset` in
-/// `file_id`: "remove extra argument(s)" for E081, "bind ref argument(s)"
-/// for E080. Empty when the cursor is not inside a `#fn(...)` literal
-/// carrying one of these diagnostics.
-#[must_use]
-pub fn fn_value_actions(db: &ProjectDb, file_id: FileId, offset: u32) -> Vec<CodeAction> {
-    if db.is_native(file_id) {
-        // `#fn(...)` has no native-dialect spelling — see module doc.
-        return Vec::new();
-    }
-    let Some(source) = db.source(file_id) else {
-        return Vec::new();
-    };
-    let at = TextSize::from(offset);
+/// The `E081` over-binding fixer: trim the creation site's bound-argument
+/// list back to the target's declared param row.
+pub struct TrimFnLiteralArgsFixer;
 
-    let parse = brink_syntax::parse(source);
-    let root = parse.tree().syntax().clone();
-
-    let Some(fl) = root
-        .descendants()
-        .filter_map(FnLiteral::cast)
-        .filter(|fl| fl.syntax().text_range().contains_inclusive(at))
-        .min_by_key(|fl| fl.syntax().text_range().len())
-    else {
-        return Vec::new();
-    };
-
-    // Gate on the analyzer's own diagnostic — it, not this function, owns
-    // the creation-site rules (same posture as `import_fix::import_actions`
-    // gating on E025). Both E081 and E080 anchor at the whole `#fn(...)`
-    // literal's own range (`fn_values::FnValueVisitor::push` sites use
-    // `fl.ptr.text_range()`), which is exactly what we just matched by
-    // cursor containment.
-    let has_creation_diag = db.diagnostics(file_id).is_some_and(|diags| {
-        diags.iter().any(|d| {
-            matches!(d.code, DiagnosticCode::E081 | DiagnosticCode::E080)
-                && d.range.contains_inclusive(at)
-        })
-    });
-    if !has_creation_diag {
-        return Vec::new();
+impl Fixer for TrimFnLiteralArgsFixer {
+    fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::E081
     }
 
-    let Some(target_path) = fl.target() else {
-        return Vec::new();
-    };
-    let target_name = target_path.full_name();
-
-    let Some((resolutions, _)) = db.resolve(file_id) else {
-        return Vec::new();
-    };
-    let target_range = target_path.syntax().text_range();
-    let Some(res) = resolutions.iter().find(|r| r.range == target_range) else {
-        return Vec::new();
-    };
-    let index = db.symbol_index();
-    let Some(info) = index.symbols.get(&res.target) else {
-        return Vec::new();
-    };
-    let is_function_def = matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch)
-        && info.detail.as_deref() == Some("function");
-    if !is_function_def {
-        return Vec::new();
+    /// The discarded arguments were being bound, not ignored — dropping them
+    /// loses author-written text, which §3 puts below `Safe`.
+    fn max_applicability(&self) -> Applicability {
+        Applicability::Suggested
     }
 
-    let args_len = fl.args().count();
-    let node_range = fl.syntax().text_range();
-    let Some(occurrence) = fn_literal_occurrence(&root, &target_name, node_range) else {
-        return Vec::new();
-    };
-
-    let mut actions = Vec::new();
-
-    // E081 — over-binding: trim back to the declared row.
-    if args_len > info.params.len() {
-        actions.push(CodeAction {
+    fn fixes(&self, cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
+        let Some(site) = CreationSite::locate(cx.db, d) else {
+            return Vec::new();
+        };
+        let keep = site.info.params.len();
+        if site.args_len <= keep {
+            return Vec::new();
+        }
+        let Some(range) = site.trailing_args_range(keep) else {
+            return Vec::new();
+        };
+        vec![Fix {
+            code: DiagnosticCode::E081,
             title: format!(
-                "Remove extra argument(s) — `{target_name}` declares {} parameter(s)",
-                info.params.len()
+                "Remove extra argument(s) — `{}` declares {keep} parameter(s)",
+                site.target_name
             ),
-            kind: CodeActionKind::QuickFix,
-            data: CodeActionData::TrimFnLiteralArgs {
-                target: target_name.clone(),
-                occurrence,
-                keep: info.params.len(),
-            },
-        });
+            applicability: Applicability::Suggested,
+            edits: vec![FileEdit {
+                file: d.file,
+                range,
+                new_text: String::new(),
+            }],
+            caret: None,
+        }]
+    }
+}
+
+/// The `E080` unbound-`ref`-param fixer: append the durable global `VAR`s
+/// that fill the unbound trailing `ref` params.
+pub struct BindRefArgsFixer;
+
+impl Fixer for BindRefArgsFixer {
+    fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::E080
     }
 
-    // E080 — a `ref` param with no bound arg at all. Only offered when no
-    // *already-bound* argument itself carries an E080 (see
-    // `has_e080_on_bound_arg`'s doc) — otherwise the fix would add the
-    // missing args and still leave the call not compiling.
-    if !has_e080_on_bound_arg(db, file_id, &fl, args_len)
-        && let Some(action) =
-            bind_ref_args_action(&index, &info.params, args_len, &target_name, occurrence)
-    {
-        actions.push(action);
+    /// Binding a specific `VAR` is a guess about which cell the author meant
+    /// (an unambiguous same-named one, but still a choice), so `Suggested`.
+    fn max_applicability(&self) -> Applicability {
+        Applicability::Suggested
     }
 
-    actions
+    fn fixes(&self, cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
+        let Some(site) = CreationSite::locate(cx.db, d) else {
+            return Vec::new();
+        };
+        // Only offered when no *already-bound* argument itself carries an
+        // E080 (see `has_e080_on_bound_arg`'s doc) — otherwise the fix would
+        // add the missing args and still leave the call not compiling.
+        if has_e080_on_bound_arg(cx.db, d.file, &site.literal, site.args_len) {
+            return Vec::new();
+        }
+        let index = cx.db.symbol_index();
+        let Some(vars) = bind_ref_vars(&index, &site.info.params, site.args_len) else {
+            return Vec::new();
+        };
+
+        let title = if vars.len() == 1 {
+            format!(
+                "Bind `{}` as the ref argument for `{}`",
+                vars[0], site.target_name
+            )
+        } else {
+            let joined = vars
+                .iter()
+                .map(|v| format!("`{v}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Bind {joined} as the ref arguments for `{}`",
+                site.target_name
+            )
+        };
+        vec![Fix {
+            code: DiagnosticCode::E080,
+            title,
+            applicability: Applicability::Suggested,
+            edits: vec![FileEdit {
+                file: d.file,
+                range: TextRange::empty(site.args_end()),
+                new_text: format!(", {}", vars.join(", ")),
+            }],
+            caret: None,
+        }]
+    }
+}
+
+/// The `#fn(target, args…)` literal a creation-site diagnostic points at,
+/// plus the target's resolved declaration.
+struct CreationSite {
+    literal: FnLiteral,
+    target_name: String,
+    /// End of the target path — where the argument list starts.
+    target_end: TextSize,
+    info: SymbolInfo,
+    args_len: usize,
+}
+
+impl CreationSite {
+    /// Locate the `#fn(...)` literal `d` anchors in, and resolve its target
+    /// to a function definition. `None` for a native file (no `#fn(...)`
+    /// spelling), an unresolvable target, or a target that is not a function.
+    fn locate(db: &ProjectDb, d: &Diagnostic) -> Option<Self> {
+        if db.is_native(d.file) {
+            // `#fn(...)` has no native-dialect spelling — see module doc.
+            return None;
+        }
+        let source = db.source(d.file)?;
+        let at = d.range.start();
+
+        let parse = brink_syntax::parse(source);
+        let root = parse.tree().syntax().clone();
+
+        // Both E081 and E080 anchor inside the `#fn(...)` literal — E080 at
+        // the literal itself for an unbound param, at the offending argument
+        // for a bound-but-not-durable one. The tightest literal covering the
+        // anchor is the site in either case.
+        let literal = root
+            .descendants()
+            .filter_map(FnLiteral::cast)
+            .filter(|fl| fl.syntax().text_range().contains_inclusive(at))
+            .min_by_key(|fl| fl.syntax().text_range().len())?;
+
+        let target_path = literal.target()?;
+        let target_name = target_path.full_name();
+
+        let (resolutions, _) = db.resolve(d.file)?;
+        let target_range = target_path.syntax().text_range();
+        let res = resolutions.iter().find(|r| r.range == target_range)?;
+        let index = db.symbol_index();
+        let info = index.symbols.get(&res.target)?;
+        let is_function_def = matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch)
+            && info.detail.as_deref() == Some("function");
+        if !is_function_def {
+            return None;
+        }
+
+        let args_len = literal.args().count();
+        Some(Self {
+            literal,
+            target_name,
+            target_end: target_range.end(),
+            info: info.clone(),
+            args_len,
+        })
+    }
+
+    /// The byte range covering every argument after the first `keep` — the
+    /// span an over-binding trim deletes. Runs from the end of the last kept
+    /// item (the target path when `keep == 0`) to the literal's real closing
+    /// `)`.
+    ///
+    /// `None` when the parser never consumed a `)` (an unterminated
+    /// `#fn(...)` under error recovery): assuming `text_range().end() - 1` is
+    /// a `)` byte would silently fuse the last kept argument with whatever
+    /// follows the node. See [`crate::text::closing_paren_offset`].
+    fn trailing_args_range(&self, keep: usize) -> Option<TextRange> {
+        let start = if keep == 0 {
+            self.target_end
+        } else {
+            self.literal
+                .args()
+                .nth(keep - 1)?
+                .syntax()
+                .text_range()
+                .end()
+        };
+        let close_paren = crate::text::closing_paren_offset(self.literal.syntax())?;
+        Some(TextRange::new(
+            start,
+            TextSize::from(u32::try_from(close_paren).unwrap_or(u32::MAX)),
+        ))
+    }
+
+    /// Where an appended argument goes: after the last bound argument, or
+    /// straight after the target path when nothing is bound yet.
+    fn args_end(&self) -> TextSize {
+        self.literal
+            .args()
+            .last()
+            .map_or(self.target_end, |a| a.syntax().text_range().end())
+    }
 }
 
 /// Whether any *already-bound* argument (`fl`'s args at index `< args_len`)
@@ -166,14 +257,14 @@ pub fn fn_value_actions(db: &ProjectDb, file_id: FileId, offset: u32) -> Vec<Cod
 /// diagnostic at the argument's own range, not the whole `#fn(...)`
 /// literal's).
 ///
-/// [`fn_value_actions`]'s "bind ref argument(s)" fix only ever *appends*
-/// args for the currently-*unbound* trailing `ref` params — it can never
-/// clear a diagnostic on an argument that is already there. Offering it
-/// anyway when one of those exists would leave the call still not
-/// compiling after the "fix", contradicting this module's guarantee that
-/// the fix always leaves the call fully bound (see module doc). Skipping
-/// under-fixes rather than guessing here — same posture as the `val`-param-
-/// inside-the-span case in [`bind_ref_args_action`]'s own doc.
+/// [`BindRefArgsFixer`]'s fix only ever *appends* args for the
+/// currently-*unbound* trailing `ref` params — it can never clear a
+/// diagnostic on an argument that is already there. Offering it anyway when
+/// one of those exists would leave the call still not compiling after the
+/// "fix", contradicting this module's guarantee that the fix always leaves
+/// the call fully bound (see module doc). Skipping under-fixes rather than
+/// guessing here — same posture as the `val`-param-inside-the-span case in
+/// [`bind_ref_vars`]'s own doc.
 fn has_e080_on_bound_arg(db: &ProjectDb, file_id: FileId, fl: &FnLiteral, args_len: usize) -> bool {
     let Some(diags) = db.diagnostics(file_id) else {
         return false;
@@ -186,8 +277,8 @@ fn has_e080_on_bound_arg(db: &ProjectDb, file_id: FileId, fl: &FnLiteral, args_l
     })
 }
 
-/// The E080 "bind ref argument(s)" fix, split out of
-/// [`fn_value_actions`] to keep that function under the line-count lint.
+/// The durable global `VAR` names that fill the E080 fix's missing bound
+/// arguments, in parameter order.
 ///
 /// The span that needs filling is `[args_len, last_ref_idx]` — up to and
 /// including the *last* declared `ref` param, since any `ref` param at or
@@ -197,18 +288,16 @@ fn has_e080_on_bound_arg(db: &ProjectDb, file_id: FileId, fl: &FnLiteral, args_l
 /// binding); a `val` param *inside* the span does, and there is no safe
 /// value to synthesize for it, so no fix is offered in that case — see
 /// module doc.
-fn bind_ref_args_action(
+fn bind_ref_vars(
     index: &SymbolIndex,
     params: &[brink_ir::ParamInfo],
     args_len: usize,
-    target_name: &str,
-    occurrence: usize,
-) -> Option<CodeAction> {
+) -> Option<Vec<String>> {
     let last_ref_idx = params.iter().rposition(|p| p.is_ref)?;
     if last_ref_idx < args_len {
         return None;
     }
-    let span = &params[args_len..=last_ref_idx];
+    let span = params.get(args_len..=last_ref_idx)?;
     if !span.iter().all(|p| p.is_ref) {
         return None;
     }
@@ -220,26 +309,7 @@ fn bind_ref_args_action(
     if vars.is_empty() {
         return None;
     }
-
-    let title = if vars.len() == 1 {
-        format!("Bind `{}` as the ref argument for `{target_name}`", vars[0])
-    } else {
-        let joined = vars
-            .iter()
-            .map(|v| format!("`{v}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("Bind {joined} as the ref arguments for `{target_name}`")
-    };
-    Some(CodeAction {
-        title,
-        kind: CodeActionKind::QuickFix,
-        data: CodeActionData::BindFnLiteralRefArgs {
-            target: target_name.to_owned(),
-            occurrence,
-            vars,
-        },
-    })
+    Some(vars)
 }
 
 /// An unambiguous durable global `VAR` (or `#@local` flow-local, same
@@ -262,118 +332,10 @@ fn matching_global_var(index: &SymbolIndex, name: &str) -> Option<String> {
     index.symbols.get(first).map(|s| s.name.clone())
 }
 
-/// The 0-based index of the `#fn(...)` literal at `node_range` among every
-/// `#fn(target, …)` site in the file naming the same `target`, in source
-/// (document) order — the disambiguating key [`CodeActionData::
-/// TrimFnLiteralArgs`]/`BindFnLiteralRefArgs` carry instead of a byte range.
-fn fn_literal_occurrence(
-    root: &brink_syntax::SyntaxNode,
-    target: &str,
-    node_range: rowan::TextRange,
-) -> Option<usize> {
-    root.descendants()
-        .filter_map(FnLiteral::cast)
-        .filter(|fl| fl.target().is_some_and(|t| t.full_name() == target))
-        .position(|fl| fl.syntax().text_range() == node_range)
-}
-
-/// Resolve a [`CodeActionData::TrimFnLiteralArgs`]/`BindFnLiteralRefArgs`
-/// action: a pure source rewrite, re-locating the `occurrence`-th
-/// `#fn(target, …)` site fresh from `source` (never trusting a
-/// previously-computed byte range — see module doc).
-#[must_use]
-pub fn resolve_fn_value_action(source: &str, data: &CodeActionData) -> Option<String> {
-    match data {
-        CodeActionData::TrimFnLiteralArgs {
-            target,
-            occurrence,
-            keep,
-        } => trim_fn_literal_args(source, target, *occurrence, *keep),
-        CodeActionData::BindFnLiteralRefArgs {
-            target,
-            occurrence,
-            vars,
-        } => bind_fn_literal_ref_args(source, target, *occurrence, vars),
-        _ => None,
-    }
-}
-
-fn nth_fn_literal(
-    root: &brink_syntax::SyntaxNode,
-    target: &str,
-    occurrence: usize,
-) -> Option<FnLiteral> {
-    root.descendants()
-        .filter_map(FnLiteral::cast)
-        .filter(|fl| fl.target().is_some_and(|t| t.full_name() == target))
-        .nth(occurrence)
-}
-
-fn trim_fn_literal_args(
-    source: &str,
-    target: &str,
-    occurrence: usize,
-    keep: usize,
-) -> Option<String> {
-    let parse = brink_syntax::parse(source);
-    let root = parse.tree().syntax().clone();
-    let fl = nth_fn_literal(&root, target, occurrence)?;
-    let target_path = fl.target()?;
-    let args: Vec<_> = fl.args().collect();
-    if args.len() <= keep {
-        // Already at or under the kept count — nothing to trim (stale
-        // offer, e.g. a previous fix already applied).
-        return None;
-    }
-
-    let last_kept_end: usize = if keep == 0 {
-        target_path.syntax().text_range().end().into()
-    } else {
-        args[keep - 1].syntax().text_range().end().into()
-    };
-    // Re-locate the real closing `)` token rather than assuming the node's
-    // `text_range().end() - 1` is a `)` byte — that assumption breaks under
-    // parse-error recovery (an unterminated `#fn(...)`), see
-    // `crate::text::closing_paren_offset`.
-    let close_paren = crate::text::closing_paren_offset(fl.syntax())?;
-
-    let mut out = String::with_capacity(source.len());
-    out.push_str(source.get(..last_kept_end)?);
-    out.push_str(source.get(close_paren..)?);
-    Some(out)
-}
-
-fn bind_fn_literal_ref_args(
-    source: &str,
-    target: &str,
-    occurrence: usize,
-    vars: &[String],
-) -> Option<String> {
-    if vars.is_empty() {
-        return None;
-    }
-    let parse = brink_syntax::parse(source);
-    let root = parse.tree().syntax().clone();
-    let fl = nth_fn_literal(&root, target, occurrence)?;
-    let target_path = fl.target()?;
-    let args: Vec<_> = fl.args().collect();
-
-    let insert_at: usize = match args.last() {
-        Some(a) => a.syntax().text_range().end().into(),
-        None => target_path.syntax().text_range().end().into(),
-    };
-    let insertion = format!(", {}", vars.join(", "));
-
-    let mut out = String::with_capacity(source.len() + insertion.len());
-    out.push_str(source.get(..insert_at)?);
-    out.push_str(&insertion);
-    out.push_str(source.get(insert_at..)?);
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fix::fixes_at;
     use crate::session::IdeSession;
 
     fn session_with(src: &str) -> IdeSession {
@@ -385,6 +347,21 @@ mod tests {
         session.update_source("test.ink", src.to_string());
         session.update_and_analyze("test.ink", src.to_string());
         session
+    }
+
+    /// Apply a fix's edits to `src`. The logic under test is the fixer's;
+    /// this only splices (single-file fixtures, spliced back to front).
+    fn applied(src: &str, fix: &Fix) -> String {
+        let mut out = src.to_owned();
+        let mut edits: Vec<&FileEdit> = fix.edits.iter().collect();
+        edits.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+        for e in edits {
+            out.replace_range(
+                usize::from(e.range.start())..usize::from(e.range.end()),
+                &e.new_text,
+            );
+        }
+        out
     }
 
     const HEAL: &str = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n";
@@ -400,29 +377,32 @@ mod tests {
         let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
         let off = u32::try_from(src.find("2)").expect("cursor site")).expect("fits");
-        let actions = fn_value_actions(session.db(), file, off);
-        let titles: Vec<&String> = actions.iter().map(|a| &a.title).collect();
-        assert_eq!(actions.len(), 1, "{titles:?}");
-        assert!(actions[0].title.contains("Remove extra argument"));
-        assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::TrimFnLiteralArgs { target, occurrence: 0, keep: 1 }
-                    if target == "double"
-            ),
-            "{:?}",
-            actions[0].data
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        let titles: Vec<&String> = fixes.iter().map(|f| &f.title).collect();
+        assert_eq!(fixes.len(), 1, "{titles:?}");
+        assert_eq!(fixes[0].code, DiagnosticCode::E081);
+        assert_eq!(fixes[0].applicability, Applicability::Suggested);
+        assert_eq!(
+            fixes[0].title,
+            "Remove extra argument(s) — `double` declares 1 parameter(s)"
+        );
+        assert_eq!(
+            applied(&src, &fixes[0]),
+            format!("{PURE}=== main ===\n~ temp f = #fn(double, 1)\n-> DONE\n")
         );
     }
 
     #[test]
-    fn trim_resolves_and_reanalysis_clears_e081() {
+    fn trim_edit_reanalysis_clears_e081() {
         let src = format!("{PURE}=== main ===\n~ temp f = #fn(double, 1, 2)\n-> DONE\n");
-        let fixed = trim_fn_literal_args(&src, "double", 0, 1).expect("resolves");
-        assert_eq!(
-            fixed,
-            format!("{PURE}=== main ===\n~ temp f = #fn(double, 1)\n-> DONE\n")
-        );
+        let session = session_with(&src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("2)").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(&src, &fixes[0]);
 
         // Prove the resulting source actually passes analysis (the E079-E081
         // house rule): re-run the same per-file diagnostics pass the offer
@@ -430,11 +410,9 @@ mod tests {
         // project that actually parses `#fn(...)` at all (Brink dialect),
         // not vacuously passing because E051 (extension syntax) ate the
         // diagnostic surface first.
-        let mut session = IdeSession::new();
-        session.set_language_dialect(brink_analyzer::Dialect::Brink);
-        session.update_and_analyze("test.ink", fixed);
-        let file = session.file_id("test.ink").expect("file id");
-        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let after = session_with(&patched);
+        let file = after.file_id("test.ink").expect("file id");
+        let diags = after.db().diagnostics(file).expect("diagnostics");
         assert!(
             diags.iter().all(|d| d.code != DiagnosticCode::E081),
             "{diags:?}"
@@ -442,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn trim_returns_none_when_closing_paren_is_missing() {
+    fn no_trim_edit_when_closing_paren_is_missing() {
         // Unterminated `#fn(...)` — parser error-recovery (`p.expect
         // (R_PAREN)` without a `)` to consume) leaves the FN_LITERAL node
         // without ever bumping an `R_PAREN` token, so its `text_range().
@@ -450,7 +428,20 @@ mod tests {
         // silently fuse the "2" argument with the newline that actually
         // follows the node instead of failing safe.
         let src = format!("{PURE}=== main ===\n~ temp f = #fn(double, 1, 2\n-> DONE\n");
-        assert_eq!(trim_fn_literal_args(&src, "double", 0, 1), None);
+        let session = session_with(&src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let e081 = diags.iter().find(|d| d.code == DiagnosticCode::E081);
+        assert!(
+            e081.is_some(),
+            "fixture must still carry an E081 to fix: {diags:?}"
+        );
+        let cx = FixCx::new(session.db());
+        assert!(
+            TrimFnLiteralArgsFixer
+                .fixes(&cx, e081.expect("just asserted above"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -459,7 +450,8 @@ mod tests {
         let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
         let off = u32::try_from(src.find("1)").expect("cursor site")).expect("fits");
-        assert!(fn_value_actions(session.db(), file, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 
     // ── E080: bind ref argument(s) ───────────────────────────────────
@@ -470,61 +462,76 @@ mod tests {
         let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
         let off = u32::try_from(src.find("#fn(heal)").expect("site") + 5).expect("fits");
-        let actions = fn_value_actions(session.db(), file, off);
-        let titles: Vec<&String> = actions.iter().map(|a| &a.title).collect();
-        assert_eq!(actions.len(), 1, "{titles:?}");
-        assert!(actions[0].title.contains("Bind `hp`"));
-        assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::BindFnLiteralRefArgs { target, occurrence: 0, vars }
-                    if target == "heal" && vars == &["hp".to_owned()]
-            ),
-            "{:?}",
-            actions[0].data
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        let titles: Vec<&String> = fixes.iter().map(|f| &f.title).collect();
+        assert_eq!(fixes.len(), 1, "{titles:?}");
+        assert_eq!(fixes[0].code, DiagnosticCode::E080);
+        assert_eq!(fixes[0].title, "Bind `hp` as the ref argument for `heal`");
+        assert_eq!(
+            applied(&src, &fixes[0]),
+            format!("{HEAL}VAR hp = 10\n=== main ===\n~ temp f = #fn(heal, hp)\n-> DONE\n")
         );
     }
 
     #[test]
-    fn bind_resolves_and_reanalysis_clears_e080() {
+    fn bind_edit_reanalysis_clears_e080() {
         let src = format!("{HEAL}VAR hp = 10\n=== main ===\n~ temp f = #fn(heal)\n-> DONE\n");
-        let fixed =
-            bind_fn_literal_ref_args(&src, "heal", 0, &["hp".to_owned()]).expect("resolves");
-        assert_eq!(
-            fixed,
-            format!("{HEAL}VAR hp = 10\n=== main ===\n~ temp f = #fn(heal, hp)\n-> DONE\n")
-        );
-
-        let mut session = IdeSession::new();
-        session.set_language_dialect(brink_analyzer::Dialect::Brink);
-        session.update_and_analyze("test.ink", fixed);
+        let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
-        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let off = u32::try_from(src.find("#fn(heal)").expect("site") + 5).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(&src, &fixes[0]);
+
+        let after = session_with(&patched);
+        let file = after.file_id("test.ink").expect("file id");
+        let diags = after.db().diagnostics(file).expect("diagnostics");
         assert!(
             diags.iter().all(|d| d.code != DiagnosticCode::E080),
             "{diags:?}"
         );
     }
 
+    /// Two unbound `ref` params means two `E080` diagnostics on the same
+    /// literal, and the fixer's one edit binds both — so the menu must show
+    /// the entry once, not twice (`fixes_at`'s identical-fix collapse).
     #[test]
     fn binds_multiple_trailing_ref_params_in_one_shot() {
         let src = format!(
             "{HEAL2}VAR hp = 10\nVAR mp = 5\n=== main ===\n~ temp f = #fn(heal2)\n-> DONE\n"
         );
-        let fixed = bind_fn_literal_ref_args(&src, "heal2", 0, &["hp".to_owned(), "mp".to_owned()])
-            .expect("resolves");
+        let session = session_with(&src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("#fn(heal2)").expect("site") + 5).expect("fits");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
         assert_eq!(
-            fixed,
+            diags
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::E080)
+                .count(),
+            2,
+            "fixture must carry one E080 per unbound ref param: {diags:?}"
+        );
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1, "identical fixes collapse into one entry");
+        assert_eq!(
+            fixes[0].title,
+            "Bind `hp`, `mp` as the ref arguments for `heal2`"
+        );
+        let patched = applied(&src, &fixes[0]);
+        assert_eq!(
+            patched,
             format!(
                 "{HEAL2}VAR hp = 10\nVAR mp = 5\n=== main ===\n~ temp f = #fn(heal2, hp, mp)\n-> DONE\n"
             )
         );
 
-        let mut session = IdeSession::new();
-        session.set_language_dialect(brink_analyzer::Dialect::Brink);
-        session.update_and_analyze("test.ink", fixed);
-        let file = session.file_id("test.ink").expect("file id");
-        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let after = session_with(&patched);
+        let file = after.file_id("test.ink").expect("file id");
+        let diags = after.db().diagnostics(file).expect("diagnostics");
         assert!(
             diags.iter().all(|d| d.code != DiagnosticCode::E080),
             "{diags:?}"
@@ -539,7 +546,8 @@ mod tests {
         let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
         let off = u32::try_from(src.find("#fn(heal)").expect("site") + 5).expect("fits");
-        assert!(fn_value_actions(session.db(), file, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 
     #[test]
@@ -563,7 +571,8 @@ mod tests {
             "fixture must actually carry an E080 on the bound `t` arg: {diags:?}"
         );
         let off = u32::try_from(src.find("#fn(heal2").expect("site") + 5).expect("fits");
-        assert!(fn_value_actions(session.db(), file, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 
     #[test]
@@ -601,7 +610,8 @@ mod tests {
         session.update_and_analyze("b.ink", b);
         let file = session.file_id("a.ink").expect("file id");
         let off = u32::try_from(a.find("#fn(heal)").expect("site") + 5).expect("fits");
-        assert!(fn_value_actions(session.db(), file, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
     }
 
     #[test]
@@ -610,6 +620,31 @@ mod tests {
         let session = session_with(&src);
         let file = session.file_id("test.ink").expect("file id");
         let off = u32::try_from(src.find("double").expect("site")).expect("fits");
-        assert!(fn_value_actions(session.db(), file, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    /// `#fn(...)` in a `.brink` file has no native spelling, so the fixers
+    /// decline rather than parsing it with the ink frontend (module doc).
+    #[test]
+    fn native_file_gets_no_creation_site_fix() {
+        let mut session = IdeSession::new();
+        session.set_language_dialect(brink_analyzer::Dialect::Brink);
+        let src = "flow start() {\n  Hi\n}\n".to_owned();
+        session.update_and_analyze("story.brink", src);
+        let file = session.file_id("story.brink").expect("file id");
+        let cx = FixCx::new(session.db());
+        let d = Diagnostic {
+            file,
+            range: rowan::TextRange::empty(TextSize::from(0)),
+            message: String::new(),
+            code: DiagnosticCode::E081,
+        };
+        assert!(TrimFnLiteralArgsFixer.fixes(&cx, &d).is_empty());
+        let d = Diagnostic {
+            code: DiagnosticCode::E080,
+            ..d
+        };
+        assert!(BindRefArgsFixer.fixes(&cx, &d).is_empty());
     }
 }

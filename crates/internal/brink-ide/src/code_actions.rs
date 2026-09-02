@@ -10,6 +10,12 @@ pub enum CodeActionKind {
 
 /// Data identifying which code action to perform on resolve.
 ///
+/// **Structural refactors only** (`docs/autofix-spec.md` §2, #3377): a
+/// diagnostic-keyed fix is not a `CodeActionData` — it travels as a
+/// [`Fix`](crate::fix::Fix) carrying its own `Vec<FileEdit>`, and
+/// [`resolve_code_action`]'s whole-source return stays for the refactors
+/// below.
+///
 /// Serializes to a self-describing, internally-tagged JSON object (the `action`
 /// field is the discriminator). This is the payload carried in a code action's
 /// `data` field over the wasm boundary so a selected action can be passed back
@@ -45,52 +51,6 @@ pub enum CodeActionData {
     DemoteKnot {
         knot: String,
         dest_knot: String,
-    },
-    /// Auto-import quick-fix (M-4, modules-spec §2/§9): insert
-    /// `IMPORT { name } FROM module` (ink) or `use module::name;` (native,
-    /// `native: true`) to bring an out-of-scope public definition into the
-    /// referring file. Produced by [`crate::import_fix::import_actions`] off
-    /// an `E025` diagnostic; resolved as a pure source rewrite. `native`
-    /// travels in the payload (rather than being re-derived at resolve time)
-    /// because [`resolve_code_action`] only ever sees `source: &str` — no
-    /// `FileId`/`ProjectDb` to ask (issue #1590 companion finding).
-    AddImport {
-        module: String,
-        name: String,
-        #[serde(default)]
-        native: bool,
-    },
-    /// `#fn(target, args…)` E081 quick-fix (issue #744,
-    /// `crate::creation_site_fix`): trim the bound-argument list back to
-    /// `keep` — the target's declared param count. `occurrence` is the
-    /// 0-based index of this `#fn(target, …)` site among every site naming
-    /// `target` in the file, in source order (never a stored byte range —
-    /// see that module's doc for why).
-    TrimFnLiteralArgs {
-        target: String,
-        occurrence: usize,
-        keep: usize,
-    },
-    /// `#fn(target, args…)` E080 quick-fix (issue #744,
-    /// `crate::creation_site_fix`): append `vars` — durable global `VAR`
-    /// names matching the target's unbound trailing `ref` params — as the
-    /// missing bound arguments. `occurrence` matches
-    /// [`Self::TrimFnLiteralArgs`]'s.
-    BindFnLiteralRefArgs {
-        target: String,
-        occurrence: usize,
-        vars: Vec<String>,
-    },
-    /// `call(f, args…)`/`bind(f, args…)` strict over-arity quick-fix (issue
-    /// #744, `crate::value_call_fix`): trim the call's trailing args back to
-    /// `keep` — the count the callee's known type accepts after the callee
-    /// itself. `verb` is `"call"` or `"bind"`; `occurrence` is the 0-based
-    /// index of this `verb(...)` call among every call to `verb` in the
-    /// file, in source order.
-    TrimValueCallArgs {
-        verb: String,
-        occurrence: usize,
-        keep: usize,
     },
 }
 
@@ -232,17 +192,6 @@ pub fn resolve_code_action(source: &str, data: &CodeActionData) -> Option<String
             stitch,
             direction,
         } => structural_move::reorder_stitch(source, knot, stitch, *direction).ok()?,
-        CodeActionData::AddImport {
-            module,
-            name,
-            native,
-        } => crate::import_fix::insert_import(source, module, name, *native)?,
-        CodeActionData::TrimFnLiteralArgs { .. } | CodeActionData::BindFnLiteralRefArgs { .. } => {
-            crate::creation_site_fix::resolve_fn_value_action(source, data)?
-        }
-        CodeActionData::TrimValueCallArgs { .. } => {
-            crate::value_call_fix::resolve_value_call_action(source, data)?
-        }
         // These require analysis — caller should use resolve_structural_action.
         CodeActionData::MoveStitch { .. }
         | CodeActionData::PromoteStitch { .. }

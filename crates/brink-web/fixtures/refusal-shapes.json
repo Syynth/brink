@@ -219,7 +219,7 @@
     "reorder_stitches:invalid-order": "invalid reorder: list is not a permutation of the existing names",
     "resolve_code_action:missing-file": "file not loaded",
     "resolve_code_action:no-change": "code action produced no change",
-    "resolve_code_action:unknown-variant": "invalid code-action data: unknown variant `Nonsense`, expected one of `SortKnots`, `SortStitches`, `FormatKnot`, `FormatStitch`, `ReorderStitch`, `MoveStitch`, `PromoteStitch`, `DemoteKnot`, `AddImport`, `TrimFnLiteralArgs`, `BindFnLiteralRefArgs`, `TrimValueCallArgs` at line 1 column 20",
+    "resolve_code_action:unknown-variant": "invalid code-action data: unknown variant `Nonsense`, expected one of `SortKnots`, `SortStitches`, `FormatKnot`, `FormatStitch`, `ReorderStitch`, `MoveStitch`, `PromoteStitch`, `DemoteKnot` at line 1 column 20",
     "resolve_code_action_doc:unknown-handle": "unknown document handle"
   },
   "outlines": {

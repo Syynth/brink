@@ -3,111 +3,122 @@
 //!
 //! When a file references a public definition that lives in another *declared*
 //! module without importing it, the analyzer raises `E025` (import-required).
-//! [`import_actions`] turns that diagnostic into a quick-fix: an
-//! [`AddImport`](crate::code_actions::CodeActionData::AddImport) code action
-//! that inserts `IMPORT { name } FROM module` (ink) or `use module::name;`
-//! (native) into the referring file.
+//! [`ImportFixer`] turns that diagnostic into a [`Fix`] whose one edit inserts
+//! `IMPORT { name } FROM module` (ink) or `use module::name;` (native) into
+//! the referring file.
 //!
 //! The offer is session-aware (it needs the whole-project module view to know
-//! *which* module exports the name), so it is computed here rather than in the
-//! source-only [`code_actions`](crate::code_actions::code_actions) path — the
-//! wasm layer merges it into the same code-action menu.
+//! *which* module exports the name), so it reads the compilation
+//! ([`FixCx::db`]) rather than the source alone.
 //!
 //! **Dialect** (issue #1590 companion finding): the diagnostic that gates this
 //! offer is dialect-blind (`brink-analyzer` never tags a `.brink` file — see
 //! `brink-db`'s `file_language` doc, "no dialect tag near HIR"), so which
 //! syntax to *render* is decided here, the presentation layer, from
-//! [`ProjectDb::is_native`] — the same sanctioned per-file signal
+//! [`brink_db::ProjectDb::is_native`] — the same sanctioned per-file signal
 //! `compilation_closure_files`/`per_file_diagnostics_query` already use for
 //! this exact frontend question.
 //!
-//! Resolution ([`insert_import`]) is a pure source rewrite: it rides the same
+//! [`import_edit`] computes the minimal insertion: it rides the same
 //! leading-block insertion machinery as the INCLUDE auto-import
 //! ([`crate::auto_import`]), placing the new import after any existing
 //! `IMPORT`/`use` block, else after the `INCLUDE` block, else at the top of
 //! the file below any leading comment / `#@module` header.
 
-use brink_db::ProjectDb;
-use brink_ir::{DiagnosticCode, FileId};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId};
+use rowan::{TextRange, TextSize};
 
-use crate::code_actions::{CodeAction, CodeActionData, CodeActionKind};
+use crate::fix::{Applicability, Fix, FixCx, Fixer};
 use crate::import_block::import_block_span;
 use crate::include_block::include_block_span;
+use crate::rename::FileEdit;
 
-/// Collect auto-import quick-fixes applicable at `offset` in `file_id`.
+/// The `E025` import-required fixer (`docs/autofix-spec.md` §9, "Migrated,
+/// unchanged in meaning").
 ///
-/// Returns an [`AddImport`](CodeActionData::AddImport) action for the
-/// `(module, name)` an `E025` at `offset` calls for. Empty when there is no
-/// import-required diagnostic at the cursor (the common case), so the caller
-/// can unconditionally merge the result into its menu.
-///
-/// Takes the [`ProjectDb`] directly (not an `IdeSession`) so both the wasm
-/// editor (`IdeSession::db`) and the LSP (its own locked db) can call it.
-///
-/// The gate reads the **module-qualified** db surface
-/// ([`ProjectDb::diagnostics`] / [`ProjectDb::symbol_index`] /
-/// [`ProjectDb::resolve`]) — the same one that produces the editor's live
-/// `E025` squiggle. The whole-project `IdeSession::analysis` snapshot hashes
-/// names bare (no module qualification), so it never carries `E025`; gating on
-/// it would leave this quick-fix permanently dead.
-#[must_use]
-pub fn import_actions(db: &ProjectDb, file_id: FileId, offset: u32) -> Vec<CodeAction> {
-    let at = rowan::TextSize::from(offset);
+/// Reads the **module-qualified** db surface ([`brink_db::ProjectDb::diagnostics`] /
+/// [`brink_db::ProjectDb::symbol_index`] / [`brink_db::ProjectDb::resolve`]) — the same one that
+/// produces the editor's live `E025` squiggle. The whole-project
+/// `IdeSession::analysis` snapshot hashes names bare (no module
+/// qualification), so it never carries `E025`; keying off it would leave this
+/// quick-fix permanently dead.
+pub struct ImportFixer;
 
-    // Gate the offer on the analyzer's own import-required diagnostic — it,
-    // not this function, owns the module-membership + import-coverage rules.
-    // `diagnostics(file_id)` is already scoped to this file.
-    let has_import_required = db.diagnostics(file_id).is_some_and(|diags| {
-        diags
-            .iter()
-            .any(|d| d.code == DiagnosticCode::E025 && d.range.contains_inclusive(at))
-    });
-    if !has_import_required {
-        return Vec::new();
+impl Fixer for ImportFixer {
+    fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::E025
     }
 
-    // The reference's resolution supplies the target's module + name
-    // structurally (never by parsing the diagnostic message). Pick the
-    // tightest reference range covering the cursor, so a nested reference wins
-    // over an enclosing one.
-    let Some((resolutions, _)) = db.resolve(file_id) else {
-        return Vec::new();
-    };
-    let index = db.symbol_index();
-    let target = resolutions
-        .iter()
-        .filter(|r| r.range.contains_inclusive(at))
-        .min_by_key(|r| r.range.len())
-        .and_then(|r| index.symbols.get(&r.target));
+    /// Adding an import brings a name into scope — mechanical, but it changes
+    /// what the file resolves to, so it is not `Safe` under §3's
+    /// observable-equivalence bar.
+    fn max_applicability(&self) -> Applicability {
+        Applicability::Suggested
+    }
 
-    let Some(info) = target else {
-        return Vec::new();
-    };
-    let Some(module) = info.module.clone() else {
-        return Vec::new();
-    };
+    fn fixes(&self, cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
+        let db = cx.db;
+        let file_id = d.file;
+        let at = d.range.start();
 
-    vec![CodeAction {
-        title: format!("Import `{}` from `{module}`", info.name),
-        kind: CodeActionKind::QuickFix,
-        data: CodeActionData::AddImport {
-            module,
-            name: info.name.clone(),
-            native: db.is_native(file_id),
-        },
-    }]
+        // The reference's resolution supplies the target's module + name
+        // structurally (never by parsing the diagnostic message). Pick the
+        // tightest reference range covering the diagnostic's anchor, so a
+        // nested reference wins over an enclosing one.
+        let Some((resolutions, _)) = db.resolve(file_id) else {
+            return Vec::new();
+        };
+        let index = db.symbol_index();
+        let target = resolutions
+            .iter()
+            .filter(|r| r.range.contains_inclusive(at))
+            .min_by_key(|r| r.range.len())
+            .and_then(|r| index.symbols.get(&r.target));
+
+        let Some(info) = target else {
+            return Vec::new();
+        };
+        let Some(module) = info.module.clone() else {
+            return Vec::new();
+        };
+        let Some(source) = db.source(file_id) else {
+            return Vec::new();
+        };
+        let Some((offset, new_text)) =
+            import_edit(source, &module, &info.name, db.is_native(file_id))
+        else {
+            return Vec::new();
+        };
+
+        vec![Fix {
+            code: DiagnosticCode::E025,
+            title: format!("Import `{}` from `{module}`", info.name),
+            applicability: Applicability::Suggested,
+            edits: vec![FileEdit {
+                file: file_id,
+                range: TextRange::empty(offset),
+                new_text,
+            }],
+            caret: None,
+        }]
+    }
 }
 
-/// Insert `IMPORT { name } FROM module` (ink) or `use module::name;`
-/// (`native: true`) into `source`, returning the new source. Returns `None`
-/// when the exact bare import already exists (an idempotent no-op).
+/// The minimal edit that brings `name` in from `module`: the insertion point
+/// and the text to insert there. `None` when the exact bare import already
+/// exists (an idempotent no-op).
 ///
 /// `native` selects both which frontend parses `source` for the idempotence
 /// check and which syntax gets rendered — the two must agree, since parsing
 /// a native `use` block with the ink frontend (or vice versa) would silently
 /// fail to recognize any existing import (issue #1590 companion finding).
 #[must_use]
-pub fn insert_import(source: &str, module: &str, name: &str, native: bool) -> Option<String> {
+pub fn import_edit(
+    source: &str,
+    module: &str,
+    name: &str,
+    native: bool,
+) -> Option<(TextSize, String)> {
     let hir = if native {
         let parsed = brink_syntax_native::parse(source);
         brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree()).0
@@ -143,11 +154,10 @@ pub fn insert_import(source: &str, module: &str, name: &str, native: bool) -> Op
         format!("{line}\n")
     };
 
-    let mut out = String::with_capacity(source.len() + insert.len());
-    out.push_str(&source[..byte]);
-    out.push_str(&insert);
-    out.push_str(&source[byte..]);
-    Some(out)
+    Some((
+        TextSize::from(u32::try_from(byte).unwrap_or(u32::MAX)),
+        insert,
+    ))
 }
 
 /// The byte offset (at the start of a line) at which to insert the new
@@ -200,6 +210,7 @@ fn line_start_byte(source: &str, line: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fix::fixes_at;
     use crate::session::IdeSession;
 
     fn session_with(files: &[(&str, &str)]) -> IdeSession {
@@ -213,12 +224,24 @@ mod tests {
         session
     }
 
-    // ── insert_import (pure source rewrite) ─────────────────────────
+    /// Apply [`import_edit`]'s minimal insertion to `source`. The placement
+    /// logic under test is `import_edit`'s; this only splices.
+    fn applied(source: &str, module: &str, name: &str, native: bool) -> Option<String> {
+        let (offset, text) = import_edit(source, module, name, native)?;
+        let byte = usize::from(offset);
+        let mut out = String::with_capacity(source.len() + text.len());
+        out.push_str(&source[..byte]);
+        out.push_str(&text);
+        out.push_str(&source[byte..]);
+        Some(out)
+    }
+
+    // ── import_edit (the minimal insertion) ─────────────────────────
 
     #[test]
     fn inserts_below_existing_import_block() {
         let src = "IMPORT quest_1\nIMPORT quest_2\n== hub ==\n";
-        let out = insert_import(src, "quest_3", "ambush", false).expect("edit");
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
         assert_eq!(
             out,
             "IMPORT quest_1\nIMPORT quest_2\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
@@ -228,7 +251,7 @@ mod tests {
     #[test]
     fn inserts_below_include_block_when_no_imports() {
         let src = "INCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n";
-        let out = insert_import(src, "quest_3", "ambush", false).expect("edit");
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
         assert_eq!(
             out,
             "INCLUDE a.ink\nINCLUDE b.ink\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
@@ -238,7 +261,7 @@ mod tests {
     #[test]
     fn inserts_below_module_header_when_no_blocks() {
         let src = "#@module(town)\n// notes\n== hub ==\n";
-        let out = insert_import(src, "quest_3", "ambush", false).expect("edit");
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
         assert_eq!(
             out,
             "#@module(town)\n// notes\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
@@ -248,14 +271,14 @@ mod tests {
     #[test]
     fn inserts_at_top_when_bare_file() {
         let src = "== hub ==\ntext\n";
-        let out = insert_import(src, "quest_3", "ambush", false).expect("edit");
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
         assert_eq!(out, "IMPORT { ambush } FROM quest_3\n== hub ==\ntext\n");
     }
 
     #[test]
     fn idempotent_when_name_already_imported() {
         let src = "IMPORT { ambush, gt } FROM quest_3\n== hub ==\n";
-        assert_eq!(insert_import(src, "quest_3", "ambush", false), None);
+        assert_eq!(import_edit(src, "quest_3", "ambush", false), None);
     }
 
     #[test]
@@ -264,7 +287,7 @@ mod tests {
         // (a second IMPORT line is legal; merging into the brace is a future
         // refinement).
         let src = "IMPORT { ambush } FROM quest_3\n== hub ==\n";
-        let out = insert_import(src, "quest_3", "guard_talk", false).expect("edit");
+        let out = applied(src, "quest_3", "guard_talk", false).expect("edit");
         assert_eq!(
             out,
             "IMPORT { ambush } FROM quest_3\nIMPORT { guard_talk } FROM quest_3\n== hub ==\n"
@@ -274,11 +297,11 @@ mod tests {
     #[test]
     fn insertion_without_trailing_newline_stays_on_its_own_line() {
         let src = "== hub ==";
-        let out = insert_import(src, "quest_3", "ambush", false).expect("edit");
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
         assert_eq!(out, "IMPORT { ambush } FROM quest_3\n== hub ==");
     }
 
-    // ── insert_import: native dialect (issue #1590 companion finding) ──
+    // ── import_edit: native dialect (issue #1590 companion finding) ──
 
     /// `native: true` renders `use module::name;`, not ink's `IMPORT { … }
     /// FROM …` — the exact gap the companion finding calls out ("do not
@@ -286,7 +309,7 @@ mod tests {
     #[test]
     fn native_insert_renders_use_syntax() {
         let src = "flow start() {\n  Hi\n}\n";
-        let out = insert_import(src, "story::market::barter", "haggle", true).expect("edit");
+        let out = applied(src, "story::market::barter", "haggle", true).expect("edit");
         assert_eq!(
             out,
             "use story::market::barter::haggle;\nflow start() {\n  Hi\n}\n"
@@ -300,7 +323,7 @@ mod tests {
     fn native_insert_is_idempotent_against_native_syntax() {
         let src = "use story::market::barter::haggle;\nflow start() {\n  Hi\n}\n";
         assert_eq!(
-            insert_import(src, "story::market::barter", "haggle", true),
+            import_edit(src, "story::market::barter", "haggle", true),
             None
         );
     }
@@ -312,17 +335,17 @@ mod tests {
     #[test]
     fn native_insert_below_existing_use_block() {
         let src = "use story::market::barter::haggle;\nflow start() {\n  Hi\n}\n";
-        let out = insert_import(src, "story::docks::barter", "haggle", true).expect("edit");
+        let out = applied(src, "story::docks::barter", "haggle", true).expect("edit");
         assert_eq!(
             out,
             "use story::market::barter::haggle;\nuse story::docks::barter::haggle;\nflow start() {\n  Hi\n}\n"
         );
     }
 
-    // ── import_actions (session-aware detection) ────────────────────
+    // ── ImportFixer (session-aware detection, through `fixes_at`) ────
 
     /// Two declared modules; `town` references `quest`'s public `ambush`
-    /// without importing it → `E025` → an `AddImport` quick-fix is offered.
+    /// without importing it → `E025` → the fixer offers an insertion.
     #[test]
     fn offers_add_import_for_out_of_scope_reference() {
         let session = session_with(&[
@@ -335,25 +358,27 @@ mod tests {
         let town = session.file_id("town.ink").expect("town id");
         let src = session.source(town).expect("src");
         let off = u32::try_from(src.find("ambush").expect("ref")).expect("fits");
-        let actions = import_actions(session.db(), town, off);
-        assert_eq!(actions.len(), 1, "one add-import offer");
-        assert_eq!(actions[0].title, "Import `ambush` from `quest`");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, town, off);
+        assert_eq!(fixes.len(), 1, "one add-import offer");
+        assert_eq!(fixes[0].title, "Import `ambush` from `quest`");
+        assert_eq!(fixes[0].code, DiagnosticCode::E025);
+        assert_eq!(fixes[0].applicability, Applicability::Suggested);
+        assert_eq!(fixes[0].edits.len(), 1);
+        assert_eq!(fixes[0].edits[0].file, town);
         assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::AddImport { module, name, native }
-                    if module == "quest" && name == "ambush" && !native
-            ),
-            "expected AddImport {{ quest, ambush, native: false }}, got {:?}",
-            actions[0].data
+            fixes[0].edits[0].range.is_empty(),
+            "an insertion replaces nothing: {:?}",
+            fixes[0].edits[0].range
         );
+        assert_eq!(fixes[0].edits[0].new_text, "IMPORT { ambush } FROM quest\n");
     }
 
-    /// `import_actions` reads `db.is_native` per referring file (issue #1590
-    /// companion finding) — a `.brink` referrer must get `native: true` on the
-    /// offer so `resolve_code_action` renders `use`, not `IMPORT`.
+    /// The fixer reads `db.is_native` per referring file (issue #1590
+    /// companion finding) — a `.brink` referrer must get `use` syntax, not
+    /// `IMPORT`.
     #[test]
-    fn offers_add_import_with_native_flag_for_native_referrer() {
+    fn offers_add_import_with_use_syntax_for_native_referrer() {
         let session = session_with(&[
             (
                 "quest.ink",
@@ -361,39 +386,13 @@ mod tests {
             ),
             ("market/barter.brink", "flow start() {\n  -> ambush\n}\n"),
         ]);
-        let town = session.file_id("market/barter.brink").expect("file id");
-        let src = session.source(town).expect("src");
+        let file = session.file_id("market/barter.brink").expect("file id");
+        let src = session.source(file).expect("src");
         let off = u32::try_from(src.find("ambush").expect("ref")).expect("fits");
-        let actions = import_actions(session.db(), town, off);
-        assert_eq!(actions.len(), 1, "one add-import offer");
-        assert!(
-            matches!(
-                &actions[0].data,
-                CodeActionData::AddImport { native, .. } if *native
-            ),
-            "expected native: true for a .brink referrer, got {:?}",
-            actions[0].data
-        );
-    }
-
-    /// The `AddImport` payload rides the wasm code-action `data` seam
-    /// (`resolve_code_action_impl` round-trips it through JSON). Prove the
-    /// tagged form survives serialize → deserialize and still resolves.
-    #[test]
-    fn add_import_data_round_trips_through_json() {
-        let data = CodeActionData::AddImport {
-            module: "quest".to_owned(),
-            name: "ambush".to_owned(),
-            native: false,
-        };
-        let json = serde_json::to_string(&data).expect("serialize");
-        assert_eq!(
-            json,
-            r#"{"action":"AddImport","module":"quest","name":"ambush","native":false}"#
-        );
-        let back: CodeActionData = serde_json::from_str(&json).expect("deserialize");
-        let out = crate::code_actions::resolve_code_action("== hub ==\n", &back).expect("resolve");
-        assert_eq!(out, "IMPORT { ambush } FROM quest\n== hub ==\n");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1, "one add-import offer");
+        assert_eq!(fixes[0].edits[0].new_text, "use quest::ambush;\n");
     }
 
     #[test]
@@ -402,6 +401,7 @@ mod tests {
         let town = session.file_id("town.ink").expect("town id");
         let src = session.source(town).expect("src");
         let off = u32::try_from(src.find("hub").expect("ref")).expect("fits");
-        assert!(import_actions(session.db(), town, off).is_empty());
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, town, off).is_empty());
     }
 }
