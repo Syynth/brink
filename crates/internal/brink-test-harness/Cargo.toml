@@ -64,8 +64,16 @@ brink-environment = { workspace = true }
 # against — without this, the two roads would diverge on any fixture that
 # added a `brink.toml` only the `Environment` road would ever read.
 brink-project-config = { workspace = true }
+# `trace::line_identity_diff` (issue #3376): the translation-identity half of
+# the equivalence oracle (`docs/observable-semantics-spec.md` §2.2) diffs the
+# line tables through the REAL exporter — the same `export_lines` XLIFF units
+# and `.inkl` overlays bind to — rather than re-deriving identity from
+# `StoryData`, so the oracle cannot drift from what translations actually key
+# on.
+brink-intl = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
