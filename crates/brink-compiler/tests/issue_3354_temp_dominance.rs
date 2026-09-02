@@ -53,6 +53,57 @@ fn compile_with_debug_info(source: &str, emit_debug_info: bool) -> brink_compile
     .expect("compile should succeed — E193 is a warning, not an error")
 }
 
+/// The ink-compat dialect (`Dialect::StrictInk`, despite the name — its
+/// `types` default is `Gradual`, see `resolve_type_policy`), for the one
+/// shape `Dialect::Brink`'s typed mode statically rejects outright (`E067`,
+/// void-assignment) but real `.ink` — and the C# reference — allow and play.
+/// `strict::check` (E065-E067 among them) never runs at all here: its own
+/// module doc gates every caller on `dialect = brink` first.
+fn compile_ink(source: &str) -> brink_compiler::CompileOutput {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("compile should succeed")
+}
+
+/// [`play`], against [`compile_ink`] instead of the Brink-dialect [`compile`].
+fn play_ink(source: &str, picks: &[usize]) -> (Vec<String>, Vec<String>) {
+    let output = compile_ink(source);
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut lines = Vec::new();
+    let mut picks = picks.iter();
+    loop {
+        match story.continue_single().expect("no runtime fault") {
+            Step::Line(line) => lines.push(line.text),
+            Step::Choices(_) => {
+                let Some(&pick) = picks.next() else { break };
+                story.choose(pick).expect("choice in range");
+            }
+            Step::Done | Step::End | Step::Suspended => break,
+        }
+    }
+    let warnings = story
+        .take_runtime_warnings()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    (lines, warnings)
+}
+
 /// Every `E193` message this compile produced.
 fn e193(source: &str) -> Vec<String> {
     compile(source)
@@ -336,5 +387,50 @@ fn sibling_branch_read_plays_the_way_inky_plays_it() {
 fn an_initialized_temp_read_emits_no_runtime_warning() {
     let (lines, warnings) = play("-> k\n=== k ===\n~ temp n = 4\nSaw {n}.\n-> END\n", &[]);
     assert_eq!(lines.join(""), "Saw 4.\n");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// BLOCKER fix: `Opcode::GetTemp`'s "was this ever written" check must key
+/// on `CallFrame::is_temp_written`, not on the stored value being
+/// `Value::Null` — a `~ temp x = f()` whose `f` falls off its end without
+/// `~ return` legitimately stores `Value::Null` into a slot `DeclareTemp`
+/// really did write. Keying on the value alone misclassifies that as
+/// "never written" and both fires a false `Variable not found` warning and
+/// substitutes `0` for the void return — flipping `{x == 0: ZERO|NOTZERO}`
+/// from `ZERO` to `NOTZERO` and changing what plays. Matches the C#
+/// reference, which prints the void return as empty text with no warning.
+#[test]
+fn temp_declared_from_a_void_returning_function_is_not_misread_as_uninitialized() {
+    let (lines, warnings) = play_ink(
+        "-> k\n=== k ===\n~ temp x = f()\nGot [{x}].\n-> END\n\
+         === function f() ===\n~ return\n",
+        &[],
+    );
+    assert_eq!(
+        lines.join(""),
+        "Got [].\n",
+        "a void return plays as empty text, exactly like main, no substituted `0`"
+    );
+    assert!(
+        warnings.is_empty(),
+        "the declaration DID run — 'Variable not found' would be false: {warnings:?}"
+    );
+}
+
+/// Same shape, checked through a comparison rather than interpolation: the
+/// void-returned `Value::Null` must still compare as `Null`, not as the
+/// substituted `Int(0)` the uninitialized-read fallback pushes.
+#[test]
+fn temp_declared_from_a_void_returning_function_does_not_compare_as_zero() {
+    let (lines, warnings) = play_ink(
+        "-> k\n=== k ===\n~ temp x = f()\n{x == 0: ZERO|NOTZERO}\n-> END\n\
+         === function f() ===\n~ return\n",
+        &[],
+    );
+    assert_eq!(
+        lines.join(""),
+        "NOTZERO\n",
+        "Null does not equal 0 — matching main's behavior"
+    );
     assert!(warnings.is_empty(), "{warnings:?}");
 }

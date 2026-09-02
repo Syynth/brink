@@ -109,6 +109,7 @@ impl FlowInstance {
         let initial_frame = CallFrame {
             return_address: None,
             temps: Vec::new(),
+            temps_written: Vec::new(),
             container_stack: vec![ContainerPosition {
                 container_idx,
                 offset: 0,
@@ -744,6 +745,7 @@ impl FlowInstance {
         let root_frame = CallFrame {
             return_address: None,
             temps: Vec::new(),
+            temps_written: Vec::new(),
             container_stack: Vec::new(),
             frame_type: CallFrameType::Root,
             external_fn_id: None,
@@ -1038,6 +1040,7 @@ impl FlowInstance {
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),
+            temps_written: Vec::new(),
             container_stack: vec![ContainerPosition {
                 container_idx,
                 offset: 0,
@@ -1172,6 +1175,7 @@ impl FlowInstance {
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),
+            temps_written: Vec::new(),
             container_stack: vec![ContainerPosition {
                 container_idx,
                 offset: 0,

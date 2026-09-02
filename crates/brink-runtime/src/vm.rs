@@ -450,10 +450,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 .last_mut()
                 .ok_or(RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
-            while frame.temps.len() <= idx {
-                frame.temps.push(Value::Null);
-            }
-            frame.temps[idx] = val;
+            frame.write_temp(idx, val);
         }
         Opcode::SetTemp(slot) => {
             // Write-through: if the temp holds a pointer, write the new
@@ -484,10 +481,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         .get_mut(frame_depth as usize)
                         .ok_or(RuntimeError::CallStackUnderflow)?;
                     let ti = target_slot as usize;
-                    while target.temps.len() <= ti {
-                        target.temps.push(Value::Null);
-                    }
-                    target.temps[ti] = val;
+                    target.write_temp(ti, val);
                 }
                 // T1e (docs/t1e-spec.md §3): a projection-bound `ref`
                 // parameter's write-through — root-cell RMW via the same
@@ -506,10 +500,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         .call_stack
                         .last_mut()
                         .ok_or(RuntimeError::CallStackUnderflow)?;
-                    while frame.temps.len() <= idx {
-                        frame.temps.push(Value::Null);
-                    }
-                    frame.temps[idx] = val;
+                    frame.write_temp(idx, val);
                 }
             }
         }
@@ -529,19 +520,26 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Issue #3354 (RULED 2026-09-01 option C): a slot that the
             // declaring `~ temp` has not written yet — either past the end
             // of this frame's `temps` (never touched) or still holding the
-            // `Value::Null` padding `SetTemp` grows the vector with — reads
-            // as ink's missing-variable default rather than as a `Null`
-            // that faults on the next operator. That fault is what made
-            // `#3354`'s repro die with `cannot apply Add to Null and Int`
-            // where the C# runtime prints the line and warns; matching the
-            // reference keeps the ink-compat floor honest. The warning is
-            // the author-facing half at runtime; `E193` is the one that
+            // `Value::Null` padding `SetTemp`/`DeclareTemp` grow the vector
+            // with — reads as ink's missing-variable default rather than as
+            // a `Null` that faults on the next operator. That fault is what
+            // made `#3354`'s repro die with `cannot apply Add to Null and
+            // Int` where the C# runtime prints the line and warns; matching
+            // the reference keeps the ink-compat floor honest. The warning
+            // is the author-facing half at runtime; `E193` is the one that
             // fires at compile time, before they ever play.
+            //
+            // The check is on `CallFrame::is_temp_written`, NOT on the
+            // stored value being `Value::Null` — a `~ temp x = f()` whose
+            // `f` falls off its end without `~ return` legitimately stores
+            // `Value::Null` into an already-written slot (a void return),
+            // and that must read back as `Null` (interpolating as empty
+            // text, matching the pre-fix/main behaviour) rather than warn.
             //
             // Deliberately only on this opcode: `GetTempRaw` exists to see
             // a slot exactly as it is (pointers included), and `TakeTemp`
             // leaves `Null` behind by design, so neither may substitute.
-            if matches!(val, Value::Null) {
+            if !frame.is_temp_written(slot as usize) {
                 let name = uninitialized_temp_name(flow, program, slot);
                 flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
                 flow.value_stack.push(Value::Int(0));
@@ -782,6 +780,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
+                temps_written: Vec::new(),
                 container_stack: vec![ContainerPosition {
                     container_idx: idx,
                     offset: 0,
@@ -814,6 +813,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
+                temps_written: Vec::new(),
                 container_stack: vec![ContainerPosition {
                     container_idx: idx,
                     offset: 0,
@@ -840,6 +840,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             forked.call_stack.push(CallFrame {
                 return_address: None,
                 temps: Vec::new(),
+                temps_written: Vec::new(),
                 container_stack: vec![ContainerPosition {
                     container_idx: idx,
                     offset: 0,
@@ -880,6 +881,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
+                temps_written: Vec::new(),
                 container_stack: vec![ContainerPosition {
                     container_idx: idx,
                     offset: 0,
@@ -915,6 +917,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     thread.call_stack.push(CallFrame {
                         return_address: Some(current_pos),
                         temps: Vec::new(),
+                        temps_written: Vec::new(),
                         container_stack: vec![ContainerPosition {
                             container_idx: idx,
                             offset: 0,
@@ -1003,6 +1006,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     thread.call_stack.push(CallFrame {
                         return_address: Some(current_pos),
                         temps: Vec::new(),
+                        temps_written: Vec::new(),
                         container_stack: vec![ContainerPosition {
                             container_idx: idx,
                             offset: 0,
@@ -1422,10 +1426,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     .last_mut()
                     .ok_or(RuntimeError::CallStackUnderflow)?;
                 let idx = slot as usize;
-                while frame.temps.len() <= idx {
-                    frame.temps.push(Value::Null);
-                }
-                frame.temps[idx] = value;
+                frame.write_temp(idx, value);
             }
             flow.value_stack.push(Value::Bool(matched));
         }
@@ -1543,9 +1544,13 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
+            let args_len = args.len();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: args,
+                // Already-supplied argument values, not padding — every
+                // slot here is written by construction.
+                temps_written: vec![true; args_len],
                 container_stack: Vec::new(),
                 frame_type: CallFrameType::External,
                 external_fn_id: Some(fn_id),
@@ -1932,6 +1937,7 @@ fn enter_fn_value(
     thread.call_stack.push(CallFrame {
         return_address: Some(current_pos),
         temps: Vec::new(),
+        temps_written: Vec::new(),
         container_stack: vec![ContainerPosition {
             container_idx: idx,
             offset: 0,
@@ -2646,6 +2652,7 @@ fn call_callback<R: crate::rng::StoryRng>(
     flow.current_thread_mut().call_stack.push(CallFrame {
         return_address: None,
         temps: Vec::new(),
+        temps_written: Vec::new(),
         container_stack: vec![ContainerPosition {
             container_idx,
             offset: 0,

@@ -80,6 +80,20 @@ pub(crate) fn classify_ran_out_of_content(
 pub(crate) struct CallFrame {
     pub return_address: Option<ContainerPosition>,
     pub temps: Vec<Value>,
+    /// Parallel to `temps`: `temps_written[i]` is `true` once slot `i` has
+    /// been the target of a real write (`DeclareTemp`, `SetTemp`, the
+    /// `TempPointer` write-through target, or the `as`-binding store) —
+    /// never set merely because `temps` grew to cover the index.
+    ///
+    /// Issue #3354's `GetTemp` fallback (see `vm.rs`) needs this because
+    /// `Value::Null` is not a reliable "never written" marker: it is also
+    /// the padding `temps.push(Value::Null)` uses when growing the vector
+    /// to a new highest index, AND it is the value a real, completed
+    /// `DeclareTemp` legitimately stores when its initializer itself
+    /// evaluates to `Null` (a void-returning function assigned into a
+    /// temp). Keying the fallback on the *value* conflated those two
+    /// cases; keying on this bitmap does not.
+    pub temps_written: Vec<bool>,
     pub container_stack: Vec<ContainerPosition>,
     pub frame_type: CallFrameType,
     /// For `External` frames: the `DefinitionId` of the external function,
@@ -89,6 +103,31 @@ pub(crate) struct CallFrame {
     /// call time.  On return, trailing whitespace is trimmed back to this
     /// point — matching the C# runtime's `TrimWhitespaceFromFunctionEnd`.
     pub function_output_start: Option<usize>,
+}
+
+impl CallFrame {
+    /// Write `val` into temp slot `idx`, growing both `temps` and
+    /// `temps_written` as needed, and marking the slot written. The single
+    /// path every real temp-slot store in the VM funnels through, so
+    /// `GetTemp`'s "was this ever written" check (issue #3354) stays
+    /// accurate without every call site having to remember the bitmap.
+    pub fn write_temp(&mut self, idx: usize, val: Value) {
+        while self.temps.len() <= idx {
+            self.temps.push(Value::Null);
+        }
+        while self.temps_written.len() <= idx {
+            self.temps_written.push(false);
+        }
+        self.temps[idx] = val;
+        self.temps_written[idx] = true;
+    }
+
+    /// Whether temp slot `idx` has ever been the target of [`Self::write_temp`].
+    /// An index past the end of `temps_written` was never written.
+    #[must_use]
+    pub fn is_temp_written(&self, idx: usize) -> bool {
+        self.temps_written.get(idx).copied().unwrap_or(false)
+    }
 }
 
 /// Two-part call stack: shared read-only prefix + owned mutable frames.
