@@ -1,8 +1,12 @@
 /**
  * Knot/stitch click routing (#3356, RULED 2026-09-01): a symbol (knot or
- * stitch) navigation target whose file is already open as a whole-file tab
- * — anywhere, not only the active group — jumps in place instead of
- * opening a new tab.
+ * stitch) NAVIGATION target (`pinned === false`, a plain click) whose file
+ * is already open as a whole-file tab — anywhere, not only the active
+ * group — jumps in place instead of opening a new tab. A PINNED
+ * (double-click) open is excluded from this reveal and keeps minting or
+ * focusing the `path::name` fragment tab exactly as before this fix —
+ * docs/studio-shell-spec.md §7.8's Fragment⇄file overlap is a first-class
+ * case, not something a navigation-open fix gets to retire.
  *
  * The bug: `TabTarget`'s symbol variant (`{ kind: "symbol", path, name,
  * start, end }`) becomes a DocumentRef with `docId = "path::name"`
@@ -12,15 +16,16 @@
  * never recognize "the file this knot lives in is already open" — every
  * symbol click minted a fresh `path::name` fragment tab, even with the
  * whole file already open and active. `resolveSymbolFileTab` (`mount.tsx`)
- * is the fix: it searches every group for the file's WHOLE-FILE tab before
- * `setDocumentOpener` falls through to `openDocument`.
+ * finds that whole-file tab; `openSymbolTarget` (`mount.tsx`) is the routing
+ * decision itself — gates on `pinned`, reveals in place, and reports back
+ * whether it handled the open.
  *
  * `mountStudio` itself needs wasm + a compiled project to boot (see
  * `wasm-location.test.ts`'s note on why full-studio tests stop at
- * `initWasm`), so this exercises `resolveSymbolFileTab` directly — the
- * real function `setDocumentOpener`'s closure calls, not a reproduction of
- * it — plus the surrounding `EditorGroupsStore` mutations it triggers,
- * against a real store built the same way `mount.tsx` builds one.
+ * `initWasm`), so this exercises `resolveSymbolFileTab` and
+ * `openSymbolTarget` directly — the exact functions `setDocumentOpener`'s
+ * closure calls, not a reproduction of them — against a real store built
+ * the same way `mount.tsx` builds one.
  */
 
 import { describe, it, expect } from "vitest";
@@ -31,7 +36,7 @@ import {
   type EditorGroup,
 } from "@brink/studio-shell";
 import { inkFileRef } from "@brink/studio-ui";
-import { resolveSymbolFileTab } from "../mount.js";
+import { resolveSymbolFileTab, openSymbolTarget } from "../mount.js";
 
 function fileTab(path: string, pinned = true) {
   return { ref: inkFileRef({ kind: "file", path }), pinned };
@@ -84,38 +89,34 @@ describe("resolveSymbolFileTab (#3356)", () => {
   });
 });
 
-describe("symbol click reveals in place — full store round trip (#3356)", () => {
-  /** Reproduces `setDocumentOpener`'s symbol branch (`mount.tsx`) — the
-   *  `documents.revealAt` call is the one piece needing a real
-   *  DocumentSessions/CM6 view (already covered by `document-sessions.test.ts`'s
-   *  `revealAt` tests), so it is stubbed here to isolate the routing this
-   *  issue is about: does a tab get duplicated or not. */
-  function openSymbol(
+describe("openSymbolTarget — full store round trip (#3356)", () => {
+  /** The production fallback: exactly what `setDocumentOpener` does when
+   *  `openSymbolTarget` returns `false` — mint/focus the `path::name`
+   *  fragment tab. Exercised here (not reproduced) via the real
+   *  `openDocument`, so a broken `openSymbolTarget` gate is caught the same
+   *  way the production call site would catch it. */
+  function fallbackOpen(
     store: ReturnType<typeof createEditorGroupsStore>,
     target: typeof SYMBOL_TARGET,
     pinned: boolean,
-    revealAt: (path: string, offset: number) => void,
   ): void {
-    const existing = resolveSymbolFileTab(store.getState().groups, target.path);
-    if (existing !== null) {
-      const key = documentKey(existing.tab.ref);
-      store.getState().setActiveTab(existing.group.id, key);
-      if (pinned && !existing.tab.pinned) store.getState().pinTab(existing.group.id, key);
-      revealAt(target.path, target.start);
-      return;
-    }
     store
       .getState()
-      .openDocument(inkFileRef({ kind: "symbol", path: target.path, name: target.name, start: target.start, end: target.end }), { pinned });
+      .openDocument(
+        inkFileRef({ kind: "symbol", path: target.path, name: target.name, start: target.start, end: target.end }),
+        { pinned },
+      );
   }
 
-  it("reveals in the active tab instead of opening a new one (same file, active)", () => {
+  it("reveals in the active tab instead of opening a new one (same file, active, navigation open)", () => {
     const store = createEditorGroupsStore();
     store.getState().openDocument(inkFileRef({ kind: "file", path: "story.brink" }));
     const reveals: Array<[string, number]> = [];
 
-    openSymbol(store, SYMBOL_TARGET, false, (p, o) => reveals.push([p, o]));
+    const handled = openSymbolTarget(store, SYMBOL_TARGET, false, (p, o) => reveals.push([p, o]));
+    if (!handled) fallbackOpen(store, SYMBOL_TARGET, false);
 
+    expect(handled).toBe(true);
     const group = store.getState().groups[0];
     expect(group.tabs).toHaveLength(1); // no fragment tab was minted
     expect(group.tabs[0].ref.docId).toBe("story.brink");
@@ -123,14 +124,16 @@ describe("symbol click reveals in place — full store round trip (#3356)", () =
     expect(reveals).toEqual([["story.brink", 42]]);
   });
 
-  it("focuses the file's tab in another group instead of duplicating (cross-group, same file)", () => {
+  it("focuses the file's tab in another group instead of duplicating (cross-group, same file, navigation open)", () => {
     const store = createEditorGroupsStore();
     store.getState().openDocument(inkFileRef({ kind: "file", path: "other.brink" })); // group-1, focused
     store.getState().openDocument(inkFileRef({ kind: "file", path: "story.brink" }), { group: "split-right" }); // group-2
     store.getState().focusGroup("group-1"); // back on the file that ISN'T the target
 
-    openSymbol(store, SYMBOL_TARGET, false, () => {});
+    const handled = openSymbolTarget(store, SYMBOL_TARGET, false, () => {});
+    if (!handled) fallbackOpen(store, SYMBOL_TARGET, false);
 
+    expect(handled).toBe(true);
     const totalTabs = store.getState().groups.flatMap((g) => g.tabs).length;
     expect(totalTabs).toBe(2); // still just the two whole-file tabs — no fragment tab
     expect(store.getState().focusedGroupId).toBe("group-2");
@@ -141,19 +144,27 @@ describe("symbol click reveals in place — full store round trip (#3356)", () =
   it("still opens a fragment tab when the file isn't open anywhere (unchanged behavior)", () => {
     const store = createEditorGroupsStore();
 
-    openSymbol(store, SYMBOL_TARGET, false, () => {});
+    const handled = openSymbolTarget(store, SYMBOL_TARGET, false, () => {});
+    if (!handled) fallbackOpen(store, SYMBOL_TARGET, false);
 
+    expect(handled).toBe(false);
     const group = store.getState().groups[0];
     expect(group.tabs).toHaveLength(1);
     expect(group.tabs[0].ref.docId).toBe("story.brink::haggle");
   });
 
-  it("pins the existing tab when the reveal is a pinned open (parity with openDocument)", () => {
+  it("a PINNED (double-click) open never reveals in place, even when the file is already open — mints the fragment tab instead", () => {
     const store = createEditorGroupsStore();
     store.getState().openDocument(inkFileRef({ kind: "file", path: "story.brink" }), { pinned: false }); // preview
+    const reveals: Array<[string, number]> = [];
 
-    openSymbol(store, SYMBOL_TARGET, true, () => {});
+    const handled = openSymbolTarget(store, SYMBOL_TARGET, true, (p, o) => reveals.push([p, o]));
+    if (!handled) fallbackOpen(store, SYMBOL_TARGET, true);
 
-    expect(store.getState().groups[0].tabs[0].pinned).toBe(true);
+    expect(handled).toBe(false); // gated: pinned opens don't reveal
+    expect(reveals).toEqual([]);
+    const tabs = store.getState().groups[0].tabs;
+    expect(tabs.map((t) => t.ref.docId)).toEqual(["story.brink", "story.brink::haggle"]);
+    expect(tabs[1].pinned).toBe(true); // the fragment tab itself is pinned, per the pinned open
   });
 });
