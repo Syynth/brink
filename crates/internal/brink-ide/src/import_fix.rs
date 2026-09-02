@@ -174,13 +174,13 @@ fn insertion_byte(hir: &brink_ir::HirFile, source: &str) -> usize {
 }
 
 /// The 0-based line index of the first line that is **not** part of a leading
-/// `//` / `///` comment / `#@module` directive / blank-line block.
+/// `//` / `///` comment / `#@module` directive / `INCLUDE` / blank-line block.
 fn leading_header_block_end(source: &str) -> u32 {
     let mut last_header_plus_one = 0u32;
     for (line, raw) in source.lines().enumerate() {
         let line = u32::try_from(line).unwrap_or(u32::MAX);
         let t = raw.trim_start();
-        if t.starts_with("//") || t.starts_with("#@module") {
+        if t.starts_with("//") || t.starts_with("#@module") || t.starts_with("INCLUDE") {
             last_header_plus_one = line + 1;
         } else if !t.is_empty() {
             break;

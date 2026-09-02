@@ -43,7 +43,7 @@ const TOWN_BEFORE: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink
 
 /// The same file after `fix_all` — both imports written out, each on its own
 /// line, in the order the two rounds applied them.
-const TOWN_AFTER: &str = "#@module(town)\nIMPORT { ambush } FROM quest\nIMPORT { barter } FROM market\nINCLUDE quest.ink\nINCLUDE market.ink\n== square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
+const TOWN_AFTER: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink\nIMPORT { ambush } FROM quest\nIMPORT { barter } FROM market\n== square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
 
 /// Two `E025`s in **one** file, so their two fixes collide.
 fn two_imports_one_file() -> IdeSession {
