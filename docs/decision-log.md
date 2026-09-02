@@ -4780,3 +4780,27 @@
 - **STATUS:** tentative
 - **WHAT:** The teach-by-example editor pulls its sample lines from the project through a content selector — the same knot/stitch typeahead the Player's "play from" launcher uses — rather than (only) a paste box or "the open file".
 - **WHY:** Maintainer: the author should point at a passage they know is representative ("pull the content in from a given knot/stitch"), and the studio already has the affordance for choosing one; reusing it keeps the two pickers identical and avoids a paste step for lines that are already in the project. The pulled passage is shown whole: the marked-lines list and the Player preview scroll for long runs rather than trimming to the first few lines.
+
+## Player look: provenance chip off the text, no row stripes, dialogue indented, choices link back, styling in Settings
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player
+- **SCOPE:** moderate
+- **WHAT:** (1) The provenance chip (`file:line` on hover) must never cover the line's text. (2) Transcript rows are not striped (no alternating row background). (3) Dialogue lines are indented a little under their speaker's header, so the speech reads as coming from the speaker. (4) A choice echo (`> Enough shopping`) links back to the choice's source the way a line does. (5) Player styling lives in Settings → Player (app scope): font family first — the desktop app enumerates the machine's fonts through the Tauri side; the web build offers a curated list plus a free-text family — with further knobs to follow.
+- **WHY:** Maintainer, reviewing the Player after the dialogue-run work: the chip "is covering the text"; "there's no reason it shouldn't link back to where it was"; indentation "to indicate it came from the speaker"; stripes read as a table, not prose; the font is a matter of taste, and taste is a setting — browsers cannot list installed fonts (fingerprinting), so enumeration is a desktop capability and the web gets a curated list.
+
+## Player look: design pass first; choice echoes carry their source marker; the editor follows the Player closely
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player, editor-ui
+- **SCOPE:** moderate
+- **WHAT:** (1) The Player gets a small design pass before more knobs are added — a better baseline (even padding on text rows, consistent rhythm) rather than fixes one at a time. (2) A choice echo in the transcript shows `*` or `+` to its left according to the choice's kind in the source (once-only vs sticky), marking it as the reader's pick. The two button-styling directions proposed (quiet buttons; echo as a "You" run) were both declined. (3) The editor's "follow the Player" behaviour is strengthened: the editor should track the Player's position much more closely as the story advances, not only on hover or ⌘-click. (4) The row highlight in the transcript runs the full width of the pane, not just the text block. (5) The pass aims at "a really strong and clear visual design for the player, something that really sells it" — directions are drawn on the canvas and one is chosen before implementation.
+- **WHY:** Maintainer: "we should absolutely have a better baseline to work from"; the marker "indicate[s] it was a choice from the user, based on what type it was in the source"; the existing follow "is not nearly strong enough, it should follow the player much more closely."
+
+## Player look: direction C ("Stage") chosen; provenance as a hanging icon button; hover links to the editor; tags shown
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player, editor-ui
+- **SCOPE:** moderate
+- **WHAT:** (1) The Player's reading surface follows direction C of the design pass — modern, colour-led: each speaker's block hangs off a rule in the speaker's palette colour with the name as a small label, asides inside the block, choices as cards carrying their `*`/`+` marker. Directions A (Manuscript) and B (Screenplay) are dropped. (2) The provenance affordance is a small icon button, absolutely positioned so it hangs below the row's edge over the next row, revealing `file:line` as a tooltip on hover — not a text chip in the row. (3) Hovering a transcript line highlights its source line in the editor (distinct from the follow band). (4) The transcript shows a line's tags. (5) Still open: a visual element that ties the choice cards to the transcript rows — "we're closer to good choices here, but I want something more." (6) Narration reads at full strength; action lines are the dimmed ones — "action is dimmed, narration isn't" (this reverses the Player's current italic-muted narration). (7) The provenance button is present only while its row is hovered. (8) The spine (the rail the speaker segments and choice nodes share — accepted: "that's neat") reacts to the line kind: solid coloured for a speaker, plain for narration, dotted along action text. The echo ring sits on the centre of its text line.
+- **WHY:** Maintainer, on the canvas: "C is pretty good. it's not quite there, but we can drop the other two from consideration"; the link "should be an icon button that when hovered reveals the filename:line"; "hovering the line should highlight in the editor, as well"; "i'd like to see tags in the example".
