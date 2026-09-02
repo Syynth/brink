@@ -625,6 +625,8 @@ export async function mountStudio(
   // assignment below has run.
   let documentsRef: DocumentSessions | null = null;
 
+  // Late-bound for `onProjectConfigApplied` (#3387) — see that callback.
+  let documentsForConfig: DocumentSessions | null = null;
   const project = new ProjectSession({
     provider,
     entryFile,
@@ -677,6 +679,13 @@ export async function mountStudio(
     // channel as the warnings above instead.
     onProjectConfigError: (message) => {
       store.getState().appendOutput("compile", `brink.toml: ${message}`);
+    },
+    // #3387: a `brink.toml [dialogue]` edit reclassifies mounted views
+    // live. `documents` is constructed after the first discovery fires
+    // (inside `initialize()`), so this guards; views mounted later read
+    // the configured dialect at mount anyway.
+    onProjectConfigApplied: () => {
+      documentsForConfig?.refreshDialectFromProject();
     },
   });
   await project.initialize();
@@ -1176,6 +1185,7 @@ export async function mountStudio(
     proseChecker: studioProseChecker,
     onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
+  documentsForConfig = documents;
 
   // The keymap overrides service, created here rather than defaulted inside
   // ShellProvider: the editor-action sync below and the Settings ▸ Keymap

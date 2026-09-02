@@ -4590,6 +4590,7 @@
 - **SYSTEM:** editor-ui / project-config (dialogue dialect, #368)
 - **SCOPE:** moderate — REVISES the 2026-07-05 #368 ruling's "no project file in v1 (mount-time config only)"; that spec filed the project-file home as the expected follow-up, and this is it.
 - **WHAT:** A project declares its dialogue dialect in `brink.toml`: a `[dialect]` table (`preset = "…"` plus `[[dialect.elements]]` overlays using the spec's affix sugar, and the run rule below) is the PRIMARY authoring form; `dialect = "path.json"` remains as the escape hatch for a full hand-written artifact. Both resolve to one `DialogueDialect`; `mountStudio({ dialect })` stays as the embedder override. Tracked as #3387.
+- **NOTE (2026-08-30, implementation):** the table is spelled `[dialogue]`, not `[dialect]` — `[project] dialect` already names the SOURCE surface (`strict-ink`/`brink`) and `[prose] dialect` the spell-check English; `[dialogue]` is the DialogueDialect's own noun. The file form is `[dialogue] file = "path.json"` (a bare top-level `dialogue = "…"` string only parses before any table header in TOML).
 - **WHY:** The dialect is "how this project's text works," which is exactly `brink.toml`'s charter (it already hosts `prose_dialect` and `conventions`); the common case is tiny (a preset plus a kind or two) and reads as TOML with the affix sugar, and a second file you must know to reference is friction for ten lines. Brink cannot bake every author's format into the app — the artifact is the capability, the project owns the format.
 
 ## No dialect by default

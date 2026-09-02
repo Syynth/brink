@@ -24,6 +24,7 @@ import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedu
 import { withPerfTiming } from "./perf/wasm-proxy.js";
 import { perfSpan } from "./perf/probe.js";
 import { LocalTransport } from "./worker/local-transport.js";
+import type { DialogueDialect } from "./dialect.js";
 import { SessionClient } from "./worker/session-client.js";
 import { WorkerTransport, createSessionWorker } from "./worker/worker-transport.js";
 
@@ -168,6 +169,14 @@ export interface ProjectSessionOptions {
    * config (if any) stays in effect until a valid edit re-discovers it.
    */
   onProjectConfigError?: (message: string) => void;
+  /**
+   * Fires after every successful `brink.toml` discovery/apply (#3387) —
+   * including the first one inside `initialize()` — once the session's
+   * `getConfigured*` accessors reflect the new file. Hosts that mirror
+   * config into live editor views (the project-declared dialogue dialect,
+   * `DocumentSessions.refreshDialectFromProject`) hook here.
+   */
+  onProjectConfigApplied?: () => void;
 }
 
 /** Config-surface methods mirrored to the worker session (W4): every
@@ -301,6 +310,7 @@ export class ProjectSession {
   private onFileConflict?: (conflict: FileConflict) => void;
   private onProjectConfigWarnings?: (warnings: string[]) => void;
   private onProjectConfigError?: (message: string) => void;
+  private onProjectConfigApplied?: () => void;
   private unsubscribeExternal?: () => void;
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
@@ -394,6 +404,7 @@ export class ProjectSession {
     this.onFileConflict = options.onFileConflict;
     this.onProjectConfigWarnings = options.onProjectConfigWarnings;
     this.onProjectConfigError = options.onProjectConfigError;
+    this.onProjectConfigApplied = options.onProjectConfigApplied;
     this.changes = new FileChangeHub({
       getContent: (path) => (this.destroyed ? null : this.session.getFileSource(path)),
       onFlush: options.onFilesChanged,
@@ -468,6 +479,20 @@ export class ProjectSession {
       this.configuredEntry = null;
     }
     this.onProjectConfigWarnings?.(warnings);
+    this.onProjectConfigApplied?.();
+  }
+
+  /**
+   * `[dialogue]` from the applied `brink.toml`, RESOLVED into the one
+   * `DialogueDialect` every view and the Player read (#3387, RULED
+   * 2026-08-30) — or `null` when the project declares none ("no dialect by
+   * default": plain lines, never the preset). Feature-detected like
+   * {@link getConfiguredIndent}.
+   */
+  getConfiguredDialogueDialect(): DialogueDialect | null {
+    return typeof this.session.getConfiguredDialogueDialect === "function"
+      ? this.session.getConfiguredDialogueDialect()
+      : null;
   }
 
   /**

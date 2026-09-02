@@ -62,6 +62,12 @@ entry = "main.ink"
 # from the entry — see the Drafts section of the project-config docs.
 drafts = ["scratch/**"]
 
+# Dialogue conventions (RULED 2026-08-30: no dialect by default — a project
+# opts in). The demo uses the shipped at-cue preset: \`@NAME:<>\` cues with
+# chained dialogue lines.
+[dialogue]
+preset = "at-cue"
+
 # Diagnostics this project has decided about. Everything else runs at its
 # built-in default — see Settings > Diagnostics.
 [lints]
