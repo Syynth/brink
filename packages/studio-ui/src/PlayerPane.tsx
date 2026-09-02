@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
   EDITOR_REVEAL_COMMAND_ID,
@@ -381,11 +390,43 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom on new content — unless the author scrolled up.
+  // Smooth (feedback 2026-09-02): a new line fades in and the choices
+  // slide to their new place; the scroll rides along instead of jumping.
   useEffect(() => {
-    if (playerRef.current && stickToBottom.current) {
-      playerRef.current.scrollTop = playerRef.current.scrollHeight;
+    const el = playerRef.current;
+    if (el && stickToBottom.current) {
+      // jsdom has no scrollTo; the assignment is the same jump as before.
+      if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      else el.scrollTop = el.scrollHeight;
     }
   }, [lines, choices, ended, hasPending]);
+
+  // The choices block (Continue, or the offered choices) SLIDES to its new
+  // position when lines land above it (feedback 2026-09-02) — a FLIP:
+  // remember where it was, and after the DOM updates, play it from the
+  // old place to the new one. Measured in the pane's scroll space so the
+  // smooth scroll above does not count as movement.
+  const choicesRef = useRef<HTMLDivElement>(null);
+  const choicesTop = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = choicesRef.current;
+    const pane = playerRef.current;
+    if (!el || !pane) {
+      choicesTop.current = null;
+      return;
+    }
+    const top = el.getBoundingClientRect().top + pane.scrollTop;
+    const prev = choicesTop.current;
+    choicesTop.current = top;
+    if (prev === null || prev === top) return;
+    const dy = prev - top;
+    el.style.transition = "none";
+    el.style.transform = `translateY(${dy.toString()}px)`;
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 280ms cubic-bezier(0.2, 0.7, 0.2, 1)";
+      el.style.transform = "";
+    });
+  });
 
   const handleScroll = useCallback(() => {
     const el = playerRef.current;
@@ -888,7 +929,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             it and never the Continue button — so a transient status wobble at a
             choice point can't flicker the two against each other (#273). */}
         {choices.length > 0 ? (
-          <div className="choices">
+          <div className="choices" ref={choicesRef}>
             {choices.map((choice) => (
               <button
                 key={choice.index}
@@ -908,7 +949,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             ))}
           </div>
         ) : hasPending ? (
-          <div className="choices">
+          <div className="choices" ref={choicesRef}>
             <button className="player-choice player-continue" onClick={handleContinue}>
               <span className="player-choice-text">Continue</span>
             </button>

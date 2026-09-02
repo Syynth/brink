@@ -898,3 +898,33 @@
   left: auto;
   right: 0;
 }
+
+/* ── Arrival (feedback 2026-09-02): a new row fades in with a few pixels
+   of rise; the choices block slides to its new place (FLIP, in
+   PlayerPane). Off under reduced motion. ── */
+@keyframes player-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brink-studio .player .player-line-row,
+.brink-studio .player .player-run-cue,
+.brink-studio .player .player-start-marker {
+  animation: player-row-in 240ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brink-studio .player .player-line-row,
+  .brink-studio .player .player-run-cue,
+  .brink-studio .player .player-start-marker {
+    animation: none;
+  }
+  .brink-studio .player .choices {
+    transition: none !important;
+    transform: none !important;
+  }
+}
