@@ -373,7 +373,10 @@ flow start() {
         let result = session.apply_fix(&malformed.to_string());
         let parsed: serde_json::Value = serde_json::from_str(&result).expect("result JSON");
         assert_eq!(parsed["ok"], false, "{result}");
-        assert_eq!(parsed["error"], "fix has an inverted edit range", "{result}");
+        assert_eq!(
+            parsed["error"], "fix has an inverted edit range",
+            "{result}"
+        );
     }
 
     /// Review finding on #3384: an edit naming a file with no loaded

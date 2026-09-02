@@ -185,6 +185,11 @@
     "promote_stitch:parameterised": "=== deal(n) ==="
   },
   "messages": {
+    "apply_fix:invalid-json": "invalid fix: expected ident at line 1 column 2",
+    "apply_fix:inverted-range": "fix has an inverted edit range",
+    "apply_fix:no-edits": "fix carries no edits",
+    "apply_fix:unloaded-file": "fix names a file that is not loaded",
+    "apply_fix_doc:unknown-handle": "unknown document handle",
     "auto_import_apply_include_doc:read-only-mount": "document handle is read-only (mounted stdlib file)",
     "auto_import_apply_include_doc:unknown-handle": "unknown document handle",
     "auto_import_include_doc:unknown-handle": "unknown document handle",

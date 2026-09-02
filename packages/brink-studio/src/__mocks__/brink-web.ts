@@ -2050,8 +2050,18 @@ export class EditorSession {
       if (!this.files.has(editPath)) {
         return EditorSession.structuralRefusal("fix names a file that is not loaded");
       }
+      const start = e.start ?? 0;
+      const end = e.end ?? 0;
+      // Mirrors production's guard (crates/brink-web/src/editor/code_actions.rs,
+      // review finding on #3384): `start > end` would panic there
+      // (`rowan::TextRange::new` asserts it), so it must refuse there instead —
+      // and the mock must refuse the same way, or this exact wording is unpinned
+      // vocabulary a mock-only test could silently drift from (#2603).
+      if (start > end) {
+        return EditorSession.structuralRefusal("fix has an inverted edit range");
+      }
       const list = byPath.get(editPath) ?? [];
-      list.push({ start: e.start ?? 0, end: e.end ?? 0, text: e.new_text ?? "" });
+      list.push({ start, end, text: e.new_text ?? "" });
       byPath.set(editPath, list);
     }
     const splice = (src: string, list: { start: number; end: number; text: string }[]): string => {
