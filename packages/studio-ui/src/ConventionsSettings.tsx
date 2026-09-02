@@ -33,7 +33,7 @@ import {
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { SettingsGroup, SettingsRow } from "./SettingsRow.js";
-import { KnotIcon, StitchIcon } from "./icons.js";
+import { KnotIcon, PasteIcon, StitchIcon } from "./icons.js";
 import { foldPlayerRuns, speakerPaletteIndex } from "./player-runs.js";
 
 interface SymbolHit {
@@ -279,6 +279,7 @@ export function ConventionsSettings() {
       <div className="conv-lines">
         <div className="settings-group-label">Your lines</div>
         <div className="conv-picker">
+          <div className="conv-picker-field">
           {pasting ? (
             <textarea
               className="settings-preview-input sv-mono"
@@ -301,15 +302,6 @@ export function ConventionsSettings() {
               // Rows use onMouseDown so a pick lands before this blur closes the list.
               onBlur={() => setListOpen(false)}
             />
-          )}
-          {pasting ? (
-            <button type="button" className="settings-apply" onClick={usePasted}>
-              Use these lines
-            </button>
-          ) : (
-            <button type="button" className="settings-apply" onClick={() => setPasting(true)}>
-              Paste instead
-            </button>
           )}
           {matches.length > 0 && !pasting && (
             <ul className="pl-typeahead-list" role="listbox" aria-label="Matching knots and stitches">
@@ -339,6 +331,22 @@ export function ConventionsSettings() {
                 </li>
               ))}
             </ul>
+          )}
+          </div>
+          {pasting ? (
+            <button type="button" className="settings-apply conv-paste-use" onClick={usePasted}>
+              Use these lines
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="conv-paste"
+              aria-label="Paste lines instead"
+              title="Paste lines instead"
+              onClick={() => setPasting(true)}
+            >
+              <PasteIcon />
+            </button>
           )}
         </div>
         {passage !== null && (

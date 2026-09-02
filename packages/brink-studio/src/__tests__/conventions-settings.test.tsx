@@ -267,7 +267,7 @@ describe("ConventionsSettings", () => {
 
   it("pasted lines work without a project passage", async () => {
     await mount();
-    const paste = Array.from(container!.querySelectorAll("button")).find((b) => b.textContent === "Paste instead")!;
+    const paste = $<HTMLButtonElement>('button[aria-label="Paste lines instead"]');
     await act(async () => {
       paste.click();
     });

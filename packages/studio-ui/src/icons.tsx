@@ -295,6 +295,17 @@ export function KnotIcon({ size = 12 }: IconProps) {
   );
 }
 
+/** Paste — a clipboard with an arrow going in (Conventions: "paste lines instead"). */
+export function PasteIcon({ size = 14 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1z" />
+      <path d="M16 5.5h2a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1h2" />
+      <path d="M12 10v7M9 14l3 3 3-3" />
+    </svg>
+  );
+}
+
 /** A stitch — the branch arrow. */
 export function StitchIcon({ size = 12 }: IconProps) {
   return (
