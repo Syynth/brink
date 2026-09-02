@@ -175,12 +175,40 @@ fn annotation_line(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Parse `TODO: text\n`.
-fn author_warning(p: &mut Parser<'_, '_>) {
+/// Parse `TODO: text\n` at weave level, where a bare `NEWLINE` is always the
+/// end of the note — there is no enclosing `{ … }` block whose `}` could
+/// share the line.
+pub(crate) fn author_warning(p: &mut Parser<'_, '_>) {
     p.start_node(AUTHOR_WARNING);
     p.bump(); // KW_TODO
     // Consume everything until newline
     while !p.at_eof() && p.nth_raw(0) != NEWLINE {
+        p.bump();
+    }
+    if p.at(NEWLINE) {
+        p.bump();
+    }
+    p.finish_node();
+}
+
+/// Parse `TODO: text\n` inside a conditional-branch body (`brink-syntax`'s
+/// `inline.rs`: `branchless_cond_body` and `multiline_branch_body`), so a
+/// `TODO` line inside a `{ cond: … }` block, an `- else:` arm, or a nested
+/// block is recognized the same way it is at weave level (issue #3353).
+///
+/// Unlike weave-level `author_warning`, this also stops at an unmatched
+/// `R_BRACE` (without consuming it): a branch's closing `}` may share the
+/// same line as the note (e.g. `TODO: fix }`), and the plain newline-only
+/// scan would otherwise swallow that brace — and with it the rest of the
+/// file, since the caller's own loop (`branchless_cond_body` /
+/// `multiline_branch_body`) relies on seeing `R_BRACE` to know the block
+/// has ended. This mirrors `multiline_branch_text`'s catch-all, which stops
+/// on `R_BRACE` the same way, so a `TODO` note and ordinary branch prose
+/// hit the block boundary identically (PR #3367 review).
+pub(crate) fn author_warning_in_branch(p: &mut Parser<'_, '_>) {
+    p.start_node(AUTHOR_WARNING);
+    p.bump(); // KW_TODO
+    while !p.at_eof() && !matches!(p.nth_raw(0), NEWLINE | R_BRACE) {
         p.bump();
     }
     if p.at(NEWLINE) {
