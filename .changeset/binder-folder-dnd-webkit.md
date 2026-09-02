@@ -10,6 +10,9 @@ remain a valid drop target, while Chromium tolerates `dragover` alone, so
 the reorder worked in the browser preview but never in the desktop app.
 `onDragEnter` now runs the same accept/reject logic as `onDragOver` on
 every Binder row (files, folders, knots, stitches) and the root drop zone;
-`.brink-binder-row` also opts into `-webkit-user-drag: element` as a
-defensive measure against WebKit's stricter interactive-children drag-start
-gating.
+rows also opt into `-webkit-user-drag: element` as a defensive measure
+against WebKit's stricter interactive-children drag-start gating, scoped to
+`.brink-binder-row[draggable="true"]` only — React renders `draggable={false}`
+as the literal attribute, and an unscoped rule would have let WebKit's
+presentational-hint cascade re-arm non-draggable rows (read-only
+`FileProvider`, pre-seed window) as drag sources.

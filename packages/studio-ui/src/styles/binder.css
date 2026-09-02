@@ -28,9 +28,15 @@
   user-select: none;
   white-space: nowrap;
   position: relative;
-  /* WebKit (Tauri/Safari, #3351) can refuse to start a drag from an
-     element that contains interactive children (the chevron toggle, the
-     hover ⋯ menu button) unless the row itself is explicitly opted in. */
+}
+/* WebKit (Tauri/Safari, #3351) can refuse to start a drag from an element
+   that contains interactive children (the chevron toggle, the hover ⋯ menu
+   button) unless the row itself is explicitly opted in. Scoped to rows React
+   actually rendered as draggable — React emits the literal `draggable="false"`
+   attribute for non-draggable rows, and `-webkit-user-drag` is a presentational
+   hint that would otherwise re-arm those rows as drag sources, overriding the
+   draggable={canRenameFiles} gate in WKWebView (review finding on #3359). */
+.brink-studio .brink-binder-row[draggable="true"] {
   -webkit-user-drag: element;
 }
 .brink-studio .brink-binder-row:hover {
