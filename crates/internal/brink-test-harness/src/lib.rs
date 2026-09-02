@@ -9,6 +9,7 @@ pub mod diff;
 pub mod episode;
 pub mod explorer;
 pub mod fence;
+pub mod fix;
 pub mod ground_truth;
 pub mod mutate;
 pub mod oracle;
@@ -20,6 +21,10 @@ pub mod trace;
 pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;
 pub use explorer::{ExploreConfig, explore};
+pub use fix::{
+    FixFixture, FixFixtureError, SafeFixConfig, SafeFixReport, SafeVerdict, assert_safe_fix,
+    check_safe_fix, load_fix_fixture,
+};
 pub use oracle::{OracleDiff, OracleEpisode, diff_oracle, load_oracle_episodes};
 pub use runner::{RunConfig, record, run_text};
 pub use trace::{
