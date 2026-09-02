@@ -297,6 +297,7 @@ pub(super) fn lower_alternation(
         kind,
         branches,
         container_id: None,
+        counter_id: None,
     }
 }
 

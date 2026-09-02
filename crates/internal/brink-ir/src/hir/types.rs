@@ -2076,6 +2076,14 @@ pub struct Sequence {
     /// Pre-assigned container ID for the sequence wrapper container.
     /// Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+    /// The container whose visit count selects this sequence's branch when
+    /// it is not the wrapper's own (#3401): a clone made by
+    /// [`super::normalize_file`]'s lift keeps its own `container_id` (a
+    /// distinct body — the branch's spliced text differs per clone) but
+    /// counts on the ORIGINAL's, so every clone advances one shared state.
+    /// `None` on the pristine HIR and on the clone that keeps the original
+    /// id.
+    pub counter_id: Option<brink_format::DefinitionId>,
 }
 
 /// A branch (alternative) within a sequence, paired with its own source

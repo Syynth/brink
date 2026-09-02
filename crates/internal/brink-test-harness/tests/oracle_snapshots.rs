@@ -72,7 +72,20 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 /// floor. Measured on the same freshly-cleaned `CARGO_TARGET_DIR` discipline
 /// as the prior raise: CASES 377 pass / 10 fail / 411 total, EPISODES 5619
 /// pass / 1012 mismatch / 2 missing.
-const RATCHET_EPISODE_COUNT: usize = 5619;
+///
+/// Raised 5619 -> 5622 on 2026-09-02: the #3401 fix (a sequence cloned into
+/// a lift's branches still lifts into whole-line renderings, but every clone
+/// counts on the ORIGINAL's container — `Sequence::counter_id`) flips
+/// exactly one existing case, its own expected-mismatch
+/// entry, and lands with two new cases pinning the shapes the fix had to
+/// get right (the glue shape and a mixed-claim shape), one episode each:
+///   tier2/sequences/sequence-leads-multi-construct-line (#3401, flipped)
+///   tier2/sequences/sequence-cloned-into-glued-line (#3401, new)
+///   tier2/sequences/sequence-shared-across-mixed-claim-branches (#3401, new)
+/// No other snapshot moved. The two #3395 expected mismatches above remain.
+/// Measured: CASES 380 pass / 10 fail / 414 total, EPISODES 5622 pass /
+/// 1012 mismatch / 2 missing.
+const RATCHET_EPISODE_COUNT: usize = 5622;
 
 #[test]
 #[expect(clippy::too_many_lines)]

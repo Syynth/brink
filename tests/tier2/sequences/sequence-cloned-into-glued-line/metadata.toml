@@ -1,0 +1,12 @@
+description = "A stateful sequence cloned into a lift's branches on a GLUED line (unclaimable as a variant line) advances once per view, shared across both outer branches (#3401)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "sequence-cloned-into-glued-line"
+notes = "Hand-minimized from the #3401 sweep: the trailing glue keeps the line off the variant path, so the cloned `{c|d|e}` used to get one counter per outer branch (ac, bc, bd, ...) where the oracle advances ac, bd, be, be. Fixed with #3401: every clone counts on the original's container (whole-line renderings kept)."
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences", "lifted-branches", "glue"]

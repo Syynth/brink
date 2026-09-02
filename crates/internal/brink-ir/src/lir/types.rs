@@ -635,6 +635,13 @@ pub struct CondBranch {
 pub struct Sequence {
     pub kind: SequenceType,
     pub branches: Vec<Vec<Stmt>>,
+    /// The container whose visit count selects the branch, when it is not
+    /// the enclosing wrapper's own (#3401): a lift clone counts on the
+    /// original's container. Codegen advances and reads it with
+    /// `TouchVisit` (and seeds a shuffle from its `path_hash`) instead of
+    /// `CurrentVisitCount`, exactly as a variant line touches its shared
+    /// alternative stubs.
+    pub counter: Option<brink_format::DefinitionId>,
 }
 
 // ─── Recognized content (pattern recognizer output) ──────────────────

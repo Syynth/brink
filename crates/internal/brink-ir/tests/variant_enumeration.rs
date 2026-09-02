@@ -38,6 +38,7 @@ fn seq(kind: SequenceType, branches: &[&str]) -> ContentPart {
         kind,
         branches: branches.iter().map(|s| text_branch(s)).collect(),
         container_id: None,
+        counter_id: None,
     })
 }
 
@@ -162,6 +163,7 @@ fn inadmissible_shapes_return_none() {
             },
         ],
         container_id: None,
+        counter_id: None,
     });
     assert!(
         enumerate_variant_contents(&line(vec![structural]))

@@ -505,6 +505,37 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    /// Push the pre-increment visit count that selects this sequence's
+    /// branch: the enclosing wrapper's own (`CurrentVisitCount` — entering
+    /// the wrapper already counted the view), or, for a lift clone that
+    /// counts on its original (#3401), `TouchVisit` on that container —
+    /// the variant path's mechanism (`emit_line_variants`), so every clone
+    /// and every claimed line advance ONE state.
+    fn emit_sequence_count(&mut self, counter: Option<brink_format::DefinitionId>) {
+        match counter {
+            Some(c) => {
+                self.emit(Opcode::PushDivertTarget(c));
+                self.emit(Opcode::TouchVisit);
+            }
+            None => self.emit(Opcode::CurrentVisitCount),
+        }
+    }
+
+    /// Turn `seq_count, num_elements` on the stack into a shuffle index,
+    /// seeded from the wrapper's own `path_hash` (`Sequence(Shuffle)`) or,
+    /// for a clone counting on its original, from THAT container's
+    /// (`ShuffleIndexOf`) — the same seed the original site uses, so the
+    /// clones draw one permutation.
+    fn emit_shuffle_index(&mut self, counter: Option<brink_format::DefinitionId>) {
+        match counter {
+            Some(c) => {
+                self.emit(Opcode::PushDivertTarget(c));
+                self.emit(Opcode::ShuffleIndexOf);
+            }
+            None => self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0)),
+        }
+    }
+
     #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub(super) fn emit_sequence(&mut self, seq: &lir::Sequence) {
         let count = seq.branches.len();
@@ -517,7 +548,7 @@ impl ContainerEmitter<'_> {
 
             if is_once {
                 // shuffle once: clamp visit count to N, skip all branches when exhausted
-                self.emit(Opcode::CurrentVisitCount);
+                self.emit_sequence_count(seq.counter);
                 self.emit(Opcode::PushInt(count as i32));
                 self.emit(Opcode::Min);
                 self.emit(Opcode::Duplicate);
@@ -527,13 +558,13 @@ impl ContainerEmitter<'_> {
                 let site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
                 // Not exhausted: do shuffle
                 self.emit(Opcode::PushInt(count as i32));
-                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+                self.emit_shuffle_index(seq.counter);
                 exhaustion_skip = Some(site);
             } else if is_stopping {
                 // shuffle stopping: clamp to N-1, skip shuffle when exhausted (pin to last)
                 // When exhausted: clamped value (N-1) stays on stack → matches last branch
                 // When not exhausted: shuffle among first N-1 branches only
-                self.emit(Opcode::CurrentVisitCount);
+                self.emit_sequence_count(seq.counter);
                 self.emit(Opcode::PushInt(count as i32 - 1));
                 self.emit(Opcode::Min);
                 self.emit(Opcode::Duplicate);
@@ -543,18 +574,18 @@ impl ContainerEmitter<'_> {
                 let site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
                 // Not exhausted: shuffle among first N-1 branches using clamped value as seq_count
                 self.emit(Opcode::PushInt(count as i32 - 1));
-                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+                self.emit_shuffle_index(seq.counter);
                 // Patch exhaustion jump to land here (right before branch switch)
                 self.patch_jump(site);
             } else {
                 // Plain shuffle or cycle shuffle
-                self.emit(Opcode::CurrentVisitCount);
+                self.emit_sequence_count(seq.counter);
                 self.emit(Opcode::PushInt(count as i32));
-                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+                self.emit_shuffle_index(seq.counter);
             }
         } else {
             // Non-shuffle: use CurrentVisitCount + math to compute branch index.
-            self.emit(Opcode::CurrentVisitCount);
+            self.emit_sequence_count(seq.counter);
 
             if seq.kind.contains(brink_ir::SequenceType::CYCLE) {
                 // cycle: index = visit_count % count

@@ -27,10 +27,16 @@
 //!   exhausted-branch synthesis stays reachable through exactly these
 //!   lines (e.g. a plain `{!…}` beside an inline conditional), as does
 //!   [`synthesized_else_branch`] through every lifted no-else conditional;
-//! * a cloned **stateful** alternative keeps its stamped container id in
-//!   every branch (shared visit-count state, the #3275 mixed-line ruling),
-//!   revoked per lift level by [`revoke_sharing_if_unclaimed`] when a
-//!   branch fails to reassemble into a claimable variant line.
+//! * a cloned **stateful** alternative shares ONE visit-count state across
+//!   every branch (the #3275 mixed-line ruling) while each clone keeps its
+//!   own body: clone 0 keeps the stamped id, every other clone gets a
+//!   derived `container_id` and records the original as its `counter_id`
+//!   (#3401, `stamp::rederive_cloned_parts`), and codegen selects that
+//!   clone's branch from the ORIGINAL container's count (`TouchVisit`, the
+//!   variant path's mechanism). Cloned lines therefore still lift into
+//!   whole-line renderings — one line-table entry each, per ruling (1)
+//!   above — and the per-lift-level revocation that used to give an
+//!   unclaimable branch its own counter is gone.
 //!
 //! [`claims_variant_line`]: crate::lir::lower::recognize::claims_variant_line
 
@@ -152,11 +158,6 @@ fn normalize_block(block: &mut Block) {
 ///
 /// Returns `Ok(stmts)` with the replacement statements, or `Err(content)`
 /// if no inline construct was found (caller passes through unchanged).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one linear lift per construct kind; the #3386 per-level salt \
-              added four lines and the two arms mirror each other deliberately"
-)]
 fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Content> {
     let Some(idx) = lift_index(&content.parts) else {
         return Err(content);
@@ -234,20 +235,15 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind
             };
 
-            revoke_sharing_if_unclaimed(
-                &prefix,
-                &suffix,
-                nonce_of(seq.container_id),
-                branches.iter_mut().map(|b| &mut b.body),
-            );
-
             Ok(vec![Stmt::Sequence(Sequence {
                 ptr: seq.ptr,
                 kind,
                 branches,
                 // Inherited from the pristine stamp (#3275) — the lift
-                // never re-mints ids.
+                // never re-mints ids. A clone's `counter_id` (#3401) names
+                // the original it shares state with.
                 container_id: seq.container_id,
+                counter_id: seq.counter_id,
             })])
         }
         ContentPart::InlineConditional(cond) => {
@@ -291,13 +287,6 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                     trailing_eol,
                 ));
             }
-
-            revoke_sharing_if_unclaimed(
-                &prefix,
-                &suffix,
-                nonce,
-                branches.iter_mut().map(|b| &mut b.body),
-            );
 
             Ok(vec![Stmt::Conditional(Conditional {
                 ptr: cond.ptr,
@@ -455,45 +444,6 @@ fn synthesized_else_branch(
             .last()
             .and_then(|b| b.container_id)
             .map(|id| super::stamp::derive_id(id, "synth-else", 0)),
-    }
-}
-
-/// A cloned stateful alternative keeps its stamped id in every branch
-/// (shared visit-count state, ruled 2026-08-29 on #3275) — but that is
-/// only sound while every branch's assembled line claims as a variant
-/// line, because the variant model emits the shared container as one
-/// empty stub (deduped at emission), while an unclaimed line's inline
-/// lowering builds a BODIED container per site: one id cannot name both.
-/// So the sharing is per-lift-level: if any branch fails to claim
-/// immediately, branches 1.. re-derive EVERY id ([`rederive_block_all`]),
-/// stateful included — a per-branch state split in this structural-mixed
-/// corner, the documented pre-#3275 behavior. The recursive normalize
-/// pass then applies the same rule at each deeper lift.
-fn revoke_sharing_if_unclaimed<'a>(
-    prefix: &[ContentPart],
-    suffix: &[ContentPart],
-    nonce: u64,
-    branches: impl Iterator<Item = &'a mut Block>,
-) {
-    let has_stateful_clone = prefix
-        .iter()
-        .chain(suffix.iter())
-        .any(|p| matches!(p, ContentPart::InlineSequence(_)));
-    if !has_stateful_clone {
-        return;
-    }
-    let mut branches: Vec<&mut Block> = branches.collect();
-    let all_claim = branches.iter().all(|b| {
-        let ([Stmt::Content(c)] | [Stmt::Content(c), Stmt::EndOfLine]) = b.stmts.as_slice() else {
-            return false;
-        };
-        crate::lir::lower::recognize::claims_variant_line(c)
-    });
-    if all_claim {
-        return;
-    }
-    for (k, b) in branches.iter_mut().enumerate().skip(1) {
-        super::stamp::rederive_block_all(b, lift_salt(nonce, k));
     }
 }
 
@@ -747,6 +697,7 @@ mod tests {
                 })
                 .collect(),
             container_id: None,
+            counter_id: None,
         })
     }
 
@@ -1394,5 +1345,67 @@ mod tests {
             "spliced branch must carry the whole line's location, not its own narrower one: {:?}",
             spliced.ptr
         );
+    }
+
+    #[test]
+    fn cloned_sequence_keeps_its_id_on_clone_zero_and_counts_on_it_elsewhere() {
+        // #3401: `{a|b}{c|d|e} <>` — the glue keeps every line off the
+        // variant path. `{a|b}` lifts and clones `{c|d|e}` into both
+        // branches; each clone lifts again into whole-line renderings
+        // (`ac|ad|ae`, `bc|bd|be`), so the clone in branch 1 needs its own
+        // wrapper id — and must count on the original's.
+        use brink_format::{DefinitionId, DefinitionTag};
+        let id = |raw: u64| DefinitionId::new(DefinitionTag::Address, raw);
+        let ContentPart::InlineSequence(mut outer) = mk_inline_seq(
+            SequenceType::STOPPING,
+            vec![vec![text("a")], vec![text("b")]],
+        ) else {
+            panic!("mk_inline_seq builds an InlineSequence");
+        };
+        outer.container_id = Some(id(1));
+        let ContentPart::InlineSequence(mut inner) = mk_inline_seq(
+            SequenceType::STOPPING,
+            vec![vec![text("c")], vec![text("d")], vec![text("e")]],
+        ) else {
+            panic!("mk_inline_seq builds an InlineSequence");
+        };
+        inner.container_id = Some(id(2));
+        let content = mk_content(vec![
+            ContentPart::InlineSequence(outer),
+            ContentPart::InlineSequence(inner),
+            ContentPart::Glue,
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let Stmt::Sequence(seq) = &hir.root_content.stmts[0] else {
+            panic!("expected Sequence, got {:?}", hir.root_content.stmts[0]);
+        };
+        assert_eq!(seq.container_id, Some(id(1)));
+        assert_eq!(seq.counter_id, None);
+        assert_eq!(seq.branches.len(), 2);
+        let clones: Vec<&Sequence> = seq
+            .branches
+            .iter()
+            .map(|b| {
+                let Stmt::Sequence(inner) = &b.body.stmts[0] else {
+                    panic!("expected the clone to lift, got {:?}", b.body.stmts);
+                };
+                inner
+            })
+            .collect();
+        // Clone 0 IS the original: stamped id, counts on itself.
+        assert_eq!(clones[0].container_id, Some(id(2)));
+        assert_eq!(clones[0].counter_id, None);
+        // Clone 1: a distinct body under a derived id, counting on the original.
+        assert_ne!(clones[1].container_id, Some(id(2)));
+        assert!(clones[1].container_id.is_some());
+        assert_eq!(clones[1].counter_id, Some(id(2)));
+        for (clone, prefix) in clones.iter().zip(["a", "b"]) {
+            let Stmt::Content(c) = &clone.branches[0].body.stmts[0] else {
+                panic!("expected a whole-line rendering");
+            };
+            assert_eq!(content_text(c), format!("{prefix}c"));
+        }
     }
 }

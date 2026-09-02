@@ -1138,7 +1138,10 @@ fn try_lower_variant_line(
         let hir::ContentPart::InlineSequence(seq) = &content.parts[alt.part_idx] else {
             return None;
         };
-        alt_ids.push((seq.container_id?, seq.ptr));
+        // #3401: a lift clone counts on its ORIGINAL's container — touch
+        // and stub that id, so this claimed line and every other clone
+        // site advance one state.
+        alt_ids.push((seq.counter_id.or(seq.container_id)?, seq.ptr));
     }
 
     // Recognize every variant BEFORE consuming sequence indices, so a
@@ -1175,7 +1178,14 @@ fn try_lower_variant_line(
         // the container once; later sites reference it through the alt's
         // `container_id` alone. The sequence index is consumed either way
         // so sibling container names stay stable.
-        if ctx.ids.mark_shared_emitted(id) {
+        // #3401: if a bodied wrapper already owns this id (the clone that
+        // keeps the original id lifted, and lowered first — clone 0 always
+        // precedes its siblings), it carries the visit count this stub
+        // would — emit nothing here. The reverse order cannot arise: only
+        // clone 0 ever builds a bodied wrapper under the stamped id, so a
+        // stub emitted first is never followed by one, and codegen's E060
+        // guard stays the arbiter for any duplicate that does slip through.
+        if !ctx.ids.is_bodied_emitted(id) && ctx.ids.mark_shared_emitted(id) {
             stubs.push(lir::Container {
                 id,
                 provenance: ptr,
@@ -1482,6 +1492,12 @@ fn lower_block_with_children(
                 // Read pre-stamped wrapper container ID; keep counter in sync.
                 let seq_idx = ctx.ids.next_seq_index();
                 let wrapper_id = seq.container_id.unwrap_or(ctx.root_id);
+                // #3401: see `content::lower_inline_sequence` — the wrapper
+                // under the stamped id owns the counted state; the variant
+                // path must not stub that id again.
+                if seq.container_id.is_some() && seq.counter_id.is_none() {
+                    ctx.ids.mark_bodied_emitted(wrapper_id);
+                }
 
                 // Push the wrapper's name onto the scope path so that nested
                 // sequences inside branches get unique IDs (e.g. `scope.s-0.s-0`
@@ -1550,11 +1566,12 @@ fn lower_block_with_children(
                         lir::StmtKind::Sequence(lir::Sequence {
                             kind: seq.kind,
                             branches,
+                            counter: seq.counter_id,
                         }),
                         stmt_prov,
                     )],
                     children: wrapper_children,
-                    counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+                    counting_flags: content::sequence_counting_flags(seq),
                     temp_slot_count: 0,
                     labeled: false,
                     inline: false,
