@@ -41,6 +41,30 @@ fn scratch_dir() -> PathBuf {
     dir
 }
 
+/// Compile one in-memory story, rendering the diagnostics themselves on
+/// failure (`CompileError`'s Display only counts them).
+fn compile(src: &str) -> Result<brink_compiler::CompileOutput, TestCaseError> {
+    brink_compiler::compile("gen.ink", |_| Ok(src.to_owned())).map_err(|e| {
+        let detail = match &e {
+            brink_compiler::CompileError::Diagnostics(ds) => ds
+                .iter()
+                .map(|d| {
+                    format!(
+                        "  [{}] {}..{}: {}",
+                        d.code.as_str(),
+                        u32::from(d.range.start()),
+                        u32::from(d.range.end()),
+                        d.message
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            other => other.to_string(),
+        };
+        TestCaseError::fail(format!("compile failed:\n{detail}\n--- source ---\n{src}"))
+    })
+}
+
 proptest! {
     #![proptest_config(config())]
 
@@ -48,8 +72,7 @@ proptest! {
     fn validates_and_compiles_clean(story in arb_story()) {
         prop_assert_eq!(brink_gen::model::validate(&story), Ok(()));
         let src = print_ink(&story);
-        let out = brink_compiler::compile("gen.ink", |_| Ok(src.clone()))
-            .map_err(|e| TestCaseError::fail(format!("compile failed: {e}\n--- source ---\n{src}")))?;
+        let out = compile(&src)?;
         // Info/Hint-tier lints (E157's anonymous once-only choice, a
         // precision lint ruled "off or info by default") are advisory, not
         // a generator defect; anything Warning or above is.
@@ -88,8 +111,7 @@ proptest! {
     #[test]
     fn explores_to_termination(story in arb_story()) {
         let src = print_ink(&story);
-        let out = brink_compiler::compile("gen.ink", |_| Ok(src.clone()))
-            .map_err(|e| TestCaseError::fail(format!("compile failed: {e}\n{src}")))?;
+        let out = compile(&src)?;
         let (program, line_tables) = brink_runtime::link(&out.data)
             .map_err(|e| TestCaseError::fail(format!("link failed: {e}\n{src}")))?;
         let config = ExploreConfig { max_depth: 64, max_episodes: 512 };

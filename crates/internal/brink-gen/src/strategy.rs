@@ -4,41 +4,49 @@
 //!
 //! The strategies never look at a generated value while generating: they
 //! produce a **raw skeleton** — a plain tree of independent values in which a
-//! divert target is just a small integer and a tail is a plain enum — and a
-//! deterministic [`decode`] step turns that skeleton into a valid [`Story`],
-//! resolving every raw target into the range the model's rules allow at its
-//! site (forward flows anywhere; back-edges only inside once-only choice
-//! bodies; fall-through only into a gather; a set that could run out gets a
-//! fallback).
+//! divert target is just a small integer, a variable reference is an index,
+//! an operator is a byte — and a deterministic [`decode`] step turns that
+//! skeleton into a valid [`Story`], resolving every raw value into the range
+//! the model's rules allow at its site: forward flows anywhere, back-edges
+//! only inside once-only choice bodies, fall-through only into a gather, a
+//! set that could run out gets a fallback, an expression decoded against the
+//! type its position needs and the names in scope there.
 //!
 //! That shape is what makes **shrinking** work. proptest shrinks each
-//! component of an independent tree on its own — fewer knots, fewer lines,
-//! a smaller target integer, a simpler tail — and the decoder keeps the
-//! result valid by construction, so a counterexample shrinks all the way
-//! down to a story a human can read. The alternative, `prop_flat_map`-ing
-//! weaves against a generated layout, regenerates the inner values whenever
-//! the outer ones shrink and stalls with a large story (the first version of
-//! this module did exactly that).
+//! component of an independent tree on its own — fewer knots, fewer items,
+//! a smaller target integer, a simpler tail, a shallower expression — and
+//! the decoder keeps the result valid by construction, so a counterexample
+//! shrinks all the way down to a story a human can read. The alternative,
+//! `prop_flat_map`-ing weaves against a generated layout, regenerates the
+//! inner values whenever the outer ones shrink and stalls with a large story
+//! (the first version of this module did exactly that).
 
 use proptest::prelude::*;
 
-use crate::model::{Choice, Divert, Exit, Knot, Line, Stitch, Story, Tail, Weave};
+use crate::model::{
+    AssignOp, BinOp, Choice, Divert, Exit, Expr, Item, Knot, Literal, Part, Stitch, Story, Tail,
+    Ty, VarDecl, Weave,
+};
 
 /// Biasing knobs — **data**, so a property names the profile it wants
-/// (`docs/program-generator-spec.md` §4). The structure tier has size
-/// bounds only; bait flags arrive with the later tiers.
+/// (`docs/program-generator-spec.md` §4). Size bounds only so far; bait
+/// flags arrive with the later tiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile {
     /// Knots per story (at least 1).
     pub max_knots: usize,
     /// Stitches per knot.
     pub max_stitches: usize,
-    /// Content lines per weave.
-    pub max_lines: usize,
+    /// Items (lines, assignments, temps, conditional blocks) per weave.
+    pub max_items: usize,
     /// Choices per choice set (at least 1).
     pub max_choices: usize,
     /// How deep choice sets may nest inside choice bodies (0 = none).
     pub max_choice_depth: usize,
+    /// Global `VAR` declarations.
+    pub max_vars: usize,
+    /// Expression nesting depth (0 = literals and variables only).
+    pub max_expr_depth: usize,
 }
 
 impl Profile {
@@ -47,9 +55,18 @@ impl Profile {
     pub const DEFAULT: Self = Self {
         max_knots: 4,
         max_stitches: 2,
-        max_lines: 3,
+        max_items: 3,
         max_choices: 3,
         max_choice_depth: 2,
+        max_vars: 3,
+        max_expr_depth: 2,
+    };
+
+    /// Structure only — no variables, so no expressions can be decoded
+    /// beyond literals: the shape the first tier shipped with.
+    pub const STRUCTURE: Self = Self {
+        max_vars: 0,
+        ..Self::DEFAULT
     };
 }
 
@@ -71,6 +88,55 @@ pub enum RawExit {
     Done,
 }
 
+/// An expression before typing: the decoder reads it against the type its
+/// position needs. A `Var` is an index into the names of that type in
+/// scope; a `Bin`'s byte selects an operator legal for the type.
+#[derive(Debug, Clone)]
+pub enum RawExpr {
+    Lit(u8),
+    Var(u8),
+    Neg(Box<RawExpr>),
+    Not(Box<RawExpr>),
+    Bin(Box<RawExpr>, u8, Box<RawExpr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum RawPart {
+    Text(String),
+    /// The byte picks the interpolated type.
+    Interp(RawExpr, u8),
+    Cond {
+        cond: RawExpr,
+        then: String,
+        otherwise: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum RawItem {
+    Line {
+        parts: Vec<RawPart>,
+        glue: bool,
+    },
+    /// `target` indexes the assignable names in scope; `op` picks the
+    /// operator (compound ops only decode for int targets).
+    Assign {
+        target: u8,
+        op: u8,
+        value: RawExpr,
+    },
+    /// `ty` picks the temp's type.
+    Temp {
+        ty: u8,
+        init: RawExpr,
+    },
+    Cond {
+        cond: RawExpr,
+        then: Vec<RawItem>,
+        otherwise: Option<Vec<RawItem>>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum RawTail {
     Exit(RawExit),
@@ -85,13 +151,14 @@ pub enum RawTail {
 #[derive(Debug, Clone)]
 pub struct RawChoice {
     pub sticky: bool,
+    pub condition: Option<RawExpr>,
     pub label: String,
     pub body: RawWeave,
 }
 
 #[derive(Debug, Clone)]
 pub struct RawWeave {
-    pub lines: Vec<Line>,
+    pub items: Vec<RawItem>,
     pub tail: RawTail,
 }
 
@@ -102,17 +169,26 @@ pub struct RawKnot {
     pub stitches: Vec<(String, RawWeave)>,
 }
 
+/// A global before typing: `ty` picks the type, `init` the literal.
+#[derive(Debug, Clone)]
+pub struct RawVar {
+    pub name: String,
+    pub ty: u8,
+    pub init: u8,
+}
+
 /// The unresolved story: independent values only.
 #[derive(Debug, Clone)]
 pub struct RawStory {
+    pub vars: Vec<RawVar>,
     pub knots: Vec<RawKnot>,
 }
 
 // ─── Leaf strategies ─────────────────────────────────────────────────
 
 /// Characters that are never ink-significant in content position: no
-/// `{}`, `#`, `|`, `\`, `[]`, `~`, `=`, `*`, `+`, `-`, `<`, `>`, `/`, and a
-/// leading lowercase letter so a line can never read as a keyword, a
+/// `{}`, `#`, `|`, `\`, `[]`, `~`, `=`, `*`, `+`, `-`, `<`, `>`, `/`, `"`,
+/// and a leading lowercase letter so a line can never read as a keyword, a
 /// choice/gather marker, or a `TODO:`.
 fn arb_text() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9 ,.!?;:]{0,29}".prop_map(|s| s.trim_end().to_owned())
@@ -124,10 +200,6 @@ fn arb_name_base() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9]{0,5}"
 }
 
-fn arb_line() -> impl Strategy<Value = Line> {
-    (arb_text(), prop::bool::weighted(0.15)).prop_map(|(text, glue)| Line { text, glue })
-}
-
 fn arb_raw_exit() -> impl Strategy<Value = RawExit> {
     prop_oneof![
         4 => any::<u8>().prop_map(RawExit::Forward),
@@ -137,8 +209,64 @@ fn arb_raw_exit() -> impl Strategy<Value = RawExit> {
     ]
 }
 
+fn arb_raw_expr(depth: usize) -> BoxedStrategy<RawExpr> {
+    let leaf = prop_oneof![
+        2 => any::<u8>().prop_map(RawExpr::Lit),
+        3 => any::<u8>().prop_map(RawExpr::Var),
+    ];
+    if depth == 0 {
+        return leaf.boxed();
+    }
+    let inner = arb_raw_expr(depth - 1);
+    prop_oneof![
+        3 => leaf,
+        1 => inner.clone().prop_map(|e| RawExpr::Neg(Box::new(e))),
+        1 => inner.clone().prop_map(|e| RawExpr::Not(Box::new(e))),
+        4 => (inner.clone(), any::<u8>(), inner)
+            .prop_map(|(l, op, r)| RawExpr::Bin(Box::new(l), op, Box::new(r))),
+    ]
+    .boxed()
+}
+
+fn arb_raw_part(p: Profile) -> impl Strategy<Value = RawPart> {
+    prop_oneof![
+        4 => arb_text().prop_map(RawPart::Text),
+        2 => (arb_raw_expr(p.max_expr_depth), any::<u8>()).prop_map(|(e, t)| RawPart::Interp(e, t)),
+        1 => (arb_raw_expr(p.max_expr_depth), arb_text(), prop::option::weighted(0.5, arb_text()))
+            .prop_map(|(cond, then, otherwise)| RawPart::Cond { cond, then, otherwise }),
+    ]
+}
+
+/// `in_cond`: inside a conditional branch — no temps, no nested blocks.
+fn arb_raw_item(p: Profile, in_cond: bool) -> BoxedStrategy<RawItem> {
+    let line = (
+        prop::collection::vec(arb_raw_part(p), 1..=3),
+        prop::bool::weighted(0.15),
+    )
+        .prop_map(|(parts, glue)| RawItem::Line { parts, glue });
+    let assign = (any::<u8>(), any::<u8>(), arb_raw_expr(p.max_expr_depth))
+        .prop_map(|(target, op, value)| RawItem::Assign { target, op, value });
+    if in_cond {
+        return prop_oneof![4 => line, 2 => assign].boxed();
+    }
+    let temp = (any::<u8>(), arb_raw_expr(p.max_expr_depth))
+        .prop_map(|(ty, init)| RawItem::Temp { ty, init });
+    let branch = || prop::collection::vec(arb_raw_item(p, true), 1..=2);
+    let cond = (
+        arb_raw_expr(p.max_expr_depth),
+        branch(),
+        prop::option::weighted(0.5, branch()),
+    )
+        .prop_map(|(cond, then, otherwise)| RawItem::Cond {
+            cond,
+            then,
+            otherwise,
+        });
+    prop_oneof![4 => line, 2 => assign, 1 => temp, 1 => cond].boxed()
+}
+
 fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
-    let lines = prop::collection::vec(arb_line(), 0..=p.max_lines);
+    let items = prop::collection::vec(arb_raw_item(p, false), 0..=p.max_items);
     let tail = if depth_left == 0 {
         prop_oneof![
             3 => arb_raw_exit().prop_map(RawTail::Exit),
@@ -149,10 +277,12 @@ fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
         let choice = (
             arb_text(),
             prop::bool::weighted(0.5),
+            prop::option::weighted(0.3, arb_raw_expr(p.max_expr_depth)),
             arb_raw_weave(p, depth_left - 1),
         )
-            .prop_map(|(label, sticky, body)| RawChoice {
+            .prop_map(|(label, sticky, condition, body)| RawChoice {
                 sticky,
+                condition,
                 label,
                 body,
             });
@@ -171,8 +301,8 @@ fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
         ]
         .boxed()
     };
-    (lines, tail)
-        .prop_map(|(lines, tail)| RawWeave { lines, tail })
+    (items, tail)
+        .prop_map(|(items, tail)| RawWeave { items, tail })
         .boxed()
 }
 
@@ -190,10 +320,21 @@ fn arb_raw_knot(p: Profile) -> impl Strategy<Value = RawKnot> {
         })
 }
 
+fn arb_raw_var() -> impl Strategy<Value = RawVar> {
+    (arb_name_base(), any::<u8>(), any::<u8>()).prop_map(|(name, ty, init)| RawVar {
+        name,
+        ty,
+        init,
+    })
+}
+
 /// A raw skeleton under `profile`.
 pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
-    prop::collection::vec(arb_raw_knot(profile), 1..=profile.max_knots.max(1))
-        .prop_map(|knots| RawStory { knots })
+    (
+        prop::collection::vec(arb_raw_var(), 0..=profile.max_vars),
+        prop::collection::vec(arb_raw_knot(profile), 1..=profile.max_knots.max(1)),
+    )
+        .prop_map(|(vars, knots)| RawStory { vars, knots })
 }
 
 // ─── Decode ──────────────────────────────────────────────────────────
@@ -205,6 +346,136 @@ struct Site {
     flow_count: usize,
     may_go_back: bool,
     may_fall_through: bool,
+}
+
+/// Names in scope while decoding: globals first, then temps as declared.
+#[derive(Clone, Default)]
+struct Env {
+    vars: Vec<(String, Ty)>,
+}
+
+impl Env {
+    /// The `n`-th name of type `ty`, wrapping.
+    fn pick(&self, ty: Ty, n: u8) -> Option<&str> {
+        let of_ty: Vec<&str> = self
+            .vars
+            .iter()
+            .filter(|(_, t)| *t == ty)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if of_ty.is_empty() {
+            None
+        } else {
+            Some(of_ty[usize::from(n) % of_ty.len()])
+        }
+    }
+
+    /// The `n`-th name of any type, wrapping.
+    fn pick_any(&self, n: u8) -> Option<(&str, Ty)> {
+        if self.vars.is_empty() {
+            None
+        } else {
+            let (name, ty) = &self.vars[usize::from(n) % self.vars.len()];
+            Some((name.as_str(), *ty))
+        }
+    }
+}
+
+const WORDS: [&str; 8] = [
+    "alpha", "beta", "gamma", "delta", "echo", "fox", "golf", "hotel",
+];
+
+fn ty_of(byte: u8) -> Ty {
+    match byte % 3 {
+        0 => Ty::Int,
+        1 => Ty::Bool,
+        _ => Ty::Str,
+    }
+}
+
+fn literal(ty: Ty, n: u8) -> Literal {
+    match ty {
+        Ty::Int => Literal::Int(i32::from(n % 21)),
+        Ty::Bool => Literal::Bool(n % 2 == 0),
+        Ty::Str => Literal::Str(WORDS[usize::from(n) % WORDS.len()].to_owned()),
+    }
+}
+
+/// A small positive int literal for `mod` divisors and `*` operands, so
+/// generated arithmetic stays far from overflow.
+fn small_positive(raw: &RawExpr, salt: u8) -> Expr {
+    let n = match raw {
+        RawExpr::Lit(n) | RawExpr::Var(n) => *n,
+        _ => salt,
+    };
+    Expr::Lit(Literal::Int(1 + i32::from(n % 9)))
+}
+
+fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
+    match raw {
+        RawExpr::Lit(n) => Expr::Lit(literal(want, *n)),
+        RawExpr::Var(n) => env.pick(want, *n).map_or_else(
+            || Expr::Lit(literal(want, *n)),
+            |name| Expr::Var(name.to_owned()),
+        ),
+        RawExpr::Neg(inner) => {
+            if want == Ty::Int {
+                Expr::Neg(Box::new(decode_expr(inner, Ty::Int, env)))
+            } else {
+                decode_expr(inner, want, env)
+            }
+        }
+        RawExpr::Not(inner) => {
+            if want == Ty::Bool {
+                Expr::Not(Box::new(decode_expr(inner, Ty::Bool, env)))
+            } else {
+                decode_expr(inner, want, env)
+            }
+        }
+        RawExpr::Bin(l, op, r) => match want {
+            Ty::Int => match op % 4 {
+                0 => Expr::Bin(
+                    Box::new(decode_expr(l, Ty::Int, env)),
+                    BinOp::Add,
+                    Box::new(decode_expr(r, Ty::Int, env)),
+                ),
+                1 => Expr::Bin(
+                    Box::new(decode_expr(l, Ty::Int, env)),
+                    BinOp::Sub,
+                    Box::new(decode_expr(r, Ty::Int, env)),
+                ),
+                2 => Expr::Bin(
+                    Box::new(decode_expr(l, Ty::Int, env)),
+                    BinOp::Mul,
+                    Box::new(small_positive(r, *op)),
+                ),
+                _ => Expr::Bin(
+                    Box::new(decode_expr(l, Ty::Int, env)),
+                    BinOp::Mod,
+                    Box::new(small_positive(r, *op)),
+                ),
+            },
+            Ty::Bool => {
+                let (bin, operand) = match op % 8 {
+                    0 => (BinOp::Eq, ty_of(op / 8)),
+                    1 => (BinOp::Ne, ty_of(op / 8)),
+                    2 => (BinOp::Lt, Ty::Int),
+                    3 => (BinOp::Gt, Ty::Int),
+                    4 => (BinOp::Le, Ty::Int),
+                    5 => (BinOp::Ge, Ty::Int),
+                    6 => (BinOp::And, Ty::Bool),
+                    _ => (BinOp::Or, Ty::Bool),
+                };
+                Expr::Bin(
+                    Box::new(decode_expr(l, operand, env)),
+                    bin,
+                    Box::new(decode_expr(r, operand, env)),
+                )
+            }
+            // No binary operator yields a string: read the left operand.
+            Ty::Str => decode_expr(l, Ty::Str, env),
+        },
+    }
 }
 
 fn resolve_exit(raw: RawExit, site: Site, table: &[Divert]) -> Exit {
@@ -232,8 +503,101 @@ fn resolve_exit(raw: RawExit, site: Site, table: &[Divert]) -> Exit {
     }
 }
 
-fn decode_weave(raw: &RawWeave, site: Site, table: &[Divert]) -> Weave {
-    let lines = raw.lines.clone();
+/// Decode items in order, extending `env` with each temp. Returns the
+/// decoded items (raw items with nothing valid to decode into are dropped).
+fn decode_items(
+    raw: &[RawItem],
+    env: &mut Env,
+    in_cond: bool,
+    temp_counter: &mut usize,
+) -> Vec<Item> {
+    let mut out = Vec::new();
+    for item in raw {
+        match item {
+            RawItem::Line { parts, glue } => {
+                let parts = parts
+                    .iter()
+                    .map(|p| match p {
+                        RawPart::Text(t) => Part::Text(t.clone()),
+                        RawPart::Interp(e, ty) => Part::Interp(decode_expr(e, ty_of(*ty), env)),
+                        RawPart::Cond {
+                            cond,
+                            then,
+                            otherwise,
+                        } => Part::Cond {
+                            cond: decode_expr(cond, Ty::Bool, env),
+                            then: then.clone(),
+                            otherwise: otherwise.clone(),
+                        },
+                    })
+                    .collect();
+                out.push(Item::Line { parts, glue: *glue });
+            }
+            RawItem::Assign { target, op, value } => {
+                if let Some((name, ty)) = env.pick_any(*target) {
+                    let op = if ty == Ty::Int {
+                        [AssignOp::Set, AssignOp::Add, AssignOp::Sub][usize::from(op % 3)]
+                    } else {
+                        AssignOp::Set
+                    };
+                    out.push(Item::Assign {
+                        target: name.to_owned(),
+                        op,
+                        value: decode_expr(value, ty, env),
+                    });
+                }
+            }
+            RawItem::Temp { ty, init } => {
+                if in_cond {
+                    continue;
+                }
+                let ty = ty_of(*ty);
+                let name = format!("t{temp_counter}");
+                *temp_counter += 1;
+                out.push(Item::Temp {
+                    name: name.clone(),
+                    init: decode_expr(init, ty, env),
+                });
+                env.vars.push((name, ty));
+            }
+            RawItem::Cond {
+                cond,
+                then,
+                otherwise,
+            } => {
+                if in_cond {
+                    continue;
+                }
+                let mut branch_env = env.clone();
+                let then = decode_items(then, &mut branch_env, true, temp_counter);
+                let otherwise = otherwise.as_ref().and_then(|o| {
+                    let mut branch_env = env.clone();
+                    let items = decode_items(o, &mut branch_env, true, temp_counter);
+                    (!items.is_empty()).then_some(items)
+                });
+                if then.is_empty() {
+                    continue;
+                }
+                out.push(Item::Cond {
+                    cond: decode_expr(cond, Ty::Bool, env),
+                    then,
+                    otherwise,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn decode_weave(
+    raw: &RawWeave,
+    site: Site,
+    table: &[Divert],
+    env: &Env,
+    temp_counter: &mut usize,
+) -> Weave {
+    let mut env = env.clone();
+    let items = decode_items(&raw.items, &mut env, false, temp_counter);
     let tail = match &raw.tail {
         RawTail::Exit(e) => Tail::Exit(resolve_exit(*e, site, table)),
         RawTail::FallThrough => {
@@ -260,8 +624,9 @@ fn decode_weave(raw: &RawWeave, site: Site, table: &[Divert]) -> Weave {
                     };
                     Choice {
                         sticky: c.sticky,
+                        condition: c.condition.as_ref().map(|e| decode_expr(e, Ty::Bool, &env)),
                         label: c.label.clone(),
-                        body: decode_weave(&c.body, body_site, table),
+                        body: decode_weave(&c.body, body_site, table, &env, temp_counter),
                     }
                 })
                 .collect();
@@ -271,14 +636,16 @@ fn decode_weave(raw: &RawWeave, site: Site, table: &[Divert]) -> Weave {
                 ..site
             };
             let mut fallback = fallback.map(|f| resolve_exit(f, fallback_site, table));
-            // Rule 3: a set with no sticky choice must carry a fallback.
-            if !decoded.iter().any(|c| c.sticky) && fallback.is_none() {
+            // Rule 3: without an unconditional sticky choice, carry a fallback.
+            let protected = decoded.iter().any(|c| c.sticky && c.condition.is_none());
+            if !protected && fallback.is_none() {
                 fallback = Some(Exit::End);
             }
-            // The gather continues at the enclosing weave's own site.
+            // The gather continues at the enclosing weave's own site and
+            // sees only the temps declared before the choice point.
             let gather = gather
                 .as_ref()
-                .map(|g| Box::new(decode_weave(g, site, table)));
+                .map(|g| Box::new(decode_weave(g, site, table, &env, temp_counter)));
             Tail::Choices {
                 choices: decoded,
                 fallback,
@@ -286,13 +653,26 @@ fn decode_weave(raw: &RawWeave, site: Site, table: &[Divert]) -> Weave {
             }
         }
     };
-    Weave { lines, tail }
+    Weave { items, tail }
 }
 
 /// Turn a raw skeleton into a valid [`Story`]: names made unique, every
-/// exit resolved into the legal range for its site, every rule of
+/// exit resolved into the legal range for its site, every expression typed
+/// for its position against the names in scope, every rule of
 /// `crate::model` satisfied by construction.
 pub fn decode(raw: &RawStory) -> Story {
+    let vars: Vec<VarDecl> = raw
+        .vars
+        .iter()
+        .enumerate()
+        .map(|(i, v)| VarDecl {
+            name: format!("v{i}_{}", v.name),
+            init: literal(ty_of(v.ty), v.init),
+        })
+        .collect();
+    let globals = Env {
+        vars: vars.iter().map(|v| (v.name.clone(), v.init.ty())).collect(),
+    };
     // Pass 1: the layout — flow table in linear order.
     let mut table = Vec::new();
     for (ki, k) in raw.knots.iter().enumerate() {
@@ -308,7 +688,8 @@ pub fn decode(raw: &RawStory) -> Story {
         }
     }
     let flow_count = table.len();
-    // Pass 2: decode every weave against its own flow index.
+    // Pass 2: decode every weave against its own flow index; temps are
+    // numbered per flow.
     let mut flow = 0;
     let knots = raw
         .knots
@@ -322,7 +703,8 @@ pub fn decode(raw: &RawStory) -> Story {
                 may_fall_through: false,
             };
             flow += 1;
-            let root = decode_weave(&k.root, root_site, &table);
+            let mut temps = 0;
+            let root = decode_weave(&k.root, root_site, &table, &globals, &mut temps);
             let stitches = k
                 .stitches
                 .iter()
@@ -330,9 +712,10 @@ pub fn decode(raw: &RawStory) -> Story {
                 .map(|(si, (base, body))| {
                     let site = Site { flow, ..root_site };
                     flow += 1;
+                    let mut temps = 0;
                     Stitch {
                         name: format!("{base}_s{si}"),
-                        body: decode_weave(body, site, &table),
+                        body: decode_weave(body, site, &table, &globals, &mut temps),
                     }
                 })
                 .collect();
@@ -343,15 +726,15 @@ pub fn decode(raw: &RawStory) -> Story {
             }
         })
         .collect();
-    Story { knots }
+    Story { vars, knots }
 }
 
-/// A structure-tier story under `profile`: validates by construction.
+/// A story under `profile`: validates by construction.
 pub fn arb_story_with(profile: Profile) -> impl Strategy<Value = Story> {
     arb_raw_story(profile).prop_map(|raw| decode(&raw))
 }
 
-/// A structure-tier story under [`Profile::DEFAULT`].
+/// A story under [`Profile::DEFAULT`].
 pub fn arb_story() -> impl Strategy<Value = Story> {
     arb_story_with(Profile::DEFAULT)
 }
@@ -371,11 +754,19 @@ mod tests {
             prop_assert_eq!(validate(&story), Ok(()));
         }
 
+        /// The structure-only profile validates too.
+        #[test]
+        fn structure_profile_validates(story in arb_story_with(Profile::STRUCTURE)) {
+            prop_assert!(story.vars.is_empty());
+            prop_assert_eq!(validate(&story), Ok(()));
+        }
+
         /// The profile's size bounds hold.
         #[test]
         fn generated_stories_respect_profile(story in arb_story()) {
             let p = Profile::DEFAULT;
             prop_assert!(!story.knots.is_empty() && story.knots.len() <= p.max_knots);
+            prop_assert!(story.vars.len() <= p.max_vars);
             for k in &story.knots {
                 prop_assert!(k.stitches.len() <= p.max_stitches);
             }

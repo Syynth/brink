@@ -1,4 +1,4 @@
-//! The typed story model — structure tier.
+//! The typed story model — structure tier plus the expressions tier.
 //!
 //! # Flow order and termination
 //!
@@ -13,27 +13,48 @@
 //!    is legal only inside the body of a once-only (`*`) choice — the choice
 //!    is consumed the first time it is taken, so each back-edge fires at
 //!    most once per playthrough.
-//! 3. A choice set never runs out: it contains a sticky (`+`) choice, or it
-//!    carries a fallback exit — printed as the **sticky** form `+ -> target`.
-//!    A `* -> target` fallback is itself a once-only choice, consumed the
-//!    first time it fires, so it protects exactly one exhaustion of the set
-//!    (found by the generator: a once-only fallback ran out on the third
-//!    visit, in brink and inklecate alike). Without this rule, exhausting
-//!    every once-only choice would leave the runtime with nowhere to go.
+//! 3. A choice set never runs out: it contains an **unconditional** sticky
+//!    (`+`) choice, or it carries a fallback exit — printed as the sticky
+//!    form `+ -> target`. A `* -> target` fallback is itself a once-only
+//!    choice, consumed the first time it fires, so it protects exactly one
+//!    exhaustion of the set (found by the generator: a once-only fallback
+//!    ran out on the third visit, in brink and inklecate alike). A choice
+//!    guarded by a condition may be hidden, so it never counts as the
+//!    protecting choice.
 //! 4. A choice body may fall through (no exit of its own) only when its
 //!    choice set has a gather to fall into.
 //!
-//! [`validate`] checks all four plus name uniqueness and reference
+//! # Expressions and scope
+//!
+//! 5. Every expression is well-typed against the declared globals and the
+//!    temps in scope: arithmetic on ints, comparisons and `and`/`or`/`not`
+//!    yielding bools, equality on any single type; `mod`'s divisor is a
+//!    nonzero int literal. No mixed-type coercion — that is a future bait
+//!    flag, not an accident.
+//! 6. A temp is visible only to the items that follow its declaration in the
+//!    same weave, and to the choice bodies and gather of that weave's tail.
+//!    Temps are never declared inside a conditional branch (the other branch
+//!    would not define them) and a choice body's temps are never read by the
+//!    gather (the other bodies would not define them) — so every temp read
+//!    is dominated by its declaration by construction.
+//! 7. Conditional blocks hold content only (lines, assignments, nested
+//!    blocks); diverts live in tails, so conditionals never affect
+//!    termination.
+//!
+//! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
 //! story validates — so a validation failure is a generator bug, never a
 //! filtered case.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// A complete single-compilation story: the entry is knot 0's root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Story {
+    /// Global `VAR` declarations, printed before the entry divert.
+    pub vars: Vec<VarDecl>,
     /// Knots in document order. Never empty.
     pub knots: Vec<Knot>,
 }
@@ -55,21 +76,120 @@ pub struct Stitch {
     pub body: Weave,
 }
 
-/// A run of content lines followed by exactly one tail.
+/// A run of items followed by exactly one tail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Weave {
-    pub lines: Vec<Line>,
+    pub items: Vec<Item>,
     pub tail: Tail,
 }
 
-/// One content line.
+/// The type of a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ty {
+    Int,
+    Bool,
+    Str,
+}
+
+/// A literal value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Line {
-    /// Printable text with no ink-significant characters (see
-    /// [`crate::strategy`] for the alphabet).
-    pub text: String,
-    /// Trailing `<>` glue.
-    pub glue: bool,
+pub enum Literal {
+    Int(i32),
+    Bool(bool),
+    /// Printable text with no quote or ink-significant characters.
+    Str(String),
+}
+
+impl Literal {
+    pub fn ty(&self) -> Ty {
+        match self {
+            Self::Int(_) => Ty::Int,
+            Self::Bool(_) => Ty::Bool,
+            Self::Str(_) => Ty::Str,
+        }
+    }
+}
+
+/// A global `VAR name = literal`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarDecl {
+    /// Unique across the story.
+    pub name: String,
+    pub init: Literal,
+}
+
+/// A binary operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    /// `mod` — the divisor must be a nonzero int literal (rule 5).
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+}
+
+/// A typed expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expr {
+    Lit(Literal),
+    /// A global or a temp in scope, by name.
+    Var(String),
+    Neg(Box<Expr>),
+    Not(Box<Expr>),
+    Bin(Box<Expr>, BinOp, Box<Expr>),
+}
+
+/// How an assignment writes its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Set,
+    /// `+=` — int targets only.
+    Add,
+    /// `-=` — int targets only.
+    Sub,
+}
+
+/// One piece of a content line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    Text(String),
+    /// `{expr}` — printed value.
+    Interp(Expr),
+    /// `{cond: then|otherwise}` — the branches are plain text.
+    Cond {
+        cond: Expr,
+        then: String,
+        otherwise: Option<String>,
+    },
+}
+
+/// One weave item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Item {
+    /// A content line; `glue` prints a trailing `<>`.
+    Line { parts: Vec<Part>, glue: bool },
+    /// `~ target = value` / `~ target += value` / `~ target -= value`.
+    Assign {
+        target: String,
+        op: AssignOp,
+        value: Expr,
+    },
+    /// `~ temp name = init`.
+    Temp { name: String, init: Expr },
+    /// A multi-line conditional block. Rule 7: content only.
+    Cond {
+        cond: Expr,
+        then: Vec<Item>,
+        otherwise: Option<Vec<Item>>,
+    },
 }
 
 /// How a weave ends.
@@ -113,6 +233,8 @@ pub struct Divert {
 pub struct Choice {
     /// `+` (re-offerable) when true, `*` (once-only) when false.
     pub sticky: bool,
+    /// `* {condition} [label]` — the choice is offered only when true.
+    pub condition: Option<Expr>,
     /// Bracketed label: shown in the choice, not echoed as content.
     pub label: String,
     pub body: Weave,
@@ -186,18 +308,109 @@ impl Story {
     }
 }
 
+// ─── Validation ──────────────────────────────────────────────────────
+
+/// Names in scope at a point: globals plus the temps declared so far.
+#[derive(Clone)]
+struct Scope {
+    vars: Vec<(String, Ty)>,
+}
+
+impl Scope {
+    fn lookup(&self, name: &str) -> Option<Ty> {
+        self.vars
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| *t)
+    }
+}
+
+/// The type of `e` in `scope`, or the rule-5 violation.
+pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)]) -> Result<Ty, Invalid> {
+    let scope = Scope {
+        vars: scope_vars.to_vec(),
+    };
+    type_in(e, &scope)
+}
+
+fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
+    match e {
+        Expr::Lit(l) => Ok(l.ty()),
+        Expr::Var(name) => scope
+            .lookup(name)
+            .ok_or_else(|| Invalid(format!("unresolved variable `{name}`"))),
+        Expr::Neg(inner) => match type_in(inner, scope)? {
+            Ty::Int => Ok(Ty::Int),
+            t => Err(Invalid(format!("negation of {t:?}"))),
+        },
+        Expr::Not(inner) => match type_in(inner, scope)? {
+            Ty::Bool => Ok(Ty::Bool),
+            t => Err(Invalid(format!("`not` of {t:?}"))),
+        },
+        Expr::Bin(l, op, r) => {
+            let lt = type_in(l, scope)?;
+            let rt = type_in(r, scope)?;
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                    if lt == Ty::Int && rt == Ty::Int {
+                        Ok(Ty::Int)
+                    } else {
+                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+                    }
+                }
+                BinOp::Mod => {
+                    if lt != Ty::Int {
+                        return Err(Invalid(format!("mod on {lt:?}")));
+                    }
+                    match r.as_ref() {
+                        Expr::Lit(Literal::Int(n)) if *n != 0 => Ok(Ty::Int),
+                        _ => Err(Invalid("mod divisor must be a nonzero int literal".into())),
+                    }
+                }
+                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                    if lt == Ty::Int && rt == Ty::Int {
+                        Ok(Ty::Bool)
+                    } else {
+                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+                    }
+                }
+                BinOp::Eq | BinOp::Ne => {
+                    if lt == rt {
+                        Ok(Ty::Bool)
+                    } else {
+                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+                    }
+                }
+                BinOp::And | BinOp::Or => {
+                    if lt == Ty::Bool && rt == Ty::Bool {
+                        Ok(Ty::Bool)
+                    } else {
+                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Check every rule in the module doc. `Ok(())` means the story is a
-/// well-formed, terminating structure-tier program.
+/// well-formed, terminating, well-typed program.
 pub fn validate(story: &Story) -> Result<(), Invalid> {
     if story.knots.is_empty() {
         return Err(Invalid("story has no knots".into()));
     }
-    let mut seen = std::collections::BTreeSet::new();
-    for k in &story.knots {
-        if !seen.insert(k.name.as_str()) {
-            return Err(Invalid(format!("duplicate knot name `{}`", k.name)));
+    let mut names = BTreeSet::new();
+    for v in &story.vars {
+        if !names.insert(v.name.as_str()) {
+            return Err(Invalid(format!("duplicate VAR `{}`", v.name)));
         }
-        let mut seen_s = std::collections::BTreeSet::new();
+    }
+    for k in &story.knots {
+        if !names.insert(k.name.as_str()) {
+            return Err(Invalid(format!("duplicate name `{}`", k.name)));
+        }
+        let mut seen_s = BTreeSet::new();
         for s in &k.stitches {
             if !seen_s.insert(s.name.as_str()) {
                 return Err(Invalid(format!(
@@ -207,12 +420,19 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
             }
         }
     }
+    let globals = Scope {
+        vars: story
+            .vars
+            .iter()
+            .map(|v| (v.name.clone(), v.init.ty()))
+            .collect(),
+    };
     let mut flow = 0;
     for k in &story.knots {
-        validate_weave(story, &k.root, flow, false, false)?;
+        validate_weave(story, &k.root, flow, false, false, &globals)?;
         flow += 1;
         for s in &k.stitches {
-            validate_weave(story, &s.body, flow, false, false)?;
+            validate_weave(story, &s.body, flow, false, false, &globals)?;
             flow += 1;
         }
     }
@@ -233,18 +453,103 @@ fn validate_exit(story: &Story, e: Exit, flow: usize, may_go_back: bool) -> Resu
     Ok(())
 }
 
+fn expect_ty(e: &Expr, want: Ty, scope: &Scope, what: &str) -> Result<(), Invalid> {
+    let got = type_in(e, scope)?;
+    if got == want {
+        Ok(())
+    } else {
+        Err(Invalid(format!("{what} must be {want:?}, got {got:?}")))
+    }
+}
+
+/// Validate items in order, extending `scope` with each temp. `in_cond` is
+/// true inside a conditional branch, where temps may not be declared.
+fn validate_items(
+    items: &[Item],
+    scope: &mut Scope,
+    in_cond: bool,
+    flow: usize,
+) -> Result<(), Invalid> {
+    for item in items {
+        match item {
+            Item::Line { parts, .. } => {
+                if parts.is_empty() {
+                    return Err(Invalid(format!("empty content line in flow {flow}")));
+                }
+                for p in parts {
+                    match p {
+                        Part::Text(t) => {
+                            if t.is_empty() {
+                                return Err(Invalid("empty text part".into()));
+                            }
+                        }
+                        Part::Interp(e) => {
+                            type_in(e, scope)?;
+                        }
+                        Part::Cond { cond, then, .. } => {
+                            expect_ty(cond, Ty::Bool, scope, "inline condition")?;
+                            if then.is_empty() {
+                                return Err(Invalid("empty inline-conditional branch".into()));
+                            }
+                        }
+                    }
+                }
+            }
+            Item::Assign { target, op, value } => {
+                let Some(tt) = scope.lookup(target) else {
+                    return Err(Invalid(format!("assignment to unknown `{target}`")));
+                };
+                expect_ty(value, tt, scope, "assigned value")?;
+                if *op != AssignOp::Set && tt != Ty::Int {
+                    return Err(Invalid(format!("{op:?} on a {tt:?} target")));
+                }
+            }
+            Item::Temp { name, init } => {
+                if in_cond {
+                    return Err(Invalid(format!(
+                        "temp `{name}` declared inside a conditional branch"
+                    )));
+                }
+                if scope.lookup(name).is_some() {
+                    return Err(Invalid(format!("temp `{name}` shadows a visible name")));
+                }
+                let t = type_in(init, scope)?;
+                scope.vars.push((name.clone(), t));
+            }
+            Item::Cond {
+                cond,
+                then,
+                otherwise,
+            } => {
+                expect_ty(cond, Ty::Bool, scope, "block condition")?;
+                if then.is_empty() {
+                    return Err(Invalid("empty conditional block".into()));
+                }
+                let mut inner = scope.clone();
+                validate_items(then, &mut inner, true, flow)?;
+                if let Some(o) = otherwise {
+                    if o.is_empty() {
+                        return Err(Invalid("empty else branch".into()));
+                    }
+                    let mut inner = scope.clone();
+                    validate_items(o, &mut inner, true, flow)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_weave(
     story: &Story,
     w: &Weave,
     flow: usize,
     may_go_back: bool,
     may_fall_through: bool,
+    scope: &Scope,
 ) -> Result<(), Invalid> {
-    for l in &w.lines {
-        if l.text.is_empty() {
-            return Err(Invalid(format!("empty content line in flow {flow}")));
-        }
-    }
+    let mut scope = scope.clone();
+    validate_items(&w.items, &mut scope, false, flow)?;
     match &w.tail {
         Tail::Exit(e) => validate_exit(story, *e, flow, may_go_back),
         Tail::FallThrough => {
@@ -264,9 +569,10 @@ fn validate_weave(
             if choices.is_empty() {
                 return Err(Invalid(format!("empty choice set in flow {flow}")));
             }
-            if !choices.iter().any(|c| c.sticky) && fallback.is_none() {
+            let protected = choices.iter().any(|c| c.sticky && c.condition.is_none());
+            if !protected && fallback.is_none() {
                 return Err(Invalid(format!(
-                    "choice set in flow {flow} can run out: no sticky choice and no fallback"
+                    "choice set in flow {flow} can run out: no unconditional sticky choice and no fallback"
                 )));
             }
             if let Some(fb) = fallback {
@@ -276,13 +582,16 @@ fn validate_weave(
                 if c.label.is_empty() {
                     return Err(Invalid(format!("empty choice label in flow {flow}")));
                 }
+                if let Some(cond) = &c.condition {
+                    expect_ty(cond, Ty::Bool, &scope, "choice condition")?;
+                }
                 // A back-edge stays legal deeper inside a once-only body
                 // (the outer once-only choice already bounds it).
                 let back = may_go_back || !c.sticky;
-                validate_weave(story, &c.body, flow, back, gather.is_some())?;
+                validate_weave(story, &c.body, flow, back, gather.is_some(), &scope)?;
             }
             match gather {
-                Some(g) => validate_weave(story, g, flow, may_go_back, may_fall_through),
+                Some(g) => validate_weave(story, g, flow, may_go_back, may_fall_through, &scope),
                 None => Ok(()),
             }
         }
@@ -293,22 +602,26 @@ fn validate_weave(
 mod tests {
     use super::*;
 
-    fn line(s: &str) -> Line {
-        Line {
-            text: s.to_owned(),
+    fn text(s: &str) -> Item {
+        Item::Line {
+            parts: vec![Part::Text(s.to_owned())],
             glue: false,
         }
     }
 
     fn exit_weave(e: Exit) -> Weave {
         Weave {
-            lines: vec![line("hello")],
+            items: vec![text("hello")],
             tail: Tail::Exit(e),
         }
     }
 
     fn two_knots() -> Story {
         Story {
+            vars: vec![VarDecl {
+                name: "n".into(),
+                init: Literal::Int(0),
+            }],
             knots: vec![
                 Knot {
                     name: "a".into(),
@@ -328,6 +641,10 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn int(n: i32) -> Expr {
+        Expr::Lit(Literal::Int(n))
     }
 
     #[test]
@@ -370,10 +687,11 @@ mod tests {
     fn back_edge_inside_once_only_is_accepted() {
         let mut s = two_knots();
         s.knots[1].root = Weave {
-            lines: vec![],
+            items: vec![],
             tail: Tail::Choices {
                 choices: vec![Choice {
                     sticky: false,
+                    condition: None,
                     label: "again".into(),
                     body: exit_weave(Exit::Divert(Divert {
                         knot: 0,
@@ -391,11 +709,36 @@ mod tests {
     fn choice_set_that_can_run_out_is_rejected() {
         let mut s = two_knots();
         s.knots[1].root = Weave {
-            lines: vec![],
+            items: vec![],
             tail: Tail::Choices {
                 choices: vec![Choice {
                     sticky: false,
+                    condition: None,
                     label: "once".into(),
+                    body: exit_weave(Exit::End),
+                }],
+                fallback: None,
+                gather: None,
+            },
+        };
+        let err = validate(&s).expect_err("must be rejected");
+        assert!(err.0.contains("run out"), "{err}");
+    }
+
+    #[test]
+    fn conditioned_sticky_choice_does_not_protect_the_set() {
+        let mut s = two_knots();
+        s.knots[1].root = Weave {
+            items: vec![],
+            tail: Tail::Choices {
+                choices: vec![Choice {
+                    sticky: true,
+                    condition: Some(Expr::Bin(
+                        Box::new(Expr::Var("n".into())),
+                        BinOp::Gt,
+                        Box::new(int(0)),
+                    )),
+                    label: "maybe".into(),
                     body: exit_weave(Exit::End),
                 }],
                 fallback: None,
@@ -410,13 +753,14 @@ mod tests {
     fn fall_through_needs_a_gather() {
         let mut s = two_knots();
         s.knots[1].root = Weave {
-            lines: vec![],
+            items: vec![],
             tail: Tail::Choices {
                 choices: vec![Choice {
                     sticky: true,
+                    condition: None,
                     label: "on".into(),
                     body: Weave {
-                        lines: vec![line("x")],
+                        items: vec![text("x")],
                         tail: Tail::FallThrough,
                     },
                 }],
@@ -430,5 +774,107 @@ mod tests {
             *gather = Some(Box::new(exit_weave(Exit::End)));
         }
         assert_eq!(validate(&s), Ok(()));
+    }
+
+    #[test]
+    fn expressions_are_type_checked() {
+        let scope = vec![("n".to_owned(), Ty::Int), ("ok".to_owned(), Ty::Bool)];
+        assert_eq!(
+            type_of(
+                &Expr::Bin(
+                    Box::new(Expr::Var("n".into())),
+                    BinOp::Add,
+                    Box::new(int(1))
+                ),
+                &scope
+            ),
+            Ok(Ty::Int)
+        );
+        assert_eq!(
+            type_of(
+                &Expr::Bin(Box::new(Expr::Var("n".into())), BinOp::Lt, Box::new(int(1))),
+                &scope
+            ),
+            Ok(Ty::Bool)
+        );
+        assert!(
+            type_of(
+                &Expr::Bin(
+                    Box::new(Expr::Var("ok".into())),
+                    BinOp::Add,
+                    Box::new(int(1))
+                ),
+                &scope
+            )
+            .is_err()
+        );
+        assert!(
+            type_of(
+                &Expr::Bin(
+                    Box::new(Expr::Var("n".into())),
+                    BinOp::Mod,
+                    Box::new(int(0))
+                ),
+                &scope
+            )
+            .is_err()
+        );
+        assert!(type_of(&Expr::Var("nope".into()), &scope).is_err());
+    }
+
+    #[test]
+    fn temps_are_scoped_to_what_follows_them() {
+        let mut s = two_knots();
+        // Read before declaration → rejected.
+        s.knots[0].root = Weave {
+            items: vec![
+                Item::Line {
+                    parts: vec![Part::Interp(Expr::Var("t0".into()))],
+                    glue: false,
+                },
+                Item::Temp {
+                    name: "t0".into(),
+                    init: int(1),
+                },
+            ],
+            tail: Tail::Exit(Exit::End),
+        };
+        assert!(validate(&s).is_err());
+        // Declaration then read → accepted, and the temp feeds an assignment.
+        s.knots[0].root = Weave {
+            items: vec![
+                Item::Temp {
+                    name: "t0".into(),
+                    init: int(1),
+                },
+                Item::Assign {
+                    target: "n".into(),
+                    op: AssignOp::Add,
+                    value: Expr::Var("t0".into()),
+                },
+                Item::Line {
+                    parts: vec![
+                        Part::Text("n is ".into()),
+                        Part::Interp(Expr::Var("n".into())),
+                    ],
+                    glue: false,
+                },
+            ],
+            tail: Tail::Exit(Exit::End),
+        };
+        assert_eq!(validate(&s), Ok(()));
+        // A temp inside a conditional branch → rejected.
+        s.knots[0].root = Weave {
+            items: vec![Item::Cond {
+                cond: Expr::Lit(Literal::Bool(true)),
+                then: vec![Item::Temp {
+                    name: "t1".into(),
+                    init: int(1),
+                }],
+                otherwise: None,
+            }],
+            tail: Tail::Exit(Exit::End),
+        };
+        assert!(validate(&s).is_err());
     }
 }
