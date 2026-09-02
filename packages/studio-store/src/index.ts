@@ -256,6 +256,20 @@ export {
   setTomlStringArray,
   tomlTableKeys,
 } from "./toml-edit.js";
+export {
+  CONVENTIONS_MARKER,
+  findDialogueSection,
+  renderDialogueSection,
+  sectionHash,
+  setDialogueSection,
+} from "./dialogue-section.js";
+export type {
+  DialogueElementRow,
+  DialogueSection,
+  DialogueSectionOwner,
+  DialogueSpec,
+  DialogueTableSpec,
+} from "./dialogue-section.js";
 // The author's prose dictionary in `[prose] dictionary` — shared by the
 // editor's "Add to dictionary" action and the Prose settings list.
 export {
