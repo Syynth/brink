@@ -658,6 +658,16 @@ export class EditorSessionHandle {
    * when the project declares none: "no dialect by default" — plain
    * lines, never the preset.
    */
+  /** Why `[dialogue]` did not resolve (#3391) — the resolver's readable
+   * message — or `null` when it resolved or the project declares none.
+   * State, not a one-shot warning: config warnings are a delta against
+   * the previous apply, and a Problems panel needs the current truth. */
+  getConfiguredDialogueError(): string | null {
+    const raw = this.session as { configured_dialogue_error?: () => string | undefined };
+    if (typeof raw.configured_dialogue_error !== "function") return null;
+    return raw.configured_dialogue_error() ?? null;
+  }
+
   getConfiguredDialogueDialect(): DialogueDialect | null {
     // Feature-detected on the raw session too: `session` is an injection
     // seam and stubs that predate this accessor must read as "declares

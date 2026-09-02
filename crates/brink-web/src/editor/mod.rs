@@ -215,6 +215,13 @@ pub struct EditorSession {
     /// `None` = the project declares no dialect, which per "No dialect by
     /// default" means NONE is registered (plain lines), never the preset.
     configured_dialogue: Option<brink_ir::DialogueDialect>,
+    /// Why the declared `[dialogue]` did NOT resolve (#3391) — the
+    /// resolver's readable message — or `None` when it resolved or the
+    /// project declares none. Kept as STATE (not just a one-shot warning)
+    /// because `apply_project_config`'s warnings are a delta against the
+    /// previous call (#2333): a Problems panel needs the current truth on
+    /// every read, not only the moment it changed.
+    configured_dialogue_error: Option<String>,
     /// The directory of the most recently DISCOVERED `brink.toml` (session
     /// path convention), so `dialogue = "path.json"` resolves relative to
     /// the file that named it. `None` after `apply_project_config` (host-
@@ -308,6 +315,7 @@ impl EditorSession {
             configured_prose_dictionary: Vec::new(),
             configured_prose_enable: None,
             configured_dialogue: None,
+            configured_dialogue_error: None,
             config_dir: None,
             last_config_warnings: BTreeSet::new(),
         }
@@ -721,6 +729,7 @@ impl EditorSession {
             // #3387: a vanished `brink.toml` takes its dialect with it —
             // "no dialect by default" applies again.
             self.configured_dialogue = None;
+            self.configured_dialogue_error = None;
             self.config_dir = None;
             self.session.clear_dialect();
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
@@ -824,6 +833,12 @@ impl EditorSession {
         self.configured_dialogue
             .as_ref()
             .and_then(|d| serde_json::to_string(d).ok())
+    }
+
+    /// Why `[dialogue]` did not resolve (#3391), or `None` — see the field.
+    #[must_use]
+    pub fn configured_dialogue_error(&self) -> Option<String> {
+        self.configured_dialogue_error.clone()
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1272,6 +1287,7 @@ impl EditorSession {
                 Ok(dialect) => {
                     self.session.set_dialect_config(dialect.clone());
                     self.configured_dialogue = Some(dialect);
+                    self.configured_dialogue_error = None;
                 }
                 Err(message) => {
                     // Loud, never silent: the previous dialect (if any) is
@@ -1280,11 +1296,13 @@ impl EditorSession {
                     dialogue_warnings.push(format!("[dialogue]: {message}"));
                     self.session.clear_dialect();
                     self.configured_dialogue = None;
+                    self.configured_dialogue_error = Some(message);
                 }
             }
         } else {
             self.session.clear_dialect();
             self.configured_dialogue = None;
+            self.configured_dialogue_error = None;
         }
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file

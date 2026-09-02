@@ -489,6 +489,13 @@ export class ProjectSession {
    * default": plain lines, never the preset). Feature-detected like
    * {@link getConfiguredIndent}.
    */
+  /** Why `[dialogue]` did not resolve (#3391), or `null` — feature-detected. */
+  getConfiguredDialogueError(): string | null {
+    return typeof this.session.getConfiguredDialogueError === "function"
+      ? this.session.getConfiguredDialogueError()
+      : null;
+  }
+
   getConfiguredDialogueDialect(): DialogueDialect | null {
     return typeof this.session.getConfiguredDialogueDialect === "function"
       ? this.session.getConfiguredDialogueDialect()

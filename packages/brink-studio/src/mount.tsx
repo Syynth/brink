@@ -169,6 +169,7 @@ import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
 import { runtimeValueNote } from "./runtime-hover.js";
 import { localStorageSaveStore, type SaveStore } from "@brink/studio-store";
+import { CONFIG_FILE, configDiagnostics, malformedCueDiagnostics } from "./dialect-diagnostics.js";
 import { registerFileCommands } from "./file-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
@@ -627,6 +628,29 @@ export async function mountStudio(
 
   // Late-bound for `onProjectConfigApplied` (#3387) — see that callback.
   let documentsForConfig: DocumentSessions | null = null;
+  // #3391: the dialect's `malformed` near-miss rules over every story
+  // file — re-run on each config apply and each compile (cheap: one regex
+  // pass per narrative line, project sizes here are small; a persistent
+  // per-file cache can come with the worker road if it ever shows up).
+  const runMalformedCuePass = (): void => {
+    const dialect = project.getConfiguredDialogueDialect();
+    let session: ReturnType<typeof project.getSession>;
+    try {
+      session = project.getSession();
+    } catch {
+      return;
+    }
+    for (const f of session.listFiles()) {
+      if (f.mounted || f.path === CONFIG_FILE) continue;
+      const source = session.getFileSource(f.path);
+      store
+        .getState()
+        .setDialectDiagnostics(
+          f.path,
+          dialect === null || source === null ? [] : malformedCueDiagnostics(f.path, source, dialect),
+        );
+    }
+  };
   const project = new ProjectSession({
     provider,
     entryFile,
@@ -679,6 +703,8 @@ export async function mountStudio(
     // channel as the warnings above instead.
     onProjectConfigError: (message) => {
       store.getState().appendOutput("compile", `brink.toml: ${message}`);
+      // A malformed brink.toml is a Problems-panel error too (#3391).
+      store.getState().setDialectDiagnostics(CONFIG_FILE, configDiagnostics([], message));
     },
     // #3387: a `brink.toml [dialogue]` edit reclassifies mounted views
     // live. `documents` is constructed after the first discovery fires
@@ -688,6 +714,16 @@ export async function mountStudio(
       documentsForConfig?.refreshDialectFromProject();
       // The Player folds lines into runs with the same artifact (#3389).
       store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
+      // #3391: the declaration's CURRENT state as Problems rows on
+      // brink.toml (an unresolvable [dialogue] is a real error), and the
+      // dialect's malformed-cue near-misses on every story file.
+      store
+        .getState()
+        .setDialectDiagnostics(
+          CONFIG_FILE,
+          configDiagnostics([], project.getConfiguredDialogueError()),
+        );
+      runMalformedCuePass();
     },
   });
   await project.initialize();
@@ -951,6 +987,7 @@ export async function mountStudio(
   // Run's compile→start handshake (W7/#3300 no-auto-start ruling).
   let pendingStart = false;
   const handleCompileResult = (result: CompileResult): void => {
+    runMalformedCuePass();
     // W2d (docs/editor-worker-spec.md): the three panel pulls ride the
     // async session facade at background priority with per-panel coalesce
     // keys, and the store fan-out lands when they resolve — in the same
