@@ -310,6 +310,46 @@ CallFrame {
 
 The "current container" is always the top of `call_stack.top().container_stack`. Finishing a container (reaching end of its bytecode) pops from the container stack and resumes the parent. Returning from a function/tunnel pops the entire call frame. Diverts replace the current container position. Threads fork the entire call stack (call frames + their container stacks).
 
+### Uninitialized temp reads
+
+RULED 2026-09-01 (issue #3354, option C; `docs/decision-log.md` "Uninitialized
+`~ temp` reads play, and warn twice"). The compile-time half is
+`docs/compiler-spec.md` "Temp scope and definite assignment" — `E193`.
+
+Because a frame shares its temp slots with every container it flows into, a
+slot can be *read* on a path where the declaring `~ temp` has not run: from a
+sibling choice branch, from a gather reached by a branch that did not declare
+it, from a read written ahead of the declaration, or from a stitch entered
+directly whose knot root declares it. `Opcode::GetTemp` answers that read with
+ink's missing-variable default — `Value::Int(0)`, which is also `false` — and
+raises a `RuntimeWarning::UninitializedTemp` on the flow. It never faults.
+
+This matches the C# reference exactly, whose own message this warning's
+`Display` mirrors: *Variable not found: 'n'. Using default value of 0 (false).
+This can happen with temporary variables if the declaration hasn't yet been
+hit.* Before this ruling, brink pushed `Value::Null` and the story died on the
+next operator (`type error: cannot apply Add to Null and Int`) where Inky
+played the line — which is how the ink-compat floor was breached.
+
+The default is ink's `0` in every case, not a per-declaration typed default:
+`Opcode::GetTemp` carries the slot alone, so nothing at the read site knows
+the declared origin. The same applies to the variable's name — resolved
+through the optional `DebugInfo` locals table when the artifact has one, and
+reported as `temp slot N` when it does not.
+
+Scope, deliberately narrow: this is the `GetTemp` read path only.
+`GetTempRaw` exists to see a slot exactly as it is (pointers included), and
+`TakeTemp` leaves `Value::Null` behind by design — neither substitutes a
+default.
+
+Warnings accumulate on the `Flow` (execution output, not a `Stats` counter),
+capped at `RUNTIME_WARNING_CAP` entries between drains so a loop cannot grow
+the list without bound. Hosts drain them with
+`Story::take_runtime_warnings` / `FlowInstance::take_runtime_warnings`; the
+CLI's batch player prints each one to stderr as it plays, and `brink-web`'s
+`WebSession.takeRuntimeWarnings()` carries them across the wasm boundary for
+the studio.
+
 ## External function handling
 
 External function resolution uses the call stack itself as the state machine. The `External` call frame type (see [Call frame types](#call-frame-types)) tracks pending external calls with no separate state flags.

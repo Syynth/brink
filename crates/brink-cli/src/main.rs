@@ -99,15 +99,19 @@ enum Commands {
         #[arg(long, value_enum)]
         types: Option<TypesArg>,
         /// Deny a diagnostic code, promoting it to a hard compile error
-        /// (issue #1373). Repeatable. Only codes whose *default* severity is
-        /// `Warning` are overridable (#1160) — an unrecognized or
-        /// non-overridable code is ignored with a warning through the usual
-        /// channel, never silently. The special code `warnings` (`-D
-        /// warnings`, mirroring rustc) is `deny-warnings`: promote every
-        /// diagnostic that would otherwise resolve to `Warning` up to
-        /// `Error`, the CLI equivalent of `[lints] deny-warnings = true`.
-        /// Always wins over the same code in a discovered `brink.toml`'s
-        /// `[lints]` table (#1005 `CLI/API > file > default` precedence).
+        /// (issue #1373). Repeatable. A code is overridable when its
+        /// *default* severity is not `Error` (#1160) — every
+        /// `Warning`/`Info`/`Hint`-default code, plus the **compat-deny**
+        /// tier (issue #3373): specific `Error`-default codes, like
+        /// `E194`, where inklecate rejects the program but brink can run
+        /// it. An unrecognized or non-overridable code is ignored with a
+        /// warning through the usual channel, never silently. The special
+        /// code `warnings` (`-D warnings`, mirroring rustc) is
+        /// `deny-warnings`: promote every diagnostic that would otherwise
+        /// resolve to `Warning` up to `Error`, the CLI equivalent of
+        /// `[lints] deny-warnings = true`. Always wins over the same code
+        /// in a discovered `brink.toml`'s `[lints]` table (#1005 CLI/API >
+        /// file > default precedence).
         #[arg(short = 'D', long = "deny", value_name = "CODE")]
         deny: Vec<String>,
         /// Force a diagnostic code to `Warning`, promotable back to `Error`
@@ -116,9 +120,13 @@ enum Commands {
         /// precedence as `--deny`.
         #[arg(long = "warn", value_name = "CODE")]
         warn: Vec<String>,
-        /// Never escalate a diagnostic code past `Warning`, even under `-D
-        /// warnings`/`deny-warnings` (issue #1373). Repeatable; same
-        /// overridability rules and precedence as `--deny`.
+        /// Suppress a diagnostic code entirely — it is not reported and
+        /// does not affect whether the compile succeeds, even under `-D
+        /// warnings`/`deny-warnings` (issue #1373; issue #3173 made `allow`
+        /// mean suppression rather than a no-op). Repeatable; same
+        /// overridability rules and precedence as `--deny` — this is also
+        /// how a project opts a **compat-deny** code (e.g. `E194`) down
+        /// from its `Error` default to nothing at all.
         #[arg(long = "allow", value_name = "CODE")]
         allow: Vec<String>,
         /// D6 (`docs/debugger-spec.md` §1.2/§2, issue #3184): emit the

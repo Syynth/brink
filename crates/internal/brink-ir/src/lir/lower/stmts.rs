@@ -462,6 +462,23 @@ pub(super) fn lower_assign_target(
                 if reject_const_write(info, path.range, ctx) {
                     return None;
                 }
+                // Issue #3362, the write half of the same hole
+                // (`expr::lower_path`'s `SymbolKind::Temp` arm is the read
+                // half): a classic temp assigned from a position its
+                // declaration has not run at resolves to a `LocalVar`-tagged
+                // id that no global table registers, so `AssignTarget::
+                // Global` produced an `unresolved global` link fault. The
+                // frame's slot already exists (`alloc_temps` walks the whole
+                // frame first), so write it.
+                if info.kind == SymbolKind::Temp
+                    && let Some(slot) = ctx.temp_slot_raw(&name)
+                {
+                    if reject_as_binding_write(slot, &name, path.range, ctx) {
+                        return None;
+                    }
+                    let name_id = ctx.names.intern(&name);
+                    return Some(lir::AssignTarget::Temp(slot, name_id));
+                }
                 let id = if info.kind == SymbolKind::List {
                     super::decls::list_def_to_global_var(info.id)
                 } else {

@@ -4511,6 +4511,43 @@
   dodge browser-reserved chords (#107); flattening them in the editor
   would re-break what those alternates were added to fix.
 
+
+## Uninitialized `~ temp` reads play, and warn twice
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler+runtime
+- **SCOPE:** moderate
+- **WHAT:** A `~ temp` used on a path its declaration does not dominate is
+  handled in both halves of the pipeline, not one. (1) The compiler emits
+  `E193`, a warning-level, `[lints]`-overridable diagnostic naming the use
+  site and the declaration, for each of three shapes: a sibling choice
+  branch, a gather reached before the declaring branch, and a read written
+  textually ahead of the declaration. (A fourth shape this entry originally
+  listed here — a stitch referencing a temp declared at its knot's root —
+  turned out, on PR #3369's review, not to be a dominance question at all:
+  see "Compat-deny diagnostic tier" below, which supersedes this entry for
+  that one shape.) (2) The runtime reads an uninitialized temp slot as the
+  typed default (`0`, which is also `false`) and reports a runtime warning
+  through the diagnostics/output channel, instead of pushing a `Null` that
+  faults on the next operator. (3) Alongside those, every such reference —
+  textually-preceding reads and stitch references included — resolves to
+  the temp's own slot, never to a phantom global that fails at link with
+  `unresolved global` (issue #3362; this resolution behavior is unaffected
+  by the compat-deny split — a stitch's reference to its knot's temp still
+  resolves to the real slot, it is just reported through a different code
+  now). The ruling is recorded in `docs/compiler-spec.md` "Temp scope and
+  definite assignment" and `docs/runtime-spec.md` "Uninitialized temp
+  reads".
+- **WHY:** What plays in Inky must play in brink — the C# reference prints
+  the line and warns (`Variable not found: 'n'. Using default value of 0
+  (false)…`), so an author who tests in Inky and then opens brink was
+  meeting a hard fault where the reference had a warning, which breaches
+  the ink-compat floor. The compile-time diagnostic is the primary fix
+  rather than the runtime fallback alone, because the author should learn
+  about the mistake before playing, and a warning that a `[lints]` entry
+  can turn down leaves a project that leans on the pattern deliberately
+  somewhere to go.
+
 ## Knot/stitch navigation click reveals in place when its file is already open
 - **WHEN:** 2026-09-01
 - **PROJECT:** brink
@@ -4518,6 +4555,46 @@
 - **SCOPE:** moderate
 - **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
 - **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
+
+## Compat-deny diagnostic tier
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler
+- **SCOPE:** architectural
+- **WHAT:** A new diagnostic class, **compat-deny**: "inklecate rejects
+  this; brink can run it; you must opt in." Default severity `Error`;
+  overridable per project through the existing `[lints]` table — to `warn`,
+  or all the way to `allow` ("we should allow it to be turned off if the
+  user wants, it's annoying"). The CLI's `--warn`/`-D` flags gain the same
+  reach. A project's `[lints]` entry travels with the project, so a host
+  consumer running `brink compile` (bevy, a game build) gets exactly the
+  permissiveness the studio does — there is no studio-only switch.
+  Mechanically: `DiagnosticCode::severity()` stays `Error` and
+  `DiagnosticCode::is_overridable()` returns `true` for tier members (widened
+  specifically for this tier — every other `Error`-default code stays
+  non-overridable, issue #1160's original rule); `effective_severity` and
+  `validate_lint_code` both defer to `is_overridable`/`is_compat_deny` rather
+  than re-deriving "not Error" so the two definitions cannot drift apart.
+  **Admission invariant (must be tested):** a code may sit in this tier only
+  if brink produces a *working* program when the code is downgraded — every
+  compat-deny code needs a fixture that compiles under `allow` and plays
+  correctly; anything that would fail at link or fault at runtime is NOT
+  admissible and stays a hard, non-overridable error. **First member:**
+  `E194` — "a knot's `~ temp` is not visible from its stitches in ink",
+  split out of `E193` shape 4 during PR #3369's review: brink plays the
+  program (`Stitch sees 7.`), inklecate rejects it (`Unresolved variable:
+  n`). Recorded in `docs/compiler-spec.md` "Compat-deny diagnostics".
+- **WHY:** Brink accepts a superset of ink at several points, and each such
+  point where the official compiler rejects the program but brink produces
+  a working one needs the same treatment — a named tier keeps them
+  consistent and discoverable rather than each one inventing its own
+  severity story. Defaulting to `Error` keeps an ink-compat project honest
+  by default (the same wall Inky would show it); making it overridable all
+  the way to `allow`, not just `warn`, was a deliberate maintainer call
+  against #1160's usual "hard errors are never downgradable" posture,
+  because the admission invariant already guarantees the downgraded program
+  genuinely works — there is no real defect left to protect the author
+  from once they opt in.
 
 ## Observable runtime semantics: the host-facing trace
 - **WHEN:** 2026-09-01
