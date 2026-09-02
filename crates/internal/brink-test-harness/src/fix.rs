@@ -58,10 +58,20 @@
 //!   Safe fixer over generated stories rather than hand fixtures is #3370.
 //!   Until then a passing fixture says "this fixture is equivalent", not
 //!   "this fixer is equivalent on every input".
-//! - **Item 4's output half is a known gap.** `Story::call_function`
-//!   isolates and discards the call's own output, so no host road exposes it
-//!   and the probe captures the returned value only
-//!   (`docs/observable-semantics-spec.md` §3).
+//! - **Item 4 is not compared at all here, not just its output half.**
+//!   [`SafeFixConfig::default`] leaves [`TraceConfig::probes`] empty and
+//!   there is no per-fixture knob to fill it, so no fix fixture ever
+//!   attaches a [`crate::trace::FunctionProbe`] — a `Safe` fix inside a
+//!   function only the host calls would be certified with the story's own
+//!   content supplying [`SafeFixReport::pre_content_events`], and the
+//!   vacuity guard would not catch it either. Nor is a non-fallback
+//!   external answered: [`SafeFixConfig::default`] leaves
+//!   [`TraceConfig::externals`] at its own default,
+//!   [`crate::trace::ExternalStubs::Fallback`], for every fixture
+//!   (adversarial review finding #4b on #3417/#3440). When either knob exists,
+//!   `Story::call_function` isolating and discarding the call's own output
+//!   (so no host road exposes it) would still leave the probe capturing the
+//!   returned value only (`docs/observable-semantics-spec.md` §3).
 //! - **Module-private native globals are outside item 3 by construction.**
 //!   The globals capture goes through the host's own `getVar` road, which
 //!   honours `#@private`; a `.brink` `var` without `pub` is not
@@ -149,6 +159,16 @@ impl Default for SafeFixConfig {
     /// a transformation that removes or reorders an RNG draw is only caught
     /// by a run whose later draws shift — which needs a seeded run to
     /// compare.
+    ///
+    /// `max_runs` is one budget shared across the whole seed list —
+    /// [`crate::trace::explore_runs`] accumulates runs `for start … for
+    /// seed …` and stops the instant the total hits `max_runs`, so a fixture
+    /// that branches enough per turn can spend the entire budget on seed `1`
+    /// and never reach `7` or `42`. Harmless for today's one-choice
+    /// fixtures; a trap for the first branchy `Safe` fixture (adversarial
+    /// review finding #5 on #3417/#3440) — widen `max_runs` (or reduce
+    /// `max_depth`) if a fixture's branching factor risks starving the
+    /// later seeds.
     fn default() -> Self {
         Self {
             trace: TraceConfig {
@@ -192,7 +212,10 @@ pub enum SafeVerdict {
     ///
     /// The usual cause is a fixture whose content sits under a knot the
     /// story root never diverts into: ink runs the root flow, finds nothing,
-    /// and ends. Give the fixture root-level content or a start path.
+    /// and ends. Give the fixture root-level content instead — a fixture
+    /// cannot name a start path today, since [`SafeFixConfig::default`]
+    /// leaves [`TraceConfig::start_paths`] empty and every caller here uses
+    /// the default config (adversarial review finding #4a on #3417/#3440).
     VacuousExploration,
 }
 
@@ -382,6 +405,15 @@ pub fn load_fix_fixture(dir: &Path) -> Result<FixFixture, FixFixtureError> {
             "{before_name} and {expected_name} are different surfaces — both sides must be the same"
         )));
     }
+    // A fixture whose fix is a no-op certifies vacuously: `produced ==
+    // before == expected` passes both the trace diff (nothing changed) and
+    // `assert_fixture_matches_fixer`'s byte comparison, without proving the
+    // fix does anything (adversarial review finding #2 on #3417/#3440).
+    if before == expected {
+        return Err(invalid(format!(
+            "{before_name} and {expected_name} are byte-identical — a Safe fixture must have a real pre-image and post-image"
+        )));
+    }
 
     Ok(FixFixture {
         label,
@@ -424,21 +456,30 @@ pub fn check_safe_fix(fixture: &FixFixture, config: &SafeFixConfig) -> SafeFixRe
         detail: None,
     };
 
-    let before = match compile_side(fixture, &fixture.before) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return SafeFixReport {
-                verdict: SafeVerdict::NoPreImage,
-                detail: Some(e),
-                ..base
-            };
-        }
-    };
+    // The post-fix side is compiled first and unconditionally — even when
+    // the pre-fix side has no pre-image (adversarial review finding #1 on
+    // #3417/#3440). `expected.*` is what a `Safe` fixer actually promises to
+    // produce, `NoPreImage` or not, so it must be a program on every path,
+    // never just a hand-written file nothing here ever compiles.
+    let before_result = compile_side(fixture, &fixture.before);
     let after = match compile_side(fixture, &fixture.expected) {
         Ok(pair) => pair,
         Err(e) => {
             return SafeFixReport {
                 verdict: SafeVerdict::PostImageDoesNotCompile,
+                detail: Some(match &before_result {
+                    Ok(_) => e,
+                    Err(pre_e) => format!("post-fix: {e}\n  pre-fix also failed: {pre_e}"),
+                }),
+                ..base
+            };
+        }
+    };
+    let before = match before_result {
+        Ok(pair) => pair,
+        Err(e) => {
+            return SafeFixReport {
+                verdict: SafeVerdict::NoPreImage,
                 detail: Some(e),
                 ..base
             };
@@ -829,5 +870,105 @@ mod tests {
         assert!(declared.is_safe(), "{declared}");
         assert_eq!(declared.rewritten_units.len(), 1, "{declared}");
         assert!(declared.unaccounted_units.is_empty(), "{declared}");
+    }
+
+    /// The `.brink` surface (`entry_name = "story.brink"`), not just `.ink`:
+    /// deleting a comment compiles and traces identically on the native
+    /// entry-file road, which no in-memory fixture here exercised before
+    /// (adversarial review finding #3 on #3417/#3440).
+    #[test]
+    fn a_brink_surface_fixture_is_observably_equivalent() {
+        let before = "flow main() {\n  // drop me\n  Hello\n  -> END\n}\n";
+        let after = "flow main() {\n  Hello\n  -> END\n}\n";
+        let fixture = FixFixture {
+            label: "brink-surface".to_owned(),
+            entry_name: "story.brink".to_owned(),
+            before: before.to_owned(),
+            expected: after.to_owned(),
+            support: Vec::new(),
+            allow_rewritten_units: Vec::new(),
+        };
+        let report = check_safe_fix(&fixture, &SafeFixConfig::default());
+        assert!(report.is_safe(), "{report}");
+        assert!(
+            report.pre_content_events > 0,
+            "the baseline must actually print something: {report}"
+        );
+    }
+
+    /// `load_fix_fixture`'s mismatched-surface `Invalid` arm — a `before.ink`
+    /// beside an `expected.brink` — is exercised end-to-end against a real
+    /// fixture directory, not just asserted to exist (adversarial review
+    /// finding #3 on #3417/#3440).
+    #[test]
+    fn a_mismatched_surface_fixture_is_invalid() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-fix-mismatched-surface-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        std::fs::write(dir.join("before.ink"), "Hello.\n-> DONE\n").expect("write before.ink");
+        std::fs::write(
+            dir.join("expected.brink"),
+            "flow main() {\n  Hello\n  -> END\n}\n",
+        )
+        .expect("write expected.brink");
+
+        let result = load_fix_fixture(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            matches!(result, Err(FixFixtureError::Invalid { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// A fixture whose `expected.*` is byte-identical to `before.*` is
+    /// rejected at load time — the third vacuity hole (adversarial review
+    /// finding #2 on #3417/#3440): a no-op fix would otherwise certify
+    /// `Safe` trivially, since `produced == before == expected` passes every
+    /// downstream comparison.
+    #[test]
+    fn a_fixture_whose_expected_equals_before_is_invalid() {
+        let dir =
+            std::env::temp_dir().join(format!("brink-fix-noop-{}-{}", std::process::id(), line!()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        std::fs::write(dir.join("before.ink"), BARE_TILDE).expect("write before.ink");
+        std::fs::write(dir.join("expected.ink"), BARE_TILDE).expect("write expected.ink");
+
+        let result = load_fix_fixture(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            matches!(result, Err(FixFixtureError::Invalid { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// A pre-fix source with no pre-image, paired with an `expected.*` that
+    /// *also* fails to compile, must report `PostImageDoesNotCompile` — not
+    /// silently `NoPreImage` while `expected.*` goes uncompiled and
+    /// unchecked (adversarial review finding #1 on #3417/#3440). Before that
+    /// fix, `check_safe_fix` returned on the pre-fix failure before
+    /// `expected.*` was ever compiled, so a `NoPreImage` fixture's
+    /// `expected.*` could be garbage and this sweep would stay green.
+    #[test]
+    fn a_no_pre_image_fixture_still_requires_its_expected_to_compile() {
+        let report = check_safe_fix(
+            &fixture(
+                "no-pre-image-broken-post",
+                "-> nowhere\n",
+                "-> also-nowhere\n",
+            ),
+            &SafeFixConfig::default(),
+        );
+        assert_eq!(
+            report.verdict,
+            SafeVerdict::PostImageDoesNotCompile,
+            "{report}"
+        );
     }
 }

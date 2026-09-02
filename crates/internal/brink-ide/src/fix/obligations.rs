@@ -355,6 +355,11 @@ pub(crate) fn assert_fixture_matches_fixer(fixer: &dyn Fixer) {
         code.as_str()
     );
     let fix = &offered[0];
+    assert!(
+        !fix.edits.is_empty(),
+        "{} produced a fix with no edits",
+        code.as_str()
+    );
 
     let mut edits: Vec<&crate::rename::FileEdit> = fix.edits.iter().collect();
     for edit in &edits {
