@@ -508,7 +508,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         <div className="toolbar" ref={toolbarRef}>
           <button
             className="player-transport-btn player-btn-run"
-            title="Run — compile and start the story"
+            data-tip="Run — compile and start the story"
             aria-label="Run"
             onClick={handleRun}
           >
@@ -518,7 +518,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn"
-            title="Restart the story"
+            data-tip="Restart the story"
             aria-label="Restart"
             onClick={handleRestart}
           >
@@ -531,7 +531,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           <>
           <button
             className="player-transport-btn"
-            title="Stop the story — back to the launcher"
+            data-tip="Stop the story — back to the launcher"
             aria-label="Stop"
             disabled={idle}
             onClick={() => commands.dispatch("story.stop")}
@@ -540,7 +540,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn"
-            title="Save state — checkpoint the current point (W14); writes back to a loaded save"
+            data-tip="Save state — checkpoint the current point (W14); writes back to a loaded save"
             aria-label="Save state"
             disabled={idle}
             onClick={() => void saveCurrentState()}
@@ -549,7 +549,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn player-auto-btn"
-            title="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
+            data-tip="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
             aria-label="Fast-forward"
             disabled={idle}
             onClick={() => revealMaximally()}
@@ -562,7 +562,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               (followInEditor ? " active" : "") +
               (followInEditor && followPaused ? " is-paused" : "")
             }
-            title={
+            data-tip={
               followInEditor
                 ? followPaused
                   ? "Follow in editor — paused while you edit; click to resume (Run or Restart resumes too)"
@@ -588,7 +588,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               {paused ? (
                 <button
                   className="player-transport-btn"
-                  title="Continue — run to the next line of content and resume play"
+                  data-tip="Continue — run to the next line of content and resume play"
                   aria-label="Continue"
                   onClick={() => commands.dispatch("debug.continue")}
                 >
@@ -597,7 +597,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               ) : (
                 <button
                   className="player-transport-btn"
-                  title="Pause — stop at the current line; step from there"
+                  data-tip="Pause — stop at the current line; step from there"
                   aria-label="Pause"
                   disabled={status !== "running" && status !== "awaiting-choice"}
                   onClick={() => commands.dispatch("debug.pause")}
@@ -607,7 +607,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               )}
               <button
                 className="player-transport-btn"
-                title="Step over — one line, calls run to completion"
+                data-tip="Step over — one line, calls run to completion"
                 aria-label="Step over"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOver")}
@@ -616,7 +616,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               </button>
               <button
                 className="player-transport-btn"
-                title="Step into — one line, descending into calls"
+                data-tip="Step into — one line, descending into calls"
                 aria-label="Step into"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepInto")}
@@ -625,7 +625,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               </button>
               <button
                 className="player-transport-btn"
-                title="Step out — run until the current frame returns"
+                data-tip="Step out — run until the current frame returns"
                 aria-label="Step out"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOut")}
@@ -636,7 +636,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           )}
           <button
             className={"player-transport-btn player-tags-btn" + (showTags ? " active" : "")}
-            title={showTags ? "Hide line tags" : "Show line tags"}
+            data-tip={showTags ? "Hide line tags" : "Show line tags"}
             aria-label="Show tags"
             aria-pressed={showTags}
             onClick={() => {
@@ -654,7 +654,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             <span className="player-overflow">
               <button
                 className={"player-transport-btn" + (overflowOpen ? " active" : "")}
-                title="More controls"
+                data-tip="More controls"
                 aria-label="More controls"
                 aria-expanded={overflowOpen}
                 onClick={() => setOverflowOpen((o) => !o)}
@@ -783,7 +783,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
             }
-            title={maximized ? "Restore (Esc)" : "Maximize"}
+            data-tip={maximized ? "Restore (Esc)" : "Maximize"}
           >
             {maximized ? "\u25a3" : "\u25a1"}
           </button>

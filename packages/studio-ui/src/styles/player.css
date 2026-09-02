@@ -812,3 +812,49 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* ── Toolbar tooltips (feedback 2026-09-02: the icon buttons are not
+   always clear). Native `title` tips are slow and easy to miss; these
+   are immediate, styled, and read the same in every shell. `data-tip`
+   carries the text; the button keeps its aria-label for readers. ── */
+.brink-studio .player-pane .header .toolbar [data-tip] {
+  position: relative;
+}
+.brink-studio .player-pane .header .toolbar [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  max-width: 320px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 35%);
+  color: var(--bs-fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-small);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: 1.4;
+  white-space: normal;
+  width: max-content;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease 250ms, visibility 0s linear 370ms;
+}
+.brink-studio .player-pane .header .toolbar [data-tip]:hover::after,
+.brink-studio .player-pane .header .toolbar [data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 250ms, 250ms;
+}
+/* Right-edge buttons open their tip leftward so it stays in the pane. */
+.brink-studio .player-pane .header .toolbar .player-btn-maximize::after {
+  left: auto;
+  right: 0;
+}

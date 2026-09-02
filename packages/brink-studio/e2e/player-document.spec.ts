@@ -199,11 +199,11 @@ test.describe("player document", () => {
   test("the maximize button in the player header toggles its own group", async ({
     page,
   }) => {
-    await page.locator(".player-pane .header button[title='Maximize']").click();
+    await page.locator(".player-pane .header button.player-btn-maximize").click();
     await expect(page.locator(".shell-editor-group")).toHaveCount(1);
     await expect(page.locator(".player-pane")).toBeVisible();
 
-    await page.locator(".player-pane .header button[title='Restore (Esc)']").click();
+    await page.locator(".player-pane .header button.player-btn-maximize").click();
     await expect(page.locator(".shell-editor-group")).toHaveCount(2);
   });
 
