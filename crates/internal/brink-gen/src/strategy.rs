@@ -1,18 +1,26 @@
 //! proptest strategies over the model.
 //!
-//! The strategies build a story in two flat-mapped stages — first the flow
-//! **layout** (how many knots, how many stitches each), then every weave
-//! generated against that layout with its own flow index in hand — so every
-//! divert is chosen from a set the model's rules already allow (forward
-//! targets anywhere; back-edges only inside once-only choice bodies). The
-//! result validates by construction; `tests/smoke.rs` asserts it anyway.
+//! # Skeleton, then decode
 //!
-//! Shrinking happens on the model: proptest shrinks the layout (fewer
-//! knots/stitches), then each weave (fewer lines, fewer choices, simpler
-//! tails), and the printer re-emits — the counterexample stays a story.
+//! The strategies never look at a generated value while generating: they
+//! produce a **raw skeleton** — a plain tree of independent values in which a
+//! divert target is just a small integer and a tail is a plain enum — and a
+//! deterministic [`decode`] step turns that skeleton into a valid [`Story`],
+//! resolving every raw target into the range the model's rules allow at its
+//! site (forward flows anywhere; back-edges only inside once-only choice
+//! bodies; fall-through only into a gather; a set that could run out gets a
+//! fallback).
+//!
+//! That shape is what makes **shrinking** work. proptest shrinks each
+//! component of an independent tree on its own — fewer knots, fewer lines,
+//! a smaller target integer, a simpler tail — and the decoder keeps the
+//! result valid by construction, so a counterexample shrinks all the way
+//! down to a story a human can read. The alternative, `prop_flat_map`-ing
+//! weaves against a generated layout, regenerates the inner values whenever
+//! the outer ones shrink and stalls with a large story (the first version of
+//! this module did exactly that).
 
 use proptest::prelude::*;
-use proptest::strategy::Union;
 
 use crate::model::{Choice, Divert, Exit, Knot, Line, Stitch, Story, Tail, Weave};
 
@@ -51,6 +59,57 @@ impl Default for Profile {
     }
 }
 
+// ─── Raw skeleton ────────────────────────────────────────────────────
+
+/// A weave exit before resolution. `Forward`/`Backward` carry a raw index
+/// the decoder maps into the legal range at the exit's site.
+#[derive(Debug, Clone, Copy)]
+pub enum RawExit {
+    Forward(u8),
+    Backward(u8),
+    End,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+pub enum RawTail {
+    Exit(RawExit),
+    FallThrough,
+    Choices {
+        choices: Vec<RawChoice>,
+        fallback: Option<RawExit>,
+        gather: Option<Box<RawWeave>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RawChoice {
+    pub sticky: bool,
+    pub label: String,
+    pub body: RawWeave,
+}
+
+#[derive(Debug, Clone)]
+pub struct RawWeave {
+    pub lines: Vec<Line>,
+    pub tail: RawTail,
+}
+
+#[derive(Debug, Clone)]
+pub struct RawKnot {
+    pub name: String,
+    pub root: RawWeave,
+    pub stitches: Vec<(String, RawWeave)>,
+}
+
+/// The unresolved story: independent values only.
+#[derive(Debug, Clone)]
+pub struct RawStory {
+    pub knots: Vec<RawKnot>,
+}
+
+// ─── Leaf strategies ─────────────────────────────────────────────────
+
 /// Characters that are never ink-significant in content position: no
 /// `{}`, `#`, `|`, `\`, `[]`, `~`, `=`, `*`, `+`, `-`, `<`, `>`, `/`, and a
 /// leading lowercase letter so a line can never read as a keyword, a
@@ -69,227 +128,227 @@ fn arb_line() -> impl Strategy<Value = Line> {
     (arb_text(), prop::bool::weighted(0.15)).prop_map(|(text, glue)| Line { text, glue })
 }
 
-/// The flow layout: stitch counts per knot. Its length is the knot count.
-fn arb_layout(p: Profile) -> impl Strategy<Value = Vec<usize>> {
-    prop::collection::vec(0..=p.max_stitches, 1..=p.max_knots.max(1))
+fn arb_raw_exit() -> impl Strategy<Value = RawExit> {
+    prop_oneof![
+        4 => any::<u8>().prop_map(RawExit::Forward),
+        2 => any::<u8>().prop_map(RawExit::Backward),
+        1 => Just(RawExit::End),
+        1 => Just(RawExit::Done),
+    ]
 }
 
-/// Everything a weave strategy needs to know about where it sits.
-#[derive(Clone, Copy)]
-struct Site {
-    /// This weave's own flow index.
-    flow: usize,
-    /// Total flows in the story.
-    flow_count: usize,
-    /// Inside a once-only choice body: back-edges are legal.
-    may_go_back: bool,
-    /// Inside a choice body whose set has a gather: fall-through is legal.
-    may_fall_through: bool,
-    /// Remaining nesting budget for choice sets.
-    depth_left: usize,
-}
-
-/// A divert to any flow strictly after `site.flow`, if one exists.
-fn arb_forward(site: Site) -> Option<BoxedStrategy<Divert>> {
-    let lo = site.flow + 1;
-    if lo >= site.flow_count {
-        return None;
-    }
-    Some((lo..site.flow_count).prop_map(placeholder).boxed())
-}
-
-/// A divert to any flow at or before `site.flow`.
-fn arb_backward(site: Site) -> BoxedStrategy<Divert> {
-    (0..=site.flow).prop_map(placeholder).boxed()
-}
-
-/// The strategies work in flow indices: a placeholder [`Divert`] carries the
-/// flow index in `knot` until [`resolve`] rewrites it against the finished
-/// layout.
-fn placeholder(flow_ix: usize) -> Divert {
-    Divert {
-        knot: flow_ix,
-        stitch: None,
-    }
-}
-
-fn arb_exit(site: Site) -> BoxedStrategy<Exit> {
-    let terminal = prop_oneof![Just(Exit::End), Just(Exit::Done)].boxed();
-    let mut arms: Vec<(u32, BoxedStrategy<Exit>)> = vec![(1, terminal)];
-    if let Some(fwd) = arb_forward(site) {
-        arms.push((4, fwd.prop_map(Exit::Divert).boxed()));
-    }
-    if site.may_go_back {
-        arms.push((2, arb_backward(site).prop_map(Exit::Divert).boxed()));
-    }
-    Union::new_weighted(arms).boxed()
-}
-
-fn arb_weave(p: Profile, site: Site) -> BoxedStrategy<Weave> {
+fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
     let lines = prop::collection::vec(arb_line(), 0..=p.max_lines);
-    let mut tails: Vec<(u32, BoxedStrategy<Tail>)> =
-        vec![(3, arb_exit(site).prop_map(Tail::Exit).boxed())];
-    if site.may_fall_through {
-        tails.push((2, Just(Tail::FallThrough).boxed()));
-    }
-    if site.depth_left > 0 {
-        tails.push((3, arb_choices(p, site).boxed()));
-    }
-    (lines, Union::new_weighted(tails))
-        .prop_map(|(lines, tail)| Weave { lines, tail })
+    let tail = if depth_left == 0 {
+        prop_oneof![
+            3 => arb_raw_exit().prop_map(RawTail::Exit),
+            2 => Just(RawTail::FallThrough),
+        ]
         .boxed()
-}
-
-fn arb_choices(p: Profile, site: Site) -> impl Strategy<Value = Tail> {
-    let inner = Site {
-        depth_left: site.depth_left - 1,
-        ..site
-    };
-    // The gather is chosen first: whether it exists decides whether the
-    // choice bodies may fall through.
-    prop::option::weighted(0.5, Just(())).prop_flat_map(move |has_gather| {
-        let body_site = Site {
-            may_fall_through: has_gather.is_some(),
-            ..inner
-        };
-        let choice =
-            (arb_text(), prop::bool::weighted(0.5)).prop_flat_map(move |(label, sticky)| {
-                let site_for_body = Site {
-                    may_go_back: body_site.may_go_back || !sticky,
-                    ..body_site
-                };
-                arb_weave(p, site_for_body).prop_map(move |body| Choice {
-                    sticky,
-                    label: label.clone(),
-                    body,
-                })
+    } else {
+        let choice = (
+            arb_text(),
+            prop::bool::weighted(0.5),
+            arb_raw_weave(p, depth_left - 1),
+        )
+            .prop_map(|(label, sticky, body)| RawChoice {
+                sticky,
+                label,
+                body,
             });
         let choices = prop::collection::vec(choice, 1..=p.max_choices.max(1));
-        // A fallback never goes back: it is taken from a normal flow position.
-        let fallback = prop::option::weighted(
-            0.4,
-            arb_exit(Site {
-                may_go_back: false,
-                ..site
-            }),
-        );
-        let gather = if has_gather.is_some() {
-            // The gather continues at the enclosing weave's own site.
-            arb_weave(p, inner).prop_map(|w| Some(Box::new(w))).boxed()
-        } else {
-            Just(None).boxed()
-        };
-        (choices, fallback, gather).prop_map(|(choices, fallback, gather)| {
-            // Rule 3: a set with no sticky choice must carry a fallback.
-            let fallback = if choices.iter().any(|c| c.sticky) {
-                fallback
-            } else {
-                Some(fallback.unwrap_or(Exit::End))
-            };
-            Tail::Choices {
+        let fallback = prop::option::weighted(0.4, arb_raw_exit());
+        let gather =
+            prop::option::weighted(0.5, arb_raw_weave(p, depth_left - 1).prop_map(Box::new));
+        prop_oneof![
+            3 => arb_raw_exit().prop_map(RawTail::Exit),
+            2 => Just(RawTail::FallThrough),
+            3 => (choices, fallback, gather).prop_map(|(choices, fallback, gather)| RawTail::Choices {
                 choices,
                 fallback,
                 gather,
-            }
-        })
-    })
+            }),
+        ]
+        .boxed()
+    };
+    (lines, tail)
+        .prop_map(|(lines, tail)| RawWeave { lines, tail })
+        .boxed()
 }
 
-fn resolve_exit(e: &mut Exit, table: &[Divert]) {
-    if let Exit::Divert(d) = e
-        && let Some(real) = table.get(d.knot)
-    {
-        *d = *real;
+fn arb_raw_knot(p: Profile) -> impl Strategy<Value = RawKnot> {
+    let stitch = (arb_name_base(), arb_raw_weave(p, p.max_choice_depth));
+    (
+        arb_name_base(),
+        arb_raw_weave(p, p.max_choice_depth),
+        prop::collection::vec(stitch, 0..=p.max_stitches),
+    )
+        .prop_map(|(name, root, stitches)| RawKnot {
+            name,
+            root,
+            stitches,
+        })
+}
+
+/// A raw skeleton under `profile`.
+pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
+    prop::collection::vec(arb_raw_knot(profile), 1..=profile.max_knots.max(1))
+        .prop_map(|knots| RawStory { knots })
+}
+
+// ─── Decode ──────────────────────────────────────────────────────────
+
+/// Where a weave sits, for resolving its raw exits.
+#[derive(Clone, Copy)]
+struct Site {
+    flow: usize,
+    flow_count: usize,
+    may_go_back: bool,
+    may_fall_through: bool,
+}
+
+fn resolve_exit(raw: RawExit, site: Site, table: &[Divert]) -> Exit {
+    let forward_count = site.flow_count.saturating_sub(site.flow + 1);
+    match raw {
+        RawExit::End => Exit::End,
+        RawExit::Done => Exit::Done,
+        RawExit::Forward(n) => {
+            if forward_count == 0 {
+                Exit::End
+            } else {
+                Exit::Divert(table[site.flow + 1 + usize::from(n) % forward_count])
+            }
+        }
+        RawExit::Backward(n) => {
+            if site.may_go_back {
+                Exit::Divert(table[usize::from(n) % (site.flow + 1)])
+            } else if forward_count == 0 {
+                Exit::End
+            } else {
+                // Not allowed to go back here: read the raw index forward.
+                Exit::Divert(table[site.flow + 1 + usize::from(n) % forward_count])
+            }
+        }
     }
 }
 
-fn resolve_weave(w: &mut Weave, table: &[Divert]) {
-    match &mut w.tail {
-        Tail::Exit(e) => resolve_exit(e, table),
-        Tail::FallThrough => {}
-        Tail::Choices {
+fn decode_weave(raw: &RawWeave, site: Site, table: &[Divert]) -> Weave {
+    let lines = raw.lines.clone();
+    let tail = match &raw.tail {
+        RawTail::Exit(e) => Tail::Exit(resolve_exit(*e, site, table)),
+        RawTail::FallThrough => {
+            if site.may_fall_through {
+                Tail::FallThrough
+            } else {
+                // No gather to fall into: the weave ends explicitly instead.
+                Tail::Exit(resolve_exit(RawExit::Forward(0), site, table))
+            }
+        }
+        RawTail::Choices {
             choices,
             fallback,
             gather,
         } => {
-            for c in choices.iter_mut() {
-                resolve_weave(&mut c.body, table);
+            let has_gather = gather.is_some();
+            let decoded: Vec<Choice> = choices
+                .iter()
+                .map(|c| {
+                    let body_site = Site {
+                        may_go_back: site.may_go_back || !c.sticky,
+                        may_fall_through: has_gather,
+                        ..site
+                    };
+                    Choice {
+                        sticky: c.sticky,
+                        label: c.label.clone(),
+                        body: decode_weave(&c.body, body_site, table),
+                    }
+                })
+                .collect();
+            // A fallback fires from a normal flow position: never a back-edge.
+            let fallback_site = Site {
+                may_go_back: false,
+                ..site
+            };
+            let mut fallback = fallback.map(|f| resolve_exit(f, fallback_site, table));
+            // Rule 3: a set with no sticky choice must carry a fallback.
+            if !decoded.iter().any(|c| c.sticky) && fallback.is_none() {
+                fallback = Some(Exit::End);
             }
-            if let Some(fb) = fallback {
-                resolve_exit(fb, table);
-            }
-            if let Some(g) = gather {
-                resolve_weave(g, table);
+            // The gather continues at the enclosing weave's own site.
+            let gather = gather
+                .as_ref()
+                .map(|g| Box::new(decode_weave(g, site, table)));
+            Tail::Choices {
+                choices: decoded,
+                fallback,
+                gather,
             }
         }
-    }
+    };
+    Weave { lines, tail }
 }
 
-/// Rewrite every placeholder divert (a flow index stored in `knot`) into a
-/// real `(knot, stitch)` pair against the finished layout.
-fn resolve(story: &mut Story) {
-    let table: Vec<Divert> = (0..story.flow_count())
-        .filter_map(|ix| story.flow_at(ix))
-        .collect();
-    for k in &mut story.knots {
-        resolve_weave(&mut k.root, &table);
-        for s in &mut k.stitches {
-            resolve_weave(&mut s.body, &table);
+/// Turn a raw skeleton into a valid [`Story`]: names made unique, every
+/// exit resolved into the legal range for its site, every rule of
+/// `crate::model` satisfied by construction.
+pub fn decode(raw: &RawStory) -> Story {
+    // Pass 1: the layout — flow table in linear order.
+    let mut table = Vec::new();
+    for (ki, k) in raw.knots.iter().enumerate() {
+        table.push(Divert {
+            knot: ki,
+            stitch: None,
+        });
+        for si in 0..k.stitches.len() {
+            table.push(Divert {
+                knot: ki,
+                stitch: Some(si),
+            });
         }
     }
+    let flow_count = table.len();
+    // Pass 2: decode every weave against its own flow index.
+    let mut flow = 0;
+    let knots = raw
+        .knots
+        .iter()
+        .enumerate()
+        .map(|(ki, k)| {
+            let root_site = Site {
+                flow,
+                flow_count,
+                may_go_back: false,
+                may_fall_through: false,
+            };
+            flow += 1;
+            let root = decode_weave(&k.root, root_site, &table);
+            let stitches = k
+                .stitches
+                .iter()
+                .enumerate()
+                .map(|(si, (base, body))| {
+                    let site = Site { flow, ..root_site };
+                    flow += 1;
+                    Stitch {
+                        name: format!("{base}_s{si}"),
+                        body: decode_weave(body, site, &table),
+                    }
+                })
+                .collect();
+            Knot {
+                name: format!("{}_k{ki}", k.name),
+                root,
+                stitches,
+            }
+        })
+        .collect();
+    Story { knots }
 }
 
 /// A structure-tier story under `profile`: validates by construction.
 pub fn arb_story_with(profile: Profile) -> impl Strategy<Value = Story> {
-    arb_layout(profile).prop_flat_map(move |layout| {
-        let flow_count: usize = layout.iter().map(|s| 1 + s).sum();
-        let mut flow = 0;
-        let knots: Vec<BoxedStrategy<Knot>> = layout
-            .iter()
-            .enumerate()
-            .map(|(ki, &n_stitches)| {
-                let root_site = Site {
-                    flow,
-                    flow_count,
-                    may_go_back: false,
-                    may_fall_through: false,
-                    depth_left: profile.max_choice_depth,
-                };
-                flow += 1;
-                let stitch_sites: Vec<Site> = (0..n_stitches)
-                    .map(|_| {
-                        let s = Site { flow, ..root_site };
-                        flow += 1;
-                        s
-                    })
-                    .collect();
-                let stitches: Vec<BoxedStrategy<Stitch>> = stitch_sites
-                    .into_iter()
-                    .enumerate()
-                    .map(|(si, site)| {
-                        (arb_name_base(), arb_weave(profile, site))
-                            .prop_map(move |(base, body)| Stitch {
-                                name: format!("{base}_s{si}"),
-                                body,
-                            })
-                            .boxed()
-                    })
-                    .collect();
-                (arb_name_base(), arb_weave(profile, root_site), stitches)
-                    .prop_map(move |(base, root, stitches)| Knot {
-                        name: format!("{base}_k{ki}"),
-                        root,
-                        stitches,
-                    })
-                    .boxed()
-            })
-            .collect();
-        knots.prop_map(|knots| {
-            let mut story = Story { knots };
-            resolve(&mut story);
-            story
-        })
-    })
+    arb_raw_story(profile).prop_map(|raw| decode(&raw))
 }
 
 /// A structure-tier story under [`Profile::DEFAULT`].
@@ -321,5 +380,74 @@ mod tests {
                 prop_assert!(k.stitches.len() <= p.max_stitches);
             }
         }
+    }
+
+    /// Shrinking quality: a property that rejects any nested choice set
+    /// must shrink to a story with exactly the offending shape and
+    /// nothing else — one knot, one choice, one nested set.
+    #[test]
+    fn counterexamples_shrink_to_the_offending_shape() {
+        use proptest::strategy::ValueTree as _;
+        use proptest::test_runner::{Config, TestRunner};
+
+        fn has_nested_set(w: &Weave, depth: usize) -> bool {
+            match &w.tail {
+                Tail::Choices {
+                    choices, gather, ..
+                } => {
+                    depth >= 1
+                        || choices.iter().any(|c| has_nested_set(&c.body, depth + 1))
+                        || gather.as_ref().is_some_and(|g| has_nested_set(g, depth))
+                }
+                _ => false,
+            }
+        }
+        fn story_has_nested_set(s: &Story) -> bool {
+            s.knots.iter().any(|k| {
+                has_nested_set(&k.root, 0)
+                    || k.stitches.iter().any(|st| has_nested_set(&st.body, 0))
+            })
+        }
+
+        let mut runner = TestRunner::new(Config::default());
+        let mut tree = None;
+        // Find a failing value.
+        for _ in 0..500 {
+            let t = arb_story().new_tree(&mut runner).expect("new tree");
+            if story_has_nested_set(&t.current()) {
+                tree = Some(t);
+                break;
+            }
+        }
+        let mut tree = tree.expect("a nested choice set is generated within 500 tries");
+        // Shrink while the failure persists (proptest's own loop, by hand).
+        let mut budget = 10_000;
+        loop {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            if story_has_nested_set(&tree.current()) {
+                if !tree.simplify() {
+                    break;
+                }
+            } else if !tree.complicate() {
+                break;
+            }
+        }
+        let minimal = tree.current();
+        assert!(story_has_nested_set(&minimal));
+        let printed = crate::print::print_ink(&minimal);
+        let line_count = printed.lines().filter(|l| !l.trim().is_empty()).count();
+        // Measured: the shrinker lands on one knot, 9 printed lines (a
+        // choice, its nested set with a fallback, the exits). Before the
+        // skeleton-then-decode design, the same property stalled at ~220
+        // lines. Shrinking can delete but not relocate, so a stitch that
+        // hosts the offending set legitimately survives.
+        assert!(
+            minimal.knots.len() == 1 && line_count <= 12,
+            "expected a minimal one-knot story, got {} knots / {line_count} lines:\n{printed}",
+            minimal.knots.len()
+        );
     }
 }
