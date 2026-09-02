@@ -1173,16 +1173,24 @@ impl<R: StoryRng> Story<R> {
         let Some(stack_idx) = depth.checked_sub(1).and_then(|d| d.checked_sub(frame_idx)) else {
             return false;
         };
-        match call_stack
-            .get_mut(stack_idx)
-            .and_then(|frame| frame.temps.get_mut(slot as usize))
-        {
-            Some(target) => {
-                *target = value;
-                true
-            }
-            None => false,
+        let Some(frame) = call_stack.get_mut(stack_idx) else {
+            return false;
+        };
+        // The slot must already exist (editing never allocates) — checked
+        // against `temps` directly rather than `is_temp_written`, since an
+        // edit is legal even on a slot that only exists as `write_temp`'s
+        // own zero-padding for a not-yet-declared name.
+        if frame.temps.get(slot as usize).is_none() {
+            return false;
         }
+        // Commit through `write_temp` — the single path every real
+        // temp-slot store in the VM funnels through — so `temps_written`
+        // is marked exactly like a real `DeclareTemp`/`SetTemp` would.
+        // Bypassing it (a raw write through `temps.get_mut`) left the bit
+        // stale, so `Opcode::GetTemp`'s issue #3354 uninitialized-slot gate
+        // would silently discard this edit on the next read.
+        frame.write_temp(slot as usize, value);
+        true
     }
 
     /// A debug snapshot of a named shared flow (#200), built against the shared
@@ -2988,6 +2996,73 @@ mod tests {
             tunnel_frame.temps[0],
             Value::Int(1),
             "tunnel frame temps[0] should be Int(1) (the parameter x)"
+        );
+    }
+
+    /// PR #3369 review: `debug_set_temp` (the W16/#3309 live-value-editing
+    /// seam) must commit through `CallFrame::write_temp` — the single path
+    /// every real temp-slot store in the VM funnels through, per that
+    /// field's own doc comment — so the slot's `temps_written` bit is set
+    /// exactly like a real `DeclareTemp`/`SetTemp` would.
+    ///
+    /// Forces the frame's slot 0 back to `write_temp`'s own "exists but
+    /// never written" shape directly (`Value::Null` with the bit unset) —
+    /// exactly the state a not-yet-declared sibling temp is left in when a
+    /// *different*, higher-slotted temp is written first (`write_temp`
+    /// zero-pads every lower index). Before the fix, `debug_set_temp` wrote
+    /// `*target = value` straight through `temps.get_mut`, leaving
+    /// `temps_written` stale — so `Opcode::GetTemp`'s issue #3354
+    /// uninitialized-slot gate would still treat the edited slot as never
+    /// written on the next read, discarding the edit and substituting the
+    /// missing-variable default plus a spurious `RuntimeWarning`.
+    #[test]
+    fn debug_set_temp_marks_the_slot_written() {
+        let (program, tables) =
+            compile_source_for_flow("-> k\n=== k ===\n~ temp n = 1\nSaw {n}.\n-> END\n");
+        let mut story = Story::<FastRng>::new(Arc::new(program), tables);
+        // Run past the `DeclareTemp` so the frame's `temps`/`temps_written`
+        // for `n` actually exist.
+        match story.continue_single().expect("VM step") {
+            Step::Line(_) => {}
+            other => panic!("expected a line, got {other:?}"),
+        }
+
+        {
+            let frame = story
+                .default
+                .flow
+                .current_thread_mut()
+                .call_stack
+                .last_mut()
+                .expect("root frame");
+            assert!(
+                !frame.temps.is_empty(),
+                "DeclareTemp must have run by now: {frame:?}"
+            );
+            frame.temps[0] = Value::Null;
+            frame.temps_written[0] = false;
+        }
+
+        assert!(
+            story.debug_set_temp(0, 0, Value::Int(42)),
+            "the slot already exists, so the edit must be accepted"
+        );
+
+        let frame = story
+            .default
+            .flow
+            .current_thread()
+            .call_stack
+            .last()
+            .expect("root frame");
+        assert_eq!(
+            frame.temps[0],
+            Value::Int(42),
+            "the edited value must land in the slot"
+        );
+        assert!(
+            frame.is_temp_written(0),
+            "debug_set_temp must mark the slot written via CallFrame::write_temp"
         );
     }
 
