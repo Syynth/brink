@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use brink_test_harness::corpus::{
-    collect_oracle_cases, compile_and_explore_from_ink, has_empty_source, is_compile_error_case,
+    MismatchFlagVerdict, collect_oracle_cases, compile_and_explore_from_ink,
+    expected_mismatch_issue, has_empty_source, is_compile_error_case, mismatch_flag_verdict,
 };
 use brink_test_harness::oracle;
 use brink_test_harness::snapshot_fmt::{CaseResult, CaseStatus};
@@ -85,6 +86,15 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 /// No other snapshot moved. The two #3395 expected mismatches above remain.
 /// Measured: CASES 380 pass / 10 fail / 414 total, EPISODES 5622 pass /
 /// 1012 mismatch / 2 missing.
+///
+/// Since issue #3402, "the two #3395 expected mismatches above remain" is no
+/// longer prose this constant has to be trusted against: those two cases'
+/// `metadata.toml` files carry `[source] expected_mismatch = "#3395"`, and
+/// `oracle_snapshots()` below asserts that no flagged case has quietly
+/// started matching the oracle in full. When #3395 is eventually fixed, that
+/// assertion fails — naming the case — until the flag is removed and this
+/// constant is raised in the same change, so the two can never drift apart
+/// silently again.
 const RATCHET_EPISODE_COUNT: usize = 5622;
 
 #[test]
@@ -103,6 +113,11 @@ fn oracle_snapshots() {
     let mut episodes_pass: usize = 0;
     let mut episodes_mismatch: usize = 0;
     let mut episodes_missing: usize = 0;
+    // Issue #3402: cases whose `metadata.toml` flags `expected_mismatch` but
+    // whose episodes all matched the oracle this run — the underlying bug is
+    // fixed and the flag (plus RATCHET_EPISODE_COUNT) must be updated in the
+    // same change, rather than the fix silently landing unnoticed.
+    let mut unexpectedly_fixed: Vec<String> = Vec::new();
 
     for case_dir in &cases {
         let rel = case_dir
@@ -194,6 +209,21 @@ fn oracle_snapshots() {
         episodes_mismatch += case_mismatch;
         episodes_missing += case_missing;
 
+        // Issue #3402: fold in the case's `expected_mismatch` flag (if any).
+        // An unflagged case's mismatch/missing count already fails today via
+        // the corpus-summary snapshot and the ratchet floor below — this
+        // check only ever adds a NEW failure mode (a flagged case quietly
+        // becoming clean), never suppresses an existing one.
+        let flag = expected_mismatch_issue(case_dir);
+        if mismatch_flag_verdict(flag.as_deref(), case_mismatch, case_missing)
+            == MismatchFlagVerdict::UnexpectedlyFixed
+        {
+            unexpectedly_fixed.push(format!(
+                "{rel} (expected_mismatch {})",
+                flag.as_deref().unwrap_or("?")
+            ));
+        }
+
         let total = oracle_eps.len();
         let status = if case_mismatch == 0 && case_missing == 0 {
             CaseStatus::Pass {
@@ -248,6 +278,19 @@ fn oracle_snapshots() {
     );
     println!(
         "EPISODES: {episodes_pass} pass / {episodes_mismatch} mismatch / {episodes_missing} missing"
+    );
+
+    // Issue #3402: a case pinned as `expected_mismatch` in metadata.toml
+    // must not silently start passing. Reading the flag mechanically (not
+    // trusting a prose enumeration in RATCHET_EPISODE_COUNT's doc comment)
+    // means a fix landing for one of these cases is caught here instead of
+    // leaving a stale flag and an unraised ratchet.
+    assert!(
+        unexpectedly_fixed.is_empty(),
+        "expected-mismatch case(s) now match the oracle in full — remove `expected_mismatch` \
+         from metadata.toml and raise RATCHET_EPISODE_COUNT to account for the newly-passing \
+         episodes: {}",
+        unexpectedly_fixed.join(", ")
     );
 
     // Ratchet assertion.
