@@ -737,6 +737,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
+        <div className="player-spine">
         <div className="story-text">
           {groups.map((group, gi) => {
             const renderRow = (row: PlayerRow): ReactNode => {
@@ -749,12 +750,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                       line.source.range_end,
                     )
                   : null;
+              // A choice echo whose kind the wire knows (#3435) draws its
+              // `*`/`+` as a ring on the spine and drops the textual `> `.
+              const echoKind = line.kind === "marker" ? line.choiceKind : undefined;
+              const point1 = point !== null && line.source ? point.line + 1 : null;
               return (
                 <div
                   key={i}
                   className={
                     `player-line-row kind-${line.kind}` +
-                    (row.kind !== null ? ` dialect-${row.kind}` : "")
+                    (row.kind !== null ? ` dialect-${row.kind}` : "") +
+                    (echoKind !== undefined ? ` is-echo echo-${echoKind}` : "")
                   }
                   onMouseEnter={() => setHoverIdx(i)}
                   onMouseLeave={() => setHoverIdx((cur) => (cur === i ? -1 : cur))}
@@ -763,7 +769,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                     if (e.metaKey || e.ctrlKey) revealSource(line);
                   }}
                 >
-                  <p>{renderRowBody(row)}</p>
+                  {echoKind !== undefined && (
+                    <span className="player-echo-ring" aria-hidden="true">
+                      {echoKind === "sticky" ? "+" : "*"}
+                    </span>
+                  )}
+                  <p>{echoKind !== undefined ? line.text.replace(/^>\s*/, "") : renderRowBody(row)}</p>
                   {showTags && line.tags.length > 0 && (
                     <span className="player-line-tags">
                       {line.tags.map((tag, ti) => (
@@ -773,16 +784,17 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                       ))}
                     </span>
                   )}
-                  {point !== null && line.source && (
+                  {point1 !== null && line.source && (
                     <button
-                      className="player-provenance-chip"
-                      title="Reveal in editor (⌘-click the line works too)"
+                      className="player-provenance"
+                      title={`${baseName(line.source.file)}:${point1.toString()} · ⌘-click to open`}
+                      aria-label={`Open ${baseName(line.source.file)}:${point1.toString()} in the editor`}
                       onClick={(e) => {
                         e.stopPropagation();
                         revealSource(line);
                       }}
                     >
-                      {baseName(line.source.file)}:{point.line + 1}
+                      <GoToSourceIcon />
                     </button>
                   )}
                 </div>
@@ -795,7 +807,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             return (
               <div
                 key={`g${gi.toString()}`}
-                className={`player-run dialect-${group.kind ?? "run"}`}
+                className={`player-run dialect-${group.kind ?? "run"} speaker-${palette.toString()}`}
                 data-speaker={group.speaker}
               >
                 <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
@@ -811,18 +823,53 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         {choices.length > 0 ? (
           <div className="choices">
             {choices.map((choice) => (
-              <button key={choice.index} onClick={() => handleChoice(choice.index)}>
-                {choice.text}
+              <button
+                key={choice.index}
+                className={
+                  "player-choice" +
+                  (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
+                }
+                onClick={() => handleChoice(choice.index)}
+              >
+                {choice.sticky !== undefined && (
+                  <span className="player-choice-mark" aria-hidden="true">
+                    {choice.sticky ? "+" : "*"}
+                  </span>
+                )}
+                <span className="player-choice-text">{choice.text}</span>
               </button>
             ))}
           </div>
         ) : hasPending ? (
           <div className="choices">
-            <button onClick={handleContinue}>Continue</button>
+            <button className="player-choice player-continue" onClick={handleContinue}>
+              <span className="player-choice-text">Continue</span>
+            </button>
           </div>
         ) : null}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** The provenance button's glyph — text with an arrow out of it. */
+function GoToSourceIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M14 4h6v6M20 4l-8 8M11 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
+    </svg>
   );
 }
 
