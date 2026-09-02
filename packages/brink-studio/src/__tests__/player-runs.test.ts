@@ -76,6 +76,22 @@ describe("foldPlayerRuns (#3389)", () => {
     ]);
   });
 
+  it("a choice echo ends the speaker's run even when the dialect's run rule does not say so", () => {
+    // AT_CUE_DIALECT has no run_ends_at at all.
+    const lines = [
+      line("@Griswold: Buying or dying?"),
+      marker("> Kneel and pray"),
+      line("A cold blessing settles over you."),
+      line("You stand again in the nave."),
+    ];
+    const groups = foldPlayerRuns(lines, AT_CUE_DIALECT);
+    expect(groups.map((g) => [g.speaker, g.rows.length])).toEqual([
+      ["Griswold", 1],
+      [null, 1],
+      [null, 2],
+    ]);
+  });
+
   it("no dialect: every row is a plain group — nothing is parsed", () => {
     const groups = foldPlayerRuns([line("@CUE1: One."), line("> text")], null);
     expect(groups.map((g) => [g.kind, g.rows[0].segments.length])).toEqual([[null, 0], [null, 0]]);

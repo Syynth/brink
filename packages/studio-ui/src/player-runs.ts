@@ -64,18 +64,27 @@ export function foldPlayerRuns(
   const groups: PlayerGroup[] = [];
   for (const run of runs) {
     // A chrome row is always standalone: split it out of whatever run the
-    // fold placed it in (segment-less, it "joined" as plain text).
+    // fold placed it in (segment-less, it "joined" as plain text). And a
+    // choice echo is the READER's turn: it ends the speaker's run in the
+    // Player whatever the dialect's run rule says (a preset with no
+    // `run_ends_at` kept attributing the narration after a pick to the
+    // last speaker — caught live 2026-09-02), so the lines after it are
+    // nobody's until the next cue.
     let current: PlayerGroup | null = null;
+    let speakerEnded = false;
     for (const idx of run.lines) {
       const row = rows[idx];
       if (row.line.kind !== "line") {
         if (current) groups.push(current);
         current = null;
+        if (row.line.kind === "marker") speakerEnded = true;
         groups.push({ kind: null, speaker: null, rows: [row] });
         continue;
       }
       if (current === null) {
-        current = { kind: run.kind, speaker: run.attrs.speaker ?? null, rows: [row] };
+        current = speakerEnded
+          ? { kind: null, speaker: null, rows: [row] }
+          : { kind: run.kind, speaker: run.attrs.speaker ?? null, rows: [row] };
       } else {
         current.rows.push(row);
       }
