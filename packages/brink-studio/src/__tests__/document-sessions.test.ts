@@ -19,7 +19,7 @@ import {
   type DocumentCallbacks,
 } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
-import { EditorView } from "@codemirror/view";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -769,6 +769,41 @@ describe("DocumentSessions", () => {
   describe("syncAnnotation export", () => {
     it("is defined (mirror transactions are annotated with it)", () => {
       expect(syncAnnotation).toBeDefined();
+    });
+  });
+
+  // #3384 review finding 1: `getFixes` used to add the fragment origin
+  // (`base + offset`) before calling `DocHandle.fixes`, which itself folds
+  // that same origin in on the wasm side (`to_absolute` adds `view.start`
+  // for a handle opened via `openFragment`) — double-counting it and
+  // resolving into the wrong file offset. The mock's `fixes_at_doc` ignores
+  // its `offset` argument entirely (synthetic — no analyzer to key fixes
+  // off), so it can't catch a wrong offset by its return value; this spies
+  // on `DocHandle.fixes` directly to assert the argument `getFixes` passes.
+  describe("auto-fixes on a fragment view (#3377/#3384)", () => {
+    it("passes the fragment-relative cursor straight through to fixes()", () => {
+      harness.documents.noteTarget(START_TARGET);
+      const { view } = harness.mount("main.ink::start", "group-1");
+      const handle = view.state.facet(documentHandleFacet)?.handle;
+      if (!handle) throw new Error("no handle on view");
+      expect(handle.fragmentRange()).not.toBeNull();
+
+      // A cursor position inside the fragment's OWN document — distinct from
+      // (and much smaller than) the fragment's file-absolute start offset,
+      // so a reintroduced `base + offset` is caught by the value, not just
+      // the call happening.
+      const relOffset = START_KNOT_TEXT.indexOf("Hello");
+      expect(relOffset).toBeGreaterThan(0);
+      view.dispatch({ selection: { anchor: relOffset } });
+
+      const spy = vi.spyOn(handle, "fixes");
+      const handled = runScopeHandlers(
+        view,
+        new KeyboardEvent("keydown", { key: ".", ctrlKey: true }),
+        "editor",
+      );
+      expect(handled).toBe(true);
+      expect(spy).toHaveBeenCalledWith(relOffset);
     });
   });
 });

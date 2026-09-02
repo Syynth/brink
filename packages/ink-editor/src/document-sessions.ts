@@ -1387,8 +1387,7 @@ export class DocumentSessions {
       getFixes: (offset) => {
         const handle = slot.handle;
         if (!handle) return [];
-        const base = handle.fragmentRange()?.start ?? 0;
-        return handle.fixes(base + offset);
+        return handle.fixes(offset);
       },
       applyFix: this.callbacks.onApplyStructural
         ? (fix: Fix) => {
