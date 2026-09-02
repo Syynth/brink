@@ -792,6 +792,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
         <div className="player-spine">
+        {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
+            the head of the rail, so the rail reads as a line of play from
+            the first line, not as a bracket around whatever is on screen. */}
+        <div className="player-spine-start" aria-hidden="true" />
         <div className="story-text">
           {groups.map((group, gi) => {
             const renderRow = (row: PlayerRow): ReactNode => {

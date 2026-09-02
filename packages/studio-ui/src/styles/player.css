@@ -53,6 +53,12 @@
 .brink-studio .player {
   flex: 1;
   overflow: auto;
+  /* A column so the spine can fill the pane's height: the rail runs
+     from its start node to the bottom of the pane even when the story
+     has produced one line (maintainer, 2026-09-02 — "when you first start
+     it's just the size of the Continue button"). */
+  display: flex;
+  flex-direction: column;
   padding: 24px 40px;
   /* Reading knobs (#3438): measure and face from Settings › Player;
      unset = these defaults. */
@@ -575,16 +581,30 @@
 }
 .brink-studio .player .player-spine {
   position: relative;
+  flex: 1 0 auto;
+  padding-top: 14px;
   padding-left: calc(var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine::before {
   content: "";
   position: absolute;
-  left: var(--player-spine-x);
+  left: calc(var(--player-spine-x) - 0.5px);
   top: 0;
   bottom: 0;
-  width: 1px;
+  width: 2px;
   background: var(--bs-border);
+}
+/* The head of the timeline: a filled node on the rail, above the first
+   line. */
+.brink-studio .player .player-spine-start {
+  position: absolute;
+  left: calc(var(--player-spine-x) - 5px);
+  top: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--bs-fg-muted);
+  box-shadow: 0 0 0 2px var(--bs-editor-bg);
 }
 /* Narration reads at full strength; ACTION is the dimmed one (ruled). */
 .brink-studio .player .story-text > .player-line-row.kind-line p {
