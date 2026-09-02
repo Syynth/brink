@@ -15,7 +15,6 @@ proptest.workspace = true
 # `test-util` (issue #2168): the smoke properties compile generated source
 # inline through the legacy closure entry point, exactly as the harness does.
 brink-compiler = { workspace = true, features = ["test-util"] }
-brink-format = { workspace = true }
 brink-runtime = { workspace = true }
 brink-test-harness = { workspace = true }
 
