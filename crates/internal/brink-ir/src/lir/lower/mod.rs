@@ -1782,9 +1782,16 @@ fn build_continuation_container(
         // the VM's normal frame-exhaustion path (`handle_frame_exhaustion`)
         // surface that instead of masking it as a safe exit (issue #1503).
         let body = if ctx.is_root_content_scope {
+            // Nested inside a choice body that has a gather of its own, the
+            // empty continuation falls into THAT gather — the exit is
+            // emitted here directly so `patch_innermost_gather` never has to
+            // overwrite a terminator to reach it (issue #3383).
+            let target = ctx
+                .choice_gather_target
+                .map_or(lir::DivertTarget::Done, lir::DivertTarget::Address);
             vec![lir::Stmt::new(
                 lir::StmtKind::Divert(lir::Divert {
-                    target: lir::DivertTarget::Done,
+                    target,
                     args: Vec::new(),
                 }),
                 provenance,
@@ -2714,16 +2721,20 @@ fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) 
         )
     });
 
+    // A gather that already transfers control keeps its own terminator:
+    // an authored `-> target` / `-> END` / `-> DONE` at the end of a nested
+    // gather is that gather's exit, not a placeholder for the outer one
+    // (issue #3383 — replacing it silently dropped the divert). The only
+    // synthesized terminator a continuation can carry is the exit
+    // `build_continuation_container` emits for an *empty* root-content
+    // continuation, and that one already targets the enclosing gather.
+    if gather_body_ends_terminal {
+        return;
+    }
     // Same no-`LowerCtx`-here rationale as `patch_root_loose_end`: inherit
     // the gather's own provenance.
     let provenance = gather.provenance;
-    if gather_body_ends_terminal {
-        // Replace the terminal (e.g., Done) with the outer gather divert
-        let last_idx = gather.body.len() - 1;
-        gather.body[last_idx] = lir::Stmt::new(lir::StmtKind::Divert(divert), provenance);
-    } else {
-        gather
-            .body
-            .push(lir::Stmt::new(lir::StmtKind::Divert(divert), provenance));
-    }
+    gather
+        .body
+        .push(lir::Stmt::new(lir::StmtKind::Divert(divert), provenance));
 }

@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/sequence-shared-across-lifted-branches
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "" [Choices: "again" (0) -> 0]
+> "aqs\n" [Choices: "again" (0) -> 0]
+> "bqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+> "cqs\n" [Choices: "again" (0) -> 0]
+outcome: InputsExhausted

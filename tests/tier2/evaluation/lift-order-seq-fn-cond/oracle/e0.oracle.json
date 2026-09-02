@@ -1,0 +1,482 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "a1small\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 1
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "b2big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 2
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "c3big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 3
+      },
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "c4big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 4
+      },
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "c5big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 5
+      },
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "c6big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 6
+      },
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "c7big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 7
+      },
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "c8big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 8
+      },
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "c9big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 9
+      },
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "c10big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 10
+      },
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "c11big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 11
+      },
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "c12big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 12
+      },
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "c13big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 13
+      },
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "c14big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 14
+      },
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "c15big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 15
+      },
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "c16big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 16
+      },
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "c17big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 17
+      },
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "c18big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 18
+      },
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "c19big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 19
+      },
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "c20big\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "n": 20
+      },
+      "visit_changes": {},
+      "turn_index": 20
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "again",
+          "index": 0,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "n": 0
+    },
+    "turn_index": 0
+  }
+}

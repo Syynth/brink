@@ -1,0 +1,11 @@
+description = "Four inline conditionals on one line, alternating true/false (#3386)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "four-inline-conditionals"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = ["conditional", "inline", "lifted-branches"]

@@ -160,7 +160,12 @@ fn compare_steps(expected: &StepRecord, actual: &StepRecord) -> StepDiff {
 
 fn step_outcome_eq(a: &StepOutcome, b: &StepOutcome) -> bool {
     match (a, b) {
-        (StepOutcome::Done, StepOutcome::Done) | (StepOutcome::Ended, StepOutcome::Ended) => true,
+        // `Continue` was missing here, so every episode with a plain
+        // mid-turn step diffed as an outcome mismatch between two identical
+        // `Continue`s (found by brink-gen's two-roads smoke property).
+        (StepOutcome::Continue, StepOutcome::Continue)
+        | (StepOutcome::Done, StepOutcome::Done)
+        | (StepOutcome::Ended, StepOutcome::Ended) => true,
         (
             StepOutcome::Choices {
                 presented: pa,
@@ -223,4 +228,42 @@ fn normalize_def_ids(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(text: &str, outcome: StepOutcome) -> StepRecord {
+        StepRecord {
+            text: text.to_owned(),
+            tags: Vec::new(),
+            outcome,
+            writes: Vec::new(),
+        }
+    }
+
+    /// `Continue` had no arm in `step_outcome_eq`, so two identical mid-turn
+    /// steps diffed as an outcome mismatch (found by brink-gen's two-roads
+    /// smoke property).
+    #[test]
+    fn identical_continue_steps_match() {
+        let a = step("hello", StepOutcome::Continue);
+        let b = step("hello", StepOutcome::Continue);
+        assert!(matches!(compare_steps(&a, &b), StepDiff::Match));
+        assert!(step_outcome_eq(
+            &StepOutcome::Continue,
+            &StepOutcome::Continue
+        ));
+    }
+
+    #[test]
+    fn continue_versus_done_is_still_a_mismatch() {
+        let a = step("hello", StepOutcome::Continue);
+        let b = step("hello", StepOutcome::Done);
+        assert!(matches!(
+            compare_steps(&a, &b),
+            StepDiff::OutcomeMismatch { .. }
+        ));
+    }
 }

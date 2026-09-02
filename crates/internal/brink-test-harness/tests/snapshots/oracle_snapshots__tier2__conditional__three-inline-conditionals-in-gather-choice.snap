@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/three-inline-conditionals-in-gather-choice
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0] === PASS
+> "" [Choices: "x" (0) -> 0]
+> "body\n" [Choices: "a" (0) -> 0]
+> "qs\n" [Ended]
+outcome: Ended
