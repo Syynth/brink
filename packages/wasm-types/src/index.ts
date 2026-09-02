@@ -1916,6 +1916,11 @@ export interface ChainRule {
   /** Named groups carried forward onto the whole chained run as `data-*`
    *  attributes (e.g. `["speaker"]` → `data-speaker`). */
   carry?: string[];
+  /** The emitted-side run rule (#3388, RULED 2026-08-30): kinds whose
+   *  appearance ENDS the active run in runtime-emitted text, plus the
+   *  reserved `"choices"` turn boundary. A new triggering kind always
+   *  starts a fresh run regardless. Applied through `runsOf`. */
+  run_ends_at?: string[];
 }
 
 /** A transition action. Tagged so shapes are unambiguous. */

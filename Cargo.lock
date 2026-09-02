@@ -2165,6 +2165,7 @@ dependencies = [
  "brink-ir",
  "brink-project-config",
  "brink-runtime",
+ "brink-source-tree",
  "clap",
  "ratatui",
  "rowan",

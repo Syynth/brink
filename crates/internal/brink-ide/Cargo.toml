@@ -19,6 +19,10 @@ brink-db = { workspace = true }
 brink-fmt = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
+# `dialect_config` (#3387): `brink.toml [dialogue]` resolves into a
+# `DialogueDialect` here, the tooling layer — the config crate only parses.
+brink-project-config = { workspace = true }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -37,9 +41,7 @@ brink-environment = { workspace = true }
 # the same seam `brink-cli`'s `Project::ide_session()` and `brink-web`'s
 # `EditorSession::apply_parsed_config` use — not a bare, unconfigured
 # session. See `crate::hover::tests::native_session`.
-brink-project-config = { workspace = true }
 insta.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

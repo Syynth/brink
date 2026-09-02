@@ -4533,7 +4533,43 @@
   #3386; sequence sharing across lifted branches, #3275; evaluation-order
   of lifted function calls, #3395) can silently reintroduce the bug with
   nothing in CI to catch it.
-||||||| acbce1831
+
+
+## Uninitialized `~ temp` reads play, and warn twice
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler+runtime
+- **SCOPE:** moderate
+- **WHAT:** A `~ temp` used on a path its declaration does not dominate is
+  handled in both halves of the pipeline, not one. (1) The compiler emits
+  `E193`, a warning-level, `[lints]`-overridable diagnostic naming the use
+  site and the declaration, for each of three shapes: a sibling choice
+  branch, a gather reached before the declaring branch, and a read written
+  textually ahead of the declaration. (A fourth shape this entry originally
+  listed here — a stitch referencing a temp declared at its knot's root —
+  turned out, on PR #3369's review, not to be a dominance question at all:
+  see "Compat-deny diagnostic tier" below, which supersedes this entry for
+  that one shape.) (2) The runtime reads an uninitialized temp slot as the
+  typed default (`0`, which is also `false`) and reports a runtime warning
+  through the diagnostics/output channel, instead of pushing a `Null` that
+  faults on the next operator. (3) Alongside those, every such reference —
+  textually-preceding reads and stitch references included — resolves to
+  the temp's own slot, never to a phantom global that fails at link with
+  `unresolved global` (issue #3362; this resolution behavior is unaffected
+  by the compat-deny split — a stitch's reference to its knot's temp still
+  resolves to the real slot, it is just reported through a different code
+  now). The ruling is recorded in `docs/compiler-spec.md` "Temp scope and
+  definite assignment" and `docs/runtime-spec.md` "Uninitialized temp
+  reads".
+- **WHY:** What plays in Inky must play in brink — the C# reference prints
+  the line and warns (`Variable not found: 'n'. Using default value of 0
+  (false)…`), so an author who tests in Inky and then opens brink was
+  meeting a hard fault where the reference had a warning, which breaches
+  the ink-compat floor. The compile-time diagnostic is the primary fix
+  rather than the runtime fallback alone, because the author should learn
+  about the mistake before playing, and a warning that a `[lints]` entry
+  can turn down leaves a project that leans on the pattern deliberately
+  somewhere to go.
 
 ## Knot/stitch navigation click reveals in place when its file is already open
 - **WHEN:** 2026-09-01
@@ -4542,6 +4578,46 @@
 - **SCOPE:** moderate
 - **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
 - **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
+
+## Compat-deny diagnostic tier
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** compiler
+- **SCOPE:** architectural
+- **WHAT:** A new diagnostic class, **compat-deny**: "inklecate rejects
+  this; brink can run it; you must opt in." Default severity `Error`;
+  overridable per project through the existing `[lints]` table — to `warn`,
+  or all the way to `allow` ("we should allow it to be turned off if the
+  user wants, it's annoying"). The CLI's `--warn`/`-D` flags gain the same
+  reach. A project's `[lints]` entry travels with the project, so a host
+  consumer running `brink compile` (bevy, a game build) gets exactly the
+  permissiveness the studio does — there is no studio-only switch.
+  Mechanically: `DiagnosticCode::severity()` stays `Error` and
+  `DiagnosticCode::is_overridable()` returns `true` for tier members (widened
+  specifically for this tier — every other `Error`-default code stays
+  non-overridable, issue #1160's original rule); `effective_severity` and
+  `validate_lint_code` both defer to `is_overridable`/`is_compat_deny` rather
+  than re-deriving "not Error" so the two definitions cannot drift apart.
+  **Admission invariant (must be tested):** a code may sit in this tier only
+  if brink produces a *working* program when the code is downgraded — every
+  compat-deny code needs a fixture that compiles under `allow` and plays
+  correctly; anything that would fail at link or fault at runtime is NOT
+  admissible and stays a hard, non-overridable error. **First member:**
+  `E194` — "a knot's `~ temp` is not visible from its stitches in ink",
+  split out of `E193` shape 4 during PR #3369's review: brink plays the
+  program (`Stitch sees 7.`), inklecate rejects it (`Unresolved variable:
+  n`). Recorded in `docs/compiler-spec.md` "Compat-deny diagnostics".
+- **WHY:** Brink accepts a superset of ink at several points, and each such
+  point where the official compiler rejects the program but brink produces
+  a working one needs the same treatment — a named tier keeps them
+  consistent and discoverable rather than each one inventing its own
+  severity story. Defaulting to `Error` keeps an ink-compat project honest
+  by default (the same wall Inky would show it); making it overridable all
+  the way to `allow`, not just `warn`, was a deliberate maintainer call
+  against #1160's usual "hard errors are never downgradable" posture,
+  because the admission invariant already guarantees the downgraded program
+  genuinely works — there is no real defect left to protect the author
+  from once they opt in.
 
 ## Observable runtime semantics: the host-facing trace
 - **WHEN:** 2026-09-01
@@ -4614,6 +4690,7 @@
 - **SYSTEM:** editor-ui / project-config (dialogue dialect, #368)
 - **SCOPE:** moderate — REVISES the 2026-07-05 #368 ruling's "no project file in v1 (mount-time config only)"; that spec filed the project-file home as the expected follow-up, and this is it.
 - **WHAT:** A project declares its dialogue dialect in `brink.toml`: a `[dialect]` table (`preset = "…"` plus `[[dialect.elements]]` overlays using the spec's affix sugar, and the run rule below) is the PRIMARY authoring form; `dialect = "path.json"` remains as the escape hatch for a full hand-written artifact. Both resolve to one `DialogueDialect`; `mountStudio({ dialect })` stays as the embedder override. Tracked as #3387.
+- **NOTE (2026-08-30, implementation):** the table is spelled `[dialogue]`, not `[dialect]` — `[project] dialect` already names the SOURCE surface (`strict-ink`/`brink`) and `[prose] dialect` the spell-check English; `[dialogue]` is the DialogueDialect's own noun. The file form is `[dialogue] file = "path.json"` (a bare top-level `dialogue = "…"` string only parses before any table header in TOML).
 - **WHY:** The dialect is "how this project's text works," which is exactly `brink.toml`'s charter (it already hosts `prose_dialect` and `conventions`); the common case is tiny (a preset plus a kind or two) and reads as TOML with the affix sugar, and a second file you must know to reference is friction for ten lines. Brink cannot bake every author's format into the app — the artifact is the capability, the project owns the format.
 
 ## No dialect by default
@@ -4639,8 +4716,6 @@
 - **SCOPE:** moderate
 - **WHAT:** `brink compile` (and the studio's export) emits `dialect.json` beside the compiled story — the project's dialect with the preset merged and affix sugar expanded. A game engine reads that derived product plus the parser, never the `brink.toml` source declaration. The parser/validator/types move to a tiny pure-TS `@brink-lang/dialect` package (re-exported by `@brink-lang/editor`). Tracked as #3393.
 - **WHY:** Single truth without drift: the source is authored once in TOML and the JSON is generated, so there is no hand-edited copy to diverge, and the engine needs no preset-resolution logic. A game codebase should not have to depend on an editor package (CodeMirror and all) to read a JSON schema.
-||||||| parent of d77459321 (docs: program-generator spec + ruling (typed model + corpus mutation, inkjs harness, capture tier))
-||||||| parent of 31d3bf11e (docs: program-generator spec + ruling (typed model + corpus mutation, inkjs harness, capture tier))
 
 ## Program generator: typed model + corpus mutation, inkjs as the reference harness, a capture tier
 - **WHEN:** 2026-09-02

@@ -30,19 +30,39 @@ const minimal = {
   getTokenTypeNames: () => [],
 };
 
+// The helper opts into the at-cue preset unless the caller says otherwise:
+// since the 2026-08-30 "no dialect by default" ruling, an ABSENT option is
+// none (plain lines) — the pin below covers that — while every other test
+// here exercises the wiring WITH a dialect, as it always did.
 function mount(doc: string, extra: Partial<Parameters<typeof brinkStudio>[0]> = {}): EditorView {
+  const withPreset = "dialect" in extra ? extra : { dialect: AT_CUE_DIALECT, ...extra };
   return new EditorView({
-    state: EditorState.create({ doc, extensions: [brinkStudio({ ...minimal, ...extra })] }),
+    state: EditorState.create({ doc, extensions: [brinkStudio({ ...minimal, ...withPreset })] }),
     parent: document.body,
   });
 }
+
+describe("dialect option — absent means NONE (RULED 2026-08-30)", () => {
+  it("no dialect option: a cue line stays narrative and no screenplay class renders", () => {
+    const view = new EditorView({
+      state: EditorState.create({ doc: "@Alice:<>\nHello there.\n", extensions: [brinkStudio(minimal)] }),
+      parent: document.body,
+    });
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).not.toBe(ElementType.Character);
+    expect(infos[1].type).not.toBe(ElementType.Dialogue);
+    const lines = [...view.dom.querySelectorAll(".cm-line")];
+    expect(lines[0].className).not.toContain("brink-character");
+    view.destroy();
+  });
+});
 
 afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("dialect option — default preset", () => {
-  it("classifies a character cue and chains following narrative to dialogue (no dialect option = at-cue preset)", () => {
+describe("dialect option — the at-cue preset", () => {
+  it("classifies a character cue and chains following narrative to dialogue", () => {
     const view = mount("@Alice:<>\nHello there.\n");
     const infos = view.state.field(elementTypeField);
     expect(infos[0].type).toBe(ElementType.Character);

@@ -8,7 +8,15 @@ pub fn play_loop<B: BufRead>(
     let mut stdout = std::io::stdout().lock();
 
     loop {
-        match story.continue_single()? {
+        let step = story.continue_single()?;
+        // Issue #3354: non-fatal runtime warnings (today: a `~ temp` read
+        // before its declaration ran) go to stderr, drained after every
+        // step so they land next to the line that raised them without
+        // interleaving into the story text on stdout — the same separation
+        // the C# reference's own `RUNTIME WARNING` line has from story
+        // output.
+        report_runtime_warnings(story)?;
+        match step {
             brink_runtime::Step::Line(line) => {
                 write!(stdout, "{}", line.text)?;
             }
@@ -33,6 +41,22 @@ pub fn play_loop<B: BufRead>(
         }
     }
 
+    Ok(())
+}
+
+/// Drain and print every [`brink_runtime::RuntimeWarning`] the story has
+/// raised since the last call (issue #3354).
+fn report_runtime_warnings(
+    story: &mut brink_runtime::Story,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let warnings = story.take_runtime_warnings();
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    let mut stderr = std::io::stderr().lock();
+    for warning in warnings {
+        writeln!(stderr, "RUNTIME WARNING: {warning}")?;
+    }
     Ok(())
 }
 

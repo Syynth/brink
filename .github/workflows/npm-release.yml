@@ -109,6 +109,12 @@ jobs:
       # published independently of @brink-lang/studio, so its own gate must
       # run before either package's version PR / publish, not rely on the
       # studio suite's borrowed coverage of its internals.
+      # @brink-lang/dialect (#3393) publishes independently too — a pure-TS
+      # package an engine imports without the editor.
+      - name: Typecheck (@brink-lang/dialect)
+        run: pnpm --filter @brink-lang/dialect typecheck
+      - name: Unit tests (vitest, @brink-lang/dialect)
+        run: pnpm --filter @brink-lang/dialect test
       - name: Typecheck (@brink-lang/editor)
         run: pnpm --filter @brink-lang/editor typecheck
       - name: Unit tests (vitest, @brink-lang/editor)

@@ -66,6 +66,7 @@ export const DESKTOP_ALIASES: Readonly<Record<string, AliasEntry>> = {
   "@brink-lang/studio": same("../brink-studio/src/index.ts"),
   "@brink/wasm-types": same("../wasm-types/src/index.ts"),
   "@brink/ink-operations": same("../ink-operations/src/index.ts"),
+  "@brink-lang/dialect": same("../dialect/src/index.ts"),
   "@brink-lang/editor": same("../ink-editor/src/index.ts"),
   "@brink/studio-shell": same("../studio-shell/src/index.ts"),
   "@brink/studio-store": same("../studio-store/src/index.ts"),

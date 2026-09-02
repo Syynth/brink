@@ -208,6 +208,25 @@ pub struct EditorSession {
     /// wholesale-replace and clear-on-missing rules; `None` means the file
     /// set none, in which case the host applies its own default (on).
     configured_prose_enable: Option<bool>,
+    /// `[dialogue]` from the applied `brink.toml`, RESOLVED (#3387, RULED
+    /// 2026-08-30): the preset merged and affix sugar compiled — the one
+    /// artifact the editor views and the Player read. Same wholesale-
+    /// replace and clear-on-missing-config rules as the fields above.
+    /// `None` = the project declares no dialect, which per "No dialect by
+    /// default" means NONE is registered (plain lines), never the preset.
+    configured_dialogue: Option<brink_ir::DialogueDialect>,
+    /// Why the declared `[dialogue]` did NOT resolve (#3391) — the
+    /// resolver's readable message — or `None` when it resolved or the
+    /// project declares none. Kept as STATE (not just a one-shot warning)
+    /// because `apply_project_config`'s warnings are a delta against the
+    /// previous call (#2333): a Problems panel needs the current truth on
+    /// every read, not only the moment it changed.
+    configured_dialogue_error: Option<String>,
+    /// The directory of the most recently DISCOVERED `brink.toml` (session
+    /// path convention), so `dialogue = "path.json"` resolves relative to
+    /// the file that named it. `None` after `apply_project_config` (host-
+    /// supplied text has no location) — the path is then tried as-is.
+    config_dir: Option<String>,
     /// `[prose] dictionary` from the applied `brink.toml` — the author's own
     /// word list. Same wholesale-replace and clear-on-missing rules: a word
     /// removed from the file must stop being a known word, or "remove from
@@ -295,6 +314,9 @@ impl EditorSession {
             configured_prose_dialect: None,
             configured_prose_dictionary: Vec::new(),
             configured_prose_enable: None,
+            configured_dialogue: None,
+            configured_dialogue_error: None,
+            config_dir: None,
             last_config_warnings: BTreeSet::new(),
         }
     }
@@ -704,6 +726,12 @@ impl EditorSession {
             self.configured_prose_dialect = None;
             self.configured_prose_enable = None;
             self.configured_prose_dictionary.clear();
+            // #3387: a vanished `brink.toml` takes its dialect with it —
+            // "no dialect by default" applies again.
+            self.configured_dialogue = None;
+            self.configured_dialogue_error = None;
+            self.config_dir = None;
+            self.session.clear_dialect();
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -720,6 +748,12 @@ impl EditorSession {
         })?;
         let (config, warnings) = brink_project_config::parse_str_at(config_key.clone(), &text)
             .map_err(|e| JsError::new(&e.to_string()))?;
+        // The artifact escape hatch (`dialogue = "path.json"`) resolves
+        // relative to the discovered file — remembered before applying.
+        self.config_dir = config_key
+            .rfind('/')
+            .map(|i| config_key[..i].to_owned())
+            .or(Some(String::new()));
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(self.apply_parsed_config(&config));
@@ -787,6 +821,24 @@ impl EditorSession {
     #[must_use]
     pub fn configured_prose_dictionary(&self) -> String {
         serde_json::to_string(&self.configured_prose_dictionary).unwrap_or_else(|_| "[]".to_owned())
+    }
+
+    /// `[dialogue]` from the applied `brink.toml`, RESOLVED, as a JSON
+    /// `DialogueDialect` — or `None` when the project declares none (or no
+    /// `brink.toml` was found): "no dialect by default" (RULED 2026-08-30).
+    /// The TS side hands this to every editor view (`setDialect`) and to
+    /// the Player; it is the single artifact both read.
+    #[must_use]
+    pub fn configured_dialogue_dialect(&self) -> Option<String> {
+        self.configured_dialogue
+            .as_ref()
+            .and_then(|d| serde_json::to_string(d).ok())
+    }
+
+    /// Why `[dialogue]` did not resolve (#3391), or `None` — see the field.
+    #[must_use]
+    pub fn configured_dialogue_error(&self) -> Option<String> {
+        self.configured_dialogue_error.clone()
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1211,6 +1263,47 @@ impl EditorSession {
         self.configured_prose_enable = config.prose_enable;
         self.configured_prose_dictionary
             .clone_from(&config.prose_dictionary);
+        // `[dialogue]` (#3387, RULED): resolve and register — or, absent,
+        // register NOTHING. Precedence is "the project file wins": the
+        // TS views read `configured_dialogue_dialect()` after discovery
+        // and pass it down, so a mount-time embedder option only ever
+        // fills in for a project that declares nothing.
+        let mut dialogue_warnings: Vec<String> = Vec::new();
+        if let Some(dialogue) = config.dialogue.as_ref() {
+            let db = self.session.db();
+            let dir = self.config_dir.clone();
+            let read_file = |path: &str| -> Option<String> {
+                let candidates = match dir.as_deref() {
+                    Some("") | None => vec![path.to_owned()],
+                    Some(d) => vec![format!("{d}/{path}"), path.to_owned()],
+                };
+                candidates.iter().find_map(|key| {
+                    db.file_ids().find_map(|id| {
+                        (db.file_path(id)? == key).then(|| db.source(id).map(str::to_owned))?
+                    })
+                })
+            };
+            match brink_ide::dialect_config::resolve_dialogue_config(dialogue, &read_file) {
+                Ok(dialect) => {
+                    self.session.set_dialect_config(dialect.clone());
+                    self.configured_dialogue = Some(dialect);
+                    self.configured_dialogue_error = None;
+                }
+                Err(message) => {
+                    // Loud, never silent: the previous dialect (if any) is
+                    // dropped rather than left stale under a config the
+                    // author is actively editing.
+                    dialogue_warnings.push(format!("[dialogue]: {message}"));
+                    self.session.clear_dialect();
+                    self.configured_dialogue = None;
+                    self.configured_dialogue_error = Some(message);
+                }
+            }
+        } else {
+            self.session.clear_dialect();
+            self.configured_dialogue = None;
+            self.configured_dialogue_error = None;
+        }
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
@@ -1218,9 +1311,9 @@ impl EditorSession {
         // `reapply_lint_overrides` is the one place that actually pushes
         // `lints` into `self.session` (see this function's doc comment).
         let override_warnings = self.reapply_lint_overrides();
-        lint_warnings
+        dialogue_warnings
             .into_iter()
-            .map(|w| w.0)
+            .chain(lint_warnings.into_iter().map(|w| w.0))
             .chain(override_warnings)
             .collect()
     }
@@ -4864,6 +4957,90 @@ mod tests {
             "brink.toml's dialect = brink: no E051 on valid extension syntax: {:?}",
             analysis.diagnostics
         );
+    }
+
+    // ── #3387: project-declared dialogue dialect (RULED 2026-08-30) ──
+
+    #[test]
+    fn dialogue_table_registers_the_resolved_dialect_and_absence_registers_none() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== start ===\n@Alice:<>\nHello there.\n> She turns away.\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        // No [dialogue] → NO dialect (never the preset): plain classification.
+        let warnings = s
+            .apply_project_config("[project]\nentry = \"main.ink\"\n")
+            .expect("valid brink.toml");
+        assert_eq!(warnings, "[]");
+        assert!(s.configured_dialogue_dialect().is_none());
+        let plain = json(&s.line_contexts());
+        assert!(plain[1].get("dialect").is_none(), "{plain}");
+
+        // Preset + an affix-sugar overlay: cues classify, and the new kind
+        // exists in the resolved artifact the TS side will receive.
+        let toml = "[dialogue]\npreset = \"at-cue\"\n\n[[dialogue.elements]]\nkind = \"action\"\nprefix = \">\"\n";
+        let warnings = s.apply_project_config(toml).expect("valid brink.toml");
+        assert_eq!(warnings, "[]");
+        let resolved: serde_json::Value =
+            serde_json::from_str(&s.configured_dialogue_dialect().expect("declared"))
+                .expect("json");
+        let kinds: Vec<&str> = resolved["elements"]
+            .as_array()
+            .expect("elements")
+            .iter()
+            .filter_map(|e| e["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["character", "parenthetical", "dialogue", "action"]);
+        let classified = json(&s.line_contexts());
+        assert_eq!(
+            classified[1]["dialect"]["kind"], "character",
+            "{classified}"
+        );
+        assert_eq!(classified[2]["dialect"]["kind"], "dialogue", "{classified}");
+        assert_eq!(classified[3]["dialect"]["kind"], "action", "{classified}");
+
+        // Removing the table again drops back to none — wholesale replace.
+        s.apply_project_config("[project]\nentry = \"main.ink\"\n")
+            .expect("valid brink.toml");
+        assert!(s.configured_dialogue_dialect().is_none());
+        assert!(json(&s.line_contexts())[1].get("dialect").is_none());
+    }
+
+    #[test]
+    fn dialogue_config_errors_surface_as_warnings_and_register_nothing() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n@Alice:<>\nHi.\n");
+        let warnings = s
+            .apply_project_config("[dialogue]\npreset = \"fountain\"\n")
+            .expect("parseable brink.toml");
+        assert!(
+            warnings.contains("unknown dialogue preset `fountain`"),
+            "the resolver's message reaches the host: {warnings}"
+        );
+        assert!(s.configured_dialogue_dialect().is_none());
+    }
+
+    #[test]
+    fn dialogue_file_form_resolves_relative_to_the_discovered_config() {
+        let mut s = EditorSession::new();
+        let artifact = serde_json::to_string(&brink_ir::dialect::at_cue_preset()).expect("json");
+        s.update_file("game/story.ink", "=== start ===\n@Alice:<>\nHi.\n");
+        // The file form inside the table (`[dialogue] file = …`) — the bare
+        // top-level `dialogue = "…"` string only parses BEFORE any table
+        // header in TOML, so the table key is the everyday spelling.
+        s.update_file(
+            "game/brink.toml",
+            "[project]\nentry = \"story.ink\"\n\n[dialogue]\nfile = \"conventions/dialect.json\"\n",
+        );
+        s.update_file("game/conventions/dialect.json", &artifact);
+        let warnings = s
+            .discover_project_config("game/story.ink")
+            .expect("discovers");
+        assert_eq!(warnings, "[]", "the artifact resolved relative to game/");
+        assert!(s.configured_dialogue_dialect().is_some());
     }
 
     #[test]

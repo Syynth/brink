@@ -20,6 +20,7 @@ export default defineConfig({
   sourcemap: false,
   clean: true,
   external: [
+    "@brink-lang/dialect",
     "@brink-lang/web",
     "react",
     /^@codemirror\//,
