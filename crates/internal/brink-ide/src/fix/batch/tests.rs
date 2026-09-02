@@ -9,7 +9,7 @@
 //! multi-edit fix, a cross-file fix) are properties of the planner, not of any
 //! one fixer — but they call the same [`plan`] the batch road runs.
 
-use brink_analyzer::Dialect;
+use brink_analyzer::{AnalysisOptions, Dialect};
 use rowan::TextSize;
 
 use super::*;
@@ -33,8 +33,8 @@ fn session(files: &[(&str, &str)]) -> IdeSession {
 }
 
 /// `town.ink` before the batch: it reaches into two other modules without
-/// importing either. Both fixes insert an import at the same offset (just
-/// below the `INCLUDE` block), so they collide.
+/// importing either. Both fixes insert an import at the same offset — just
+/// below the `#@module` header, above the `INCLUDE` block — so they collide.
 ///
 /// The `INCLUDE`s are what let `brink compile` see the same two `E025`s the db
 /// road reports here — the reachability check on #3418 compiles this exact
@@ -53,6 +53,10 @@ fn two_imports_one_file() -> IdeSession {
         ("town.ink", TOWN_BEFORE),
     ])
 }
+
+/// A file that is *loaded* but never `INCLUDE`d by `town.ink` — outside the
+/// entry's compilation closure — yet carries its own fixable `E025`.
+const ORPHAN: &str = "#@module(orphan)\n== isolated ==\nHi\n* [Go] -> ambush\n";
 
 /// One `E025` in each of two files, one per surface — the cross-file round.
 fn one_import_each_file() -> IdeSession {
@@ -374,11 +378,42 @@ fn select_in_file_picks_up_only_that_files_diagnostics() {
     let native = session
         .file_id("market/barter.brink")
         .expect("fixture file is loaded");
-    let select = Select::all().in_file(session.db(), native);
+    let select = Select::all().in_file(native);
     let round = apply_round(&FixCx::new(session.db()), &select, &promoted());
 
     assert_eq!(round.applied.len(), 1);
     assert_eq!(round.applied[0].file, native);
+}
+
+/// `Select::in_file` must not freeze the file's length at construction:
+/// `fix_all` reuses the same `Select` across every round, and each round's
+/// edits grow the file. A stale end would put `town.ink`'s second `E025`
+/// (`barter`, originally at `101..107`) out of range the moment round one's
+/// insertion shifts it — reproduced here exactly as the fixture does it.
+#[test]
+fn fix_all_over_an_in_file_selection_still_reaches_a_diagnostic_shifted_by_an_earlier_round() {
+    let mut session = two_imports_one_file();
+    let town = session.file_id("town.ink").expect("fixture file is loaded");
+    let select = Select::all().in_file(town);
+
+    let report = fix_all(&mut session, &select, &promoted(), DEFAULT_MAX_ROUNDS);
+
+    assert_eq!(
+        report.applied.len(),
+        2,
+        "both imports must land through a whole-file selection: {:?}",
+        report.applied.len()
+    );
+    assert!(
+        report.remaining.is_empty(),
+        "converged, so nothing should be left: {:?}",
+        report.remaining
+    );
+    assert_eq!(
+        e025_count(&session, &["town.ink"]),
+        0,
+        "the compilation must have no E025 left in town.ink"
+    );
 }
 
 /// `Select::at_offset` is the cursor-menu narrowing: an offset the diagnostic
@@ -404,6 +439,50 @@ fn select_at_offset_narrows_to_the_squiggle() {
             .applied
             .is_empty(),
         "offset 0 is the `#@module` header, not the squiggle"
+    );
+}
+
+/// §4's `Select::files` `compilation_closure` branch — the path every real
+/// caller (`brink fix`, LSP `fixAll`) takes once an entry is set, unlike
+/// every other test in this file, which take the `db.file_ids()` fallback.
+/// `orphan.ink` is loaded and carries its own `E025`, but it is not
+/// `INCLUDE`d by the `town.ink` entry, so a whole-compilation selection must
+/// not batch its fix.
+#[test]
+fn collect_after_compile_is_scoped_to_the_entrys_closure_not_every_loaded_file() {
+    let mut session = two_imports_one_file();
+    session.update_source("orphan.ink", ORPHAN.to_owned());
+    session.update_and_analyze("orphan.ink", ORPHAN.to_owned());
+
+    assert_eq!(
+        e025_count(&session, &["orphan.ink"]),
+        1,
+        "fixture must carry a real, fixable E025 in the excluded file"
+    );
+
+    session
+        .compile("town.ink", &AnalysisOptions::default())
+        .expect("town.ink is loaded");
+    let closure = session.compilation_closure_paths();
+    assert!(
+        !closure.contains(&"orphan.ink".to_owned()),
+        "orphan.ink must be outside town.ink's INCLUDE closure: {closure:?}"
+    );
+
+    let candidates = collect(&FixCx::new(session.db()), &Select::all(), &promoted());
+    let files: Vec<String> = candidates
+        .iter()
+        .filter_map(|c| session.file_path(c.site.file))
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !files.contains(&"orphan.ink".to_owned()),
+        "a loaded-but-not-INCLUDEd file's E025 must not be batched: {files:?}"
+    );
+    assert_eq!(
+        files.iter().filter(|f| f.as_str() == "town.ink").count(),
+        2,
+        "both of town.ink's own E025s are still reachable through the closure: {files:?}"
     );
 }
 

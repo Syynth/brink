@@ -118,7 +118,7 @@ pub fn collect(cx: &FixCx<'_>, select: &Select, policy: &FixPolicy) -> Vec<Candi
             None => raw.to_vec(),
         };
         for d in &diagnostics {
-            if !select.matches(d) {
+            if !select.matches(db, d) {
                 continue;
             }
             for fix in fixes_for(cx, d) {

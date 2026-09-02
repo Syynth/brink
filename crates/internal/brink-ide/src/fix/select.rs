@@ -27,8 +27,14 @@ pub struct Select {
     /// Only fixes at these tiers. `None` ⇒ every tier the policy admits.
     pub tiers: Option<Vec<Applicability>>,
     /// Only diagnostics of this file whose own range meets this byte range.
-    /// `None` ⇒ the whole compilation.
-    pub range: Option<(FileId, TextRange)>,
+    /// The inner `None` means "the whole file, whatever its current length
+    /// is" — re-derived from the compilation on every use ([`files`](Self::files)
+    /// / [`matches`](Self::matches)) instead of a length frozen at
+    /// construction, which is what [`in_file`](Self::in_file) needs under
+    /// [`fix_all`](super::fix_all): the file grows round over round, and a
+    /// stale end would silently strand any diagnostic that shifted past it.
+    /// Outer `None` ⇒ the whole compilation.
+    pub range: Option<(FileId, Option<TextRange>)>,
 }
 
 impl Select {
@@ -55,7 +61,7 @@ impl Select {
     /// Restrict to one byte range of one file.
     #[must_use]
     pub fn in_range(mut self, file: FileId, range: TextRange) -> Self {
-        self.range = Some((file, range));
+        self.range = Some((file, Some(range)));
         self
     }
 
@@ -67,16 +73,16 @@ impl Select {
         self.in_range(file, TextRange::empty(offset))
     }
 
-    /// Restrict to one whole file — "fix all in this file". The file's own
-    /// length comes from the compilation, so the range is exact rather than
-    /// an open-ended sentinel; an unknown file selects nothing.
+    /// Restrict to one whole file — "fix all in this file". The end of the
+    /// range is not frozen here: [`files`](Self::files) and
+    /// [`matches`](Self::matches) re-derive the file's current length from
+    /// the compilation on every call, so a selection reused across
+    /// [`fix_all`](super::fix_all)'s rounds keeps covering the whole file
+    /// even as earlier rounds' edits grow it.
     #[must_use]
-    pub fn in_file(self, db: &ProjectDb, file: FileId) -> Self {
-        let len = db
-            .source(file)
-            .and_then(|s| u32::try_from(s.len()).ok())
-            .unwrap_or(0);
-        self.in_range(file, TextRange::up_to(TextSize::from(len)))
+    pub fn in_file(mut self, file: FileId) -> Self {
+        self.range = Some((file, None));
+        self
     }
 
     /// The files whose diagnostics this selection can reach, in a
@@ -106,14 +112,27 @@ impl Select {
 
     /// Whether this diagnostic is in the selection (code and range halves —
     /// the tier half needs a computed fix, see [`admits_tier`](Self::admits_tier)).
+    ///
+    /// Takes `db` because an [`in_file`](Self::in_file) selection's range is
+    /// not stored — it is re-derived from the file's *current* length on
+    /// every call, so a `Select` reused across rounds by
+    /// [`fix_all`](super::fix_all) keeps covering the whole file as it grows.
     #[must_use]
-    pub fn matches(&self, d: &Diagnostic) -> bool {
+    pub fn matches(&self, db: &ProjectDb, d: &Diagnostic) -> bool {
         if let Some(codes) = &self.codes
             && !codes.contains(&d.code)
         {
             return false;
         }
-        if let Some((file, range)) = self.range {
+        if let Some((file, range)) = &self.range {
+            let file = *file;
+            let range = range.unwrap_or_else(|| {
+                let len = db
+                    .source(file)
+                    .and_then(|s| u32::try_from(s.len()).ok())
+                    .unwrap_or(0);
+                TextRange::up_to(TextSize::from(len))
+            });
             // Inclusive on both ends, so an empty range at an offset behaves
             // exactly like `contains_inclusive` — the cursor-menu shape.
             if d.file != file || d.range.start() > range.end() || range.start() > d.range.end() {

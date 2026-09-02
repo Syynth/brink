@@ -131,15 +131,26 @@ uses — nothing is written the author has not seen); the CLI and LSP
 
 *As built (#3418, milestone 3):* `Select` is a **filter**, not the enum
 sketched above — `Select { codes: Option<Vec<DiagnosticCode>>, tiers:
-Option<Vec<Applicability>>, range: Option<(FileId, TextRange)> }`, per the
-milestone's own shape. The enum's arms are its constructors: `Select::all()`
-is `All`, `.in_file(db, file)` is `InFile` (the file's real length, so the
-range is exact rather than an open-ended sentinel), `.at_offset(file, offset)`
-is `AtOffset` (an empty range, matched inclusively — the same narrowing
-`fixes_at` does), `.with_codes(…)` is `Codes`. `One(DiagnosticId)` has no
-equivalent: there is no `DiagnosticId` in the tree to name one with. `tiers`
-is the new half the enum had nowhere to put — it filters on the *offered
-fix's* tier, which is why it cannot be decided before `fixes_for` runs.
+Option<Vec<Applicability>>, range: Option<(FileId, Option<TextRange>)> }`, per
+the milestone's own shape. The enum's arms are its constructors: `Select::all()`
+is `All`, `.in_file(file)` is `InFile` (the *inner* `None` — no `&ProjectDb`
+needed to construct it), `.at_offset(file, offset)` is `AtOffset` (an empty
+range, matched inclusively — the same narrowing `fixes_at` does),
+`.with_codes(…)` is `Codes`. `One(DiagnosticId)` has no equivalent: there is no
+`DiagnosticId` in the tree to name one with. `tiers` is the new half the enum
+had nowhere to put — it filters on the *offered fix's* tier, which is why it
+cannot be decided before `fixes_for` runs.
+
+`.in_file`'s range is deliberately not resolved to a byte span at construction
+time: `files`/`matches` re-derive "the whole file" from the file's *current*
+length on every call instead. A fix's own length is not stable across a
+`fix_all` fixpoint — round one's insertion grows the file, shifting every
+diagnostic after it — so a length frozen at `.in_file(file)`'s call site would
+go stale after the very first round and silently strand any diagnostic that
+shifted past it. `.at_offset`, by contrast, freezes an explicit `TextRange`
+(an empty range at one offset): that selection is documented single-round —
+the cursor-menu shape `fixes_at` already is — and is not carried across
+`fix_all` rounds by any caller today.
 
 `Select::files` is where "scope is the compilation" is cashed out:
 `ProjectDb::compilation_closure` when an entry is set, and every loaded file
