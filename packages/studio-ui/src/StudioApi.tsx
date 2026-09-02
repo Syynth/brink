@@ -17,6 +17,7 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react";
+import type { DialogueDialect } from "@brink-lang/editor";
 import type {
   CommandRegistry,
   NotificationCenter,
@@ -69,6 +70,11 @@ export interface StudioPublicState {
   diagnostics: { errors: number; warnings: number };
   /** Compile status: "ok" when the latest compile had no errors. */
   compileStatus: "ok" | "errors";
+  /** The project's resolved dialogue dialect (#3393) — `brink.toml
+   *  [dialogue]` with the preset merged and affix sugar expanded — or
+   *  `null` when the project declares none. Additive (no version bump):
+   *  what a host's Export writes beside the story as `dialect.json`. */
+  projectDialect: DialogueDialect | null;
   /** Story session status (spec §7.6); "none" when no session exists. */
   sessionStatus: SessionStatus;
   /**
@@ -131,6 +137,7 @@ export function derivePublicState(s: StudioState): StudioPublicState {
     element: info === null ? null : { type: info.type, depth: info.depth },
     diagnostics: s.diagnostics,
     compileStatus: s.diagnostics.errors > 0 ? "errors" : "ok",
+    projectDialect: s.projectDialect,
     sessionStatus: s.sessionStatus,
     dirtyFiles: s.dirtyFiles,
   };

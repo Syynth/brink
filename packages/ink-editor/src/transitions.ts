@@ -4,6 +4,7 @@ import type { ConvertTarget, TextEdit, TransitionRow } from "@brink/wasm-types";
 import { sigilBypass, leadingWsLen } from "./screenplay.js";
 import { extractLineContent } from "@brink/ink-operations";
 import { renderTemplate, type ResolvedDialect } from "./dialect.js";
+import { convertibleShapesOf } from "./dialect.js";
 
 /**
  * The slice of the wasm session the transition actions need: element
@@ -299,7 +300,7 @@ function executeDialectRow(
       // declares, not just the built-in at-cue `character`/`parenthetical`,
       // so a custom dialect's convert row extracts correctly instead of
       // silently falling through to the hardcoded at-cue regexes.
-      const content = extractLineContent(line.text, dialect.convertibleShapes());
+      const content = extractLineContent(line.text, convertibleShapesOf(dialect));
       const rendered = template && role ? renderTemplate(template, role, content) : content;
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + rendered },
@@ -322,7 +323,7 @@ function executeDialectRow(
       // identically, not silently fall through to the hardcoded at-cue
       // regexes (which would extract nothing and leave an empty line).
       const content =
-        row.action.action === "strip" ? extractLineContent(line.text, dialect.convertibleShapes()) : "";
+        row.action.action === "strip" ? extractLineContent(line.text, convertibleShapesOf(dialect)) : "";
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + content },
         selection: { anchor: line.from + prefix.length + content.length },

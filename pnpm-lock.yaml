@@ -173,8 +173,26 @@ importers:
         specifier: ^5.0.15
         version: 5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
 
+  packages/dialect:
+    devDependencies:
+      '@brink/wasm-types':
+        specifier: workspace:*
+        version: link:../wasm-types
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(@microsoft/api-extractor@7.58.8(@types/node@26.2.0))(postcss@8.5.26)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@26.2.0)(jsdom@29.0.1)(vite@8.2.2(@types/node@26.2.0)(esbuild@0.27.7))
+
   packages/ink-editor:
     dependencies:
+      '@brink-lang/dialect':
+        specifier: workspace:^
+        version: link:../dialect
       '@brink-lang/web':
         specifier: workspace:^
         version: link:../wasm

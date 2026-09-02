@@ -72,6 +72,17 @@ export async function exportStoryToInkb(
 
   try {
     await saveDialog(defaultExportName(root), bytes);
+    // The RESOLVED dialogue dialect rides beside the story (#3393, RULED
+    // 2026-08-30): an engine reads `<name>.dialect.json` + @brink-lang/dialect
+    // to apply the project's conventions the way the studio does. Only
+    // when the project declares one — no dialect, no file.
+    const dialect = api.select((s) => s.projectDialect);
+    if (dialect) {
+      await saveDialog(
+        defaultExportName(root).replace(/\.inkb$/, ".dialect.json"),
+        new TextEncoder().encode(JSON.stringify(dialect, null, 2)),
+      );
+    }
   } catch (e: unknown) {
     api.notify({
       severity: "error",

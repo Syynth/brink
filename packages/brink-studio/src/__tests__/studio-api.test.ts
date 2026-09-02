@@ -100,6 +100,7 @@ describe("StudioPublicState (select)", () => {
       element: { type: "knot-header", depth: 1 },
       diagnostics: { errors: 2, warnings: 1 },
       compileStatus: "errors",
+      projectDialect: null,
       sessionStatus: "none",
       dirtyFiles: 0,
     });
