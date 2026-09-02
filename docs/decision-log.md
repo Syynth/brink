@@ -4542,3 +4542,28 @@
 - **SCOPE:** moderate
 - **WHAT:** The proptest story-level generator is a standalone epic (#3370), prerequisite to the optimizer and immediately useful to auto-fix, fmt, respell and incremental lowering. Its first deliverable is the **`.ink` grammar**; the native grammar follows. The native half is built **both** ways — direct `.brink` generation and routing generated `.ink` through `brink-respell` — and the respell route is itself one more equivalence property, `trace(P) = trace(respell(P))`.
 - **WHY:** Maintainer: "i need regular .ink support more urgently than native syntax right now"; and on the native half, "we'll need to do both, but we should include the respell as another form of test, because we should define the equivalence properties" first. Defining the properties before the generator keeps every consumer stating the same claim against the same oracle.
+
+## Auto-fix: lazy per-code fixers; diagnostics stay data; three tiers each backed by a test
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide / brink-analyzer / studio / brink-cli / brink-lsp (`docs/autofix-spec.md` §2–§3)
+- **SCOPE:** architectural
+- **WHAT:** No per-diagnostic trait; `Diagnostic { file, range, message, code }` is unchanged. Fixes are computed lazily by per-code `Fixer` impls in `brink-ide` (a `static FIXERS` registry, one per code, with a registry test), returning `Fix { code, title, applicability, edits: Vec<FileEdit>, caret }` — minimal text edits are the only fix currency, and the three existing quick-fixes migrate to it. `max_applicability` is declared statically per fixer (so surfaces can count without computing edits); the per-instance value may only be lower. Tiers: **Safe** = observably equivalent + translation identity, proven per fixer by `assert_safe_fix` (compile → apply → recompile → empty `trace_diff` → line-table identity); **Suggested** = discharges the diagnostic with no new error (the existing `StructuralResult.safe` property), applied one instance per click unless the project promotes the code; **Placeholder** = leaves a hole, never batched. An optional typed `data` payload is added to a diagnostic only when a specific fixer provably needs it.
+- **WHY:** Maintainer, after weighing a diagnostic trait: diagnostics are data that travel across wasm/LSP/CLI and are built at ~200 sites — a trait buys nothing the `DiagnosticCode` enum's metadata methods don't already give; fixes are behaviour that must be lazy because eager edit construction on every keystroke is exactly the cost the live-typing perf work fights. Tiers name the test that backs them so "safe" is never a label somebody typed: "implementing fixes could potentially be complex and some are safe for auto-fix versus some requiring positive intent from the user."
+
+## Fix scope is the compilation, not the file
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide (`docs/autofix-spec.md` §4–§5)
+- **SCOPE:** moderate
+- **WHAT:** `FixCx` is the compilation (`ProjectDb`); a fixer emits whatever edits the fix needs in whichever files. Surfaces differ only in which *diagnostics* they select (all / in this file / at the cursor / one row / by code), never in which files may be written. A per-file selection — fix-on-save, "Fix all in this file" — may therefore edit other files: in the studio those edits land on the other buffers and mark them dirty (rename's existing road); the CLI and LSP `fixAll` write every touched file. Batching drops (never merges) overlapping edits within a round and re-analyzes the compilation to a fixpoint, capped at 5 rounds.
+- **WHY:** Maintainer: "i don't see why they have to be explicitly single-file? if they need to be cross-file to work, they need to. i don't think we should [be] intrinsically tied to files in the first place. for ink it should be tied to the compilation overall." The trace-equivalence definition is compilation-wide already, so tying scope to the compilation makes the safety notion and the mechanism the same thing.
+
+## Auto-fix policy layering: `[fix]` in brink.toml is what; the app setting is when, as a ceiling
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-project-config / studio settings / brink-cli (`docs/autofix-spec.md` §6–§8)
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** `brink.toml` gains a `[fix]` table shaped like `[lints]`: per code `auto` (promote a Suggested fix to batch), `ask` (default), `off` (never offer). It travels with the project and applies identically to `brink fix`, LSP `fixAll`, the Problems "Fix all", and on-save; it is edited from the existing lints table in Settings as a Fix column. The app-scope "Fix on save" setting is a personal ceiling — Off / Safe only / Everything the project allows — and the effective on-save policy is the intersection with the project policy: the editor can only be more conservative than the project. Explicit actions (`brink fix --suggested E033`, a row click) may widen per run; the implicit save only narrows. Entry points RULED: Problems panel (row + header), editor context menu, code actions, command palette, `brink fix` as its own subcommand with `--dry-run`/`--diff`/`--suggested`/`--code`.
+- **WHY:** Maintainer ruled the `[fix]` knob ("yes, it can even go in the existing diagnostics UI"), the save setting plus the three entry points, and the subcommand ("it can generate patches, dry-run, etc."), and named the app-setting ↔ `brink.toml` relationship as the one point of uncertainty — hence tentative. The ceiling-∩-policy shape keeps a team decision (promote E033) from being silently re-decided per editor while never letting an editor exceed what the project admitted.
