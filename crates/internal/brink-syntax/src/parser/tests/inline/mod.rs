@@ -1,3 +1,4 @@
+mod author_warning;
 mod conditional;
 mod inner_expr;
 mod midline_comment;
