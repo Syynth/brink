@@ -29,11 +29,11 @@
 //! defect), and the 2026-09-01 follow-up ruling on #3373 moved that shape
 //! out of `E193` entirely into its own compat-deny code, `E194`
 //! (`brink_analyzer::compat_deny::knot_temp_from_stitch`,
-//! `docs/compiler-spec.md` "Compat-deny diagnostics") — every read in a
-//! knot's stitch of a name that knot's own root declares, regardless of
-//! whether the divert into the stitch ran the declaration first, since ink
-//! itself never extends a knot's `~ temp` visibility into its stitches at
-//! all.
+//! `docs/compiler-spec.md` "Compat-deny diagnostics") — every read OR plain
+//! write in a knot's stitch of a name that knot's own root declares,
+//! regardless of whether the divert into the stitch ran the declaration
+//! first, since ink itself never extends a knot's `~ temp` visibility into
+//! its stitches at all.
 //!
 //! # How dominance is decided
 //!

@@ -21,7 +21,8 @@
 //!
 //! # What fires
 //!
-//! Every bare-name read inside a stitch's body that:
+//! Every bare-name reference inside a stitch's body — a read OR a plain
+//! (`~ n = …`) write — that:
 //!
 //! 1. is not a parameter of that stitch,
 //! 2. is not shadowed by a `~ temp`/`~ let` the stitch declares itself
@@ -33,7 +34,16 @@
 //!
 //! fires regardless of whether the divert that entered the stitch ran the
 //! knot root's declaration first or skipped it entirely — both are
-//! equally rejected by inklecate, so both are equally flagged here.
+//! equally rejected by inklecate, so both are equally flagged here. A
+//! plain write is included deliberately: `~ n = 9` still has to *resolve*
+//! `n` to a slot before it can store into it, and ink's compiler rejects
+//! that resolution exactly as it rejects a read — this shape (`~ temp n =
+//! 7` at a knot's root, `~ n = 9` in a stitch) compiled clean with zero
+//! diagnostics before this was fixed, and inklecate itself raises
+//! `Variable could not be found to assign to: 'n'`
+//! (`ParsedHierarchy/VariableAssignment.cs`'s `ResolveVariableWithName`,
+//! which — like the read path — resolves only against the assignment's own
+//! enclosing `FlowBase`, never a parent knot's).
 
 use brink_ir::hir::visit;
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile, Knot};
@@ -86,10 +96,16 @@ fn check_knot(file: FileId, knot: &Knot, is_native: bool, out: &mut Vec<Diagnost
         };
         visit::walk_block(&stitch.body, &mut v);
 
+        // `ReadCollector::enter_stmt` puts a plain (`~ n = …`) assignment
+        // target's range into `skipped` because, for `E193`'s dominance
+        // question, a write is not a read. That is the wrong discount
+        // here: `reads` still contains the target (its path expression is
+        // walked like any other), so rather than dropping it, use
+        // `skipped` to tell "this occurrence is a write" from "this
+        // occurrence is a read" and pick the message's verb accordingly —
+        // both still need the name to resolve to a slot, and ink rejects
+        // resolving either one across this boundary.
         for read in &reads {
-            if skipped.contains(&read.range) {
-                continue;
-            }
             if stitch_params.contains(&read.name.as_str()) {
                 continue;
             }
@@ -100,15 +116,22 @@ fn check_knot(file: FileId, knot: &Knot, is_native: bool, out: &mut Vec<Diagnost
                 continue;
             }
             let name = &read.name;
+            let (verb, inklecate_rejection) = if skipped.contains(&read.range) {
+                (
+                    "written",
+                    format!("Variable could not be found to assign to: '{name}'"),
+                )
+            } else {
+                ("read", format!("Unresolved variable: {name}"))
+            };
             out.push(Diagnostic {
                 file,
                 range: read.range,
                 message: format!(
-                    "{}: `{name}` is read here, but the `~ {decl_keyword} {name}` that \
+                    "{}: `{name}` is {verb} here, but the `~ {decl_keyword} {name}` that \
                      declares it belongs to {knot_owner}'s own root — ink does not consider \
                      a {knot_noun}'s `~ {decl_keyword}` visible from its stitches, so this \
-                     compiles and plays here but inklecate rejects it (`Unresolved variable: \
-                     {name}`)",
+                     compiles and plays here but inklecate rejects it (`{inklecate_rejection}`)",
                     DiagnosticCode::E194.title(),
                 ),
                 code: DiagnosticCode::E194,

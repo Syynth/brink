@@ -26,6 +26,11 @@
 //! 4. **The native-surface message**, on a real `.brink` file compiled
 //!    through `compile_path` — the same `is_native` wiring `E193`'s own
 //!    coverage (`issue_3354_temp_dominance.rs`) already exercises.
+//! 5. **Plain writes, not just reads** (PR #3369 review, second round) — a
+//!    stitch's plain assignment (`~ n = 9`) to its knot root's temp must
+//!    fire exactly like a read, on both surfaces, with its own message
+//!    wording quoting inklecate's assignment-rejection text rather than its
+//!    read-rejection text.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -179,6 +184,107 @@ fn denied_explicitly_still_refuses_to_compile() {
     }
 }
 
+// ─── Plain writes fire too (PR #3369 review) ──────────────────────────
+//
+// `ReadCollector::enter_stmt` discounts a plain (`~ n = …`) assignment
+// target's range from `E193`'s dominance question — correctly, since `E193`
+// is about reads. `check_knot` used to inherit that same discount wholesale,
+// so `~ n = 9` in a stitch, assigning to a name only the knot's root
+// declares, compiled with zero diagnostics on either road — even though
+// assigning still has to resolve `n` to a slot, and inklecate rejects that
+// resolution too (`Variable could not be found to assign to: 'n'`,
+// `ParsedHierarchy/VariableAssignment.cs`). The exact repro from the
+// review, verified against origin/main pre-fix as a loud runtime failure
+// (`unresolved global: $07_c97cb87a72101c` at play time) rather than a
+// caught compile-time diagnostic.
+
+/// The reviewer's own repro: a plain write, not a read, to a knot-root temp
+/// from inside a stitch. Refuses to compile by default, exactly like the
+/// read shape.
+const WRITE_FIXTURE: &str =
+    "-> k\n=== k ===\n~ temp n = 7\n-> s\n= s\n~ n = 9\nKnot temp is now assigned.\n-> END\n";
+
+#[test]
+fn a_plain_write_to_the_knot_root_temp_is_e194() {
+    match compile_with(WRITE_FIXTURE, &[]) {
+        Err(CompileError::Diagnostics(diags)) => {
+            let e194s: Vec<_> = diags
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::E194)
+                .collect();
+            assert_eq!(e194s.len(), 1, "{diags:?}");
+            assert_eq!(e194s[0].severity, Severity::Error, "{diags:?}");
+        }
+        other => panic!("expected CompileError::Diagnostics with E194, got {other:?}"),
+    }
+}
+
+/// The message must say "written", not "read" (a write is not a read), and
+/// must quote inklecate's OWN assignment-rejection wording — different
+/// from the read shape's `Unresolved variable`.
+#[test]
+fn a_plain_write_message_says_written_and_quotes_the_assignment_rejection() {
+    let msgs = e194_messages(WRITE_FIXTURE, &[("E194", LintLevel::Warn)]);
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert!(
+        msgs[0].contains("`n` is written here"),
+        "must say written, not read: {msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("Variable could not be found to assign to: 'n'"),
+        "must quote inklecate's own assignment rejection, not its read rejection: {msgs:?}"
+    );
+}
+
+/// Downgraded, the write compiles and plays exactly as the review verified
+/// on the built CLI: `Knot temp is now assigned.`
+#[test]
+fn a_plain_write_downgraded_to_allow_compiles_and_plays_correctly() {
+    let (lines, warnings) = play(WRITE_FIXTURE, &[("E194", LintLevel::Allow)]);
+    assert_eq!(lines.join(""), "Knot temp is now assigned.\n");
+    assert!(
+        warnings.is_empty(),
+        "the write lands in the knot's own shared frame slot cleanly: {warnings:?}"
+    );
+}
+
+/// Native surface: the same write shape, spelled `~ let`/`flow`, must also
+/// fire — not just the read shape native coverage already pins.
+#[test]
+fn native_surface_plain_write_is_e194() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-e194-native-write-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  ~ let n = 7\n  flow s() {\n    ~ n = 9\n    Knot temp is now assigned.\n    -> END\n  }\n  -> s\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    let diags = match result {
+        Err(CompileError::Diagnostics(diags)) => diags,
+        other => panic!("expected CompileError::Diagnostics, got {other:?}"),
+    };
+    let msgs: Vec<&String> = diags
+        .iter()
+        .filter(|w| w.code == DiagnosticCode::E194)
+        .map(|w| &w.message)
+        .collect();
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert!(
+        msgs[0].contains("`n` is written here"),
+        "must say written, not read: {msgs:?}"
+    );
+    assert!(
+        msgs[0].contains("`~ let n`") && msgs[0].contains("flow `main`"),
+        "must name the declaration/enclosing definition the author wrote: {msgs:?}"
+    );
+}
+
 // ─── What does not fire ───────────────────────────────────────────────
 
 /// A stitch that declares its own `~ temp` of the same name shadows the
@@ -220,6 +326,19 @@ fn reading_the_knot_root_temp_from_the_knot_root_is_not_e194() {
 fn a_knot_with_no_stitches_is_not_e194() {
     let msgs = e194_messages("-> k\n=== k ===\n~ temp n = 7\nSaw {n}.\n-> END\n", &[]);
     assert!(msgs.is_empty(), "{msgs:?}");
+}
+
+/// A knot that HAS stitches, but whose root declares no `~ temp` at all,
+/// hits `check_knot`'s OTHER early return (`knot_decls.is_empty()`) — a
+/// different code path than `a_knot_with_no_stitches_is_not_e194`'s
+/// `hir.knots`/`knot.stitches.is_empty()` guard in `check`.
+#[test]
+fn a_knot_with_stitches_but_no_root_temp_is_not_e194() {
+    let msgs = e194_messages("-> k\n=== k ===\n-> s\n= s\nSaw the stitch.\n-> END\n", &[]);
+    assert!(
+        msgs.is_empty(),
+        "no root-level `~ temp` means nothing for a stitch to shadow: {msgs:?}"
+    );
 }
 
 /// A stitch reading a name that is a genuine project `VAR`, not a knot
