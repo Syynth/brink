@@ -104,9 +104,12 @@
  * One consequence worth stating plainly: because the inline padding masks
  * the host's cascaded value, `base` is whatever the host's padding was
  * when the compensation was last (re)established, not a live read of it. A
- * host whose padding changes responsively (the studio's `--editor-margin`
- * is a viewport `clamp()`) is picked up the next time the pair is cleared
- * and re-applied, not on the resize itself.
+ * host whose padding changes responsively is picked up the next time the
+ * pair is cleared and re-applied, not on the resize itself. The studio host
+ * has no such responsive padding today — `--editor-margin` is a fixed 24px
+ * (`packages/studio-ui/src/styles/editor.css`, literal-whitespace ruling,
+ * 2026-08-23) — so this limitation is real only for an embedder that
+ * introduces one.
  */
 
 import type { Extension } from "@codemirror/state";
@@ -224,6 +227,14 @@ export function detachedGutters(): Extension {
               wrapping: view.contentDOM.classList.contains("cm-lineWrapping"),
               width: gutters === null ? 0 : Math.ceil(gutters.getBoundingClientRect().width),
               paddingLeft: Number.parseFloat(getComputedStyle(view.contentDOM).paddingLeft) || 0,
+              // The INLINE value, not computed — used only to decide whether
+              // a rewrite is needed. A host rule that beats the inline
+              // declaration (e.g. `!important`) makes the computed value
+              // permanently disagree with whatever we write; comparing
+              // against that would rewrite every pass, forever. The inline
+              // attribute is the one thing this plugin actually controls, so
+              // it is what "already applied" means.
+              inlinePaddingLeft: view.contentDOM.style.paddingLeft,
               // The compensation the content is actually carrying, read
               // back off the element rather than remembered. Absent (0)
               // whenever the inline declaration was dropped or clobbered,
@@ -234,7 +245,7 @@ export function detachedGutters(): Extension {
                 ) || 0,
             };
           },
-          write: ({ wrapping, width, paddingLeft, compensation }, view) => {
+          write: ({ wrapping, width, paddingLeft, inlinePaddingLeft, compensation }, view) => {
             if (!wrapping) {
               this.restore(view);
               return;
@@ -259,10 +270,13 @@ export function detachedGutters(): Extension {
             // compensates afresh.
             const base = paddingLeft >= compensation ? paddingLeft - compensation : paddingLeft;
             const target = base + width;
-            // Written whenever the DOM does not ALREADY say exactly this,
-            // not when the width changed: a width that never changes is
-            // exactly the case where drift used to become permanent.
-            if (compensation !== width || paddingLeft !== target) {
+            // Written whenever the INLINE value does not ALREADY say
+            // exactly this, not when the width changed (a width that never
+            // changes is exactly the case where drift used to become
+            // permanent) and not against the COMPUTED value (a host rule
+            // that outranks the inline declaration — `!important` — would
+            // otherwise never converge, rewriting on every pass forever).
+            if (compensation !== width || inlinePaddingLeft !== `${target}px`) {
               view.contentDOM.style.setProperty(COMPENSATION_PROP, `${width}px`);
               view.contentDOM.style.paddingLeft = `${target}px`;
             }

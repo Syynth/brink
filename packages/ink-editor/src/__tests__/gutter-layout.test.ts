@@ -24,6 +24,7 @@ import { EditorView } from "@codemirror/view";
 import { detachedGutters } from "../gutter-layout.js";
 
 const DETACHED = "brink-detached-gutters";
+const COMPENSATION_PROP = "--brink-detached-gutter-compensation";
 
 /** jsdom has no layout, so the gutter's width is stubbed per view — the
  *  plugin's only geometry input. */
@@ -297,6 +298,98 @@ describe("detachedGutters", () => {
     expect(view.contentDOM.style.paddingLeft).toBe("109px");
     // The steady state writes nothing: the DOM already says exactly what
     // this pass would write, record included.
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("clears the compensation when the gutters are removed after a successful pass", () => {
+    const { view, parent, gutters } = mount({ wrapping: true, gutterWidth: 85, hostPadding: "24px" });
+    cleanups.push(() => { view.destroy(); parent.remove(); });
+    flush(view);
+    expect(view.contentDOM.style.paddingLeft).toBe("109px");
+
+    // Unlike "is inert when the view has no gutters at all", this removes
+    // gutters AFTER a compensation pass already succeeded — the `width ===
+    // 0` branch has to clear an existing pair, not merely no-op on one that
+    // was never written.
+    gutters.remove();
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+    flush(view);
+
+    expect(view.contentDOM.style.paddingLeft).toBe("");
+    expect(view.contentDOM.style.getPropertyValue(COMPENSATION_PROP)).toBe("");
+  });
+
+  it("restores the view when line wrapping is reconfigured off through a compartment", () => {
+    // The other half of the #3352 `tr.reconfigured` sync: at base, only
+    // geometry/viewport/doc changes triggered a re-sync, so turning
+    // wrapping off through a live compartment (no geometry change of its
+    // own) left the stale detached class and compensating padding in
+    // place — `padding-left: 109px` and `brink-detached-gutters` both
+    // stuck — until some unrelated geometry change happened to fire next.
+    const wrapping = new Compartment();
+    const parent = document.createElement("div");
+    parent.className = "gutter-layout-host";
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "hello\nworld\n",
+        extensions: [wrapping.of([EditorView.lineWrapping]), detachedGutters()],
+      }),
+      parent,
+    });
+    view.contentDOM.style.paddingLeft = "24px";
+    const gutters = document.createElement("div");
+    gutters.className = "cm-gutters";
+    gutters.getBoundingClientRect = () =>
+      ({ width: 85, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0 }) as DOMRect;
+    view.dom.appendChild(gutters);
+    cleanups.push(() => { view.destroy(); parent.remove(); });
+
+    flush(view);
+    expect(view.dom.classList.contains(DETACHED)).toBe(true);
+    expect(view.contentDOM.style.paddingLeft).toBe("109px");
+
+    view.dispatch({ effects: wrapping.reconfigure([]) });
+    flush(view);
+
+    expect(view.dom.classList.contains(DETACHED)).toBe(false);
+    expect(view.contentDOM.style.paddingLeft).toBe("");
+  });
+
+  /**
+   * #3358 review — a host rule that outranks the inline declaration (an
+   * `!important` `padding-left`) makes the COMPUTED value permanently
+   * disagree with whatever this plugin writes, even right after writing
+   * it. Comparing the write guard against that computed value therefore
+   * never converges: every update pass looks like drift and rewrites
+   * again, forever — an un-`observer.ignore`d mutation on `contentDOM` on
+   * every keystroke, in the file whose whole point is keystroke latency.
+   *
+   * No rule in this repo uses `!important` there today, but
+   * `@brink-lang/editor` is published and externally embedded, so a host
+   * can. The guard has to compare against the INLINE value this plugin
+   * actually controls, not the computed value a host can permanently
+   * outrank.
+   */
+  it("does not rewrite every pass when a host !important rule outranks the inline padding", () => {
+    const { view, parent, sheet } = mount({
+      wrapping: true,
+      gutterWidth: 85,
+      hostPaddingRule: "24px !important",
+    });
+    cleanups.push(() => { view.destroy(); parent.remove(); sheet?.remove(); });
+    flush(view);
+    // The plugin's own record converges even though the host's rule keeps
+    // the COMPUTED padding at its own 24px forever.
+    expect(view.contentDOM.style.paddingLeft).toBe("109px");
+    expect(getComputedStyle(view.contentDOM).paddingLeft).toBe("24px");
+
+    const spy = vi.spyOn(view.contentDOM.style, "setProperty");
+    for (let i = 0; i < 5; i++) {
+      view.dispatch({ changes: { from: 0, insert: "x" } });
+      flush(view);
+    }
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
