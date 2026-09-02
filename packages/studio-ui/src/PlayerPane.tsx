@@ -415,12 +415,19 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       choicesTop.current = null;
       return;
     }
+    // getBoundingClientRect includes an in-flight transform, so this IS
+    // the visual position — a paced reveal lands a line every 150ms, and
+    // each slide must start from where the block visibly is, not from
+    // where the last slide was headed (that restart was the jank).
+    const visual = el.getBoundingClientRect().top + pane.scrollTop;
+    el.style.transition = "none";
+    el.style.transform = "";
     const top = el.getBoundingClientRect().top + pane.scrollTop;
     const prev = choicesTop.current;
     choicesTop.current = top;
-    if (prev === null || prev === top) return;
-    const dy = prev - top;
-    el.style.transition = "none";
+    if (prev === null) return;
+    const dy = visual - top;
+    if (Math.abs(dy) < 0.5) return;
     el.style.transform = `translateY(${dy.toString()}px)`;
     requestAnimationFrame(() => {
       el.style.transition = "transform 280ms cubic-bezier(0.2, 0.7, 0.2, 1)";
