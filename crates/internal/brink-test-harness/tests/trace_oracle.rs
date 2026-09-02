@@ -18,10 +18,10 @@
               preceded by an assert! naming what went wrong"
 )]
 
-use brink_test_harness::corpus::compile_source_to_inkb;
+use brink_test_harness::corpus::{compile_entry_to_inkb, compile_source_to_inkb};
 use brink_test_harness::trace::{
-    ExternalStubs, FunctionProbe, LinkedProgram, RunSpec, Terminal, TraceConfig, TraceEvent,
-    capture, explore_runs, line_identity_diff, trace_diff_with,
+    DivergenceKind, ExternalStubs, FunctionProbe, LinkedProgram, RunSpec, Terminal, TraceConfig,
+    TraceEvent, capture, explore_runs, line_identity_diff, trace_diff_with,
 };
 
 /// Compile one source file through the real pipeline, returning its
@@ -38,6 +38,39 @@ fn ink(label: &str, source: &str) -> (brink_format::StoryData, Vec<u8>) {
 
 fn brink(label: &str, source: &str) -> (brink_format::StoryData, Vec<u8>) {
     build(label, "story.brink", source)
+}
+
+/// Compile `.brink` source that declares its own `@[convention]` handler
+/// (issue #2289: an unconfigured handler is `E169`, not a silent pass), so
+/// — unlike [`brink`] — this writes a co-located `brink.toml` naming
+/// `story.brink` as its own conventions module, alongside `story.brink`
+/// itself, in a scratch directory unique to `label`.
+fn brink_with_own_conventions(label: &str, source: &str) -> (brink_format::StoryData, Vec<u8>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink-trace-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+    let created = std::fs::create_dir_all(&dir);
+    assert!(
+        created.is_ok(),
+        "create scratch dir {}: {created:?}",
+        dir.display()
+    );
+    let wrote_source = std::fs::write(dir.join("story.brink"), source);
+    assert!(wrote_source.is_ok(), "write scratch source: {wrote_source:?}");
+    let wrote_toml = std::fs::write(
+        dir.join("brink.toml"),
+        "[project]\nconventions = \"story.brink\"\n",
+    );
+    assert!(wrote_toml.is_ok(), "write scratch brink.toml: {wrote_toml:?}");
+    let result = compile_entry_to_inkb(&dir.join("story.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(result.is_ok(), "compile {label}/story.brink: {result:?}");
+    result.expect("just asserted the compile succeeded")
 }
 
 /// Explore `p`'s runs, then diff `p` against `q` over exactly those runs.
@@ -349,6 +382,56 @@ fn a_fault_on_one_side_only_is_detected() {
 }
 
 #[test]
+fn a_one_sided_fault_is_named_fault_asymmetry_not_a_bare_terminal_diff() {
+    // Regression: `DivergenceKind::FaultAsymmetry` was declared and
+    // rendered by `Display` but never constructed — `first_divergence`
+    // reported a one-sided fault as a bare `Differs` on two `Terminal`
+    // events instead of naming the asymmetry.
+    let (_, p) = ink("fault-kind-a", "~ temp z = 0\n~ temp y = 5 / z\n-> END\n");
+    let (_, q) = ink("fault-kind-b", "~ temp z = 0\n~ temp y = 5\n-> END\n");
+    let diff = diff_over_p_runs(&p, &q, &TraceConfig::default());
+    assert!(!diff.is_empty(), "expected a divergence, oracle reported {diff}");
+    let first = diff.first().expect("just asserted the diff is non-empty");
+    assert!(
+        matches!(first.kind, DivergenceKind::FaultAsymmetry { .. }),
+        "expected FaultAsymmetry, got {:?}",
+        first.kind
+    );
+}
+
+#[test]
+fn an_external_call_made_before_a_fault_on_the_same_step_is_still_captured() {
+    // Regression: `capture`'s fault branch used to return before draining
+    // the handler, so an external call made earlier in the *same step* as
+    // a fault was silently discarded. Because fault text is not compared
+    // (spec §6), two programs that call the external with different
+    // arguments before an otherwise-identical fault were reported
+    // observably equivalent — a blind spot in the one harness whose
+    // purpose is sensitivity. Both programs here fault at the same
+    // division by zero; the only difference is the argument the external
+    // saw beforehand.
+    let template = "\
+EXTERNAL logEvent(code)
+
+~ logEvent(ARG)
+~ temp z = 0
+~ temp y = 5 / z
+-> END
+
+=== function logEvent(code) ===
+~ return 0
+";
+    let (_, p) = ink("fault-external-a", &template.replace("ARG", "3"));
+    let (_, q) = ink("fault-external-b", &template.replace("ARG", "4"));
+    assert_divergent(
+        "external call before fault",
+        &p,
+        &q,
+        &TraceConfig::default(),
+    );
+}
+
+#[test]
 fn a_safe_exit_is_distinguished_from_running_out_of_content() {
     // Same printed text, both ending in `Step::Done`. One reached an
     // explicit `-> DONE`; the other ran dry, so the host's *next*
@@ -478,6 +561,45 @@ flow main() {
     let (_, p) = brink("native-text-a", &template.replace("MESSAGE", "Hello."));
     let (_, q) = brink("native-text-b", &template.replace("MESSAGE", "Goodbye."));
     assert_divergent("native line text", &p, &q, &TraceConfig::default());
+}
+
+#[test]
+fn element_data_from_an_attaching_convention_is_detected() {
+    // §2 item 1 names `element.data` explicitly, but until this test
+    // nothing constructed a program whose `element.data` differs — the
+    // corpus self-check is a self-equivalence sweep, so it stayed green
+    // even with the capture dropped. Modeled on
+    // `tests/tier1-native/conventions-attach-schema/story.brink`: the two
+    // programs are identical except for the `attach = Cue` handler's own
+    // returned `voiceover` field. The handler's claimed `VENDOR` line is
+    // consumed by the attaching convention (ruling item 2/6,
+    // `docs/decision-log.md` "The element output model"), so the visible
+    // transcript is byte-identical and only `element.data` differs.
+    let template = "\
+struct Cue {
+  speaker: string,
+  voiceover: bool,
+}
+
+@[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name, voiceover: VALUE };
+}
+
+flow main() {
+  VENDOR
+  You shouldn't be here after dark.
+  -> END
+}
+";
+    let (_, p) = brink_with_own_conventions("element-data-a", &template.replace("VALUE", "false"));
+    let (_, q) = brink_with_own_conventions("element-data-b", &template.replace("VALUE", "true"));
+    assert_divergent(
+        "element.data from attach handler",
+        &p,
+        &q,
+        &TraceConfig::default(),
+    );
 }
 
 // ── Run-set exploration ────────────────────────────────────────────────────

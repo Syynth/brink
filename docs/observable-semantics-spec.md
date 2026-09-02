@@ -137,6 +137,20 @@ into the definition and would change the on-disk golden-episode schema
 the ink ratchet reads. The two harnesses are independent, and
 `RATCHET_EPISODE_COUNT` is untouched by anything here.
 
+**Item 4's second half is not captured today — a gap, not a definition
+amendment.** The clause reads "together with any output such a call
+emits." Measured while building the oracle (#3376):
+`Story::call_function` (`crates/brink-runtime/src/story/mod.rs:512`)
+returns `Result<Value, RuntimeError>` and its own doc states the call's
+output is isolated — the visible story is untouched — so no host road
+exposes that output as text at all. `TraceEvent::Probe` therefore
+captures the returned value only; there is nothing for it to capture on
+the output half, because brink has no host-facing API that surfaces it.
+Item 4 stays as written — the day a `call_function` variant returns its
+emitted text, the oracle must capture it too — but until then this is a
+known gap in the mechanical oracle, not a claim that the clause is
+satisfied.
+
 The targets:
 
 - `tests/trace_oracle.rs` — one test per observable in §2, each a pair

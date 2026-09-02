@@ -467,6 +467,9 @@ pub fn capture(
         let step = match story.continue_single_with(&handler) {
             Ok(step) => step,
             Err(e) => {
+                for call in handler.drain() {
+                    push(&mut trace, call, turn);
+                }
                 trace.fault_detail = Some(e.to_string());
                 push(&mut trace, TraceEvent::Terminal(Terminal::Faulted), turn);
                 return Ok(trace);
@@ -908,6 +911,16 @@ fn first_divergence(left: &Trace, right: &Trace) -> Option<(usize, DivergenceKin
         match (left.events.get(i), right.events.get(i)) {
             (Some(a), Some(b)) => {
                 if a != b {
+                    let left_faulted = matches!(a, TraceEvent::Terminal(Terminal::Faulted));
+                    let right_faulted = matches!(b, TraceEvent::Terminal(Terminal::Faulted));
+                    if left_faulted != right_faulted {
+                        let (side, detail) = if left_faulted {
+                            (Side::Left, left.fault_detail.clone())
+                        } else {
+                            (Side::Right, right.fault_detail.clone())
+                        };
+                        return Some((i, DivergenceKind::FaultAsymmetry { side, detail }));
+                    }
                     return Some((
                         i,
                         DivergenceKind::Differs {
@@ -939,8 +952,9 @@ fn first_divergence(left: &Trace, right: &Trace) -> Option<(usize, DivergenceKin
         }
     }
     // Event sequences agree. A fault on one side only would already have
-    // shown up as a `Terminal::Faulted` mismatch above — fault *text* is
-    // never compared (spec §6), so there is nothing left to check.
+    // been reported above as `DivergenceKind::FaultAsymmetry` — fault
+    // *text* is never compared (spec §6), so there is nothing left to
+    // check.
     None
 }
 
