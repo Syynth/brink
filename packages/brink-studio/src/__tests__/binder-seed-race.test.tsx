@@ -240,6 +240,7 @@ describe("Binder in-row rename pre-select (#2571, SELECT-INVARIANT Binder.rename
             onContextMenu: () => {},
             onDragStart: () => {},
             onDragEnd: () => {},
+            onDragEnter: () => {},
             onDragOver: () => {},
             onDrop: () => {},
           }),
