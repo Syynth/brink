@@ -49,8 +49,25 @@ export {
   DialectParser,
   detectCast,
   runsOf,
+  // The `[dialogue]` table and rule inference (#3409) — the Conventions
+  // editor's engine, re-exported so studio-ui keeps one import road.
+  inferDialect,
+  dialectFromConfig,
+  toDialogueConfig,
+  affixElement,
+  emittedForAffix,
+  PRESET_NAMES,
+  presetByName,
+  canonicalDialectJson,
 } from "./dialect.js";
 export type {
+  Inference,
+  Learned,
+  Decision,
+  Mark,
+  MarkedLine,
+  DialogueConfig,
+  DialogueElementConfig,
   DialogueDialect,
   DialectElement,
   ChainRule,
