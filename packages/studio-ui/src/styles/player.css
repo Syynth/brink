@@ -62,6 +62,10 @@
   padding: 24px 40px;
   /* Reading knobs (#3438): measure and face from Settings › Player;
      unset = these defaults. */
+  /* Bounded and centred (feedback 2026-09-02): an explicit width, because
+     inside the pane's column flexbox `margin: 0 auto` alone shrinks the
+     column to its content — a lone Continue card collapsed it. */
+  width: 100%;
   max-width: var(--bs-player-measure, 8in);
   margin: 0 auto;
   box-sizing: border-box;
