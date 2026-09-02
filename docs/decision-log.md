@@ -3278,8 +3278,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** `demo.yml` loses its `pull_request` trigger — the compound-demo build no longer runs (even advisorily) on PRs. The weekly scheduled run and `workflow_dispatch` remain the demo's health check.
 - **WHY:** Maintainer, while merging the perf stack with only DEMO_GATE outstanding: "the demo is silly" as a per-PR gate — it delays merges for signal that the weekly run provides just as well; it was never in the required-checks list, so a red demo could only ever slow a human down, not protect main.
-||||||| parent of 9f4d6cc48 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
-||||||| parent of 9a82a9bb6 (docs: decision-log — option A total: monolith deleted, LSP in scope, equivalence test retired)
 
 ## Option A goes total: the off-db analyzer composition is DELETED, LSP included
 - **WHEN:** 2026-08-24
@@ -4487,7 +4485,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** "Reveal in Program Explorer" (and by extension any context-menu item whose action can only work under a live session) is *omitted* from the menu when no session can answer, rather than shown and failing with a notification on click. Implemented as a per-open presence predicate (`canRevealInstructions`) the host wires to session state.
 - **WHY:** The source→address resolver runs through the live session's program; with no session the item is a guaranteed dead end. An item that can never work is worse than no item.
-||||||| 226dcb2ef
 
 ## A rebound key displaces the old owner, and says so
 - **WHEN:** 2026-08-30
@@ -4521,3 +4518,52 @@
 - **SCOPE:** moderate
 - **WHAT:** A single-click (navigation, `pinned === false`) open of a knot or stitch whose file is already open as a whole-file tab — anywhere, not only the active group — reveals in place inside that tab instead of minting a `path::name` fragment tab. A pinned open (double-click) is excluded from this: it always mints or focuses the fragment tab, unchanged from before. Implemented as `openSymbolTarget` (`packages/brink-studio/src/mount.tsx`), gated ahead of the normal `openDocument` fallback in `setDocumentOpener`.
 - **WHY:** Every knot/stitch click previously minted a fresh fragment tab regardless of whether its file was already open, because `EditorGroupsState.openDocument`'s existing-tab reveal matches by exact `documentKey` and a symbol's fragment key (`"path::name"`) never equals its file's whole-file key (`"path"`) — the common case of browsing structure while a file is already open just kept stacking tabs (#3356). Restricting the reveal to navigation opens (not pinned) preserves docs/studio-shell-spec.md §7.8's Fragment⇄file overlap as first-class: a pinned open is a deliberate "give me a dedicated, focused view of this knot" action, and silently retiring that into the whole-file tab would remove a feature four e2e specs encode, not fix a bug.
+
+## Observable runtime semantics: the host-facing trace
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** cross-system — runtime / compiler / test-harness (`docs/observable-semantics-spec.md`)
+- **SCOPE:** architectural
+- **WHAT:** Two programs are observably equivalent iff every run (start point, RNG seed, choice sequence, fixed external results) yields the same trace: output steps in order (lines with text/tags/element data; choice sets compared **by order**; terminal kind), external calls in order with arguments, **host-readable global state at every turn boundary** (in, not out), and host-invoked function results. Bytecode layout, step counts, timing, compile diagnostics, runtime warnings, temps, stacks, visit counts as internals, and RNG state as such are unobservable. A second, separate invariant binds source-level tools: translation identity (line-table scope ids / text hashes) must be unchanged for every line the tool did not edit. A future `#@internal`-style marker to take a global out of the host-visible set is noted, not built.
+- **WHY:** Maintainer: the bar for a "safe" transformation "is not byte-identical in the compiled output, it's more like identical in observable runtime semantics, which is a notion we probably need when we work on the optimizer anyway." One definition shared by auto-fix, fmt, respell, incremental lowering and the optimizer, instead of five private ones. Globals are in because hosts read them regardless of whether the story does; choices are ordered because hosts pick by index; translation identity is separate because it is not runtime-observable but an author with a shipped locale would rightly call breaking it unsafe.
+
+## Safe auto-fix means observably equivalent — and the oracle harness is not enough on its own
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** cross-system — auto-fix / optimizer testing (`docs/observable-semantics-spec.md` §4–§5)
+- **SCOPE:** architectural
+- **WHAT:** A *Safe* fix (batchable: fix-all, CLI, fix-on-save) is one that satisfies the observable-equivalence definition plus translation identity — nothing weaker. Fixes that change meaning or lose text require positive author intent and never batch. Correctness for the optimizer is the same relation, and "optimized and non-optimized programs must be observably identical in all cases"; the guarantee ladder is corpus differential (tier 0), property testing over generated programs (1), pass-level metamorphic properties (2), mutation sensitivity of the oracle itself plus `cargo-mutants` on the optimizer (3), and runtime fuzzing of optimized output (4). Tier 0 and the oracle-sensitivity study ship first.
+- **WHY:** Maintainer: "we'll need a stronger guarantee than the oracle harness, it's got plenty of stuff, but not nearly enough, we'll need something more like mutation testing, or property testing or similar to test the optimizer properly." The corpus only covers shapes someone already wrote down; an optimizer's bugs live in the shapes nobody did. Mutation-testing the oracle first is what proves the definition is complete before anything rests on it.
+
+## Story-level program generator is its own epic; `.ink` first; native via both direct generation and respell
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** test-harness (`docs/observable-semantics-spec.md` §4.1, #3370)
+- **SCOPE:** moderate
+- **WHAT:** The proptest story-level generator is a standalone epic (#3370), prerequisite to the optimizer and immediately useful to auto-fix, fmt, respell and incremental lowering. Its first deliverable is the **`.ink` grammar**; the native grammar follows. The native half is built **both** ways — direct `.brink` generation and routing generated `.ink` through `brink-respell` — and the respell route is itself one more equivalence property, `trace(P) = trace(respell(P))`.
+- **WHY:** Maintainer: "i need regular .ink support more urgently than native syntax right now"; and on the native half, "we'll need to do both, but we should include the respell as another form of test, because we should define the equivalence properties" first. Defining the properties before the generator keeps every consumer stating the same claim against the same oracle.
+
+## Auto-fix: lazy per-code fixers; diagnostics stay data; three tiers each backed by a test
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide / brink-analyzer / studio / brink-cli / brink-lsp (`docs/autofix-spec.md` §2–§3)
+- **SCOPE:** architectural
+- **WHAT:** No per-diagnostic trait; `Diagnostic { file, range, message, code }` is unchanged. Fixes are computed lazily by per-code `Fixer` impls in `brink-ide` (a `static FIXERS` registry, one per code, with a registry test), returning `Fix { code, title, applicability, edits: Vec<FileEdit>, caret }` — minimal text edits are the only fix currency, and the three existing quick-fixes migrate to it. `max_applicability` is declared statically per fixer (so surfaces can count without computing edits); the per-instance value may only be lower. Tiers: **Safe** = observably equivalent + translation identity, proven per fixer by `assert_safe_fix` (compile → apply → recompile → empty `trace_diff` → line-table identity); **Suggested** = discharges the diagnostic with no new error (the existing `StructuralResult.safe` property), applied one instance per click unless the project promotes the code; **Placeholder** = leaves a hole, never batched. An optional typed `data` payload is added to a diagnostic only when a specific fixer provably needs it.
+- **WHY:** Maintainer, after weighing a diagnostic trait: diagnostics are data that travel across wasm/LSP/CLI and are built at ~200 sites — a trait buys nothing the `DiagnosticCode` enum's metadata methods don't already give; fixes are behaviour that must be lazy because eager edit construction on every keystroke is exactly the cost the live-typing perf work fights. Tiers name the test that backs them so "safe" is never a label somebody typed: "implementing fixes could potentially be complex and some are safe for auto-fix versus some requiring positive intent from the user."
+
+## Fix scope is the compilation, not the file
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide (`docs/autofix-spec.md` §4–§5)
+- **SCOPE:** moderate
+- **WHAT:** `FixCx` is the compilation (`ProjectDb`); a fixer emits whatever edits the fix needs in whichever files. Surfaces differ only in which *diagnostics* they select (all / in this file / at the cursor / one row / by code), never in which files may be written. A per-file selection — fix-on-save, "Fix all in this file" — may therefore edit other files: in the studio those edits land on the other buffers and mark them dirty (rename's existing road); the CLI and LSP `fixAll` write every touched file. Batching drops (never merges) overlapping edits within a round and re-analyzes the compilation to a fixpoint, capped at 5 rounds.
+- **WHY:** Maintainer: "i don't see why they have to be explicitly single-file? if they need to be cross-file to work, they need to. i don't think we should [be] intrinsically tied to files in the first place. for ink it should be tied to the compilation overall." The trace-equivalence definition is compilation-wide already, so tying scope to the compilation makes the safety notion and the mechanism the same thing.
+
+## Auto-fix policy layering: `[fix]` in brink.toml is what; the app setting is when, as a ceiling
+- **WHEN:** 2026-09-01
+- **PROJECT:** brink
+- **SYSTEM:** brink-project-config / studio settings / brink-cli (`docs/autofix-spec.md` §6–§8)
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** `brink.toml` gains a `[fix]` table shaped like `[lints]`: per code `auto` (promote a Suggested fix to batch), `ask` (default), `off` (never offer). It travels with the project and applies identically to `brink fix`, LSP `fixAll`, the Problems "Fix all", and on-save; it is edited from the existing lints table in Settings as a Fix column. The app-scope "Fix on save" setting is a personal ceiling — Off / Safe only / Everything the project allows — and the effective on-save policy is the intersection with the project policy: the editor can only be more conservative than the project. Explicit actions (`brink fix --suggested E033`, a row click) may widen per run; the implicit save only narrows. Entry points RULED: Problems panel (row + header), editor context menu, code actions, command palette, `brink fix` as its own subcommand with `--dry-run`/`--diff`/`--suggested`/`--code`.
+- **WHY:** Maintainer ruled the `[fix]` knob ("yes, it can even go in the existing diagnostics UI"), the save setting plus the three entry points, and the subcommand ("it can generate patches, dry-run, etc."), and named the app-setting ↔ `brink.toml` relationship as the one point of uncertainty — hence tentative. The ceiling-∩-policy shape keeps a team decision (promote E033) from being silently re-decided per editor while never letting an editor exceed what the project admitted.
