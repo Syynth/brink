@@ -2835,6 +2835,23 @@ export class StorySessionHandle {
     this.noteJournalActivity();
   }
 
+  /** Drain the non-fatal runtime warnings raised since the last call, as
+   * already-rendered message strings (issue #3354). Today's only source is
+   * a `~ temp` read on a path its declaration had not run on yet — the
+   * runtime substitutes ink's missing-variable default and keeps playing,
+   * exactly as the C# reference does, so the story never faults and the
+   * host has to ask for the warning to learn about it. The studio's
+   * Problems panel already carries the compile-time half of the same
+   * story as `E193`.
+   *
+   * Draining, not borrowing: call this after each step you care about — a
+   * caller that never polls does not leak memory (the runtime caps the
+   * list independently at `brink_runtime::RUNTIME_WARNING_CAP`), but it
+   * does lose warnings it never asked for. */
+  takeRuntimeWarnings(): string[] {
+    return JSON.parse(this.session.takeRuntimeWarnings()) as string[];
+  }
+
   /** Resolve the external the session is parked on (a deferred
    * `awaiting_external` from `advance`). No-op if not awaiting. */
   resolveExternal(value: ExternalValue): void {

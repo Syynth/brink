@@ -26,7 +26,7 @@ class Program
         if (args.Length == 0)
         {
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  ink-oracle <story.ink> [--output-dir <dir>]");
+            Console.Error.WriteLine("  ink-oracle <story.ink> [--output-dir <dir>] [--warn-and-continue]");
             Console.Error.WriteLine("  ink-oracle --crawl <tests-dir> [--force]");
             return 1;
         }
@@ -49,6 +49,14 @@ class Program
     {
         var inkPath = args[0];
         string? outputDir = null;
+        // Opt-in, single-file-mode-only flag: makes the Explorer attach a
+        // Story.onError handler so a runtime WARNING (e.g. reading a
+        // `~ temp` before its declaration executes) warns-and-continues
+        // instead of escalating to a fatal StoryException, matching ink's
+        // own behavior when a host listens for onError. Deliberately not
+        // wired into --crawl/CrawlDirectory, so a corpus-wide regeneration
+        // never picks this up implicitly -- it must be requested per file.
+        bool warnAndContinue = args.Contains("--warn-and-continue");
 
         for (int i = 1; i < args.Length - 1; i++)
         {
@@ -64,10 +72,10 @@ class Program
             return 1;
         }
 
-        return GenerateOracle(inkPath, outputDir);
+        return GenerateOracle(inkPath, outputDir, warnAndContinue);
     }
 
-    static int GenerateOracle(string inkPath, string? outputDir)
+    static int GenerateOracle(string inkPath, string? outputDir, bool warnAndContinue = false)
     {
         inkPath = Path.GetFullPath(inkPath);
         var inkSource = File.ReadAllText(inkPath);
@@ -113,7 +121,7 @@ class Program
         List<OracleEpisode> episodes;
         try
         {
-            var explorer = new Explorer(story);
+            var explorer = new Explorer(story, warnAndContinue: warnAndContinue);
             episodes = explorer.Explore();
         }
         catch (Exception ex)
