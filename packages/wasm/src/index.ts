@@ -49,6 +49,9 @@ import type {
   CodeAction,
   CodeActionData,
   Fix,
+  FixOffer,
+  FixReport,
+  FixSelect,
   ProjectFile,
   FileOutline,
   PassageLine,
@@ -1380,6 +1383,54 @@ export class EditorSessionHandle {
     this.bump();
     const json = this.session.apply_fix(JSON.stringify(fix));
     return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * `getFixes` for a named file rather than the active one — the Problems
+   * panel's per-row road, where the row already names its own file and the
+   * offset is whole-file absolute (UTF-16).
+   */
+  getFixesInFile(path: string, offset: number): Fix[] {
+    const json = this.session.fixes_at_path(path, offset);
+    return JSON.parse(json) as Fix[];
+  }
+
+  /**
+   * Every auto-fix OFFERED for the diagnostics of a selection
+   * (`docs/autofix-spec.md` §7), paired with the diagnostic site it
+   * discharges. One call per compile feeds every Problems row; `{}` selects
+   * the whole compilation.
+   *
+   * "Offered" excludes only what the project's `[fix]` table turned `"off"`
+   * — a Suggested fix is offered but not `batchable`.
+   */
+  getFixOffers(select: FixSelect = {}): FixOffer[] {
+    const json = this.session.fix_offers(JSON.stringify(select));
+    return JSON.parse(json) as FixOffer[];
+  }
+
+  /**
+   * How many fixes one batch round would take for `select` — the `N` in
+   * "Fix all safe (N)". Not a tally of `getFixOffers`: this applies the
+   * policy's batching gate and collapses identical fixes, exactly as
+   * `fixAll` will.
+   */
+  countFixes(select: FixSelect = {}): number {
+    return this.session.fix_count(JSON.stringify(select));
+  }
+
+  /**
+   * Run the batch to a fixpoint (`docs/autofix-spec.md` §5).
+   *
+   * **Mutates the session**: the loop rewrites sources and re-analyzes
+   * between rounds. The host still owns the write — push each `files` entry
+   * through its own apply seam (re-applying is idempotent; the session
+   * already holds that text).
+   */
+  fixAll(select: FixSelect = {}): FixReport {
+    this.bump();
+    const json = this.session.fix_all(JSON.stringify(select));
+    return JSON.parse(json) as FixReport;
   }
 
   getInlayHints(start: number, end: number): InlayHint[] {
