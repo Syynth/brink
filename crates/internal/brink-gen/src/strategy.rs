@@ -396,7 +396,7 @@ fn ty_of(byte: u8) -> Ty {
 fn literal(ty: Ty, n: u8) -> Literal {
     match ty {
         Ty::Int => Literal::Int(i32::from(n % 21)),
-        Ty::Bool => Literal::Bool(n % 2 == 0),
+        Ty::Bool => Literal::Bool(n.is_multiple_of(2)),
         Ty::Str => Literal::Str(WORDS[usize::from(n) % WORDS.len()].to_owned()),
     }
 }
