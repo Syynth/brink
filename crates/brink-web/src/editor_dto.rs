@@ -1213,6 +1213,11 @@ const CATEGORIES: &[(&str, &str)] = &[
     // `~` lines and what they evaluate to.
     ("E014", "Logic"),
     ("E030", "Logic"),
+    // A `~ temp` read on a path its declaration does not dominate (#3354).
+    // "Logic" rather than "Names & shadowing": the name resolves fine — it
+    // is the same frame's slot — and what is wrong is *when* the `~ temp`
+    // line runs relative to the read.
+    ("E193", "Logic"),
     // Calling something, and with what.
     ("E031", "Functions & calls"),
     ("E176", "Functions & calls"),
