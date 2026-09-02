@@ -15,7 +15,6 @@
 import type { SettingsSection } from "./SettingsModal.js";
 import { SETTINGS_ICONS } from "./SettingsModal.js";
 import {
-  ConventionsSection,
   DebuggingSection,
   PlayerSection,
   DiagnosticsSection,
@@ -31,6 +30,7 @@ import { ProseSettings } from "./ProseSettings.js";
 import { DraftSettings } from "./DraftSettings.js";
 import { KeymapSettings } from "./KeymapSettings.js";
 import { PlayerReadingAidsSection, PlayerReadingSection } from "./PlayerStyling.js";
+import { ConventionsSettings } from "./ConventionsSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 import { SettingsGroup } from "./SettingsRow.js";
 
@@ -136,11 +136,7 @@ export function settingsSections(groupId: string): SettingsSection[] {
         "conventions dialogue dialect cue cues character speaker parenthetical action " +
         "screenplay preset at-cue brink.toml run",
       icon: SETTINGS_ICONS.diagnostics,
-      body: (
-        <SettingsGroup title="Dialogue conventions">
-          <ConventionsSection />
-        </SettingsGroup>
-      ),
+      body: <ConventionsSettings />,
     },
     {
       id: SETTINGS_SECTION_IDS.player,

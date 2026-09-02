@@ -4725,6 +4725,23 @@
 - **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
 - **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.
 
+## Conventions editor: choice text hidden by default, branch headers never lines, sections stacked
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-settings (Conventions section; #3411, #3408)
+- **SCOPE:** minor/local
+- **WHAT:** (1) Choice-text lines are hidden from the marking list by default, behind an "Include choice text" toggle; hidden lines are not taught from. (2) Conditional branch header lines (`- cond: text`, `- else: text` inside a multi-line `{ … }`) are never passage lines — only the content after the colon is. (3) The section is stacked in working order: the passage you pick, the lines you mark, what the studio learned, then the Player preview — not two columns. (4) Clicking into "Your lines" lists every knot and stitch before anything is typed; typing narrows.
+- **WHY:** Maintainer, on seeing it run: choice lines are the player's options far more often than dialogue and crowd the list ("cut out choice lines, or add that as an option"), but the ink docs' own sub-format puts a cue inside choice text, so they stay reachable rather than gone. Branch headers carry a condition and a colon — never dialogue, and a `Name:` false positive waiting to happen. Two columns squeezed the line text beside a five-way control; stacking gives each step the width.
+
+## Player: a speaker who keeps talking is one run, however the script cued it
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-player (dialogue runs, #3389; Conventions preview #3411)
+- **SCOPE:** minor/local
+- **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
+- **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.
+||||||| 46916cbc5
+
 ## A cloned stateful alternative shares one counter, not one body
 - **WHEN:** 2026-09-02
 - **PROJECT:** brink

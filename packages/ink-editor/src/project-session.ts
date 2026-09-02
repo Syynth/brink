@@ -18,7 +18,7 @@
 
 import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle, getDiagnosticRegistry } from "@brink-lang/web";
-import type { CompileResult, RenameDiagnostic } from "@brink/wasm-types";
+import type { CompileResult, PassageLine, RenameDiagnostic } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
 import { withPerfTiming } from "./perf/wasm-proxy.js";
@@ -493,6 +493,17 @@ export class ProjectSession {
   getConfiguredDialogueError(): string | null {
     return typeof this.session.getConfiguredDialogueError === "function"
       ? this.session.getConfiguredDialogueError()
+      : null;
+  }
+
+  /**
+   * The content lines of a knot/stitch for the Conventions editor's
+   * marking list (#3408); `null` when the path is unknown or the session
+   * predates the query.
+   */
+  passageLines(path: string): PassageLine[] | null {
+    return typeof this.session.passageLines === "function"
+      ? this.session.passageLines(path)
       : null;
   }
 

@@ -114,7 +114,7 @@ const SPEAKER_PALETTE_SIZE = 6;
 /** A row's body: the cue's own text is dropped from a `character` row's
  *  first line (the header carries it); a parenthetical segment renders
  *  in its own style; everything else is the segment text as delivered. */
-function renderRowBody(row: PlayerRow): ReactNode {
+export function renderRowBody(row: PlayerRow): ReactNode {
   if (row.segments.length === 0) return row.line.text;
   return (
     <>
