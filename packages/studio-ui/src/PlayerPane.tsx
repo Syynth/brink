@@ -415,18 +415,19 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       choicesTop.current = null;
       return;
     }
-    // getBoundingClientRect includes an in-flight transform, so this IS
-    // the visual position — a paced reveal lands a line every 150ms, and
-    // each slide must start from where the block visibly is, not from
-    // where the last slide was headed (that restart was the jank).
-    const visual = el.getBoundingClientRect().top + pane.scrollTop;
+    // Where the block VISIBLY was: the last render's settled position plus
+    // whatever slide is still in flight — a paced reveal lands a line
+    // every 150ms, and each new slide must start from the visible spot,
+    // not restart from the previous settled one (the jank).
+    const m = getComputedStyle(el).transform;
+    const inFlight = m === "none" ? 0 : (Number.parseFloat(m.split(",")[5] ?? "0") || 0);
     el.style.transition = "none";
     el.style.transform = "";
     const top = el.getBoundingClientRect().top + pane.scrollTop;
     const prev = choicesTop.current;
     choicesTop.current = top;
     if (prev === null) return;
-    const dy = visual - top;
+    const dy = prev + inFlight - top;
     if (Math.abs(dy) < 0.5) return;
     el.style.transform = `translateY(${dy.toString()}px)`;
     requestAnimationFrame(() => {
