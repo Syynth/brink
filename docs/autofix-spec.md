@@ -384,6 +384,42 @@ Exit status: 0 when the fixpoint is reached, non-zero when the round
 cap hit or a fixer failed to discharge its diagnostic (the report names
 it).
 
+*As built (#3421, milestone 6):* `PROJECT|ENTRY` is one positional entry
+file, exactly `brink compile`'s own addressing — `brink_ide`'s `Project::
+load` (already shared by `brink ide`) discovers `brink.toml` from the
+entry's directory and follows `INCLUDE`s (or the native module graph); a
+bare file with no discovered `brink.toml` is the same code path with an
+empty `ProjectConfig`, not a second mode. `--suggested` takes an *optional*
+value rather than the sketch's required list: bare, it promotes every
+Suggested-max fixer in the registry for this run; `--suggested E025,E080`
+promotes just those codes. Both forms — like `--code`'s codes — win over
+the project's `brink.toml` `[fix]` table for the same code, mirroring the
+repo's standing `CLI/API > file > default` precedence (#1005): a project
+that sets a code `"off"` can still be promoted for one run with
+`--suggested`, the same way `-D`/`--warn`/`--allow` always beat `[lints]`.
+`ProjectConfig::effective_fix_policy`'s `Ask` (`docs/autofix-spec.md` §6.1's
+neutral value, returned identically for an absent entry and an explicit
+`= "ask"`) is deliberately **not** recorded as a `brink_ide::fix::policy::
+FixPolicy` override — doing so would force a Safe-max fixer down to
+non-batchable, which the TOML comment's own "absent ⇒ ask: … batchable
+(Safe)" rules out; only `Off`/`Auto` become overrides.
+
+One flag beyond the sketch: `--placeholder` lists every `Applicability::
+Placeholder` fix available in the selection (code, location, title)
+alongside whichever of `--dry-run`/`--diff`/the default write already ran —
+never applied, since `FixPolicy::admits` refuses `Placeholder`
+unconditionally (§3) however a project's `[fix]` table is written. It exists
+so an author (or a CI step driving `--dry-run`) can see where a hole needs
+filling by hand without a second invocation.
+
+The report itself names `applied`/`skipped_overlap` sites by file path only,
+never a line:col: their `FixSite.range` was captured against whichever
+round's source was current *then*, and a later round's own edits shift
+every offset after it — resolving a stale range against the final source
+would print a confidently wrong position. `remaining` (recomputed once,
+after the loop, against the session's then-current source) is the only
+bucket a line:col is safe to render from.
+
 ## 9. First-wave membership
 
 Sorted from the 31 Warning-default codes plus the compat-parity issues

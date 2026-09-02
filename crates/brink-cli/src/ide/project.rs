@@ -42,7 +42,7 @@ use super::handlers::{Mutation, emit_mutation};
 /// flags (reusing the seam #1373/#1394/#1553 established, not inventing a
 /// fourth path).
 #[derive(Clone, Default)]
-pub(super) struct LintOverrides {
+pub(crate) struct LintOverrides {
     pub(super) lints: BTreeMap<String, brink_analyzer::LintLevel>,
     pub(super) deny_warnings: Option<bool>,
 }
@@ -156,6 +156,41 @@ fn resolve_analysis_options(
     Ok(options)
 }
 
+/// Discover `brink.toml` from `entry`'s directory and parse it into a
+/// [`brink_project_config::ProjectConfig`] (`docs/autofix-spec.md` §6.1) —
+/// `brink fix`'s own use of the same discovery dance
+/// [`resolve_analysis_options`] runs, kept separate because the `[fix]`
+/// table has no `AnalysisOptions` field to fold into: `brink fix` needs the
+/// parsed config itself, to resolve `ProjectConfig::effective_fix_policy`
+/// per code. `Ok(None)` when no `brink.toml` is found (a bare single file,
+/// same fallback `resolve_analysis_options` has). Unknown keys warn on
+/// stderr exactly like `resolve_analysis_options`, never treated as errors.
+pub(crate) fn discover_fix_project_config(
+    entry: &Path,
+) -> Result<Option<brink_project_config::ProjectConfig>, String> {
+    let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+    for warning in &warnings {
+        let _ = writeln!(io::stderr(), "warning: {warning}");
+    }
+    let tree = RealFs::new(&root);
+    let entry_key = brink_driver::relative_key(&root, entry);
+    let Some(config_key) = brink_project_config::discover_from_entry_in_tree(&tree, &entry_key)
+        .map_err(|e| format!("{e}"))?
+    else {
+        return Ok(None);
+    };
+    let text = tree
+        .read(&config_key)
+        .map_err(|e| format!("failed to read project config {config_key}: {e}"))?;
+    let config_path = root.join(&config_key).display().to_string();
+    let (config, warnings) = brink_project_config::parse_str_at(config_path.clone(), &text)
+        .map_err(|e| e.to_string())?;
+    for warning in &warnings {
+        let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
+    }
+    Ok(Some(config))
+}
+
 /// Resolve a project file key back to a real filesystem path, for the
 /// `--write` mutation sites (issue #1295). Native (`.brink`) discovery keys
 /// files root-relative to [`brink_driver::native_source_root`] (#1288), not
@@ -166,7 +201,7 @@ fn resolve_analysis_options(
 /// `brink.toml` above `entry`'s own directory, so `native_source_root(entry)
 /// != cwd`) would write the bare key literally, landing on a phantom path
 /// under cwd instead of the real file.
-pub(super) fn resolve_fs_path(entry: &Path, key: &str) -> PathBuf {
+pub(crate) fn resolve_fs_path(entry: &Path, key: &str) -> PathBuf {
     if brink_driver::is_native(entry) {
         brink_driver::native_source_root(entry).join(key)
     } else {
@@ -212,7 +247,7 @@ impl SourceTree for EditOverlay<'_> {
     }
 }
 
-pub(super) struct Project {
+pub(crate) struct Project {
     pub(super) driver: Driver,
     pub(super) analysis: AnalysisResult,
     pub(super) entry_id: FileId,
@@ -241,7 +276,7 @@ impl Project {
     /// file by [`resolve_analysis_options`]. Unknown keys in the file (and
     /// unrecognized/non-overridable override codes) are reported as
     /// warnings on stderr, never treated as errors.
-    pub(super) fn load(entry: &Path, lints: &LintOverrides) -> Result<Self, String> {
+    pub(crate) fn load(entry: &Path, lints: &LintOverrides) -> Result<Self, String> {
         let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
         for warning in &warnings {
             let _ = writeln!(io::stderr(), "warning: {warning}");
@@ -617,7 +652,7 @@ impl Project {
     }
 
     /// A `git apply`-able patch for the edited files (whole-file hunks).
-    pub(super) fn unified_diff(&self, edited: &BTreeMap<String, String>) -> Result<String, String> {
+    pub(crate) fn unified_diff(&self, edited: &BTreeMap<String, String>) -> Result<String, String> {
         let db = self.driver.db();
         let mut out = String::new();
         for (path, new_src) in edited {
@@ -705,7 +740,7 @@ impl Project {
     /// reanalyze against an empty file set, then leave that stale (empty)
     /// result in place once sources are added via `update_source` (which
     /// does not itself trigger re-analysis).
-    pub(super) fn ide_session(&self) -> IdeSession {
+    pub(crate) fn ide_session(&self) -> IdeSession {
         let db = self.driver.db();
         let mut session = IdeSession::new();
         let ids: Vec<FileId> = db.file_ids().collect();

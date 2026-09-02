@@ -1,5 +1,6 @@
 mod batch;
 mod debug;
+mod fix;
 mod ide;
 mod lint_overrides;
 mod tui;
@@ -283,6 +284,50 @@ Use --format json for machine-readable output. Exit codes: 0 ok, 1 query-false,
         #[command(subcommand)]
         command: ide::IdeCommand,
     },
+    /// Apply auto-fixes to a project's diagnostics (auto-fix M6,
+    /// `docs/autofix-spec.md` §8)
+    #[command(long_about = "\
+Apply the project's [fix] policy (docs/autofix-spec.md §6.1) to a fixpoint:
+Safe fixes always batch, Suggested fixes batch only when the project (or
+--suggested) promotes their code, Placeholder fixes never batch.
+
+  brink fix story.ink                       apply to a fixpoint, write the files
+  brink fix story.ink --dry-run             print the report, write nothing
+  brink fix story.ink --diff                git apply-able patch to stdout
+  brink fix story.ink --suggested           promote every Suggested fixer
+  brink fix story.ink --suggested E025      promote just E025
+  brink fix story.ink --code E025,E080      restrict to these codes
+
+Exit codes: 0 fixpoint reached, 1 round cap hit or a fixer failed to
+discharge its own diagnostic, 2 usage/IO error.")]
+    Fix {
+        /// Entry-point file (.ink or .brink); brink.toml is discovered from
+        /// its directory exactly like `brink compile`.
+        path: PathBuf,
+        /// Print the report; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit a `git apply`-able unified diff instead of writing — to
+        /// stdout, or to FILE if given. Implies no disk write.
+        #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
+        diff: Option<String>,
+        /// Promote the Suggested tier to batchable for this run. Bare:
+        /// every Suggested-max fixer. With a comma-separated code list:
+        /// just those codes. Wins over the project's brink.toml [fix]
+        /// table for the same code.
+        #[arg(long, value_name = "CODE,...", num_args = 0..=1, default_missing_value = "*")]
+        suggested: Option<String>,
+        /// Also report every Placeholder-tier fix available (never
+        /// applied — Placeholder fixes are never batchable).
+        #[arg(long)]
+        placeholder: bool,
+        /// Restrict the run to these diagnostic codes (comma-separated).
+        #[arg(long, value_name = "CODE", value_delimiter = ',')]
+        code: Vec<String>,
+        /// Round cap for the fixpoint loop (docs/autofix-spec.md §5).
+        #[arg(long, default_value_t = brink_ide::fix::DEFAULT_MAX_ROUNDS)]
+        max_rounds: u8,
+    },
 }
 
 fn main() -> ExitCode {
@@ -395,6 +440,23 @@ fn run_command(command: Commands) -> ExitCode {
             report_result(debug::run_debug(&file, script.as_deref()))
         }
         Commands::Ide { command } => ide::run(&command),
+        Commands::Fix {
+            path,
+            dry_run,
+            diff,
+            suggested,
+            placeholder,
+            code,
+            max_rounds,
+        } => fix::run(&fix::FixOpts {
+            path,
+            dry_run,
+            diff,
+            suggested,
+            placeholder,
+            code,
+            max_rounds,
+        }),
     }
 }
 

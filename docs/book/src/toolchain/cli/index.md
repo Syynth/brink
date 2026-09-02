@@ -16,6 +16,7 @@ brink --help
 | [`play`](./play.md) | Play an ink story interactively or in batch mode |
 | [`debug`](./debug.md) | Step through a story: breakpoints, stepping, locals, call stack |
 | [`ide`](./ide.md) | Scriptable IDE queries & refactors (navigation, references, rename, structural refactors) |
+| [`fix`](./fix.md) | Apply automatic fixes to a project's diagnostics to a fixpoint |
 | [`export-xliff`](../localization/xliff.md) | Export a story's line tables as an XLIFF 2.0 file for translation |
 | [`compile-locale`](../localization/xliff.md) | Compile a translated XLIFF into a `.inkl` locale overlay |
 | [`regenerate-xliff`](../localization/xliff.md) | Update an XLIFF after recompilation, preserving translations |
