@@ -60,6 +60,7 @@ import {
   withDictionaryWord,
   toProseDiagnostics,
   type StudioStore,
+  type TabTarget,
 } from "@brink/studio-store";
 import {
   CommandRegistry,
@@ -81,11 +82,14 @@ import {
   loadEditorSnapshot,
   reconcileEditorSnapshot,
   documentKey,
+  findTab,
   focusedTab,
   installStudioExtensions,
   type DocumentRef,
+  type EditorGroup,
   type EditorGroupsState,
   type EditorGroupsStore,
+  type EditorTab,
   type ShellLayoutStore,
   type Location as ShellLocation,
   type SourceLocation,
@@ -523,6 +527,60 @@ function Root({
       </StoreProvider>
     </ShellProvider>
   );
+}
+
+/**
+ * #3356 (RULED 2026-09-01): where a knot/stitch (symbol) navigation target
+ * should land — the existing whole-file tab for `path`, if one is open in
+ * ANY group, or `null` to fall through to the normal fragment-tab open. A
+ * symbol target's `documentKey` (`"path::name"`) never matches a plain
+ * file tab's (`"path"`), so without this check the open-document road
+ * (which only reveals an EXISTING tab by exact key) always minted a new
+ * `path::name` tab — even when `path` was already open as a whole file,
+ * the common case of browsing structure while editing. Exported standalone
+ * (pure over `EditorGroup[]`, no wasm/DocumentSessions) so the decision is
+ * unit-testable without booting the full studio.
+ */
+export function resolveSymbolFileTab(
+  groups: readonly EditorGroup[],
+  path: string,
+): { group: EditorGroup; tab: EditorTab } | null {
+  return findTab(groups, documentKey(inkFileRef({ kind: "file", path })));
+}
+
+/**
+ * #3356 (RULED 2026-09-01): handles a symbol (knot/stitch) navigation open
+ * by revealing the target's already-open whole-file tab in place, when one
+ * exists. Gated to `pinned === false` (a plain click, never the pinned
+ * double-click): the ruling is about a NAVIGATION open losing your place
+ * when its file is already open elsewhere, not about the pinned/focused-view
+ * road — docs/studio-shell-spec.md §7.8 names the symbol document as its
+ * own first-class tab ("Fragment⇄file overlaps"), and a pinned open must
+ * keep minting/focusing that fragment tab exactly as before this fix.
+ *
+ * Returns `true` when it handled the open (the caller must not also call
+ * `openDocument`); `false` when the caller should fall through to the
+ * normal fragment-tab open — `pinned` is `true`, or the target's file
+ * isn't open as a whole-file tab anywhere.
+ *
+ * Exported standalone — over the real `EditorGroupsStore` and a `revealAt`
+ * callback, no wasm/DocumentSessions needed — so `setDocumentOpener`'s
+ * production branch and its regression test call the exact same function
+ * rather than the test re-implementing it.
+ */
+export function openSymbolTarget(
+  groups: EditorGroupsStore,
+  target: Extract<TabTarget, { kind: "symbol" }>,
+  pinned: boolean,
+  revealAt: (path: string, offset: number) => void,
+): boolean {
+  if (pinned) return false;
+  const existing = resolveSymbolFileTab(groups.getState().groups, target.path);
+  if (existing === null) return false;
+  const fileKey = documentKey(existing.tab.ref);
+  groups.getState().setActiveTab(existing.group.id, fileKey);
+  revealAt(target.path, target.start);
+  return true;
 }
 
 // ── Mount ──────────────────────────────────────────────────────────
@@ -1203,11 +1261,24 @@ export async function mountStudio(
       store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
-        if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
+    if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
       editorGroups
         .getState()
         .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
       documents.revealAt(target.path, target.start);
+      return;
+    }
+    // #3356: same-file-as-active-tab (and same-file-open-elsewhere) jump in
+    // place instead of opening a new fragment tab, for a navigation
+    // (pinned === false) open only — see `openSymbolTarget`'s doc comment
+    // for why a pinned open is excluded and for why the plain open-document
+    // road can't already do this for a symbol target.
+    if (
+      target.kind === "symbol" &&
+      openSymbolTarget(editorGroups, target, pinned, (path, offset) =>
+        documents.revealAt(path, offset),
+      )
+    ) {
       return;
     }
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });
