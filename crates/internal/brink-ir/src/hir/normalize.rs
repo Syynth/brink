@@ -152,6 +152,11 @@ fn normalize_block(block: &mut Block) {
 ///
 /// Returns `Ok(stmts)` with the replacement statements, or `Err(content)`
 /// if no inline construct was found (caller passes through unchanged).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear lift per construct kind; the #3386 per-level salt \
+              added four lines and the two arms mirror each other deliberately"
+)]
 fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Content> {
     let Some(idx) = lift_index(&content.parts) else {
         return Err(content);
@@ -173,7 +178,8 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 // re-derive them, except a cloned stateful alternative,
                 // which keeps its id in every clone (shared visit-count
                 // state, the ruled ink semantics).
-                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, branch_idx as u64);
+                let salt = lift_salt(nonce_of(seq.container_id), branch_idx);
+                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, salt);
                 splice_around(&mut b, &p, &s, &t, ptr);
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
@@ -201,8 +207,8 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind.contains(SequenceType::ONCE) && !seq.kind.contains(SequenceType::SHUFFLE);
             let kind = if is_plain_once && (!prefix.is_empty() || !suffix.is_empty()) {
                 let mut exhausted = Block::default();
-                let (p, s, t) =
-                    salted_splice_sources(&prefix, &suffix, tags, seq.branches.len() as u64);
+                let salt = lift_salt(nonce_of(seq.container_id), seq.branches.len());
+                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, salt);
                 splice_around(&mut exhausted, &p, &s, &t, ptr);
                 if trailing_eol {
                     exhausted.stmts.push(Stmt::EndOfLine);
@@ -228,7 +234,12 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind
             };
 
-            revoke_sharing_if_unclaimed(&prefix, &suffix, branches.iter_mut().map(|b| &mut b.body));
+            revoke_sharing_if_unclaimed(
+                &prefix,
+                &suffix,
+                nonce_of(seq.container_id),
+                branches.iter_mut().map(|b| &mut b.body),
+            );
 
             Ok(vec![Stmt::Sequence(Sequence {
                 ptr: seq.ptr,
@@ -241,9 +252,11 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
         }
         ContentPart::InlineConditional(cond) => {
             let mut branches = Vec::with_capacity(cond.branches.len() + 1);
+            let nonce = conditional_nonce(cond);
             for (branch_idx, branch) in cond.branches.iter().enumerate() {
                 let mut body = branch.body.clone();
-                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, branch_idx as u64);
+                let salt = lift_salt(nonce, branch_idx);
+                let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, salt);
                 splice_around(&mut body, &p, &s, &t, ptr);
                 if trailing_eol {
                     body.stmts.push(Stmt::EndOfLine);
@@ -279,7 +292,12 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 ));
             }
 
-            revoke_sharing_if_unclaimed(&prefix, &suffix, branches.iter_mut().map(|b| &mut b.body));
+            revoke_sharing_if_unclaimed(
+                &prefix,
+                &suffix,
+                nonce,
+                branches.iter_mut().map(|b| &mut b.body),
+            );
 
             Ok(vec![Stmt::Conditional(Conditional {
                 ptr: cond.ptr,
@@ -420,7 +438,8 @@ fn synthesized_else_branch(
     trailing_eol: bool,
 ) -> CondBranch {
     let mut else_body = Block::default();
-    let (p, s, t) = salted_splice_sources(prefix, suffix, tags, cond.branches.len() as u64);
+    let salt = lift_salt(conditional_nonce(cond), cond.branches.len());
+    let (p, s, t) = salted_splice_sources(prefix, suffix, tags, salt);
     splice_around(&mut else_body, &p, &s, &t, ptr);
     if trailing_eol {
         else_body.stmts.push(Stmt::EndOfLine);
@@ -453,6 +472,7 @@ fn synthesized_else_branch(
 fn revoke_sharing_if_unclaimed<'a>(
     prefix: &[ContentPart],
     suffix: &[ContentPart],
+    nonce: u64,
     branches: impl Iterator<Item = &'a mut Block>,
 ) {
     let has_stateful_clone = prefix
@@ -473,8 +493,39 @@ fn revoke_sharing_if_unclaimed<'a>(
         return;
     }
     for (k, b) in branches.iter_mut().enumerate().skip(1) {
-        super::stamp::rederive_block_all(b, k as u64);
+        super::stamp::rederive_block_all(b, lift_salt(nonce, k));
     }
+}
+
+/// The lifting construct's identity for [`lift_salt`]: a sequence's
+/// wrapper id, or `0` when the construct was never stamped (in-crate tests
+/// that normalize without stamping keep the bare-index derivation).
+fn nonce_of(id: Option<brink_format::DefinitionId>) -> u64 {
+    id.map_or(0, brink_format::DefinitionId::to_raw)
+}
+
+/// A `hir::Conditional` has no wrapper id; its first stamped branch id is
+/// unique to the construct and serves the same purpose.
+fn conditional_nonce(cond: &Conditional) -> u64 {
+    nonce_of(cond.branches.first().and_then(|b| b.container_id))
+}
+
+/// The per-branch salt for one lift level. `0` (branch 0) keeps the stamped
+/// ids — the first clone is the one container each id stays live on
+/// (#3275). Every other branch mixes the lifting construct's own identity
+/// with its index, so two lift LEVELS can never cancel: with a bare index
+/// the clone at (outer 0, inner 1) and the clone at (outer 1, inner 0) both
+/// derived to `derive(id, 1)` — the identity at 0 made the composition
+/// commutative — and three inline conditionals on one line collided on a
+/// `DefinitionId` (issue #3386, E060).
+fn lift_salt(nonce: u64, branch_idx: usize) -> u64 {
+    if branch_idx == 0 {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&nonce, &mut hasher);
+    std::hash::Hash::hash(&(branch_idx as u64), &mut hasher);
+    std::hash::Hasher::finish(&hasher).max(1)
 }
 
 /// Clone the spliced prefix/suffix/tags for the branch at `salt`,
