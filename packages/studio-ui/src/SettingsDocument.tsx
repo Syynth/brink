@@ -246,6 +246,13 @@ export interface PlayerSettings {
   saveLocation: "local" | "project";
   /** Follow in editor (#3437): scroll the editor to each revealed line. */
   followInEditor: boolean;
+  /** Reading knobs (#3438): "" / 0 = the theme's default. */
+  fontFamily: string;
+  lineHeight: number;
+  measure: number;
+  /** Reading aids (#3438). */
+  showProvenance: boolean;
+  showChoiceMarkers: boolean;
 }
 
 const DEFAULT_PLAYER: PlayerSettings = {
@@ -253,6 +260,11 @@ const DEFAULT_PLAYER: PlayerSettings = {
   fontSize: 0,
   saveLocation: "local",
   followInEditor: true,
+  fontFamily: "",
+  lineHeight: 0,
+  measure: 0,
+  showProvenance: true,
+  showChoiceMarkers: true,
 };
 
 /** Load persisted player settings. Never throws; defaults on garbage. */
@@ -275,7 +287,14 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
     fontSize?: unknown;
     saveLocation?: unknown;
     followInEditor?: unknown;
+    fontFamily?: unknown;
+    lineHeight?: unknown;
+    measure?: unknown;
+    showProvenance?: unknown;
+    showChoiceMarkers?: unknown;
   } | null;
+  const num = (v: unknown, lo: number, hi: number): number =>
+    typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? Math.round(v) : 0;
   const ms = obj?.pacedRevealMs;
   const px = obj?.fontSize;
   return {
@@ -289,6 +308,11 @@ export function loadPlayerSettings(storage: Pick<Storage, "getItem">): PlayerSet
         : DEFAULT_PLAYER.fontSize,
     saveLocation: obj?.saveLocation === "project" ? "project" : "local",
     followInEditor: obj?.followInEditor !== false,
+    fontFamily: typeof obj?.fontFamily === "string" ? obj.fontFamily : "",
+    lineHeight: num(obj?.lineHeight, 12, 22),
+    measure: num(obj?.measure, 48, 96),
+    showProvenance: obj?.showProvenance !== false,
+    showChoiceMarkers: obj?.showChoiceMarkers !== false,
   };
 }
 
@@ -658,6 +682,7 @@ export function PlayerSection() {
 
   const persist = (over: Partial<PlayerSettings>): void => {
     savePlayerSettings(window.localStorage, {
+      ...loadPlayerSettings(window.localStorage),
       pacedRevealMs: pacedMs,
       fontSize: playerFontSize,
       saveLocation,

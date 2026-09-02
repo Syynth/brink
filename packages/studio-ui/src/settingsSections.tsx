@@ -30,6 +30,7 @@ import { FormattingSettings } from "./FormattingSettings.js";
 import { ProseSettings } from "./ProseSettings.js";
 import { DraftSettings } from "./DraftSettings.js";
 import { KeymapSettings } from "./KeymapSettings.js";
+import { PlayerReadingAidsSection, PlayerReadingSection } from "./PlayerStyling.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 import { SettingsGroup } from "./SettingsRow.js";
 
@@ -146,12 +147,19 @@ export function settingsSections(groupId: string): SettingsSection[] {
       scope: "app",
       title: "Player",
       keywords:
+        "font family typeface line spacing leading measure width reading provenance follow markers " +
         "player auto reveal paced fast forward speed lines debug info breakpoints " +
         "stepping compile section emit opt out host manifest binding check severity " +
         "diagnostics external functions",
       icon: SETTINGS_ICONS.diagnostics,
       body: (
         <>
+          <SettingsGroup title="Reading">
+            <PlayerReadingSection />
+          </SettingsGroup>
+          <SettingsGroup title="Reading aids">
+            <PlayerReadingAidsSection />
+          </SettingsGroup>
           <SettingsGroup title="Playback">
             <PlayerSection />
           </SettingsGroup>

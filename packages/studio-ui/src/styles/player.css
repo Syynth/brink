@@ -54,14 +54,16 @@
   flex: 1;
   overflow: auto;
   padding: 24px 40px;
-  max-width: 8in;
+  /* Reading knobs (#3438): measure and face from Settings › Player;
+     unset = these defaults. */
+  max-width: var(--bs-player-measure, 8in);
   margin: 0 auto;
   box-sizing: border-box;
-  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", serif;
+  font-family: var(--bs-player-font-family, "Georgia", "Palatino Linotype", "Book Antiqua", serif);
 }
 .brink-studio .player .story-text p {
   margin-bottom: 12px;
-  line-height: 1.8;
+  line-height: var(--bs-player-line-height, 1.8);
   /* W13/#3306: the Player's own knob wins; unset = the app type scale. */
   font-size: var(--bs-player-font-size, var(--bs-font-prose));
   letter-spacing: 0.01em;
@@ -700,4 +702,84 @@
    keeps the accent but dims it, so "on but not moving" reads as such. */
 .brink-studio .player-pane .header .toolbar .player-follow-btn.is-paused {
   opacity: 0.55;
+}
+
+/* ── Settings › Player › Font picker (#3438) ───────────────────────── */
+.brink-studio .font-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.brink-studio .font-picker-filter,
+.brink-studio .font-picker-input {
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .font-picker-filter:focus,
+.brink-studio .font-picker-input:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+.brink-studio .font-picker-input[aria-invalid="true"] {
+  border-color: var(--bs-error);
+}
+.brink-studio .font-picker-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 232px;
+  overflow-y: auto;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  background: var(--bs-editor-bg);
+}
+.brink-studio .font-picker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--bs-fg);
+}
+.brink-studio .font-picker-row:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .font-picker-row.on {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}
+.brink-studio .font-picker-specimen {
+  flex-grow: 1;
+  min-width: 0;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .font-picker-name {
+  flex-shrink: 0;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .font-picker-row.on .font-picker-name {
+  color: var(--bs-accent);
+}
+.brink-studio .font-picker-custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .font-picker-custom .font-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }

@@ -275,6 +275,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const followPaused = useStudioStore((s) => s.followPaused);
   const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
   const setSessionHoverSource = useStudioStore((s) => s.setSessionHoverSource);
+  const showProvenance = useStudioStore((s) => s.showProvenance);
+  const showChoiceMarkers = useStudioStore((s) => s.showChoiceMarkers);
   const lines = useStudioStore((s) => s.sessionLines);
   const projectDialect = useStudioStore((s) => s.projectDialect);
   const groups = useMemo(() => foldPlayerRuns(lines, projectDialect), [lines, projectDialect]);
@@ -828,7 +830,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                     if (e.metaKey || e.ctrlKey) revealSource(line);
                   }}
                 >
-                  {echoKind !== undefined && (
+                  {echoKind !== undefined && showChoiceMarkers && (
                     <span className="player-echo-ring" aria-hidden="true">
                       {echoKind === "sticky" ? "+" : "*"}
                     </span>
@@ -843,7 +845,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                       ))}
                     </span>
                   )}
-                  {point1 !== null && line.source && (
+                  {showProvenance && point1 !== null && line.source && (
                     <button
                       className="player-provenance"
                       title={`${baseName(line.source.file)}:${point1.toString()} · ⌘-click to open`}
@@ -890,7 +892,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 }
                 onClick={() => handleChoice(choice.index)}
               >
-                {choice.sticky !== undefined && (
+                {choice.sticky !== undefined && showChoiceMarkers && (
                   <span className="player-choice-mark" aria-hidden="true">
                     {choice.sticky ? "+" : "*"}
                   </span>

@@ -269,6 +269,10 @@ export interface MountStudioOptions {
    * view (see `@brink-lang/editor`).
    */
   dialect?: DialogueDialect | null;
+  /** The host's font list for Settings › Player › Font (#3438/#3439): the
+   *  desktop app enumerates the machine's fonts; the web has none and
+   *  gets the curated list. Family names, resolved on demand. */
+  systemFonts?: () => Promise<readonly string[]>;
   /**
    * File-content egress (issue #154): called with batched change
    * notifications whenever project files change in the session — CM6 edits,
@@ -1714,6 +1718,17 @@ export async function mountStudio(
     store.getState().setPlayerFontSize(player.fontSize);
     store.getState().setSaveLocationDefault(player.saveLocation);
     store.getState().setFollowInEditor(player.followInEditor);
+    store.getState().setPlayerFontFamily(player.fontFamily);
+    store.getState().setPlayerLineHeight(player.lineHeight);
+    store.getState().setPlayerMeasure(player.measure);
+    store.getState().setShowProvenance(player.showProvenance);
+    store.getState().setShowChoiceMarkers(player.showChoiceMarkers);
+    if (options.systemFonts) {
+      void options
+        .systemFonts()
+        .then((fonts) => store.getState().setHostFonts(fonts))
+        .catch(() => store.getState().setHostFonts(null));
+    }
   }
 
   // Checkpoint stores (W14/#3307): the embedder/desktop host may supply
