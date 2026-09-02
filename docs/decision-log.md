@@ -4615,3 +4615,13 @@
 - **SCOPE:** moderate
 - **WHAT:** `brink compile` (and the studio's export) emits `dialect.json` beside the compiled story — the project's dialect with the preset merged and affix sugar expanded. A game engine reads that derived product plus the parser, never the `brink.toml` source declaration. The parser/validator/types move to a tiny pure-TS `@brink-lang/dialect` package (re-exported by `@brink-lang/editor`). Tracked as #3393.
 - **WHY:** Single truth without drift: the source is authored once in TOML and the JSON is generated, so there is no hand-edited copy to diverge, and the engine needs no preset-resolution logic. A game codebase should not have to depend on an editor package (CodeMirror and all) to read a JSON schema.
+||||||| parent of d77459321 (docs: program-generator spec + ruling (typed model + corpus mutation, inkjs harness, capture tier))
+||||||| parent of 31d3bf11e (docs: program-generator spec + ruling (typed model + corpus mutation, inkjs harness, capture tier))
+
+## Program generator: typed model + corpus mutation, inkjs as the reference harness, a capture tier
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** test-harness / brink-gen (`docs/program-generator-spec.md`)
+- **SCOPE:** architectural
+- **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
+- **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.
