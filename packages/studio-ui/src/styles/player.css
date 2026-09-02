@@ -596,7 +596,7 @@
 .brink-studio .player .player-spine {
   position: relative;
   flex: 1 0 auto;
-  padding-top: 8px;
+  padding-top: 4px;
   padding-left: calc(var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine::before {
@@ -608,26 +608,48 @@
   width: 2px;
   background: var(--bs-border);
 }
-/* Idle (the launcher is up): no timeline yet, so no rail and no node. */
+/* Idle (the launcher is up): no timeline yet, so no rail and no start. */
 .brink-studio .player .player-spine.is-idle::before,
-.brink-studio .player .player-spine.is-idle .player-spine-start {
+.brink-studio .player .player-spine.is-idle .player-start-marker {
   display: none;
 }
 .brink-studio .player .player-spine.is-idle {
   flex: 0 0 auto;
   padding-top: 0;
 }
-/* The head of the timeline: a filled node on the rail, above the first
-   line. */
-.brink-studio .player .player-spine-start {
+/* The head of the timeline is a ROW of its own (feedback 2026-09-02): a
+   filled node on the rail, a label, and a rule across the column — the
+   start's twin of the end marker — so the first line's hover band never
+   touches it. */
+.brink-studio .player .player-start-marker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 20px;
+  margin: 0 0 8px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-start-marker::before {
+  content: "";
   position: absolute;
-  left: calc(var(--player-spine-x) - 5px);
-  top: 0;
+  left: calc(-1 * var(--player-spine-gap) - 5px);
+  top: calc(50% - 5.5px);
   width: 11px;
   height: 11px;
   border-radius: 50%;
   background: var(--bs-fg-muted);
   box-shadow: 0 0 0 2px var(--bs-editor-bg);
+}
+.brink-studio .player .player-start-marker::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--bs-border);
 }
 /* Narration reads at full strength; ACTION is the dimmed one (ruled). */
 .brink-studio .player .story-text > .player-line-row.kind-line p {
