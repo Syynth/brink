@@ -67,6 +67,7 @@ import { proseExtension } from "./prose.js";
 import type { ProseChecker, ProseLint } from "./prose.js";
 import { perfViewportProbe } from "./perf/viewport-probe.js";
 import { editorActionKeymap } from "./editor-actions.js";
+import { tooltipPortalExtension } from "./tooltip-portal.js";
 
 /**
  * The indent width when the project declares none — mirrors
@@ -648,6 +649,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     options.dialect === null ? [] : screenplayDecorations();
 
   return [
+    // Tooltips (#3349): reparent hover/lint/autocomplete out of `.cm-editor`
+    // so a sibling pane's stacking context or `overflow` (the Player split)
+    // never clips them. See `tooltip-portal.ts` for why this can't just be
+    // `tooltips({ parent: document.body })` inline.
+    tooltipPortalExtension(),
     // Viewport/scroll instrumentation (measure-first ruling, 2026-08-24).
     // Inert branches while the probe is disabled — the production state.
     perfViewportProbe(),
