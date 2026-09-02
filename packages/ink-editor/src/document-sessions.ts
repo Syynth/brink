@@ -40,6 +40,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type {
   CodeAction,
+  Fix,
   CompileResult,
   CompletionItem,
   DialogueDialect,
@@ -1379,6 +1380,36 @@ export class DocumentSessions {
             });
           }
         : undefined,
+      // Auto-fixes (docs/autofix-spec.md §7): the fixes for the diagnostics
+      // under the cursor. A `Fix` carries its own edits, so applying it is
+      // `applyFix` (which resolves those edits to the sources to write) and
+      // then the same host apply seam the code actions use.
+      getFixes: (offset) => {
+        const handle = slot.handle;
+        if (!handle) return [];
+        const base = handle.fragmentRange()?.start ?? 0;
+        return handle.fixes(base + offset);
+      },
+      applyFix: this.callbacks.onApplyStructural
+        ? (fix: Fix) => {
+            const handle = slot.handle;
+            if (!handle) return;
+            this.callbacks.onApplyStructural?.({
+              path: slot.path,
+              description: fix.title,
+              result: handle.applyFix(fix),
+            });
+          }
+        : undefined,
+      // A Placeholder fix's hole is a (path, whole-file UTF-16 offset); only
+      // this slot knows its own path and fragment origin, so the mapping
+      // into view coordinates happens here and the menu does the dispatch.
+      resolveFixCaret: (fix: Fix) => {
+        const caret = fix.caret;
+        if (caret === undefined || caret.path !== slot.path) return null;
+        const base = slot.handle?.fragmentRange()?.start ?? 0;
+        return caret.offset - base;
+      },
       // Extract (#315 H): compute is side-effect-free — fold any fragment-view
       // origin into whole-file UTF-16 offsets, then call the matching wasm op.
       // Apply routes the (safe or forced) result through the host apply seam.

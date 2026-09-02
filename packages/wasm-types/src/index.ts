@@ -874,6 +874,48 @@ export interface CodeAction {
   data: CodeActionData;
 }
 
+// ── Auto-fix (docs/autofix-spec.md §2/§7) ───────────────────────────
+
+/**
+ * How far a surface may go with a fix without asking the author.
+ *
+ * - `safe` — observably equivalent; batchable.
+ * - `suggested` — probably what the author meant, but it changes meaning or
+ *   loses text; one explicit click each.
+ * - `placeholder` — leaves a hole the author must fill (`Fix.caret` says
+ *   where); never batchable.
+ */
+export type Applicability = "safe" | "suggested" | "placeholder";
+
+/** One minimal text edit of a {@link Fix}, in UTF-16 file-absolute offsets. */
+export interface FixEdit {
+  /** Project-relative path of the file this edit lands in. */
+  path: string;
+  start: number;
+  end: number;
+  new_text: string;
+}
+
+/** Where a `placeholder` fix leaves the caret — the hole to fill. */
+export interface FixCaret {
+  path: string;
+  offset: number;
+}
+
+/**
+ * One offered auto-fix for one diagnostic. Unlike a {@link CodeAction}, a fix
+ * carries its *own* edits — `edits` is the whole fix and may span files. Hand
+ * the object back to `applyFix` to get the sources to write.
+ */
+export interface Fix {
+  /** The diagnostic code this fix discharges, e.g. `"E025"`. */
+  code: string;
+  title: string;
+  applicability: Applicability;
+  edits: FixEdit[];
+  caret?: FixCaret;
+}
+
 // ── Document handles (multi-document EditorSession) ─────────────
 
 /**

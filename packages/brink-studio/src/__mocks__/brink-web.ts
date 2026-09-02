@@ -1925,11 +1925,16 @@ export class EditorSession {
    * straight to the structural ops above (`ReorderStitch`, `MoveStitch`,
    * `PromoteStitch`, `DemoteKnot`).
    *
-   * ⚠ Every OTHER known action (`FormatKnot`, `FormatStitch`, `AddImport`, the
-   * `#fn(...)` quick-fixes) is UNMODELLED and answers the real op's own
-   * no-change refusal. That is deliberately the real vocabulary — the real op
-   * emits exactly this string whenever its rewrite is a no-op — but do not read
-   * it as production's answer for those actions.
+   * ⚠ Every OTHER known action (`FormatKnot`, `FormatStitch`) is UNMODELLED
+   * and answers the real op's own no-change refusal. That is deliberately the
+   * real vocabulary — the real op emits exactly this string whenever its
+   * rewrite is a no-op — but do not read it as production's answer for those
+   * actions.
+   *
+   * The diagnostic-keyed quick-fixes (`AddImport`, the `#fn(...)` and
+   * `call`/`bind` trims) are no longer `CodeActionData` at all (#3377): they
+   * travel as `Fix`es through `fixes_at`/`apply_fix`, which this mock models
+   * as "no fixes offered" — see {@link fixes_at}.
    *
    * The refusal ORDER is production's: an unknown handle / unloaded file
    * outranks malformed data, and a structural action whose op errors falls
@@ -1967,6 +1972,110 @@ export class EditorSession {
       return EditorSession.structuralRefusal("unknown document handle");
     }
     return this.resolveCodeActionImpl(d.path, dataJson, offset);
+  }
+
+  /**
+   * Auto-fixes at a cursor (`docs/autofix-spec.md` §7).
+   *
+   * ⚠ SYNTHETIC: the mock has no analyzer, so it has no diagnostics to key
+   * fixes off. It answers one fixed entry — enough to let a test open the
+   * real menu, choose a fix, and watch the edits reach the host apply seam —
+   * whose `code`/`title` are the mock's own invention, not production's.
+   * Production offers a `Fix` only where a fixer claims a diagnostic under
+   * the cursor, and offers none at all in the common case.
+   *
+   * The edit is a real, appliable insertion at offset 0 so
+   * {@link apply_fix_doc} produces a genuinely changed source.
+   */
+  static readonly MOCK_FIX_TITLE = "Mock fix";
+
+  private mockFix(path: string): string {
+    return JSON.stringify([
+      {
+        code: "E025",
+        title: EditorSession.MOCK_FIX_TITLE,
+        applicability: "suggested",
+        edits: [{ path, start: 0, end: 0, new_text: "// fixed\n" }],
+      },
+    ]);
+  }
+
+  fixes_at(_offset: number): string {
+    return this.mockFix(this.activePath);
+  }
+
+  /** Document-handle variant of {@link fixes_at}. Same synthetic entry. */
+  fixes_at_doc(doc: number, _offset: number): string {
+    const d = this.docs.get(doc);
+    return d ? this.mockFix(d.path) : "[]";
+  }
+
+  /**
+   * Resolve a chosen fix's edits to the sources to write.
+   *
+   * The mock models the real edit application faithfully (splice each edit's
+   * `[start, end)` back to front) so a host that hands back a hand-built
+   * `Fix` still sees production's `StructuralResult` shape; only the *offer*
+   * side ({@link fixes_at}) is unmodelled.
+   */
+  apply_fix(fixJson: string): string {
+    return this.applyFixImpl(this.activePath, fixJson);
+  }
+
+  /** Document-handle variant of {@link apply_fix}. */
+  apply_fix_doc(doc: number, fixJson: string): string {
+    const d = this.docs.get(doc);
+    if (!d) {
+      return EditorSession.structuralRefusal("unknown document handle");
+    }
+    return this.applyFixImpl(d.path, fixJson);
+  }
+
+  private applyFixImpl(path: string, fixJson: string): string {
+    let fix: { edits?: { path?: string; start?: number; end?: number; new_text?: string }[] };
+    try {
+      fix = JSON.parse(fixJson) as typeof fix;
+    } catch (e) {
+      return EditorSession.structuralRefusal(
+        `invalid fix: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const edits = fix.edits ?? [];
+    if (edits.length === 0) {
+      return EditorSession.structuralRefusal("fix carries no edits");
+    }
+    const byPath = new Map<string, { start: number; end: number; text: string }[]>();
+    for (const e of edits) {
+      const editPath = typeof e.path === "string" ? e.path : path;
+      if (!this.files.has(editPath)) {
+        return EditorSession.structuralRefusal("fix names a file that is not loaded");
+      }
+      const list = byPath.get(editPath) ?? [];
+      list.push({ start: e.start ?? 0, end: e.end ?? 0, text: e.new_text ?? "" });
+      byPath.set(editPath, list);
+    }
+    const splice = (src: string, list: { start: number; end: number; text: string }[]): string => {
+      let out = src;
+      for (const e of [...list].sort((a, b) => b.start - a.start)) {
+        out = out.slice(0, e.start) + e.text + out.slice(e.end);
+      }
+      return out;
+    };
+    const crossFileEdits: { path: string; new_source: string }[] = [];
+    let newSource = this.files.get(path) ?? "";
+    for (const [editPath, list] of [...byPath.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const applied = splice(this.files.get(editPath) ?? "", list);
+      if (editPath === path) newSource = applied;
+      else crossFileEdits.push({ path: editPath, new_source: applied });
+    }
+    return JSON.stringify({
+      ok: true,
+      path,
+      new_source: newSource,
+      cross_file_edits: crossFileEdits,
+      introduced_diagnostics: [],
+      safe: true,
+    });
   }
 
   private resolveCodeActionImpl(path: string, dataJson: string, _offset: number): string {
@@ -2050,10 +2159,6 @@ export class EditorSession {
         );
       case "FormatKnot":
       case "FormatStitch":
-      case "AddImport":
-      case "TrimFnLiteralArgs":
-      case "BindFnLiteralRefArgs":
-      case "TrimValueCallArgs":
         // Known to the real op, unmodelled here — see this method's doc.
         return noChange;
       default:

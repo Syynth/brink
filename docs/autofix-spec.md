@@ -80,6 +80,18 @@ Decisions folded into the shape (RULED as the defaults, 2026-09-01):
   `brink-test-harness`; `Safe` fixtures in an integration-test crate
   that sees both.
 
+*As built (#3377, milestone 1):* the model lives in `brink_ide::fix`
+(`Applicability`, `Fix`, `FixCx`, `Fixer`, `FIXERS`, `fixes_for`) with one
+addition the surfaces needed — `fixes_at(cx, file, offset)`, the
+`Select::AtOffset` pull of §4, which collapses *identical* fixes: one site
+can carry several diagnostics of the same code that a single edit discharges
+(E080 reports one per unbound `ref` param), and the menu must show that entry
+once. Both §3 helpers (`assert_fix_discharges` and the stub
+`assert_safe_fix`) landed in `brink-ide`'s own `fix::obligations` rather than
+`brink-test-harness`: the registry test that enforces them is `brink-ide`'s,
+and the trace half has nothing to delegate to until #3371's oracle lands — at
+which point it moves to the harness in place.
+
 ## 3. Tiers and their test obligations — RULED
 
 A tier is not a label somebody typed; each names the test that backs it.
@@ -182,7 +194,13 @@ anything.
 
 - **Code-actions menu** (`packages/ink-editor/src/code-actions.ts`):
   the fixes for the diagnostics under the cursor, every tier; one click
-  applies one fix; Placeholder moves the caret.
+  applies one fix; Placeholder moves the caret. **Under the cursor means
+  on the squiggle**: the selection is the diagnostics whose own range
+  covers the offset, so a fix keyed to a diagnostic anchored at (say) a
+  call's identifier is not offered from inside the argument list. That is
+  a narrowing relative to the pre-#3377 quick-fixes, which searched from
+  the cursor for a syntax node and then looked for a diagnostic anywhere
+  inside it.
 - **Editor context menu**: the same entries for the diagnostic under
   the pointer, plus "Fix all safe in this file".
 - **Problems panel** (`ProblemsView.tsx`, `ProblemsContextMenu.tsx`):
@@ -194,8 +212,18 @@ anything.
 - **LSP** (`brink-lsp`): each `Fix` → `CodeAction { kind: quickfix,
   diagnostics: [d], edit: WorkspaceEdit }`; `source.fixAll.brink` →
   `fix_all(All, Safe ∩ project)` — which gives VS Code fix-on-save.
+  *As built (#3377):* only the `Fix` → `CodeAction { kind: quickfix, edit }`
+  half exists, because the currency change forced it — the three migrated
+  fixers would otherwise have gone dark over LSP. `diagnostics: [d]` and
+  `source.fixAll.brink` remain this surface's own milestone.
 - **wasm DTO** (`@brink-lang/web`): `FixJs { code, title,
-  applicability, edits: FileEditJs[], caret? }`.
+  applicability, edits: FileEditJs[], caret? }`. *As built (#3377):*
+  `fixes_at` / `fixes_at_doc` return it (offsets are UTF-16 file-absolute,
+  the editor boundary convention), and `apply_fix` / `apply_fix_doc` take a
+  chosen `FixJs` back and answer the `StructuralResult` shape the studio's
+  existing cross-file apply seam already consumes — so a fix reaches the
+  buffers by the same road a rename does. `resolve_code_action` stays for
+  structural refactors.
 
 ## 8. `brink fix` — RULED
 

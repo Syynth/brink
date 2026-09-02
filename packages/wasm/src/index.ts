@@ -48,6 +48,7 @@ import type {
   DocumentSymbol,
   CodeAction,
   CodeActionData,
+  Fix,
   ProjectFile,
   FileOutline,
   PerfCounters,
@@ -941,6 +942,19 @@ export class EditorSessionHandle {
     return JSON.parse(json) as StructuralResult;
   }
 
+  /** Document-handle variant of `getFixes`. */
+  getFixesDoc(doc: DocumentId, offset: number): Fix[] {
+    const json = this.session.fixes_at_doc(doc, offset);
+    return JSON.parse(json) as Fix[];
+  }
+
+  /** Document-handle variant of `applyFix`. */
+  applyFixDoc(doc: DocumentId, fix: Fix): StructuralResult {
+    this.bump();
+    const json = this.session.apply_fix_doc(doc, JSON.stringify(fix));
+    return JSON.parse(json) as StructuralResult;
+  }
+
   getInlayHintsDoc(doc: DocumentId, start: number, end: number): InlayHint[] {
     const json = this.session.inlay_hints_doc(doc, start, end);
     return JSON.parse(json) as InlayHint[];
@@ -1299,6 +1313,30 @@ export class EditorSessionHandle {
   resolveCodeAction(data: CodeActionData, offset: number): StructuralResult {
     this.bump();
     const json = this.session.resolve_code_action(JSON.stringify(data), offset);
+    return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * The auto-fixes offered for the diagnostics under `offset`
+   * (`docs/autofix-spec.md` §7). Distinct from `getCodeActions`, which offers
+   * structural refactors keyed off the *syntax* at the cursor: a `Fix` is
+   * keyed off a *diagnostic* and carries its own minimal edits, which may
+   * land in other files.
+   */
+  getFixes(offset: number): Fix[] {
+    const json = this.session.fixes_at(offset);
+    return JSON.parse(json) as Fix[];
+  }
+
+  /**
+   * Turn a chosen fix (a `Fix` from `getFixes`, passed back verbatim) into
+   * the sources to write: a `StructuralResult` with `new_source` for the
+   * active file plus a `cross_file_edits` entry per other file the fix
+   * touches. Side-effect-free — apply it through the host's own apply seam.
+   */
+  applyFix(fix: Fix): StructuralResult {
+    this.bump();
+    const json = this.session.apply_fix(JSON.stringify(fix));
     return JSON.parse(json) as StructuralResult;
   }
 

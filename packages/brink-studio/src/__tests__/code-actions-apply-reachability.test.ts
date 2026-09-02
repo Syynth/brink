@@ -119,6 +119,32 @@ describe("onApplyStructural refusal reachability (#2578)", () => {
     dispose();
   });
 
+  /**
+   * The auto-fix road (#3377, `docs/autofix-spec.md` §7) through the same
+   * real `DocumentSessions`: a `Fix` is a different currency from a
+   * `CodeAction` — it carries its own edits — so it rides `getFixes` /
+   * `applyFix`, not `resolveCodeAction`. This drives every seam between the
+   * menu and the host: `document-sessions`' `getFixes`/`applyFix` closures,
+   * the doc handle's `fixes`/`applyFix`, and the `@brink-lang/web` wrapper's
+   * `getFixesDoc`/`applyFixDoc`.
+   */
+  it("a chosen fix's edits reach onApplyStructural as the new source", async () => {
+    const applied: Applied[] = [];
+    const { view, dispose } = await mountHarness(applied);
+
+    const menu = await openMenu(view);
+    menuItem(menu, "Mock fix").click();
+
+    expect(applied).toHaveLength(1);
+    expect(applied[0]!.description).toBe("Mock fix");
+    expect(applied[0]!.path).toBe("main.ink");
+    expect(applied[0]!.result.ok).toBe(true);
+    // The fix's own edit, applied — not a `resolveCodeAction` round-trip.
+    expect(applied[0]!.result.new_source).toBe(`// fixed\n${DOC}`);
+
+    dispose();
+  });
+
   it("an ok:false extract result never reaches onApplyStructural", async () => {
     const applied: Applied[] = [];
     const { view, dispose } = await mountHarness(applied);
