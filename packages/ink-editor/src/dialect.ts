@@ -978,6 +978,103 @@ export class DialectParser {
   }
 }
 
+/** One line of runtime-emitted text, parsed into segments, as `runsOf` takes
+ *  it. `boundary` marks that a turn boundary (choices presented) preceded
+ *  this line — the reserved `"choices"` run-ending kind keys off it. */
+export interface EmittedLine {
+  segments: readonly EmittedSegment[];
+  boundary?: boolean;
+}
+
+/** One dialogue run — or one standalone line — in the emitted stream.
+ *  `kind` is the run's opening kind (the triggering cue), the standalone
+ *  line's own kind, or `null` for plain narrative outside any run. `attrs`
+ *  carries what the chain rule `carry`s (e.g. `speaker`) from the opening
+ *  segment onto the whole run. `lines` are indices into `runsOf`'s input. */
+export interface EmittedRun {
+  kind: string | null;
+  attrs: Record<string, string>;
+  lines: number[];
+}
+
+/**
+ * The emitted-side run rule (#3388, RULED 2026-08-30 "Dialects declare
+ * what ends a dialogue run in the emitted stream"): fold a sequence of
+ * parsed emitted lines into runs. The ONE shared implementation — the
+ * studio Player and a game engine importing the resolved dialect apply
+ * the identical rule, so they can never disagree about who is speaking.
+ *
+ * - A line whose first segment is a **triggering** kind (one of a chain
+ *   rule's `after` kinds that has its own `emitted` shape — a cue) closes
+ *   the active run and opens a new one; the carried attrs come from that
+ *   segment's content (the `carry` group name matching the element's
+ *   emitted `content_group`).
+ * - A line whose first segment's kind is in `run_ends_at` closes the
+ *   active run and stands alone (an action paragraph).
+ * - A turn boundary (`boundary: true`) closes the run when `"choices"` is
+ *   in `run_ends_at`.
+ * - Any other line while a run is open joins it (a cue-less dialogue
+ *   line, a parenthetical); outside a run it stands alone.
+ */
+export function runsOf(
+  lines: readonly EmittedLine[],
+  dialect: DialogueDialect,
+): EmittedRun[] {
+  const elements = dialect.elements ?? [];
+  const rules = dialect.chain ?? [];
+  const triggers = new Set<string>();
+  const enders = new Set<string>();
+  let choicesEnd = false;
+  for (const rule of rules) {
+    for (const k of rule.after) {
+      if (elements.some((e) => e.kind === k && e.emitted)) triggers.add(k);
+    }
+    for (const k of rule.run_ends_at ?? []) {
+      if (k === "choices") choicesEnd = true;
+      else enders.add(k);
+    }
+  }
+  const carryFor = (kind: string): string[] =>
+    rules.filter((r) => r.after.includes(kind)).flatMap((r) => r.carry ?? []);
+  const contentGroupOf = (kind: string): string | null =>
+    elements.find((e) => e.kind === kind)?.emitted?.content_group ?? null;
+
+  const runs: EmittedRun[] = [];
+  let open: EmittedRun | null = null;
+  const close = (): void => {
+    if (open) runs.push(open);
+    open = null;
+  };
+
+  lines.forEach((line, i) => {
+    if (line.boundary && choicesEnd) close();
+    const first = line.segments[0];
+    const kind = first?.kind ?? null;
+    if (kind !== null && triggers.has(kind)) {
+      close();
+      const attrs: Record<string, string> = {};
+      const group = contentGroupOf(kind);
+      for (const name of carryFor(kind)) {
+        if (group !== null && name === group && first?.content) attrs[name] = first.content;
+      }
+      open = { kind, attrs, lines: [i] };
+      return;
+    }
+    if (kind !== null && enders.has(kind)) {
+      close();
+      runs.push({ kind, attrs: {}, lines: [i] });
+      return;
+    }
+    if (open) {
+      open.lines.push(i);
+      return;
+    }
+    runs.push({ kind, attrs: {}, lines: [i] });
+  });
+  close();
+  return runs;
+}
+
 /**
  * Detect the distinct cast (speaker names) from already-classified source
  * lines — the #366 answer to cast detection (`characterName()` stays

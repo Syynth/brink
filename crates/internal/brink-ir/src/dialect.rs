@@ -333,6 +333,17 @@ pub struct ChainRule {
     /// `data-speaker` on every line in the run).
     #[serde(default)]
     pub carry: Vec<String>,
+    /// The emitted-side run rule (#3388, RULED 2026-08-30 "Dialects declare
+    /// what ends a dialogue run in the emitted stream"): kinds whose
+    /// appearance ENDS the active run in RUNTIME-EMITTED text — plus the
+    /// reserved `"choices"` boundary. Source-side classification has a hard
+    /// break the emitted stream lacks ("blank ALWAYS breaks", and ink
+    /// swallows blank lines on output), so without this a cue-less dialogue
+    /// line after a cue is unattributable downstream. A new triggering kind
+    /// (one of `after` with its own emitted shape) always starts a fresh
+    /// run regardless. Empty = only a new cue ends the run.
+    #[serde(default)]
+    pub run_ends_at: Vec<String>,
 }
 
 fn default_chain_is() -> Vec<String> {
@@ -552,6 +563,13 @@ pub fn validate(dialect: &DialogueDialect) -> Result<(), Vec<DialectError>> {
         }
         if !declared_kinds.contains(&rule.becomes) {
             errors.push(DialectError::ChainBecomesUndeclared(rule.becomes.clone()));
+        }
+        // `run_ends_at` (#3388): declared kinds, reserved-structural kinds,
+        // or the reserved `"choices"` turn boundary.
+        for k in &rule.run_ends_at {
+            if k != "choices" && !is_known(k) {
+                errors.push(DialectError::ChainUndeclaredKind(k.clone()));
+            }
         }
     }
 
@@ -968,6 +986,7 @@ pub fn at_cue_preset() -> DialogueDialect {
             is: vec!["narrative".to_owned()],
             becomes: "dialogue".to_owned(),
             carry: vec!["speaker".to_owned()],
+            run_ends_at: Vec::new(),
         }],
         transitions: Vec::new(),
         templates: Templates {

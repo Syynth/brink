@@ -75,7 +75,25 @@ pub fn resolve_dialogue_config(
         transitions: Vec::new(),
         templates: Templates::default(),
     };
-    check(extend_dialect(&base, &overlay))
+    let mut merged = extend_dialect(&base, &overlay);
+    // `run-ends-at` (#3388): the emitted-side run rule rides on the chain
+    // rule(s) — a project-level declaration applies to every chain the
+    // resolved dialect has (the preset has exactly one). Declaring it for a
+    // dialect with NO chain rule is a readable error rather than a no-op:
+    // there is no run to end.
+    if !config.run_ends_at.is_empty() {
+        if merged.chain.is_empty() {
+            return Err(
+                "`dialogue.run-ends-at` needs a chain rule to apply to — this dialect declares none \
+                 (no preset, and no chain in the artifact)"
+                    .to_owned(),
+            );
+        }
+        for rule in &mut merged.chain {
+            rule.run_ends_at.clone_from(&config.run_ends_at);
+        }
+    }
+    check(merged)
 }
 
 fn check(dialect: DialogueDialect) -> Result<DialogueDialect, String> {
@@ -191,6 +209,44 @@ mod tests {
             .find(|e| e.kind == "action")
             .expect("action");
         assert!(action.emitted.as_ref().is_some_and(|e| e.reserved_prefix));
+    }
+
+    #[test]
+    fn run_ends_at_lands_on_the_chain_rule_and_is_validated() {
+        let cfg = DialogueConfig {
+            preset: Some("at-cue".to_owned()),
+            run_ends_at: vec![
+                "character".to_owned(),
+                "action".to_owned(),
+                "choices".to_owned(),
+            ],
+            elements: vec![DialogueElementConfig {
+                kind: "action".to_owned(),
+                prefix: Some(">".to_owned()),
+                ..DialogueElementConfig::default()
+            }],
+            ..DialogueConfig::default()
+        };
+        let d = resolve_dialogue_config(&cfg, &no_files).expect("resolves");
+        assert_eq!(d.chain.len(), 1);
+        assert_eq!(d.chain[0].run_ends_at, ["character", "action", "choices"]);
+
+        // An undeclared kind in the rule is the dialect's own validation error.
+        let bad = DialogueConfig {
+            preset: Some("at-cue".to_owned()),
+            run_ends_at: vec!["transition".to_owned()],
+            ..DialogueConfig::default()
+        };
+        let err = resolve_dialogue_config(&bad, &no_files).expect_err("undeclared");
+        assert!(err.contains("ChainUndeclaredKind"), "{err}");
+
+        // No chain rule to apply to: readable, not silent.
+        let none = DialogueConfig {
+            run_ends_at: vec!["character".to_owned()],
+            ..DialogueConfig::default()
+        };
+        let err = resolve_dialogue_config(&none, &no_files).expect_err("no chain");
+        assert!(err.contains("needs a chain rule"), "{err}");
     }
 
     #[test]
