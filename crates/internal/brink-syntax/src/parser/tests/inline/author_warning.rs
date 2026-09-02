@@ -44,7 +44,8 @@ fn find_knot_named(node: &SyntaxNode, name: &str) -> Option<ast::KnotDef> {
     {
         return Some(knot);
     }
-    node.children().find_map(|child| find_knot_named(&child, name))
+    node.children()
+        .find_map(|child| find_knot_named(&child, name))
 }
 
 /// `TODO:` in the then-arm of an explicit `- cond:` branch (`MULTILINE_BRANCH_BODY`).
@@ -240,7 +241,8 @@ fn todo_only_branchless_body() {
 /// prose.
 #[test]
 fn todo_with_brace_on_same_line_closes_block_branchless() {
-    let src = "VAR x = true\n{ x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
+    let src =
+        "VAR x = true\n{ x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
     let parsed = parse(src);
     let root = parsed.syntax();
 
@@ -260,8 +262,7 @@ fn todo_with_brace_on_same_line_closes_block_branchless() {
 /// Same as above, through `multiline_branch_body` (the `{\n- x: …` form).
 #[test]
 fn todo_with_brace_on_same_line_closes_block_multiline() {
-    let src =
-        "VAR x = true\n{\n- x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
+    let src = "VAR x = true\n{\n- x:\n  TODO: fix }\n}\nPlain line.\n=== later ===\nKnot body.\n-> DONE\n";
     let parsed = parse(src);
     let root = parsed.syntax();
 
