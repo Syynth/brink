@@ -4,9 +4,9 @@ mode = "runtime"
 [source]
 origin = "brink"
 original_id = "sequence-leads-multi-construct-line"
-notes = "Expected to mismatch brink today (#3401) — oracle: apc, bpd, bpe, bpe, ...; brink: apc, bpc, bpd, ... Added to lock in the C#-oracle-correct behavior as a permanent regression target, not counted toward RATCHET_EPISODE_COUNT until fixed."
+notes = "Added as an expected mismatch (#3401): brink advanced apc, bpc, bpd where the oracle advances apc, bpd, bpe. Fixed by having every clone of the sequence count on the original's container (whole-line renderings kept); counts toward RATCHET_EPISODE_COUNT since the 5619 -> 5622 raise."
 
 [classification]
 tier = 2
 feature = "sequences"
-tags = ["sequences", "lifted-branches", "conditional", "known-mismatch"]
+tags = ["sequences", "lifted-branches", "conditional"]

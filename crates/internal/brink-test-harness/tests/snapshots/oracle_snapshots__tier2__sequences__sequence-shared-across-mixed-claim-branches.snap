@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/sequence-shared-across-mixed-claim-branches
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "" [Choices: "again" (0) -> 0]
+> "xc\n" [Choices: "again" (0) -> 0]
+> "yd\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+> "xe\n" [Choices: "again" (0) -> 0]
+> "ye\n" [Choices: "again" (0) -> 0]
+outcome: InputsExhausted

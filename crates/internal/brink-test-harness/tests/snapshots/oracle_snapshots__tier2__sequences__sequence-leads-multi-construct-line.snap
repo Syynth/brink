@@ -4,12 +4,11 @@ expression: case_snapshot
 ---
 case: tier2/sequences/sequence-leads-multi-construct-line
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === FAIL
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
 > "" [Choices: "again" (0) -> 0]
 > "apc\n" [Choices: "again" (0) -> 0]
-> "bpc\n" [Choices: "again" (0) -> 0]
 > "bpd\n" [Choices: "again" (0) -> 0]
 > "bpe\n" [Choices: "again" (0) -> 0]
 > "bpe\n" [Choices: "again" (0) -> 0]
@@ -28,10 +27,5 @@ passing: 0/1
 > "bpe\n" [Choices: "again" (0) -> 0]
 > "bpe\n" [Choices: "again" (0) -> 0]
 > "bpe\n" [Choices: "again" (0) -> 0]
+> "bpe\n" [Choices: "again" (0) -> 0]
 outcome: InputsExhausted
-  step 2: text differs
-    oracle: "bpd\n"
-    brink:  "bpc\n"
-  step 3: text differs
-    oracle: "bpe\n"
-    brink:  "bpd\n"

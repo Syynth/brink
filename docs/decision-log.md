@@ -4724,3 +4724,41 @@
 - **SCOPE:** architectural
 - **WHAT:** (1) Architecture A + C: the generator builds a typed semantic model (declare-before-use, terminating by construction) and prints it to `.ink`; proptest shrinks on the model; corpus mutation (the #3376 mutator) is the second source; string-grammar generation is not used. (2) The reference differential for generated ink-valid programs runs on **inkjs** (runtime + JS compiler), sanctioned as a proxy by replaying every checked-in C# oracle episode; the C# runtime stays the tie-breaker. (3) A **capture tier**, `tests/tier4-generated/`: shrunk counterexamples and coverage-novel generated stories are promoted into the corpus with provenance (`oracle-source` inkjs/csharp), outside `RATCHET_EPISODE_COUNT`, with its own must-pass target. (4) `crates/internal/brink-gen` is its own crate. (5) Feature order is the corpus ladder as written; biasing is a data `Profile` with bait flags.
 - **WHY:** Maintainer, 2026-09-02: "1-yes" (A+C); "maybe we use inkjs as the harness here so it's easier to run not on my laptop? we already have web tooling?"; "i'd also like to consider capture for interesting cases so they join the corpus, maybe as a new tier or something"; "4- yes"; "ordering looks fine as-is." A typed model is what makes shrinking produce readable counterexamples and validity hold by construction; inkjs removes dotnet from the loop so the strongest ink-compat check available runs in CI; the capture tier turns every found bug into a permanent regression case rather than a transient seed.
+
+## A cloned stateful alternative shares one counter, not one body
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** compiler (HIR normalize/stamp, LIR lower, codegen)
+- **SCOPE:** moderate — amends the #3275 ruling's "sharing revoked" corner;
+  ruling (1) of #3275 (whole-line renderings for cloned lines) is
+  reaffirmed
+- **WHAT:** When lifting an inline construct clones a stateful alternative
+  into two or more branches, every clone still lifts into whole-line
+  renderings (one line-table entry, translation unit, and VO slot each),
+  and every clone keeps its own wrapper container — but the clones share
+  ONE visit-count state: clone 0 keeps the stamped id (its wrapper, or the
+  variant path's empty stub, carries the count), every other clone gets a
+  derived `container_id` and records the original as its `counter_id`,
+  and codegen selects that clone's branch by touching the original
+  container (`TouchVisit`, seeded for shuffles from the original's
+  `path_hash` via `ShuffleIndexOf`) instead of reading its own wrapper's
+  count. A claimed variant line whose alternative is a clone touches the
+  original too. The per-lift-level revocation — a clone in an unclaimable
+  branch getting its own counter — is removed.
+- **WHY:** #3401: revocation made `{c|d|e}` drift a view behind the C#
+  reference whenever a conditional or glue made its branch unclaimable
+  (`apc bpc bpd` vs `apc bpd bpe`; 93 of 512 probed shapes, one trigger).
+  Two shapes were on the table. Sharing the clone's BODY (keep the clone
+  inline, enter one container from every site) is ink's own container
+  model and also matches, but it moves those lines from whole-line units
+  to per-token fragments in the line table — `brink export-xliff` for
+  `{a|b}{true:p}{c|d|e}` went from twelve whole-line units to seven
+  fragments, orphaning translations and VO slots, which is exactly what
+  #3275's ruling (1) chose to protect. Sharing only the COUNTER keeps
+  both: the maintainer ruled for it (2026-09-02, "C: lift + shared
+  counter"). It is codegen-only — the variant path already touches shared
+  stubs this way — with no runtime or format change, and saves stay keyed
+  to the stamped id. Pinned by three C#-oracle cases
+  (`sequence-leads-multi-construct-line`,
+  `sequence-cloned-into-glued-line`,
+  `sequence-shared-across-mixed-claim-branches`); ratchet 5619 → 5622.

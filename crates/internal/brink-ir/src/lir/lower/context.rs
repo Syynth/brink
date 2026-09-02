@@ -376,16 +376,24 @@ pub fn root_definition_id() -> DefinitionId {
 /// (root, choice targets, unlabeled gathers).
 pub struct IdAllocator {
     used: LookupMap<String, DefinitionId>,
-    /// Shared containers already emitted in this allocator's file (#3275
-    /// stage 3a): a stateful alternative cloned across a lifted
-    /// construct's branches keeps ONE stamped id (shared visit-count
-    /// state, ruled 2026-08-29), so each claiming branch line's variant
-    /// emission would otherwise create an identical empty stub per clone
-    /// site — tripping codegen's #1673 uniqueness guard on ids that are
-    /// deliberately, correctly shared. First emission wins; later sites
-    /// reference the id without re-emitting. Threaded with the allocator
-    /// (one per file lowering) because clones never cross files.
+    /// Stamped ids of shared alternative stubs already emitted (#3274
+    /// stage 3a / #3401): a stateful alternative cloned across a lifted
+    /// construct's branches keeps ONE counted container — the stamped id —
+    /// so each claiming clone site's variant emission would otherwise
+    /// create an identical empty stub, tripping codegen's #1673 uniqueness
+    /// guard on an id that is deliberately shared. First emission wins;
+    /// later sites reference the id without re-emitting. Lives on the
+    /// allocator, which is minted PER CHUNK (one per knot, one for the
+    /// root chunks — see `IdAllocator::new` sites in `lower`), not per
+    /// file: that is sufficient only because a lift's clones always come
+    /// from one line, and a line never spans chunks.
     emitted_shared: crate::determinism::LookupSet<DefinitionId>,
+    /// Stamped ids that a lifted or inline BODIED wrapper already owns
+    /// (#3401): the clone that keeps the original id counts on its own
+    /// wrapper, so a claiming sibling's variant emission must touch that
+    /// wrapper rather than mint a stub under the same id. Same per-chunk
+    /// scope and the same one-line justification as `emitted_shared`.
+    emitted_bodied: crate::determinism::LookupSet<DefinitionId>,
     /// Global counter for conditionals and sequences. Never resets —
     /// shared between the plan phase and lowering phase to ensure
     /// unique container paths across all sub-scopes.
@@ -405,6 +413,7 @@ impl IdAllocator {
             used: LookupMap::new(),
             seq_counter: 0,
             emitted_shared: crate::determinism::LookupSet::new(),
+            emitted_bodied: crate::determinism::LookupSet::new(),
             path_prefix: String::new(),
         }
     }
@@ -474,6 +483,19 @@ impl IdAllocator {
     /// (reference it without emitting). See `emitted_shared`.
     pub fn mark_shared_emitted(&mut self, id: DefinitionId) -> bool {
         self.emitted_shared.insert(id)
+    }
+
+    /// Record that a bodied wrapper under the stamped `id` is being
+    /// emitted (#3401). See `emitted_bodied`.
+    pub fn mark_bodied_emitted(&mut self, id: DefinitionId) {
+        self.emitted_bodied.insert(id);
+    }
+
+    /// Whether `id` already has a bodied wrapper in this chunk — a
+    /// variant-line stub for it must then not be emitted (the wrapper
+    /// carries the visit count the stub would have).
+    pub fn is_bodied_emitted(&self, id: DefinitionId) -> bool {
+        self.emitted_bodied.contains(&id)
     }
 
     pub fn next_seq_index(&mut self) -> usize {
