@@ -43,6 +43,7 @@ fn expected_source() -> String {
     fs::read_to_string(src).unwrap()
 }
 
+#[expect(clippy::expect_used, reason = "test fixture setup")]
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -59,7 +60,6 @@ fn git(dir: &Path, args: &[&str]) {
 // ── default policy: Suggested stays off ──────────────────────────────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn default_run_leaves_a_suggested_only_project_unchanged() {
     let dir = e025_project("default-noop");
     let before = fs::read_to_string(dir.join("before.ink")).unwrap();
@@ -91,13 +91,15 @@ fn default_run_leaves_a_suggested_only_project_unchanged() {
 // ── --suggested promotes and writes ──────────────────────────────────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn suggested_flag_promotes_e025_and_writes_the_import() {
     let dir = e025_project("suggested-write");
     let before = fs::read_to_string(dir.join("before.ink")).unwrap();
     let expected = expected_source();
     // A vacuous fixture (before == expected) would certify nothing.
-    assert_ne!(before, expected, "fixture must actually change under the fix");
+    assert_ne!(
+        before, expected,
+        "fixture must actually change under the fix"
+    );
 
     let out = brink()
         .args(["fix", "before.ink", "--suggested"])
@@ -116,7 +118,10 @@ fn suggested_flag_promotes_e025_and_writes_the_import() {
     );
 
     let after = fs::read_to_string(dir.join("before.ink")).unwrap();
-    assert_eq!(after, expected, "--suggested must reproduce the fixture's expected.ink");
+    assert_eq!(
+        after, expected,
+        "--suggested must reproduce the fixture's expected.ink"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -124,7 +129,6 @@ fn suggested_flag_promotes_e025_and_writes_the_import() {
 /// `--suggested E025` (an explicit code list) must have the same effect as
 /// the bare flag for a project with only one Suggested-max fixer live.
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn suggested_with_explicit_code_list_promotes_just_that_code() {
     let dir = e025_project("suggested-code-list");
     let expected = expected_source();
@@ -144,7 +148,6 @@ fn suggested_with_explicit_code_list_promotes_just_that_code() {
 // ── --dry-run writes nothing ──────────────────────────────────────────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn dry_run_prints_the_report_and_writes_nothing() {
     let dir = e025_project("dry-run");
     let before = fs::read_to_string(dir.join("before.ink")).unwrap();
@@ -174,7 +177,6 @@ fn dry_run_prints_the_report_and_writes_nothing() {
 // ── --diff emits a git-apply-able patch, and writes nothing ──────────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn diff_flag_emits_a_git_apply_able_patch_and_writes_nothing() {
     let dir = e025_project("diff");
     let before = fs::read_to_string(dir.join("before.ink")).unwrap();
@@ -215,7 +217,6 @@ fn diff_flag_emits_a_git_apply_able_patch_and_writes_nothing() {
 // ── --code restricts the selection, and rejects an unknown code ─────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn code_flag_restricts_the_selection() {
     let dir = e025_project("code-restrict");
 
@@ -244,7 +245,6 @@ fn code_flag_restricts_the_selection() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn unknown_code_is_a_hard_error_not_a_silent_no_op() {
     let dir = e025_project("unknown-code");
 
@@ -266,7 +266,6 @@ fn unknown_code_is_a_hard_error_not_a_silent_no_op() {
 // ── --placeholder is informational only ──────────────────────────────
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 fn placeholder_flag_does_not_change_the_write_outcome() {
     let dir = e025_project("placeholder");
     let expected = expected_source();

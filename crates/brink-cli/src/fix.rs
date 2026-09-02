@@ -298,8 +298,12 @@ fn print_placeholders(
     if found.is_empty() {
         return Ok(());
     }
-    writeln!(out, "{} placeholder fix(es) available (not applied):", found.len())
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "{} placeholder fix(es) available (not applied):",
+        found.len()
+    )
+    .map_err(|e| e.to_string())?;
     for (code, file, offset, title) in &found {
         writeln!(
             out,
