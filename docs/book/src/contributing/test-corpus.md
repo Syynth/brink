@@ -53,6 +53,25 @@ The `tests_github/` directory contains real-world `.ink` files from open-source 
 
 ## Probe-found edge cases
 
-Per maintainer directive (2026-09-02, `docs/decision-log.md`), a hand-minimized edge case discovered by the gen-expressions generator or by reference-differential probing against the C# ink runtime becomes a permanent corpus case, not a one-off fix. Cases added this way carry `origin = "brink"` in `metadata.toml`; a case documenting a *known* mismatch (brink diverges from the C# oracle) is still added with a real oracle golden and a `notes` field explaining the gap, and is called out separately so it is excluded from `RATCHET_EPISODE_COUNT` until fixed. The first batch of these covers nested-gather fallback-choice semantics (#3383), multi-conditional lifting (#3386), sequence sharing across lifted branches (#3275), and lift-order of function-call side effects (#3395).
+Per maintainer directive (2026-09-02, `docs/decision-log.md`), a hand-minimized edge case discovered by the gen-expressions generator or by reference-differential probing against the C# ink runtime becomes a permanent corpus case, not a one-off fix. Cases added this way carry `origin = "brink"` in `metadata.toml`; a case documenting a *known* mismatch (brink diverges from the C# oracle) is still added with a real oracle golden and an `expected_mismatch` flag (see below) recording the gap. The first batch of these covers nested-gather fallback-choice semantics (#3383), multi-conditional lifting (#3386), sequence sharing across lifted branches (#3275), and lift-order of function-call side effects (#3395).
+
+## `expected_mismatch`: pinning a known divergence mechanically
+
+A case that is added *knowing* it currently mismatches the C# oracle — to lock in the oracle-correct golden as a permanent regression target while the underlying bug stays open — sets `expected_mismatch` in its `metadata.toml`'s `[source]` table, naming the tracking issue:
+
+```toml
+[source]
+origin = "brink"
+original_id = "lift-order-seq-fn-cond"
+expected_mismatch = "#3395"
+```
+
+The harness (`brink_test_harness::corpus::expected_mismatch_issue` and `mismatch_flag_verdict`, issue #3402) reads this field in both `oracle_snapshots.rs` and `corpus_report.rs`, rather than the two trusting a hand-maintained doc-comment enumeration of which cases are the expected failures:
+
+- An **unflagged** case that mismatches or is missing episodes fails exactly as it always has — the corpus summary snapshot changes, and `corpus_report` reports it under its category.
+- A **flagged** case that still mismatches or is missing episodes is the expected, steady state — `corpus_report`'s "EXPECTED-MISMATCH CASES" section lists it (with its issue number) as "still mismatching, as expected", and its episodes are not required to clear `RATCHET_EPISODE_COUNT`.
+- A **flagged** case whose episodes *all* now match the oracle — the underlying bug got fixed — makes `oracle_snapshots` fail outright, naming the case and its issue: the flag must be removed from `metadata.toml` and `RATCHET_EPISODE_COUNT` raised in the *same* change that fixed it, not left to drift silently. `corpus_report` marks the same case "⚠ NOW MATCHES THE ORACLE".
+
+This means a fix landing for a flagged case can never leave the ratchet and the flag disagreeing about whether the case counts — see `tests/tier2/evaluation/lift-order-seq-fn-cond/metadata.toml` and `tests/tier2/evaluation/lift-order-fn-then-cond/metadata.toml` for the two live examples (both #3395). A `notes` field alongside `expected_mismatch` is still welcome for human-readable context, but only `expected_mismatch` is read by the harness.
 
 A follow-up case, `tests/tier2/sequences/sequence-leads-multi-construct-line` (#3401), covers a stateful sequence *leading* a multi-construct line (sequence, then inline conditional, then a second sequence): across three views the oracle advances `apc`, `bpd`, `bpe`. It was added as a known mismatch (brink advanced `apc`, `bpc`, `bpd`) and flipped to passing with the #3401 fix, which is the intended life cycle of such a case — the golden was correct from day one, and the ratchet rose when brink caught up. The fix landed with two more cases pinning the shapes it had to get right: `sequence-cloned-into-glued-line` (`{a|b}{c|d|e} <>`, where trailing glue keeps the line off the variant path) and `sequence-shared-across-mixed-claim-branches` (one lifted branch claims as a variant line, the other cannot, and both must advance one counter).
