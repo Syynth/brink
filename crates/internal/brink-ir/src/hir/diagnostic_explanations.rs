@@ -546,12 +546,34 @@ a *working* program once a project opts in, so the code stays
 error — the ruling's own words: "we should allow it to be turned off if the
 user wants, it's annoying."
 
+**What fires: reads AND plain writes.** A plain assignment (`~ n = 9`) in a
+stitch to a name only the knot's root declares fires exactly like a read —
+assigning still has to *resolve* `n` to a slot before it can store into it,
+and inklecate rejects that resolution too, just with a different message
+(`Variable could not be found to assign to: 'n'` rather than `Unresolved
+variable: n`):
+
+```ink,fires(E194)
+-> k
+=== k ===
+~ temp n = 7
+-> s
+= s
+~ n = 9
+Knot temp is now assigned.
+-> END
+```
+
 **What does not fire.** A stitch parameter of the same name is bound at
 call time and is never reported. A stitch that declares its *own* `~ temp`
-of the same name shadows the knot's for that stitch's reads entirely — that
-is [`E193`](E193.md)'s question (does the stitch's own declaration dominate
-its own reads?), not this one. A read inside the knot's own root body, or
-inside another stitch that itself declares the name, is untouched by this
-check."#,
+of the same name shadows the knot's for that stitch's reads and writes
+entirely — that is [`E193`](E193.md)'s question (does the stitch's own
+declaration dominate its own reads?), not this one. A read or write inside
+the knot's own root body, or inside another stitch that itself declares the
+name, is untouched by this check. A compound assignment (`~ n += 1`) or
+`~ n++`/`~ n--` reads the name before writing it back, so it is reported as
+a read, not a write — the message still names the right operation because
+`ReadCollector` (shared with `E193`) only discounts a plain `Set` target as
+"not a read", never a compound one."#,
     ),
 ];
