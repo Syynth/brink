@@ -233,6 +233,7 @@ export type {
   DocTarget,
   DocumentCallbacks,
   DocumentSessionsOptions,
+  FileEditRange,
   KeyHint,
   ViewStateSnapshot,
 } from "./document-sessions.js";

@@ -20,7 +20,7 @@ import {
   type BinderOrder,
 } from "../binder-order.js";
 import type { StudioState } from "../index.js";
-import type { StructuralResult, RenameDiagnostic } from "@brink/wasm-types";
+import type { FixEdit, RenameDiagnostic, StructuralResult } from "@brink/wasm-types";
 
 // ── Undo entry ──────────────────────────────────────────────────────
 
@@ -120,10 +120,22 @@ export interface BinderSlice {
   selectKey(key: string, multi: boolean): void;
   clearSelection(): void;
   setFocusedKey(key: string | null): void;
+  /**
+   * `edits`, when the caller already knows them precisely (a single `Fix`'s
+   * own `edits` — `applyOfferedFix` in `@brink/studio-ui`'s `fixActions.ts`
+   * passes `offer.fix.edits` here), let the view refresh (step 5) apply a
+   * minimal change to each touched file's mounted views instead of
+   * reloading them wholesale (#3496) — preserving scroll position,
+   * selection, and undo granularity. A structural op (rename/move/promote/
+   * demote/reorder) has no such precise list — only whole-file
+   * `new_source`/`cross_file_edits` — so it omits this and still benefits
+   * from `invalidateFile`'s own minimal-diff fallback.
+   */
   applyMoveResult(
     result: StructuralResult,
     description: string,
     affectedPaths: string[],
+    edits?: readonly FixEdit[],
   ): Promise<void>;
   deleteFile(path: string): Promise<void>;
   deleteFolder(prefix: string, paths: string[]): Promise<void>;
@@ -250,7 +262,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     set({ focusedKey: key });
   },
 
-  async applyMoveResult(result, description, affectedPaths) {
+  async applyMoveResult(result, description, affectedPaths, edits) {
     const state = get();
     const project = state._project;
     const documents = state._documents;
@@ -310,10 +322,27 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       { kind: "edits", description, snapshots },
     ];
 
-    // 5. Refresh editor views for affected files: mounted views reload their
-    //    content (symbol views re-resolve their range), cached states rebuild
-    //    on next mount.
+    // 5. Refresh editor views for affected files: a touched path with a
+    //    precise edit list (#3496 — passed only when the caller genuinely
+    //    knows it, e.g. `applyOfferedFix`'s `offer.fix.edits`) applies a
+    //    minimal change to its mounted views instead of reloading them
+    //    wholesale, preserving scroll position, selection, and undo
+    //    granularity; every other touched path reloads (symbol views
+    //    re-resolve their range, cached states rebuild on next mount) via
+    //    `invalidateFile`'s own minimal-diff fallback.
+    const editsByPath = new Map<string, { start: number; end: number; text: string }[]>();
+    for (const e of edits ?? []) {
+      const entry = { start: e.start, end: e.end, text: e.new_text };
+      const list = editsByPath.get(e.path);
+      if (list) list.push(entry);
+      else editsByPath.set(e.path, [entry]);
+    }
     for (const path of touchedPaths) {
+      const pathEdits = editsByPath.get(path);
+      if (pathEdits !== undefined && pathEdits.length > 0) {
+        documents.applyEditsToViews(path, pathEdits);
+        continue;
+      }
       documents.invalidateFile(path);
     }
 
