@@ -4904,3 +4904,11 @@
   pathway is proven, and the pathway's own bugs (fixes offered for
   `[lints]`-allowed codes, fix-on-save persisting only the focused file)
   are already known.
+
+## `file.save` routes a cross-file fix-on-save write through `file.saveAll`'s own confirm→retire algorithm, narrowed to the touched set
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio (`file-commands.ts`), brink-desktop
+- **SCOPE:** minor/local
+- **WHAT:** `file.save`'s fix-on-save step now inspects `runFixOnSave`'s own return value — every path the batch actually rewrote. When that names files besides the one being saved, `file.save` no longer calls `project.save([path])`; it calls a shared `hostSaveBatch` helper (the exact per-path confirm→retire dance `file.saveAll` already used, factored out rather than duplicated) with the write narrowed to `[path, ...otherWritten]` — not the whole dirty set, which stays Save All's job. A toast names the OTHER file(s) written; the focused file's own `Saved <path>` notice and fix-on-save's no-toast-of-its-own rule are unchanged.
+- **WHY:** Issue #3462: `file.save` always narrowed its host-save write to the focused path, so a cross-file fix batch (currently latent — no registered fixer produces one yet, but `runFixOnSave` already supports it) would leave the other file staged and silently dirty while the save reported success. Reusing `file.saveAll`'s existing, already-swept confirm→retire call site (rather than adding a second one) means the race-safety property `save-retire-invariant.test.ts` pins for that call site covers this new caller too, with no new `SAVE-PATH` id or driver to maintain.
