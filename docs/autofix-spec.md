@@ -564,7 +564,14 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
   differently-named `#@was` argument, or a declaration-level self-alias
   whose file's leading run carries a differently-named `#@module` —
   see `crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc);
-  E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
+  E110 `#@effects(…)` → `@[effects(…)]` (issue #3426 — the two spellings
+  do not share an argument grammar: the tag spelling freezes the legacy
+  **colon** shape (`reads: gold, hp`) forever, while the annotation uses
+  the amended **paren-clause** shape (`reads(gold, hp)`), so the fixer
+  translates the parsed assertion rather than copying its argument text —
+  see `crates/internal/brink-ide/src/effects_tag_fix.rs`'s module doc;
+  withheld when the tag is dynamic, has no argument list, or fails to
+  parse under the legacy grammar); E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
   (issue #3428 — the classic call/divert convention these two codes
   cover binds the **trailing** supplied argument, not the leading one

@@ -47,6 +47,7 @@ fn expected_verdicts() -> BTreeMap<&'static str, SafeVerdict> {
         ("E176", SafeVerdict::ObservablyEquivalent),
         ("E092", SafeVerdict::ObservablyEquivalent),
         ("E095", SafeVerdict::ObservablyEquivalent),
+        ("E110", SafeVerdict::ObservablyEquivalent),
     ])
 }
 

@@ -161,6 +161,7 @@ pub static FIXERS: &[&dyn Fixer] = &[
     &crate::arity_trim_fix::DivertArityTrimFixer,
     &crate::redundant_visibility_fix::RedundantVisibilityFixer,
     &crate::stale_was_fix::StaleWasFixer,
+    &crate::effects_tag_fix::EffectsTagFixer,
 ];
 
 /// Run one fixer over one diagnostic, enforcing the per-instance ≤ static-max
@@ -272,6 +273,7 @@ mod tests {
             (DiagnosticCode::E176, obligations::e176_fixture()),
             (DiagnosticCode::E092, obligations::e092_fixture()),
             (DiagnosticCode::E095, obligations::e095_fixture()),
+            (DiagnosticCode::E110, obligations::e110_fixture()),
         ]
     }
 
