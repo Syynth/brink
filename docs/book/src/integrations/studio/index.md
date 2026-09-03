@@ -54,12 +54,15 @@ editor, compile, and player state; `@brink-lang/studio` assembles the lot.
 
 ## Running it
 
-The WASM package must exist first — `@brink-lang/web` resolves `brink-web` through a
-`file:` path to `crates/brink-web/www/pkg`:
+The WASM packages must exist first — `@brink-lang/web` resolves `brink-web` through a
+`file:` path to `crates/brink-web/www/pkg`, and the studio resolves `brink-prose` (the
+prose checker, loaded on demand) the same way to `crates/brink-prose/www/pkg`.
+`pnpm install:checked` refuses to install until both are built:
 
 ```sh
-# 1. build the wasm package (see Web & WASM)
+# 1. build the wasm packages (see Web & WASM)
 wasm-pack build crates/brink-web --target web --out-dir www/pkg
+wasm-pack build crates/brink-prose --target web --out-dir www/pkg
 
 # 2. install + run the studio
 pnpm install:checked
