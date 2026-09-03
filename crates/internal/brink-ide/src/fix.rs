@@ -24,7 +24,7 @@
 //! module takes one as an input.
 
 use brink_db::ProjectDb;
-use brink_ir::{Diagnostic, DiagnosticCode, FileId};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, suppressions::apply_suppressions};
 use rowan::TextSize;
 
 use crate::rename::FileEdit;
@@ -199,6 +199,14 @@ pub fn fixes_for(cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
 /// per-file `diagnostics` road that paints the editor's squiggles, so a fix is
 /// offered exactly where the author can see the problem it discharges.
 ///
+/// **Suppressions are applied before matching.** `cx.db.diagnostics` is the
+/// RAW per-file list; a `// brink-disable`/`brink-expect` directive or an
+/// `@[allow(…)]` scope withdraws a diagnostic from every other surface
+/// (`fix_offers_impl`'s own `apply_suppressions` call, the Problems panel's
+/// `compile_project` road) before it ever reaches the author, so the cursor
+/// menu must not offer a fix for a diagnostic no one can see (review finding
+/// on #3459: this used to read the raw list and disagree with its sibling).
+///
 /// **Identical fixes are collapsed.** One site can carry several diagnostics
 /// of the same code whose single fix discharges all of them at once — E080
 /// reports one diagnostic per unbound `ref` param, while `BindRefArgsFixer`
@@ -207,8 +215,14 @@ pub fn fixes_for(cx: &FixCx<'_>, d: &Diagnostic) -> Vec<Fix> {
 #[must_use]
 pub fn fixes_at(cx: &FixCx<'_>, file: FileId, offset: u32) -> Vec<Fix> {
     let at = TextSize::from(offset);
-    let Some(diagnostics) = cx.db.diagnostics(file) else {
+    let Some(raw) = cx.db.diagnostics(file) else {
         return Vec::new();
+    };
+    let diagnostics: Vec<Diagnostic> = match (cx.db.suppressions(file), cx.db.source(file)) {
+        (Some(suppressions), Some(source)) => {
+            apply_suppressions(file, source, raw.to_vec(), suppressions)
+        }
+        _ => raw.to_vec(),
     };
     let mut seen: Vec<FixKey> = Vec::new();
     let mut out = Vec::new();

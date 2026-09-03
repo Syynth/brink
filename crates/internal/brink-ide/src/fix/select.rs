@@ -7,10 +7,13 @@
 //! rather than special-cased). What varies is which diagnostics are picked up.
 //!
 //! [`Select`] is a filter, not a menu of pre-baked scopes: `codes` restricts
-//! by diagnostic code, `tiers` by the offered fix's [`Applicability`], and
-//! `range` to one file's byte range. All three absent means the whole
-//! compilation, every code, every tier — the `brink fix` / LSP `fixAll`
-//! selection. `Select::at_offset` is the cursor-menu selection the
+//! by diagnostic code, `excluded_codes` withdraws codes the caller's own
+//! diagnostic surface does not show (`[lints] X = "allow"` — issue #3459),
+//! `tiers` by the offered fix's [`Applicability`], and
+//! `range` to one file's byte range. All four unset — `codes`, `tiers` and
+//! `range` absent, `excluded_codes` empty — means the whole compilation,
+//! every code, every tier — the `brink fix` / LSP `fixAll` selection.
+//! `Select::at_offset` is the cursor-menu selection the
 //! [`fixes_at`](super::fixes_at) pull already implements.
 
 use brink_db::ProjectDb;
@@ -24,6 +27,18 @@ use super::Applicability;
 pub struct Select {
     /// Only these diagnostic codes. `None` ⇒ every code.
     pub codes: Option<Vec<DiagnosticCode>>,
+    /// Never these diagnostic codes, whatever [`codes`](Self::codes) says.
+    ///
+    /// This is the seam a caller uses to withdraw a code that its own
+    /// diagnostic surface does not show. `[lints] E014 = "allow"` suppresses
+    /// a diagnostic outright (`brink_analyzer::effective_severity` returns
+    /// `None`), and a batch must never offer, count or apply a fix for a
+    /// problem the author cannot see (issue #3459) — the suppressed set is a
+    /// *subtraction*, so it applies to an unrestricted selection too, which
+    /// a `codes` whitelist could not express.
+    ///
+    /// Empty ⇒ nothing is withdrawn.
+    pub excluded_codes: Vec<DiagnosticCode>,
     /// Only fixes at these tiers. `None` ⇒ every tier the policy admits.
     pub tiers: Option<Vec<Applicability>>,
     /// Only diagnostics of this file whose own range meets this byte range.
@@ -48,6 +63,14 @@ impl Select {
     #[must_use]
     pub fn with_codes(mut self, codes: Vec<DiagnosticCode>) -> Self {
         self.codes = Some(codes);
+        self
+    }
+
+    /// Withdraw these codes from the selection — see
+    /// [`excluded_codes`](Self::excluded_codes).
+    #[must_use]
+    pub fn excluding_codes(mut self, codes: Vec<DiagnosticCode>) -> Self {
+        self.excluded_codes = codes;
         self
     }
 
@@ -119,6 +142,9 @@ impl Select {
     /// [`fix_all`](super::fix_all) keeps covering the whole file as it grows.
     #[must_use]
     pub fn matches(&self, db: &ProjectDb, d: &Diagnostic) -> bool {
+        if self.excluded_codes.contains(&d.code) {
+            return false;
+        }
         if let Some(codes) = &self.codes
             && !codes.contains(&d.code)
         {
