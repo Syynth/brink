@@ -520,9 +520,9 @@ fn resolve_options(
         );
         for warning in &config_warnings {
             // Same channel as the unknown-key warnings above: an unknown or
-            // non-overridable `[lints]` code, or an unrecognized `[project]
-            // elements` preset name (issue #1874), is never silently
-            // dropped (house rule).
+            // non-overridable `[lints]` code, an unrecognized `[fix]` code
+            // (issue #3447), or an unrecognized `[project] elements` preset
+            // name (issue #1874), is never silently dropped (house rule).
             tracing::warn!("[{config_key}] {warning}");
         }
     }

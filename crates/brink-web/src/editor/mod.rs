@@ -11,6 +11,7 @@ mod code_actions;
 mod completion;
 mod doc_handles;
 mod explain_match;
+mod fix_batch;
 mod folding;
 mod hints;
 mod hover;
@@ -205,6 +206,16 @@ pub struct EditorSession {
     /// exactly the failure this key exists to prevent. `None` means the file
     /// set no dialect, in which case the host applies the default.
     configured_prose_dialect: Option<brink_project_config::ProseDialect>,
+    /// `[fix]` from the applied `brink.toml` (`docs/autofix-spec.md` §6.1,
+    /// #3419) — the project's per-code fix policy, keyed by the raw code
+    /// string as written in the file. Same wholesale-replace and
+    /// clear-on-missing-config rules as [`Self::configured_indent`]: a code
+    /// whose `[fix]` entry was deleted must stop being promoted (or
+    /// withdrawn), not stay stuck at what the previous file said. Read by
+    /// [`Self::fix_policy`] (`editor/fix_batch.rs`), which resolves it
+    /// through `ProjectConfig::effective_fix_policy` against the host's
+    /// optional app-scope ceiling (§6.2).
+    configured_fix: std::collections::BTreeMap<String, brink_project_config::FixPolicy>,
     /// `[prose] enable` from the applied `brink.toml` (#3211). Same
     /// wholesale-replace and clear-on-missing rules; `None` means the file
     /// set none, in which case the host applies its own default (on).
@@ -313,6 +324,7 @@ impl EditorSession {
             draft_globs: Vec::new(),
             configured_indent: None,
             configured_prose_dialect: None,
+            configured_fix: std::collections::BTreeMap::new(),
             configured_prose_dictionary: Vec::new(),
             configured_prose_enable: None,
             configured_dialogue: None,
@@ -1183,9 +1195,9 @@ impl EditorSession {
     /// be one (#2334 review — this restores the pre-#2334 invariant that
     /// `apply_parsed_config` itself never pushes `lints`).
     ///
-    /// Returns the `[lints]`/non-overridable-code warning strings (unknown
-    /// top-level/`[project]` key warnings are the caller's own — parsed
-    /// alongside `config`, not part of it).
+    /// Returns the `[lints]`/non-overridable-code and `[fix]`/unrecognized-
+    /// code warning strings (unknown top-level/`[project]` key warnings are
+    /// the caller's own — parsed alongside `config`, not part of it).
     fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
         // No need to seed `lints` from the session's current policy:
         // `apply_project_config` replaces `.lints` wholesale from `config`
@@ -1261,6 +1273,9 @@ impl EditorSession {
         self.configured_indent = config.indent;
         // `[prose] dialect` (#3211): same wholesale-replace rule.
         self.configured_prose_dialect = config.prose_dialect;
+        // `[fix]` (#3419/#3420): same wholesale-replace rule — a removed
+        // entry must stop applying, exactly like `[lints]`'s own tier.
+        self.configured_fix.clone_from(&config.fix);
         self.configured_prose_enable = config.prose_enable;
         self.configured_prose_dictionary
             .clone_from(&config.prose_dictionary);
@@ -6209,6 +6224,29 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("E9999"));
+    }
+
+    /// Issue #3447: an unrecognized `[fix]` code is reported through the
+    /// exact same channel as `[lints]`'s own unrecognized-code warning
+    /// above — proving `AnalysisOptions::apply_project_config`'s new
+    /// `[fix]`-code gate (`brink-analyzer`) is wired into
+    /// `@brink-lang/web`'s editor session (the studio's Problems-panel-
+    /// adjacent `onProjectConfigWarnings` road), not merely covered by an
+    /// analyzer-crate unit test. `docs/autofix-spec.md` §6.1 named this
+    /// exact gap as still owed after #3419.
+    #[test]
+    fn apply_project_config_reports_unknown_fix_code_as_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[fix]\nE9999 = \"auto\"\n")
+            .expect("unrecognized fix codes are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1, "{parsed:?}");
+        assert!(parsed[0].contains("E9999"), "{parsed:?}");
+        assert!(
+            parsed[0].contains("[fix]"),
+            "must name the table it came from: {parsed:?}"
+        );
     }
 
     /// Issue #1397: a live editor session re-applying `brink.toml` after a

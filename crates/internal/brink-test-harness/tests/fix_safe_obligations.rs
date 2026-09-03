@@ -32,17 +32,23 @@ use brink_test_harness::fix::{
 /// What each fixture directory is expected to prove today.
 ///
 /// `E014` is the positive case — `docs/autofix-spec.md` §9's first-wave
-/// `Safe` candidate, deleting a bare `~`. It has no registered fixer yet
-/// (that is its own sub-issue of #3374); it is here so the sweep has one pair
-/// that genuinely clears the bar, and so a regression in the oracle cannot
-/// hide behind a table of negatives.
+/// `Safe` candidate, deleting a bare `~` (`brink_ide::empty_logic_line_fix`,
+/// issue #3423). Its fixture predates that fixer by design (see
+/// `tests/fix/E014/README.md`) so the sweep always had one pair that
+/// genuinely clears the bar, and so a regression in the oracle cannot hide
+/// behind a table of negatives.
 fn expected_verdicts() -> BTreeMap<&'static str, SafeVerdict> {
     BTreeMap::from([
         ("E014", SafeVerdict::ObservablyEquivalent),
         ("E025", SafeVerdict::NoPreImage),
+        ("E031", SafeVerdict::ObservablyEquivalent),
         ("E063", SafeVerdict::NoPreImage),
         ("E080", SafeVerdict::NoPreImage),
         ("E081", SafeVerdict::NoPreImage),
+        ("E176", SafeVerdict::ObservablyEquivalent),
+        ("E092", SafeVerdict::ObservablyEquivalent),
+        ("E095", SafeVerdict::ObservablyEquivalent),
+        ("E110", SafeVerdict::ObservablyEquivalent),
     ])
 }
 

@@ -6,7 +6,10 @@ use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::{KindToken, NodeClass, Provenance};
-use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixExpr, InfixOp, Stmt, Tag};
+use crate::{
+    Block, Choice, Content, ContentPart, DiagnosticCode, Divert, Expr, InfixExpr, InfixOp, Stmt,
+    Tag,
+};
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
@@ -35,6 +38,15 @@ fn content_region_ptr(scope: &LowerScope, node: &brink_syntax::SyntaxNode) -> Op
         return None;
     }
     Some(scope.prov(NodeClass::Content, node))
+}
+
+/// True when a choice content region (`start`/`bracket`/`inner`) carries no
+/// real text or tags — either the region never parsed at all (`None`), or
+/// it parsed to an empty node (e.g. `* []`'s `CHOICE_BRACKET_CONTENT`, a
+/// zero-width node the parser still creates for grammar uniformity). Used
+/// only by the `E195` "completely empty choice" check (#3365) below.
+fn content_region_is_textless(content: Option<&Content>) -> bool {
+    content.is_none_or(|c| c.parts.is_empty() && c.tags.is_empty())
 }
 
 #[expect(
@@ -187,6 +199,44 @@ impl LowerChoice for ast::Choice {
         preamble.push(Stmt::EndOfLine);
         preamble.append(&mut body.stmts);
         body.stmts = preamble;
+
+        // #3365: warn when this choice offers nothing to distinguish it —
+        // no same-line divert (with or without a target), no tags directly
+        // on the choice line, and no real text in any of its three content
+        // regions — matching inklecate's "Choice is completely empty"
+        // warning (`InkParser/InkParser_Choices.cs:84-86`; line 90's
+        // "Blank choice" warning, guarded by a different condition on the
+        // `* [] some text` shape, is a deliberate non-goal here).
+        //
+        // A `(label)` or `{condition}` guard does NOT exempt a choice from
+        // this check — the reference's own `emptyContent` computation
+        // (`startContent`/`innerContent`/`optionOnlyContent`) has no such
+        // carve-out, and measurement against inklecate confirms it: both
+        // `* (opt)` and `VAR x = true\n* {x}`, each followed by a blank
+        // line, still emit the warning.
+        //
+        // Must check `self.divert()` here, on the AST, rather than as a
+        // later pass over the lowered `Choice`: an explicit-but-empty
+        // divert (`* ->`) and no divert at all (`* []`) are
+        // indistinguishable once lowered — both leave no `Stmt::Divert` in
+        // `body.stmts` above — so the raw token's presence is the only
+        // place this evidence survives (`docs/diagnostics/E195.md`).
+        //
+        // `self.all_tags()` (not each content region's own `.tags`) is what
+        // actually catches a tag directly on the choice line (`* #tag`):
+        // when there is no preceding `CHOICE_START_CONTENT`/bracket/inner
+        // region node at all, the tag-distribution loop above has nowhere
+        // to attribute the lowered tag to, so a per-region `.tags.is_empty()`
+        // check alone is dead code for that shape. Matches inklecate, which
+        // does not warn on a tag-only choice either (measured).
+        if self.divert().is_none()
+            && self.all_tags().next().is_none()
+            && content_region_is_textless(start_content.as_ref())
+            && content_region_is_textless(bracket_content.as_ref())
+            && content_region_is_textless(inner_content.as_ref())
+        {
+            sink.diagnose(self.syntax().text_range(), DiagnosticCode::E195);
+        }
 
         Ok(Choice {
             ptr: scope.prov(NodeClass::Choice, self.syntax()),

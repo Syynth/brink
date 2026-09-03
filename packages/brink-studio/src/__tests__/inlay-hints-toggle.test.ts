@@ -53,6 +53,7 @@ describe("inlay hints visibility toggle", () => {
       showInlayHints: false,
       fontSize: 14,
       appFontSize: 12,
+      fixOnSave: "off",
     });
     const loaded = loadEditorSettings(storage);
     expect(loaded).toEqual({
@@ -62,6 +63,7 @@ describe("inlay hints visibility toggle", () => {
       showInlayHints: false,
       fontSize: 14,
       appFontSize: 12,
+      fixOnSave: "off",
     });
   });
 

@@ -1619,6 +1619,7 @@ impl LanguageServer for Backend {
                             CodeActionKind::QUICKFIX,
                             CodeActionKind::REFACTOR,
                             CodeActionKind::SOURCE,
+                            FIX_ALL_BRINK_KIND,
                         ]),
                         resolve_provider: Some(true),
                         ..Default::default()
@@ -2591,7 +2592,16 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let (source, is_native, fix_actions) = {
+        // `source.fixAll.brink` (`docs/autofix-spec.md` §7) is only worth its
+        // whole-compilation batching pass when a client actually asked for
+        // it — VS Code's fix-on-save names exactly this kind (or a prefix of
+        // it) in `context.only`; a routine lightbulb-menu request carries no
+        // `only` at all and gets the cheap per-cursor fixes only.
+        let want_fix_all = wants_kind(params.context.only.as_deref(), FIX_ALL_BRINK_KIND.as_str());
+        let types = self.type_policy();
+        let lints = self.lints();
+
+        let (source, is_native, mut lsp_actions) = {
             let projects = lock_db(&self.db);
             let Some(db) = projects.project_for_path(&path) else {
                 return Ok(Some(vec![]));
@@ -2611,8 +2621,11 @@ impl LanguageServer for Backend {
             // they are pulled while the lock is held and their edits resolved
             // to a `WorkspaceEdit` here — a `Fix` carries its own edits, so
             // there is nothing left to `code_action_resolve`.
-            let fix_actions = fix_code_actions(db, file_id, offset);
-            (source, db.is_native(file_id), fix_actions)
+            let mut actions = fix_code_actions(db, file_id, offset, types, &lints);
+            if want_fix_all && let Some(action) = fix_all_action(db) {
+                actions.push(action);
+            }
+            (source, db.is_native(file_id), actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -2636,7 +2649,6 @@ impl LanguageServer for Backend {
         };
 
         let uri = params.text_document.uri.as_str();
-        let mut lsp_actions: Vec<tower_lsp::lsp_types::CodeActionOrCommand> = fix_actions;
         lsp_actions.extend(domain_actions.into_iter().map(|a| {
             let kind = match a.kind {
                 brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
@@ -3404,6 +3416,60 @@ fn code_action_data_to_json(
     }
 }
 
+/// The `source.fixAll.brink` kind — VS Code's fix-on-save `codeAction`
+/// request names exactly this in `context.only` (`docs/autofix-spec.md` §7).
+/// A `const`, not a `static`: [`CodeActionKind`] is `Clone`-only (its inner
+/// `Cow` is not `Copy`), and a `const` re-embeds a fresh value at every use
+/// site, so every reference below owns its own copy without an explicit
+/// `.clone()`.
+const FIX_ALL_BRINK_KIND: CodeActionKind = CodeActionKind::new("source.fixAll.brink");
+
+/// Whether a `codeAction` request's `context.only` filter reaches `kind` —
+/// LSP's kind hierarchy is dot-separated, so a request for a shared prefix
+/// (the built-in `"source"` or `"source.fixAll"`) also reaches our
+/// namespaced [`FIX_ALL_BRINK_KIND`]. `None` (no filter at all) never
+/// matches: this gates [`fix_all_action`], the expensive whole-compilation
+/// pass, and a routine lightbulb-menu request (`only: None`) should not pay
+/// for it — only an explicit ask (fix-on-save, "Fix all" from the palette)
+/// does.
+fn wants_kind(only: Option<&[CodeActionKind]>, kind: &str) -> bool {
+    only.is_some_and(|kinds| {
+        kinds.iter().any(|k| {
+            let k = k.as_str();
+            kind == k
+                || kind
+                    .strip_prefix(k)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    })
+}
+
+/// What makes two offered fixes the same quick-fix menu entry — mirrors
+/// [`brink_ide::fix`]'s own (private) dedup key exactly. [`fix_code_actions`]
+/// inlines that fixer-dispatch loop rather than calling the crate's
+/// [`brink_ide::fix::fixes_at`] pull, because this needs the *diagnostic*
+/// each collapsed fix came from (to populate `CodeAction.diagnostics`, §7)
+/// and `fixes_at` returns only the collapsed `Fix`es.
+type FixIdentity = (&'static str, String, Vec<(u32, u32, u32, String)>);
+
+fn fix_identity(fix: &brink_ide::fix::Fix) -> FixIdentity {
+    (
+        fix.code.as_str(),
+        fix.title.clone(),
+        fix.edits
+            .iter()
+            .map(|e| {
+                (
+                    e.file.0,
+                    u32::from(e.range.start()),
+                    u32::from(e.range.end()),
+                    e.new_text.clone(),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// The diagnostic-keyed auto-fixes offered at `offset`, as LSP quick-fix
 /// code actions (`docs/autofix-spec.md` §7).
 ///
@@ -3411,54 +3477,232 @@ fn code_action_data_to_json(
 /// `WorkspaceEdit` is built here and the action needs no
 /// `code_action_resolve` round-trip. Cross-file edits (§4) are carried
 /// through — the fix's edits are grouped by file, each resolved against that
-/// file's own line index.
-///
-/// The full §7 LSP surface (`CodeAction.diagnostics`, `source.fixAll.brink`)
-/// is a later milestone of #3374; this keeps the three migrated fixers
-/// reachable over LSP on the new currency.
+/// file's own line index. Each action also carries the diagnostic it
+/// discharges (`diagnostics: [d]`) — the other half of §7 this surface left
+/// unbuilt at #3377, alongside `source.fixAll.brink` ([`fix_all_action`]).
 fn fix_code_actions(
     db: &brink_db::ProjectDb,
     file_id: brink_ir::FileId,
     offset: u32,
+    types: TypePolicy,
+    lints: &LintPolicy,
 ) -> Vec<tower_lsp::lsp_types::CodeActionOrCommand> {
     let cx = brink_ide::fix::FixCx::new(db);
+    let at = rowan::TextSize::from(offset);
+    let Some(raw_diagnostics) = db.diagnostics(file_id) else {
+        return Vec::new();
+    };
+    let Some(source) = db.source(file_id) else {
+        return Vec::new();
+    };
+    // The Problems panel never shows a suppressed diagnostic (`[lints]
+    // allow`), so a quickfix must not offer to fix one either — the same
+    // rule `brink_ide::fix::batch::collect` already applies.
+    let diagnostics = match db.suppressions(file_id) {
+        Some(sup) => brink_ir::suppressions::apply_suppressions(
+            file_id,
+            source,
+            raw_diagnostics.to_vec(),
+            sup,
+        ),
+        None => raw_diagnostics.to_vec(),
+    };
+    let doc_idx = LineIndex::new(source);
+    let mut seen: Vec<FixIdentity> = Vec::new();
     let mut out = Vec::new();
-    for fix in brink_ide::fix::fixes_at(&cx, file_id, offset) {
-        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-        let mut resolvable = true;
-        for edit in &fix.edits {
-            let (Some(edit_path), Some(edit_source)) =
-                (db.file_path(edit.file), db.source(edit.file))
-            else {
-                resolvable = false;
-                break;
+    for d in diagnostics
+        .iter()
+        .filter(|d| d.range.contains_inclusive(at))
+    {
+        for fix in brink_ide::fix::fixes_for(&cx, d) {
+            let identity = fix_identity(&fix);
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.push(identity);
+
+            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+            let mut resolvable = true;
+            for edit in &fix.edits {
+                let (Some(edit_path), Some(edit_source)) =
+                    (db.file_path(edit.file), db.source(edit.file))
+                else {
+                    resolvable = false;
+                    break;
+                };
+                let Ok(uri) = Url::from_file_path(edit_path) else {
+                    resolvable = false;
+                    break;
+                };
+                let idx = LineIndex::new(edit_source);
+                changes.entry(uri).or_default().push(TextEdit {
+                    range: convert::to_lsp_range(edit.range, &idx),
+                    new_text: edit.new_text.clone(),
+                });
+            }
+            if !resolvable || changes.is_empty() {
+                continue;
+            }
+
+            // A `[lints] allow`-suppressed diagnostic is never published to
+            // the client (#3173) — a quickfix action must not claim to
+            // discharge one the Problems panel never showed.
+            let Some(lsp_diag) = convert::diagnostic_to_lsp(d, &doc_idx, types, lints) else {
+                continue;
             };
-            let Ok(uri) = Url::from_file_path(edit_path) else {
-                resolvable = false;
-                break;
-            };
-            let idx = LineIndex::new(edit_source);
-            changes.entry(uri).or_default().push(TextEdit {
-                range: convert::to_lsp_range(edit.range, &idx),
-                new_text: edit.new_text.clone(),
-            });
-        }
-        if !resolvable || changes.is_empty() {
-            continue;
-        }
-        out.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-            CodeAction {
-                title: fix.title,
-                kind: Some(CodeActionKind::QUICKFIX),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
+
+            out.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                CodeAction {
+                    title: fix.title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![lsp_diag]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ));
+                },
+            ));
+        }
     }
     out
+}
+
+/// The batching machinery behind `source.fixAll.brink` (`docs/autofix-spec.md`
+/// §7): `fix_all(select, policy)`, run to a fixpoint on a private scratch
+/// copy of the compilation and reduced to one whole-file [`TextEdit`] per
+/// changed file. `None` when nothing was applied.
+///
+/// Separated from [`fix_all_action`] — which fixes `select`/`policy` at the
+/// production values `docs/autofix-spec.md` §7 rules for `source.fixAll.brink`
+/// — so this can be exercised directly with a policy that actually admits
+/// something: every fixer registered today declares `Suggested`, not `Safe`
+/// (§9's first-wave `Safe` candidates haven't landed), so the production
+/// values alone can never demonstrate a batch over the wire yet.
+///
+/// Runs on a scratch [`IdeSession`](brink_ide::session::IdeSession), never
+/// the live project: `code_action` requests fire continually to populate a
+/// client's lightbulb menu, not only right before an edit is accepted, and a
+/// batching pass that mutated the live db here would silently pre-fix files
+/// whose open buffers had not actually changed — visible as a diagnostic
+/// that vanishes before the editor's own text does, and permanently wrong if
+/// the offered edit is never applied. The scratch session mirrors the live
+/// project's [`AnalysisOptions`] and every loaded file's current source —
+/// **but not its native/ink roots or compile entry**: `IdeSession` exposes
+/// no root or entry setter, so native module identity here mints from each
+/// file's full absolute path rather than the live project's mounted root,
+/// and with no entry configured, fix selection falls back to every loaded
+/// file (including the mounted stdlib) instead of the live compile closure.
+/// The fixes computed here can therefore diverge from what the live
+/// diagnostics show; closing that gap is tracked as issue #3458, which
+/// milestone 8 must land before the first `Safe` fixer makes this path live
+/// (`docs/autofix-spec.md` §7).
+fn fix_all_workspace_edit(
+    db: &brink_db::ProjectDb,
+    select: &brink_ide::fix::Select,
+    policy: &brink_ide::fix::FixPolicy,
+) -> Option<WorkspaceEdit> {
+    let mut scratch = brink_ide::session::IdeSession::new();
+    scratch.apply_analysis_options(db.analysis_options());
+
+    let mut originals: BTreeMap<String, String> = BTreeMap::new();
+    for file in db.file_ids() {
+        let (Some(path), Some(source)) = (db.file_path(file), db.source(file)) else {
+            continue;
+        };
+        scratch.update_source(path, source.to_owned());
+        originals.insert(path.to_owned(), source.to_owned());
+    }
+    scratch.refresh_analysis();
+
+    let report = brink_ide::fix::fix_all(
+        &mut scratch,
+        select,
+        policy,
+        brink_ide::fix::DEFAULT_MAX_ROUNDS,
+    );
+    if report.applied.is_empty() {
+        return None;
+    }
+
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for (path, original) in &originals {
+        let Some(file_id) = scratch.db().file_id(path) else {
+            continue;
+        };
+        let Some(final_source) = scratch.db().source(file_id) else {
+            continue;
+        };
+        if final_source == original {
+            continue;
+        }
+        // A batch is all-or-nothing (§4): a file that can't be represented
+        // in the edit abandons the whole batch rather than shipping a
+        // WorkspaceEdit with the rest silently applied — the same failure
+        // this sibling function's quickfix arm treats as fatal to its own
+        // fix (`resolvable = false` + `break`, above).
+        let Ok(uri) = Url::from_file_path(path) else {
+            return None;
+        };
+        let Ok(len) = u32::try_from(original.len()) else {
+            return None;
+        };
+        let idx = LineIndex::new(original);
+        let whole = rowan::TextRange::up_to(rowan::TextSize::from(len));
+        changes.insert(
+            uri,
+            vec![TextEdit {
+                range: convert::to_lsp_range(whole, &idx),
+                new_text: final_source.to_owned(),
+            }],
+        );
+    }
+    if changes.is_empty() {
+        return None;
+    }
+
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    })
+}
+
+/// The `source.fixAll.brink` code action (`docs/autofix-spec.md` §7):
+/// [`fix_all_workspace_edit`] with `Select{tiers: [Safe]}` plus the
+/// tier-default [`FixPolicy`] — no `[fix]` promotion reaches this yet, since
+/// reconciling `brink.toml`'s table with this policy type is tracked as
+/// issue #3489, not built here (`docs/autofix-spec.md` §6.1 covers only
+/// `[fix]`-code validation, landed by #3447). `None` when nothing was
+/// applied — either because no `Safe`-tier fixer is registered yet (true of
+/// every fixer today) or because the compilation is already clean.
+fn fix_all_action(db: &brink_db::ProjectDb) -> Option<tower_lsp::lsp_types::CodeActionOrCommand> {
+    let select =
+        brink_ide::fix::Select::all().with_tiers(vec![brink_ide::fix::Applicability::Safe]);
+
+    // No registered fixer can produce anything at this selection's tiers
+    // today (every fixer declares `Suggested`, not `Safe` — §9's first-wave
+    // `Safe` candidates haven't landed) — bail before paying for a
+    // whole-project scratch-session analysis whose result is guaranteed
+    // `None`. Sound because `fixes_from` asserts per-instance applicability
+    // never exceeds the fixer's declared max (`Fixer::max_applicability`).
+    if !brink_ide::fix::FIXERS
+        .iter()
+        .any(|f| select.admits_tier(f.max_applicability()))
+    {
+        return None;
+    }
+
+    let policy = brink_ide::fix::FixPolicy::default();
+    let edit = fix_all_workspace_edit(db, &select, &policy)?;
+
+    Some(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+        CodeAction {
+            title: "Fix all safe problems".to_owned(),
+            kind: Some(FIX_ALL_BRINK_KIND),
+            edit: Some(edit),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Decode a `code_action_resolve` request's `data` payload (the `kind`
@@ -3522,8 +3766,8 @@ mod tests {
     use super::{
         AnalysisOptions, ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex,
         PublishDecision, PublishRecord, PublishTier, collect_source_files, config_error_diagnostic,
-        is_native_path, is_source_path, native_source_root, path_under_ignored_dir,
-        publish_decision, rename_suspicion_diags, resolve_language_options,
+        fix_all_workspace_edit, is_native_path, is_source_path, native_source_root,
+        path_under_ignored_dir, publish_decision, rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -4193,5 +4437,140 @@ mod tests {
     /// [`Diagnostic::code`].
     fn lsp_code(code: &str) -> tower_lsp::lsp_types::NumberOrString {
         tower_lsp::lsp_types::NumberOrString::String(code.to_owned())
+    }
+
+    /// `docs/autofix-spec.md` §7/§5: `fix_all_workspace_edit` — the batching
+    /// machinery `source.fixAll.brink` (`fix_all_action`) calls — must
+    /// converge two *colliding* fixes (both auto-imports insert at the same
+    /// offset) into one edit set, in the same round order
+    /// `brink_ide::fix::batch`'s own `the_author_is_left_with_both_imports_
+    /// written_out` test pins for `fix_all` directly: two rounds, both
+    /// imports landing on their own line above the `INCLUDE` block.
+    ///
+    /// No fixer registered today declares `Safe` (§9's first-wave candidates
+    /// haven't landed), so this promotes the `Suggested`-tier `E025` fixer to
+    /// `auto` and lifts the `Select` tier gate — exactly how a project's own
+    /// `[fix]` table would promote it (§6.1) — rather than exercising the
+    /// literal `Select{tiers: [Safe]}`/default-`FixPolicy` values
+    /// `fix_all_action` hardcodes, which cannot batch anything until a `Safe`
+    /// fixer exists. That production wiring is covered separately by
+    /// `fix_all_brink_is_gated_behind_explicit_only_and_empty_with_no_safe_fixer`
+    /// in `tests/integration.rs`, which asserts today's honest empty result
+    /// over the wire.
+    #[test]
+    fn fix_all_workspace_edit_batches_two_colliding_fixes_into_one_edit() {
+        use brink_ide::fix::{FixMode, FixPolicy, Select};
+        use brink_ide::session::IdeSession;
+        use brink_ir::DiagnosticCode;
+
+        const QUEST: &str = "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n";
+        const MARKET: &str = "#@module(market)\n== barter ==\n#@public\nDeal.\n-> DONE\n";
+        const TOWN_BEFORE: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink\n\
+             == square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
+        const TOWN_AFTER: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink\n\
+             IMPORT { ambush } FROM quest\nIMPORT { barter } FROM market\n\
+             == square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
+
+        // Absolute paths: `fix_all_workspace_edit` builds each changed
+        // file's `Url` via `Url::from_file_path`, which requires one (and
+        // is why the LSP's own `db.file_path` always holds one — every
+        // path reaches the db through `Self::uri_to_path`, `file://`'s own
+        // absolute form).
+        let files: [(&str, &str); 3] = [
+            ("/quest.ink", QUEST),
+            ("/market.ink", MARKET),
+            ("/town.ink", TOWN_BEFORE),
+        ];
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        for (path, src) in files {
+            session.update_source(path, src.to_owned());
+        }
+        for (path, src) in files {
+            session.update_and_analyze(path, src.to_owned());
+        }
+
+        let select = Select::all();
+        let policy = FixPolicy::new().with(DiagnosticCode::E025, FixMode::Auto);
+        let edit = fix_all_workspace_edit(session.db(), &select, &policy)
+            .expect("two colliding E025 auto-imports should batch into one edit");
+
+        let changes = edit.changes.expect("workspace edit carries file changes");
+        assert_eq!(changes.len(), 1, "only town.ink changed: {changes:?}");
+        let (uri, edits) = changes.iter().next().expect("just asserted len == 1");
+        assert!(
+            uri.as_str().ends_with("town.ink"),
+            "changed file must be town.ink, got {uri}"
+        );
+        assert_eq!(
+            edits.len(),
+            1,
+            "one whole-file replace per changed file: {edits:?}"
+        );
+        assert_eq!(
+            edits[0].new_text, TOWN_AFTER,
+            "both imports must land, in fix_all's own round order"
+        );
+    }
+
+    /// Review finding on PR #3455 (backend.rs:3615/3618, the two arms that
+    /// resolve a changed file into a `TextEdit`): a file whose path can't
+    /// round-trip through [`Url::from_file_path`] must abandon the whole
+    /// batch (`return None`), not just be dropped from it — a `fix_all`
+    /// pass spans the whole compilation (§4), so a `WorkspaceEdit` missing
+    /// one of its files is a *partial* multi-file change silently applied
+    /// to the author's tree, exactly the failure the sibling quickfix arm
+    /// (`fix_code_actions`'s `resolvable = false` + `break`) already treats
+    /// as fatal to its own fix.
+    ///
+    /// Two independent host files each reference an unimported public knot
+    /// from their own sibling provider module — one pair lives under an
+    /// absolute directory (`/questA.ink`, `/townA.ink`), the other under a
+    /// relative one (`questB.ink`, `villageB.ink`), so `resolve_include_path`
+    /// (`brink-db/src/db.rs`) still joins each pair correctly while only the
+    /// second host's path fails `Url::from_file_path`. Before the fix this
+    /// returned `Some(WorkspaceEdit)` carrying only `townA.ink`'s fix,
+    /// silently dropping `villageB.ink`'s; the fix makes it `None`.
+    #[test]
+    fn fix_all_workspace_edit_abandons_the_whole_batch_when_one_file_path_is_not_a_url() {
+        use brink_ide::fix::{FixMode, FixPolicy, Select};
+        use brink_ide::session::IdeSession;
+        use brink_ir::DiagnosticCode;
+
+        const QUEST_A: &str = "#@module(questA)\n== ambushA ==\n#@public\nGotcha!\n-> DONE\n";
+        const TOWN_A: &str =
+            "#@module(townA)\nINCLUDE questA.ink\n== square ==\nHi\n* [Fight] -> ambushA\n";
+        const QUEST_B: &str = "#@module(questB)\n== ambushB ==\n#@public\nGotcha!\n-> DONE\n";
+        const VILLAGE_B: &str =
+            "#@module(villageB)\nINCLUDE questB.ink\n== hamlet ==\nYo\n* [Fight] -> ambushB\n";
+
+        // `/townA.ink` is absolute (`Url::from_file_path` succeeds);
+        // `villageB.ink` has no leading `/` (it fails) — both providers sit
+        // alongside their own host so `resolve_include_path` still joins
+        // each `INCLUDE` correctly within its own pair.
+        let files: [(&str, &str); 4] = [
+            ("/questA.ink", QUEST_A),
+            ("/townA.ink", TOWN_A),
+            ("questB.ink", QUEST_B),
+            ("villageB.ink", VILLAGE_B),
+        ];
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        for (path, src) in files {
+            session.update_source(path, src.to_owned());
+        }
+        for (path, src) in files {
+            session.update_and_analyze(path, src.to_owned());
+        }
+
+        let select = Select::all();
+        let policy = FixPolicy::new().with(DiagnosticCode::E025, FixMode::Auto);
+        let edit = fix_all_workspace_edit(session.db(), &select, &policy);
+        assert!(
+            edit.is_none(),
+            "one file's fix cannot be represented as a URL, so the whole \
+             batch must be abandoned rather than shipping townA.ink's fix \
+             alone: {edit:?}"
+        );
     }
 }

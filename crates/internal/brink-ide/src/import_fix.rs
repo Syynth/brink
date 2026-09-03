@@ -162,7 +162,10 @@ pub fn import_edit(
 
 /// The byte offset (at the start of a line) at which to insert the new
 /// `IMPORT` line: after an existing `IMPORT` block, else after the `INCLUDE`
-/// block, else at the top below any leading comment / `#@module` header.
+/// block, else at the top below any leading comment / `#@module` header —
+/// where the header scan also steps over a leading `INCLUDE` run, so a
+/// module-headed file with no imports gets its first `IMPORT` below its
+/// `INCLUDE`s, not between the header and them (#3448).
 fn insertion_byte(hir: &brink_ir::HirFile, source: &str) -> usize {
     if let Some(span) = import_block_span(hir, source) {
         line_start_byte(source, span.end_line + 1)
@@ -174,13 +177,13 @@ fn insertion_byte(hir: &brink_ir::HirFile, source: &str) -> usize {
 }
 
 /// The 0-based line index of the first line that is **not** part of a leading
-/// `//` / `///` comment / `#@module` directive / blank-line block.
+/// `//` / `///` comment / `#@module` directive / `INCLUDE` / blank-line block.
 fn leading_header_block_end(source: &str) -> u32 {
     let mut last_header_plus_one = 0u32;
     for (line, raw) in source.lines().enumerate() {
         let line = u32::try_from(line).unwrap_or(u32::MAX);
         let t = raw.trim_start();
-        if t.starts_with("//") || t.starts_with("#@module") {
+        if t.starts_with("//") || t.starts_with("#@module") || t.starts_with("INCLUDE") {
             last_header_plus_one = line + 1;
         } else if !t.is_empty() {
             break;
@@ -255,6 +258,18 @@ mod tests {
         assert_eq!(
             out,
             "INCLUDE a.ink\nINCLUDE b.ink\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
+        );
+    }
+
+    #[test]
+    fn inserts_below_include_block_under_a_module_header() {
+        // #3448: the exact shape the issue is about — header, INCLUDEs, no
+        // imports. The new IMPORT must land after both INCLUDEs.
+        let src = "#@module(town)\nINCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n";
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
+        assert_eq!(
+            out,
+            "#@module(town)\nINCLUDE a.ink\nINCLUDE b.ink\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
         );
     }
 

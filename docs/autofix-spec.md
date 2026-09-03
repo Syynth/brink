@@ -297,12 +297,25 @@ per-code entries) is not built yet. Validated the same way `[lints]`'s value
 is (`"off" | "ask" | "auto"`, a wrong TOML type or an unrecognized spelling
 is a `ConfigError`, never a panic; an unrecognized *code* is accepted here
 regardless — this crate stays dependency-free of the real `DiagnosticCode`
-set, same split `validate_lint_code` uses). The diagnostic `[lints]` raises
-for an unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
-still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to hang
-it off, so it's tracked as a follow-up rather than built here (#3447, to
-land when a fix-policy engine first reads the table and reconciles it with
-milestone 3's type). `ProjectConfig::effective_fix_policy(code,
+set, same split `validate_lint_code` uses).
+
+*As built (#3447):* the diagnostic `[lints]` raises for an unrecognized
+*code* is no longer owed for `[fix]`. `AnalysisOptions::apply_project_config`
+(`brink-analyzer`) gained a `validate_fix_code` sibling to
+`validate_lint_code` — same "resolve against the real `DiagnosticCode` set,
+never silently drop" `ConfigWarning` channel and wording shape, minus
+`validate_lint_code`'s `is_overridable` gate (a fix policy never touches a
+code's severity, so every real code — including an `Error`-default one — is
+eligible to carry one). The check runs over every `[fix]` key inside
+`apply_project_config` itself, which both of `[lints]`'s own reader roads
+already call — `brink_environment::resolve_options` (the compile road) and
+`brink-web`'s `EditorSession::apply_parsed_config` (the studio/db road) —
+so an unrecognized `[fix]` code now warns on the exact same two channels an
+unrecognized `[lints]` code already did, with no new call site needed at
+either of milestone 3's/4's actual consumers
+(`EditorSession::fix_policy`/`brink-cli`'s `fix` subcommand).
+
+`ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix
@@ -359,6 +372,55 @@ anything.
   half exists, because the currency change forced it — the three migrated
   fixers would otherwise have gone dark over LSP. `diagnostics: [d]` and
   `source.fixAll.brink` remain this surface's own milestone.
+  *As built (#3422, milestone 7):* both remaining halves. `fix_code_actions`
+  inlines the diagnostic-dispatch loop `fixes_at` runs (rather than calling
+  it) so it can pair each collapsed `Fix` with the diagnostic that produced
+  it, and attaches that as the action's single-element `diagnostics`. Two
+  independent suppression paths both apply before a fix is ever offered,
+  matching what the Problems panel shows: the diagnostic list is run
+  through `brink_ir::suppressions::apply_suppressions` first (a
+  `// brink-disable-file`/`@[allow(…)]`-suppressed diagnostic is dropped
+  outright, same as `brink_ide::fix::batch::collect` and the publish path),
+  and each survivor's action is skipped when `convert::diagnostic_to_lsp`
+  (the same conversion the Problems-panel road uses) returns `None` for a
+  `[lints] allow`-leveled code (#3173).
+  `source.fixAll.brink` is `fix_all(Select{tiers: [Safe]}, FixPolicy::
+  default())` — `[fix]`-table promotion does not reach it yet, since
+  reconciling `brink.toml`'s table with `brink_ide::fix::policy::FixPolicy`
+  is tracked as issue #3489, not built here (§6.1 covers only `[fix]`-code
+  validation, landed by #3447) — run on a private scratch
+  `IdeSession` that mirrors the live project's `AnalysisOptions` and every
+  loaded file's current source — **but not its native/ink roots or compile
+  entry**: `IdeSession` exposes no root or entry setter, so native module
+  identity in the scratch mints from each file's full absolute path rather
+  than the live project's mounted root, and with no entry configured, fix
+  selection falls back to every loaded file (including the mounted stdlib)
+  instead of the live compile closure. The fixes computed here can
+  therefore diverge from what the live diagnostics show; closing that gap
+  is tracked as issue #3458, which milestone 8 must land before the first
+  `Safe` fixer makes this path live. **Never the live db** either way: a
+  `codeAction` request fires continually to populate a client's lightbulb
+  menu, not only right before an edit is accepted, so a batching pass that
+  mutated the live project here would silently pre-fix files whose open
+  buffers had not actually changed. The fixpoint's final state is reduced
+  to one whole-file `TextEdit` per changed file (not a minimal per-line
+  diff) — simple and always valid, at the cost of not preserving an
+  unrelated concurrent edit to the same file made between the request and
+  the client applying it, the same trade-off any whole-document formatter
+  edit already accepts; a file whose path can't round-trip through
+  `Url::from_file_path` or whose length overflows `u32` abandons the whole
+  batch (`return None`) rather than shipping a `WorkspaceEdit` with the
+  rest silently applied. The action itself is computed only when a
+  `codeAction` request's `context.only` explicitly names
+  `source.fixAll.brink` (or a shared prefix, `"source"`/`"source.fixAll"`),
+  and even then only after a cheap check — no scratch session is built at
+  all — that some registered fixer's `max_applicability` admits the
+  selected tiers; the whole-compilation pass itself is too expensive to pay
+  on every unfiltered lightbulb-menu request, and VS Code's own
+  fix-on-save always sends that filter. No registered fixer declares
+  `Safe` yet (§9's first-wave candidates are a later milestone), so
+  `source.fixAll.brink` is a correct no-op today — it starts batching the
+  moment the first one lands, once #3458 also closes.
 - **wasm DTO** (`@brink-lang/web`): `FixJs { code, title,
   applicability, edits: FileEditJs[], caret? }`. *As built (#3377):*
   `fixes_at` / `fixes_at_doc` return it (offsets are UTF-16 file-absolute,
@@ -367,6 +429,68 @@ anything.
   existing cross-file apply seam already consumes — so a fix reaches the
   buffers by the same road a rename does. `resolve_code_action` stays for
   structural refactors.
+
+*As built (#3420, milestone 5):* the studio half of this section — the
+Problems panel's per-row **Fix** and header **Fix all safe (N)**, the row's
+context-menu fix entries, the editor context menu's fix group plus "Fix all
+safe in this file", the palette's two `fix.allSafe*` commands, and fix on
+save. Six decisions the sketch left open, decided here:
+
+- **The header's `N` is `collect().len()`, not a `max_applicability` tally.**
+  The sketch's "from `max_applicability` counts" would count a diagnostic's
+  *potential*; the button promises what pressing it does. `fix_count` runs
+  the batch's own `collect` — the policy's `admits` gate applied, identical
+  fixes collapsed — so the number and the action cannot disagree.
+- **The Problems panel makes ONE fix query per compile, not one per row.**
+  `fix_offers(select)` answers every OFFERED fix of the selection paired
+  with its diagnostic's `(path, start, end, code)`, and each row looks
+  itself up. A per-row query would be one wasm call per visible diagnostic
+  on every render. "Offered" is `FixPolicy::offers` (everything except a
+  code the project turned `"off"`), and each entry carries `batchable` —
+  `FixPolicy::admits` — so a surface can tell "you may click this" from
+  "the batch will take this" without a second query.
+- **`fix_all` over wasm leaves the session unchanged.** The loop must
+  rewrite sources to re-analyze between rounds (§5), but they are restored
+  before it returns and the report carries `files` instead: every path whose
+  text changed, with its full new source. That is not cosmetic symmetry with
+  `apply_fix` — the studio's apply seam snapshots each file for undo *as it
+  writes*, so a session left holding the fixed text would snapshot the fixed
+  text and make Undo a no-op.
+- **The report's sites carry no offsets.** `Report::applied`'s ranges are
+  positions in the revision the round that took them saw, and later rounds
+  rewrote that source; resolving them against the current text would report
+  positions that never existed. `FixSiteJs` is `{ code, path }`.
+- **`apply_fix_at_path` exists because a Problems row names its own file.**
+  `apply_fix` reports its result against the *active* file, which for a row
+  in an unopened file is the wrong primary.
+- **§6.2's app setting is `off | safe | project`, default off, and it
+  resolves as a CEILING rather than a tier filter.** "Safe only" is the
+  ceiling `"ask"`: at that ceiling a Safe fix keeps its `auto` tier default
+  and a Suggested fix — promoted by the project or not — resolves to `ask`
+  and is not batched. Both roads go through
+  `ProjectConfig::effective_fix_policy`, so the still-tentative ceiling
+  relationship stays in one place. The setting lives with the other
+  app-scope editor settings (`brink-studio.editor.v1`); an unrecognized
+  persisted value lands on off. On-save runs after the editor's text is
+  flushed into the session and before the write, and deliberately does NOT
+  push an undo entry or a toast of its own — an implicit action on every
+  Ctrl-S would make both noise.
+
+*As built (#3462):* `file.save`'s host-save write narrows to the focused
+path — correct for an ordinary edit, but fix-on-save's batch (like any
+other batch apply) can rewrite files OTHER than the one being saved (a
+cross-file fix), and those were staying staged and silently unpersisted —
+"saved" while a sibling file the same batch touched stayed dirty with no
+warning. `runFixOnSave` already reports every path it actually rewrote;
+`file.save` now checks that return, and when it names more than the
+focused path, routes the write through the SAME per-path confirm→retire
+algorithm `file.saveAll` uses (`brink-studio/src/file-commands.ts`'s
+`hostSaveBatch`, shared by both commands rather than duplicated), narrowed
+to exactly the touched set — not every dirty file, which is Save All's job,
+not an implicit side effect of Ctrl-S. A toast names the OTHER file(s)
+written; the focused file's own `Saved <path>` notice, and fix-on-save's
+still-deliberate no-toast-of-its-own rule for the file being saved, are
+unchanged.
 
 ## 8. `brink fix` — RULED
 
@@ -384,17 +508,129 @@ Exit status: 0 when the fixpoint is reached, non-zero when the round
 cap hit or a fixer failed to discharge its diagnostic (the report names
 it).
 
+*As built (#3421, milestone 6):* `PROJECT|ENTRY` is one positional entry
+file, exactly `brink compile`'s own addressing — `brink-cli`'s own
+`crate::ide::project::Project::load` (already shared by `brink ide`;
+`brink_ide` itself has no `Project` type) discovers `brink.toml` from the
+entry's directory and follows `INCLUDE`s (or the native module graph); a
+bare file with no discovered `brink.toml` is the same code path with an
+empty `ProjectConfig`, not a second mode. `--suggested` takes an *optional*
+value rather than the sketch's required list: bare, it promotes every
+Suggested-max fixer in the registry for this run *except one the project's
+`brink.toml` `[fix]` table explicitly sets to `"off"`* — `off` means never
+offer or batch a fixer for this code in this project
+(`docs/book/src/toolchain/project-config.md` §Fix policy), and a codeless
+flag is not the "explicit action" that widens it; `--suggested E025,E080`
+names codes explicitly, and naming a code *is* that explicit action, so it
+wins over `[fix]` for those codes even over an `"off"` entry — the same
+`CLI/API > file > default` precedence (#1005) `-D`/`--warn`/`--allow` follow
+over `[lints]`, and exactly `--suggested E033`, §6.2's own sanctioned
+widening example (a code-explicit form, not the bare one).
+`ProjectConfig::effective_fix_policy`'s `Ask` (`docs/autofix-spec.md` §6.1's
+neutral value, returned identically for an absent entry and an explicit
+`= "ask"`) is deliberately **not** recorded as a `brink_ide::fix::policy::
+FixPolicy` override — doing so would force a Safe-max fixer down to
+non-batchable, which the TOML comment's own "absent ⇒ ask: … batchable
+(Safe)" rules out; only `Off`/`Auto` become overrides.
+
+One flag beyond the sketch: `--placeholder` lists every `Applicability::
+Placeholder` fix available in the selection (code, location, title), on
+**stderr** — never stdout, so it can never land inside a `--diff` patch
+piped straight to `git apply` — alongside whichever of `--dry-run`/`--diff`/
+the default write already ran; never applied, since `FixPolicy::admits`
+refuses `Placeholder` unconditionally (§3) however a project's `[fix]` table
+is written. It exists so an author (or a CI step driving `--dry-run`) can
+see where a hole needs filling by hand without a second invocation. No
+fixer registered today (milestone 6) declares `Applicability::Placeholder`,
+so this listing has no positive-path test yet — tracked as issue #3456,
+alongside the native (`.brink`) write-path fixture gap noted below.
+
+`--diff` composes with `--dry-run` rather than one silently overriding the
+other (issue #3463): the diff still goes to its destination, nothing is
+written, and the report — which `--diff` alone does not print, matching the
+pipeable-patch contract above — is printed to **stderr** when `--dry-run`
+asked for it, same stream as `--placeholder`'s listing and for the same
+reason (stdout must stay a clean `git apply`-able patch). A capped run
+(`Report::cap_hit`, non-zero exit) always prints the report to stderr under
+`--diff` too, `--dry-run` or not — the exit code must never go unexplained.
+`brink-project-config`'s `FixPolicy -> brink_ide::fix::policy::FixMode`
+bridge described two paragraphs up (`Off`/`Auto` recorded, `Ask` elided) is
+a single function, `FixMode::from_config`, that this CLI and the wasm batch
+surface (`brink-web`'s `fix_batch.rs`, §7) both call — it used to be
+hand-rolled identically in each (issue #3464).
+
+The report itself names `applied`/`skipped_overlap` sites by file path only,
+never a line:col: their `FixSite.range` was captured against whichever
+round's source was current *then*, and a later round's own edits shift
+every offset after it — resolving a stale range against the final source
+would print a confidently wrong position. `remaining` (recomputed once,
+after the loop, against the session's then-current source) is the only
+bucket a line:col is safe to render from.
+
+Out of scope for milestone 6: `resolve_fs_path`'s native (`.brink`)
+write-path branch (`crate::ide::project::resolve_fs_path`, `ide/project.rs`)
+rejoins a discovered key against `native_source_root(entry)` rather than
+treating it as cwd-relative — the branch a nested `.brink` project (a
+`brink.toml` above `entry`'s own directory) takes. Every fixture this
+milestone ships (`tests/fix/E025`) is `.ink`, so `brink fix`'s own tests
+only ever exercise the identity (cwd-relative) branch; there is no `.brink`
+sibling fixture proving the write actually lands on the real file rather
+than a phantom cwd-relative path. Tracked as issue #3456 alongside the
+`--placeholder` coverage gap above.
+
 ## 9. First-wave membership
 
 Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
-- **Safe**: E014 bare `~` → delete the line; E092 redundant
-  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
-  E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
+- **Safe**: E014 bare `~` → delete the line (issue #3423 — ink-only;
+  `E014` also covers a handful of unrelated malformed-partial parses that
+  share the code, and the fixer re-derives effect-freedom from the CST
+  itself to refuse those rather than trust the diagnostic — see
+  `crates/internal/brink-ide/src/empty_logic_line_fix.rs`'s module doc);
+  E092 redundant
+  `#@public`/`#@private` → delete the directive line, including any
+  leading indentation on it (issue #3424, `RedundantVisibilityFixer`,
+  `crates/internal/brink-ide/src/redundant_visibility_fix.rs`; ink-only —
+  a native file's module is always `declared` (defaults `Private`), so
+  native's own `pub` mark can never be redundant in practice on the
+  `ProjectDb`/compile roads and this diagnostic cannot fire there, but the
+  fixer still checks the dialect first since it only ever parses with the
+  ink grammar; also offers nothing for a stacked pair of conflicting
+  visibility directives, itself also `E093` and ambiguous about which line
+  the diagnostic means, nor for an `@[public]`/`@[private]`
+  annotation-channel mark anywhere in the leading run — it rides the same
+  directive list a `#@…` tag line resolves against, so it can be the
+  redundant `chosen` mark or conflict with one, but this fixer's only edit
+  shape is deleting a tag line; a leading-run tag line a *following*
+  `VAR`/`CONST`/`LIST`/`EXTERNAL` claims for itself is excluded from the
+  knot/stitch's own count, not misattributed to it);
+  E095 self-alias `#@was` → delete
+  (issue #3425 — withheld outright — no fix offered — when the same
+  physical tag line is also a *live* rename for a different owner than
+  the one that self-aliased: a file-level module self-alias whose line
+  also attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` with a
+  differently-named `#@was` argument, or a declaration-level self-alias
+  whose file's leading run carries a differently-named `#@module` —
+  see `crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc);
+  E110 `#@effects(…)` → `@[effects(…)]` (issue #3426 — the two spellings
+  do not share an argument grammar: the tag spelling freezes the legacy
+  **colon** shape (`reads: gold, hp`) forever, while the annotation uses
+  the amended **paren-clause** shape (`reads(gold, hp)`), so the fixer
+  translates the parsed assertion rather than copying its argument text —
+  see `crates/internal/brink-ide/src/effects_tag_fix.rs`'s module doc;
+  withheld when the tag is dynamic, has no argument list, or fails to
+  parse under the legacy grammar); E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
-  (the discarded args were already being ignored); empty choice
-  `* []` → `* ->` (#3365).
+  (issue #3428 — the classic call/divert convention these two codes
+  cover binds the **trailing** supplied argument, not the leading one
+  "over-supplied args" suggests, so the fixer deletes the **leading**
+  excess and keeps the trailing `expected` — see
+  `crates/internal/brink-ide/src/arity_trim_fix.rs`'s module doc for the
+  empirical proof; withheld outright — no fix offered — when a leading
+  argument isn't provably pure, when the call's own return value isn't
+  popped in isolation from a larger expression, or when the target
+  declares a `ref` parameter); empty choice `* []` → `* ->` (#3365).
 - **Suggested**: E026 duplicate list item → delete (changes host state);
   E033 unreachable after divert → delete; E035/E054/E188 shadowing or
   colliding name → rename (rides the rename machinery, cross-file);

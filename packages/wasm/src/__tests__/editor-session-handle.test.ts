@@ -23,6 +23,7 @@ import { describe, it, expect, vi } from "vitest";
 const hoisted = vi.hoisted(() => {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   let configuredEntryStub: string | undefined;
+  let fixAllReportStub = "{}";
   class EditorSessionStub {
     set_semantic_type_check(level: unknown): void {
       calls.push({ method: "set_semantic_type_check", args: [level] });
@@ -68,12 +69,19 @@ const hoisted = vi.hoisted(() => {
       // path's remove is refused (returns false), everything else succeeds.
       return path !== "std/core.brink";
     }
+    fix_all(json: unknown): string {
+      calls.push({ method: "fix_all", args: [json] });
+      return fixAllReportStub;
+    }
   }
   return {
     calls,
     EditorSessionStub,
     setConfiguredEntry: (value: string | undefined) => {
       configuredEntryStub = value;
+    },
+    setFixAllReport: (report: string) => {
+      fixAllReportStub = report;
     },
   };
 });
@@ -353,5 +361,59 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     // property of what the write attempted, not evidence nothing needs
     // re-analyzing (mirrors `updateFile`'s bump-regardless contract).
     expect(handle.generation).toBe(before + 2);
+  });
+
+  // Adversarial review on PR #3454 (finding 1): `fixAll` bumped `generation`
+  // unconditionally even though `fix_all`'s decision 3 (`docs/autofix-spec.md`
+  // §5) rolls the session back to exactly what it was. `mutationCount` is
+  // the cache key `ProjectSession.compileProject()` keys on
+  // (`packages/ink-editor/src/project-session.ts`), so an unconditional
+  // bump forces a full project recompile on every `fixAll` call — including
+  // the common `runFixOnSave` path, where today's all-Suggested fixer
+  // roster makes the batch a no-op at the "safe" ceiling on every save.
+
+  it("does NOT bump generation when fixAll's report applies no files (a no-op batch)", () => {
+    hoisted.setFixAllReport(
+      JSON.stringify({
+        applied: [],
+        skipped_overlap: 0,
+        remaining: [],
+        rounds: 0,
+        cap_hit: false,
+        files: [],
+      }),
+    );
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const report = handle.fixAll({ tiers: ["safe"] });
+
+    expect(hoisted.calls).toEqual([
+      { method: "fix_all", args: [JSON.stringify({ tiers: ["safe"] })] },
+    ]);
+    expect(report.files).toEqual([]);
+    expect(handle.generation).toBe(before);
+  });
+
+  it("bumps generation when fixAll's report actually rewrites a file", () => {
+    hoisted.setFixAllReport(
+      JSON.stringify({
+        applied: [{ code: "E025", path: "main.brink" }],
+        skipped_overlap: 0,
+        remaining: [],
+        rounds: 1,
+        cap_hit: false,
+        files: [{ path: "main.brink", new_source: "use a::b;\n" }],
+      }),
+    );
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const report = handle.fixAll({});
+
+    expect(report.files).toHaveLength(1);
+    expect(handle.generation).toBe(before + 1);
   });
 });

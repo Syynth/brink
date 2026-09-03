@@ -18,6 +18,36 @@ use super::DiagnosticCode;
 
 pub(super) const EXPLANATIONS: &[(DiagnosticCode, &str)] = &[
     (
+        DiagnosticCode::E014,
+        r"A `~` logic line that lowers to no statement at all: not a `~ temp`
+declaration, not an assignment, not a `return`, not a `~ { … }` block, not
+an `await`, and not even a bare expression — just `~` followed by nothing
+the grammar recognizes as the start of one. The line contributes nothing to
+the compiled program, so the compiler flags it rather than silently
+dropping it.
+
+`E014` also covers a handful of unrelated **malformed** partial parses that
+happen to share the code — fourteen other raise sites in total, across
+three files: `~ temp` and `~ x =` (target/value) shapes with a missing
+name or value in `hir::lower::content::logic_line`, the `~ { … }`
+block-statement mirrors (`TempDecl`/`Assignment`/`ForStmt`) in
+`hir::lower::content::logic_block`, and the native surface's own
+`let`/`assign`/`for` mirrors missing their name, place, or value in
+`hir::lower_native::control_flow`. Those are error-recovery diagnostics
+over a real, if broken, construct — not an empty line — and the auto-fix
+below is careful to tell the two apart.",
+    ),
+    (
+        DiagnosticCode::E031,
+        r"`brink_analyzer::resolve::check_arity` compares an ordinary call site's
+supplied argument count against the resolved target's declared parameter
+count. This is `Warning`-tier: the mismatched program still compiles and
+runs — the call site's excess or missing arguments are a mechanical
+problem the compiler can point at, not one that blocks the build.
+`E176` is this diagnostic's sibling for a divert/tunnel/thread-start call
+shape rather than an ordinary call.",
+    ),
+    (
         DiagnosticCode::E035,
         r#"`brink-analyzer::manifest`'s symbol-declaration pass warns whenever an
 author declares a `VAR`, `CONST`, `EXTERNAL`, or knot (including a
@@ -90,6 +120,15 @@ The confusing part is that the declaration is still sitting right there in the s
 This mechanism is shared LIR lowering, reached from both source surfaces: ink's own `~ { … }` block syntax, and the native `.brink` surface's own code-ground logic blocks, which lower through the identical scope-tracking pass (see the native lowering's own cross-reference to this exact E082 arm in `hir::lower_native::body::mark_split_logic_block_scopes`'s doc comment, guarding a `> text` prose-line split against attributing a later read to the wrong block).
 
 **Plain classic temps behave differently.** A *classic* `temp` — one declared directly in a knot/stitch body, not inside a nested block — used before its own declaring statement is a forward reference on the flow graph, not a lexical-scope defect: it lives in the same call frame, so since issue #3362 it resolves to that frame's own slot (`temp_slot_raw`) and is reported as [E193](E193.md), a `[lints]`-overridable warning, while the runtime reads the still-unset slot as ink's missing-variable default. (Until #3362 it emitted a hashed `GetGlobal`/`RefGlobal` id — matching how the converter's own hashing works — with no compile diagnostic at all, which failed at link with `unresolved global`.) A block-scoped temp read after its block closes gets the opposite treatment on purpose — it is unambiguously a real defect, and one that was never expressible in inklecate at all, so it is refused at compile time instead of deferred to a runtime fault (the #680 root cause this diagnostic replaced)."#,
+    ),
+    (
+        DiagnosticCode::E092,
+        r"`brink-analyzer::manifest::insert_symbol`'s `effective_visibility` applies
+declaration-flips-default (`docs/modules-spec.md` §4): a declared module
+(`#@module(name)` present) defaults `Private`; an undeclared stem-module
+defaults `Public`. An explicit `#@private`/`#@public` override that names
+exactly that default changes nothing — the effective visibility is the same
+either way — so it warns rather than silently doing nothing.",
     ),
     (
         DiagnosticCode::E156,
@@ -575,5 +614,62 @@ name, is untouched by this check. A compound assignment (`~ n += 1`) or
 a read, not a write — the message still names the right operation because
 `ReadCollector` (shared with `E193`) only discounts a plain `Set` target as
 "not a read", never a compound one."#,
+    ),
+    (
+        DiagnosticCode::E195,
+        r#"The check runs once per choice line, during HIR lowering
+(`hir::lower::choice::LowerChoice::lower_choice`), and looks at exactly the
+evidence inklecate's own parser looks at: the choice's own line, not
+whatever is nested underneath it. It fires only when **all** of the
+following hold:
+
+- no divert on the choice's own line — `* ->` counts as having one, even
+  though the divert has no target; only a line with no `->` token at all
+  counts as "no divert",
+- no tag directly on the choice line (`* #tag`) — matching inklecate, which
+  does not warn on a tag-only choice either,
+- and no real text in any of the three same-line content regions ink's
+  grammar gives a choice (`text[bracket]inner`) — including an *explicit but
+  empty* `[]`, which still parses to a zero-width content node, not to
+  nothing.
+
+**A `(label)` or `{condition}` guard does not exempt a choice from this
+check.** The reference's own `emptyContent` computation
+(`startContent`/`innerContent`/`optionOnlyContent`) has no such carve-out,
+and measurement against inklecate confirms it fires anyway: both `* (opt)`
+and `VAR x = true` / `* {x}`, each followed by a blank line, still emit
+"Choice is completely empty…" — see the fires examples below.
+
+Nested content *underneath* the choice line — the block that plays after the
+choice is selected — is never consulted. `* []` followed by an indented
+paragraph still fires: inklecate's own check works the same way, since the
+nested block is parsed as a separate weave continuation, after the single
+line `Choice()` has already decided whether to warn.
+
+**Why the check lives in lowering, not in a later analyzer pass over the
+built `hir::Choice`** (contrast [E034](E034.md), which runs entirely over
+already-lowered `Choice` values): an explicit-but-empty divert (`* ->`) and
+no divert at all (`* []`) are indistinguishable once lowered — both leave no
+`Stmt::Divert` in the choice's `body.stmts`, since a target-less divert
+carries no target to lower into one. Whether a `->` token was written at
+all is evidence that exists only on the AST, at the point `lower_choice`
+already has it in hand, so the check runs there instead of being
+reconstructed later from a shape that has already thrown the distinction
+away.
+
+**Ink surface only.** This is not wired into the native `{? … }` surface's
+own `lower_choice`. inklecate is an ink-only tool, so ink is the surface
+this diagnostic's parity claim is actually about — but the deeper reason is
+that the same rule would be actively wrong for native: native choices
+routinely put their only divert *inside* the choice's braced body
+(`{? * { -> knot } }`), which this check's same-line-only evidence does not
+see, so wiring it in as written would warn on completely ordinary native
+code. Native already has its own, unambiguous slot for "no visible option"
+— `else { … }` — which lowers with `is_fallback: true` and needs no warning
+about being empty; it is supposed to be."#,
+    ),
+    (
+        DiagnosticCode::E110,
+        r"`#@effects(…)` was the original tag-channel spelling of a knot/stitch's effects assertion. The `@[effects(…)]` annotation is the final NS-A2 form (`docs/stdlib-spec.md` §9.2, ruled 2026-07-18), and the two spellings are **not** interchangeable text: `#@effects(…)` keeps the legacy **colon** argument grammar (`reads: gold, hp`) frozen forever, while `@[effects(…)]` uses the amended **paren-clause** grammar (`reads(gold, hp)`, 2026-07-19). The tag spelling still parses — nothing about the assertion's meaning changes — but every new definition should use the annotation spelling, and this warning is how an existing `#@effects(…)` site is found.",
     ),
 ];

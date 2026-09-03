@@ -926,6 +926,85 @@ export interface Fix {
   caret?: FixCaret;
 }
 
+/**
+ * How far the *app* may go on an implicit run (`docs/autofix-spec.md` §6.2).
+ * The same three words `brink.toml`'s `[fix]` table uses, in the same space,
+ * because the effective policy is the intersection of the two — the app can
+ * only ever be more conservative than the project.
+ */
+export type FixPolicyLevel = "off" | "ask" | "auto";
+
+/**
+ * Which diagnostics a batch query acts on (`brink_ide::fix::Select` plus
+ * §6.2's ceiling). Every field is optional; `{}` is the whole compilation,
+ * every code, every tier, no app opinion.
+ *
+ * A `codes` or `path` naming something this build doesn't know selects
+ * NOTHING rather than falling back to everything.
+ */
+export interface FixSelect {
+  codes?: string[];
+  tiers?: Applicability[];
+  /** Restrict to one file — "fix all in this file". */
+  path?: string;
+  ceiling?: FixPolicyLevel;
+}
+
+/**
+ * One offered fix paired with the diagnostic site it discharges — the
+ * Problems panel's per-row road. `start`/`end` are the DIAGNOSTIC's own
+ * UTF-16 range in `path`; the fix's own `edits` may land in other files.
+ */
+export interface FixOffer {
+  /** The diagnostic code — the same value as `fix.code`, carried out here so
+   *  a row can be matched without looking inside the fix. */
+  code: string;
+  /** Project-relative path of the file the DIAGNOSTIC is reported in. */
+  path: string;
+  start: number;
+  end: number;
+  /** Whether `fixAll` would apply this unattended under the current project
+   *  policy. A "Fix all safe (N)" count must not include a false one. */
+  batchable: boolean;
+  fix: Fix;
+}
+
+/**
+ * Where a batched fix was taken. Deliberately no offsets: a report's
+ * `applied` sites are ranges in the source revision the round that took them
+ * saw, and later rounds rewrote that source.
+ */
+export interface FixSite {
+  code: string;
+  path: string;
+}
+
+/** A file `fixAll` rewrote, with its full new text — the host's write list. */
+export interface FixFile {
+  path: string;
+  new_source: string;
+}
+
+/** `fixAll`'s outcome (`docs/autofix-spec.md` §5). */
+export interface FixReport {
+  applied: FixSite[];
+  /** How many fixes were deferred to a later round because their edits
+   *  collided, summed across rounds. */
+  skipped_overlap: number;
+  /** Diagnostics the policy still admits a fix for when the loop stopped.
+   *  Empty on convergence; non-empty exactly when `cap_hit`. */
+  remaining: FixSite[];
+  rounds: number;
+  /** The loop ran out of rounds with work still admitted — reported, never
+   *  silent. */
+  cap_hit: boolean;
+  files: FixFile[];
+  /** Why nothing ran, when the request itself was unusable (a path this
+   *  session never loaded). Absent on every real run — including a run the
+   *  app-scope ceiling turned into a legitimate no-op. */
+  error?: string;
+}
+
 // ── Document handles (multi-document EditorSession) ─────────────
 
 /**

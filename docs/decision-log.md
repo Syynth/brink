@@ -4740,7 +4740,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
 - **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.
-||||||| 46916cbc5
 
 ## A cloned stateful alternative shares one counter, not one body
 - **WHEN:** 2026-09-02
@@ -4829,6 +4828,90 @@
 - **SCOPE:** moderate
 - **WHAT:** (1) The Player's reading surface follows direction C of the design pass — modern, colour-led: each speaker's block hangs off a rule in the speaker's palette colour with the name as a small label, asides inside the block, choices as cards carrying their `*`/`+` marker. Directions A (Manuscript) and B (Screenplay) are dropped. (2) The provenance affordance is a small icon button, absolutely positioned so it hangs below the row's edge over the next row, revealing `file:line` as a tooltip on hover — not a text chip in the row. (3) Hovering a transcript line highlights its source line in the editor (distinct from the follow band). (4) The transcript shows a line's tags. (5) Still open: a visual element that ties the choice cards to the transcript rows — "we're closer to good choices here, but I want something more." (6) Narration reads at full strength; action lines are the dimmed ones — "action is dimmed, narration isn't" (this reverses the Player's current italic-muted narration). (7) The provenance button is present only while its row is hovered. (8) The spine (the rail the speaker segments and choice nodes share — accepted: "that's neat") reacts to the line kind: solid coloured for a speaker, plain for narration, dotted along action text. The echo ring sits on the centre of its text line.
 - **WHY:** Maintainer, on the canvas: "C is pretty good. it's not quite there, but we can drop the other two from consideration"; the link "should be an icon button that when hovered reveals the filename:line"; "hovering the line should highlight in the editor, as well"; "i'd like to see tags in the example".
+
+## E031/E176 Safe trim removes the leading excess argument, not the trailing one
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide auto-fix (`docs/autofix-spec.md` §9, #3428, milestone 8 of #3374)
+- **SCOPE:** moderate
+- **WHAT:** The `Safe` fixer for `E031` (ordinary call over-arity) and `E176` (divert-with-args over-arity) deletes the call/divert site's **leading** `got - expected` supplied arguments and keeps the **trailing** `expected` ones — the opposite end of the list from `creation_site_fix`'s `TrimFnLiteralArgsFixer` (the `#fn(...)`/`call(...)`/`bind(...)` function-value path), which keeps the leading prefix. The safety guard (withhold the fix) therefore checks the **leading**, dropped arguments for a nested call (or, on ink, an `++`/`--` increment — native has no expression-position mutation to guard against), not the trailing ones.
+- **WHY:** Proven empirically, not inferred from reading the bytecode: compiling and playing `-> accuse("Hastings", "Poirot")` against `flow accuse(who) { I accuse {who}! }` prints "I accuse Poirot!". The classic calling convention these two diagnostics cover (`Opcode::Call`/`Opcode::CallExternal`) pushes every supplied argument in source order, and the callee's own parameter-binding prologue pops exactly its declared count off the shared value stack LIFO — so the trailing supplied argument binds to the declared parameter, and the leading excess is evaluated (for any side effect) and then silently discarded. A fixer that trimmed the trailing arguments instead would be observably wrong for any over-supplied call, which is exactly the shape `Safe` exists to rule out.
+
+## E031/E176 Safe trim also withholds on a non-isolated call site and on any `ref` param
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide auto-fix (`docs/autofix-spec.md` §9, #3428, milestone 8 of #3374)
+- **SCOPE:** moderate
+- **WHAT:** Two more conditions withhold the `E031`/`E176` `Safe` trim, on top of the leading-arguments-must-be-pure guard above: (1) the call's own return value must be popped in isolation — the call must be the entire right-hand side of a `~ temp`/`~` assignment (or, for `E176`, the entire divert; a divert is never itself nested inside a larger expression on either surface, so this only narrows `E031`'s ordinary-call shape in practice) — never a sub-expression of something larger like `~ temp r = 1 + greet(...)`; (2) the resolved target must declare no `ref` parameter.
+- **WHY:** (1) A call embedded in a larger expression leaves its leaked leading argument sitting *beneath* the call's own return value on the shared value stack; the enclosing operator's pop then reads that leaked value as its other operand instead of discarding it, so trimming the source-level leading argument changes the program's computed result rather than reproducing it — proven by `-> accuse` and this fixer's own repro, `~ temp r = 1 + greet("Al", "Bob")` against `greet(name)`, which pops `"Al"` (not `1`) as `+`'s other operand before the fix. (2) `lower_call_args` decides `ref`-ness positionally against the *declared* params, while the runtime binds the actual argument value by *trailing* position — trimming the leading arguments re-indexes which supplied argument lands on the `ref` param, silently flipping write-back (`VAR hp = 10` / `heal(ref h, amt)` / `heal(hp, hp, 5)`: before the fix `{hp}` stays `10`; after the offered trim it would become `15`). Both found in review before merge; the `Safe` tier admits no exceptions to "observably equivalent," so both are withheld outright rather than special-cased.
+
+## Fix on save is an app-scope ceiling, default off, resolved through `effective_fix_policy`
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-ui, brink-web
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** The studio's "Fix on save" setting is `off | safe | project`, defaults to **off**, and lives with the other app-scope editor settings (`brink-studio.editor.v1`) — never in `brink.toml`. It resolves as a CEILING over the project's `[fix]` table rather than as a tier filter: `safe` maps to the ceiling `"ask"` and `project` to `"auto"`, and both go through `ProjectConfig::effective_fix_policy(code, ceiling)` rather than any intersection re-derived at the call site. An unrecognized persisted value lands on `off`. The on-save run pushes no undo entry and raises no toast of its own.
+- **WHY:** `docs/autofix-spec.md` §6.2 marks the ceiling relationship TENTATIVE and asks for it to stay resolved in exactly one function, so the relationship can change in one place. The default-off half is not tentative: an editor that silently rewrites a manuscript on every Ctrl-S is not a default anyone opted into. `safe` is expressed as a ceiling rather than `Select{tiers:["safe"]}` because a tier filter would ALSO withdraw a Safe fix the project turned `"off"` — the project's own opinion has to keep applying underneath the personal one.
+
+## `fix_all` over wasm restores the session; the report carries the sources to write
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-web, studio-ui
+- **SCOPE:** moderate
+- **WHAT:** `EditorSession::fix_all` rolls the batch loop's intermediate rewrites back before returning, and reports `files: [{ path, new_source }]` instead. The host applies them through its own seam, exactly as it applies `apply_fix`'s `StructuralResult`.
+- **WHY:** The studio's apply seam (`applyMoveResult`) snapshots each file for undo *as it writes*. A session left holding the fixed text would make that snapshot capture the fixed text, and Undo after "Fix all safe" would restore nothing. Keeping the wasm query side-effect-free also makes it the same shape as every sibling on that boundary, so a host cannot be surprised by which of them mutate.
+
+## E095 Safe fix needs exactly one narrowing guard — the physical-line overlap with a following declaration's own `#@was` lookback
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide auto-fix (`docs/autofix-spec.md` §9, #3425, milestone 8 of #3374)
+- **SCOPE:** minor/local
+- **WHAT:** The `Safe` fixer for `E095` (`#@was(name)` naming a definition's own current name) deletes the stale tag line, **except** when the diagnostic's own physical line is also read by a different owner as a live (non-self) rename: (i) a file-level module self-alias whose line also attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` whose name differs from the `#@was` argument, or (ii) a declaration-level self-alias whose file also carries a `#@module` (in the same leading run) whose name differs from the argument. Both withhold the fix outright rather than deleting.
+- **WHY:** Reproduced through the production road (`brink_test_harness::corpus::compile_via_environment`): `#@module(town)` / `#@was(town)` / `VAR gold = 0` self-aliases the module (`E095` there), but `file_module_was`'s file-level scan and `VAR gold`'s own `directives_before` lookback both read the identical physical tag line — `assemble_hir_file`'s module arm documents this coincidence as "an entirely ordinary authoring style". Compiling both sides shows `alias_table` going from one live `AliasEntry` (the `VAR`'s own `town -> gold` rename) to empty once the line is deleted — the self-alias reasoning is correct for *the module*, but the same line is a live rename for the declaration. The mirror shape (`#@was(gold)` self-aliasing the `VAR`, `#@module(town)` differing) loses the module's alias instead. Neither original PR text nor `assert_safe_fix` caught this: the harness diffs traces and exported line tables only, never the alias table, so its `ObservablyEquivalent` verdict on the *unrelated* `tests/fix/E095/` fixture (where the line attaches to no declaration at all) is not evidence for this shape. Outside this one physical-line overlap the original no-narrowing reasoning holds.
+
+## E014 Safe fixer covers only the catch-all "bare `~`" shape, ink-only, and is deleted as a whole physical line
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide auto-fix (`docs/autofix-spec.md` §9, #3423, milestone 8 of #3374)
+- **SCOPE:** moderate
+- **WHAT:** `empty_logic_line_fix::EmptyLogicLineFixer` fires only when the located `LogicLine` carries none of `stmt_block()`/`await_stmt()`/`return_stmt()`/`temp_decl()`/`assignment()` and no `Expr` child either — the one `E014` raise site (`logic_line.rs`'s trailing catch-all) that is genuinely effect-free, out of **fifteen** raise sites total across three files: `logic_line.rs`'s own five (the catch-all plus four malformed-partial `~ temp`/`~ x =` shapes), `logic_block.rs`'s six `~ { … }` block-statement mirrors (`TempDecl`/`Assignment`/`ForStmt` missing a name/target/value), and `control_flow.rs`'s four native mirrors. The four `logic_line.rs` malformed-partial sites are refused by the same five-accessor structural check. The six `logic_block.rs` sites are refused by a *different* mechanism, not that check: they diagnose at the inner `TempDecl`/`Assignment`/`ForStmt` node's own range rather than the enclosing `LogicLine`'s, so the fixer's exact-range `LogicLine` lookup never matches there and returns early before the five accessors are even consulted. The fixer never fires on a native file at all: native's own "nothing after `~`" shape parses as an `EXPR_STMT` with a missing operand and raises `E015`, not `E014` — there is no native CST shape this fixer's own code is ever raised for; `control_flow.rs`'s four native `E014` sites are excluded by the same ink-only dialect gate. The deletion range extends to the whole physical line (back through any leading indentation, forward through trailing whitespace and the line break) **only when the located node's own range is itself confined to one physical line and carries no `LINE_COMMENT`/`BLOCK_COMMENT` trivia token** — a comment (single-line trailing, or a multi-line `/* … */` that pulls several physical lines into the node's own range) withholds the fix outright rather than being deleted along with the line.
+- **WHY:** The five accessors being `None` is only reachable one way in the grammar (`atom()`'s catch-all returning `false`, consuming nothing and building no node) — proven from the CST, not read off the diagnostic message, per the issue's "re-establish effect-freedom itself" requirement. Extending to the whole physical line matters because the `LogicLine` node's own range starts at the `~` token, not at the line's start — a fix that deleted only the node's own range on an indented line (e.g. inside a choice body) would leave the leading indentation glued onto the next line's content instead of removing a clean line, which is not what "delete the line" means and is not proven safe by the flush-left fixture alone. The comment guard was added on review: `Parser::skip_ws` treats `LINE_COMMENT`/`BLOCK_COMMENT` as trivia and attaches it into the `LogicLine`'s own token run, so `~ // TODO: …` passed the five-accessor check exactly like a genuinely bare `~` and the fix silently deleted the author's comment — measured before the fix (`~ // TODO: bump the score here` produced one `Safe` fix whose applied result dropped the `TODO` text entirely), which is not `Safe` by `docs/autofix-spec.md` §3's own definition (Safe requires no lost text). A multi-line `/* … */` compounded this: because it is one trivia token, the `LogicLine` node's own range already spanned every line the comment covered, so the pre-review "whole physical line" extension deleted all of them, not one.
+
+## Auto-fix: a tested end-to-end usability pathway before more fixer implementations
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** auto-fix (studio surfaces, brink fix, LSP) / process
+- **SCOPE:** moderate — sequencing of the #3374 epic
+- **WHAT:** With a handful of Safe fixers working (E025 add-import, E014,
+  E092, E095, E110, E031/E176 after waves D–F), the next work is wiring
+  and proving the *usability* of auto-fix end to end — the Problems-panel
+  Fix row and "Fix all safe (N)", the editor and Problems context menus,
+  the command palette, fix-on-save under the app setting, `brink fix`
+  over a real project, and LSP quickfixes — each covered by an e2e or
+  integration test on a fixture project that actually carries fixable
+  diagnostics, plus the usability bugs the reviews surfaced (#3447,
+  #3459, #3462, #3463, #3464). The remaining fixer implementations
+  (#3429 and the Suggested/Placeholder tiers) are backlogged until that
+  pathway exists and is tested.
+- **WHY:** Maintainer, 2026-09-03: "if we have a handful of fixes
+  working, i'd like to start working on wiring through the actual
+  usability of these, and then we can backlog the remaining fix
+  implementations, once they have a tested end-to-end pathway to be
+  usable." Every fixer PR so far was verified through Rust
+  `EditorSession` tests and vitest, never by an author clicking Fix on a
+  real project; more fixers add nothing an author can use until the
+  pathway is proven, and the pathway's own bugs (fixes offered for
+  `[lints]`-allowed codes, fix-on-save persisting only the focused file)
+  are already known.
+
+## `file.save` routes a cross-file fix-on-save write through `file.saveAll`'s own confirm→retire algorithm, narrowed to the touched set
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio (`file-commands.ts`), brink-desktop
+- **SCOPE:** minor/local
+- **WHAT:** `file.save`'s fix-on-save step now inspects `runFixOnSave`'s own return value — every path the batch actually rewrote. When that names files besides the one being saved, `file.save` no longer calls `project.save([path])`; it calls a shared `hostSaveBatch` helper (the exact per-path confirm→retire dance `file.saveAll` already used, factored out rather than duplicated) with the write narrowed to `[path, ...otherWritten]` — not the whole dirty set, which stays Save All's job. A toast names the OTHER file(s) written; the focused file's own `Saved <path>` notice and fix-on-save's no-toast-of-its-own rule are unchanged.
+- **WHY:** Issue #3462: `file.save` always narrowed its host-save write to the focused path, so a cross-file fix batch (currently latent — no registered fixer produces one yet, but `runFixOnSave` already supports it) would leave the other file staged and silently dirty while the save reported success. Reusing `file.saveAll`'s existing, already-swept confirm→retire call site (rather than adding a second one) means the race-safety property `save-retire-invariant.test.ts` pins for that call site covers this new caller too, with no new `SAVE-PATH` id or driver to maintain.
 
 ## Peek: hovering a Player transport action forecasts what it will hit
 - **WHEN:** 2026-09-03

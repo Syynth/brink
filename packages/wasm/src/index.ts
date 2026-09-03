@@ -49,6 +49,9 @@ import type {
   CodeAction,
   CodeActionData,
   Fix,
+  FixOffer,
+  FixReport,
+  FixSelect,
   ProjectFile,
   FileOutline,
   PassageLine,
@@ -1380,6 +1383,78 @@ export class EditorSessionHandle {
     this.bump();
     const json = this.session.apply_fix(JSON.stringify(fix));
     return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * `getFixes` for a named file rather than the active one — the Problems
+   * panel's per-row road, where the row already names its own file and the
+   * offset is whole-file absolute (UTF-16).
+   */
+  getFixesInFile(path: string, offset: number): Fix[] {
+    const json = this.session.fixes_at_path(path, offset);
+    return JSON.parse(json) as Fix[];
+  }
+
+  /**
+   * `applyFix` for a named file rather than the active one. The result's
+   * `path`/`new_source` describe THAT file — which is what a Problems row
+   * needs, since the row's diagnostic names its own file and the active
+   * editor may be showing something else entirely.
+   */
+  applyFixInFile(path: string, fix: Fix): StructuralResult {
+    this.bump();
+    const json = this.session.apply_fix_at_path(path, JSON.stringify(fix));
+    return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * Every auto-fix OFFERED for the diagnostics of a selection
+   * (`docs/autofix-spec.md` §7), paired with the diagnostic site it
+   * discharges. One call per compile feeds every Problems row; `{}` selects
+   * the whole compilation.
+   *
+   * "Offered" excludes only what the project's `[fix]` table turned `"off"`
+   * — a Suggested fix is offered but not `batchable`.
+   */
+  getFixOffers(select: FixSelect = {}): FixOffer[] {
+    const json = this.session.fix_offers(JSON.stringify(select));
+    return JSON.parse(json) as FixOffer[];
+  }
+
+  /**
+   * How many fixes one batch round would take for `select` — the `N` in
+   * "Fix all safe (N)". Not a tally of `getFixOffers`: this applies the
+   * policy's batching gate and collapses identical fixes, exactly as
+   * `fixAll` will.
+   */
+  countFixes(select: FixSelect = {}): number {
+    return this.session.fix_count(JSON.stringify(select));
+  }
+
+  /**
+   * Run the batch to a fixpoint (`docs/autofix-spec.md` §5).
+   *
+   * The session is left exactly as it was found — the loop's intermediate
+   * rewrites are rolled back before this returns, so the host's apply seam
+   * still snapshots the PRE-fix text for undo. Push each `files` entry
+   * through that seam to actually write.
+   *
+   * Deliberately does NOT unconditionally `bump()`: the session is restored
+   * byte-identical when nothing was applied, and `mutationCount` is the
+   * exact key `ProjectSession.compileProject()` caches on, so bumping it for
+   * a no-op batch forces a full recompile for nothing (every `Ctrl-S` with
+   * Fix on save enabled, at today's all-Suggested fixer roster). Bump only
+   * when a file was actually written — mirroring the real mutation that
+   * `applyEdit`/`updateFile` will perform once the host pushes `files`
+   * through that seam.
+   */
+  fixAll(select: FixSelect = {}): FixReport {
+    const json = this.session.fix_all(JSON.stringify(select));
+    const report = JSON.parse(json) as FixReport;
+    if (report.files.length > 0) {
+      this.bump();
+    }
+    return report;
   }
 
   getInlayHints(start: number, end: number): InlayHint[] {

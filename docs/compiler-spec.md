@@ -368,7 +368,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E194`, with
+Every diagnostic the compiler can emit has a stable code (`E001`–`E195`, with
 `E177` reserved and unused) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
@@ -595,6 +595,7 @@ through the real native driver.
 | [`E189`](diagnostics/E189.md) | An ink `TODO:` author note (issue #3050). Advisory, `Info` by default — surfaces the note's text for the Problems and TODO panels; the language's own dropped-work marker, not a defect. Recognized at weave level (top-level, knot, stitch body) and, since issue #3353, wherever branch content lines are parsed inside a multiline conditional's then-arm, `- else:` arm, or a nested block. |
 | [`E193`](diagnostics/E193.md) | A classic `~ temp` (native `~ let`) is read on a path its declaration does not dominate — a sibling choice branch, a gather reached from a branch that did not declare it, or a read written textually ahead of the declaration. Warning, `[lints]`-overridable: the story compiles and plays, reading the unset slot as ink's missing-variable default. See "Temp scope and definite assignment" below. |
 | [`E194`](diagnostics/E194.md) | A knot's `~ temp` (native `~ let`) is read from one of that knot's stitches — brink plays it correctly (one shared call frame), but inklecate rejects the identical program (`Unresolved variable`). The **compat-deny** tier's first member: `Error` by default, `[lints]`-overridable all the way to `allow`. See "Compat-deny diagnostics" below. |
+| [`E195`](diagnostics/E195.md) | A `*`/`+` choice line has no divert (even an empty `* ->`), no tag directly on the line, and no text in any of its three same-line content regions — matching inklecate's "Choice is completely empty" warning; a `(label)` or `{condition}` guard does NOT exempt it either, matching the reference. Ink surface only (raised from `hir::lower::choice`); the same rule is not wired into native's `{? … }` surface, where a body-only divert is the ordinary idiom. Warning, `[lints]`-overridable. |
 
 ## Compat-deny diagnostics
 

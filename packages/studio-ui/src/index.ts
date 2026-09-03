@@ -77,6 +77,33 @@ export {
   ProblemsContextMenu,
   type ProblemsMenuTarget,
 } from "./ProblemsContextMenu.js";
+export {
+  FIX_ALL_SAFE_FILE_COMMAND_ID,
+  FIX_ALL_SAFE_PROJECT_COMMAND_ID,
+  DEFAULT_FIX_ON_SAVE,
+  applyOfferedFix,
+  countFixes,
+  diagnosticFixKey,
+  fixOnSaveCeiling,
+  parseFixOnSave,
+  runFixOnSave,
+  type FixOnSaveDeps,
+  type FixOnSaveMode,
+  fixAllSafeLabel,
+  fixButtonTitle,
+  fixOfferKey,
+  fixReportToStructuralResult,
+  indexFixOffers,
+  offersForDiagnostic,
+  pullFixOffers,
+  runFixAll,
+  safeSelect,
+  summarizeFixReport,
+  tierLabel,
+  type FixProject,
+  type FixSession,
+  type FixStoreState,
+} from "./fixActions.js";
 export { ConfigFormPanel, isConfigPath } from "./ConfigFormPanel.js";
 export {
   COMPILED_OUTPUT_DOC_ID,

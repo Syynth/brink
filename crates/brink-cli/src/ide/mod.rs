@@ -21,6 +21,6 @@
 
 mod commands;
 mod handlers;
-mod project;
+pub(crate) mod project;
 
 pub use commands::{IdeCommand, run};
