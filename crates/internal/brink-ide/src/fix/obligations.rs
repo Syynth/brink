@@ -506,11 +506,13 @@ pub(crate) fn e176_fixture() -> FixFixture {
 }
 
 /// E095: a knot's `#@was(greet)` names its own current name (`greet`) —
-/// nothing to migrate. `crate::stale_was_fix`'s own module doc: every call
-/// site that reads a `#@was` compares the old name against the current one
-/// *before* storing anything, so a self-aliasing occurrence never reaches
-/// codegen at all — deleting the tag removes a value nothing downstream
-/// reads.
+/// nothing to migrate, and this line attaches to no following declaration
+/// (`crate::stale_was_fix`'s narrowing guard doesn't apply). `crate::stale_was_fix`'s
+/// own module doc: every call site that reads a `#@was` compares the old
+/// name against the current one *before* storing anything, so a
+/// self-aliasing occurrence never reaches *that owner's* alias-table
+/// codegen — deleting the tag removes a value that codegen path never
+/// read.
 pub(crate) fn e095_fixture() -> FixFixture {
     let src = "=== greet ===\n#@was(greet)\nHello!\n-> DONE\n".to_owned();
     let at = offset_of(&src, "#@was(greet)");
