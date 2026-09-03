@@ -1161,8 +1161,14 @@ export async function mountStudio(
         .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
+    // The projection is passed as a THUNK (#3490): pulling it eagerly cost
+    // a synchronous whole-document `getHirSpansDoc` on every call, and the
+    // play gutter asks once per visible line — ~38 wasm queries per
+    // keystroke on a 1.1k-line file, with no session running at all.
     getExecutionHighlights: (path) =>
-      executionHighlightsFor(store.getState(), path, documents.getHirProjection(path)),
+      executionHighlightsFor(store.getState(), path, () =>
+        documents.getHirProjection(path),
+      ),
     // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
     // instructions, target the explorer, and surface the tool window —
     // only when a target was actually set (the honest-failure

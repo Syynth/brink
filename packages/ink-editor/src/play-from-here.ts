@@ -578,13 +578,44 @@ async function buildTextMenuRequest(
   };
 }
 
+/** Shared "the host offers nothing" answer — never mutated. */
+const EMPTY: readonly never[] = [];
+
 export function playFromHereExtension(options: PlayFromHereOptions): Extension {
   const { onPlayFrom, onSymbolContextMenu, getBreakpoints, onToggleBreakpoint } = options;
   const breakpointsOn = getBreakpoints !== undefined && onToggleBreakpoint !== undefined;
 
+  // `lineMarker` runs ONCE PER VISIBLE LINE, so a host hook called from it
+  // is called ~40× per gutter render — and `getExecutionHighlights` is a
+  // whole-document query behind the studio's seam (#3490: ~38 synchronous
+  // wasm `getHirSpansDoc` calls per keystroke). Both host reads are cached
+  // per `EditorState`, which is exactly "once per update": the host's truth
+  // only reaches the gutter through `refreshExecutionHighlight` /
+  // `refreshBreakpoints`, and both dispatch a transaction — so a new answer
+  // always arrives with a new state, and a cache keyed on state identity
+  // can never serve a stale one. Weak keys: states are discarded per edit.
+  const highlightsByState = new WeakMap<EditorState, readonly ExecutionHighlight[]>();
+  const breakpointsByState = new WeakMap<EditorState, readonly BreakpointGutterMarker[]>();
+
+  function readOnce<T>(
+    cache: WeakMap<EditorState, readonly T[]>,
+    state: EditorState,
+    read: (() => readonly T[]) | undefined,
+  ): readonly T[] {
+    if (read === undefined) return EMPTY;
+    const cached = cache.get(state);
+    if (cached !== undefined) return cached;
+    const value = read();
+    cache.set(state, value);
+    return value;
+  }
+
   /** The host's dots for this render pass, keyed by 1-based line. */
-  const breakpointAt = (line: number): BreakpointGutterMarker | undefined =>
-    getBreakpoints?.().find((b) => b.line === line);
+  const breakpointAt = (
+    state: EditorState,
+    line: number,
+  ): BreakpointGutterMarker | undefined =>
+    readOnce(breakpointsByState, state, getBreakpoints).find((b) => b.line === line);
 
   const playGutter = gutter({
     class: "brink-play-gutter",
@@ -598,11 +629,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
       // The execution arrow outranks the dot on its own line (the canvas
       // draws them merged; the arrow carries the load-bearing fact —
       // where you ARE — and the band still marks the breakpoint's line).
-      const exec = options
-        .getExecutionHighlights?.()
-        .find((h) => h.line === lineNo && h.kind !== "live");
+      const exec = readOnce(
+        highlightsByState,
+        view.state,
+        options.getExecutionHighlights,
+      ).find((h) => h.line === lineNo && h.kind !== "live");
       if (exec !== undefined) return exec.kind === "paused" ? pausedArrow : frameArrow;
-      const bp = breakpointAt(lineNo);
+      const bp = breakpointAt(view.state, lineNo);
       if (bp !== undefined) return dotFor[bp.state];
       // Hover preview on plain lines: the click affordance made visible.
       if (breakpointsOn && hovered === lineNo) return previewDot;

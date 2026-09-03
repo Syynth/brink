@@ -312,3 +312,70 @@ describe("executionHighlightsFor (W6/#3299)", () => {
     expect(executionHighlightsFor(st, "main.ink")).toEqual([]);
   });
 });
+
+describe("the HIR projection is pulled lazily (#3490)", () => {
+  // The play gutter asks this policy once per render; behind the studio's
+  // seam the projection is a synchronous whole-document wasm query. Every
+  // road out of the policy EXCEPT the choice point answers without it, so
+  // a projection thunk must go untouched on all of them.
+  it("is never pulled when there is no session", () => {
+    const pull = vi.fn(projectionFixture);
+    expect(executionHighlightsFor(stateWith({ status: "none" }), "main.ink", pull)).toEqual(
+      [],
+    );
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it("is never pulled for an ended or errored session", () => {
+    for (const status of ["ended", "error"]) {
+      const pull = vi.fn(projectionFixture);
+      expect(executionHighlightsFor(stateWith({ status }), "main.ink", pull)).toEqual([]);
+      expect(pull).not.toHaveBeenCalled();
+    }
+  });
+
+  it("is never pulled while merely running — only a choice point reads it", () => {
+    const pull = vi.fn(projectionFixture);
+    expect(executionHighlightsFor(stateWith({}), "main.ink", pull)).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+    ]);
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it("is never pulled for a degraded session — suppressed, never stale", () => {
+    const pull = vi.fn(projectionFixture);
+    const st = stateWith({
+      status: "awaiting-choice",
+      program: "old",
+      compiled: "new",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+    });
+    expect(executionHighlightsFor(st, "main.ink", pull)).toEqual([]);
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it("is pulled exactly once at a choice point, and its answer is used", () => {
+    const pull = vi.fn(projectionFixture);
+    const st = stateWith({
+      status: "awaiting-choice",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+      visitIds: [{ def_id: "$a", count: 1 }],
+    });
+    expect(executionHighlightsFor(st, "main.ink", pull)).toEqual([
+      { line: 6, kind: "live" },
+      { line: 2, kind: "rejected", note: "once-only · used" },
+      { line: 4, kind: "rejected", note: "condition false" },
+    ]);
+    expect(pull).toHaveBeenCalledTimes(1);
+  });
+
+  it("a thunk returning null falls back to the position band, like a null projection", () => {
+    const st = stateWith({
+      status: "awaiting-choice",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+    });
+    expect(executionHighlightsFor(st, "main.ink", () => null)).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+    ]);
+  });
+});

@@ -4980,3 +4980,28 @@
   the 3px bars a fiddly target and the gaps spent width on nothing; a
   single legend-style hover reads the whole nesting at once, and sitting
   next to the text the rails line up with the structure they describe.
+
+## A gutter's per-line callback never reads a host hook
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (`packages/ink-editor/src/play-from-here.ts`,
+  `packages/brink-studio/src/execution-highlights.ts`)
+- **SCOPE:** moderate — a standing contract for every host seam a
+  CodeMirror gutter reads, not just this one
+- **WHAT:** `gutter({ lineMarker })` runs once per visible line, so a host
+  hook must be read once per render and shared across the lines, never
+  called from inside the callback. Host truth reaches a gutter only
+  through an explicit refresh effect, and a refresh dispatches a
+  transaction — so caching a host answer per `EditorState` is exactly
+  "once per render" and cannot serve a stale answer. Corollary for the
+  other side of the seam: a host callback must not eagerly evaluate an
+  expensive argument the policy consults on only one branch — pass a
+  thunk (`executionHighlightsFor`'s HIR projection).
+- **WHY:** Measured on #3490: the play gutter's arrow-vs-dot decision
+  called the studio's `getExecutionHighlights` once per visible line, and
+  that hook eagerly pulled the file's HIR projection — 10,045 synchronous
+  whole-document `getHirSpansDoc` wasm calls across a 228-keystroke burst
+  on a 1,125-line file (~38 per keystroke, p50 input latency 48 ms), all
+  of them computing an answer that was `[]` because no session was
+  running. The cost is invisible at review time because the callback
+  itself looks like a cheap lookup; the multiplier lives in CodeMirror.

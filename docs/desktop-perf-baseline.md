@@ -390,3 +390,39 @@ analysis call site; the full playwright suite (390) runs in worker mode
 by default; `?worker=0` keeps the in-process control measurable. Residual
 main-thread analysis: the one-shot family (#3110) at incremental cost,
 and small-document (<1000-line) sync rebuilds.
+
+## Gutter host reads are per-render, not per-line (2026-09-03, #3490)
+
+Measured on a real 1,125-line, 38 KB `.ink` file loaded through
+`?fixtureUrl` (typing burst, Chromium headless): `wasm.getHirSpansDoc`
+recorded **10,045 calls** across 228 keystrokes — ~38 per keystroke, one
+per visible line — with `input.keydown` p50 at 48 ms. No session was
+running; every one of those queries computed an answer that could only
+ever be `[]`.
+
+Two contracts come out of it, and both are pinned by tests:
+
+1. **A gutter's `lineMarker` runs once per visible line, so it must not
+   read a host hook.** `playFromHereExtension` caches each host read
+   (`getExecutionHighlights`, `getBreakpoints`) per `EditorState`, which is
+   exactly one read per render pass: host truth reaches the gutter only
+   through `refreshExecutionHighlight` / `refreshBreakpoints`, and both
+   dispatch a transaction, so a new answer always arrives with a new state
+   and a state-keyed cache can never serve a stale one. Pinned by
+   `packages/ink-editor/src/__tests__/play-gutter-host-reads.test.ts`
+   (pre-fix counts scale with the viewport: 4 / 20 / 36 reads for 4- /
+   20- / 60-line documents; post-fix, 1).
+2. **`executionHighlightsFor` takes the HIR projection as a thunk.** Only
+   the choice-point branch reads it; "no session", "ended", "error",
+   "degraded" and plain "running" all answer without it. The studio passes
+   `() => documents.getHirProjection(path)` so the synchronous
+   whole-document pull happens on that branch alone. Pinned by
+   `packages/brink-studio/src/__tests__/execution-highlights.test.ts`
+   ("the HIR projection is pulled lazily").
+
+Deliberately NOT changed: `DocumentHandle.hirProjection()`'s dirty-stash
+fallback still takes the synchronous main-thread road rather than serving
+the stale stash. With the two contracts above the decoration consumers no
+longer pull it per line, so the staleness trade buys nothing here — and it
+would silently change what `prose.ts` and the HIR overlay see after an
+edit, which is a separate ruling.
