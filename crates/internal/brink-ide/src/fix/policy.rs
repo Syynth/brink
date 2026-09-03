@@ -12,8 +12,12 @@
 //!
 //! Where the overrides come *from* is #3419's job (`brink.toml`'s `[fix]`
 //! table and `effective_fix_policy`); this type is the input the batching road
-//! takes, so both roads agree on what "batchable" means without the policy
-//! source being decided here.
+//! takes, so both roads agree on what "batchable" means. The one exception is
+//! the `brink_project_config::FixPolicy -> FixMode` bridge itself
+//! ([`FixMode::from_config`]): both `brink-cli`'s `fix.rs` and
+//! `brink-web`'s `fix_batch.rs` used to hand-roll that three-way mapping
+//! independently (issue #3464), so it now lives here, as the one place it is
+//! decided, rather than being re-derived at each call site.
 //!
 //! [`Applicability::Placeholder`] is never batchable however the policy is
 //! written (§3, "Batchable: never") — a promotion to [`FixMode::Auto`] cannot
@@ -67,6 +71,31 @@ impl FixMode {
             Applicability::Safe => Self::Auto,
             Applicability::Suggested => Self::Ask,
             Applicability::Placeholder => Self::Off,
+        }
+    }
+
+    /// Bridge from `brink_project_config::FixPolicy` (a raw `[fix]`-table
+    /// entry, resolved through `ProjectConfig::effective_fix_policy`) to the
+    /// override this module's own [`FixPolicy`] records.
+    ///
+    /// The three-way mapping is the ONE place it is decided
+    /// (`docs/autofix-spec.md` §6.1) — `brink-cli`'s `fix.rs` and
+    /// `brink-web`'s `fix_batch.rs` both call this rather than re-deriving
+    /// it, after the two hand-rolled the identical match independently
+    /// (issue #3464). `Off`/`Auto` become that literal override; `Ask`
+    /// elides to `None` ("no override recorded") rather than
+    /// [`FixMode::Ask`] — `Ask` means "this project says nothing special",
+    /// which per §6.1 still leaves a Safe fixer batchable (its own TOML
+    /// comment: "absent ⇒ ask: … batchable (Safe)"). Recording
+    /// [`FixMode::Ask`] here would instead demote every Safe-tier fixer to
+    /// non-batchable — the exact regression both call sites' doc comments
+    /// warn against.
+    #[must_use]
+    pub fn from_config(policy: brink_project_config::FixPolicy) -> Option<Self> {
+        match policy {
+            brink_project_config::FixPolicy::Off => Some(Self::Off),
+            brink_project_config::FixPolicy::Auto => Some(Self::Auto),
+            brink_project_config::FixPolicy::Ask => None,
         }
     }
 }
@@ -193,5 +222,28 @@ mod tests {
             assert_eq!(FixMode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(FixMode::parse("sometimes"), None);
+    }
+
+    /// The ONE pin on the `brink_project_config::FixPolicy -> Option<FixMode>`
+    /// bridge (issue #3464): `Off`/`Auto` become that literal override, and
+    /// `Ask` elides to "no override recorded" rather than [`FixMode::Ask`] —
+    /// both `brink-cli`'s `fix.rs` and `brink-web`'s `fix_batch.rs` call
+    /// [`FixMode::from_config`] and must see exactly this mapping.
+    #[test]
+    fn from_config_maps_off_and_auto_literally_and_elides_ask() {
+        assert_eq!(
+            FixMode::from_config(brink_project_config::FixPolicy::Off),
+            Some(FixMode::Off)
+        );
+        assert_eq!(
+            FixMode::from_config(brink_project_config::FixPolicy::Auto),
+            Some(FixMode::Auto)
+        );
+        assert_eq!(
+            FixMode::from_config(brink_project_config::FixPolicy::Ask),
+            None,
+            "Ask must elide to no override — recording FixMode::Ask would \
+             demote every Safe-tier fixer to non-batchable"
+        );
     }
 }
