@@ -849,7 +849,7 @@ Score is {score}.
     #[test]
     fn allowing_one_code_leaves_the_others_fixable() {
         const TWO: &str = "\
-=== accuse(who) ===
+=== accuse(who: string) ===
 I accuse {who}!
 -> DONE
 
@@ -927,7 +927,6 @@ mod fixable_fixture {
 [project]
 entry = \"main.ink\"
 dialect = \"brink\"
-types = \"gradual\"
 
 [lints]
 E110 = \"allow\"
@@ -962,7 +961,7 @@ This line can never be reached.
     const MARKET: &str = "\
 #@module(market)
 
-=== function greet(name) ===
+=== function greet(name: string): string ===
 ~ return \"Hello, \" + name
 
 === square ===
@@ -971,7 +970,7 @@ The market square is loud.
 {hail}
 -> accuse(\"Hastings\", \"Poirot\")
 
-=== accuse(who) ===
+=== accuse(who: string) ===
 I accuse {who}!
 -> haggle
 ";
@@ -1093,8 +1092,7 @@ You haggle over the price of a lantern.
     /// not five for some unrelated reason.
     #[test]
     fn without_the_allow_line_the_suppressed_sixth_comes_back() {
-        let session =
-            fixture("[project]\nentry = \"main.ink\"\ndialect = \"brink\"\ntypes = \"gradual\"\n");
+        let session = fixture("[project]\nentry = \"main.ink\"\ndialect = \"brink\"\n");
         assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 6);
         let codes: Vec<String> = offers(&session).into_iter().map(|(c, _, _)| c).collect();
         assert!(codes.contains(&"E110".to_owned()), "{codes:?}");
@@ -1144,7 +1142,7 @@ VAR gold = 12
                     "\
 #@module(market)
 
-=== function greet(name) ===
+=== function greet(name: string): string ===
 ~ return \"Hello, \" + name
 
 === square ===
@@ -1153,7 +1151,7 @@ The market square is loud.
 {hail}
 -> accuse(\"Poirot\")
 
-=== accuse(who) ===
+=== accuse(who: string) ===
 I accuse {who}!
 -> haggle
 "

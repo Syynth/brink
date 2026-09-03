@@ -207,13 +207,15 @@ pub flow main() {
 // the import fixer's own diagnostic). The Problems panel still lists every
 // row, which is all these surfaces need.
 const FIXABLE_FIXTURE: Record<string, string> = {
-  // `dialect = "brink"` because every directive below is a brink extension;
-  // `types = "gradual"` keeps strict-mode diagnostics out of a fixture whose
-  // whole value is a closed diagnostic set.
+  // `dialect = "brink"` because every directive below is a brink extension.
+  // No `types` key: `brink` defaults to strict, and the two knot signatures
+  // in market.ink are annotated so strict inference has nothing to complain
+  // about — a `types = "gradual"` opt-out would keep the ink files quiet but
+  // make the mounted native `std/` illegal (E137) on the `brink compile`
+  // road, which is not a difference this fixture should carry.
   "brink.toml": `[project]
 entry = "main.ink"
 dialect = "brink"
-types = "gradual"
 
 [lints]
 E110 = "allow"
@@ -245,7 +247,7 @@ This line can never be reached.
 `,
   "market.ink": `#@module(market)
 
-=== function greet(name) ===
+=== function greet(name: string): string ===
 ~ return "Hello, " + name
 
 === square ===
@@ -254,7 +256,7 @@ The market square is loud.
 {hail}
 -> accuse("Hastings", "Poirot")
 
-=== accuse(who) ===
+=== accuse(who: string) ===
 I accuse {who}!
 -> haggle
 `,
