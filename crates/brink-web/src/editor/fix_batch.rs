@@ -14,6 +14,15 @@
 //! - [`fix_all`](EditorSession::fix_all) — the fixpoint loop, returning the
 //!   `Report` plus the sources to write.
 //!
+//! **All three intersect the Problems panel's own severity resolution.**
+//! `ProjectDb::diagnostics` is the RAW per-file list; the panel renders
+//! `compile_project`, which drops every diagnostic
+//! `brink_analyzer::effective_severity` answers `None` for — a `[lints]`
+//! `"allow"` code (#3173). [`suppressed_codes`](EditorSession::suppressed_codes)
+//! withdraws exactly those codes from the [`Select`] every one of the three
+//! queries below runs, so a code an author turned off is never offered,
+//! never counted in "Fix all safe (N)", and never applied (issue #3459).
+//!
 //! **Policy comes from the project, narrowed by the app.** `brink.toml`'s
 //! `[fix]` table (§6.1) is resolved through
 //! `ProjectConfig::effective_fix_policy` against an optional app-scope
@@ -148,6 +157,36 @@ impl EditorSession {
         config.effective_fix_policy(code, ceiling)
     }
 
+    /// Every diagnostic code this project's `[lints]` table suppresses
+    /// outright — the codes `brink_analyzer::effective_severity` answers
+    /// `None` for (issue #3173's `"allow"` level).
+    ///
+    /// This is the intersection issue #3459 names. `db.diagnostics` is the
+    /// RAW list; the Problems panel renders `compile_project`'s output,
+    /// which drops every diagnostic whose effective severity is `None`. Any
+    /// fix surface reading the raw list therefore offers, counts and applies
+    /// fixes for problems with no visible row — "Fix all safe (3)" against a
+    /// panel showing two.
+    ///
+    /// Computed by asking the real seam about every known code rather than
+    /// by re-deriving which levels suppress: `effective_severity`'s
+    /// resolution order (the hard-error exemption, the compat-deny carve-out,
+    /// `deny-warnings`) stays its own business, and a future level that
+    /// suppresses is picked up here for free.
+    pub(super) fn suppressed_codes(&self) -> Vec<DiagnosticCode> {
+        let options = self.session.analysis_options();
+        let types = options.type_policy();
+        // `DiagnosticCode::ALL` is a fixed slice, so this walk — and the
+        // resulting selection — is deterministic.
+        DiagnosticCode::ALL
+            .iter()
+            .copied()
+            .filter(|code| {
+                brink_analyzer::effective_severity(*code, types, &options.lints).is_none()
+            })
+            .collect()
+    }
+
     /// Turn a caller's `FixSelectJs` into a [`Select`] plus the policy to
     /// judge with.
     fn parse_fix_request(&self, select_json: &str) -> FixRequest {
@@ -160,7 +199,11 @@ impl EditorSession {
             // no-op, never an error.
             return FixRequest::NothingAdmitted;
         };
-        let mut select = Select::all();
+        // The severity intersection (#3459), applied FIRST so it survives
+        // every other narrowing: a `[lints]` `"allow"` code is withdrawn
+        // from `fix_offers`, `fix_count` and `fix_all` alike, including
+        // when the caller names it explicitly in `codes`.
+        let mut select = Select::all().excluding_codes(self.suppressed_codes());
         if let Some(codes) = &request.codes {
             // An unrecognized spelling drops out: the resulting list may be
             // empty, which selects NOTHING. That is the honest reading of
@@ -190,8 +233,10 @@ impl EditorSession {
     /// Every offered fix of `select`, in the compilation's own file order.
     ///
     /// "Offered" is `FixPolicy::offers` — everything except a code the
-    /// project turned `"off"`. Suppressed diagnostics are dropped first, so
-    /// this sees exactly what the Problems panel sees (§5).
+    /// project turned `"off"`. `#@allow`-suppressed diagnostics are dropped
+    /// first, and [`suppressed_codes`](Self::suppressed_codes) has already
+    /// withdrawn every `[lints] "allow"` code from the selection, so this
+    /// sees exactly what the Problems panel sees (§5).
     fn fix_offers_impl(&self, select: &Select, policy: &FixPolicy) -> Vec<FixOfferJs> {
         let db = self.session.db();
         let cx = FixCx::new(db);
@@ -688,6 +733,167 @@ flow start() {
             !written.contains("use "),
             "…and never the native `use` form: {written:?}"
         );
+    }
+
+    // ── §5's severity intersection (issue #3459) ─────────────────────
+
+    /// The Problems panel's own list, as `compile_project` renders it —
+    /// `effective_severity` applied, so a `[lints]` `"allow"` code is
+    /// already gone. The fix surfaces are asserted against THIS, not against
+    /// `ProjectDb::diagnostics`, because it is what the author can see.
+    fn problem_codes(session: &mut EditorSession, entry: &str) -> Vec<String> {
+        let compiled = parse(&session.compile_project(entry));
+        let warnings = compiled["warnings"].as_array().cloned().unwrap_or_default();
+        warnings
+            .iter()
+            .filter_map(|d| d["code"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// A project whose only diagnostic is a Safe-fixable `E014` — an
+    /// effect-free logic line. Single file, so the compile road and the fix
+    /// road are looking at exactly the same compilation.
+    const EMPTY_LOGIC: &str = "\
+VAR score = 0
+Hello.
+~
+~ score = score + 1
+Score is {score}.
+-> DONE
+";
+
+    fn e014_session() -> EditorSession {
+        let mut session = EditorSession::new();
+        session.update_file("main.ink", EMPTY_LOGIC);
+        assert!(session.set_active_file("main.ink"));
+        session
+    }
+
+    /// The premise: without `[lints]`, `E014` is a visible Problems row AND
+    /// a batchable Safe fix. Everything below is the difference `allow`
+    /// makes, so this must be non-vacuous first.
+    #[test]
+    fn the_allow_fixture_is_fixable_before_the_lint_is_allowed() {
+        let mut session = e014_session();
+        assert!(
+            problem_codes(&mut session, "main.ink").contains(&"E014".to_owned()),
+            "fixture must produce a VISIBLE E014 row"
+        );
+        let offers = parse(&session.fix_offers("{}"));
+        assert_eq!(offers.as_array().expect("array").len(), 1, "{offers:?}");
+        assert_eq!(offers[0]["code"], "E014");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 1);
+    }
+
+    /// #3459: `[lints] E014 = "allow"` removes the row from the Problems
+    /// panel, so it must remove the offer, the count and the batch too.
+    ///
+    /// The assertion is against the panel's OWN list (`problem_codes`), not
+    /// a restatement of the rule — a fix surface that disagrees with it is
+    /// exactly the reachable false positive this issue reports.
+    #[test]
+    fn an_allowed_code_is_never_offered_counted_or_fixed() {
+        let mut session = e014_session();
+        apply_config(&mut session, "[lints]\nE014 = \"allow\"\n");
+
+        let visible = problem_codes(&mut session, "main.ink");
+        assert!(
+            !visible.contains(&"E014".to_owned()),
+            "the panel must not show an allowed code: {visible:?}"
+        );
+
+        assert_eq!(session.fix_offers("{}"), "[]");
+        assert_eq!(session.fix_count("{}"), 0);
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 0);
+
+        let report = parse(&session.fix_all(r#"{"tiers":["safe"]}"#));
+        assert_eq!(report.get("error"), None, "{report:?}");
+        assert_eq!(report["rounds"], 0, "{report:?}");
+        assert_eq!(report["files"].as_array().expect("files").len(), 0);
+        assert_eq!(report["applied"].as_array().expect("applied").len(), 0);
+        // …and the source is untouched: no silent rewrite of a problem the
+        // author turned off.
+        assert_eq!(parse(&session.get_file_source("main.ink")), EMPTY_LOGIC);
+    }
+
+    /// Naming the allowed code explicitly does not get it back: the
+    /// intersection is a subtraction, not a default the caller can override.
+    #[test]
+    fn naming_an_allowed_code_explicitly_still_selects_nothing() {
+        let mut session = e014_session();
+        apply_config(&mut session, "[lints]\nE014 = \"allow\"\n");
+        assert_eq!(session.fix_count(r#"{"codes":["E014"]}"#), 0);
+        assert_eq!(session.fix_offers(r#"{"codes":["E014"]}"#), "[]");
+    }
+
+    /// The cursor menu is the same road (`fixes_at_path`) and reads the same
+    /// raw diagnostic list — an allowed code must offer nothing there either.
+    #[test]
+    fn the_cursor_menu_offers_nothing_for_an_allowed_code() {
+        let mut session = e014_session();
+        let at = EMPTY_LOGIC.find("~\n");
+        assert!(at.is_some(), "fixture must carry the empty logic line");
+        let offset = u32::try_from(at.expect("just asserted above")).expect("offset");
+
+        let before = parse(&session.fixes_at_path("main.ink", offset));
+        assert_eq!(before.as_array().expect("array").len(), 1, "{before:?}");
+        assert_eq!(before[0]["code"], "E014");
+
+        apply_config(&mut session, "[lints]\nE014 = \"allow\"\n");
+        assert_eq!(session.fixes_at_path("main.ink", offset), "[]");
+    }
+
+    /// Only the allowed code is withdrawn — the rest of the batch is
+    /// untouched, so "Fix all safe (N)" drops by exactly the allowed code's
+    /// share rather than collapsing.
+    #[test]
+    fn allowing_one_code_leaves_the_others_fixable() {
+        const TWO: &str = "\
+=== accuse(who) ===
+I accuse {who}!
+-> DONE
+
+=== main ===
+~
+-> accuse(\"Hastings\", \"Poirot\")
+";
+        let mut session = EditorSession::new();
+        session.update_file("main.ink", TWO);
+        assert!(session.set_active_file("main.ink"));
+
+        let codes = problem_codes(&mut session, "main.ink");
+        assert!(codes.contains(&"E014".to_owned()), "{codes:?}");
+        assert!(codes.contains(&"E176".to_owned()), "{codes:?}");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 2);
+
+        apply_config(&mut session, "[lints]\nE014 = \"allow\"\n");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 1);
+        let offers = parse(&session.fix_offers("{}"));
+        let offers = offers.as_array().expect("array");
+        assert_eq!(offers.len(), 1, "{offers:?}");
+        assert_eq!(offers[0]["code"], "E176");
+    }
+
+    /// `deny`/`warn` are not `allow`: only the level that SUPPRESSES
+    /// withdraws a fix. A code the author escalated is still fixable.
+    #[test]
+    fn a_denied_code_stays_fixable() {
+        let mut session = e014_session();
+        apply_config(&mut session, "[lints]\nE014 = \"deny\"\n");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 1);
+        let offers = parse(&session.fix_offers("{}"));
+        assert_eq!(offers[0]["code"], "E014", "{offers:?}");
+    }
+
+    /// A `[lints]` entry removed from `brink.toml` restores the fix — the
+    /// same wholesale-replace rule `[fix]` follows.
+    #[test]
+    fn removing_the_allow_entry_restores_the_fix() {
+        let mut session = e014_session();
+        apply_config(&mut session, "[lints]\nE014 = \"allow\"\n");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 0);
+        apply_config(&mut session, "[project]\n");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 1);
     }
 
     /// A `[fix]` entry removed from `brink.toml` must stop applying — the

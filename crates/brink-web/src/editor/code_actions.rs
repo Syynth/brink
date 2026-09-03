@@ -171,8 +171,14 @@ impl EditorSession {
         // reason `Fix::edits` exists (docs/autofix-spec.md §4), so a partial
         // resolution here would offer a fix that `apply_fix` can only apply
         // incompletely (review finding on #3384).
+        // The same severity intersection the batch road applies (#3459): a
+        // `[lints]` `"allow"` code has no Problems row and no squiggle, so
+        // the cursor menu must not offer a fix for it either. `fixes_at`
+        // reads `ProjectDb::diagnostics`, which is the RAW list.
+        let suppressed = self.suppressed_codes();
         let items: Vec<FixJs> = brink_ide::fix::fixes_at(&cx, file_id, abs_offset)
             .iter()
+            .filter(|fix| !suppressed.contains(&fix.code))
             .filter_map(|fix| self.fix_to_js(fix))
             .collect();
 
