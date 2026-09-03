@@ -159,6 +159,7 @@ pub static FIXERS: &[&dyn Fixer] = &[
     &crate::value_call_fix::ValueCallArityFixer,
     &crate::arity_trim_fix::CallArityTrimFixer,
     &crate::arity_trim_fix::DivertArityTrimFixer,
+    &crate::empty_logic_line_fix::EmptyLogicLineFixer,
 ];
 
 /// Run one fixer over one diagnostic, enforcing the per-instance ≤ static-max
@@ -268,6 +269,7 @@ mod tests {
             (DiagnosticCode::E063, obligations::e063_fixture()),
             (DiagnosticCode::E031, obligations::e031_fixture()),
             (DiagnosticCode::E176, obligations::e176_fixture()),
+            (DiagnosticCode::E014, obligations::e014_fixture()),
         ]
     }
 
@@ -343,10 +345,12 @@ mod tests {
         }
     }
 
-    /// The fixture path must name the real fixture tree. `E014` is the one
-    /// fixture that exists ahead of its fixer (`docs/autofix-spec.md` §9's
-    /// first-wave Safe candidate — delete the bare `~`), and it is what keeps
-    /// this path honest while the loop above has nothing to iterate.
+    /// The fixture path must name the real fixture tree. `E014`'s fixture
+    /// predates its fixer by design (`docs/autofix-spec.md` §9's first-wave
+    /// Safe candidate — delete the bare `~`; `empty_logic_line_fix`, issue
+    /// #3423, is the fixer now registered for it), and this test is what
+    /// keeps the path honest regardless of how many fixers the loop above
+    /// has to iterate.
     #[test]
     fn the_safe_fixture_path_resolves() {
         assert_safe_fixture_present("E014");

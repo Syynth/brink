@@ -539,7 +539,12 @@ than a phantom cwd-relative path. Tracked as issue #3456 alongside the
 Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
-- **Safe**: E014 bare `~` → delete the line; E092 redundant
+- **Safe**: E014 bare `~` → delete the line (issue #3423 — ink-only;
+  `E014` also covers a handful of unrelated malformed-partial parses that
+  share the code, and the fixer re-derives effect-freedom from the CST
+  itself to refuse those rather than trust the diagnostic — see
+  `crates/internal/brink-ide/src/empty_logic_line_fix.rs`'s module doc);
+  E092 redundant
   `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
   E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim

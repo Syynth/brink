@@ -504,3 +504,20 @@ pub(crate) fn e176_fixture() -> FixFixture {
         at: ("test.ink", at),
     }
 }
+
+/// E014: a bare `~` line resolves to no statement and no expression at all
+/// (`empty_logic_line_fix`'s own module doc). Mirrors
+/// `tests/fix/E014/before.ink`'s shape, not a copy of it — the on-disk
+/// fixture is what `every_fixture_matches_its_fixer`/`assert_safe_fix` pin
+/// against; this one only needs to carry the diagnostic at a known cursor
+/// for the discharge obligation.
+pub(crate) fn e014_fixture() -> FixFixture {
+    let src = "VAR score = 0\nHello.\n~\n~ score = score + 1\nScore is {score}.\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "~\n");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
