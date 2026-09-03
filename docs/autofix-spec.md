@@ -539,7 +539,12 @@ than a phantom cwd-relative path. Tracked as issue #3456 alongside the
 Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
-- **Safe**: E014 bare `~` → delete the line; E092 redundant
+- **Safe**: E014 bare `~` → delete the line (issue #3423 — ink-only;
+  `E014` also covers a handful of unrelated malformed-partial parses that
+  share the code, and the fixer re-derives effect-freedom from the CST
+  itself to refuse those rather than trust the diagnostic — see
+  `crates/internal/brink-ide/src/empty_logic_line_fix.rs`'s module doc);
+  E092 redundant
   `#@public`/`#@private` → delete the directive line, including any
   leading indentation on it (issue #3424, `RedundantVisibilityFixer`,
   `crates/internal/brink-ide/src/redundant_visibility_fix.rs`; ink-only —
