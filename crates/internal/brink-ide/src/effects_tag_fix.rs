@@ -28,12 +28,19 @@
 //! internals, not part of this crate's dependency surface) — but it is
 //! never trusted to *certify* the fix on its own: it only decides whether a
 //! translation is safe to offer and what text to write. The actual proof
-//! that the rewritten annotation preserves the definition's effects is the
-//! fixture test at the bottom of this module, which re-parses the produced
-//! `@[effects(…)]` line through the real production pipeline and compares
-//! the analyzer's own inferred effect row before and after
-//! (`brink_ide::effects::EffectRowView`) — a bug in this module's parser
-//! would show up there as a failing test, not a silently-wrong "safe" fix.
+//! that the rewritten annotation is the same assertion is
+//! `e110_fix_preserves_the_parsed_assertion_shape` at the bottom of this
+//! module, which re-parses the produced `@[effects(…)]` line through the
+//! real production pipeline and compares the HIR's own parsed
+//! [`brink_ir::EffectsAssertion`] (`{pure, silent, total, reads, writes,
+//! calls}`, `range` excluded) before and after — a bug in this module's
+//! port would show up there as a failing test, not a silently-wrong "safe"
+//! fix. `e110_fix_preserves_the_analyzers_inferred_effect_row` is a
+//! separate, weaker check alongside it: the analyzer's *inferred* effect
+//! row is computed from the definition's body, not its assertion, so it is
+//! unaffected by the rewrite regardless of whether the translation is
+//! correct — it only proves re-analysis after the rewrite still succeeds
+//! and resolves the same definition, not that the assertion text is right.
 //!
 //! # Scope: ink only, knot/stitch leading run only
 //!
@@ -43,12 +50,19 @@
 //! never fires there, and this fixer bails immediately on a native file.
 //!
 //! `effects_assertion_from_directives` (the only place `E110` is raised) is
-//! called from exactly two sites — `hir::lower::structure::knot` and
-//! `::stitch` — both feeding it `leading_body_directives(&body)`, which
-//! collects tags/annotations from a `KNOT_BODY`/`STITCH_BODY`'s **leading
-//! run** (interleaved trivia, empty lines, tag lines, and annotation lines
-//! only) that are not themselves attached to a following `VAR`/`CONST`/
-//! `LIST`/`EXTERNAL` declaration. So every reachable `E110` site is a
+//! called from exactly three sites — `hir::lower::structure::knot::lower_knot`
+//! (knot.rs), and `hir::lower::structure::stitch`'s two functions,
+//! `lower_top_level_stitch` (the promoted top-level `= name` stitch) and
+//! `lower_stitch` (a nested `= name` under a `== knot ==`) — all three
+//! feeding it `leading_body_directives(b.syntax())`, which collects
+//! tags/annotations from a `KNOT_BODY`/`STITCH_BODY`'s **leading run**
+//! (interleaved trivia, empty lines, tag lines, and annotation lines only)
+//! that are not themselves attached to a following `VAR`/`CONST`/`LIST`/
+//! `EXTERNAL` declaration. Behaviour is identical across all three shapes —
+//! `e110_ink_stitch_leading_run_rewrites_too` and
+//! `e110_ink_top_level_stitch_rewrites_too` below cover the two stitch
+//! shapes alongside the knot coverage above them. So every reachable `E110`
+//! site is a
 //! `TAG_LINE` already sitting in a position an `@[…]` annotation line is
 //! equally legal in (`in_leading_annotation_run` accepts the same three
 //! sibling kinds `in_leading_body_run` does) — replacing the tag line's own
@@ -487,18 +501,183 @@ mod tests {
         let after = session_with("test.ink", &patched);
         let after_file = after.file_id("test.ink").expect("file id");
         let diags = after.db().diagnostics(after_file).expect("diagnostics");
+        // Not just "no E110" — a wrong-grammar rewrite (e.g. the byte-copy
+        // mistake this module's doc warns about, `@[effects(reads: mood)]`)
+        // would clear E110 and raise E101 in its place, and an
+        // E110-only filter would not catch that. The rewritten source is a
+        // real, equivalent assertion, so re-analysis must produce nothing
+        // at all.
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// A parsed [`brink_ir::EffectsAssertion`]'s comparable shape —
+    /// `{pure, silent, total, reads, writes, calls}`, deliberately excluding
+    /// `range` (a source-position field that necessarily differs between
+    /// the two spellings and carries no semantic weight).
+    fn effects_assertion_shape(
+        a: &brink_ir::EffectsAssertion,
+    ) -> (bool, bool, bool, Vec<String>, Vec<String>, Vec<String>) {
+        (
+            a.pure,
+            a.silent,
+            a.total,
+            a.reads.clone(),
+            a.writes.clone(),
+            a.calls.clone(),
+        )
+    }
+
+    /// The actual translation-identity proof: the HIR's own parsed
+    /// `#@effects`/`@[effects(…)]` assertion for `greet` is the identical
+    /// shape before and after, read off both sides through the real
+    /// production parsers (`brink_ir::hir::lower::directive::
+    /// parse_effects_clauses` for the legacy tag, the paren-clause
+    /// annotation parser for the rewrite) — not by trusting
+    /// [`parse_legacy_effects`]/[`render_annotation_args`] in isolation. A
+    /// bug in either — a wrong clause key, a dropped value, a flag hoisted
+    /// out of a clause's continuation — changes this comparison, unlike
+    /// `e110_fix_preserves_the_analyzers_inferred_effect_row` below, which
+    /// only reads the *inferred* row (computed from the body, never the
+    /// assertion) and would pass unchanged even for a wrong translation.
+    #[test]
+    fn e110_fix_preserves_the_parsed_assertion_shape() {
+        let src = "VAR mood = 5\n\n-> greet\n\n=== greet ===\n#@effects(reads: mood)\nMood is {mood}.\n-> END\n";
+        let before_session = session_with("test.ink", src);
+        let before_file = before_session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("#@effects").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(before_session.db());
+        let fixes = fixes_at(&cx, before_file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(src, &fixes[0]);
+        assert_ne!(patched, src, "the fix must actually change the source");
+
+        let after_session = session_with("test.ink", &patched);
+        let after_file = after_session.file_id("test.ink").expect("file id");
+
+        let before_hir = before_session.db().hir(before_file).expect("hir before");
+        let before_assertion = before_hir
+            .knots
+            .iter()
+            .find(|k| k.name.text == "greet")
+            .and_then(|k| k.effects_assertion.as_ref());
         assert!(
-            diags.iter().all(|d| d.code != DiagnosticCode::E110),
-            "{diags:?}"
+            before_assertion.is_some(),
+            "greet has no assertion before the fix"
+        );
+        let before_assertion = before_assertion.expect("just asserted above");
+
+        let after_hir = after_session.db().hir(after_file).expect("hir after");
+        let after_assertion = after_hir
+            .knots
+            .iter()
+            .find(|k| k.name.text == "greet")
+            .and_then(|k| k.effects_assertion.as_ref());
+        assert!(
+            after_assertion.is_some(),
+            "greet has no assertion after the fix"
+        );
+        let after_assertion = after_assertion.expect("just asserted above");
+
+        assert_eq!(
+            effects_assertion_shape(before_assertion),
+            effects_assertion_shape(after_assertion),
+            "the fixer's rewrite changed the parsed assertion"
         );
     }
 
+    /// Closes the round trip through the real `@[effects(…)]` annotation
+    /// grammar for every argument shape — the fixer's own fixtures and the
+    /// tests above only ever exercise `reads: mood` and `pure`; the port's
+    /// unit tests above check the port against itself. This is the
+    /// highest-risk case in the mix: `reads: gold, silent` must render as
+    /// `reads(gold, silent)` (`silent` as a VALUE, continuing the open
+    /// `reads` clause — the documented legacy footgun), never hoisted to
+    /// the `silent` flag, which would silently change the assertion with
+    /// nothing else here to catch it. `reads: pure` is the flag-shaped-word
+    /// counterpart: `pure` as a bare clause value, not the `pure` flag.
+    #[test]
+    fn e110_round_trips_every_argument_shape_through_the_real_grammar() {
+        let cases = [
+            "pure",
+            "silent, total",
+            "reads: gold, hp",
+            "writes: mood",
+            "calls: Alarm",
+            "silent, reads: gold",
+            "reads: gold, silent",
+            "reads: pure",
+        ];
+        for legacy_args in cases {
+            let src = format!(
+                "VAR gold = 1\nVAR hp = 1\nVAR mood = 1\nVAR pure = 1\nVAR silent = 1\nEXTERNAL Alarm()\n\n-> greet\n\n=== greet ===\n#@effects({legacy_args})\n-> END\n"
+            );
+            let before_session = session_with("test.ink", &src);
+            let before_file = before_session.file_id("test.ink").expect("file id");
+            let off = u32::try_from(src.find("#@effects").expect("cursor site")).expect("fits");
+            let cx = FixCx::new(before_session.db());
+            let fixes = fixes_at(&cx, before_file, off);
+            assert_eq!(
+                fixes.len(),
+                1,
+                "{legacy_args}: {:?}",
+                fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+            );
+            let patched = applied(&src, &fixes[0]);
+            assert_ne!(
+                patched, src,
+                "{legacy_args}: the fix must actually change the source"
+            );
+
+            let before_hir = before_session.db().hir(before_file).expect("hir before");
+            let before_assertion = before_hir
+                .knots
+                .iter()
+                .find(|k| k.name.text == "greet")
+                .and_then(|k| k.effects_assertion.as_ref());
+            assert!(
+                before_assertion.is_some(),
+                "{legacy_args}: greet has no assertion before the fix"
+            );
+            let before_shape =
+                effects_assertion_shape(before_assertion.expect("just asserted above"));
+
+            let after_session = session_with("test.ink", &patched);
+            let after_file = after_session.file_id("test.ink").expect("file id");
+            let diags = after_session
+                .db()
+                .diagnostics(after_file)
+                .expect("diagnostics");
+            assert!(diags.is_empty(), "{legacy_args}: {diags:?}");
+
+            let after_hir = after_session.db().hir(after_file).expect("hir after");
+            let after_assertion = after_hir
+                .knots
+                .iter()
+                .find(|k| k.name.text == "greet")
+                .and_then(|k| k.effects_assertion.as_ref());
+            assert!(
+                after_assertion.is_some(),
+                "{legacy_args}: greet has no assertion after the fix"
+            );
+            let after_shape =
+                effects_assertion_shape(after_assertion.expect("just asserted above"));
+
+            assert_eq!(
+                before_shape, after_shape,
+                "{legacy_args}: the fix changed the parsed assertion"
+            );
+        }
+    }
+
     /// The analyzer's own inferred effect row for `greet` is byte-identical
-    /// before and after — the actual proof this fix preserves the
-    /// definition's effects, computed by re-running the real production
-    /// parsers (both grammars) rather than trusting [`parse_legacy_effects`]
-    /// in isolation. `EffectRowView` is used (not the raw `EffectRow`)
-    /// because it name-resolves atoms and is independent of
+    /// before and after — re-analysis proceeds and resolves the same
+    /// definition after the rewrite. This is a weaker, complementary check
+    /// to `e110_fix_preserves_the_parsed_assertion_shape` above: the
+    /// inferred row is computed from the definition's *body*, never its
+    /// assertion, so it would stay unchanged even if the fixer emitted a
+    /// wrong or empty assertion — it does not, on its own, prove the
+    /// translation is correct. `EffectRowView` is used (not the raw
+    /// `EffectRow`) because it name-resolves atoms and is independent of
     /// `DefinitionId`-allocation order across the two separate compilations
     /// (its own doc: "exactly what `effects-diff` needs to compare two
     /// builds without spurious churn").
@@ -578,6 +757,40 @@ mod tests {
         assert_eq!(
             patched,
             "-> greet.hello\n\n=== greet ===\n= hello\n@[effects(pure)]\nHi!\n-> END\n"
+        );
+
+        let after = session_with("test.ink", &patched);
+        let after_file = after.file_id("test.ink").expect("file id");
+        let diags = after.db().diagnostics(after_file).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E110),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn e110_ink_top_level_stitch_rewrites_too() {
+        // `effects_assertion_from_directives`'s third call site (module doc
+        // "Scope", corrected count): a top-level `= name` stitch is
+        // promoted to a `Knot` by `lower_top_level_stitch`, distinct from
+        // both the knot-header shape above and the nested-stitch shape
+        // just above this one.
+        let src = "VAR mood = 5\n\n= fire\n#@effects(reads: mood)\nHi!\n-> END\n";
+        let session = session_with("test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("#@effects").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        let patched = applied(src, &fixes[0]);
+        assert_eq!(
+            patched,
+            "VAR mood = 5\n\n= fire\n@[effects(reads(mood))]\nHi!\n-> END\n"
         );
 
         let after = session_with("test.ink", &patched);
