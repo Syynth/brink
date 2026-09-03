@@ -201,11 +201,33 @@ pub(crate) fn container_paths_from(
 
 impl Program {
     /// The knot or `knot.stitch` path a container names, if it names one.
-    /// The runtime's own vocabulary for "where am I" — see
-    /// [`Story::current_path`](crate::Story::current_path).
+    /// Exact: an anonymous container (a choice body, gather, sequence
+    /// branch) is `None` — the save format relies on that to write such a
+    /// container's visit entry without a path. For "where is this
+    /// container" see [`Program::scope_path`].
     #[must_use]
     pub fn container_path(&self, idx: u32) -> Option<&str> {
         self.container_paths.get(&idx).map(String::as_str)
+    }
+
+    /// The knot or `knot.stitch` a container sits in: its own path when it
+    /// names one, otherwise its lexical scope's — a choice body, gather, or
+    /// sequence branch reports the knot/stitch that holds it (after
+    /// `choose`, the frame holds only the chosen branch, and the story is
+    /// still in that knot). `None` for the root scope and anything directly
+    /// under it. The runtime's own vocabulary for "where am I" — see
+    /// [`Story::current_path`](crate::Story::current_path).
+    #[must_use]
+    pub fn scope_path(&self, idx: u32) -> Option<&str> {
+        if let Some(path) = self.container_path(idx) {
+            return Some(path);
+        }
+        let scope_id = self.containers.get(usize::try_from(idx).ok()?)?.scope_id;
+        let (scope_idx, _) = self.resolve_target(scope_id)?;
+        if scope_idx == idx {
+            return None;
+        }
+        self.container_path(scope_idx)
     }
 
     /// Resolve any target (container or address) to `(container_idx, byte_offset)`.

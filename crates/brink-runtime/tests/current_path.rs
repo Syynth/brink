@@ -65,3 +65,31 @@ fn current_path_after_choose_path_string() -> Res<()> {
     assert_eq!(story.current_path().as_deref(), Some("b"));
     Ok(())
 }
+
+/// After `choose`, the frame holds only the chosen branch — an unnamed
+/// choice body. The story is still in the knot that offered the choice,
+/// and the query says so (found live 2026-09-02: the first line after a
+/// choice read as "nowhere", which hid the knot change that followed).
+#[test]
+fn current_path_after_a_choice_is_the_offering_knot() -> Res<()> {
+    let src = "-> hall\n=== hall ===\nA voice.\n* [Answer]\n    Wrong.\n    -> hub\n=== hub ===\nBack in the hub.\n-> END\n";
+    let mut story = story_from_source(src)?;
+    let _ = walk(&mut story)?; // runs to the choice point
+    assert_eq!(story.current_path().as_deref(), Some("hall"));
+    story.choose(0)?;
+    assert_eq!(
+        story.current_path().as_deref(),
+        Some("hall"),
+        "the chosen branch's body belongs to the knot that offered it"
+    );
+    let seen = walk(&mut story)?;
+    let before: Vec<Option<&str>> = seen
+        .iter()
+        .map(|(t, b, _)| (t, b))
+        .map(|(_, b)| b.as_deref())
+        .collect();
+    let texts: Vec<&str> = seen.iter().map(|(t, ..)| t.as_str()).collect();
+    assert_eq!(texts, vec!["Wrong.", "Back in the hub."]);
+    assert_eq!(before, vec![Some("hall"), Some("hub")]);
+    Ok(())
+}
