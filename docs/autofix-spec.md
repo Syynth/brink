@@ -284,6 +284,14 @@ re-deriving which `[lints]` levels suppress. The severity policy is
 per-caller, not global — the CLI resolves its own `AnalysisOptions` — which
 is why the set is an input to `Select` and not something `collect` invents.
 
+**Open gap:** the rule above is not yet universal in practice.
+`brink-lsp`'s `source.fixAll.brink` action (`fix_all_action`,
+`crates/brink-lsp/src/backend.rs`) builds `Select::all().with_tiers([Safe])`
+with no `excluding_codes` call, so it does not withdraw a `[lints]`
+`"allow"` code the way the studio's batch road does — tracked as issue
+#3494. (`brink fix`'s CLI road has the analogous gap tracked separately, as
+#3463.)
+
 ## 6. Policy — what is batchable, and when the editor acts
 
 ### 6.1 `brink.toml [fix]` — project-owned, RULED
