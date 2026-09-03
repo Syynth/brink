@@ -28,6 +28,10 @@ export interface EditorTextMenuRequest {
   lineType?: string;
   /** Editor-side line-context items (Open File, Fold/Unfold, …). */
   lineActions?: { label: string; run: () => void }[];
+  /** The auto-fixes for the diagnostics under the pointer
+   *  (`docs/autofix-spec.md` §7). `tier` is the fix's applicability, so the
+   *  menu can say how far an entry goes before it is clicked. */
+  fixActions?: { label: string; code: string; tier: string; run: () => void }[];
   /** Navigate/Rename group for identity-bearing tokens (context-menu spec). */
   identity?: {
     name: string;

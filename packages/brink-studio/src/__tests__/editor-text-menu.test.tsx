@@ -18,6 +18,7 @@ import { createStudioStore, type EditorTextMenuRequest } from "@brink/studio-sto
 import { EditorTextMenuHost, StoreProvider } from "@brink/studio-ui";
 
 let root: Root | null = null;
+let lastCommands: CommandRegistry | null = null;
 let container: HTMLElement | null = null;
 
 afterEach(() => {
@@ -25,6 +26,7 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+  lastCommands = null;
 });
 
 function request(hasSelection: boolean): EditorTextMenuRequest & {
@@ -40,6 +42,7 @@ function mount() {
   document.body.appendChild(container);
   root = createRoot(container);
   const commands = new CommandRegistry();
+  lastCommands = commands;
   const themes = new ThemeService();
   const overrides = new KeymapOverridesService();
   act(() => {
@@ -211,6 +214,81 @@ describe("EditorTextMenuHost", () => {
     });
     expect(gotoDef).toHaveBeenCalledOnce();
     expect(container!.querySelector(".brink-text-menu")).toBeNull();
+  });
+
+  // Adversarial review on PR #3454 (finding 2): the fix group
+  // (`docs/autofix-spec.md` §7, `EditorTextMenuHost`'s `fixItems`) shipped
+  // with no pin on its ordering or its "Fix all safe in this file" trailer
+  // — deleting the `fixItems` block turned nothing red. Placed alongside the
+  // identity-ordering test above, which already pins this component's group
+  // ordering the same way.
+  it("fix entries render above the identity group, and the trailer dispatches fix.allSafeInFile", () => {
+    const store = mount();
+    const runFix = vi.fn();
+    const dispatchSpy = vi.spyOn(lastCommands!, "dispatch");
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        identity: { name: "gold", gotoDefinition: vi.fn() },
+        fixActions: [
+          {
+            label: "Import `haggle` from `story::market::barter`",
+            code: "E025",
+            tier: "suggested",
+            run: runFix,
+          },
+        ],
+      }),
+    );
+    expect(items().map((i) => i.label)).toEqual([
+      "Import `haggle` from `story::market::barter` — Suggested",
+      "Fix all safe in this file",
+      "Go to Definition⌘Click",
+      "Cut⌘X",
+      "Copy⌘C",
+      "Paste⌘V",
+      "Select All⌘A",
+      "Hide Gutters",
+    ]);
+
+    const els = [...container!.querySelectorAll(".brink-context-menu-item")];
+    const fixEl = els.find((el) => el.textContent?.startsWith("Import `haggle`"))!;
+    act(() => fixEl.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(runFix).toHaveBeenCalledOnce();
+
+    // Re-open: clicking a stale element from the closed menu is invalid, so
+    // reopen fresh before exercising the trailer.
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        fixActions: [
+          {
+            label: "Import `haggle` from `story::market::barter`",
+            code: "E025",
+            tier: "suggested",
+            run: runFix,
+          },
+        ],
+      }),
+    );
+    const trailer = [...container!.querySelectorAll(".brink-context-menu-item")].find(
+      (el) => el.textContent === "Fix all safe in this file",
+    )!;
+    act(() => trailer.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(dispatchSpy).toHaveBeenCalledWith("fix.allSafeInFile");
+  });
+
+  it("no fix entries and no trailer when the diagnostic under the pointer has no offered fix", () => {
+    const store = mount();
+    act(() =>
+      store.getState().openTextMenu({
+        ...request(false),
+        identity: { name: "gold", gotoDefinition: vi.fn() },
+        fixActions: [],
+      }),
+    );
+    expect(items().map((i) => i.label)).not.toContain("Fix all safe in this file");
+    expect(items().map((i) => i.label)[0]).toBe("Go to Definition⌘Click");
   });
 
   it("symbol menu and text menu are mutually exclusive in the store", () => {
