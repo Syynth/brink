@@ -505,6 +505,24 @@ pub(crate) fn e176_fixture() -> FixFixture {
     }
 }
 
+/// E092: an undeclared module defaults `Public`
+/// (`docs/modules-spec.md` §4), so `#@public` above `VAR score` restates
+/// it. The cursor sits on `score`'s own identifier — `insert_symbol`
+/// anchors the diagnostic on `DeclaredSymbol::range`, the declaration's
+/// name span (issue #3424, `crates/brink-lsp/src/convert.rs`'s
+/// `is_unnecessary` doc has the full account of why that range is the
+/// name, not the directive).
+pub(crate) fn e092_fixture() -> FixFixture {
+    let src = "#@public\nVAR score = 0\nHello, world.\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "score");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
 /// E095: a knot's `#@was(greet)` names its own current name (`greet`) —
 /// nothing to migrate, and this line attaches to no following declaration
 /// (`crate::stale_was_fix`'s narrowing guard doesn't apply). `crate::stale_was_fix`'s
