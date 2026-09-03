@@ -22,11 +22,13 @@
  *   feeds the bounded **backup ring** (`ringBackups` → `append_backups`),
  *   which is crash protection, orthogonal to dirty.
  * - **`requestSave` is THE canonical write**: the save commands await it
- *   (⌘S narrowed to the focused path, saveAll/autosave unnarrowed) and
- *   only re-baseline on success — a rejected write stays staged and dirty
- *   for retry. Calls are serialized (#2403) so an autosave tick and a
- *   saveAll (including the quit-time call) queue behind each other instead
- *   of racing writes to the same file.
+ *   (⌘S narrowed to the fix-touched set when fix-on-save rewrote more than
+ *   the focused path — {@link hostSaveBatch}, #3462 — otherwise just the
+ *   focused path; saveAll/autosave unnarrowed) and only re-baseline on
+ *   success — a rejected write stays staged and dirty for retry. Calls are
+ *   serialized (#2403) so an autosave tick and a saveAll (including the
+ *   quit-time call) queue behind each other instead of racing writes to the
+ *   same file.
  * - **`onExternalChange` is a real fs watcher** (shell `start_watch`,
  *   debounced + filtered): events forward into `ProjectSession`'s #320
  *   never-clobber machinery, with self-write, self-delete (#2404), and
