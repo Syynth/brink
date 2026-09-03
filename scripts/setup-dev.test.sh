@@ -272,7 +272,11 @@ real_cargo="$(command -v cargo)"
 # make that one step sleep past its configured timeout instead:
 #   HANG_RUSTUP_CURL, HANG_WASM_PACK_CURL, HANG_BINARYEN_CURL,
 #   HANG_NEXTEST_CURL, HANG_CARGO_INSTALL_WASM_PACK,
-#   HANG_CARGO_INSTALL_NEXTEST, HANG_CARGO_INSTALL_DENY
+#   HANG_CARGO_INSTALL_NEXTEST, HANG_CARGO_INSTALL_DENY,
+#   HANG_WASM_PACK_BUILD, HANG_PNPM_INSTALL (the BRINK_SETUP_FRONTEND=1
+#   stage: the stubbed `wasm-pack build` / `pnpm install:checked`; each also
+#   has a FAIL_* twin, and each records its invocations to the file named by
+#   WASM_PACK_BUILD_LOG / PNPM_INSTALL_LOG so a test can assert what ran).
 #
 # The rustup/wasm-pack/nextest curl fetches also each have a FAIL_* twin
 # (FAIL_RUSTUP_CURL, FAIL_WASM_PACK_CURL, FAIL_NEXTEST_CURL) that makes the
@@ -357,6 +361,16 @@ RUSTUP_INSTALLER
     mkdir -p "${t}/wasm-pack-v0.14.0-x86_64-unknown-linux-musl"
     cat > "${t}/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack" <<'WP'
 #!/usr/bin/env bash
+# `build` is the frontend stage's cold compile (BRINK_SETUP_FRONTEND=1) —
+# a crates.io/wasm-bindgen-cli fetch on a cold cache, hence bounded and
+# hence these toggles. Records every build invocation so a test can assert
+# the crate order came from the registry.
+if [ "${1:-}" = "build" ]; then
+  if [ -n "${WASM_PACK_BUILD_LOG:-}" ]; then printf '%s\n' "$*" >> "${WASM_PACK_BUILD_LOG}"; fi
+  if [ "${HANG_WASM_PACK_BUILD:-0}" = "1" ]; then sleep 5; exit 0; fi
+  if [ "${FAIL_WASM_PACK_BUILD:-0}" = "1" ]; then echo "stub wasm-pack: simulated build failure" >&2; exit 101; fi
+  exit 0
+fi
 echo "wasm-pack 0.14.0"
 WP
     chmod +x "${t}/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack"
@@ -462,8 +476,16 @@ EOF
   # exposes on a corepack cache miss: it execs corepack's shim, which
   # re-attempts the same network fetch `corepack prepare` above just gave up
   # on — so this stub, like the real shim, can itself stall.
+  # `install:checked` is the frontend stage's guarded install (#2479/#2593)
+  # — an npm-registry fetch, hence bounded, hence its own HANG_/FAIL_ pair.
   cat > "${dir}/pnpm" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = "install:checked" ]; then
+  if [ -n "\${PNPM_INSTALL_LOG:-}" ]; then printf '%s\\n' "\$*" >> "\${PNPM_INSTALL_LOG}"; fi
+  if [ "\${HANG_PNPM_INSTALL:-0}" = "1" ]; then sleep 5; exit 0; fi
+  if [ "\${FAIL_PNPM_INSTALL:-0}" = "1" ]; then echo "stub pnpm: simulated guarded-install refusal" >&2; exit 1; fi
+  exit 0
+fi
 if [ "\${HANG_PNPM_VERSION:-0}" = "1" ]; then sleep 5; exit 0; fi
 echo "\${STUB_PNPM_VERSION:-${pinned_pnpm_version}}"
 EOF
@@ -886,6 +908,168 @@ if printf '%s' "${out}" | grep -q "pnpm ready"; then
   fail "pnpm --version timeout: printed 'pnpm ready' despite the bounded read timing out:\n${out}"
 else
   pass "pnpm --version timeout: does not print 'pnpm ready'"
+fi
+
+# --- Part 3: the opt-in frontend stage (BRINK_SETUP_FRONTEND=1) — the stage a
+# cloud-environment setup script needs, where a bare `pnpm install
+# --frozen-lockfile` died with `ENOENT … scandir crates/brink-prose/www/pkg`
+# before Claude Code could start. The crate list the stage builds is READ
+# from scripts/check-wasm-pkg.mjs's WASM_PACKAGES registry, so the expected
+# order here is read from the same place rather than restated. ---
+
+expected_crate_dirs="$(BRINK_WASM_REGISTRY="${repo_root}/scripts/check-wasm-pkg.mjs" node -e "import(require('node:url').pathToFileURL(process.env.BRINK_WASM_REGISTRY).href).then((m) => process.stdout.write(m.WASM_PACKAGES.map((p) => p.crateDir).join('\n') + '\n'))")"
+expected_crate_count="$(printf '%s\n' "${expected_crate_dirs}" | grep -c .)"
+if [ "${expected_crate_count}" -ge 2 ]; then
+  pass "frontend: the registry lists ${expected_crate_count} wasm crates (the second is what the bare install missed)"
+else
+  fail "frontend: expected at least two registered wasm crates, found ${expected_crate_count}"
+fi
+
+# --- Test 22: default run (no BRINK_SETUP_FRONTEND) must NOT build or install
+# — the stage is opt-in — but its printed "Next steps" must list a build line
+# for EVERY registered crate, not just brink-web, followed by the guarded
+# install. ---
+build_log="$(mktemp)"; install_log="$(mktemp)"; : > "${build_log}"; : > "${install_log}"
+out="$(run_full_script 1 WASM_PACK_BUILD_LOG="${build_log}" PNPM_INSTALL_LOG="${install_log}")"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "frontend off: script exits 0"
+else
+  fail "frontend off: script exited ${rc}:\n${out}"
+fi
+if [ ! -s "${build_log}" ] && [ ! -s "${install_log}" ]; then
+  pass "frontend off: neither wasm-pack build nor pnpm install:checked ran"
+else
+  fail "frontend off: build/install ran without opt-in (build: $(cat "${build_log}"); install: $(cat "${install_log}"))"
+fi
+if printf '%s' "${out}" | grep -qF "Skipping frontend (set BRINK_SETUP_FRONTEND=1"; then
+  pass "frontend off: prints the opt-in pointer"
+else
+  fail "frontend off: missing the opt-in pointer:\n${out}"
+fi
+while IFS= read -r crate_dir; do
+  [ -n "${crate_dir}" ] || continue
+  if printf '%s' "${out}" | grep -qF "    wasm-pack build ${crate_dir} --target web --out-dir www/pkg"; then
+    pass "frontend off: Next steps lists the ${crate_dir} build"
+  else
+    fail "frontend off: Next steps does not list the ${crate_dir} build:\n${out}"
+  fi
+done <<< "${expected_crate_dirs}"
+if printf '%s' "${out}" | grep -qF "    pnpm install:checked -- --frozen-lockfile"; then
+  pass "frontend off: Next steps lists the guarded install"
+else
+  fail "frontend off: Next steps does not list the guarded install:\n${out}"
+fi
+rm -f "${build_log}" "${install_log}"
+
+# --- Test 23: BRINK_SETUP_FRONTEND=1 happy path — one `wasm-pack build` per
+# registered crate, in registry order, THEN the guarded install with the
+# frozen-lockfile flag forwarded exactly as CLAUDE.md documents it, THEN the
+# ready line; and the Next steps must no longer repeat the two done steps. ---
+build_log="$(mktemp)"; install_log="$(mktemp)"; : > "${build_log}"; : > "${install_log}"
+out="$(run_full_script 1 BRINK_SETUP_FRONTEND=1 WASM_PACK_BUILD_LOG="${build_log}" PNPM_INSTALL_LOG="${install_log}")"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "frontend on: script exits 0"
+else
+  fail "frontend on: script exited ${rc}:\n${out}"
+fi
+expected_builds="$(printf '%s\n' "${expected_crate_dirs}" | grep . | sed 's#^#build #; s#$# --target web --out-dir www/pkg#')"
+if [ "$(cat "${build_log}")" = "${expected_builds}" ]; then
+  pass "frontend on: wasm-pack build ran once per registered crate, in registry order"
+else
+  fail "frontend on: wasm-pack build invocations differ from the registry:\n--- got ---\n$(cat "${build_log}")\n--- expected ---\n${expected_builds}"
+fi
+if [ "$(cat "${install_log}")" = "install:checked -- --frozen-lockfile" ]; then
+  pass "frontend on: pnpm install:checked ran exactly once with -- --frozen-lockfile"
+else
+  fail "frontend on: unexpected pnpm install invocations:\n$(cat "${install_log}")"
+fi
+if printf '%s' "${out}" | grep -qF "Frontend ready"; then
+  pass "frontend on: prints the ready line"
+else
+  fail "frontend on: missing the ready line:\n${out}"
+fi
+if printf '%s' "${out}" | grep -qF "    wasm-pack build "; then
+  fail "frontend on: Next steps still lists a wasm-pack build that already ran:\n${out}"
+else
+  pass "frontend on: Next steps no longer lists the wasm builds"
+fi
+rm -f "${build_log}" "${install_log}"
+
+# --- Test 24: a hanging `wasm-pack build` must be bounded by
+# BRINK_SETUP_WASM_BUILD_TIMEOUT and FAIL naming that knob, without ever
+# reaching the install. ---
+install_log="$(mktemp)"; : > "${install_log}"
+out="$(run_full_script 1 BRINK_SETUP_FRONTEND=1 HANG_WASM_PACK_BUILD=1 BRINK_SETUP_WASM_BUILD_TIMEOUT=1 PNPM_INSTALL_LOG="${install_log}")"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "wasm-pack build timeout: script exits non-zero"
+else
+  fail "wasm-pack build timeout: script exited 0 — the hang was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "wasm-pack build .* TIMED OUT after 1s.*BRINK_SETUP_WASM_BUILD_TIMEOUT"; then
+  pass "wasm-pack build timeout: names the step and the knob"
+else
+  fail "wasm-pack build timeout: missing the named diagnostic:\n${out}"
+fi
+if [ ! -s "${install_log}" ]; then
+  pass "wasm-pack build timeout: pnpm install:checked never ran"
+else
+  fail "wasm-pack build timeout: pnpm install:checked ran after a failed build:\n$(cat "${install_log}")"
+fi
+rm -f "${install_log}"
+
+# --- Test 25: the FAIL_ twin — a `wasm-pack build` that exits non-zero
+# immediately must abort the same way, through the plain-failure branch. ---
+out="$(run_full_script 1 BRINK_SETUP_FRONTEND=1 FAIL_WASM_PACK_BUILD=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "wasm-pack build failure: script exits non-zero"
+else
+  fail "wasm-pack build failure: script exited 0:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "wasm-pack build .* failed (exit 101)"; then
+  pass "wasm-pack build failure: reports the build's own exit code"
+else
+  fail "wasm-pack build failure: missing the failure diagnostic:\n${out}"
+fi
+
+# --- Test 26: a hanging `pnpm install:checked` must be bounded by
+# BRINK_SETUP_PNPM_INSTALL_TIMEOUT and FAIL naming that knob — never a
+# warn-and-continue, since exit 0 with no node_modules is the exact silent
+# shape #2479/#2593 were about. ---
+out="$(run_full_script 1 BRINK_SETUP_FRONTEND=1 HANG_PNPM_INSTALL=1 BRINK_SETUP_PNPM_INSTALL_TIMEOUT=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "pnpm install timeout: script exits non-zero"
+else
+  fail "pnpm install timeout: script exited 0 — the hang was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm install:checked TIMED OUT after 1s.*BRINK_SETUP_PNPM_INSTALL_TIMEOUT"; then
+  pass "pnpm install timeout: names the step and the knob"
+else
+  fail "pnpm install timeout: missing the named diagnostic:\n${out}"
+fi
+if printf '%s' "${out}" | grep -qF "Frontend ready"; then
+  fail "pnpm install timeout: printed the ready line despite the install never completing:\n${out}"
+else
+  pass "pnpm install timeout: does not print the ready line"
+fi
+
+# --- Test 27: the FAIL_ twin — the guarded install refusing (exit 1) must
+# abort the run and point at its diagnostic. ---
+out="$(run_full_script 1 BRINK_SETUP_FRONTEND=1 FAIL_PNPM_INSTALL=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "pnpm install failure: script exits non-zero"
+else
+  fail "pnpm install failure: script exited 0:\n${out}"
+fi
+if printf '%s' "${out}" | grep -qF "pnpm install:checked failed (exit 1)"; then
+  pass "pnpm install failure: reports the guarded install's exit code"
+else
+  fail "pnpm install failure: missing the failure diagnostic:\n${out}"
 fi
 
 if [ "${failures}" -gt 0 ]; then

@@ -17,6 +17,20 @@
 #     `cargo nextest run --workspace`, measured at 35s vs `cargo test`'s
 #     2m52s for identical results (issue #1695). Without it every pump agent
 #     falls back to the 5x-slower path or fails outright.
+#   - the frontend tree (BRINK_SETUP_FRONTEND=1 only) — every `file:`-linked
+#     wasm-pack output in scripts/check-wasm-pkg.mjs's WASM_PACKAGES registry
+#     (crates/brink-web AND crates/brink-prose today; the list is READ from
+#     that registry, never restated here), then `pnpm install:checked --
+#     --frozen-lockfile`. This is the stage a cloud-environment setup script
+#     needs: a bare `pnpm install --frozen-lockfile` there dies with
+#     `ENOENT … scandir crates/brink-prose/www/pkg` before Claude Code can
+#     even start, because nothing built the wasm first (#2479/#2593 family).
+#     Opt-in because the cold wasm builds are the slowest thing this script
+#     can do (measured cold on a 4-job cloud VM: 2m43s for brink-web, ~8m30s
+#     for brink-prose, wasm-opt included) and a Rust-only session does not
+#     need them. NOTE the web docs ask a cloud setup script to finish in
+#     roughly five minutes so the environment snapshot can build — this
+#     stage alone runs past that on a cold cache.
 #   - cargo-deny (BRINK_SETUP_FULL=1 only) — pinned to the version CI's
 #     pinned EmbarkStudios/cargo-deny-action SHA runs, then run against BOTH
 #     workspaces .github/workflows/ci.yml's "cargo-deny" job and
@@ -76,9 +90,29 @@
 #                                                is what FAILS the run if
 #                                                pnpm did not end up at the
 #                                                pinned version.
+#   BRINK_SETUP_WASM_BUILD_TIMEOUT       900s   FAIL (exit 1) — applied to
+#                                                EACH `wasm-pack build` in
+#                                                the frontend stage
+#                                                (BRINK_SETUP_FRONTEND=1
+#                                                only). A cold build fetches
+#                                                crates.io deps and
+#                                                wasm-bindgen-cli, then
+#                                                compiles for minutes; same
+#                                                bound as the justfile's
+#                                                `wasm` recipe.
+#   BRINK_SETUP_PNPM_INSTALL_TIMEOUT     300s   FAIL (exit 1) — the
+#                                                `pnpm install:checked`
+#                                                registry fetch + link
+#                                                (BRINK_SETUP_FRONTEND=1
+#                                                only). Exiting 0 without
+#                                                an installed tree is the
+#                                                exact silent failure the
+#                                                guarded install exists to
+#                                                stop, so this never warns.
 #
 # Also see BRINK_SETUP_FULL (below, and CLAUDE.md "Cloud / fresh-environment
-# sessions") — gates whether cargo-deny installs/audits at all.
+# sessions") — gates whether cargo-deny installs/audits at all — and
+# BRINK_SETUP_FRONTEND (below) — gates the wasm builds + guarded pnpm install.
 #
 # Safe to re-run: every step checks current state before acting.
 
@@ -545,6 +579,87 @@ if [ "$missing" -gt 0 ]; then
   echo "==> WARNING: ${missing} required tool(s) missing — gates depending on them will fail."
 fi
 
+# --- frontend (opt-in) --------------------------------------------------------
+# The stage a cloud-environment setup script actually needs, and the one a
+# bare two-liner (`bash scripts/setup-dev.sh` then `pnpm install
+# --frozen-lockfile`) gets wrong: packages/wasm and packages/brink-studio each
+# carry a `file:` devDependency on a wasm-pack output that only exists after
+# its crate is built, so the bare install dies with `ENOENT … scandir
+# crates/brink-prose/www/pkg` — and in a setup script, a non-zero exit means
+# the session never starts. (Before brink-prose joined the registry in
+# c39e83d7c the same install failed the same way on brink-web; the crate
+# list is read from the registry precisely so a third crate cannot reopen
+# this.)
+#
+# OPT-IN (BRINK_SETUP_FRONTEND=1) because the cold wasm builds are the
+# slowest thing this script can do — measured cold on a 4-job cloud VM at
+# 2m43s for brink-web and ~8m30s for brink-prose, wasm-opt included — and a
+# Rust-only session has no use for them. A cloud setup script wants exactly:
+#
+#   BRINK_SETUP_FRONTEND=1 bash scripts/setup-dev.sh
+#
+# Every step FAILS the run (exit 1) on timeout or error. That is deliberate:
+# the alternative — exit 0 with no node_modules — is the silent shape #2479/
+# #2593 were about, and `pnpm install:checked` (scripts/guarded-install.mjs)
+# is used here rather than a bare `pnpm install` for the same reason (it
+# refuses before spawning pnpm if any registered output is missing, and
+# verifies afterwards that a tree actually materialised).
+#
+# The crate list is READ from scripts/check-wasm-pkg.mjs's WASM_PACKAGES
+# registry, not restated here — the registry and this script would otherwise
+# have no mechanical link, which is the exact drift 201000ee fixed by hand in
+# scripts/release-desktop-local.sh.
+
+BRINK_SETUP_WASM_BUILD_TIMEOUT="${BRINK_SETUP_WASM_BUILD_TIMEOUT:-900}"
+BRINK_SETUP_PNPM_INSTALL_TIMEOUT="${BRINK_SETUP_PNPM_INSTALL_TIMEOUT:-300}"
+
+# One repo-relative crate directory per line, in registry order.
+# The registry path travels by env var, NOT as a positional argument: with
+# `node -e`, the first positional lands in process.argv[1], and
+# check-wasm-pkg.mjs's main-guard compares exactly that against its own URL
+# — passed positionally, the module runs its standalone check (and exits 1
+# on an unbuilt tree) instead of just exporting the registry.
+wasm_crate_dirs=""
+wasm_crate_dirs="$(BRINK_WASM_REGISTRY="${brink_repo_root}/scripts/check-wasm-pkg.mjs" node -e "import(require('node:url').pathToFileURL(process.env.BRINK_WASM_REGISTRY).href).then((m) => process.stdout.write(m.WASM_PACKAGES.map((p) => p.crateDir).join('\n') + '\n'))")" || true
+if [ -z "${wasm_crate_dirs}" ]; then
+  echo "==> ✗ could not read the wasm package registry from scripts/check-wasm-pkg.mjs (WASM_PACKAGES) — the frontend stage and the printed next steps both derive their crate list from it."
+  exit 1
+fi
+
+if [ "${BRINK_SETUP_FRONTEND:-0}" = "1" ]; then
+  echo "==> Building the frontend tree (BRINK_SETUP_FRONTEND=1)"
+  # `wasm-pack build <crate>` and `pnpm install:checked` both resolve paths
+  # against the cwd; this script may be invoked from anywhere.
+  cd "${brink_repo_root}"
+  while IFS= read -r crate_dir; do
+    [ -n "${crate_dir}" ] || continue
+    echo "==> wasm-pack build ${crate_dir}"
+    wasm_build_rc=0
+    run_with_timeout "${BRINK_SETUP_WASM_BUILD_TIMEOUT}" wasm-pack build "${crate_dir}" --target web --out-dir www/pkg || wasm_build_rc=$?
+    if [ "$wasm_build_rc" -eq 124 ]; then
+      echo "==> ✗ wasm-pack build ${crate_dir} TIMED OUT after ${BRINK_SETUP_WASM_BUILD_TIMEOUT}s — the crates.io/wasm-bindgen-cli fetch behind it never completed (likely a stalled proxy), or the cold build is genuinely slower than the bound. Retry when network is stable, or raise BRINK_SETUP_WASM_BUILD_TIMEOUT."
+      exit 1
+    elif [ "$wasm_build_rc" -ne 0 ]; then
+      echo "==> ✗ wasm-pack build ${crate_dir} failed (exit ${wasm_build_rc})"
+      exit 1
+    fi
+  done <<< "${wasm_crate_dirs}"
+
+  echo "==> pnpm install:checked -- --frozen-lockfile"
+  pnpm_install_rc=0
+  run_with_timeout "${BRINK_SETUP_PNPM_INSTALL_TIMEOUT}" pnpm install:checked -- --frozen-lockfile || pnpm_install_rc=$?
+  if [ "$pnpm_install_rc" -eq 124 ]; then
+    echo "==> ✗ pnpm install:checked TIMED OUT after ${BRINK_SETUP_PNPM_INSTALL_TIMEOUT}s — the npm-registry fetch never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_SETUP_PNPM_INSTALL_TIMEOUT."
+    exit 1
+  elif [ "$pnpm_install_rc" -ne 0 ]; then
+    echo "==> ✗ pnpm install:checked failed (exit ${pnpm_install_rc}) — see the guarded-install diagnostic above"
+    exit 1
+  fi
+  echo "==> Frontend ready: wasm packages built and node_modules installed"
+else
+  echo "==> Skipping frontend (set BRINK_SETUP_FRONTEND=1 to build the wasm packages and run pnpm install:checked here — a cloud setup script needs this)"
+fi
+
 echo "==> Done. Next steps:"
 echo "    cargo check --workspace"
 # @brink-lang/web (packages/wasm) has a file: dependency on this build
@@ -566,6 +681,15 @@ echo "    cargo check --workspace"
 # success. A pnpm `preinstall` hook cannot do this job: pnpm skips every
 # project lifecycle script when a per-package link fails, so the hook is
 # dead code in exactly this case (re-verified on pnpm 10.34.5 for #2593).
-echo "    wasm-pack build crates/brink-web --target web --out-dir www/pkg"
-echo "    pnpm install:checked -- --frozen-lockfile   # guarded; see #2479/#2593"
+#
+# Printed only when the frontend stage above did NOT run — after it has, both
+# lines are already done. One build line per registered crate (read from the
+# registry above), so a crate added later shows up here without an edit.
+if [ "${BRINK_SETUP_FRONTEND:-0}" != "1" ]; then
+  while IFS= read -r crate_dir; do
+    [ -n "${crate_dir}" ] || continue
+    echo "    wasm-pack build ${crate_dir} --target web --out-dir www/pkg"
+  done <<< "${wasm_crate_dirs}"
+  echo "    pnpm install:checked -- --frozen-lockfile   # guarded; see #2479/#2593"
+fi
 echo "    cargo nextest run --workspace     # the pump's per-round gate"
