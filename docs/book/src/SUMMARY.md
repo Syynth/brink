@@ -64,6 +64,7 @@
   - [Playground](./integrations/web/playground.md)
   - [Conventions for Your Engine](./integrations/web/conventions.md)
 - [Studio](./integrations/studio/index.md)
+  - [Auto-fix](./integrations/studio/fix.md)
 
 # Contributing
 

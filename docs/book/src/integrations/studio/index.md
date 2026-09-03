@@ -28,6 +28,9 @@ navigation, and screenplay mode, all driven by `@brink-lang/web`.
   call stack, visit counts, and pending choices, refreshed as the story advances.
 - **Line-element switching** — convert a line between narrative, choice, sticky
   choice, gather, and divert via keyboard or UI.
+- **[Auto-fix](./fix.md)** — one-click and batch fixes for diagnostics, from
+  the Problems panel, the editor, and the command palette, plus a fix-on-save
+  setting.
 
 ## Architecture
 
