@@ -41,10 +41,17 @@ pub struct FixOpts {
     /// write it to a file. Implies no disk write, same as `dry_run`.
     pub diff: Option<String>,
     /// `None`: don't promote the Suggested tier. `Some("*")`: promote every
-    /// Suggested-max fixer for this run. `Some(codes)`: promote only the
-    /// comma-separated codes named. Wins over the project's `[fix]` table for
-    /// the same code (CLI > file, `docs/autofix-spec.md` §6.2's "explicit
-    /// actions may widen per run").
+    /// Suggested-max fixer for this run — except one the project's `[fix]`
+    /// table explicitly sets to `"off"`, which stays off (`off` means never
+    /// offer or batch a fixer for this code in this project,
+    /// `docs/book/src/toolchain/project-config.md` §Fix policy — a bare,
+    /// codeless flag is not the "explicit action" that section's widening
+    /// applies to). `Some(codes)`: promote only the comma-separated codes
+    /// named — naming a code IS the explicit action, so it wins over the
+    /// project's `[fix]` table for that code even when the table says
+    /// `"off"` (CLI > file, `docs/autofix-spec.md` §6.2's "explicit actions
+    /// may widen per run"; its own sanctioned example, `brink fix --suggested E033`,
+    /// is this code-explicit form).
     pub suggested: Option<String>,
     /// Also report every Placeholder-tier fix available in the selection.
     /// Never applied — `FixPolicy::admits` refuses `Placeholder`
@@ -125,7 +132,15 @@ fn run_inner(opts: &FixOpts) -> Result<ExitCode, String> {
     }
 
     if opts.placeholder {
-        print_placeholders(&mut out, &session, &select)?;
+        // Stderr, deliberately never `out` (stdout): the `--diff` branch
+        // above may already have written a unified diff to stdout, and a
+        // pipeline like `brink fix story.ink --diff --placeholder | git
+        // apply` (advertised in `docs/book/src/toolchain/cli/fix.md`) must
+        // see nothing but that patch there. See `print_placeholders`' own
+        // doc comment for why this listing has no positive-path CLI test
+        // today.
+        let mut err = io::stderr().lock();
+        print_placeholders(&mut err, &session, &select)?;
     }
 
     Ok(if report.cap_hit {
@@ -138,10 +153,15 @@ fn run_inner(opts: &FixOpts) -> Result<ExitCode, String> {
 /// The project's `[fix]` policy (`docs/autofix-spec.md` §6.1), resolved with
 /// no app-scope ceiling (`brink fix` is not an app — §6.2's ceiling is a
 /// per-editor personal setting with nothing to plug in here), then widened by
-/// `--suggested` — a CLI action, so it wins over the file for the same code
-/// (`docs/autofix-spec.md` §6.2, "explicit actions may widen per run"; #1005
-/// CLI/API > file > default is the same precedence every other `brink`
-/// override follows).
+/// `--suggested` — a CLI action, so an *explicit* code wins over the file for
+/// that code (`docs/autofix-spec.md` §6.2, "explicit actions may widen per
+/// run"; #1005 CLI/API > file > default is the same precedence every other
+/// `brink` override follows). The bare, codeless form is not that explicit
+/// action: it must not silently re-enable a code the project withdrew with
+/// `"off"` (`docs/book/src/toolchain/project-config.md` §Fix policy — "never
+/// offer or batch a fixer for this code in this project" — and this crate's
+/// own `docs/book/src/toolchain/cli/fix.md` example comment on
+/// `E014 = "off"`, both state `off` unconditionally).
 ///
 /// Only [`FIXERS`]' own registered codes are considered: a code with no
 /// fixer can never produce a `Fix` for [`fixes_for`] to filter, so recording
@@ -170,8 +190,17 @@ fn build_policy(
         None => {}
         Some("*") => {
             for fixer in FIXERS {
-                if fixer.max_applicability() == Applicability::Suggested {
-                    policy.set(fixer.code(), FixMode::Auto);
+                let code = fixer.code();
+                // The bare form promotes every Suggested-max fixer EXCEPT
+                // one the project explicitly turned off — see this
+                // function's own doc comment. A named code (the `Some(codes)`
+                // arm below) is the one place `off` is meant to be
+                // overridable.
+                if fixer.max_applicability() == Applicability::Suggested
+                    && config.effective_fix_policy(code.as_str(), None)
+                        != brink_project_config::FixPolicy::Off
+                {
+                    policy.set(code, FixMode::Auto);
                 }
             }
         }
@@ -268,11 +297,34 @@ fn loc_str(session: &brink_ide::session::IdeSession, file: FileId, offset: TextS
 /// own walk (diagnostics → suppressions → `fixes_for`) minus the
 /// `policy.admits` filter, since a placeholder fix would fail that filter by
 /// construction.
+///
+/// Split into collection ([`collect_placeholders`]) and rendering
+/// ([`render_placeholders`]) so the rendering half is unit-testable on its
+/// own: every fixer in [`FIXERS`] today declares `Applicability::Suggested`
+/// (no `Placeholder`-max fixer is registered yet), so `collect_placeholders`
+/// can never actually return anything through a real `brink fix` invocation
+/// — there is no positive-path CLI test for this listing's content, only for
+/// the fact that it changes nothing else (`fix_cli.rs`'s
+/// `placeholder_flag_does_not_change_the_write_outcome`). Tracked as a named
+/// follow-up (issue #3456) for once a `Placeholder`-tier fixer exists to
+/// drive it.
 fn print_placeholders(
     out: &mut impl Write,
     session: &brink_ide::session::IdeSession,
     select: &Select,
 ) -> Result<(), String> {
+    let found = collect_placeholders(session, select);
+    render_placeholders(out, session, &found)
+}
+
+/// Collect every `Applicability::Placeholder` fix in `select`'s diagnostics,
+/// as `(code, file, start offset, title)` — see [`print_placeholders`]'s doc
+/// comment for why this is always empty against the registry as it stands
+/// today.
+fn collect_placeholders(
+    session: &brink_ide::session::IdeSession,
+    select: &Select,
+) -> Vec<(DiagnosticCode, FileId, TextSize, String)> {
     let db = session.db();
     let cx = FixCx::new(db);
     let mut found = Vec::new();
@@ -295,6 +347,19 @@ fn print_placeholders(
             }
         }
     }
+    found
+}
+
+/// Render `found` (from [`collect_placeholders`]) as `--placeholder`'s
+/// listing. A pure formatting step over already-collected entries, so it can
+/// be unit-tested with a hand-built `found` even though nothing in the
+/// current fixer registry can produce one for real (see
+/// [`print_placeholders`]'s doc comment).
+fn render_placeholders(
+    out: &mut impl Write,
+    session: &brink_ide::session::IdeSession,
+    found: &[(DiagnosticCode, FileId, TextSize, String)],
+) -> Result<(), String> {
     if found.is_empty() {
         return Ok(());
     }
@@ -304,7 +369,7 @@ fn print_placeholders(
         found.len()
     )
     .map_err(|e| e.to_string())?;
-    for (code, file, offset, title) in &found {
+    for (code, file, offset, title) in found {
         writeln!(
             out,
             "  [{}] {} — {title}",
@@ -314,4 +379,93 @@ fn print_placeholders(
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// A minimal loaded [`Project`] + its [`brink_ide::session::IdeSession`],
+    /// just so [`render_placeholders`]'s `loc_str` calls (which need a real
+    /// `FileId`/session pair) have something to resolve against — the
+    /// content is irrelevant, this never runs a real fix.
+    fn loaded_session(tag: &str) -> brink_ide::session::IdeSession {
+        let dir = std::env::temp_dir().join(format!("brink-fix-unit-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+        let project = Project::load(&dir.join("story.ink"), &LintOverrides::default()).unwrap();
+        project.ide_session()
+    }
+
+    // ── render_placeholders: pure formatting, no live Placeholder fixer
+    // needed (see `print_placeholders`'s doc comment for why the CLI itself
+    // can't drive this positively yet — issue #3456) ──────────────────────
+
+    #[test]
+    fn render_placeholders_lists_every_entry_with_its_location_and_title() {
+        let session = loaded_session("render-nonempty");
+        let file = session.db().file_ids().next().expect("at least one file");
+        let code = DiagnosticCode::from_str_code("E025").unwrap();
+        let found = vec![(
+            code,
+            file,
+            TextSize::from(0),
+            "fill this in by hand".to_string(),
+        )];
+
+        let mut buf: Vec<u8> = Vec::new();
+        render_placeholders(&mut buf, &session, &found).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+
+        assert!(
+            text.starts_with("1 placeholder fix(es) available (not applied):"),
+            "got: {text}"
+        );
+        assert!(text.contains("[E025]"), "got: {text}");
+        assert!(text.contains("fill this in by hand"), "got: {text}");
+    }
+
+    #[test]
+    fn render_placeholders_prints_nothing_for_an_empty_list() {
+        let session = loaded_session("render-empty");
+        let mut buf: Vec<u8> = Vec::new();
+        render_placeholders(&mut buf, &session, &[]).unwrap();
+        assert!(buf.is_empty(), "an empty list must print nothing at all");
+    }
+
+    // ── build_policy: bare --suggested must not override an explicit
+    // `[fix] = "off"` entry; a named code still may (finding on PR #3453)
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn bare_suggested_does_not_promote_a_code_the_project_turned_off() {
+        let mut config = brink_project_config::ProjectConfig::default();
+        config
+            .fix
+            .insert("E025".to_string(), brink_project_config::FixPolicy::Off);
+
+        let policy = build_policy(&config, Some("*")).unwrap();
+        assert_eq!(
+            policy.override_for(DiagnosticCode::from_str_code("E025").unwrap()),
+            Some(FixMode::Off),
+            "bare --suggested must leave an explicit [fix] E025 = \"off\" alone"
+        );
+    }
+
+    #[test]
+    fn explicit_suggested_code_still_overrides_an_off_entry() {
+        let mut config = brink_project_config::ProjectConfig::default();
+        config
+            .fix
+            .insert("E025".to_string(), brink_project_config::FixPolicy::Off);
+
+        let policy = build_policy(&config, Some("E025")).unwrap();
+        assert_eq!(
+            policy.override_for(DiagnosticCode::from_str_code("E025").unwrap()),
+            Some(FixMode::Auto),
+            "naming the code explicitly is the sanctioned widening — it must still win"
+        );
+    }
 }

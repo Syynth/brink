@@ -43,6 +43,24 @@ fn expected_source() -> String {
     fs::read_to_string(src).unwrap()
 }
 
+/// Same fixture as [`e025_project`], but with a `[fix]` table appended to
+/// the temp copy's `brink.toml` — never to the checked-in
+/// `tests/fix/E025/brink.toml` itself, which is a sibling issue's fixture
+/// this wave (`tests/fix/E025/**` is owned by #3448 per the file-ownership
+/// table). `fix_table` is the raw contents of the `[fix]` section body
+/// (e.g. `"E025 = \"auto\""`).
+#[expect(clippy::unwrap_used, reason = "test fixture setup")]
+fn e025_project_with_fix_table(tag: &str, fix_table: &str) -> PathBuf {
+    let dir = e025_project(tag);
+    let toml_path = dir.join("brink.toml");
+    let mut contents = fs::read_to_string(&toml_path).unwrap();
+    contents.push_str("\n[fix]\n");
+    contents.push_str(fix_table);
+    contents.push('\n');
+    fs::write(&toml_path, contents).unwrap();
+    dir
+}
+
 #[expect(clippy::expect_used, reason = "test fixture setup")]
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -139,6 +157,132 @@ fn suggested_with_explicit_code_list_promotes_just_that_code() {
         .output()
         .unwrap();
     assert!(out.status.success());
+    let after = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(after, expected);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── the project's own `[fix]` table (no CLI flag at all) ──────────────
+//
+// Regression for the review finding on PR #3453: deleting `fix.rs`'s whole
+// `for fixer in FIXERS { match config.effective_fix_policy(...) }` block
+// left every test above still green, because none of them exercises
+// `brink.toml`'s `[fix]` table without also passing `--suggested` (which
+// promotes independently of it). These do not pass `--suggested` at all.
+
+#[test]
+fn project_fix_table_auto_promotes_e025_with_no_flags_at_all() {
+    let dir = e025_project_with_fix_table("fix-table-auto", "E025 = \"auto\"");
+    let expected = expected_source();
+
+    let out = brink()
+        .arg("fix")
+        .arg("before.ink")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("1 fix(es) applied"),
+        "[fix] E025 = \"auto\" must batch it with no --suggested flag: {stdout}"
+    );
+
+    let after = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(after, expected);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn project_fix_table_off_yields_zero_fixes_even_with_code_naming_it() {
+    let dir = e025_project_with_fix_table("fix-table-off", "E025 = \"off\"");
+    let before = fs::read_to_string(dir.join("before.ink")).unwrap();
+
+    let out = brink()
+        .args(["fix", "before.ink", "--code", "E025"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("0 fix(es) applied"),
+        "[fix] E025 = \"off\" must block it even when --code names it: {stdout}"
+    );
+
+    let after = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(after, before, "an off-policy code must not be written");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── bare --suggested must not override an explicit "off" entry ────────
+//
+// Regression for the review finding on PR #3453: `--suggested`'s bare form
+// used to rewrite every Suggested-max fixer's mode to Auto unconditionally,
+// including one the project explicitly turned off — contradicting
+// `docs/book/src/toolchain/project-config.md` §Fix policy ("off — never
+// offer or batch a fixer for this code in this project") and this crate's
+// own `docs/book/src/toolchain/cli/fix.md` example comment.
+
+#[test]
+fn bare_suggested_does_not_override_an_explicit_off_entry() {
+    let dir = e025_project_with_fix_table("off-bare-suggested", "E025 = \"off\"");
+    let before = fs::read_to_string(dir.join("before.ink")).unwrap();
+
+    let out = brink()
+        .args(["fix", "before.ink", "--suggested"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("0 fix(es) applied"),
+        "bare --suggested must not re-enable an explicit [fix] E025 = \"off\": {stdout}"
+    );
+
+    let after = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(after, before);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// The explicit-code form of `--suggested` is the sanctioned widening
+/// (`docs/autofix-spec.md` §6.2's own example, `--suggested E033`, names a
+/// code) — unlike the bare form, it still wins over an `"off"` entry.
+#[test]
+fn explicit_suggested_code_still_overrides_an_off_entry() {
+    let dir = e025_project_with_fix_table("off-explicit-suggested", "E025 = \"off\"");
+    let expected = expected_source();
+
+    let out = brink()
+        .args(["fix", "before.ink", "--suggested", "E025"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("1 fix(es) applied"), "got: {stdout}");
+
     let after = fs::read_to_string(dir.join("before.ink")).unwrap();
     assert_eq!(after, expected);
 
@@ -285,6 +429,50 @@ fn placeholder_flag_does_not_change_the_write_outcome() {
     // applies exactly as it does without the flag.
     let after = fs::read_to_string(dir.join("before.ink")).unwrap();
     assert_eq!(after, expected);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression for the review finding on PR #3453: `--placeholder`'s listing
+/// used to be written to the same stdout handle `--diff` had already written
+/// the patch to, so `brink fix story.ink --diff --placeholder | git apply`
+/// (a pipeline `docs/book/src/toolchain/cli/fix.md` advertises) would
+/// corrupt the patch the moment a `Placeholder`-tier fixer existed. No such
+/// fixer is registered yet, so this can't reproduce the corruption
+/// end-to-end — but it does pin that stdout carries only the diff even with
+/// `--placeholder` set.
+#[test]
+fn diff_and_placeholder_together_leaves_stdout_as_a_clean_patch() {
+    let dir = e025_project("diff-placeholder");
+    let expected = expected_source();
+
+    let out = brink()
+        .args([
+            "fix",
+            "before.ink",
+            "--suggested",
+            "--diff",
+            "--placeholder",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let diff = String::from_utf8(out.stdout).unwrap();
+
+    fs::write(dir.join("out.diff"), &diff).unwrap();
+    git(&dir, &["init", "-q", "."]);
+    git(&dir, &["apply", "--check", "out.diff"]);
+    git(&dir, &["apply", "out.diff"]);
+    let applied = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(
+        applied, expected,
+        "--placeholder must not corrupt --diff's patch on stdout"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }

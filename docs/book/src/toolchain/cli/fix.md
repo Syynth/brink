@@ -46,9 +46,9 @@ E014 = "off"    # never offer this fixer here
 |------|---------|-------------|
 | `--dry-run` | off | Print the report; write nothing to disk. |
 | `--diff [FILE]` | off | Emit a `git apply`-able unified diff instead of writing — to stdout, or to `FILE` if given. Implies no disk write, like `--dry-run`. |
-| `--suggested [CODES]` | off | Promote the Suggested tier to batchable **for this run only**. Bare, it promotes every Suggested-tier fixer; `--suggested E025,E080` promotes just those codes. Wins over the project's `brink.toml` `[fix]` table for the same code (CLI beats file, like `-D`/`--warn`/`--allow` beat `[lints]`). |
+| `--suggested [CODES]` | off | Promote the Suggested tier to batchable **for this run only**. Bare, it promotes every Suggested-tier fixer *except one the project's `[fix]` table set to `"off"`* (`off` still means off — a codeless flag isn't the explicit action that widens it); `--suggested E025,E080` names codes explicitly and so wins over `[fix]` for those, even over an `"off"` entry (CLI beats file, like `-D`/`--warn`/`--allow` beat `[lints]`). |
 | `--code CODES` | every code | Restrict the run to these diagnostic codes (comma-separated, e.g. `E025,E080`). An unrecognized code is a hard error, not a silent no-op. |
-| `--placeholder` | off | Also report every Placeholder-tier fix available — never applied, since a Placeholder fix always leaves a hole. Useful with `--dry-run` to see where an author still needs to fill something in. |
+| `--placeholder` | off | Also report every Placeholder-tier fix available, on **stderr** — never applied, since a Placeholder fix always leaves a hole. Written to stderr (not stdout) so it never lands inside a `--diff` patch piped to `git apply`. Useful with `--dry-run` to see where an author still needs to fill something in. |
 | `--max-rounds N` | 5 | Round cap for the fixpoint loop. A fixer that never discharges its own diagnostic surfaces as a cap breach naming it, rather than looping forever. |
 
 With none of `--dry-run`/`--diff` given, `brink fix` writes every file the

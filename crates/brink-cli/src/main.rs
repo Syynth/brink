@@ -312,9 +312,11 @@ discharge its own diagnostic, 2 usage/IO error.")]
         #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
         diff: Option<String>,
         /// Promote the Suggested tier to batchable for this run. Bare:
-        /// every Suggested-max fixer. With a comma-separated code list:
-        /// just those codes. Wins over the project's brink.toml [fix]
-        /// table for the same code.
+        /// every Suggested-max fixer except one the project's brink.toml
+        /// [fix] table set to "off" (off stays off). With a
+        /// comma-separated code list: just those codes, which DOES win
+        /// over an "off" entry for that code (naming a code is the
+        /// explicit widening).
         #[arg(long, value_name = "CODE,...", num_args = 0..=1, default_missing_value = "*")]
         suggested: Option<String>,
         /// Also report every Placeholder-tier fix available (never

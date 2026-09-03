@@ -385,18 +385,23 @@ cap hit or a fixer failed to discharge its diagnostic (the report names
 it).
 
 *As built (#3421, milestone 6):* `PROJECT|ENTRY` is one positional entry
-file, exactly `brink compile`'s own addressing — `brink_ide`'s `Project::
-load` (already shared by `brink ide`) discovers `brink.toml` from the
+file, exactly `brink compile`'s own addressing — `brink-cli`'s own
+`crate::ide::project::Project::load` (already shared by `brink ide`;
+`brink_ide` itself has no `Project` type) discovers `brink.toml` from the
 entry's directory and follows `INCLUDE`s (or the native module graph); a
 bare file with no discovered `brink.toml` is the same code path with an
 empty `ProjectConfig`, not a second mode. `--suggested` takes an *optional*
 value rather than the sketch's required list: bare, it promotes every
-Suggested-max fixer in the registry for this run; `--suggested E025,E080`
-promotes just those codes. Both forms — like `--code`'s codes — win over
-the project's `brink.toml` `[fix]` table for the same code, mirroring the
-repo's standing `CLI/API > file > default` precedence (#1005): a project
-that sets a code `"off"` can still be promoted for one run with
-`--suggested`, the same way `-D`/`--warn`/`--allow` always beat `[lints]`.
+Suggested-max fixer in the registry for this run *except one the project's
+`brink.toml` `[fix]` table explicitly sets to `"off"`* — `off` means never
+offer or batch a fixer for this code in this project
+(`docs/book/src/toolchain/project-config.md` §Fix policy), and a codeless
+flag is not the "explicit action" that widens it; `--suggested E025,E080`
+names codes explicitly, and naming a code *is* that explicit action, so it
+wins over `[fix]` for those codes even over an `"off"` entry — the same
+`CLI/API > file > default` precedence (#1005) `-D`/`--warn`/`--allow` follow
+over `[lints]`, and exactly `--suggested E033`, §6.2's own sanctioned
+widening example (a code-explicit form, not the bare one).
 `ProjectConfig::effective_fix_policy`'s `Ask` (`docs/autofix-spec.md` §6.1's
 neutral value, returned identically for an absent entry and an explicit
 `= "ask"`) is deliberately **not** recorded as a `brink_ide::fix::policy::
@@ -405,12 +410,16 @@ non-batchable, which the TOML comment's own "absent ⇒ ask: … batchable
 (Safe)" rules out; only `Off`/`Auto` become overrides.
 
 One flag beyond the sketch: `--placeholder` lists every `Applicability::
-Placeholder` fix available in the selection (code, location, title)
-alongside whichever of `--dry-run`/`--diff`/the default write already ran —
-never applied, since `FixPolicy::admits` refuses `Placeholder`
-unconditionally (§3) however a project's `[fix]` table is written. It exists
-so an author (or a CI step driving `--dry-run`) can see where a hole needs
-filling by hand without a second invocation.
+Placeholder` fix available in the selection (code, location, title), on
+**stderr** — never stdout, so it can never land inside a `--diff` patch
+piped straight to `git apply` — alongside whichever of `--dry-run`/`--diff`/
+the default write already ran; never applied, since `FixPolicy::admits`
+refuses `Placeholder` unconditionally (§3) however a project's `[fix]` table
+is written. It exists so an author (or a CI step driving `--dry-run`) can
+see where a hole needs filling by hand without a second invocation. No
+fixer registered today (milestone 6) declares `Applicability::Placeholder`,
+so this listing has no positive-path test yet — tracked as issue #3456,
+alongside the native (`.brink`) write-path fixture gap noted below.
 
 The report itself names `applied`/`skipped_overlap` sites by file path only,
 never a line:col: their `FixSite.range` was captured against whichever
@@ -419,6 +428,17 @@ every offset after it — resolving a stale range against the final source
 would print a confidently wrong position. `remaining` (recomputed once,
 after the loop, against the session's then-current source) is the only
 bucket a line:col is safe to render from.
+
+Out of scope for milestone 6: `resolve_fs_path`'s native (`.brink`)
+write-path branch (`crate::ide::project::resolve_fs_path`, `ide/project.rs`)
+rejoins a discovered key against `native_source_root(entry)` rather than
+treating it as cwd-relative — the branch a nested `.brink` project (a
+`brink.toml` above `entry`'s own directory) takes. Every fixture this
+milestone ships (`tests/fix/E025`) is `.ink`, so `brink fix`'s own tests
+only ever exercise the identity (cwd-relative) branch; there is no `.brink`
+sibling fixture proving the write actually lands on the real file rather
+than a phantom cwd-relative path. Tracked as issue #3456 alongside the
+`--placeholder` coverage gap above.
 
 ## 9. First-wave membership
 
