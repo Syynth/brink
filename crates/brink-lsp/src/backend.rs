@@ -4466,8 +4466,8 @@ mod tests {
         const MARKET: &str = "#@module(market)\n== barter ==\n#@public\nDeal.\n-> DONE\n";
         const TOWN_BEFORE: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink\n\
              == square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
-        const TOWN_AFTER: &str = "#@module(town)\nIMPORT { ambush } FROM quest\n\
-             IMPORT { barter } FROM market\nINCLUDE quest.ink\nINCLUDE market.ink\n\
+        const TOWN_AFTER: &str = "#@module(town)\nINCLUDE quest.ink\nINCLUDE market.ink\n\
+             IMPORT { ambush } FROM quest\nIMPORT { barter } FROM market\n\
              == square ==\nHi\n* [Fight] -> ambush\n* [Trade] -> barter\n";
 
         // Absolute paths: `fix_all_workspace_edit` builds each changed

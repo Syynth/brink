@@ -1,5 +1,5 @@
 #@module(town)
-IMPORT { ambush } FROM quest
 INCLUDE quest.ink
+IMPORT { ambush } FROM quest
 Hi
 -> ambush
