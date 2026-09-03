@@ -108,6 +108,45 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) -> Result<(), ShellError
     Ok(())
 }
 
+/// The machine's font families for Settings › Player › Font (#3439): a
+/// browser cannot enumerate installed fonts (fingerprinting; the Local
+/// Font Access API is Chromium-only and `WKWebView` has nothing), the shell
+/// can. Family names only — the studio resolves a name through CSS.
+/// Enumerated once per app run: the system font set does not change under
+/// a running app often enough to pay a directory walk per Settings open.
+#[tauri::command]
+async fn list_system_fonts() -> Vec<String> {
+    static FONTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            fold_families(db.faces().flat_map(|face| {
+                face.families
+                    .iter()
+                    .map(|(name, _lang)| name.clone())
+                    .collect::<Vec<_>>()
+            }))
+        })
+        .clone()
+}
+
+/// Sorted, de-duplicated (case-insensitively; first spelling wins),
+/// blank-free family list — a face per weight/style must not list its
+/// family five times, and "Arial" vs "arial" is one family.
+fn fold_families(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeMap::<String, String>::new();
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        seen.entry(trimmed.to_lowercase())
+            .or_insert_with(|| trimmed.to_owned());
+    }
+    seen.into_values().collect()
+}
+
 #[tauri::command]
 async fn list_files(root: String) -> Result<Vec<String>, ShellError> {
     let root_path = Path::new(&root);
@@ -1718,6 +1757,7 @@ pub fn run() -> tauri::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_system_fonts,
             list_files,
             read_file,
             write_file,
@@ -4981,5 +5021,28 @@ mod recents_race_tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod system_fonts_tests {
+    use super::fold_families;
+
+    #[test]
+    fn fold_families_sorts_dedupes_and_drops_blanks() {
+        let got = fold_families(
+            [
+                "Menlo",
+                "arial",
+                "Arial",
+                " ",
+                "Baskerville",
+                "Menlo",
+                "Arial Black",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert_eq!(got, vec!["arial", "Arial Black", "Baskerville", "Menlo"]);
     }
 }

@@ -815,6 +815,20 @@ impl FlowInstance {
         self.flow.did_safe_exit
     }
 
+    /// The knot or `knot.stitch` this flow is executing in — see
+    /// [`Story::current_path`](super::Story::current_path). Hosts that
+    /// drive instances directly (`bevy-brink`) pass the program they run.
+    #[must_use]
+    pub fn current_path(&self, program: &Program) -> Option<String> {
+        self.flow
+            .current_thread()
+            .call_stack
+            .last()
+            .and_then(|frame| super::frame_path(program, frame))
+            // The root scope's empty path is "no named container".
+            .filter(|path| !path.is_empty())
+    }
+
     /// Runtime statistics (instructions, materialization counts, etc.)
     /// accumulated over this flow's execution.
     #[must_use]
@@ -1673,10 +1687,18 @@ fn collect_choices(
             let display_text = display_text
                 .trim_matches(|c: char| c == ' ' || c == '\t')
                 .to_string();
+            let source = match &pc.display {
+                ChoiceDisplay::Fragment(idx) => {
+                    flow.output.fragment_source(*idx, program, line_tables)
+                }
+                ChoiceDisplay::Text(_) => None,
+            };
             Choice {
                 text: display_text,
                 index: i,
                 tags: pc.tags.clone(),
+                sticky: !pc.flags.once_only,
+                source,
             }
         })
         .collect()

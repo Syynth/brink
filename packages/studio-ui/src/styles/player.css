@@ -53,39 +53,96 @@
 .brink-studio .player {
   flex: 1;
   overflow: auto;
+  /* A column so the spine can fill the pane's height: the rail runs
+     from its start node to the bottom of the pane even when the story
+     has produced one line (maintainer, 2026-09-02 — "when you first start
+     it's just the size of the Continue button"). */
+  display: flex;
+  flex-direction: column;
   padding: 24px 40px;
-  max-width: 8in;
+  /* Reading knobs (#3438): measure and face from Settings › Player;
+     unset = these defaults. */
+  max-width: var(--bs-player-measure, 8in);
   margin: 0 auto;
   box-sizing: border-box;
-  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", serif;
+  font-family: var(--bs-player-font-family, "Georgia", "Palatino Linotype", "Book Antiqua", serif);
 }
 .brink-studio .player .story-text p {
   margin-bottom: 12px;
-  line-height: 1.8;
+  line-height: var(--bs-player-line-height, 1.8);
   /* W13/#3306: the Player's own knob wins; unset = the app type scale. */
   font-size: var(--bs-player-font-size, var(--bs-font-prose));
   letter-spacing: 0.01em;
 }
+/* ── Choices (#3436): cards hanging off the spine, each with a connector
+   and a node on the rail, carrying its `*`/`+` as written. The taken one
+   comes back as an echo ring on the rail (below). ── */
 .brink-studio .player .choices {
-  margin-top: 12px;
+  margin: 14px 0 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
-.brink-studio .player .choices button {
+.brink-studio .player .player-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: 28px;
+  padding: 10px 14px;
   background: var(--bs-panel-bg);
-  color: var(--bs-accent);
+  color: var(--bs-fg);
   border: 1px solid var(--bs-border);
-  border-radius: 6px;
-  padding: 10px 16px;
-  font-size: var(--bs-font-xlarge);
+  border-radius: 8px;
+  font-size: var(--bs-player-font-size, var(--bs-font-prose));
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
-.brink-studio .player .choices button:hover {
-  background: var(--bs-hover-bg);
+.brink-studio .player .player-choice::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--player-spine-gap));
+  top: 50%;
+  width: var(--player-spine-gap);
+  height: 2px;
+  background: var(--bs-border);
+}
+.brink-studio .player .player-choice::after {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--player-spine-gap) - 4px);
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bs-border);
+}
+.brink-studio .player .player-choice:hover,
+.brink-studio .player .player-choice:focus-visible {
+  background: rgb(var(--bs-accent-rgb) / 10%);
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+  outline: none;
+}
+.brink-studio .player .player-choice:hover::before,
+.brink-studio .player .player-choice:hover::after,
+.brink-studio .player .player-choice:focus-visible::before,
+.brink-studio .player .player-choice:focus-visible::after {
+  background: var(--bs-accent);
+}
+.brink-studio .player .player-choice-mark {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-large);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-choice:hover .player-choice-mark,
+.brink-studio .player .player-choice:focus-visible .player-choice-mark {
+  color: var(--bs-accent);
 }
 .brink-studio .player .end-marker {
   margin-top: 16px;
@@ -255,20 +312,17 @@
   border-style: dashed;
 }
 
-/* ── Line rows (W7/#3300 F13): full-width rows with a subtle alternating
-   tint so line boundaries read at a glance; hover strengthens and carries
-   the provenance chip (F9). ── */
+/* ── Line rows (W7/#3300 F13; restyled #3436, ruled 2026-09-02): even
+   padding, NO alternating stripe, and the hover tint runs the full width
+   of the pane — the row bleeds out over the Player's own padding and the
+   spine gutter. ── */
 .brink-studio .player .player-line-row {
   position: relative;
-  border-radius: 4px;
-  padding: 2px 8px;
-  margin: 0 -8px;
-}
-.brink-studio .player .player-line-row:nth-child(even) {
-  background: color-mix(in srgb, var(--bs-fg) 3%, transparent);
+  padding: 8px 40px 8px var(--player-text-x);
+  margin: 0 -40px 0 calc(-1 * var(--player-text-x));
 }
 .brink-studio .player .player-line-row:hover {
-  background: color-mix(in srgb, var(--bs-fg) 7%, transparent);
+  background: color-mix(in srgb, var(--bs-fg) 6%, transparent);
 }
 .brink-studio .player .player-line-row.kind-notice p span {
   color: var(--bs-error);
@@ -288,20 +342,29 @@
   border-radius: 3px;
   padding: 0 5px;
 }
-.brink-studio .player .player-provenance-chip {
+/* Provenance (#3436): a small button hanging off the row's lower edge,
+   over the next row — present only while its row is hovered (the pane
+   resolves `point` for the hovered row alone). `file:line` is its
+   tooltip; ⌘-click on the row does the same jump. */
+.brink-studio .player .player-provenance {
   position: absolute;
-  top: 2px;
-  right: 4px;
-  font-family: var(--bs-font-mono, ui-monospace, monospace);
-  font-size: var(--bs-font-small);
+  right: 54px;
+  bottom: -11px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   color: var(--bs-fg-muted);
   background: var(--bs-panel-bg);
   border: 1px solid var(--bs-border);
-  border-radius: 3px;
-  padding: 0 5px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 35%);
   cursor: pointer;
 }
-.brink-studio .player .player-provenance-chip:hover {
+.brink-studio .player .player-provenance:hover {
   color: var(--bs-accent);
   border-color: var(--bs-accent);
 }
@@ -504,20 +567,47 @@
   visibility: visible;
 }
 
-/* ── Dialogue runs (#3389, RULED 2026-08-30) — rendered from the project
-   dialect, not a hardcoded cue regex. A run = the cue header once, then its
-   spoken lines; action/narrative sit outside. Speaker colours are a
-   deterministic palette index from the name (no roster needed). */
-.brink-studio .player .player-run {
-  margin: 0 0 6px;
+/* ── The spine (#3436, direction C, ruled 2026-09-02) ───────────────
+   One faint rail runs the whole transcript at `--player-spine-x` from the
+   pane's left edge. A speaker group paints its segment in the speaker's
+   colour; an action row paints a dotted segment; narration paints nothing.
+   The reader's own beats are nodes on the same rail: the echo of a taken
+   choice (a ring carrying its `*`/`+`) and the choices on offer (cards
+   with a connector each). Rows and cards are one line of play. */
+.brink-studio .player {
+  --player-spine-x: 30px; /* from the .player padding edge */
+  --player-spine-gap: 22px; /* rail → text */
+  --player-text-x: calc(40px + var(--player-spine-x) + var(--player-spine-gap));
 }
-.brink-studio .player .player-run-cue {
-  font-weight: 700;
-  font-style: normal;
-  letter-spacing: 0.02em;
-  margin: 8px 0 2px;
+.brink-studio .player .player-spine {
+  position: relative;
+  flex: 1 0 auto;
+  padding-top: 14px;
+  padding-left: calc(var(--player-spine-x) + var(--player-spine-gap));
 }
-.brink-studio .player .player-run .player-line-row p {
+.brink-studio .player .player-spine::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--player-spine-x) - 0.5px);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--bs-border);
+}
+/* The head of the timeline: a filled node on the rail, above the first
+   line. */
+.brink-studio .player .player-spine-start {
+  position: absolute;
+  left: calc(var(--player-spine-x) - 5px);
+  top: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--bs-fg-muted);
+  box-shadow: 0 0 0 2px var(--bs-editor-bg);
+}
+/* Narration reads at full strength; ACTION is the dimmed one (ruled). */
+.brink-studio .player .story-text > .player-line-row.kind-line p {
   font-style: normal;
   color: var(--bs-fg);
 }
@@ -525,26 +615,191 @@
   font-style: italic;
   color: var(--bs-fg-muted);
 }
+.brink-studio .player .player-line-row.dialect-action::before {
+  content: "";
+  position: absolute;
+  left: calc(40px + var(--player-spine-x) - 1px);
+  top: 4px;
+  bottom: 4px;
+  width: 0;
+  border-left: 3px dotted var(--bs-fg-muted);
+  opacity: 0.8;
+}
 .brink-studio .player .player-line-row.kind-marker p {
+  color: var(--bs-fg);
+}
+.brink-studio .player .player-line-row.is-echo {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.brink-studio .player .player-line-row.is-echo p {
+  font-weight: 600;
+}
+.brink-studio .player .player-echo-ring {
+  position: absolute;
+  left: calc(40px + var(--player-spine-x) - 9.5px);
+  top: calc(12px + 0.85 * var(--bs-player-font-size, var(--bs-font-prose)) - 9.5px);
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--bs-editor-bg);
+  border: 2px solid var(--bs-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--bs-font-mono);
+  font-size: var(--bs-font-body);
+  line-height: 1;
   color: var(--bs-accent);
 }
-.brink-studio .player .player-run-paren {
-  font-style: italic;
-  color: var(--bs-fg-muted);
+
+/* ── Dialogue runs (#3389, RULED 2026-08-30; restyled #3436) — rendered
+   from the project dialect, not a hardcoded cue regex. A run = the
+   speaker's block: the name as a small label, then its lines, hanging off
+   a segment of the spine in the speaker's colour (a deterministic palette
+   index from the name; no roster needed). */
+.brink-studio .player .player-run {
+  position: relative;
+  margin: 0 0 4px;
+  padding: 6px 0 2px;
 }
-.brink-studio .player .speaker-0 { color: var(--bs-syn-enum); }
-.brink-studio .player .speaker-1 { color: var(--bs-info); }
-.brink-studio .player .speaker-2 { color: var(--bs-success); }
-.brink-studio .player .speaker-3 { color: var(--bs-accent); }
-.brink-studio .player .speaker-4 { color: var(--bs-syn-keyword); }
-.brink-studio .player .speaker-5 { color: var(--bs-warning); }
-/* Narrative outside any run keeps the narrator voice (italic, muted) the
-   Player always had; the parenthetical sits on its own line, screenplay
-   style, the way the old renderer broke it. */
-.brink-studio .player .story-text > .player-line-row.kind-line p {
-  font-style: italic;
-  color: var(--bs-fg-muted);
+.brink-studio .player .player-run::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--player-spine-gap) - 1px);
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--speaker-color, var(--bs-fg-muted));
+}
+.brink-studio .player .player-run-cue {
+  margin: 0 0 2px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-body);
+  font-weight: 600;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  color: var(--speaker-color, var(--bs-fg));
+}
+.brink-studio .player .player-run .player-line-row p {
+  font-style: normal;
+  color: var(--bs-fg);
+}
+.brink-studio .player .player-run .player-line-row {
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 .brink-studio .player .player-run-paren {
   display: block;
+  font-style: italic;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .speaker-0 { --speaker-color: var(--bs-syn-enum); }
+.brink-studio .player .speaker-1 { --speaker-color: var(--bs-info); }
+.brink-studio .player .speaker-2 { --speaker-color: var(--bs-success); }
+.brink-studio .player .speaker-3 { --speaker-color: var(--bs-accent); }
+.brink-studio .player .speaker-4 { --speaker-color: var(--bs-syn-keyword); }
+.brink-studio .player .speaker-5 { --speaker-color: var(--bs-warning); }
+.brink-studio .player .player-run-cue.speaker-0,
+.brink-studio .player .player-run-cue.speaker-1,
+.brink-studio .player .player-run-cue.speaker-2,
+.brink-studio .player .player-run-cue.speaker-3,
+.brink-studio .player .player-run-cue.speaker-4,
+.brink-studio .player .player-run-cue.speaker-5 {
+  color: var(--speaker-color);
+}
+
+/* Follow in editor (#3437): a toggle beside fast-forward; paused-by-edit
+   keeps the accent but dims it, so "on but not moving" reads as such. */
+.brink-studio .player-pane .header .toolbar .player-follow-btn.is-paused {
+  opacity: 0.55;
+}
+
+/* Follow in editor (#3437): a toggle beside fast-forward; paused-by-edit
+   keeps the accent but dims it, so "on but not moving" reads as such. */
+.brink-studio .player-pane .header .toolbar .player-follow-btn.is-paused {
+  opacity: 0.55;
+}
+
+/* ── Settings › Player › Font picker (#3438) ───────────────────────── */
+.brink-studio .font-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.brink-studio .font-picker-filter,
+.brink-studio .font-picker-input {
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .font-picker-filter:focus,
+.brink-studio .font-picker-input:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+.brink-studio .font-picker-input[aria-invalid="true"] {
+  border-color: var(--bs-error);
+}
+.brink-studio .font-picker-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 232px;
+  overflow-y: auto;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  background: var(--bs-editor-bg);
+}
+.brink-studio .font-picker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--bs-fg);
+}
+.brink-studio .font-picker-row:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .font-picker-row.on {
+  background: rgb(var(--bs-accent-rgb) / 12%);
+}
+.brink-studio .font-picker-specimen {
+  flex-grow: 1;
+  min-width: 0;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .font-picker-name {
+  flex-shrink: 0;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .font-picker-row.on .font-picker-name {
+  color: var(--bs-accent);
+}
+.brink-studio .font-picker-custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--bs-font-small);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .font-picker-custom .font-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }

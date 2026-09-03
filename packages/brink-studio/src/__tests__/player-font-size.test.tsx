@@ -33,10 +33,10 @@ describe("player font size (W13/#3306)", () => {
 
   it("persists alongside the paced setting and survives a reload", () => {
     const storage = memStorage();
-    savePlayerSettings(storage, { pacedRevealMs: 150, fontSize: 21, saveLocation: "local" });
-    expect(loadPlayerSettings(storage)).toEqual({ pacedRevealMs: 150, fontSize: 21, saveLocation: "local" });
+    savePlayerSettings(storage, { pacedRevealMs: 150, fontSize: 21, saveLocation: "local", followInEditor: true, fontFamily: "", lineHeight: 0, measure: 0, showProvenance: true, showChoiceMarkers: true });
+    expect(loadPlayerSettings(storage)).toEqual({ pacedRevealMs: 150, fontSize: 21, saveLocation: "local", followInEditor: true, fontFamily: "", lineHeight: 0, measure: 0, showProvenance: true, showChoiceMarkers: true });
     // Garbage → defaults (never throws).
     storage.setItem("brink-studio.player.v1", "{nope");
-    expect(loadPlayerSettings(storage)).toEqual({ pacedRevealMs: 150, fontSize: 0, saveLocation: "local" });
+    expect(loadPlayerSettings(storage)).toEqual({ pacedRevealMs: 150, fontSize: 0, saveLocation: "local", followInEditor: true, fontFamily: "", lineHeight: 0, measure: 0, showProvenance: true, showChoiceMarkers: true });
   });
 });

@@ -1067,6 +1067,27 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The knot or `knot.stitch` the story is executing in —
+    /// [`brink_runtime::Story::current_path`]. See `WebSession::current_path`.
+    #[must_use]
+    pub fn current_path(&self) -> Option<String> {
+        self.story
+            .borrow()
+            .as_ref()
+            .and_then(brink_runtime::Story::current_path)
+    }
+
+    /// [`current_path`](Self::current_path) for a named flow.
+    pub fn flow_current_path(&self, name: &str) -> Result<Option<String>, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        story
+            .current_path_flow(name)
+            .map_err(|e| JsError::new(&format!("flow error: {e}")))
+    }
+
     /// Per-flow debug snapshot (State View) for a named flow.
     pub fn flow_debug_snapshot(&self, name: &str) -> Result<String, JsError> {
         let borrow = self.story.borrow();

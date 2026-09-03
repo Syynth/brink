@@ -772,6 +772,24 @@ export class DocumentSessions {
     this.applyToMountedView(docKey);
   }
 
+  /** Scroll every MOUNTED view of a document to `offset` WITHOUT taking
+   *  focus or moving the selection (#3437 follow): the Player is driving;
+   *  the author's cursor stays where it is. A document with no mounted
+   *  view is left alone — follow never opens files, and it never queues a
+   *  scroll to surprise a view mounted later. Returns whether any view
+   *  scrolled. */
+  scrollTo(docKey: string, offset: number): boolean {
+    let scrolled = false;
+    for (const slot of this.slots.values()) {
+      if (slot.docKey !== docKey || slot.view === null) continue;
+      const view = slot.view;
+      const clamped = Math.max(0, Math.min(offset, view.state.doc.length));
+      view.dispatch({ effects: EditorView.scrollIntoView(clamped, { y: "center" }) });
+      scrolled = true;
+    }
+    return scrolled;
+  }
+
   // ── View state (#347) ────────────────────────────────────────────
 
   /**

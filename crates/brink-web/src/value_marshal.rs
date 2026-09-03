@@ -874,6 +874,11 @@ struct DebugChoiceJs {
     /// The overlay-projection join key (W11/#3304).
     def_id: String,
     index: usize,
+    /// `+` (sticky) vs `*` (once-only), as written (#3435).
+    sticky: bool,
+    /// The choice text's source (#3435); omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<SourceLocationJs>,
 }
 
 #[derive(Serialize)]
@@ -946,6 +951,8 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
                 target: c.target,
                 def_id: c.def_id,
                 index: c.index,
+                sticky: c.sticky,
+                source: c.source.map(source_location_to_js),
             })
             .collect(),
         rng: DebugRngJs {
@@ -1182,6 +1189,8 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
                         text: c.text,
                         index: c.index,
                         tags: c.tags,
+                        sticky: c.sticky,
+                        source: c.source.map(source_location_to_js),
                     })
                     .collect(),
             ),
@@ -1275,6 +1284,11 @@ pub(crate) struct ChoiceJs {
     pub(crate) text: String,
     pub(crate) index: usize,
     pub(crate) tags: Vec<String>,
+    /// `+` (sticky) vs `*` (once-only), as written (#3435).
+    pub(crate) sticky: bool,
+    /// The choice text's source (#3435); omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<SourceLocationJs>,
 }
 
 // ── Value ↔ native-JS boundary (T1a-3 / #525) ────────────────────────

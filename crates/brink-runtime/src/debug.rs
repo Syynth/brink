@@ -15,7 +15,6 @@ use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, Value};
 
-use crate::collections::Map as HashMap;
 use crate::program::Program;
 use crate::value_ops;
 
@@ -244,6 +243,12 @@ pub struct DebugVisitId {
 /// A pending choice and the knot it targets.
 pub struct DebugChoice {
     pub text: String,
+    /// `+` (sticky) vs `*` (once-only), as written (#3435) — see
+    /// [`Choice::sticky`](crate::story::Choice::sticky).
+    pub sticky: bool,
+    /// The choice text's source location (#3435) — see
+    /// [`Choice::source`](crate::story::Choice::source).
+    pub source: Option<brink_format::SourceLocation>,
     pub target: Option<String>,
     /// The choice target's `DefinitionId` display form (W11/#3304) —
     /// string-equal to the overlay projection's `def_id` for the choice's
@@ -268,37 +273,17 @@ pub struct DebugRng {
 /// `address_by_path` table.
 pub(crate) struct NameResolver<'p> {
     program: &'p Program,
-    /// `container_idx → shortest knot/stitch path` (offset-0 scope entries).
-    rev: HashMap<u32, String>,
 }
 
 impl<'p> NameResolver<'p> {
     pub(crate) fn new(program: &'p Program) -> Self {
-        let mut rev: HashMap<u32, String> = HashMap::new();
-        for (path, target) in &program.address_by_path {
-            if target.byte_offset != 0 {
-                continue;
-            }
-            let idx = &target.container_idx;
-            // Deterministic on collision: shortest path, then lexicographically
-            // smallest — independent of HashMap iteration order.
-            let better = match rev.get(idx) {
-                None => true,
-                Some(existing) => {
-                    path.len() < existing.len()
-                        || (path.len() == existing.len() && path.as_str() < existing.as_str())
-                }
-            };
-            if better {
-                rev.insert(*idx, path.clone());
-            }
-        }
-        Self { program, rev }
+        Self { program }
     }
 
-    /// The knot/stitch path for a container, if it names a scope.
+    /// The knot/stitch path for a container, if it names a scope — the
+    /// program's link-time index ([`Program::container_path`]).
     pub(crate) fn container_path(&self, idx: u32) -> Option<&str> {
-        self.rev.get(&idx).map(String::as_str)
+        self.program.container_path(idx)
     }
 
     /// The knot/stitch path a definition id lives in, if resolvable.

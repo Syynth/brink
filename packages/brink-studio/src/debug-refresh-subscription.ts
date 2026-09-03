@@ -27,6 +27,9 @@ export interface DebugRefreshTargets {
   refreshExecutionHighlight(): void;
   /** Reveal a program address in the editor (the W3 resolver chain). */
   revealProgram(containerIdx: number, offset: number): void;
+  /** Follow (#3437): scroll the editor to a revealed line's source without
+   *  taking focus. Optional so older hosts/tests need not provide it. */
+  followSource?(source: { file: string; range_start: number; range_end: number }): void;
 }
 
 /** Subscribe `store` to drive `targets`; returns the unsubscribe. */
@@ -50,6 +53,12 @@ export function subscribeDebugRefresh(
       // W8/#3301: a frame selection draws/clears the accent frame band.
       st.selectedFrameIdx !== last.frameIdx;
     const pausedRose = st.sessionPaused && !last.paused;
+    // Follow / hover (#3437).
+    const linesMoved = st.sessionLines !== last.lines;
+    const hoverMoved = st.sessionHoverSource !== last.hover;
+    const followFlipped =
+      st.followInEditor !== last.follow || st.followPaused !== last.followPaused;
+    const sessionStarted = last.status === "none" && st.sessionStatus !== "none";
     last = {
       anchors: st.sourceBreakpoints,
       program: st.programChecksum,
@@ -58,7 +67,13 @@ export function subscribeDebugRefresh(
       paused: st.sessionPaused,
       status: st.sessionStatus,
       frameIdx: st.selectedFrameIdx,
+      lines: st.sessionLines,
+      hover: st.sessionHoverSource,
+      follow: st.followInEditor,
+      followPaused: st.followPaused,
     };
+    // A new run lifts the pause an edit put on follow.
+    if (sessionStarted && st.followPaused) store.getState().setFollowPaused(false);
 
     if (anchorsChanged) {
       // A running-program identity change means the provider swapped or
@@ -69,12 +84,32 @@ export function subscribeDebugRefresh(
       if (programChanged) store.getState()._syncSourceBreakpoints();
       targets.refreshBreakpoints();
     }
-    if (highlightMoved) {
+    if (highlightMoved || hoverMoved || followFlipped || (linesMoved && st.followInEditor)) {
       targets.refreshExecutionHighlight();
     }
     if (pausedRose) {
       const pos = st.debugState?.position;
       if (pos) targets.revealProgram(pos.container_idx, pos.offset);
+    }
+    // Follow (#3437): each newly revealed line scrolls the editor to its
+    // source — while playing, follow on, not paused by an edit, and not
+    // at a debugger pause (that road reveals with focus, above).
+    const playing = st.sessionStatus === "running" || st.sessionStatus === "awaiting-choice";
+    if (
+      linesMoved &&
+      playing &&
+      st.followInEditor &&
+      !st.followPaused &&
+      !st.sessionPaused &&
+      targets.followSource
+    ) {
+      for (let i = st.sessionLines.length - 1; i >= 0; i--) {
+        const src = st.sessionLines[i]?.source;
+        if (src) {
+          targets.followSource(src);
+          break;
+        }
+      }
     }
   });
 }
@@ -89,5 +124,9 @@ function snapshot(store: StudioStore) {
     paused: st.sessionPaused,
     status: st.sessionStatus,
     frameIdx: st.selectedFrameIdx,
+    lines: st.sessionLines,
+    hover: st.sessionHoverSource,
+    follow: st.followInEditor,
+    followPaused: st.followPaused,
   };
 }

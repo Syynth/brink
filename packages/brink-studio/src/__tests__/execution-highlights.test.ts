@@ -55,6 +55,60 @@ function stateWith(overrides: {
   return store.getState();
 }
 
+describe("executionHighlightsFor — follow and hover bands (#3437)", () => {
+  const src = { file: "main.ink", range_start: 10, range_end: 20 };
+  const resolver = (file: string, start: number) =>
+    file === "main.ink" ? { line: start === 10 ? 9 : 20, start, end: start + 5 } : null;
+
+  it("bands the newest revealed line as `follow` while playing with follow on", () => {
+    const st = stateWith({ status: "running", position: null });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [{ text: "One", kind: "line" as const, tags: [], source: src }],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: null,
+        _resolveSourceBytes: resolver as never,
+      },
+      "main.ink",
+    );
+    expect(out).toEqual([{ line: 10, kind: "follow" }]);
+  });
+
+  it("no follow band when off, paused by an edit, at a debugger pause, or for another file", () => {
+    const base = {
+      sessionLines: [{ text: "One", kind: "line" as const, tags: [], source: src }],
+      sessionHoverSource: null,
+      _resolveSourceBytes: resolver as never,
+    };
+    const st = stateWith({ status: "running", position: null });
+    expect(executionHighlightsFor({ ...st, ...base, followInEditor: false, followPaused: false }, "main.ink")).toEqual([]);
+    expect(executionHighlightsFor({ ...st, ...base, followInEditor: true, followPaused: true }, "main.ink")).toEqual([]);
+    expect(executionHighlightsFor({ ...st, ...base, followInEditor: true, followPaused: false }, "other.ink")).toEqual([]);
+    const paused = stateWith({ status: "running", paused: true, position: null });
+    expect(
+      executionHighlightsFor({ ...paused, ...base, followInEditor: true, followPaused: false }, "main.ink").filter((h) => h.kind === "follow"),
+    ).toEqual([]);
+  });
+
+  it("bands the hovered transcript row's source as `hover`, even when idle", () => {
+    const st = stateWith({ status: "none", position: null });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: { file: "main.ink", range_start: 30, range_end: 35 },
+        _resolveSourceBytes: resolver as never,
+      },
+      "main.ink",
+    );
+    expect(out).toEqual([{ line: 21, kind: "hover" }]);
+  });
+});
+
 /** A weave with three sibling choices under one knot (choice point A)
  *  and one unrelated choice under another knot (choice point B). */
 function projectionFixture() {
