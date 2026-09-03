@@ -7,7 +7,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { brinkStudio, classifyLine, lineActionsAt } from "@brink-lang/editor";
+import { brinkStudio, classifyLine, lineActionsAt, fixActionsAt } from "@brink-lang/editor";
+import type { Fix } from "@brink/wasm-types";
 
 const minimal = {
   compile: () => ({ ok: true, diagnostics: [] }) as never,
@@ -101,5 +102,64 @@ describe("editor menu line actions", () => {
 
   it("TODO lines classify as todo (the host keys the panel item off this)", () => {
     expect(classifyLine("TODO: fix this").type).toBe("todo");
+  });
+
+  // Adversarial review on PR #3454 (finding 2): the editor context-menu's
+  // fix entries (`fixActionsAt`, `docs/autofix-spec.md` §7) shipped with no
+  // test in the gate that owns `packages/ink-editor/**`
+  // (`pnpm --filter @brink-lang/editor test`). Pinned here alongside
+  // `lineActionsAt`'s own tests, its sibling in the same file.
+  describe("fixActionsAt (auto-fix editor context-menu entries)", () => {
+    const fix: Fix = {
+      code: "E025",
+      title: "Import `haggle` from `story::market::barter`",
+      applicability: "suggested",
+      edits: [
+        {
+          path: "main.brink",
+          start: 0,
+          end: 0,
+          new_text: "use story::market::barter::haggle;\n",
+        },
+      ],
+    };
+
+    it("labels each entry with the fix's title and tier with the fix's applicability", () => {
+      const actions = fixActionsAt(4, {
+        onPlayFrom: () => {},
+        getFixes: () => [fix],
+        applyFix: vi.fn(),
+      });
+      expect(actions).toHaveLength(1);
+      expect(actions[0].label).toBe(
+        "Import `haggle` from `story::market::barter`",
+      );
+      expect(actions[0].code).toBe("E025");
+      expect(actions[0].tier).toBe("suggested");
+    });
+
+    it("run() calls the host's applyFix with the fix", () => {
+      const applyFix = vi.fn();
+      const actions = fixActionsAt(4, {
+        onPlayFrom: () => {},
+        getFixes: () => [fix],
+        applyFix,
+      });
+      actions[0].run();
+      expect(applyFix).toHaveBeenCalledWith(fix);
+    });
+
+    it("returns [] when the host wired neither getFixes nor applyFix", () => {
+      expect(fixActionsAt(4, { onPlayFrom: () => {} })).toEqual([]);
+    });
+
+    it("a throwing getFixes yields [] rather than taking the menu down", () => {
+      const getFixes = () => {
+        throw new Error("fix query failed");
+      };
+      expect(
+        fixActionsAt(4, { onPlayFrom: () => {}, getFixes, applyFix: vi.fn() }),
+      ).toEqual([]);
+    });
   });
 });

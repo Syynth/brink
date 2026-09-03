@@ -42,6 +42,14 @@ export interface EditorSlice {
   /** App-wide UI text size in px — mirrored onto the root as
    *  `--bs-font-base`, which the whole type scale derives from. */
   appFontSize: number;
+  /** How far auto-fix may go on save (`docs/autofix-spec.md` §6.2, #3420):
+   *  `"off"` | `"safe"` | `"project"`. An app-scope CEILING over the
+   *  project's `[fix]` table, never a second copy of it — the save road
+   *  resolves the two through `effective_fix_policy`. Default off.
+   *
+   *  Typed as a plain union rather than importing `FixOnSaveMode` from
+   *  `@brink/studio-ui`: this package sits UNDER that one. */
+  fixOnSave: "off" | "safe" | "project";
 
   setCursor(line: number, col: number): void;
   setLineInfo(info: LineInfo | null, hints: KeyHint[]): void;
@@ -54,6 +62,7 @@ export interface EditorSlice {
   /** Step the size by `delta` px (clamped) — the zoom in/out commands. */
   adjustEditorFontSize(delta: number): void;
   setAppFontSize(px: number): void;
+  setFixOnSave(mode: "off" | "safe" | "project"): void;
 }
 
 export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> = (set, get) => ({
@@ -67,6 +76,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   showInlayHints: true,
   editorFontSize: 14,
   appFontSize: 12,
+  fixOnSave: "off",
 
   setCursor(line, col) {
     set({ cursor: { line, col } });
@@ -109,5 +119,9 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
 
   setAppFontSize(px) {
     set({ appFontSize: clampAppFontSize(px) });
+  },
+
+  setFixOnSave(mode) {
+    set({ fixOnSave: mode });
   },
 });

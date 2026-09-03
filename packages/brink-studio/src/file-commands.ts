@@ -29,6 +29,12 @@
 
 import type { CommandRegistry, NotificationInput } from "@brink/studio-shell";
 import type { DocumentSessions, ProjectSession } from "@brink/studio-store";
+import {
+  DEFAULT_FIX_ON_SAVE,
+  runFixOnSave,
+  type FixOnSaveMode,
+  type FixProject,
+} from "@brink/studio-ui";
 
 export const FILE_SAVE_COMMAND_ID = "file.save";
 export const FILE_SAVE_ALL_COMMAND_ID = "file.saveAll";
@@ -37,6 +43,12 @@ export interface FileCommandDeps {
   project: ProjectSession;
   documents: DocumentSessions;
   notify: (n: NotificationInput) => void;
+  /**
+   * The app-scope fix-on-save ceiling (`docs/autofix-spec.md` §6.2), read
+   * fresh per save — a setting changed mid-session must take effect on the
+   * next Ctrl-S, not at the next reload. Omitted ⇒ off.
+   */
+  fixOnSave?: () => FixOnSaveMode;
 }
 
 function plural(n: number, word: string): string {
@@ -46,8 +58,32 @@ function plural(n: number, word: string): string {
 /** Register `file.save` / `file.saveAll`. Returns a disposer. */
 export function registerFileCommands(
   commands: CommandRegistry,
-  { project, documents, notify }: FileCommandDeps,
+  { project, documents, notify, fixOnSave }: FileCommandDeps,
 ): () => void {
+  /**
+   * Fix on save (`docs/autofix-spec.md` §7, "run on the save road before the
+   * write"), for one file.
+   *
+   * Runs AFTER the editor's text has been flushed into the session — so the
+   * batch sees what the author just typed — and BEFORE the write, so the
+   * bytes that reach disk are the fixed ones. Synchronous, and it writes
+   * through the project's own `applyEdit` seam, which is what makes the
+   * rewritten text part of the very dirty set this save is about to retire.
+   */
+  const applyFixOnSave = (path: string): void => {
+    const mode = fixOnSave?.() ?? DEFAULT_FIX_ON_SAVE;
+    if (mode === "off") return;
+    runFixOnSave(
+      {
+        project: project as unknown as FixProject,
+        applyEdit: (p, source) => project.applyEdit(p, source),
+        invalidate: (p) => documents.invalidateFile(p),
+      },
+      path,
+      mode,
+    );
+  };
+
   const disposers = [
     commands.register({
       id: FILE_SAVE_COMMAND_ID,
@@ -58,6 +94,7 @@ export function registerFileCommands(
         // editor (player/tool-window focus) there is nothing doc-shaped to
         // save — still flush pending egress so Mod-S always syncs the host.
         const path = documents.flushFocused();
+        if (path !== null) applyFixOnSave(path);
         project.flushFileChanges();
         if (path === null) {
           notify({ severity: "info", source: "file", message: "No editor focused — nothing to save" });
@@ -159,6 +196,11 @@ export function registerFileCommands(
         // Push every mounted view first, so the dirty set (and the egress
         // batch) reflects the very latest editor text.
         documents.flushAll();
+        // Fix on save covers Save All too: the same ceiling, run per dirty
+        // file before the batch write. Read the dirty set AFTER, so a file
+        // the fixes rewrote is in the set this save retires — running it on
+        // an already-captured list would leave the rewrite unsaved.
+        for (const path of project.dirtyPaths()) applyFixOnSave(path);
         const dirty = project.dirtyPaths();
         project.flushFileChanges();
         const report = (savedCount: number): void =>

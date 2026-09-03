@@ -590,6 +590,13 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         onPlayFrom: options.onPlayFrom,
         onSymbolContextMenu: options.onSymbolContextMenu,
         onTextContextMenu: options.onTextContextMenu,
+        // The editor context menu's fix group (docs/autofix-spec.md §7)
+        // reuses the code-actions menu's own two seams verbatim, so both
+        // surfaces offer exactly the same fixes for a given pointer.
+        getFixes: options.getFixes,
+        applyFix: options.applyFix
+          ? (fix) => options.applyFix?.(fix)
+          : undefined,
         // The menu's Navigate/Rename identity group reuses the same
         // callbacks the cmd-click / Shift-Alt-F / F2 surfaces use.
         gotoDefinition: options.gotoDefinition,
