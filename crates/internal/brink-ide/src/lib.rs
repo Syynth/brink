@@ -9,6 +9,7 @@ pub mod dialect_config;
 pub mod dir_rename;
 pub mod document;
 pub mod effects;
+pub mod effects_tag_fix;
 pub mod extract;
 pub mod file_rename;
 pub mod fix;

@@ -487,6 +487,21 @@ pub(crate) fn e031_fixture() -> FixFixture {
     }
 }
 
+/// E110: a knot's leading `#@effects(reads: mood)` deprecated tag spelling
+/// (`effects_tag_fix`'s own module doc). The cursor sits inside the tag —
+/// `d.range` is the whole tag's own range (`parse_directive_tag`), so any
+/// offset the tag covers finds it.
+pub(crate) fn e110_fixture() -> FixFixture {
+    let src = "VAR mood = 5\n\n-> greet\n\n=== greet ===\n#@effects(reads: mood)\nMood is {mood}.\n-> END\n".to_owned();
+    let at = offset_of(&src, "#@effects");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
 /// E176: a divert-with-args (`-> accuse("Hastings", "Poirot")`) over-supplies
 /// `accuse`'s one declared param. `arity_trim_fix`'s own module doc: the
 /// runtime binds the *trailing* supplied argument here, not the leading one

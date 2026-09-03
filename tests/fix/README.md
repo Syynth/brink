@@ -43,6 +43,9 @@ Who runs what:
 | `E063` | `ValueCallArityFixer` (trim call args) | `NoPreImage` |
 | `E080` | `BindRefArgsFixer` (bind `ref` args) | `NoPreImage` |
 | `E081` | `TrimFnLiteralArgsFixer` (trim `#fn` args) | `NoPreImage` |
+| `E031` | `CallArityTrimFixer` (trim over-supplied call args) | `ObservablyEquivalent` |
+| `E176` | `DivertArityTrimFixer` (trim over-supplied divert args) | `ObservablyEquivalent` |
+| `E110` | `EffectsTagFixer` (rewrite `#@effects` to `@[effects(…)]`) | `ObservablyEquivalent` |
 
 `NoPreImage` is the honest answer, not a gap in the fixture: all four
 migrated fixers discharge a diagnostic that **prevents compilation**, so
