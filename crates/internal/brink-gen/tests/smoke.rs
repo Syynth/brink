@@ -114,9 +114,19 @@ proptest! {
         let out = compile(&src)?;
         let (program, line_tables) = brink_runtime::link(&out.data)
             .map_err(|e| TestCaseError::fail(format!("link failed: {e}\n{src}")))?;
-        let config = ExploreConfig { max_depth: 64, max_episodes: 512 };
+        // The explorer returns silently when it hits `max_episodes` (the
+        // depth cap is loud — it records `InputsExhausted`); a saturated
+        // exploration would let this property pass on a truncated DFS, so
+        // saturation is itself a failure — a story the default profile
+        // cannot exhaust is a profile-size problem to surface, not hide.
+        let config = ExploreConfig { max_depth: 64, max_episodes: 4096 };
         let episodes = explore(Arc::new(program), line_tables, &config);
         prop_assert!(!episodes.is_empty(), "no episodes explored for:\n{src}");
+        prop_assert!(
+            episodes.len() < config.max_episodes,
+            "exploration saturated at {} episodes — the profile is too large to explore exhaustively:\n{src}",
+            config.max_episodes
+        );
         for ep in &episodes {
             prop_assert!(
                 matches!(ep.outcome, Outcome::Ended | Outcome::Done),
