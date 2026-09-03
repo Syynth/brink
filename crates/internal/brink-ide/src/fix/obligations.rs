@@ -471,3 +471,36 @@ pub(crate) fn e063_fixture() -> FixFixture {
         at: ("test.ink", at),
     }
 }
+
+/// E031: an ordinary call (`greet("Al", "Bob")`) over-supplies `greet`'s one
+/// declared param. The cursor sits on `greet`'s own identifier — where
+/// `resolve::check_arity` anchors the diagnostic (`uref.range`, the callee
+/// path's whole span, issue #1561).
+pub(crate) fn e031_fixture() -> FixFixture {
+    let src = "=== function greet(name) ===\n~ return \"Hi \" + name\n\n=== main ===\n~ temp r = greet(\"Al\", \"Bob\")\n{r}\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "greet(\"Al\"");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
+/// E176: a divert-with-args (`-> accuse("Hastings", "Poirot")`) over-supplies
+/// `accuse`'s one declared param. `arity_trim_fix`'s own module doc: the
+/// runtime binds the *trailing* supplied argument here, not the leading one
+/// a first read of "over-supplied args" suggests — this fixture's own
+/// `expected.ink` is what `every_fixture_matches_its_fixer` pins that against.
+pub(crate) fn e176_fixture() -> FixFixture {
+    let src =
+        "=== accuse(who) ===\nI accuse {who}!\n-> DONE\n\n=== main ===\n-> accuse(\"Hastings\", \"Poirot\")\n"
+            .to_owned();
+    let at = offset_of(&src, "accuse(\"Hastings\"");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}

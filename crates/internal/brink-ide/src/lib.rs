@@ -1,4 +1,5 @@
 pub mod argument_widgets;
+pub mod arity_trim_fix;
 pub mod auto_import;
 pub mod code_actions;
 pub mod color;

@@ -40,9 +40,11 @@ fn expected_verdicts() -> BTreeMap<&'static str, SafeVerdict> {
     BTreeMap::from([
         ("E014", SafeVerdict::ObservablyEquivalent),
         ("E025", SafeVerdict::NoPreImage),
+        ("E031", SafeVerdict::ObservablyEquivalent),
         ("E063", SafeVerdict::NoPreImage),
         ("E080", SafeVerdict::NoPreImage),
         ("E081", SafeVerdict::NoPreImage),
+        ("E176", SafeVerdict::ObservablyEquivalent),
     ])
 }
 
