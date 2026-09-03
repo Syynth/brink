@@ -1,6 +1,8 @@
 //! Issue #3365, Part 1: `E195` — a `*`/`+` choice with neither
 //! display/bracket text nor a divert, matching inklecate's own "Choice is
-//! completely empty" warning (`InkParser/InkParser_Choices.cs:86,90`).
+//! completely empty" warning (`InkParser/InkParser_Choices.cs:84-86`; line
+//! 90 guards a different warning — "Blank choice", on the
+//! `* [] some text` shape — which this code deliberately does not cover).
 //!
 //! Exercises the real production entry point
 //! (`brink_ir::hir::lower::choice::LowerChoice::lower_choice`, called
@@ -75,22 +77,38 @@ fn fires_on_second_choice_in_a_mixed_set() {
     );
 }
 
-// ─── Does not fire: label, condition, divert, text ────────────────────
-
+// A `(label)` or `{condition}` guard does NOT exempt a choice from this
+// check — the reference's own `emptyContent` computation has no such
+// carve-out, and measurement against inklecate confirms it fires anyway
+// for both shapes below. The blank line before the gather matters: an
+// indented body line right after the label is absorbed into the choice's
+// own `CHOICE_START_CONTENT` by a parser quirk (the newline-after-label
+// bump in `parser/choice.rs`, and the matching bump in the
+// condition-continuation loop), which would give the choice real text and
+// make it fail to reach this check at all — a prior version of this file
+// used exactly that shape and passed for the wrong reason (review finding,
+// PR #3473): reverting the fires-check's `label.is_none() &&
+// condition.is_none()` guards left it green.
 #[test]
-fn does_not_fire_with_a_label() {
-    assert_does_not_fire(
-        "labeled_choice",
-        "* (opt)\n    Fallthrough body.\n- -> END\n",
-    );
+fn fires_with_a_label_and_no_other_exemption() {
+    assert_fires("labeled_choice", "* (opt)\n\n- -> END\n");
 }
 
 #[test]
-fn does_not_fire_with_a_condition() {
-    assert_does_not_fire(
-        "conditioned_choice",
-        "VAR x = true\n* {x}\n    Fallthrough body.\n- -> END\n",
-    );
+fn fires_with_a_condition_and_no_other_exemption() {
+    assert_fires("conditioned_choice", "VAR x = true\n* {x}\n\n- -> END\n");
+}
+
+// ─── Does not fire: tag, divert, text ──────────────────────────────────
+
+#[test]
+fn does_not_fire_with_a_tag_only() {
+    // `self.all_tags()` (not each content region's own `.tags`) is what
+    // catches this: a tag directly on the choice line, with no preceding
+    // content region node, has nowhere else to be attributed (review
+    // finding, PR #3473) — matching inklecate's own silence on the same
+    // shape (measured).
+    assert_does_not_fire("tag_only_choice", "* #tag\n- -> END\n");
 }
 
 #[test]

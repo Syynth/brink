@@ -201,10 +201,19 @@ impl LowerChoice for ast::Choice {
         body.stmts = preamble;
 
         // #3365: warn when this choice offers nothing to distinguish it —
-        // no label, no condition, no same-line divert (with or without a
-        // target), and no real text in any of its three content regions —
-        // matching inklecate's "Choice is completely empty" warning
-        // (`InkParser_Choices.cs:86,90`).
+        // no same-line divert (with or without a target), no tags directly
+        // on the choice line, and no real text in any of its three content
+        // regions — matching inklecate's "Choice is completely empty"
+        // warning (`InkParser/InkParser_Choices.cs:84-86`; line 90's
+        // "Blank choice" warning, guarded by a different condition on the
+        // `* [] some text` shape, is a deliberate non-goal here).
+        //
+        // A `(label)` or `{condition}` guard does NOT exempt a choice from
+        // this check — the reference's own `emptyContent` computation
+        // (`startContent`/`innerContent`/`optionOnlyContent`) has no such
+        // carve-out, and measurement against inklecate confirms it: both
+        // `* (opt)` and `VAR x = true\n* {x}`, each followed by a blank
+        // line, still emit the warning.
         //
         // Must check `self.divert()` here, on the AST, rather than as a
         // later pass over the lowered `Choice`: an explicit-but-empty
@@ -212,9 +221,16 @@ impl LowerChoice for ast::Choice {
         // indistinguishable once lowered — both leave no `Stmt::Divert` in
         // `body.stmts` above — so the raw token's presence is the only
         // place this evidence survives (`docs/diagnostics/E195.md`).
-        if label.is_none()
-            && condition.is_none()
-            && self.divert().is_none()
+        //
+        // `self.all_tags()` (not each content region's own `.tags`) is what
+        // actually catches a tag directly on the choice line (`* #tag`):
+        // when there is no preceding `CHOICE_START_CONTENT`/bracket/inner
+        // region node at all, the tag-distribution loop above has nowhere
+        // to attribute the lowered tag to, so a per-region `.tags.is_empty()`
+        // check alone is dead code for that shape. Matches inklecate, which
+        // does not warn on a tag-only choice either (measured).
+        if self.divert().is_none()
+            && self.all_tags().next().is_none()
             && content_region_is_textless(start_content.as_ref())
             && content_region_is_textless(bracket_content.as_ref())
             && content_region_is_textless(inner_content.as_ref())

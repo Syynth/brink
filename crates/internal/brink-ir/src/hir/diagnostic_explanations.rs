@@ -603,15 +603,22 @@ evidence inklecate's own parser looks at: the choice's own line, not
 whatever is nested underneath it. It fires only when **all** of the
 following hold:
 
-- no `(label)`,
-- no `{condition}` guard,
 - no divert on the choice's own line — `* ->` counts as having one, even
   though the divert has no target; only a line with no `->` token at all
   counts as "no divert",
+- no tag directly on the choice line (`* #tag`) — matching inklecate, which
+  does not warn on a tag-only choice either,
 - and no real text in any of the three same-line content regions ink's
   grammar gives a choice (`text[bracket]inner`) — including an *explicit but
   empty* `[]`, which still parses to a zero-width content node, not to
   nothing.
+
+**A `(label)` or `{condition}` guard does not exempt a choice from this
+check.** The reference's own `emptyContent` computation
+(`startContent`/`innerContent`/`optionOnlyContent`) has no such carve-out,
+and measurement against inklecate confirms it fires anyway: both `* (opt)`
+and `VAR x = true` / `* {x}`, each followed by a blank line, still emit
+"Choice is completely empty…" — see the fires examples below.
 
 Nested content *underneath* the choice line — the block that plays after the
 choice is selected — is never consulted. `* []` followed by an indented

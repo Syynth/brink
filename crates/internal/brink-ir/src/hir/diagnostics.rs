@@ -2100,7 +2100,9 @@ pub enum DiagnosticCode {
 
     /// A choice with neither display/bracket text nor a divert (#3365),
     /// matching inklecate's own "Choice is completely empty" warning
-    /// (`InkParser/InkParser_Choices.cs:86,90`).
+    /// (`InkParser/InkParser_Choices.cs:84-86`; line 90 guards a different
+    /// warning — "Blank choice", on the `* [] some text` shape — which this
+    /// code deliberately does not cover).
     ///
     /// Raised from `hir::lower::choice::LowerChoice::lower_choice` (the ink
     /// surface only — see this code's doc page for why the native `{? … }`
@@ -2112,9 +2114,11 @@ pub enum DiagnosticCode {
     /// the choice's body), so the check cannot be reconstructed later from
     /// the HIR alone the way `E034`'s all-fallback check can.
     ///
-    /// Fires only when the choice has none of: a label, a condition, a
-    /// same-line divert (with or without a target), or actual text in any
-    /// of its three content regions (`start`/`bracket`/`inner`). `Warning`,
+    /// Fires only when the choice has none of: a same-line divert (with or
+    /// without a target), a tag directly on the choice line, or actual text
+    /// in any of its three content regions (`start`/`bracket`/`inner`). A
+    /// `(label)` or `{condition}` guard does NOT exempt a choice — matching
+    /// the reference, which has no such carve-out either. `Warning`,
     /// `[lints]`-overridable, matching the sibling markup/shadow-warning
     /// family (`E164`/`E188`/…) — the story still compiles.
     E195,
