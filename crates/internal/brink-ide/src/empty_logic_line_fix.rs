@@ -193,7 +193,10 @@ fn empty_logic_line_deletion(source: &str, target_range: TextRange) -> Option<Te
     // content there (never observed reachable from this grammar shape, but
     // never assumed) would be deleted right along with the `~` line, which
     // is not "no effect" for it.
-    let line_start = bytes[..start].iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let line_start = bytes[..start]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |i| i + 1);
     if !is_blank(&bytes[line_start..start]) {
         return None;
     }
@@ -355,13 +358,16 @@ mod tests {
             .diagnostics(file)
             .expect("diagnostics")
             .to_vec();
-        let target = diags
-            .iter()
-            .find(|d| d.code == DiagnosticCode::E014)
-            .unwrap_or_else(|| panic!("expected an E014 diagnostic: {diags:?}"));
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
         let cx = FixCx::new(session.db());
         let offered = crate::fix::fixes_for(&cx, target);
-        assert!(offered.is_empty(), "{:?}", offered.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -377,13 +383,16 @@ mod tests {
             .diagnostics(file)
             .expect("diagnostics")
             .to_vec();
-        let target = diags
-            .iter()
-            .find(|d| d.code == DiagnosticCode::E014)
-            .unwrap_or_else(|| panic!("expected an E014 diagnostic: {diags:?}"));
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
         let cx = FixCx::new(session.db());
         let offered = crate::fix::fixes_for(&cx, target);
-        assert!(offered.is_empty(), "{:?}", offered.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -404,12 +413,15 @@ mod tests {
             .diagnostics(file)
             .expect("diagnostics")
             .to_vec();
-        let target = diags
-            .iter()
-            .find(|d| d.code == DiagnosticCode::E014)
-            .unwrap_or_else(|| panic!("expected an E014 diagnostic: {diags:?}"));
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
         let cx = FixCx::new(session.db());
         let offered = crate::fix::fixes_for(&cx, target);
-        assert!(offered.is_empty(), "{:?}", offered.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 }

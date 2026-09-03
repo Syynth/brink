@@ -512,7 +512,8 @@ pub(crate) fn e176_fixture() -> FixFixture {
 /// against; this one only needs to carry the diagnostic at a known cursor
 /// for the discharge obligation.
 pub(crate) fn e014_fixture() -> FixFixture {
-    let src = "VAR score = 0\nHello.\n~\n~ score = score + 1\nScore is {score}.\n-> DONE\n".to_owned();
+    let src =
+        "VAR score = 0\nHello.\n~\n~ score = score + 1\nScore is {score}.\n-> DONE\n".to_owned();
     let at = offset_of(&src, "~\n");
     FixFixture {
         files: vec![("test.ink", src)],
