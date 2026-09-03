@@ -540,7 +540,14 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
 - **Safe**: E014 bare `~` → delete the line; E092 redundant
-  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
+  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete
+  (issue #3425 — withheld outright — no fix offered — when the same
+  physical tag line is also a *live* rename for a different owner than
+  the one that self-aliased: a file-level module self-alias whose line
+  also attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` with a
+  differently-named `#@was` argument, or a declaration-level self-alias
+  whose file's leading run carries a differently-named `#@module` —
+  see `crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc);
   E110 `#@effects(…)` → `@[effects(…)]` (issue #3426 — the two spellings
   do not share an argument grammar: the tag spelling freezes the legacy
   **colon** shape (`reads: gold, hp`) forever, while the annotation uses

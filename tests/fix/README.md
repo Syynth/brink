@@ -45,6 +45,7 @@ Who runs what:
 | `E081` | `TrimFnLiteralArgsFixer` (trim `#fn` args) | `NoPreImage` |
 | `E031` | `CallArityTrimFixer` (trim over-supplied call args) | `ObservablyEquivalent` |
 | `E176` | `DivertArityTrimFixer` (trim over-supplied divert args) | `ObservablyEquivalent` |
+| `E095` | `StaleWasFixer` (delete the stale `#@was`) | `ObservablyEquivalent` |
 | `E110` | `EffectsTagFixer` (rewrite `#@effects` to `@[effects(…)]`) | `ObservablyEquivalent` |
 
 `NoPreImage` is the honest answer, not a gap in the fixture: all four
@@ -56,7 +57,18 @@ makes it an error.) All four already declare `Applicability::Suggested`;
 this is the mechanical confirmation that they could not declare `Safe` even
 if someone wanted them to.
 
-`E014` is the positive case, and the only one that proves the oracle is
-doing anything. It has no fixer yet — that is its own sub-issue of #3374 —
-and the registry obligation runs the other way round, so a fixture without a
-fixer is fine while a `Safe` fixer without a fixture is not.
+`E014`, `E031`, `E176`, `E095`, and `E110` are the positive cases — the ones
+that prove the oracle is doing anything. `E014` has no fixer yet — that is
+its own sub-issue of #3374 — and the registry obligation runs the other way
+round, so a fixture without a fixer is fine while a `Safe` fixer without a
+fixture is not. The other four each have both: `E031`/`E176`'s
+`CallArityTrimFixer`/`DivertArityTrimFixer` (issue #3428, see
+`crates/internal/brink-ide/src/arity_trim_fix.rs`'s module doc); `E095`'s
+`StaleWasFixer`, whose fixture is the one shape where deletion is
+unconditionally safe (no attached declaration to read the same line
+differently) — see `tests/fix/E095/README.md` and
+`crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc for the
+narrowing that withholds the fix in the shapes that aren't; and `E110`'s
+`EffectsTagFixer` (issue #3426, see
+`crates/internal/brink-ide/src/effects_tag_fix.rs`'s module doc for the
+grammar-translation narrowing).
