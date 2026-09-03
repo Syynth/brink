@@ -13,6 +13,7 @@
   - [brink play](./toolchain/cli/play.md)
   - [brink debug](./toolchain/cli/debug.md)
   - [brink ide](./toolchain/cli/ide.md)
+  - [brink fix](./toolchain/cli/fix.md)
 - [Embedding the Runtime](./toolchain/embedding/index.md)
   - [Loading & Linking](./toolchain/embedding/loading.md)
   - [External Functions](./toolchain/embedding/external-functions.md)
