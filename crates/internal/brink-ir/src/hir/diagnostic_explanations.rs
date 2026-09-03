@@ -18,6 +18,16 @@ use super::DiagnosticCode;
 
 pub(super) const EXPLANATIONS: &[(DiagnosticCode, &str)] = &[
     (
+        DiagnosticCode::E031,
+        r"`brink_analyzer::resolve::check_arity` compares an ordinary call site's
+supplied argument count against the resolved target's declared parameter
+count. This is `Warning`-tier: the mismatched program still compiles and
+runs — the call site's excess or missing arguments are a mechanical
+problem the compiler can point at, not one that blocks the build.
+`E176` is this diagnostic's sibling for a divert/tunnel/thread-start call
+shape rather than an ordinary call.",
+    ),
+    (
         DiagnosticCode::E035,
         r#"`brink-analyzer::manifest`'s symbol-declaration pass warns whenever an
 author declares a `VAR`, `CONST`, `EXTERNAL`, or knot (including a
