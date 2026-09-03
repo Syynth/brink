@@ -67,6 +67,14 @@ impl WebSpeculation {
             .map_err(|e| JsError::new(&format!("go_to_path error: {e}")))
     }
 
+    /// The knot or `knot.stitch` this speculation is executing in — the
+    /// speculative twin of `WebSession::current_path`, read before an
+    /// `advance` to know where the coming line is from. `undefined` at the
+    /// root.
+    pub fn current_path(&self) -> Option<String> {
+        self.speculation.borrow().current_path()
+    }
+
     /// Select a pending choice by index.
     pub fn choose(&self, index: usize) -> Result<(), JsError> {
         self.speculation
@@ -286,6 +294,60 @@ pub(crate) struct SpeculateOptionsJs {
     pub(crate) context: Option<String>,
     pub(crate) live_effects: bool,
     pub(crate) kinds: HashMap<String, String>,
+}
+
+/// The decoded `speculate()` options every forking surface shares
+/// (`StoryRunner::speculate`, `WebSession::speculate`).
+pub(crate) struct SpeculateOptions {
+    pub(crate) budget: brink_runtime::Budget,
+    pub(crate) context: brink_runtime::EvalContext,
+    pub(crate) kinds: HashMap<String, brink_runtime::PolicyKind>,
+    pub(crate) live_effects: bool,
+}
+
+/// Parse `speculate()`'s options JSON (empty = all defaults); see
+/// `StoryRunner::speculate`'s doc for the shape.
+pub(crate) fn parse_speculate_options(options_json: &str) -> Result<SpeculateOptions, JsError> {
+    let opts: SpeculateOptionsJs = if options_json.trim().is_empty() {
+        SpeculateOptionsJs::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("speculate options error: {e}")))?
+    };
+    let default_budget = brink_runtime::Budget::default();
+    let budget = brink_runtime::Budget {
+        steps: opts.steps.unwrap_or(default_budget.steps),
+        lines: opts.lines.unwrap_or(default_budget.lines),
+    };
+    let context = match opts.context.as_deref() {
+        None | Some("watch") => brink_runtime::EvalContext::Watch,
+        Some("eval") => brink_runtime::EvalContext::Eval,
+        Some(other) => {
+            return Err(JsError::new(&format!(
+                "speculate: unknown context '{other}' (expected 'watch' or 'eval')"
+            )));
+        }
+    };
+    let mut kinds = HashMap::new();
+    for (name, kind) in &opts.kinds {
+        let k = match kind.as_str() {
+            "query" => brink_runtime::PolicyKind::Query,
+            "effect" => brink_runtime::PolicyKind::Effect,
+            other => {
+                return Err(JsError::new(&format!(
+                    "speculate: unknown kind '{other}' for external '{name}' \
+                     (expected 'query' or 'effect')"
+                )));
+            }
+        };
+        kinds.insert(name.clone(), k);
+    }
+    Ok(SpeculateOptions {
+        budget,
+        context,
+        kinds,
+        live_effects: opts.live_effects,
+    })
 }
 
 #[derive(Serialize)]

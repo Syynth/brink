@@ -1020,6 +1020,23 @@ pub(crate) fn resolve_lines(
 /// element field is always the state at the END of `parts` — callers that
 /// need to carry it forward (again, only `take_first_line`) read it from
 /// there.
+/// Fold one more `LineRef`'s source into the line's: the first sets it,
+/// a later one in the same file widens it to cover both, one from another
+/// file is ignored.
+fn widen_source(
+    current: &mut Option<brink_format::SourceLocation>,
+    entry: Option<&brink_format::SourceLocation>,
+) {
+    match (current, entry) {
+        (current @ None, Some(src)) => *current = Some(src.clone()),
+        (Some(cur), Some(src)) if cur.file == src.file => {
+            cur.range_start = cur.range_start.min(src.range_start);
+            cur.range_end = cur.range_end.max(src.range_end);
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn resolve_lines_annotated(
     parts: &[OutputPart],
     seed_element: BTreeMap<String, String>,
@@ -1046,9 +1063,12 @@ pub(crate) fn resolve_lines_annotated(
     // from the caller's already-accumulated state (see this function's own
     // `seed_element` doc) rather than always starting empty.
     let mut current_element: BTreeMap<String, String> = seed_element;
-    // The line's provenance (W7/#3300): the FIRST `LineRef`'s line-table
-    // `source_location`. First wins — a glue-joined line spans several
-    // refs and the line "is" where it starts. Reset per line.
+    // The line's provenance (W7/#3300): the span of its `LineRef`s'
+    // line-table `source_location`s — from the first ref's start to the
+    // furthest end among refs in that same file (a glue-joined line, or a
+    // prose-dialect cue + aside + dialogue, spans several source lines and
+    // the host highlights them all; feedback 2026-09-02). A ref from
+    // another file never widens it. Reset per line.
     let mut current_source: Option<brink_format::SourceLocation> = None;
     let mut saw_fragment_ref = false;
     let mut after_glue = false;
@@ -1062,12 +1082,11 @@ pub(crate) fn resolve_lines_annotated(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
-                if current_source.is_none()
-                    && let OutputPart::LineRef {
-                        container_idx,
-                        line_idx,
-                        ..
-                    } = part
+                if let OutputPart::LineRef {
+                    container_idx,
+                    line_idx,
+                    ..
+                } = part
                 {
                     // Same table selection as `resolve_line_ref`: a
                     // `LineRef`'s `container_idx` keys the SCOPE table via
@@ -1077,10 +1096,11 @@ pub(crate) fn resolve_lines_annotated(
                     // wrong place while the TEXT — resolved through the
                     // correct road — looked fine).
                     let scope_idx = program.scope_table_idx(*container_idx) as usize;
-                    current_source = line_tables
+                    let entry_source = line_tables
                         .get(scope_idx)
                         .and_then(|t| t.get(*line_idx as usize))
-                        .and_then(|entry| entry.source_location.clone());
+                        .and_then(|entry| entry.source_location.as_ref());
+                    widen_source(&mut current_source, entry_source);
                 }
                 if part_involves_fragment_ref(part) {
                     saw_fragment_ref = true;

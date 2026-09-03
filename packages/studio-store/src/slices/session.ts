@@ -48,6 +48,7 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
+import { isPeekSessionProvider } from "../session/types.js";
 import type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 export type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 
@@ -85,6 +86,13 @@ export function sanitizeFontFamily(input: string): string {
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
+  /**
+   * Run generation: bumps on every start, restart and session switch. The
+   * Player keys its timeline on it so a restart REMOUNTS the transcript —
+   * the first line fades back in exactly as it does after Stop → Run
+   * (feedback 2026-09-02), instead of the old rows being reused in place.
+   */
+  sessionRun: number;
   /** Append-only transcript TEXT for the current run (cleared on
    * restart) — derived from `sessionLines`; kept as the stable
    * text-only view for consumers that only need strings. */
@@ -114,6 +122,18 @@ export interface SessionSlice {
   /** The source of the transcript row under the pointer (#3437): the
    *  editor bands it with the hover band, distinct from the follow band. */
   sessionHoverSource: SourceLocation | null;
+  /** Peek (ruled 2026-09-03): the sources one forecast continue call
+   *  would hit — set while Continue or a choice card is hovered, cleared
+   *  on leave and whenever the transcript moves (the forecast is for the
+   *  state it was taken in). `null` = no forecast showing. */
+  sessionPeek: SourceLocation[] | null;
+  /** Forecast what pressing Continue delivers next (no-op without the
+   *  `peek` capability, or when Continue cannot be pressed). */
+  peekContinue(): void;
+  /** Forecast what picking choice `index` delivers first. */
+  peekChoice(index: number): void;
+  /** Drop the forecast. */
+  clearPeek(): void;
   setSessionHoverSource(source: SourceLocation | null): void;
   /** Player reading knobs (#3438, app scope, persisted with the Player
    *  settings). Empty string / 0 = the theme's default; the CSS variable
@@ -329,6 +349,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       activeSessionId: entry.id,
       capabilities: entry.provider.capabilities,
     });
+    set((s) => ({ sessionRun: s.sessionRun + 1 }));
     mirror(set, entry.provider.getSnapshot(), true);
     // Debug session slice (#3232): a switch is a different provider, so its
     // armed breakpoints/capability must be re-read, not carried over.
@@ -337,12 +358,14 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
   return {
     sessionStatus: "none",
+    sessionRun: 0,
     sessionText: [],
     sessionLines: [],
     sessionPacedMs: 150,
     followInEditor: true,
     followPaused: false,
     sessionHoverSource: null,
+    sessionPeek: null,
     playerFontSize: 0,
     playerFontFamily: "",
     playerLineHeight: 0,
@@ -410,6 +433,22 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       if (get().followPaused !== paused) set({ followPaused: paused });
     },
 
+    peekContinue() {
+      const provider = get()._provider;
+      if (!provider || !isPeekSessionProvider(provider)) return;
+      const result = provider.peekContinue();
+      set({ sessionPeek: result && result.sources.length > 0 ? result.sources : null });
+    },
+    peekChoice(index) {
+      const provider = get()._provider;
+      if (!provider || !isPeekSessionProvider(provider)) return;
+      const result = provider.peekChoice(index);
+      set({ sessionPeek: result && result.sources.length > 0 ? result.sources : null });
+    },
+    clearPeek() {
+      if (get().sessionPeek !== null) set({ sessionPeek: null });
+    },
+
     setSessionHoverSource(source) {
       const cur = get().sessionHoverSource;
       if (cur === source) return;
@@ -472,7 +511,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       } else if (get().activeSessionId !== DEFAULT_SESSION_ID) {
         setActive(DEFAULT_SESSION_ID);
       }
-      set({ _sessionBytes: bytes });
+      set((s) => ({ _sessionBytes: bytes, sessionRun: s.sessionRun + 1 }));
       entry?.provider.start?.(bytes);
       // A start swaps the provider's internal wasm session — the runtime
       // breakpoint set dies with the old one, so the anchors must re-arm
@@ -547,6 +586,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       // restart means a fresh start on the latest available program — preferring
       // the newest compile, falling back to the session's own bytes.
       if (provider instanceof LocalSessionProvider && provider.hasLiveRunner()) {
+        set((s) => ({ sessionRun: s.sessionRun + 1 }));
         provider.restart();
         return;
       }
@@ -640,6 +680,12 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionStatus: snap.status,
     sessionText: snap.transcript.map((l) => l.text),
     sessionLines: snap.transcript,
+    // A forecast is for the state it was taken in: the transcript moving
+    // drops it (the Player re-peeks while the pointer stays).
+    sessionPeek:
+      snap.transcript === s.sessionLines && snap.status === s.sessionStatus
+        ? s.sessionPeek
+        : null,
     sessionReloadedAt: snap.reloadedAt,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,

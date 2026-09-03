@@ -38,12 +38,16 @@ export function executionHighlightsFor(
     | "followInEditor"
     | "followPaused"
     | "sessionHoverSource"
+    | "sessionPeek"
     | "_resolveSourceBytes"
   >,
   path: string,
   projection?: HirProjection | null,
 ): ExecutionHighlight[] {
   const out = coreHighlights(st, path, projection);
+  // Bars over tints (ruled 2026-09-03): follow / hover / peek are bar-only
+  // attention marks and STACK on a tinted line — a line where play is can
+  // also be the one just revealed, hovered, or forecast. No dedupe.
   // Follow (#3437): the last revealed line's source, banded, while the
   // Player plays and follow is on and not paused by an edit. Not while
   // paused — the paused band already says where play is.
@@ -60,20 +64,34 @@ export function executionHighlightsFor(
     const last = lastLineWithSource(st.sessionLines);
     if (last?.source && last.source.file === path) {
       const point = resolve(last.source.file, last.source.range_start, last.source.range_end);
-      if (point !== null && !out.some((h) => h.line === point.line + 1)) {
-        out.push({ line: point.line + 1, kind: "follow" });
-      }
+      if (point !== null) out.push(band(point, "follow"));
     }
   }
   // Hover (#3437): the transcript row under the pointer.
   const hover = st.sessionHoverSource;
   if (hover !== null && hover.file === path && resolve) {
     const point = resolve(hover.file, hover.range_start, hover.range_end);
-    if (point !== null && !out.some((h) => h.line === point.line + 1)) {
-      out.push({ line: point.line + 1, kind: "hover" });
-    }
+    if (point !== null) out.push(band(point, "hover"));
+  }
+  // Peek (ruled 2026-09-03): what the hovered Continue / choice would hit.
+  for (const src of st.sessionPeek ?? []) {
+    if (src.file !== path || !resolve) continue;
+    const point = resolve(src.file, src.range_start, src.range_end);
+    if (point !== null) out.push(band(point, "peek"));
   }
   return out;
+}
+
+/** A band over every source line the point spans — a transcript line
+ *  built from several source lines (glue, cue + aside + dialogue) lights
+ *  as the one line it reads as (feedback 2026-09-02). */
+function band(
+  point: { line: number; endLine?: number },
+  kind: ExecutionHighlight["kind"],
+): ExecutionHighlight {
+  const line = point.line + 1;
+  const endLine = (point.endLine ?? point.line) + 1;
+  return endLine > line ? { line, endLine, kind } : { line, kind };
 }
 
 /** The newest transcript line that knows where it came from. */

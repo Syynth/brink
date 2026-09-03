@@ -66,12 +66,27 @@ describe("execution highlight (W6/#3299)", () => {
       { line: 1, kind: "paused" },
       { line: 3, kind: "live" },
       { line: 4, kind: "frame" },
+      // A bar stacks on a tinted line (ruled 2026-09-03): one line element
+      // carries both classes.
+      { line: 3, kind: "peek" },
     ]);
     const classes = bandEls(view).join(" | ");
     expect(classes).toContain("brink-exec-paused");
     expect(classes).toContain("brink-exec-live");
     expect(classes).toContain("brink-exec-frame");
     expect(bandEls(view)).toHaveLength(3);
+    expect(bandEls(view).find((c) => c.includes("brink-exec-live"))).toContain("brink-exec-peek");
+  });
+
+  it("a band with `endLine` covers every line from `line` to `endLine`", () => {
+    const view = mount(() => [{ line: 2, endLine: 4, kind: "follow" }]);
+    expect(bandEls(view)).toHaveLength(3);
+    expect(bandEls(view).every((c) => c.includes("brink-exec-follow"))).toBe(true);
+    // An endLine below line is one band; one past the document clamps to
+    // its last line (DOC has five lines, the trailing empty one included)
+    // — never a zero-band or a crash.
+    const clamped = mount(() => [{ line: 3, endLine: 1, kind: "hover" }, { line: 4, endLine: 99, kind: "live" }]);
+    expect(bandEls(clamped)).toHaveLength(1 + 2);
   });
 
   it("re-reads only on refresh — no polling", () => {

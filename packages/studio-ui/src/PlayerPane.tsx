@@ -1,4 +1,14 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
   EDITOR_REVEAL_COMMAND_ID,
@@ -20,6 +30,7 @@ import {
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
+import type { Choice } from "@brink/wasm-types";
 import { loadPlayerSettings, savePlayerSettings } from "./SettingsDocument.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
 
@@ -275,6 +286,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const followPaused = useStudioStore((s) => s.followPaused);
   const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
   const setSessionHoverSource = useStudioStore((s) => s.setSessionHoverSource);
+  // Peek (ruled 2026-09-03): hovering Continue / a choice card forecasts
+  // what that press would hit, in the editor.
+  const peekContinue = useStudioStore((s) => s.peekContinue);
+  const peekChoice = useStudioStore((s) => s.peekChoice);
+  const clearPeek = useStudioStore((s) => s.clearPeek);
+  const [continueHovered, setContinueHovered] = useState(false);
   const showProvenance = useStudioStore((s) => s.showProvenance);
   const showChoiceMarkers = useStudioStore((s) => s.showChoiceMarkers);
   const lines = useStudioStore((s) => s.sessionLines);
@@ -288,6 +305,9 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
   const saveCurrentState = useStudioStore((s) => s.saveCurrentState);
   const choices = useStudioStore((s) => s.sessionChoices);
+  // The run generation keys the timeline: a restart remounts every row so
+  // the first line fades back in, the same entrance Stop → Run plays.
+  const run = useStudioStore((s) => s.sessionRun);
   // One-shot fast-forward (RULED 2026-08-30) — no sticky auto mode.
   const revealMaximally = useStudioStore((s) => s.revealMaximally);
   // Transport (W5/#3298): render the debug cluster only for a debug-capable
@@ -381,11 +401,62 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom on new content — unless the author scrolled up.
+  // Smooth (feedback 2026-09-02): a new line fades in and the choices
+  // slide to their new place; the scroll rides along instead of jumping.
   useEffect(() => {
-    if (playerRef.current && stickToBottom.current) {
-      playerRef.current.scrollTop = playerRef.current.scrollHeight;
+    const el = playerRef.current;
+    if (el && stickToBottom.current) {
+      // jsdom has no scrollTo; the assignment is the same jump as before.
+      if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      else el.scrollTop = el.scrollHeight;
     }
   }, [lines, choices, ended, hasPending]);
+
+  // The choices block (Continue, or the offered choices) SLIDES to its new
+  // position when lines land above it (feedback 2026-09-02) — a FLIP:
+  // remember where it was, and after the DOM updates, play it from the
+  // old place to the new one. Measured in the pane's scroll space so the
+  // smooth scroll above does not count as movement.
+  const choicesRef = useRef<HTMLDivElement>(null);
+  const choicesTop = useRef<number | null>(null);
+  // The back face keeps the last first-choice text while it turns back to
+  // Continue, so the flip-back shows what was there rather than a blank.
+  const lastFirstChoice = useRef<string>("");
+  if (choices.length > 0) lastFirstChoice.current = choices[0]?.text ?? "";
+  const runSeen = useRef(run);
+  useLayoutEffect(() => {
+    const el = choicesRef.current;
+    const pane = playerRef.current;
+    if (!el || !pane) {
+      choicesTop.current = null;
+      return;
+    }
+    // A new run is a fresh timeline: the block appears where it is, it
+    // does not slide down from where the previous run left it.
+    if (runSeen.current !== run) {
+      runSeen.current = run;
+      choicesTop.current = null;
+    }
+    // Where the block VISIBLY was: the last render's settled position plus
+    // whatever slide is still in flight — a paced reveal lands a line
+    // every 150ms, and each new slide must start from the visible spot,
+    // not restart from the previous settled one (the jank).
+    const m = getComputedStyle(el).transform;
+    const inFlight = m === "none" ? 0 : (Number.parseFloat(m.split(",")[5] ?? "0") || 0);
+    el.style.transition = "none";
+    el.style.transform = "";
+    const top = el.getBoundingClientRect().top + pane.scrollTop;
+    const prev = choicesTop.current;
+    choicesTop.current = top;
+    if (prev === null) return;
+    const dy = prev + inFlight - top;
+    if (Math.abs(dy) < 0.5) return;
+    el.style.transform = `translateY(${dy.toString()}px)`;
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 240ms cubic-bezier(0.2, 0.7, 0.2, 1)";
+      el.style.transform = "";
+    });
+  });
 
   const handleScroll = useCallback(() => {
     const el = playerRef.current;
@@ -445,6 +516,32 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const handleContinue = useCallback(() => {
     commands.dispatch("story.continue");
   }, [commands]);
+
+  // The forecast follows the state: while Continue stays hovered across a
+  // press, the transcript moving drops the old peek and this takes a new
+  // one (mirror() clears; this re-peeks).
+  useEffect(() => {
+    if (!continueHovered) return;
+    if (choices.length > 0) {
+      clearPeek();
+      return;
+    }
+    peekContinue();
+  }, [continueHovered, lines.length, status, choices.length, peekContinue, clearPeek]);
+  const hoverChoice = useCallback(
+    (choice: Choice | null) => {
+      if (choice === null) {
+        setSessionHoverSource(null);
+        clearPeek();
+        return;
+      }
+      // Both at once (ruled 2026-09-03): the card's own text as delivered-
+      // content hover, the line picking it leads to as a peek.
+      setSessionHoverSource(choice.source ?? null);
+      peekChoice(choice.index);
+    },
+    [setSessionHoverSource, clearPeek, peekChoice],
+  );
 
   const handleStart = useCallback(() => {
     commands.dispatch("story.start");
@@ -508,7 +605,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         <div className="toolbar" ref={toolbarRef}>
           <button
             className="player-transport-btn player-btn-run"
-            title="Run — compile and start the story"
+            data-tip="Run — compile and start the story"
             aria-label="Run"
             onClick={handleRun}
           >
@@ -518,7 +615,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn"
-            title="Restart the story"
+            data-tip="Restart the story"
             aria-label="Restart"
             onClick={handleRestart}
           >
@@ -531,7 +628,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           <>
           <button
             className="player-transport-btn"
-            title="Stop the story — back to the launcher"
+            data-tip="Stop the story — back to the launcher"
             aria-label="Stop"
             disabled={idle}
             onClick={() => commands.dispatch("story.stop")}
@@ -540,7 +637,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn"
-            title="Save state — checkpoint the current point (W14); writes back to a loaded save"
+            data-tip="Save state — checkpoint the current point (W14); writes back to a loaded save"
             aria-label="Save state"
             disabled={idle}
             onClick={() => void saveCurrentState()}
@@ -549,7 +646,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           </button>
           <button
             className="player-transport-btn player-auto-btn"
-            title="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
+            data-tip="Fast-forward — run to the next choice or stop (one shot; paced per Settings → Player)"
             aria-label="Fast-forward"
             disabled={idle}
             onClick={() => revealMaximally()}
@@ -562,7 +659,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               (followInEditor ? " active" : "") +
               (followInEditor && followPaused ? " is-paused" : "")
             }
-            title={
+            data-tip={
               followInEditor
                 ? followPaused
                   ? "Follow in editor — paused while you edit; click to resume (Run or Restart resumes too)"
@@ -588,7 +685,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               {paused ? (
                 <button
                   className="player-transport-btn"
-                  title="Continue — run to the next line of content and resume play"
+                  data-tip="Continue — run to the next line of content and resume play"
                   aria-label="Continue"
                   onClick={() => commands.dispatch("debug.continue")}
                 >
@@ -597,7 +694,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               ) : (
                 <button
                   className="player-transport-btn"
-                  title="Pause — stop at the current line; step from there"
+                  data-tip="Pause — stop at the current line; step from there"
                   aria-label="Pause"
                   disabled={status !== "running" && status !== "awaiting-choice"}
                   onClick={() => commands.dispatch("debug.pause")}
@@ -607,7 +704,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               )}
               <button
                 className="player-transport-btn"
-                title="Step over — one line, calls run to completion"
+                data-tip="Step over — one line, calls run to completion"
                 aria-label="Step over"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOver")}
@@ -616,7 +713,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               </button>
               <button
                 className="player-transport-btn"
-                title="Step into — one line, descending into calls"
+                data-tip="Step into — one line, descending into calls"
                 aria-label="Step into"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepInto")}
@@ -625,7 +722,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               </button>
               <button
                 className="player-transport-btn"
-                title="Step out — run until the current frame returns"
+                data-tip="Step out — run until the current frame returns"
                 aria-label="Step out"
                 disabled={!paused}
                 onClick={() => commands.dispatch("debug.stepOut")}
@@ -636,7 +733,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           )}
           <button
             className={"player-transport-btn player-tags-btn" + (showTags ? " active" : "")}
-            title={showTags ? "Hide line tags" : "Show line tags"}
+            data-tip={showTags ? "Hide line tags" : "Show line tags"}
             aria-label="Show tags"
             aria-pressed={showTags}
             onClick={() => {
@@ -654,7 +751,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             <span className="player-overflow">
               <button
                 className={"player-transport-btn" + (overflowOpen ? " active" : "")}
-                title="More controls"
+                data-tip="More controls"
                 aria-label="More controls"
                 aria-expanded={overflowOpen}
                 onClick={() => setOverflowOpen((o) => !o)}
@@ -783,7 +880,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
             }
-            title={maximized ? "Restore (Esc)" : "Maximize"}
+            data-tip={maximized ? "Restore (Esc)" : "Maximize"}
           >
             {maximized ? "\u25a3" : "\u25a1"}
           </button>
@@ -791,11 +888,13 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
-        <div className="player-spine">
+        <div key={run} className={"player-spine" + (idle ? " is-idle" : "")}>
         {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
             the head of the rail, so the rail reads as a line of play from
             the first line, not as a bracket around whatever is on screen. */}
-        <div className="player-spine-start" aria-hidden="true" />
+        <div className="player-start-marker" aria-hidden="true">
+          <span className="player-start-label">Start</span>
+        </div>
         <div className="story-text">
           {groups.map((group, gi) => {
             const renderRow = (row: PlayerRow): ReactNode => {
@@ -885,36 +984,108 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         {/* Choices win over Continue: whenever a choice list is present, show
             it and never the Continue button — so a transient status wobble at a
             choice point can't flicker the two against each other (#273). */}
-        {choices.length > 0 ? (
-          <div className="choices">
-            {choices.map((choice) => (
-              <button
+        {/* The choices block (feedback 2026-09-02): the first card is a
+            two-faced FLIP — Continue on the front, the first choice on the
+            back — that turns over when choices arrive and turns back after
+            the pick; the remaining choices slide out one by one behind it.
+            Only the live face is a <button>; the other is a plain mirror,
+            so `.choices button` still counts exactly what can be pressed. */}
+        {choices.length > 0 || hasPending ? (
+          <div className="choices" ref={choicesRef}>
+            <div
+              className={
+                "player-flip player-spine-node" + (choices.length > 0 ? " is-choices" : "")
+              }
+            >
+              {choices.length > 0 ? (
+                <div className="player-choice player-continue player-flip-face is-front" aria-hidden="true">
+                  <span className="player-choice-text">Continue</span>
+                </div>
+              ) : (
+                <button
+                  className="player-choice player-continue player-flip-face is-front"
+                  onClick={handleContinue}
+                  onMouseEnter={() => {
+                    setContinueHovered(true);
+                  }}
+                  onMouseLeave={() => {
+                    setContinueHovered(false);
+                    clearPeek();
+                  }}
+                >
+                  <span className="player-choice-text">Continue</span>
+                </button>
+              )}
+              {choices.length > 0 ? (
+                <ChoiceCard
+                  choice={choices[0]}
+                  showMarker={showChoiceMarkers}
+                  className="player-flip-face is-back"
+                  onPick={handleChoice}
+                  onHover={hoverChoice}
+                />
+              ) : (
+                <div className="player-choice player-flip-face is-back" aria-hidden="true">
+                  <span className="player-choice-text">{lastFirstChoice.current}</span>
+                </div>
+              )}
+            </div>
+            {choices.slice(1).map((choice, i) => (
+              <ChoiceCard
                 key={choice.index}
-                className={
-                  "player-choice" +
-                  (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
-                }
-                onClick={() => handleChoice(choice.index)}
-              >
-                {choice.sticky !== undefined && showChoiceMarkers && (
-                  <span className="player-choice-mark" aria-hidden="true">
-                    {choice.sticky ? "+" : "*"}
-                  </span>
-                )}
-                <span className="player-choice-text">{choice.text}</span>
-              </button>
+                choice={choice}
+                showMarker={showChoiceMarkers}
+                className="player-spine-node player-choice-extra"
+                style={{ animationDelay: `${(420 + i * 90).toString()}ms` }}
+                onPick={handleChoice}
+                onHover={hoverChoice}
+              />
             ))}
-          </div>
-        ) : hasPending ? (
-          <div className="choices">
-            <button className="player-choice player-continue" onClick={handleContinue}>
-              <span className="player-choice-text">Continue</span>
-            </button>
           </div>
         ) : null}
         </div>
       </div>
     </div>
+  );
+}
+
+/** One offered choice as a card on the rail: its `*`/`+` as written, then
+ *  the text. `style` carries the stagger delay for the slide-out. */
+function ChoiceCard({
+  choice,
+  showMarker,
+  className,
+  style,
+  onPick,
+  onHover,
+}: {
+  choice: Choice;
+  showMarker: boolean;
+  className: string;
+  style?: CSSProperties;
+  onPick: (index: number) => void;
+  /** Pointer enters (`choice`) / leaves (`null`) the card. */
+  onHover?: (choice: Choice | null) => void;
+}) {
+  return (
+    <button
+      className={
+        "player-choice " +
+        className +
+        (choice.sticky === undefined ? "" : choice.sticky ? " is-sticky" : " is-once")
+      }
+      style={style}
+      onClick={() => onPick(choice.index)}
+      onMouseEnter={onHover ? () => onHover(choice) : undefined}
+      onMouseLeave={onHover ? () => onHover(null) : undefined}
+    >
+      {choice.sticky !== undefined && showMarker && (
+        <span className="player-choice-mark" aria-hidden="true">
+          {choice.sticky ? "+" : "*"}
+        </span>
+      )}
+      <span className="player-choice-text">{choice.text}</span>
+    </button>
   );
 }
 

@@ -130,7 +130,11 @@ export interface TranscriptLine {
  * `TranscriptLine.source`'s byte range by the app boundary's registered
  * resolver (`setSourceByteResolver`). */
 export interface ProvenancePoint {
+  /** 0-based line the range starts on. */
   line: number;
+  /** 0-based line the range ends on (≥ `line`): a glue-joined or
+   *  cue + aside + dialogue line spans several source lines. */
+  endLine: number;
   start: number;
   end: number;
 }
@@ -239,7 +243,10 @@ export type SessionCapability =
   // D8's debug control bridged through wasm (#3232): pause/step/breakpoints
   // *and* program→source position resolution, bundled as ONE capability —
   // see `DebugSessionProvider` below for why the two aren't split.
-  | "debug";
+  | "debug"
+  // Peek (ruled 2026-09-03): can fork the live story at its exact position
+  // and run one continue call on the fork — the Player's hover forecasts.
+  | "peek";
 
 /** The full capability set — what the local (wasm) provider advertises. */
 export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
@@ -250,6 +257,7 @@ export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
   "continue",
   "auto",
   "debug",
+  "peek",
 ]);
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -402,6 +410,36 @@ export interface DebugSessionProvider extends SessionProvider {
    * (`debugRunToLine`) delivers the next content line and resumes play;
    * the statement steps advance and stay paused. */
   pause(): void;
+}
+
+/** What one forecast continue call would produce (peek, ruled
+ *  2026-09-03): the source of the line it delivers — or of every choice it
+ *  presents — and the knot/stitch the fork was in when it ran, read
+ *  before the advance exactly as a transcript row's `path` is. */
+export interface PeekResult {
+  sources: SourceLocation[];
+  path: string | null;
+}
+
+/** A provider that can forecast (peek, ruled 2026-09-03): fork the live
+ *  story at its exact position, run ONE continue call on the fork —
+ *  never the auto run, externals sandboxed — and report what it hit. The
+ *  fork is discarded; the live session never moves. */
+export interface PeekSessionProvider extends SessionProvider {
+  /** What pressing Continue would deliver next; `null` when it cannot be
+   *  pressed (a choice point, an ended story, no live session). */
+  peekContinue(): PeekResult | null;
+  /** What picking choice `index` would deliver first; `null` unless the
+   *  session waits on that choice. */
+  peekChoice(index: number): PeekResult | null;
+}
+
+/** Narrow a bound `SessionProvider` to `PeekSessionProvider` (the `"peek"`
+ *  capability flag, same two-facts posture as `isDebugSessionProvider`). */
+export function isPeekSessionProvider(
+  provider: SessionProvider,
+): provider is PeekSessionProvider {
+  return provider.capabilities.has("peek");
 }
 
 /** Narrow a bound `SessionProvider` to `DebugSessionProvider` — checks the

@@ -107,6 +107,54 @@ describe("executionHighlightsFor — follow and hover bands (#3437)", () => {
     );
     expect(out).toEqual([{ line: 21, kind: "hover" }]);
   });
+
+  it("a source spanning several lines bands them all — hover and follow carry `endLine`", () => {
+    const spanning = (file: string, start: number, end: number) =>
+      file === "main.ink" ? { line: 86, endLine: 88, start, end } : null;
+    const st = stateWith({ status: "running", position: null });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [{ text: "@GRISWOLD: …", kind: "line" as const, tags: [], source: src }],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: { file: "main.ink", range_start: 30, range_end: 60 },
+        _resolveSourceBytes: spanning as never,
+      },
+      "main.ink",
+    );
+    // Bars stack (ruled 2026-09-03): follow AND hover both band the lines.
+    expect(out).toEqual([
+      { line: 87, endLine: 89, kind: "follow" },
+      { line: 87, endLine: 89, kind: "hover" },
+    ]);
+  });
+
+  it("peek bands each forecast source; bars stack on a tinted line instead of deduping", () => {
+    // Playing with a resolvable position: line 5 carries the live tint.
+    const st = stateWith({ status: "running" });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [{ text: "One", kind: "line" as const, tags: [], source: src }],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: null,
+        sessionPeek: [
+          { file: "main.ink", range_start: 10, range_end: 20 },
+          { file: "other.ink", range_start: 10, range_end: 20 },
+        ],
+        _resolveSourceBytes: ((file: string, start: number) =>
+          file === "main.ink" ? { line: 4, endLine: 4, start, end: start + 5 } : null) as never,
+      },
+      "main.ink",
+    );
+    expect(out).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+      { line: 5, kind: "follow" },
+      { line: 5, kind: "peek" },
+    ]);
+  });
 });
 
 /** A weave with three sibling choices under one knot (choice point A)

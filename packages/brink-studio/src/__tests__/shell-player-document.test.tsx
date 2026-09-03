@@ -379,7 +379,7 @@ describe("PlayerPane as a document view", () => {
     expect(echo.querySelector(".player-echo-ring")?.textContent).toBe("+");
     expect(echo.querySelector("p")?.textContent).toBe("Go now");
     // Cards: markers as written; an older host's choice has none.
-    const cards = Array.from(el.querySelectorAll<HTMLButtonElement>(".choices .player-choice"));
+    const cards = Array.from(el.querySelectorAll<HTMLButtonElement>(".choices button.player-choice"));
     expect(cards.map((c) => c.querySelector(".player-choice-mark")?.textContent ?? null)).toEqual(["*", "+", null]);
     expect(cards.map((c) => c.className.includes("is-sticky"))).toEqual([false, true, false]);
     // No provenance button without a hover.

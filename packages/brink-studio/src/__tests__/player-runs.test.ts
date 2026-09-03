@@ -76,6 +76,40 @@ describe("foldPlayerRuns (#3389)", () => {
     ]);
   });
 
+  it("a choice echo ends the speaker's run even when the dialect's run rule does not say so", () => {
+    // AT_CUE_DIALECT has no run_ends_at at all.
+    const lines = [
+      line("@Griswold: Buying or dying?"),
+      marker("> Kneel and pray"),
+      line("A cold blessing settles over you."),
+      line("You stand again in the nave."),
+    ];
+    const groups = foldPlayerRuns(lines, AT_CUE_DIALECT);
+    expect(groups.map((g) => [g.speaker, g.rows.length])).toEqual([
+      ["Griswold", 1],
+      [null, 1],
+      [null, 2],
+    ]);
+  });
+
+  it("a knot/stitch change (the row's path) ends the speaker's run; rows without a path never break", () => {
+    const at = (l: TranscriptLine, path: string): TranscriptLine => ({ ...l, path });
+    const lines = [
+      at(line("@Griswold: Pleasure doing business."), "barter"),
+      at(line("The temple opens into a toppled nave."), "threshold"),
+      at(line("Three ways lead off into the dark."), "threshold"),
+    ];
+    const groups = foldPlayerRuns(lines, AT_CUE_DIALECT);
+    expect(groups.map((g) => [g.speaker, g.rows.length])).toEqual([
+      ["Griswold", 1],
+      [null, 2],
+    ]);
+    const recued = [at(line("@Griswold: One."), "barter"), at(line("@Griswold: Two."), "threshold")];
+    expect(foldPlayerRuns(recued, AT_CUE_DIALECT).map((g) => g.speaker)).toEqual(["Griswold", "Griswold"]);
+    const plain = [line("@Griswold: One."), line("Still him."), at(line("Still him too."), "x")];
+    expect(foldPlayerRuns(plain, AT_CUE_DIALECT).map((g) => [g.speaker, g.rows.length])).toEqual([["Griswold", 3]]);
+  });
+
   it("no dialect: every row is a plain group — nothing is parsed", () => {
     const groups = foldPlayerRuns([line("@CUE1: One."), line("> text")], null);
     expect(groups.map((g) => [g.kind, g.rows[0].segments.length])).toEqual([[null, 0], [null, 0]]);

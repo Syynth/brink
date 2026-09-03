@@ -59,9 +59,13 @@
      it's just the size of the Continue button"). */
   display: flex;
   flex-direction: column;
-  padding: 24px 40px;
+  padding: 16px var(--player-pad-x);
   /* Reading knobs (#3438): measure and face from Settings › Player;
      unset = these defaults. */
+  /* Bounded and centred (feedback 2026-09-02): an explicit width, because
+     inside the pane's column flexbox `margin: 0 auto` alone shrinks the
+     column to its content — a lone Continue card collapsed it. */
+  width: 100%;
   max-width: var(--bs-player-measure, 8in);
   margin: 0 auto;
   box-sizing: border-box;
@@ -74,21 +78,26 @@
   font-size: var(--bs-player-font-size, var(--bs-font-prose));
   letter-spacing: 0.01em;
 }
-/* ── Choices (#3436): cards hanging off the spine, each with a connector
-   and a node on the rail, carrying its `*`/`+` as written. The taken one
-   comes back as an echo ring on the rail (below). ── */
+/* ── Choices (#3436; flip + stagger, feedback 2026-09-02): cards hanging
+   off the spine. The first card is a two-faced flip — Continue on the
+   front, the first choice on the back — turning over when choices arrive
+   and back after the pick; the rest slide out one by one behind it. Each
+   card's node on the rail is a ring, like the echo ring, so the rail runs
+   INTO it rather than under a dot. ── */
 .brink-studio .player .choices {
   margin: 14px 0 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  perspective: 1100px;
 }
 .brink-studio .player .player-choice {
   position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-right: 28px;
+  width: 100%;
+  margin: 0;
   padding: 10px 14px;
   background: var(--bs-panel-bg);
   color: var(--bs-fg);
@@ -100,24 +109,43 @@
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.brink-studio .player .player-choice::before {
+/* The node + connector live on the element that sits on the rail: the
+   flip container for the first card, the card itself for the rest. */
+.brink-studio .player .player-spine-node {
+  position: relative;
+}
+.brink-studio .player .player-spine-node::before {
   content: "";
   position: absolute;
-  left: calc(-1 * var(--player-spine-gap));
+  left: calc(-1 * var(--player-spine-gap) + 5px);
   top: 50%;
-  width: var(--player-spine-gap);
+  width: calc(var(--player-spine-gap) - 5px);
   height: 2px;
+  margin-top: -1px;
   background: var(--bs-border);
 }
-.brink-studio .player .player-choice::after {
+.brink-studio .player .player-spine-node::after {
   content: "";
   position: absolute;
-  left: calc(-1 * var(--player-spine-gap) - 4px);
-  top: calc(50% - 4px);
-  width: 8px;
-  height: 8px;
+  left: calc(-1 * var(--player-spine-gap) - 5.5px);
+  top: calc(50% - 5.5px);
+  width: 11px;
+  height: 11px;
+  box-sizing: border-box;
   border-radius: 50%;
-  background: var(--bs-border);
+  border: 2px solid var(--bs-border);
+  background: var(--bs-editor-bg);
+}
+.brink-studio .player .player-spine-node:hover::before,
+.brink-studio .player .player-spine-node:hover::after,
+.brink-studio .player .player-spine-node:focus-within::before,
+.brink-studio .player .player-spine-node:focus-within::after {
+  border-color: var(--bs-accent);
+  background-color: var(--bs-accent);
+}
+.brink-studio .player .player-spine-node:hover::after,
+.brink-studio .player .player-spine-node:focus-within::after {
+  background-color: var(--bs-editor-bg);
 }
 .brink-studio .player .player-choice:hover,
 .brink-studio .player .player-choice:focus-visible {
@@ -126,11 +154,41 @@
   color: var(--bs-accent);
   outline: none;
 }
-.brink-studio .player .player-choice:hover::before,
-.brink-studio .player .player-choice:hover::after,
-.brink-studio .player .player-choice:focus-visible::before,
-.brink-studio .player .player-choice:focus-visible::after {
-  background: var(--bs-accent);
+/* The flip: both faces in one grid cell, the back pre-turned; the
+   container turns 180° about its horizontal axis when choices arrive. */
+.brink-studio .player .player-flip {
+  display: grid;
+  transform-style: preserve-3d;
+  transition: transform 560ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.brink-studio .player .player-flip > .player-flip-face {
+  grid-area: 1 / 1;
+  backface-visibility: hidden;
+}
+.brink-studio .player .player-flip > .is-back {
+  transform: rotateX(180deg);
+}
+.brink-studio .player .player-flip.is-choices {
+  transform: rotateX(180deg);
+}
+/* A mirror face is decoration: never a target. */
+.brink-studio .player .player-flip > div.player-flip-face {
+  pointer-events: none;
+}
+/* The other choices slide out one by one after the flip (delay per card
+   is set inline). */
+@keyframes player-choice-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brink-studio .player .player-choice-extra {
+  animation: player-choice-in 320ms ease-out both;
 }
 .brink-studio .player .player-choice-mark {
   width: 14px;
@@ -318,11 +376,17 @@
    spine gutter. ── */
 .brink-studio .player .player-line-row {
   position: relative;
-  padding: 8px 40px 8px var(--player-text-x);
-  margin: 0 -40px 0 calc(-1 * var(--player-text-x));
+  padding: 8px var(--player-pad-x) 8px var(--player-text-x);
+  margin: 0 calc(-1 * var(--player-pad-x)) 0 calc(-1 * var(--player-text-x));
 }
 .brink-studio .player .player-line-row:hover {
   background: color-mix(in srgb, var(--bs-fg) 6%, transparent);
+}
+/* The row's padding is the ONLY spacing around the text — the prose
+   paragraph's own bottom margin would add to it below (feedback
+   2026-09-02: "more padding below the text"). */
+.brink-studio .player .player-line-row p {
+  margin: 0;
 }
 .brink-studio .player .player-line-row.kind-notice p span {
   color: var(--bs-error);
@@ -346,10 +410,12 @@
    over the next row — present only while its row is hovered (the pane
    resolves `point` for the hovered row alone). `file:line` is its
    tooltip; ⌘-click on the row does the same jump. */
+/* Top-right corner of the row, inside its padding (feedback 2026-09-02) —
+   never over the text and never hanging into the neighbouring row. */
 .brink-studio .player .player-provenance {
   position: absolute;
-  right: 54px;
-  bottom: -11px;
+  right: 6px;
+  top: 4px;
   z-index: 2;
   width: 22px;
   height: 22px;
@@ -575,37 +641,76 @@
    choice (a ring carrying its `*`/`+`) and the choices on offer (cards
    with a connector each). Rows and cards are one line of play. */
 .brink-studio .player {
-  --player-spine-x: 30px; /* from the .player padding edge */
+  /* Tightened (feedback 2026-09-02: "a lot of padding around the
+     timeline"): pane padding 20px, rail 14px in, text 22px past it —
+     56px from the pane edge to the text, down from 92. */
+  --player-pad-x: 20px;
+  --player-spine-x: 14px; /* from the .player padding edge */
   --player-spine-gap: 22px; /* rail → text */
-  --player-text-x: calc(40px + var(--player-spine-x) + var(--player-spine-gap));
+  --player-text-x: calc(var(--player-pad-x) + var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine {
   position: relative;
   flex: 1 0 auto;
-  padding-top: 14px;
+  padding-top: 4px;
   padding-left: calc(var(--player-spine-x) + var(--player-spine-gap));
 }
 .brink-studio .player .player-spine::before {
   content: "";
   position: absolute;
   left: calc(var(--player-spine-x) - 0.5px);
-  top: 0;
+  /* The rail begins AT the start node's centre (spine padding-top + half
+     the start row), never above it. */
+  top: calc(4px + 10px);
   bottom: 0;
   width: 2px;
   background: var(--bs-border);
 }
-/* The head of the timeline: a filled node on the rail, above the first
-   line. */
-.brink-studio .player .player-spine-start {
+/* Idle (the launcher is up): no timeline yet, so no rail and no start. */
+.brink-studio .player .player-spine.is-idle::before,
+.brink-studio .player .player-spine.is-idle .player-start-marker {
+  display: none;
+}
+.brink-studio .player .player-spine.is-idle {
+  flex: 0 0 auto;
+  padding-top: 0;
+}
+/* The head of the timeline is a ROW of its own (feedback 2026-09-02): a
+   filled node on the rail, a label, and a rule across the column — the
+   start's twin of the end marker — so the first line's hover band never
+   touches it. */
+.brink-studio .player .player-start-marker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  margin: 0 0 8px;
+  /* The rule runs the whole column, centred on the row; the label sits
+     on it with the page colour behind it — the end marker's twin. */
+  background: linear-gradient(var(--bs-border), var(--bs-border)) center / 100% 1px no-repeat;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .player .player-start-label {
+  padding: 0 10px;
+  background: var(--bs-editor-bg);
+}
+.brink-studio .player .player-start-marker::before {
+  content: "";
   position: absolute;
-  left: calc(var(--player-spine-x) - 5px);
-  top: 0;
+  left: calc(-1 * var(--player-spine-gap) - 5px);
+  top: calc(50% - 5.5px);
   width: 11px;
   height: 11px;
   border-radius: 50%;
   background: var(--bs-fg-muted);
   box-shadow: 0 0 0 2px var(--bs-editor-bg);
 }
+
 /* Narration reads at full strength; ACTION is the dimmed one (ruled). */
 .brink-studio .player .story-text > .player-line-row.kind-line p {
   font-style: normal;
@@ -618,7 +723,7 @@
 .brink-studio .player .player-line-row.dialect-action::before {
   content: "";
   position: absolute;
-  left: calc(40px + var(--player-spine-x) - 1px);
+  left: calc(var(--player-pad-x) + var(--player-spine-x) - 1px);
   top: 4px;
   bottom: 4px;
   width: 0;
@@ -637,7 +742,7 @@
 }
 .brink-studio .player .player-echo-ring {
   position: absolute;
-  left: calc(40px + var(--player-spine-x) - 9.5px);
+  left: calc(var(--player-pad-x) + var(--player-spine-x) - 9.5px);
   top: calc(12px + 0.85 * var(--bs-player-font-size, var(--bs-font-prose)) - 9.5px);
   width: 19px;
   height: 19px;
@@ -802,4 +907,88 @@
 .brink-studio .font-picker-custom .font-picker-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* ── Toolbar tooltips (feedback 2026-09-02: the icon buttons are not
+   always clear). Native `title` tips are slow and easy to miss; these
+   are immediate, styled, and read the same in every shell. `data-tip`
+   carries the text; the button keeps its aria-label for readers. ── */
+.brink-studio .player-pane .header .toolbar [data-tip] {
+  position: relative;
+}
+.brink-studio .player-pane .header .toolbar [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  max-width: 320px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 35%);
+  color: var(--bs-fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: var(--bs-font-small);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: 1.4;
+  white-space: normal;
+  width: max-content;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease 250ms, visibility 0s linear 370ms;
+}
+.brink-studio .player-pane .header .toolbar [data-tip]:hover::after,
+.brink-studio .player-pane .header .toolbar [data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 250ms, 250ms;
+}
+/* Right-edge buttons open their tip leftward so it stays in the pane. */
+.brink-studio .player-pane .header .toolbar .player-btn-maximize::after {
+  left: auto;
+  right: 0;
+}
+
+/* ── Arrival (feedback 2026-09-02): a new row fades in with a few pixels
+   of rise; the choices block slides to its new place (FLIP, in
+   PlayerPane). Off under reduced motion. ── */
+@keyframes player-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brink-studio .player .player-line-row,
+.brink-studio .player .player-run-cue,
+.brink-studio .player .player-start-marker {
+  /* Delayed past the choices block's slide (240ms in PlayerPane), so the
+     text fades in where the block has ALREADY left — never under it. */
+  animation: player-row-in 400ms ease-out 240ms both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brink-studio .player .player-line-row,
+  .brink-studio .player .player-run-cue,
+  .brink-studio .player .player-start-marker {
+    animation: none;
+  }
+  .brink-studio .player .choices {
+    transition: none !important;
+    transform: none !important;
+  }
+  .brink-studio .player .player-flip {
+    transition: none;
+  }
+  .brink-studio .player .player-choice-extra {
+    animation: none;
+  }
 }

@@ -197,7 +197,7 @@ pub(crate) fn frame_path(program: &Program, frame: &CallFrame) -> Option<String>
         .container_stack
         .iter()
         .rev()
-        .find_map(|cp| program.container_path(cp.container_idx))
+        .find_map(|cp| program.scope_path(cp.container_idx))
         .map(str::to_owned)
 }
 

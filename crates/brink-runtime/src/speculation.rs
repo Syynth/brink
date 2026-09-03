@@ -186,6 +186,15 @@ impl<R: StoryRng> Speculation<R> {
         self.flow.choose(&mut view, index)
     }
 
+    /// The knot or `knot.stitch` this speculation is executing in — the
+    /// same query as [`Story::current_path`](crate::Story::current_path),
+    /// over the forked position. Read it BEFORE an `advance` to know where
+    /// the coming line is from, exactly as a host stamps live lines.
+    #[must_use]
+    pub fn current_path(&self) -> Option<String> {
+        self.flow.current_path(&self.program)
+    }
+
     /// Drive this speculation forward by one visible line, honoring
     /// `budget` in place of the runtime's hardcoded step/line ceilings.
     ///

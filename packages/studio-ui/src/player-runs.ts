@@ -64,18 +64,38 @@ export function foldPlayerRuns(
   const groups: PlayerGroup[] = [];
   for (const run of runs) {
     // A chrome row is always standalone: split it out of whatever run the
-    // fold placed it in (segment-less, it "joined" as plain text).
+    // fold placed it in (segment-less, it "joined" as plain text). And a
+    // choice echo is the READER's turn: it ends the speaker's run in the
+    // Player whatever the dialect's run rule says (a preset with no
+    // `run_ends_at` kept attributing the narration after a pick to the
+    // last speaker — caught live 2026-09-02), so the lines after it are
+    // nobody's until the next cue.
     let current: PlayerGroup | null = null;
+    let speakerEnded = false;
     for (const idx of run.lines) {
       const row = rows[idx];
+      // A knot/stitch change is a scene boundary the dialect cannot see
+      // (ruled 2026-09-02: the runtime's `currentPath()`, stamped per row):
+      // the speaker's run ends there. Rows without a path (restored
+      // history, the first line from the root) never break.
+      if (idx > 0 && pathBreak(rows[idx - 1].line, row.line)) {
+        if (current) groups.push(current);
+        current = null;
+        // The run's own first row (a cue in the new knot) keeps its speaker;
+        // only rows the OLD run would have carried across lose theirs.
+        if (idx !== run.lines[0]) speakerEnded = true;
+      }
       if (row.line.kind !== "line") {
         if (current) groups.push(current);
         current = null;
+        if (row.line.kind === "marker") speakerEnded = true;
         groups.push({ kind: null, speaker: null, rows: [row] });
         continue;
       }
       if (current === null) {
-        current = { kind: run.kind, speaker: run.attrs.speaker ?? null, rows: [row] };
+        current = speakerEnded
+          ? { kind: null, speaker: null, rows: [row] }
+          : { kind: run.kind, speaker: run.attrs.speaker ?? null, rows: [row] };
       } else {
         current.rows.push(row);
       }
@@ -90,13 +110,23 @@ export function foldPlayerRuns(
   const merged: PlayerGroup[] = [];
   for (const g of groups) {
     const last = merged[merged.length - 1];
-    if (last && g.speaker !== null && last.speaker === g.speaker && last.kind === g.kind) {
+    const lastRow = last?.rows[last.rows.length - 1]?.line;
+    const firstRow = g.rows[0]?.line;
+    const sameScene =
+      lastRow === undefined || firstRow === undefined || !pathBreak(lastRow, firstRow);
+    if (last && sameScene && g.speaker !== null && last.speaker === g.speaker && last.kind === g.kind) {
       last.rows.push(...g.rows);
     } else {
       merged.push(g);
     }
   }
   return merged;
+}
+
+/** Whether two consecutive rows come from different knots/stitches — only
+ *  when BOTH know where they came from. */
+function pathBreak(a: TranscriptLine, b: TranscriptLine): boolean {
+  return a.path !== undefined && b.path !== undefined && a.path !== b.path;
 }
 
 /** Deterministic speaker colour: a stable palette index from the name, so

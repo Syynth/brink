@@ -55,7 +55,7 @@ export function subscribeDebugRefresh(
     const pausedRose = st.sessionPaused && !last.paused;
     // Follow / hover (#3437).
     const linesMoved = st.sessionLines !== last.lines;
-    const hoverMoved = st.sessionHoverSource !== last.hover;
+    const hoverMoved = st.sessionHoverSource !== last.hover || st.sessionPeek !== last.peek;
     const followFlipped =
       st.followInEditor !== last.follow || st.followPaused !== last.followPaused;
     const sessionStarted = last.status === "none" && st.sessionStatus !== "none";
@@ -69,6 +69,7 @@ export function subscribeDebugRefresh(
       frameIdx: st.selectedFrameIdx,
       lines: st.sessionLines,
       hover: st.sessionHoverSource,
+      peek: st.sessionPeek,
       follow: st.followInEditor,
       followPaused: st.followPaused,
     };
@@ -126,6 +127,7 @@ function snapshot(store: StudioStore) {
     frameIdx: st.selectedFrameIdx,
     lines: st.sessionLines,
     hover: st.sessionHoverSource,
+    peek: st.sessionPeek,
     follow: st.followInEditor,
     followPaused: st.followPaused,
   };

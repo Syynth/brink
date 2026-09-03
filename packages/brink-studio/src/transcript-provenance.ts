@@ -42,6 +42,10 @@ export function provenanceFromBytes(
   let line = 0;
   let start: number | null = null;
   let startLine = 0;
+  // The line of the last character INSIDE the range: a line's range
+  // usually runs through its own newline, which must not count as the
+  // next line.
+  let lastLine = 0;
 
   for (const ch of text) {
     if (start === null && bytes >= byteStart) {
@@ -49,11 +53,12 @@ export function provenanceFromBytes(
       startLine = line;
     }
     if (bytes >= byteEnd && start !== null) {
-      return { line: startLine, start, end: units };
+      return { line: startLine, endLine: Math.max(startLine, lastLine), start, end: units };
     }
     const cp = ch.codePointAt(0) ?? 0;
     bytes += byteLen(cp);
     units += ch.length;
+    lastLine = line;
     if (ch === "\n") line += 1;
   }
   // Ranges touching the very end of the text.
@@ -62,5 +67,5 @@ export function provenanceFromBytes(
     startLine = line;
   }
   if (start === null) return null;
-  return { line: startLine, start, end: units };
+  return { line: startLine, endLine: Math.max(startLine, lastLine), start, end: units };
 }

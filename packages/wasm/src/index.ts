@@ -2646,6 +2646,13 @@ export class SpeculationHandle {
     this.spec.go_to_path(path);
   }
 
+  /** The knot/stitch this speculation is executing in — the speculative
+   * twin of {@link StorySessionHandle.currentPath}: read it before an
+   * `advance` to know where the coming line is from. `null` at the root. */
+  currentPath(): string | null {
+    return this.spec.current_path() ?? null;
+  }
+
   /** Select a pending choice by index. */
   choose(index: number): void {
     this.spec.choose(index);
@@ -3027,6 +3034,16 @@ export class StorySessionHandle {
   /** See {@link StoryRunnerHandle.currentPath}. */
   currentPath(): string | null {
     return this.session.current_path() ?? null;
+  }
+
+  /** Fork a `SpeculationHandle` from this session's default flow at its
+   * EXACT current position (mid-knot, at a pending choice) — the same
+   * sandboxed, side-effect-proof fork as {@link StoryRunnerHandle.speculate},
+   * same options. Driving it never moves this session; `free()` it to
+   * discard everything it did. A session registers no JS bindings, so the
+   * fork resolves externals through the ink fallback body, never the host. */
+  speculate(options?: SpeculationOptions): SpeculationHandle {
+    return new SpeculationHandle(this.session.speculate(JSON.stringify(options ?? {})));
   }
 
   flowCurrentPath(name: string): string | null {
