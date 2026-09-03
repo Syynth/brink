@@ -4959,3 +4959,24 @@
 - **SCOPE:** moderate
 - **WHAT:** Execution highlights split into two channels that stack on one line. The whole-line TINT is owned by the runtime position — `live`, `paused` (with the gutter arrow), `frame`, and the choice-point set — exactly one per line. The inset left BAR is transient attention: `follow` (solid accent, the line just revealed), `hover` (solid muted, delivered content under the pointer), and `peek` (dashed accent, a forecast, styled as "not yet real", no gutter glyph). `follow`/`hover`/`peek` are bar-only — they carry no tint of their own — and the policy no longer dedupes them against a tinted line. The editor's own active-line (cursor) highlight gets its own colour when it lands on a tinted line, so the two coexist instead of one hiding the other.
 - **WHY:** The bands competed for one channel (the background), so the policy had to pick a winner per line and the debugger's stop marker, the follow band, and any forecast could never show together on the line they all cared about — the stepping case makes this concrete: the paused tint marks the stop, and a hover over Continue/Step must draw its forecast over it. Giving each meaning its own channel makes the rule teachable in one sentence and lets a hovered choice show both its text and its consequence at once.
+
+## Structural rails: rightmost gutter, one compact hover for the whole stack
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (HIR rails gutter, `packages/ink-editor/src/hir-overlay.ts`, studio `editor.css`)
+- **SCOPE:** moderate — presentation of the rails column; the HIR projection it draws from is unchanged
+- **WHAT:** (1) The structural rails column moves to the RIGHT of every
+  other gutter — after line numbers and the play/breakpoint gutter,
+  adjacent to the text. (2) The stacked rails become ONE hover target: a
+  single tooltip for the whole stack at that line, listing each colour
+  with its constituent (knot / stitch / choice / gather / branch name and
+  line range), instead of a tooltip per bar. (3) The lanes pack with no
+  gap between bars, so the column is more compact.
+- **WHY:** Maintainer, 2026-09-03, during the auto-fix drive-it on a
+  real project: "maybe first we can move the structural rails to the
+  right of the current gutter. i'd also like to make them a single hover,
+  which shows each color and its constituents, so it can be a little more
+  compact, and we don't need gaps between them." The per-bar hover made
+  the 3px bars a fiddly target and the gaps spent width on nothing; a
+  single legend-style hover reads the whole nesting at once, and sitting
+  next to the text the rails line up with the structure they describe.
