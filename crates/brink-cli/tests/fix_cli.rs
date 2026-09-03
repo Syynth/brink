@@ -165,9 +165,9 @@ fn suggested_with_explicit_code_list_promotes_just_that_code() {
 
 // ── the project's own `[fix]` table (no CLI flag at all) ──────────────
 //
-// Regression for the review finding on PR #3453: deleting `fix.rs`'s whole
-// `for fixer in FIXERS { match config.effective_fix_policy(...) }` block
-// left every test above still green, because none of them exercises
+// Regression for the review finding on PR #3453: deleting `fix.rs`'s
+// `if let Some(mode) = FixMode::from_config(config.effective_fix_policy(...))`
+// block left every test above still green, because none of them exercises
 // `brink.toml`'s `[fix]` table without also passing `--suggested` (which
 // promotes independently of it). These do not pass `--suggested` at all.
 

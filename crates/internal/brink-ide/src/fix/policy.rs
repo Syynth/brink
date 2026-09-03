@@ -12,8 +12,12 @@
 //!
 //! Where the overrides come *from* is #3419's job (`brink.toml`'s `[fix]`
 //! table and `effective_fix_policy`); this type is the input the batching road
-//! takes, so both roads agree on what "batchable" means without the policy
-//! source being decided here.
+//! takes, so both roads agree on what "batchable" means. The one exception is
+//! the `brink_project_config::FixPolicy -> FixMode` bridge itself
+//! ([`FixMode::from_config`]): both `brink-cli`'s `fix.rs` and
+//! `brink-web`'s `fix_batch.rs` used to hand-roll that three-way mapping
+//! independently (issue #3464), so it now lives here, as the one place it is
+//! decided, rather than being re-derived at each call site.
 //!
 //! [`Applicability::Placeholder`] is never batchable however the policy is
 //! written (§3, "Batchable: never") — a promotion to [`FixMode::Auto`] cannot
