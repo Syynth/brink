@@ -45,7 +45,7 @@ E014 = "off"    # never offer this fixer here
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dry-run` | off | Print the report; write nothing to disk. |
-| `--diff [FILE]` | off | Emit a `git apply`-able unified diff instead of writing — to stdout, or to `FILE` if given. Implies no disk write, like `--dry-run`. |
+| `--diff [FILE]` | off | Emit a `git apply`-able unified diff instead of writing — to stdout, or to `FILE` if given. Implies no disk write, like `--dry-run`. Composes with `--dry-run` rather than one silently overriding the other: the diff still goes to its destination, and the report is printed to **stderr** (never stdout, which must stay a clean patch). A capped run (exit `1`) always prints the report to stderr too, with or without `--dry-run`, so the exit code is never unexplained. |
 | `--suggested [CODES]` | off | Promote the Suggested tier to batchable **for this run only**. Bare, it promotes every Suggested-tier fixer *except one the project's `[fix]` table set to `"off"`* (`off` still means off — a codeless flag isn't the explicit action that widens it); `--suggested E025,E080` names codes explicitly and so wins over `[fix]` for those, even over an `"off"` entry (CLI beats file, like `-D`/`--warn`/`--allow` beat `[lints]`). |
 | `--code CODES` | every code | Restrict the run to these diagnostic codes (comma-separated, e.g. `E025,E080`). An unrecognized code is a hard error, not a silent no-op. |
 | `--placeholder` | off | Also report every Placeholder-tier fix available, on **stderr** — never applied, since a Placeholder fix always leaves a hole. Written to stderr (not stdout) so it never lands inside a `--diff` patch piped to `git apply`. Useful with `--dry-run` to see where an author still needs to fill something in. |
@@ -74,6 +74,11 @@ brink fix story.ink --dry-run
 
 # Get a patch instead of a write — pipe straight into `git apply`.
 brink fix story.ink --diff | git apply
+
+# Preview the patch AND see the report, without piping into git apply —
+# --diff composes with --dry-run: stdout stays a clean patch, the report
+# (fix count, and why a capped run exited 1) goes to stderr.
+brink fix story.ink --diff --dry-run
 
 # Promote every Suggested fixer for one run, without editing brink.toml.
 brink fix story.ink --suggested

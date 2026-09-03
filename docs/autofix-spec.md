@@ -323,12 +323,25 @@ per-code entries) is not built yet. Validated the same way `[lints]`'s value
 is (`"off" | "ask" | "auto"`, a wrong TOML type or an unrecognized spelling
 is a `ConfigError`, never a panic; an unrecognized *code* is accepted here
 regardless — this crate stays dependency-free of the real `DiagnosticCode`
-set, same split `validate_lint_code` uses). The diagnostic `[lints]` raises
-for an unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
-still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to hang
-it off, so it's tracked as a follow-up rather than built here (#3447, to
-land when a fix-policy engine first reads the table and reconciles it with
-milestone 3's type). `ProjectConfig::effective_fix_policy(code,
+set, same split `validate_lint_code` uses).
+
+*As built (#3447):* the diagnostic `[lints]` raises for an unrecognized
+*code* is no longer owed for `[fix]`. `AnalysisOptions::apply_project_config`
+(`brink-analyzer`) gained a `validate_fix_code` sibling to
+`validate_lint_code` — same "resolve against the real `DiagnosticCode` set,
+never silently drop" `ConfigWarning` channel and wording shape, minus
+`validate_lint_code`'s `is_overridable` gate (a fix policy never touches a
+code's severity, so every real code — including an `Error`-default one — is
+eligible to carry one). The check runs over every `[fix]` key inside
+`apply_project_config` itself, which both of `[lints]`'s own reader roads
+already call — `brink_environment::resolve_options` (the compile road) and
+`brink-web`'s `EditorSession::apply_parsed_config` (the studio/db road) —
+so an unrecognized `[fix]` code now warns on the exact same two channels an
+unrecognized `[lints]` code already did, with no new call site needed at
+either of milestone 3's/4's actual consumers
+(`EditorSession::fix_policy`/`brink-cli`'s `fix` subcommand).
+
+`ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix
@@ -409,7 +422,8 @@ anything.
   `source.fixAll.brink` is `fix_all(Select{tiers: [Safe]}, FixPolicy::
   default())` — `[fix]`-table promotion does not reach it yet, since
   reconciling `brink.toml`'s table with `brink_ide::fix::policy::FixPolicy`
-  is #3447's, not built here (§6.1) — run on a private scratch
+  is tracked as issue #3489, not built here (§6.1 covers only `[fix]`-code
+  validation, landed by #3447) — run on a private scratch
   `IdeSession` that mirrors the live project's `AnalysisOptions` and every
   loaded file's current source — **but not its native/ink roots or compile
   entry**: `IdeSession` exposes no root or entry setter, so native module
@@ -549,6 +563,20 @@ see where a hole needs filling by hand without a second invocation. No
 fixer registered today (milestone 6) declares `Applicability::Placeholder`,
 so this listing has no positive-path test yet — tracked as issue #3456,
 alongside the native (`.brink`) write-path fixture gap noted below.
+
+`--diff` composes with `--dry-run` rather than one silently overriding the
+other (issue #3463): the diff still goes to its destination, nothing is
+written, and the report — which `--diff` alone does not print, matching the
+pipeable-patch contract above — is printed to **stderr** when `--dry-run`
+asked for it, same stream as `--placeholder`'s listing and for the same
+reason (stdout must stay a clean `git apply`-able patch). A capped run
+(`Report::cap_hit`, non-zero exit) always prints the report to stderr under
+`--diff` too, `--dry-run` or not — the exit code must never go unexplained.
+`brink-project-config`'s `FixPolicy -> brink_ide::fix::policy::FixMode`
+bridge described two paragraphs up (`Off`/`Auto` recorded, `Ask` elided) is
+a single function, `FixMode::from_config`, that this CLI and the wasm batch
+surface (`brink-web`'s `fix_batch.rs`, §7) both call — it used to be
+hand-rolled identically in each (issue #3464).
 
 The report itself names `applied`/`skipped_overlap` sites by file path only,
 never a line:col: their `FixSite.range` was captured against whichever

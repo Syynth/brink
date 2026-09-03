@@ -1195,9 +1195,9 @@ impl EditorSession {
     /// be one (#2334 review — this restores the pre-#2334 invariant that
     /// `apply_parsed_config` itself never pushes `lints`).
     ///
-    /// Returns the `[lints]`/non-overridable-code warning strings (unknown
-    /// top-level/`[project]` key warnings are the caller's own — parsed
-    /// alongside `config`, not part of it).
+    /// Returns the `[lints]`/non-overridable-code and `[fix]`/unrecognized-
+    /// code warning strings (unknown top-level/`[project]` key warnings are
+    /// the caller's own — parsed alongside `config`, not part of it).
     fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
         // No need to seed `lints` from the session's current policy:
         // `apply_project_config` replaces `.lints` wholesale from `config`
@@ -6224,6 +6224,29 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("E9999"));
+    }
+
+    /// Issue #3447: an unrecognized `[fix]` code is reported through the
+    /// exact same channel as `[lints]`'s own unrecognized-code warning
+    /// above — proving `AnalysisOptions::apply_project_config`'s new
+    /// `[fix]`-code gate (`brink-analyzer`) is wired into
+    /// `@brink-lang/web`'s editor session (the studio's Problems-panel-
+    /// adjacent `onProjectConfigWarnings` road), not merely covered by an
+    /// analyzer-crate unit test. `docs/autofix-spec.md` §6.1 named this
+    /// exact gap as still owed after #3419.
+    #[test]
+    fn apply_project_config_reports_unknown_fix_code_as_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[fix]\nE9999 = \"auto\"\n")
+            .expect("unrecognized fix codes are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1, "{parsed:?}");
+        assert!(parsed[0].contains("E9999"), "{parsed:?}");
+        assert!(
+            parsed[0].contains("[fix]"),
+            "must name the table it came from: {parsed:?}"
+        );
     }
 
     /// Issue #1397: a live editor session re-applying `brink.toml` after a
