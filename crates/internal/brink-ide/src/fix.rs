@@ -157,6 +157,8 @@ pub static FIXERS: &[&dyn Fixer] = &[
     &crate::creation_site_fix::TrimFnLiteralArgsFixer,
     &crate::creation_site_fix::BindRefArgsFixer,
     &crate::value_call_fix::ValueCallArityFixer,
+    &crate::arity_trim_fix::CallArityTrimFixer,
+    &crate::arity_trim_fix::DivertArityTrimFixer,
 ];
 
 /// Run one fixer over one diagnostic, enforcing the per-instance ≤ static-max
@@ -264,6 +266,8 @@ mod tests {
             (DiagnosticCode::E080, obligations::e080_fixture()),
             (DiagnosticCode::E081, obligations::e081_fixture()),
             (DiagnosticCode::E063, obligations::e063_fixture()),
+            (DiagnosticCode::E031, obligations::e031_fixture()),
+            (DiagnosticCode::E176, obligations::e176_fixture()),
         ]
     }
 
@@ -321,12 +325,13 @@ mod tests {
     /// dependency only runs one way. Neither half is optional; see
     /// [`obligations`]'s module doc.
     ///
-    /// No fixer declares `Safe` today (all four migrated ones are
-    /// `Suggested`), so the loop below is currently empty — which is why
-    /// `the_safe_fixture_path_resolves` and `every_fixture_matches_its_fixer`
-    /// sit beside it: without a live fixture to resolve, a typo in the
-    /// fixture path would make this obligation silently unenforceable the day
-    /// the first Safe fixer lands.
+    /// The four migrated fixers (E025/E080/E081/E063) are all `Suggested`;
+    /// `arity_trim_fix`'s `CallArityTrimFixer`/`DivertArityTrimFixer`
+    /// (E031/E176, issue #3428) are the first two to declare `Safe`, so this
+    /// loop now actually iterates. `the_safe_fixture_path_resolves` and
+    /// `every_fixture_matches_its_fixer` stay beside it regardless: without a
+    /// live fixture to resolve, a typo in the fixture path would make this
+    /// obligation silently unenforceable for the *next* Safe fixer.
     #[test]
     fn every_safe_max_fixer_has_a_safe_fixture() {
         for fixer in FIXERS {
@@ -354,9 +359,8 @@ mod tests {
     /// source files and knows nothing about fixers, so a hand-written
     /// `expected.*` would be certified observably equivalent while proving
     /// nothing about the fix. Every registered fixer that has a fixture is
-    /// checked here regardless of its tier — which is what gives the four
-    /// migrated `Suggested` fixers real coverage today, ahead of the first
-    /// `Safe` one.
+    /// checked here regardless of its tier — the four migrated `Suggested`
+    /// fixers and the two `Safe` ones (E031/E176, issue #3428) alike.
     #[test]
     fn every_fixture_matches_its_fixer() {
         let mut checked = 0usize;
