@@ -184,7 +184,7 @@ pub flow main() {
 //
 // ⚠ EVERY diagnostic below is deliberate, and the set is CLOSED: the e2e
 // asserts exact counts against it, and `fixable_fixture` in
-// `crates/brink-web/src/editor/fix_batch.rs` pins the same four sources
+// `crates/brink-web/src/editor/fix_batch.rs` pins the same five sources
 // byte-for-byte through a real `EditorSession`. Change one side and the
 // other goes red — that is the point. The inventory:
 //
