@@ -277,6 +277,15 @@ export function proseExtension(options: ProseOptions): Extension {
         // because the feature landed four days after it was taken). The
         // annotation is the document length, so a run's report says what the
         // duration was paid for.
+        //
+        // What it measures is end-to-end LATENCY, not main-thread time: the
+        // interface is async, and the studio's checker now answers from a
+        // worker, so a multi-second span here is compatible with a main
+        // thread that never blocked. The main-thread half of the question is
+        // `browser.longtask` / `frame.long` — and that is exactly the pair
+        // that moved in #3491's measurement (fast-scroll, same machine: a
+        // 6,382 ms check with a co-located 6,465 ms long task became a
+        // 5,812 ms check with a 184 ms one).
         const endCheck = perfSpan("prose.check");
         let lints: ProseLint[];
         try {

@@ -541,6 +541,30 @@ As landed:
   survived a perf baseline (§11.5's "perf judge" measures what has a
   name).
 
+**Measured, one machine, same session, `?fixture=perf`** — the arms
+differ only in this section's change, with the `prose.check` span present
+in both so the two are directly comparable:
+
+| scenario | arm | `prose.check` | `browser.longtask` p95 / max |
+|---|---|---|---|
+| fast-scroll | before | 6,382 ms | 6,465 / 6,465 ms |
+| fast-scroll | after | 5,812 ms | **184 / 184 ms** |
+| typing-burst | before | 6,608 ms | 543 / 6,689 ms |
+| typing-burst | after | 5,850 ms (p95 of 2) | 460 / **760 ms** |
+
+Read it as: the *check* did not get faster — it got off the thread that
+owns input. `fast-scroll` is the clean isolation, one check with little
+else running: the co-located long task collapses from 6,465 ms to
+184 ms.
+
+`typing-burst`'s **p95 barely moves, and that is not this change
+failing**. Its p95 is set by ~238 per-keystroke long tasks whose p50 is
+already 431–476 ms in both arms — the separate per-keystroke cost
+tracked elsewhere, which prose never contributed to. What this change
+owns there is the *max*: 6,689 ms → 760 ms. Anyone re-running these must
+compare max, or use `fast-scroll`, rather than reading `typing-burst`'s
+p95 as a prose number.
+
 Also in that change, and independent of the worker: `brink-prose`'s
 `check` caches the merged dictionary and the curated `LintGroup` across
 calls (thread-local, invalidated when the project's words or the dialect
