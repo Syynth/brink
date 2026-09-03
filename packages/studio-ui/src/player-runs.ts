@@ -74,6 +74,17 @@ export function foldPlayerRuns(
     let speakerEnded = false;
     for (const idx of run.lines) {
       const row = rows[idx];
+      // A knot/stitch change is a scene boundary the dialect cannot see
+      // (ruled 2026-09-02: the runtime's `currentPath()`, stamped per row):
+      // the speaker's run ends there. Rows without a path (restored
+      // history, the first line from the root) never break.
+      if (idx > 0 && pathBreak(rows[idx - 1].line, row.line)) {
+        if (current) groups.push(current);
+        current = null;
+        // The run's own first row (a cue in the new knot) keeps its speaker;
+        // only rows the OLD run would have carried across lose theirs.
+        if (idx !== run.lines[0]) speakerEnded = true;
+      }
       if (row.line.kind !== "line") {
         if (current) groups.push(current);
         current = null;
@@ -99,13 +110,23 @@ export function foldPlayerRuns(
   const merged: PlayerGroup[] = [];
   for (const g of groups) {
     const last = merged[merged.length - 1];
-    if (last && g.speaker !== null && last.speaker === g.speaker && last.kind === g.kind) {
+    const lastRow = last?.rows[last.rows.length - 1]?.line;
+    const firstRow = g.rows[0]?.line;
+    const sameScene =
+      lastRow === undefined || firstRow === undefined || !pathBreak(lastRow, firstRow);
+    if (last && sameScene && g.speaker !== null && last.speaker === g.speaker && last.kind === g.kind) {
       last.rows.push(...g.rows);
     } else {
       merged.push(g);
     }
   }
   return merged;
+}
+
+/** Whether two consecutive rows come from different knots/stitches — only
+ *  when BOTH know where they came from. */
+function pathBreak(a: TranscriptLine, b: TranscriptLine): boolean {
+  return a.path !== undefined && b.path !== undefined && a.path !== b.path;
 }
 
 /** Deterministic speaker colour: a stable palette index from the name, so
