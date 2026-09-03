@@ -4740,7 +4740,6 @@
 - **SCOPE:** minor/local
 - **WHAT:** Adjacent runs by the same speaker (same kind, nothing between them) fold into one group: the speaker header prints once and the lines flow under it. A run with something in between — an action, a choice echo, narration — keeps its own header.
 - **WHY:** Maintainer, seeing per-line cues render as a header per line: "if we have the CUE be sticky, we should render the speaker cue differently … in this script it's per-line, but if it weren't, we'd still want that." The cue is sticky by the run rule already; the render should read the way a reader experiences it.
-||||||| 46916cbc5
 
 ## A cloned stateful alternative shares one counter, not one body
 - **WHEN:** 2026-09-02
