@@ -44,6 +44,27 @@ function projectionOnce(source: ProjectionSource): () => HirProjection | null {
   };
 }
 
+/** The studio's `getExecutionHighlights` host hook, as the play gutter
+ * consumes it (#3490).
+ *
+ * The seam matters as much as the policy behind it. The gutter asks once
+ * per render, and `getHirProjection` is a synchronous whole-document
+ * `getHirSpansDoc` query — so resolving it at the call site pulls it on
+ * EVERY ask, including the overwhelmingly common "no session" one whose
+ * answer is `[]` regardless. It rides in as a thunk instead, and only the
+ * choice-point branch resolves it.
+ *
+ * Named and exported (the `location-resolvers.ts` pattern this module
+ * already follows) so the WIRING is testable and not just the policy:
+ * inlined at the mount site, an eagerly-evaluated argument here is exactly
+ * the defect #3490 measured, and nothing could have caught it. */
+export function executionHighlightsHook(
+  getState: () => StudioState,
+  getProjection: (path: string) => HirProjection | null,
+): (path: string) => ExecutionHighlight[] {
+  return (path) => executionHighlightsFor(getState(), path, () => getProjection(path));
+}
+
 /** All execution highlights for `path`, from the live session.
  *
  * `projection` (W11/#3304) is the file's HIR overlay — when the session

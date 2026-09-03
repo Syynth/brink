@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { createStudioStore, ALL_CAPABILITIES } from "@brink/studio-store";
-import { executionHighlightsFor } from "../execution-highlights";
+import { executionHighlightsFor, executionHighlightsHook } from "../execution-highlights";
 
 function stateWith(overrides: {
   paused?: boolean;
@@ -375,6 +375,66 @@ describe("the HIR projection is pulled lazily (#3490)", () => {
       pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
     });
     expect(executionHighlightsFor(st, "main.ink", () => null)).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+    ]);
+  });
+});
+
+describe("executionHighlightsHook — the studio's wiring of it (#3490)", () => {
+  // The measured defect was not in the policy but at the CALL SITE: the
+  // mount inlined `documents.getHirProjection(path)` as a plain argument,
+  // so it resolved on every ask no matter which branch the policy took.
+  // These pin the hook the mount now delegates to in full, so the eager
+  // shape cannot come back unnoticed.
+
+  it("does not touch the projection when there is no session", () => {
+    const getProjection = vi.fn(() => projectionFixture());
+    const hook = executionHighlightsHook(
+      () => stateWith({ status: "none" }) as never,
+      getProjection as never,
+    );
+    expect(hook("main.ink")).toEqual([]);
+    expect(getProjection).not.toHaveBeenCalled();
+  });
+
+  it("does not touch the projection while merely running", () => {
+    const getProjection = vi.fn(() => projectionFixture());
+    const hook = executionHighlightsHook(
+      () => stateWith({}) as never,
+      getProjection as never,
+    );
+    expect(hook("main.ink")).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+    ]);
+    expect(getProjection).not.toHaveBeenCalled();
+  });
+
+  it("pulls the projection for the asked-for path, once, at a choice point", () => {
+    const getProjection = vi.fn(() => projectionFixture());
+    const st = stateWith({
+      status: "awaiting-choice",
+      pendingChoices: [{ text: "Go", index: 0, def_id: "$c" }],
+      visitIds: [{ def_id: "$a", count: 1 }],
+    });
+    const hook = executionHighlightsHook(() => st as never, getProjection as never);
+    expect(hook("main.ink")).toEqual([
+      { line: 6, kind: "live" },
+      { line: 2, kind: "rejected", note: "once-only · used" },
+      { line: 4, kind: "rejected", note: "condition false" },
+    ]);
+    expect(getProjection).toHaveBeenCalledTimes(1);
+    expect(getProjection).toHaveBeenCalledWith("main.ink");
+  });
+
+  it("reads the store per ask — the hook is built once, the state is not", () => {
+    let status = "none";
+    const hook = executionHighlightsHook(
+      () => stateWith({ status }) as never,
+      (() => null) as never,
+    );
+    expect(hook("main.ink")).toEqual([]);
+    status = "running";
+    expect(hook("main.ink")).toEqual([
       { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
     ]);
   });

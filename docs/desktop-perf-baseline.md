@@ -400,6 +400,23 @@ per visible line — with `input.keydown` p50 at 48 ms. No session was
 running; every one of those queries computed an answer that could only
 ever be `[]`.
 
+Reproduced and fixed against the in-repo scenario runner (`pnpm --filter
+@brink-lang/studio test:perf`, `typing-burst` on `?fixture=perf`, same
+machine, fix reverted vs applied — this box is slower than the box the
+`?fixtureUrl` numbers above came from, so read the ratios, not the
+absolutes):
+
+| span | before | after |
+|---|---|---|
+| `wasm.getHirSpansDoc` count | 6,964 | **0 — never called** |
+| `input.keydown` p50 / p95 | 424 / 528 ms | **32 / 32 ms** |
+| `cm.dispatch.view` p50 / p95 | 390.9 / 494.7 ms | **6.7 / 8.4 ms** |
+
+The count going to zero (not merely down) is the shape of the fix: with no
+session running there is no branch that can use the projection, so nothing
+pulls it. Note that `?fixture=perf` DOES reproduce the pathology — the
+issue's opening measurement suggested it did not.
+
 Two contracts come out of it, and both are pinned by tests:
 
 1. **A gutter's `lineMarker` runs once per visible line, so it must not
@@ -414,11 +431,17 @@ Two contracts come out of it, and both are pinned by tests:
    20- / 60-line documents; post-fix, 1).
 2. **`executionHighlightsFor` takes the HIR projection as a thunk.** Only
    the choice-point branch reads it; "no session", "ended", "error",
-   "degraded" and plain "running" all answer without it. The studio passes
-   `() => documents.getHirProjection(path)` so the synchronous
-   whole-document pull happens on that branch alone. Pinned by
-   `packages/brink-studio/src/__tests__/execution-highlights.test.ts`
-   ("the HIR projection is pulled lazily").
+   "degraded" and plain "running" all answer without it, so the synchronous
+   whole-document pull happens on that branch alone. The studio's side of
+   the seam is `executionHighlightsHook(getState, getProjection)` — a named
+   export rather than an arrow inlined in `mountStudio`, because the defect
+   was never in the policy but in the *call site* evaluating its argument
+   eagerly, and inline there was nothing a test could hold. `mount.tsx` now
+   delegates to it whole. Pinned by
+   `packages/brink-studio/src/__tests__/execution-highlights.test.ts` ("the
+   HIR projection is pulled lazily" for the policy, "the studio's wiring of
+   it" for the hook — the latter goes red if the argument is made eager
+   again).
 
 Deliberately NOT changed: `DocumentHandle.hirProjection()`'s dirty-stash
 fallback still takes the synchronous main-thread road rather than serving
