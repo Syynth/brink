@@ -10,9 +10,10 @@
 //! by diagnostic code, `excluded_codes` withdraws codes the caller's own
 //! diagnostic surface does not show (`[lints] X = "allow"` — issue #3459),
 //! `tiers` by the offered fix's [`Applicability`], and
-//! `range` to one file's byte range. All three absent means the whole
-//! compilation, every code, every tier — the `brink fix` / LSP `fixAll`
-//! selection. `Select::at_offset` is the cursor-menu selection the
+//! `range` to one file's byte range. All four unset — `codes`, `tiers` and
+//! `range` absent, `excluded_codes` empty — means the whole compilation,
+//! every code, every tier — the `brink fix` / LSP `fixAll` selection.
+//! `Select::at_offset` is the cursor-menu selection the
 //! [`fixes_at`](super::fixes_at) pull already implements.
 
 use brink_db::ProjectDb;

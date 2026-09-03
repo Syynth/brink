@@ -849,6 +849,43 @@ Score is {score}.
         assert_eq!(session.fixes_at_path("main.ink", offset), "[]");
     }
 
+    /// §5 names TWO suppression channels: a `[lints]` `"allow"` code (the
+    /// test above) and an inline `// brink-disable` directive. The cursor
+    /// menu must agree with the Problems panel on both, not just the first
+    /// (review finding on #3459: `fixes_at_impl` filtered the `[lints]`
+    /// channel but never ran `apply_suppressions`, so a line-suppressed
+    /// `E014` had no Problems row yet still offered its Fix button here).
+    #[test]
+    fn the_cursor_menu_offers_nothing_for_a_line_suppressed_code() {
+        const DISABLED: &str = "\
+VAR score = 0
+Hello.
+// brink-disable E014
+~
+~ score = score + 1
+Score is {score}.
+-> DONE
+";
+        let mut session = EditorSession::new();
+        session.update_file("main.ink", DISABLED);
+        assert!(session.set_active_file("main.ink"));
+
+        let visible = problem_codes(&mut session, "main.ink");
+        assert!(
+            !visible.contains(&"E014".to_owned()),
+            "the panel must not show a line-suppressed code: {visible:?}"
+        );
+
+        let at = DISABLED.find("~\n");
+        assert!(at.is_some(), "fixture must carry the empty logic line");
+        let offset = u32::try_from(at.expect("just asserted above")).expect("offset");
+        assert_eq!(
+            session.fixes_at_path("main.ink", offset),
+            "[]",
+            "the cursor menu must not offer a fix the Problems panel hides"
+        );
+    }
+
     /// Only the allowed code is withdrawn — the rest of the batch is
     /// untouched, so "Fix all safe (N)" drops by exactly the allowed code's
     /// share rather than collapsing.
