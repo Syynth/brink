@@ -106,11 +106,10 @@ impl EditorSession {
     /// keyed by code, and a code absent from `[fix]` would fall through to
     /// its tier default and stay batchable.
     ///
-    /// The mapping is deliberately NOT one-to-one. `brink-project-config`'s
-    /// `Ask` means "this project says nothing special", which per §6.1 still
-    /// leaves a Safe fixer batchable — so it becomes *no override* rather
-    /// than [`FixMode::Ask`], which would demote every Safe fix in the
-    /// project. Only `Off` and `Auto` are recorded.
+    /// The mapping is deliberately NOT one-to-one — see
+    /// [`FixMode::from_config`], the one shared bridge both this module and
+    /// `brink-cli`'s `fix.rs` call, for why `Ask` elides to *no override*
+    /// rather than [`FixMode::Ask`].
     fn fix_policy(&self, ceiling: Option<ConfigFixPolicy>) -> Option<FixPolicy> {
         if ceiling == Some(ConfigFixPolicy::Off) {
             return None;
@@ -125,10 +124,13 @@ impl EditorSession {
                 // Surfacing it as a diagnostic is #3447's job.
                 continue;
             };
-            match self.configured_fix_policy_for(code, ceiling) {
-                ConfigFixPolicy::Off => policy.set(parsed, FixMode::Off),
-                ConfigFixPolicy::Auto => policy.set(parsed, FixMode::Auto),
-                ConfigFixPolicy::Ask => {}
+            // `FixMode::from_config` is the one place `brink_project_config`'s
+            // `Off`/`Auto`/`Ask` maps onto `brink_ide`'s own `FixMode` (issue
+            // #3464: this bridge used to be hand-rolled here and
+            // independently in `brink-cli`'s `fix.rs`).
+            if let Some(mode) = FixMode::from_config(self.configured_fix_policy_for(code, ceiling))
+            {
+                policy.set(parsed, mode);
             }
         }
         Some(policy)
