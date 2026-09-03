@@ -34,7 +34,8 @@ fn session(files: &[(&str, &str)]) -> IdeSession {
 
 /// `town.ink` before the batch: it reaches into two other modules without
 /// importing either. Both fixes insert an import at the same offset — just
-/// below the `#@module` header, above the `INCLUDE` block — so they collide.
+/// below the `INCLUDE` block that follows the `#@module` header (#3448) —
+/// so they collide.
 ///
 /// The `INCLUDE`s are what let `brink compile` see the same two `E025`s the db
 /// road reports here — the reachability check on #3418 compiles this exact

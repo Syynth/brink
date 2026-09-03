@@ -162,7 +162,10 @@ pub fn import_edit(
 
 /// The byte offset (at the start of a line) at which to insert the new
 /// `IMPORT` line: after an existing `IMPORT` block, else after the `INCLUDE`
-/// block, else at the top below any leading comment / `#@module` header.
+/// block, else at the top below any leading comment / `#@module` header —
+/// where the header scan also steps over a leading `INCLUDE` run, so a
+/// module-headed file with no imports gets its first `IMPORT` below its
+/// `INCLUDE`s, not between the header and them (#3448).
 fn insertion_byte(hir: &brink_ir::HirFile, source: &str) -> usize {
     if let Some(span) = import_block_span(hir, source) {
         line_start_byte(source, span.end_line + 1)
@@ -255,6 +258,18 @@ mod tests {
         assert_eq!(
             out,
             "INCLUDE a.ink\nINCLUDE b.ink\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
+        );
+    }
+
+    #[test]
+    fn inserts_below_include_block_under_a_module_header() {
+        // #3448: the exact shape the issue is about — header, INCLUDEs, no
+        // imports. The new IMPORT must land after both INCLUDEs.
+        let src = "#@module(town)\nINCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n";
+        let out = applied(src, "quest_3", "ambush", false).expect("edit");
+        assert_eq!(
+            out,
+            "#@module(town)\nINCLUDE a.ink\nINCLUDE b.ink\nIMPORT { ambush } FROM quest_3\n== hub ==\n"
         );
     }
 
