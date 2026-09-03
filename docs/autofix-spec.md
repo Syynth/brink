@@ -359,6 +359,54 @@ anything.
   half exists, because the currency change forced it — the three migrated
   fixers would otherwise have gone dark over LSP. `diagnostics: [d]` and
   `source.fixAll.brink` remain this surface's own milestone.
+  *As built (#3422, milestone 7):* both remaining halves. `fix_code_actions`
+  inlines the diagnostic-dispatch loop `fixes_at` runs (rather than calling
+  it) so it can pair each collapsed `Fix` with the diagnostic that produced
+  it, and attaches that as the action's single-element `diagnostics`. Two
+  independent suppression paths both apply before a fix is ever offered,
+  matching what the Problems panel shows: the diagnostic list is run
+  through `brink_ir::suppressions::apply_suppressions` first (a
+  `// brink-disable-file`/`@[allow(…)]`-suppressed diagnostic is dropped
+  outright, same as `brink_ide::fix::batch::collect` and the publish path),
+  and each survivor's action is skipped when `convert::diagnostic_to_lsp`
+  (the same conversion the Problems-panel road uses) returns `None` for a
+  `[lints] allow`-leveled code (#3173).
+  `source.fixAll.brink` is `fix_all(Select{tiers: [Safe]}, FixPolicy::
+  default())` — `[fix]`-table promotion does not reach it yet, since
+  reconciling `brink.toml`'s table with `brink_ide::fix::policy::FixPolicy`
+  is #3447's, not built here (§6.1) — run on a private scratch
+  `IdeSession` that mirrors the live project's `AnalysisOptions` and every
+  loaded file's current source — **but not its native/ink roots or compile
+  entry**: `IdeSession` exposes no root or entry setter, so native module
+  identity in the scratch mints from each file's full absolute path rather
+  than the live project's mounted root, and with no entry configured, fix
+  selection falls back to every loaded file (including the mounted stdlib)
+  instead of the live compile closure. The fixes computed here can
+  therefore diverge from what the live diagnostics show; closing that gap
+  is tracked as issue #3458, which milestone 8 must land before the first
+  `Safe` fixer makes this path live. **Never the live db** either way: a
+  `codeAction` request fires continually to populate a client's lightbulb
+  menu, not only right before an edit is accepted, so a batching pass that
+  mutated the live project here would silently pre-fix files whose open
+  buffers had not actually changed. The fixpoint's final state is reduced
+  to one whole-file `TextEdit` per changed file (not a minimal per-line
+  diff) — simple and always valid, at the cost of not preserving an
+  unrelated concurrent edit to the same file made between the request and
+  the client applying it, the same trade-off any whole-document formatter
+  edit already accepts; a file whose path can't round-trip through
+  `Url::from_file_path` or whose length overflows `u32` abandons the whole
+  batch (`return None`) rather than shipping a `WorkspaceEdit` with the
+  rest silently applied. The action itself is computed only when a
+  `codeAction` request's `context.only` explicitly names
+  `source.fixAll.brink` (or a shared prefix, `"source"`/`"source.fixAll"`),
+  and even then only after a cheap check — no scratch session is built at
+  all — that some registered fixer's `max_applicability` admits the
+  selected tiers; the whole-compilation pass itself is too expensive to pay
+  on every unfiltered lightbulb-menu request, and VS Code's own
+  fix-on-save always sends that filter. No registered fixer declares
+  `Safe` yet (§9's first-wave candidates are a later milestone), so
+  `source.fixAll.brink` is a correct no-op today — it starts batching the
+  moment the first one lands, once #3458 also closes.
 - **wasm DTO** (`@brink-lang/web`): `FixJs { code, title,
   applicability, edits: FileEditJs[], caret? }`. *As built (#3377):*
   `fixes_at` / `fixes_at_doc` return it (offsets are UTF-16 file-absolute,
@@ -383,6 +431,62 @@ flags and modes.
 Exit status: 0 when the fixpoint is reached, non-zero when the round
 cap hit or a fixer failed to discharge its diagnostic (the report names
 it).
+
+*As built (#3421, milestone 6):* `PROJECT|ENTRY` is one positional entry
+file, exactly `brink compile`'s own addressing — `brink-cli`'s own
+`crate::ide::project::Project::load` (already shared by `brink ide`;
+`brink_ide` itself has no `Project` type) discovers `brink.toml` from the
+entry's directory and follows `INCLUDE`s (or the native module graph); a
+bare file with no discovered `brink.toml` is the same code path with an
+empty `ProjectConfig`, not a second mode. `--suggested` takes an *optional*
+value rather than the sketch's required list: bare, it promotes every
+Suggested-max fixer in the registry for this run *except one the project's
+`brink.toml` `[fix]` table explicitly sets to `"off"`* — `off` means never
+offer or batch a fixer for this code in this project
+(`docs/book/src/toolchain/project-config.md` §Fix policy), and a codeless
+flag is not the "explicit action" that widens it; `--suggested E025,E080`
+names codes explicitly, and naming a code *is* that explicit action, so it
+wins over `[fix]` for those codes even over an `"off"` entry — the same
+`CLI/API > file > default` precedence (#1005) `-D`/`--warn`/`--allow` follow
+over `[lints]`, and exactly `--suggested E033`, §6.2's own sanctioned
+widening example (a code-explicit form, not the bare one).
+`ProjectConfig::effective_fix_policy`'s `Ask` (`docs/autofix-spec.md` §6.1's
+neutral value, returned identically for an absent entry and an explicit
+`= "ask"`) is deliberately **not** recorded as a `brink_ide::fix::policy::
+FixPolicy` override — doing so would force a Safe-max fixer down to
+non-batchable, which the TOML comment's own "absent ⇒ ask: … batchable
+(Safe)" rules out; only `Off`/`Auto` become overrides.
+
+One flag beyond the sketch: `--placeholder` lists every `Applicability::
+Placeholder` fix available in the selection (code, location, title), on
+**stderr** — never stdout, so it can never land inside a `--diff` patch
+piped straight to `git apply` — alongside whichever of `--dry-run`/`--diff`/
+the default write already ran; never applied, since `FixPolicy::admits`
+refuses `Placeholder` unconditionally (§3) however a project's `[fix]` table
+is written. It exists so an author (or a CI step driving `--dry-run`) can
+see where a hole needs filling by hand without a second invocation. No
+fixer registered today (milestone 6) declares `Applicability::Placeholder`,
+so this listing has no positive-path test yet — tracked as issue #3456,
+alongside the native (`.brink`) write-path fixture gap noted below.
+
+The report itself names `applied`/`skipped_overlap` sites by file path only,
+never a line:col: their `FixSite.range` was captured against whichever
+round's source was current *then*, and a later round's own edits shift
+every offset after it — resolving a stale range against the final source
+would print a confidently wrong position. `remaining` (recomputed once,
+after the loop, against the session's then-current source) is the only
+bucket a line:col is safe to render from.
+
+Out of scope for milestone 6: `resolve_fs_path`'s native (`.brink`)
+write-path branch (`crate::ide::project::resolve_fs_path`, `ide/project.rs`)
+rejoins a discovered key against `native_source_root(entry)` rather than
+treating it as cwd-relative — the branch a nested `.brink` project (a
+`brink.toml` above `entry`'s own directory) takes. Every fixture this
+milestone ships (`tests/fix/E025`) is `.ink`, so `brink fix`'s own tests
+only ever exercise the identity (cwd-relative) branch; there is no `.brink`
+sibling fixture proving the write actually lands on the real file rather
+than a phantom cwd-relative path. Tracked as issue #3456 alongside the
+`--placeholder` coverage gap above.
 
 ## 9. First-wave membership
 
