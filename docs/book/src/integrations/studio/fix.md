@@ -26,7 +26,9 @@ before you click it:
   automatically (see [Policy](#policy-the-fix-table-in-brinktoml) below).
 - **Placeholder** — the fix can't complete the thought for you; it removes
   the ambiguity and drops your cursor where you still need to type
-  something. Placeholder fixes are never batched.
+  something. Placeholder fixes are never batched. The studio's tier button
+  doesn't show this wire spelling to authors — it reads **Needs input**
+  instead (see [Where fixes appear](#where-fixes-appear) below).
 
 A fix never appears for a diagnostic it can't actually clear, and applying
 one always re-runs analysis — if a fix doesn't make its own diagnostic go
@@ -78,7 +80,7 @@ A project can adjust the default tier behavior per diagnostic code with a
 
 ```toml
 [fix]
-E033 = "auto"   # promote a Suggested fix to batch automatically in this project
+E025 = "auto"   # promote a Suggested fix to batch automatically in this project
 E014 = "off"    # never offer this fixer here
 # a code left out of the table keeps its tier's default:
 #   Safe -> batched automatically, Suggested -> offered per click, Placeholder -> never batched
@@ -105,10 +107,10 @@ otherwise unrelated.
 
 These are the diagnostic codes that currently ship a **Safe**-tier fixer —
 the ones "Fix all safe", fix-on-save, and `source.fixAll.brink` will batch
-without asking. (Suggested- and Placeholder-tier fixers exist too — E025,
-E063, E080, and E081 today — but a one-at-a-time click is expected for
-those, so they're left out of this list; see `docs/autofix-spec.md` §9 for
-the full registry.)
+without asking. (Suggested-tier fixers exist too — E025, E063, E080, and
+E081 today — but a one-at-a-time click is expected for those, so they're
+left out of this list; no Placeholder-tier fixer ships yet. See
+`docs/autofix-spec.md` §9 for the full registry.)
 
 | Code | What it fixes |
 |------|----------------|
