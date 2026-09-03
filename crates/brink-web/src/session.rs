@@ -1,10 +1,13 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_format::Value;
 use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+
+use crate::speculation::WebSpeculation;
 
 use crate::external_binding::{BusyGuard, reentrant_error};
 use crate::program_model;
@@ -925,6 +928,43 @@ impl WebSession {
             .borrow()
             .as_ref()
             .is_some_and(|s| s.story().did_safe_exit())
+    }
+
+    /// Fork a `WebSpeculation` from this session's default flow at its EXACT
+    /// current position (mid-knot, at a pending choice) — the sandboxed,
+    /// side-effect-proof fork `StoryRunner::speculate` gives, with the same
+    /// options JSON. Driving it never moves this session; drop it to discard
+    /// everything it did. The peek behind the Player's hover forecasts
+    /// (ruled 2026-09-03) is one `advance` on this.
+    ///
+    /// A `WebSession` registers no JS bindings, so a speculation forked here
+    /// resolves externals exactly as the session does: through the ink
+    /// fallback body, never a host call.
+    pub fn speculate(&self, options_json: &str) -> Result<WebSpeculation, JsError> {
+        let crate::speculation::SpeculateOptions {
+            budget,
+            context,
+            kinds,
+            live_effects,
+        } = crate::speculation::parse_speculate_options(options_json)?;
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        Ok(WebSpeculation {
+            program: Arc::clone(&self.program),
+            speculation: RefCell::new(session.story().speculate()),
+            budget,
+            bindings: RefCell::new(HashMap::new()),
+            lenient_unbound: false,
+            kinds,
+            context,
+            live_effects,
+            pending_promise: RefCell::new(None),
+            busy: Cell::new(false),
+            externals_live: RefCell::new(Vec::new()),
+            externals_fallback: RefCell::new(Vec::new()),
+        })
     }
 
     // ── Turn-boundary mutations (journaled) ──────────────────────
@@ -1920,6 +1960,51 @@ mod debug_control_tests {
             }
         }
         assert!(found, "the included line never arrived");
+    }
+
+    // ── Peek (ruled 2026-09-03): a fork from the live position ──────────
+    #[test]
+    fn a_session_speculation_forks_the_exact_position_and_never_moves_the_session() {
+        let src = "-> hall\n=== hall ===\nA voice.\n* [Answer]\n    -> hub\n=== hub ===\nBack in the hub.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let _ = session.continue_single().expect("A voice.");
+        let at_choice = json(&session.continue_single().expect("choices"));
+        assert_eq!(
+            at_choice["type"],
+            serde_json::json!("choices"),
+            "{at_choice}"
+        );
+        assert_eq!(session.current_path().as_deref(), Some("hall"));
+
+        let fork = session.speculate("").expect("fork");
+        assert_eq!(fork.current_path().as_deref(), Some("hall"));
+        fork.choose(0).expect("choose in the fork");
+        let line = json(&fork.advance().expect("advance the fork"));
+        assert_eq!(line["type"], serde_json::json!("text"), "{line}");
+        assert!(
+            line["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Back in the hub.")
+        );
+        let start = line["source"]["range_start"]
+            .as_u64()
+            .expect("source rides along");
+        let end = line["source"]["range_end"].as_u64().expect("range_end");
+        assert!(
+            src[usize::try_from(start).expect("usize")..usize::try_from(end).expect("usize")]
+                .contains("Back in the hub.")
+        );
+        assert_eq!(fork.current_path().as_deref(), Some("hub"));
+
+        // The live session is exactly where it was: still at the choice, in `hall`.
+        assert_eq!(session.current_path().as_deref(), Some("hall"));
+        let snap = json(&session.debug_snapshot().expect("snapshot"));
+        assert_eq!(
+            snap["pending_choices"].as_array().map(Vec::len),
+            Some(1),
+            "{snap}"
+        );
     }
 
     // ── W7/#3300: transcript provenance ─────────────────────────────────

@@ -88,6 +88,7 @@ import type {
   SessionJournal,
   ProjectSource,
   SessionLine,
+  SourceLocation,
   StepMode,
   StructuralTranscript,
 } from "@brink/wasm-types";
@@ -101,6 +102,7 @@ import {
   transcriptLine,
   transcriptNotice,
   type DebugSessionProvider,
+  type PeekResult,
   type TranscriptLine,
   type ProviderCallbacks,
   type SessionCapability,
@@ -1054,6 +1056,50 @@ export class LocalSessionProvider implements DebugSessionProvider {
       return fn();
     } catch {
       return null;
+    }
+  }
+
+  // ── Peek (ruled 2026-09-03) ───────────────────────────────────────
+  //
+  // Fork the live session at its exact position (`speculate()` — the F4
+  // sandboxed clone-run-drop), run ONE continue call on the fork, report
+  // what it hit, free the fork. Never the auto run; externals stay
+  // sandboxed (the fork takes the ink fallback body, so a forecast may
+  // differ from the real press where an external would have answered —
+  // accepted). The path is read BEFORE the advance, exactly as a
+  // transcript row's is stamped.
+
+  peekContinue(): PeekResult | null {
+    if (!sessionCanContinue(this.status)) return null;
+    return this.peek(null);
+  }
+
+  peekChoice(index: number): PeekResult | null {
+    if (this.status !== "awaiting-choice") return null;
+    return this.peek(index);
+  }
+
+  private peek(choice: number | null): PeekResult | null {
+    const session = this.session;
+    if (!session) return null;
+    // One visible line is all a peek needs; the budget caps a runaway fork.
+    const fork = this.capture(() => session.speculate({ lines: 2 }));
+    if (!fork) return null;
+    try {
+      if (choice !== null) fork.choose(choice);
+      const path = fork.currentPath();
+      const line = fork.advance();
+      const sources: SourceLocation[] = [];
+      if (line.type === "text") {
+        if (line.source) sources.push(line.source);
+      } else if (line.type === "choices") {
+        for (const c of line.choices ?? []) if (c.source) sources.push(c.source);
+      }
+      return { sources, path };
+    } catch {
+      return null;
+    } finally {
+      fork.free();
     }
   }
 

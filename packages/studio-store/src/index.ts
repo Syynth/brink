@@ -226,6 +226,11 @@ export {
   isDebugSessionProvider,
   type DebugSessionProvider,
 } from "./slices/debug.js";
+export {
+  isPeekSessionProvider,
+  type PeekResult,
+  type PeekSessionProvider,
+} from "./session/types.js";
 
 // Runtime save/load (W14/#3307): the checkpoint-store seam. The
 // localStorage factory is the web default; desktop replaces via mount.

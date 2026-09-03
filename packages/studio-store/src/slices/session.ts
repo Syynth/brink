@@ -48,6 +48,7 @@ import {
   type SessionStatus,
 } from "../session/types.js";
 import { LocalSessionProvider } from "../session/local-provider.js";
+import { isPeekSessionProvider } from "../session/types.js";
 import type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 export type { ProvenancePoint, TranscriptLine } from "../session/types.js";
 
@@ -121,6 +122,18 @@ export interface SessionSlice {
   /** The source of the transcript row under the pointer (#3437): the
    *  editor bands it with the hover band, distinct from the follow band. */
   sessionHoverSource: SourceLocation | null;
+  /** Peek (ruled 2026-09-03): the sources one forecast continue call
+   *  would hit — set while Continue or a choice card is hovered, cleared
+   *  on leave and whenever the transcript moves (the forecast is for the
+   *  state it was taken in). `null` = no forecast showing. */
+  sessionPeek: SourceLocation[] | null;
+  /** Forecast what pressing Continue delivers next (no-op without the
+   *  `peek` capability, or when Continue cannot be pressed). */
+  peekContinue(): void;
+  /** Forecast what picking choice `index` delivers first. */
+  peekChoice(index: number): void;
+  /** Drop the forecast. */
+  clearPeek(): void;
   setSessionHoverSource(source: SourceLocation | null): void;
   /** Player reading knobs (#3438, app scope, persisted with the Player
    *  settings). Empty string / 0 = the theme's default; the CSS variable
@@ -352,6 +365,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     followInEditor: true,
     followPaused: false,
     sessionHoverSource: null,
+    sessionPeek: null,
     playerFontSize: 0,
     playerFontFamily: "",
     playerLineHeight: 0,
@@ -417,6 +431,22 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
     setFollowPaused(paused) {
       if (get().followPaused !== paused) set({ followPaused: paused });
+    },
+
+    peekContinue() {
+      const provider = get()._provider;
+      if (!provider || !isPeekSessionProvider(provider)) return;
+      const result = provider.peekContinue();
+      set({ sessionPeek: result && result.sources.length > 0 ? result.sources : null });
+    },
+    peekChoice(index) {
+      const provider = get()._provider;
+      if (!provider || !isPeekSessionProvider(provider)) return;
+      const result = provider.peekChoice(index);
+      set({ sessionPeek: result && result.sources.length > 0 ? result.sources : null });
+    },
+    clearPeek() {
+      if (get().sessionPeek !== null) set({ sessionPeek: null });
     },
 
     setSessionHoverSource(source) {
@@ -650,6 +680,12 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionStatus: snap.status,
     sessionText: snap.transcript.map((l) => l.text),
     sessionLines: snap.transcript,
+    // A forecast is for the state it was taken in: the transcript moving
+    // drops it (the Player re-peeks while the pointer stays).
+    sessionPeek:
+      snap.transcript === s.sessionLines && snap.status === s.sessionStatus
+        ? s.sessionPeek
+        : null,
     sessionReloadedAt: snap.reloadedAt,
     sessionChoices: snap.choices,
     sessionAuto: snap.auto,

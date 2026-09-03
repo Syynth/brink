@@ -286,6 +286,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const followPaused = useStudioStore((s) => s.followPaused);
   const setFollowInEditor = useStudioStore((s) => s.setFollowInEditor);
   const setSessionHoverSource = useStudioStore((s) => s.setSessionHoverSource);
+  // Peek (ruled 2026-09-03): hovering Continue / a choice card forecasts
+  // what that press would hit, in the editor.
+  const peekContinue = useStudioStore((s) => s.peekContinue);
+  const peekChoice = useStudioStore((s) => s.peekChoice);
+  const clearPeek = useStudioStore((s) => s.clearPeek);
+  const [continueHovered, setContinueHovered] = useState(false);
   const showProvenance = useStudioStore((s) => s.showProvenance);
   const showChoiceMarkers = useStudioStore((s) => s.showChoiceMarkers);
   const lines = useStudioStore((s) => s.sessionLines);
@@ -510,6 +516,32 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const handleContinue = useCallback(() => {
     commands.dispatch("story.continue");
   }, [commands]);
+
+  // The forecast follows the state: while Continue stays hovered across a
+  // press, the transcript moving drops the old peek and this takes a new
+  // one (mirror() clears; this re-peeks).
+  useEffect(() => {
+    if (!continueHovered) return;
+    if (choices.length > 0) {
+      clearPeek();
+      return;
+    }
+    peekContinue();
+  }, [continueHovered, lines.length, status, choices.length, peekContinue, clearPeek]);
+  const hoverChoice = useCallback(
+    (choice: Choice | null) => {
+      if (choice === null) {
+        setSessionHoverSource(null);
+        clearPeek();
+        return;
+      }
+      // Both at once (ruled 2026-09-03): the card's own text as delivered-
+      // content hover, the line picking it leads to as a peek.
+      setSessionHoverSource(choice.source ?? null);
+      peekChoice(choice.index);
+    },
+    [setSessionHoverSource, clearPeek, peekChoice],
+  );
 
   const handleStart = useCallback(() => {
     commands.dispatch("story.start");
@@ -973,6 +1005,13 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 <button
                   className="player-choice player-continue player-flip-face is-front"
                   onClick={handleContinue}
+                  onMouseEnter={() => {
+                    setContinueHovered(true);
+                  }}
+                  onMouseLeave={() => {
+                    setContinueHovered(false);
+                    clearPeek();
+                  }}
                 >
                   <span className="player-choice-text">Continue</span>
                 </button>
@@ -983,6 +1022,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   showMarker={showChoiceMarkers}
                   className="player-flip-face is-back"
                   onPick={handleChoice}
+                  onHover={hoverChoice}
                 />
               ) : (
                 <div className="player-choice player-flip-face is-back" aria-hidden="true">
@@ -998,6 +1038,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 className="player-spine-node player-choice-extra"
                 style={{ animationDelay: `${(420 + i * 90).toString()}ms` }}
                 onPick={handleChoice}
+                onHover={hoverChoice}
               />
             ))}
           </div>
@@ -1016,12 +1057,15 @@ function ChoiceCard({
   className,
   style,
   onPick,
+  onHover,
 }: {
   choice: Choice;
   showMarker: boolean;
   className: string;
   style?: CSSProperties;
   onPick: (index: number) => void;
+  /** Pointer enters (`choice`) / leaves (`null`) the card. */
+  onHover?: (choice: Choice | null) => void;
 }) {
   return (
     <button
@@ -1032,6 +1076,8 @@ function ChoiceCard({
       }
       style={style}
       onClick={() => onPick(choice.index)}
+      onMouseEnter={onHover ? () => onHover(choice) : undefined}
+      onMouseLeave={onHover ? () => onHover(null) : undefined}
     >
       {choice.sticky !== undefined && showMarker && (
         <span className="player-choice-mark" aria-hidden="true">

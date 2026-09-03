@@ -123,8 +123,37 @@ describe("executionHighlightsFor — follow and hover bands (#3437)", () => {
       },
       "main.ink",
     );
-    // Follow lands first on the same lines, so the hover dedupes against it.
-    expect(out).toEqual([{ line: 87, endLine: 89, kind: "follow" }]);
+    // Bars stack (ruled 2026-09-03): follow AND hover both band the lines.
+    expect(out).toEqual([
+      { line: 87, endLine: 89, kind: "follow" },
+      { line: 87, endLine: 89, kind: "hover" },
+    ]);
+  });
+
+  it("peek bands each forecast source; bars stack on a tinted line instead of deduping", () => {
+    // Playing with a resolvable position: line 5 carries the live tint.
+    const st = stateWith({ status: "running" });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [{ text: "One", kind: "line" as const, tags: [], source: src }],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: null,
+        sessionPeek: [
+          { file: "main.ink", range_start: 10, range_end: 20 },
+          { file: "other.ink", range_start: 10, range_end: 20 },
+        ],
+        _resolveSourceBytes: ((file: string, start: number) =>
+          file === "main.ink" ? { line: 4, endLine: 4, start, end: start + 5 } : null) as never,
+      },
+      "main.ink",
+    );
+    expect(out).toEqual([
+      { line: 5, kind: "live", rangeStart: 100, rangeLen: 12 },
+      { line: 5, kind: "follow" },
+      { line: 5, kind: "peek" },
+    ]);
   });
 });
 

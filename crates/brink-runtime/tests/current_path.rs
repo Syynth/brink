@@ -93,3 +93,36 @@ fn current_path_after_a_choice_is_the_offering_knot() -> Res<()> {
     assert_eq!(before, vec![Some("hall"), Some("hub")]);
     Ok(())
 }
+
+/// Every external takes its ink fallback body — a peek never calls the host.
+struct Fallback;
+impl brink_runtime::ExternalFnHandler for Fallback {
+    fn call(&self, _name: &str, _args: &[brink_format::Value]) -> brink_runtime::ExternalResult {
+        brink_runtime::ExternalResult::Fallback
+    }
+}
+
+/// A speculation forked from the live story answers the same query over
+/// its own forked position (peek, ruled 2026-09-03): it starts where the
+/// story is, moves with the fork's own advances, and the live story never
+/// moves with it.
+#[test]
+fn a_speculation_reports_its_own_current_path() -> Res<()> {
+    let src = "-> hall\n=== hall ===\nA voice.\n* [Answer]\n    -> hub\n=== hub ===\nBack in the hub.\n-> END\n";
+    let mut story = story_from_source(src)?;
+    let _ = walk(&mut story)?; // at the choice point, in `hall`
+    let handler = Fallback;
+    let mut fork = story.speculate();
+    assert_eq!(fork.current_path().as_deref(), Some("hall"));
+    fork.choose(0)?;
+    assert_eq!(fork.current_path().as_deref(), Some("hall"));
+    let step = fork.advance(brink_runtime::Budget::default(), &handler)?;
+    let brink_runtime::SpeculationStep::Step(Step::Line(line)) = step else {
+        return Err("expected the hub's line".into());
+    };
+    assert_eq!(line.text.trim(), "Back in the hub.");
+    assert_eq!(fork.current_path().as_deref(), Some("hub"));
+    // The live story did not move.
+    assert_eq!(story.current_path().as_deref(), Some("hall"));
+    Ok(())
+}

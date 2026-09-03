@@ -162,6 +162,10 @@ export interface Line {
   choices?: Choice[];
   /** External name, present only on an `awaiting_external` line. */
   name?: string;
+  /** Where the line came from in the author's source (W7/#3300) —
+   *  present only for `"text"` lines whose line-table entry carries a
+   *  source location. A speculation's lines carry it too (peek). */
+  source?: SourceLocation;
 }
 
 /** A line's classification (`brink_runtime::Element`). `kind` is an open

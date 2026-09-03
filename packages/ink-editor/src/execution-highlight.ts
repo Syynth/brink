@@ -28,14 +28,19 @@ export interface ExecutionHighlight {
    *  from several source lines (glue, a cue + aside + dialogue) reads as
    *  one in the Player, so it lights as one here. Omitted = one line. */
   endLine?: number;
-  /** live = the line being revealed during play (no gutter glyph) — also
+  /** Two channels (ruled 2026-09-03): the whole-line TINT is state — where
+   *  play is (`live` / `paused` / `frame`, the choice-point set) — and the
+   *  inset left BAR is attention (`follow` / `hover` / `peek`), bar-only,
+   *  stacking on a tinted line.
+   *
+   *  live = the line being revealed during play (no gutter glyph) — also
    *  every PRESENTED choice at a choice point (W11/#3304, the plural
    *  case);
    *  paused = where the debugger halted (warning band + gutter arrow);
    *  frame = a selected non-top stack frame (accent band + hollow arrow);
    *  rejected = an authored choice NOT added to the block (dimmed, with
    *  {@link ExecutionHighlight.note} rendered beside the line). */
-  kind: "live" | "paused" | "frame" | "rejected" | "follow" | "hover";
+  kind: "live" | "paused" | "frame" | "rejected" | "follow" | "hover" | "peek";
   /** Why a `rejected` line was left out — rendered as a muted chip at
    *  the line's end (e.g. "once-only · used", "condition false"). For
    *  the by-elimination condition case, the extension enriches the
@@ -134,17 +139,40 @@ const executionHighlightTheme = EditorView.baseTheme({
   ".brink-exec-frame": {
     backgroundColor: "rgb(var(--bs-accent-rgb, 59 130 246) / 10%)",
   },
-  // Follow (#3437): the line the Player just revealed — a full-width band
-  // with an inset accent bar, so the eye finds it without a gutter scan.
+  // The cursor's own active-line highlight and a state tint used to fight
+  // for the background; on a tinted line the cursor gets its own colour
+  // (ruled 2026-09-03), so both read at once.
+  ".cm-activeLine.brink-exec-live, .cm-activeLine.brink-exec-paused, .cm-activeLine.brink-exec-frame":
+    {
+      backgroundColor:
+        "var(--bs-exec-active-line-bg, rgb(var(--bs-fg-rgb, 205 214 244) / 14%))",
+    },
+  // Attention bars (ruled 2026-09-03): bar-only, no tint of their own.
+  // Follow (#3437): the line the Player just revealed — a solid accent bar.
   ".brink-exec-follow": {
-    backgroundColor: "rgb(var(--bs-accent-rgb, 59 130 246) / 16%)",
     boxShadow: "inset 3px 0 0 var(--bs-accent, #3b82f6)",
   },
-  // Hover (#3437): the transcript row under the pointer — a neutral band,
-  // never mistaken for where play is.
+  // Hover (#3437): delivered content under the pointer — a solid muted
+  // bar, never mistaken for where play is.
   ".brink-exec-hover": {
-    backgroundColor: "rgb(var(--bs-fg-rgb, 205 214 244) / 8%)",
     boxShadow: "inset 3px 0 0 var(--bs-fg-muted, #6c7086)",
+  },
+  // Peek: a forecast of what the hovered Continue / choice would hit —
+  // a DASHED accent bar, styled as "not yet real", no gutter glyph. Drawn
+  // as a pseudo-element so it never widens the line.
+  ".brink-exec-peek": {
+    position: "relative",
+  },
+  ".brink-exec-peek::before": {
+    content: '""',
+    position: "absolute",
+    left: "0",
+    top: "0",
+    bottom: "0",
+    width: "3px",
+    background:
+      "repeating-linear-gradient(to bottom, var(--bs-accent, #3b82f6) 0 4px, transparent 4px 7px)",
+    pointerEvents: "none",
   },
   // Rejected choice (W11/#3304): dimmed line, reason chip at line end.
   ".brink-exec-rejected": {

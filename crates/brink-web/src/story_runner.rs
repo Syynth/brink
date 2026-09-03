@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::external_binding::{BusyGuard, JsHandler, RecordingReplayHandler, reentrant_error};
 use crate::program_model;
-use crate::speculation::{SpeculateOptionsJs, WebSpeculation};
+use crate::speculation::WebSpeculation;
 use crate::value_marshal::{LineJs, debug_snapshot_to_js, js_to_value, line_to_js, value_to_js};
 
 // ── Runtime ─────────────────────────────────────────────────────────
@@ -1141,42 +1141,12 @@ impl StoryRunner {
     /// it never fires live under the default `"watch"` context. See
     /// [`brink_runtime::KindTieredHandler`].
     pub fn speculate(&self, options_json: &str) -> Result<WebSpeculation, JsError> {
-        let opts: SpeculateOptionsJs = if options_json.trim().is_empty() {
-            SpeculateOptionsJs::default()
-        } else {
-            serde_json::from_str(options_json)
-                .map_err(|e| JsError::new(&format!("speculate options error: {e}")))?
-        };
-
-        let default_budget = brink_runtime::Budget::default();
-        let budget = brink_runtime::Budget {
-            steps: opts.steps.unwrap_or(default_budget.steps),
-            lines: opts.lines.unwrap_or(default_budget.lines),
-        };
-        let context = match opts.context.as_deref() {
-            None | Some("watch") => brink_runtime::EvalContext::Watch,
-            Some("eval") => brink_runtime::EvalContext::Eval,
-            Some(other) => {
-                return Err(JsError::new(&format!(
-                    "speculate: unknown context '{other}' (expected 'watch' or 'eval')"
-                )));
-            }
-        };
-        let mut kinds = HashMap::new();
-        for (name, kind) in &opts.kinds {
-            let k = match kind.as_str() {
-                "query" => brink_runtime::PolicyKind::Query,
-                "effect" => brink_runtime::PolicyKind::Effect,
-                other => {
-                    return Err(JsError::new(&format!(
-                        "speculate: unknown kind '{other}' for external '{name}' \
-                         (expected 'query' or 'effect')"
-                    )));
-                }
-            };
-            kinds.insert(name.clone(), k);
-        }
-
+        let crate::speculation::SpeculateOptions {
+            budget,
+            context,
+            kinds,
+            live_effects,
+        } = crate::speculation::parse_speculate_options(options_json)?;
         let borrow = self.story.borrow();
         let story = borrow
             .as_ref()
@@ -1191,7 +1161,7 @@ impl StoryRunner {
             lenient_unbound: self.lenient_unbound.get(),
             kinds,
             context,
-            live_effects: opts.live_effects,
+            live_effects,
             pending_promise: RefCell::new(None),
             busy: Cell::new(false),
             externals_live: RefCell::new(Vec::new()),
