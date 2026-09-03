@@ -545,7 +545,14 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
   itself to refuse those rather than trust the diagnostic — see
   `crates/internal/brink-ide/src/empty_logic_line_fix.rs`'s module doc);
   E092 redundant
-  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
+  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete
+  (issue #3425 — withheld outright — no fix offered — when the same
+  physical tag line is also a *live* rename for a different owner than
+  the one that self-aliased: a file-level module self-alias whose line
+  also attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` with a
+  differently-named `#@was` argument, or a declaration-level self-alias
+  whose file's leading run carries a differently-named `#@module` —
+  see `crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc);
   E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
   (issue #3428 — the classic call/divert convention these two codes

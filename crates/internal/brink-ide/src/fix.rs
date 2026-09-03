@@ -159,6 +159,7 @@ pub static FIXERS: &[&dyn Fixer] = &[
     &crate::value_call_fix::ValueCallArityFixer,
     &crate::arity_trim_fix::CallArityTrimFixer,
     &crate::arity_trim_fix::DivertArityTrimFixer,
+    &crate::stale_was_fix::StaleWasFixer,
     &crate::empty_logic_line_fix::EmptyLogicLineFixer,
 ];
 
@@ -269,6 +270,7 @@ mod tests {
             (DiagnosticCode::E063, obligations::e063_fixture()),
             (DiagnosticCode::E031, obligations::e031_fixture()),
             (DiagnosticCode::E176, obligations::e176_fixture()),
+            (DiagnosticCode::E095, obligations::e095_fixture()),
             (DiagnosticCode::E014, obligations::e014_fixture()),
         ]
     }
