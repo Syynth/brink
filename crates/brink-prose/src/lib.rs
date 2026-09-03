@@ -45,6 +45,7 @@ use harper_core::spell::{FstDictionary, MergedDictionary, MutableDictionary};
 use harper_core::{Dialect, Document};
 use harper_core::{DictWordMetadata, NounData};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
@@ -126,11 +127,67 @@ fn dialect_from(name: Option<&str>) -> Dialect {
     }
 }
 
+/// The dictionary and rule set one configuration needs, kept across calls.
+///
+/// Constructing these is the per-call cost #3491 measured:
+/// `LintGroup::new_curated` builds several hundred rules, each with its own
+/// compiled expression, on every debounce. They depend on nothing but the
+/// project's words and the dialect, so they are built once per configuration
+/// and reused.
+///
+/// Reuse also buys more than construction: a `LintGroup` carries its own
+/// bounded LRU of per-chunk results, so an edit to one paragraph re-lints
+/// that paragraph and reads the rest of the document back out of that cache.
+/// A fresh group per call threw it away every time.
+struct CachedChecker {
+    /// The request's `dictionary` field, verbatim. Compared as given rather
+    /// than as a set: the caller sends a stable list, and normalizing here
+    /// would cost more than the comparison it shortens.
+    words: Vec<String>,
+    dialect: Dialect,
+    dictionary: Arc<MergedDictionary>,
+    linter: LintGroup,
+}
+
+impl CachedChecker {
+    fn new(words: &[String], dialect: Dialect) -> Self {
+        let dictionary = build_dictionary(words);
+        Self {
+            words: words.to_vec(),
+            dialect,
+            // The same dictionary reaches the linter and the `Document` —
+            // see the note at the `Document::new` call for why that matters.
+            linter: LintGroup::new_curated(Arc::clone(&dictionary), dialect),
+            dictionary,
+        }
+    }
+
+    /// Whether this entry answers for `words` + `dialect`.
+    fn matches(&self, words: &[String], dialect: Dialect) -> bool {
+        self.dialect == dialect && self.words == words
+    }
+}
+
+thread_local! {
+    /// One entry, not a map: a session checks one project with one dialect,
+    /// so a second configuration means the first is stale rather than worth
+    /// keeping. Thread-local rather than a global lock because the only
+    /// deployment is single-threaded wasm, and because it keeps the host
+    /// tests independent of each other's caches.
+    static CHECKER: RefCell<Option<CachedChecker>> = const { RefCell::new(None) };
+}
+
 /// Run the checker. Pure: same request, same response.
 ///
 /// Kept separate from the `wasm_bindgen` entry point so it is testable on the
 /// host — the offset behaviour is this crate's whole correctness claim, and
 /// pinning it through a wasm harness would be slower and prove less.
+///
+/// Not stateless, though: the dictionary and rule set are cached across calls
+/// on the calling thread and rebuilt whenever `dictionary` or `dialect`
+/// changes ([`CachedChecker`]). That is an optimization, never a semantic —
+/// the tests pin that a changed configuration is honoured on the very next
+/// call, and that changing it back restores the earlier answer.
 pub fn check(request: &CheckRequest) -> CheckResponseJs {
     let ranges: Vec<Utf16Range> = request
         .spans
@@ -148,18 +205,28 @@ pub fn check(request: &CheckRequest) -> CheckResponseJs {
         return CheckResponseJs { lints: Vec::new() };
     }
 
+    let dialect = dialect_from(request.dialect.as_deref());
+
+    // Taken out of the cell and put back, rather than borrowed across the
+    // lint: `lint` needs `&mut`, and holding the `RefCell` borrow across it
+    // would turn any future re-entrant call into a panic rather than a slow
+    // path.
+    let mut cached = CHECKER.with_borrow_mut(|slot| match slot.take() {
+        Some(cached) if cached.matches(&request.dictionary, dialect) => cached,
+        _ => CachedChecker::new(&request.dictionary, dialect),
+    });
+
     // The SAME dictionary for both, and that is not a tidiness point: the
     // Document does its own word lookup while tokenizing, so handing it the
     // curated dictionary while merging the project's names only into the
     // linter leaves every invented name still reported — the exact failure
     // this feature exists to prevent, and one that looks like it works
     // because the merged dictionary does reach the *suggestions*.
-    let dictionary = build_dictionary(&request.dictionary);
     let parser = Mask::new(masker, PlainEnglish);
-    let document = Document::new(&request.text, &parser, &dictionary);
+    let document = Document::new(&request.text, &parser, &cached.dictionary);
 
-    let mut linter = LintGroup::new_curated(dictionary, dialect_from(request.dialect.as_deref()));
-    let lints = linter.lint(&document);
+    let lints = cached.linter.lint(&document);
+    CHECKER.with_borrow_mut(|slot| *slot = Some(cached));
 
     let to_utf16 = CharToUtf16::new(&request.text);
     let lints = lints
@@ -445,5 +512,112 @@ mod tests {
     #[test]
     fn a_malformed_request_yields_no_lints_rather_than_throwing() {
         assert_eq!(super::check_prose("not json"), r#"{"lints":[]}"#);
+    }
+
+    /// The cross-call cache (#3491).
+    ///
+    /// The dictionary and the curated `LintGroup` now survive between calls,
+    /// which is only safe if a changed configuration is noticed. Every test
+    /// here runs its calls on ONE thread deliberately — the cache is
+    /// thread-local, so calls split across threads would prove nothing about
+    /// invalidation.
+    mod cache {
+        use super::{covered, utf16_len};
+        use crate::{CheckRequest, SpanJs, check};
+
+        fn request(text: &str, dictionary: Vec<String>, dialect: Option<&str>) -> CheckRequest {
+            CheckRequest {
+                text: text.to_owned(),
+                spans: vec![SpanJs {
+                    start: 0,
+                    end: utf16_len(text),
+                }],
+                dictionary,
+                dialect: dialect.map(str::to_owned),
+            }
+        }
+
+        fn flags(text: &str, dictionary: Vec<String>, dialect: Option<&str>, word: &str) -> bool {
+            check(&request(text, dictionary, dialect))
+                .lints
+                .iter()
+                .any(|l| covered(text, l.start, l.end) == word)
+        }
+
+        #[test]
+        fn a_changed_dictionary_is_honoured_on_the_next_call_and_when_it_changes_back() {
+            // Both directions. A cache that keyed only on "is there a
+            // dictionary" would pass the first half and fail the second, and
+            // one that never invalidated would pass the third — so all three
+            // are asserted, in order, on one thread.
+            let text = "Kaelen nodded at the warden.";
+            assert!(
+                flags(text, Vec::new(), None, "Kaelen"),
+                "fixture assumption: unseeded Harper flags the invented name"
+            );
+            assert!(
+                !flags(text, vec!["Kaelen".to_owned()], None, "Kaelen"),
+                "seeding the name must take effect on the very next call"
+            );
+            assert!(
+                flags(text, Vec::new(), None, "Kaelen"),
+                "removing the word again must take effect too — a cache that \
+                 only ever grew would keep silencing it"
+            );
+        }
+
+        #[test]
+        fn a_changed_dialect_is_honoured_on_the_next_call_and_when_it_changes_back() {
+            let text = "The colour of the harbour at night.";
+            assert!(flags(text, Vec::new(), None, "colour"));
+            assert!(
+                !flags(text, Vec::new(), Some("british"), "colour"),
+                "switching dialect must rebuild the rule set"
+            );
+            assert!(
+                flags(text, Vec::new(), None, "colour"),
+                "switching back must rebuild it again"
+            );
+        }
+
+        #[test]
+        fn repeating_the_same_request_repeats_the_same_answer() {
+            // The reuse itself: a `LintGroup` carries a per-chunk LRU, so a
+            // second call over the same text takes the cached path. It must
+            // return the same findings, not an empty second round.
+            let text = "The squre is empty. The squre is empty.";
+            let first = check(&request(text, Vec::new(), None));
+            let second = check(&request(text, Vec::new(), None));
+            assert!(!first.lints.is_empty(), "fixture flags something");
+            assert_eq!(
+                first
+                    .lints
+                    .iter()
+                    .map(|l| (l.start, l.end, l.kind.clone()))
+                    .collect::<Vec<_>>(),
+                second
+                    .lints
+                    .iter()
+                    .map(|l| (l.start, l.end, l.kind.clone()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        #[test]
+        fn a_document_checked_after_another_is_not_answered_from_the_first() {
+            // The LRU is keyed by chunk, so a different document must be
+            // linted rather than served the previous document's findings.
+            let first = "The squre is empty.";
+            let second = "Nothing wrong here at all.";
+            assert!(flags(first, Vec::new(), None, "squre"));
+            let out = check(&request(second, Vec::new(), None));
+            assert!(
+                !out.lints
+                    .iter()
+                    .any(|l| covered(second, l.start, l.end) == "squre"),
+                "the previous document's lint leaked into this one: {:?}",
+                out.lints
+            );
+        }
     }
 }
