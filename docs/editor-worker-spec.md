@@ -530,7 +530,11 @@ As landed:
 - **Fallback, same posture as §8's**: no `Worker` global (jsdom, node), a
   bundler that left `new URL(..., import.meta.url)` alone, or a worker
   crash all route to the in-process checker. Checking degrades in speed,
-  never into silence.
+  never into silence. A failure to load the wasm module *inside* a
+  healthy worker deliberately does NOT fall back — the in-process road
+  resolves the same specifier and would fail the same way, for another
+  6.5 MB of fetch. It rejects, which the editor reads as "no new
+  squiggles", the same thing an unregistered checker gives.
 - **The cost is now visible**: `prose.check` is a permanent perf span in
   `packages/ink-editor/src/prose.ts`, annotated with the document
   length. Its absence for four days after PR #3177 is why the regression

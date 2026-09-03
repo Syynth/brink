@@ -71,7 +71,12 @@ class FakeWorker implements ProseWorkerLike {
   reply(index: number, response: Omit<ProseWorkerResponse, "id">): void {
     const asked = this.seen[index];
     expect(asked, `no request at index ${index}`).toBeDefined();
-    this.onMessage?.({ data: { ...response, id: asked.id } });
+    this.post({ ...response, id: asked.id } as ProseWorkerResponse);
+  }
+
+  /** Post a raw response — for ids this worker was never asked for. */
+  post(response: ProseWorkerResponse): void {
+    this.onMessage?.({ data: response });
   }
 
   crash(message: string): void {
@@ -170,12 +175,16 @@ describe("createWorkerProseChecker", () => {
     const pending = checker.check(request("one"));
     const asked = worker.seen[0];
     expect(asked).toBeDefined();
-    // An id that was never issued.
-    worker.reply(0, { lints: [lint(7)] });
-    // ...and a duplicate of the same id, after it was settled.
-    worker.reply(0, { lints: [lint(8)] });
 
-    await expect(pending).resolves.toEqual([lint(7)]);
+    // An id that was never issued at all.
+    worker.post({ id: 9_999, lints: [lint(7)] });
+    // The real reply settles the caller...
+    worker.reply(0, { lints: [lint(8)] });
+    // ...and a duplicate of that same id, arriving after it was settled,
+    // must be dropped rather than re-settling with different offsets.
+    worker.reply(0, { lints: [lint(3)] });
+
+    await expect(pending).resolves.toEqual([lint(8)]);
   });
 
   it("rejects rather than resolving empty when the worker reports an error", async () => {
