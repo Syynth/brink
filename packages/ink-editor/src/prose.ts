@@ -24,6 +24,7 @@ import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { Diagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { diagnosticSources, publishDiagnostics } from "./diagnostic-sources.js";
+import { perfSpan } from "./perf/probe.js";
 import { ElementType, elementTypeField } from "./element-type.js";
 import { renderDiagnosticMessage } from "./diagnostic-anatomy.js";
 
@@ -269,6 +270,14 @@ export function proseExtension(options: ProseOptions): Extension {
           return;
         }
 
+        // Permanent, not a probe left behind: prose checking is the one
+        // debounced consumer whose cost is NOT the compiler's, so without a
+        // span of its own a stall here reads as an unattributed long task
+        // (#3491 — a 651 ms freeze that the Aug 24 baseline could not see
+        // because the feature landed four days after it was taken). The
+        // annotation is the document length, so a run's report says what the
+        // duration was paid for.
+        const endCheck = perfSpan("prose.check");
         let lints: ProseLint[];
         try {
           lints = await checker.check({
@@ -277,7 +286,9 @@ export function proseExtension(options: ProseOptions): Extension {
             dictionary: options.getDictionary?.() ?? [],
             dialect: options.getDialect?.() ?? "american",
           });
+          endCheck(text.length);
         } catch {
+          endCheck(text.length);
           // A failed check is not an editor error. The author sees no prose
           // squiggles, which is the same as having no checker installed.
           return;
