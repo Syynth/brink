@@ -2284,7 +2284,6 @@ name = "brink-gen"
 version = "0.0.16"
 dependencies = [
  "brink-compiler",
- "brink-format",
  "brink-runtime",
  "brink-test-harness",
  "proptest",
