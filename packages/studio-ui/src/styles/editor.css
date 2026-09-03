@@ -455,9 +455,21 @@
    zero footprint keeps it from affecting any sibling's layout while CM6's
    own `position: fixed` tooltip placement inside it is unaffected. */
 .brink-studio .brink-tooltip-layer {
+  /* Full-width, zero-height, click-through: CM6 falls back from `fixed` to
+     `absolute` placement whenever an ancestor turns fixed positioning
+     relative (#3497), and an absolutely positioned tooltip shrinks to fit
+     its containing block's width — which was 0 here, so every tooltip
+     wrapped at one word. Give the layer the root's width; the tooltips
+     themselves restore pointer events. */
   position: absolute;
-  width: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
   height: 0;
+  pointer-events: none;
+}
+.brink-studio .brink-tooltip-layer > * {
+  pointer-events: auto;
 }
 
 /* CM6 lint panel overrides */
