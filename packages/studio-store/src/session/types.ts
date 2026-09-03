@@ -130,7 +130,11 @@ export interface TranscriptLine {
  * `TranscriptLine.source`'s byte range by the app boundary's registered
  * resolver (`setSourceByteResolver`). */
 export interface ProvenancePoint {
+  /** 0-based line the range starts on. */
   line: number;
+  /** 0-based line the range ends on (≥ `line`): a glue-joined or
+   *  cue + aside + dialogue line spans several source lines. */
+  endLine: number;
   start: number;
   end: number;
 }

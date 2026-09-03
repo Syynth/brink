@@ -74,6 +74,17 @@ describe("execution highlight (W6/#3299)", () => {
     expect(bandEls(view)).toHaveLength(3);
   });
 
+  it("a band with `endLine` covers every line from `line` to `endLine`", () => {
+    const view = mount(() => [{ line: 2, endLine: 4, kind: "follow" }]);
+    expect(bandEls(view)).toHaveLength(3);
+    expect(bandEls(view).every((c) => c.includes("brink-exec-follow"))).toBe(true);
+    // An endLine below line is one band; one past the document clamps to
+    // its last line (DOC has five lines, the trailing empty one included)
+    // — never a zero-band or a crash.
+    const clamped = mount(() => [{ line: 3, endLine: 1, kind: "hover" }, { line: 4, endLine: 99, kind: "live" }]);
+    expect(bandEls(clamped)).toHaveLength(1 + 2);
+  });
+
   it("re-reads only on refresh — no polling", () => {
     let highlights: ExecutionHighlight[] = [];
     const view = mount(() => highlights);

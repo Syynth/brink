@@ -23,6 +23,11 @@ import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 export interface ExecutionHighlight {
   /** 1-based line the band covers. */
   line: number;
+  /** 1-based LAST line of a multi-line band (`≥ line`): every line from
+   *  `line` to `endLine` gets the same band — a transcript line built
+   *  from several source lines (glue, a cue + aside + dialogue) reads as
+   *  one in the Player, so it lights as one here. Omitted = one line. */
+  endLine?: number;
   /** live = the line being revealed during play (no gutter glyph) — also
    *  every PRESENTED choice at a choice point (W11/#3304, the plural
    *  case);
@@ -80,7 +85,7 @@ export function executionHighlightExtension(options: ExecutionHighlightOptions):
     const highlights = options.getExecutionHighlights();
     const decos = highlights
       .filter((h) => h.line >= 1 && h.line <= state.doc.lines)
-      .map((h) => {
+      .flatMap((h) => {
         const line = state.doc.line(h.line);
         let note = h.note;
         if (h.kind === "rejected" && note === "condition false") {
@@ -90,10 +95,14 @@ export function executionHighlightExtension(options: ExecutionHighlightOptions):
           const m = /^\s*[*+]\s*(?:\(\s*[\w.]+\s*\)\s*)?\{([^}]+)\}/.exec(line.text);
           if (m) note = `${m[1].trim()} = false`;
         }
-        return Decoration.line({
+        const deco = Decoration.line({
           class: `brink-exec-line brink-exec-${h.kind}`,
           attributes: note !== undefined ? { "data-brink-exec-note": note } : undefined,
-        }).range(line.from);
+        });
+        const last = Math.min(Math.max(h.endLine ?? h.line, h.line), state.doc.lines);
+        const out = [];
+        for (let n = h.line; n <= last; n++) out.push(deco.range(state.doc.line(n).from));
+        return out;
       });
     // Decoration.set requires sorted ranges; hosts owe no ordering.
     return Decoration.set(decos, true);

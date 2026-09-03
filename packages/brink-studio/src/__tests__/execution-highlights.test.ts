@@ -107,6 +107,25 @@ describe("executionHighlightsFor — follow and hover bands (#3437)", () => {
     );
     expect(out).toEqual([{ line: 21, kind: "hover" }]);
   });
+
+  it("a source spanning several lines bands them all — hover and follow carry `endLine`", () => {
+    const spanning = (file: string, start: number, end: number) =>
+      file === "main.ink" ? { line: 86, endLine: 88, start, end } : null;
+    const st = stateWith({ status: "running", position: null });
+    const out = executionHighlightsFor(
+      {
+        ...st,
+        sessionLines: [{ text: "@GRISWOLD: …", kind: "line" as const, tags: [], source: src }],
+        followInEditor: true,
+        followPaused: false,
+        sessionHoverSource: { file: "main.ink", range_start: 30, range_end: 60 },
+        _resolveSourceBytes: spanning as never,
+      },
+      "main.ink",
+    );
+    // Follow lands first on the same lines, so the hover dedupes against it.
+    expect(out).toEqual([{ line: 87, endLine: 89, kind: "follow" }]);
+  });
 });
 
 /** A weave with three sibling choices under one knot (choice point A)

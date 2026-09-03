@@ -61,7 +61,7 @@ export function executionHighlightsFor(
     if (last?.source && last.source.file === path) {
       const point = resolve(last.source.file, last.source.range_start, last.source.range_end);
       if (point !== null && !out.some((h) => h.line === point.line + 1)) {
-        out.push({ line: point.line + 1, kind: "follow" });
+        out.push(band(point, "follow"));
       }
     }
   }
@@ -70,10 +70,22 @@ export function executionHighlightsFor(
   if (hover !== null && hover.file === path && resolve) {
     const point = resolve(hover.file, hover.range_start, hover.range_end);
     if (point !== null && !out.some((h) => h.line === point.line + 1)) {
-      out.push({ line: point.line + 1, kind: "hover" });
+      out.push(band(point, "hover"));
     }
   }
   return out;
+}
+
+/** A band over every source line the point spans — a transcript line
+ *  built from several source lines (glue, cue + aside + dialogue) lights
+ *  as the one line it reads as (feedback 2026-09-02). */
+function band(
+  point: { line: number; endLine?: number },
+  kind: ExecutionHighlight["kind"],
+): ExecutionHighlight {
+  const line = point.line + 1;
+  const endLine = (point.endLine ?? point.line) + 1;
+  return endLine > line ? { line, endLine, kind } : { line, kind };
 }
 
 /** The newest transcript line that knows where it came from. */
