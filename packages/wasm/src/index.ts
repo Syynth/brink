@@ -1438,11 +1438,23 @@ export class EditorSessionHandle {
    * rewrites are rolled back before this returns, so the host's apply seam
    * still snapshots the PRE-fix text for undo. Push each `files` entry
    * through that seam to actually write.
+   *
+   * Deliberately does NOT unconditionally `bump()`: the session is restored
+   * byte-identical when nothing was applied, and `mutationCount` is the
+   * exact key `ProjectSession.compileProject()` caches on, so bumping it for
+   * a no-op batch forces a full recompile for nothing (every `Ctrl-S` with
+   * Fix on save enabled, at today's all-Suggested fixer roster). Bump only
+   * when a file was actually written — mirroring the real mutation that
+   * `applyEdit`/`updateFile` will perform once the host pushes `files`
+   * through that seam.
    */
   fixAll(select: FixSelect = {}): FixReport {
-    this.bump();
     const json = this.session.fix_all(JSON.stringify(select));
-    return JSON.parse(json) as FixReport;
+    const report = JSON.parse(json) as FixReport;
+    if (report.files.length > 0) {
+      this.bump();
+    }
+    return report;
   }
 
   getInlayHints(start: number, end: number): InlayHint[] {

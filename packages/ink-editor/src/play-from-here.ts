@@ -379,8 +379,12 @@ export interface FixMenuAction extends LineMenuAction {
  * identical between the two surfaces. A pull that throws contributes no
  * entries — a failed fix query must never take the context menu down with
  * it, exactly as in `code-actions.ts`.
+ *
+ * Exported for tests (jsdom has no layout, so the pointer path that reaches
+ * this via `buildTextMenuRequest` can't be driven there) — mirrors
+ * `lineActionsAt`'s own export-for-tests rationale.
  */
-function fixActionsAt(pos: number, options: PlayFromHereOptions): FixMenuAction[] {
+export function fixActionsAt(pos: number, options: PlayFromHereOptions): FixMenuAction[] {
   const { getFixes, applyFix } = options;
   if (!getFixes || !applyFix) return [];
   let fixes: Fix[];
