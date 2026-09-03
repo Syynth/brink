@@ -4877,3 +4877,30 @@
 - **SCOPE:** moderate
 - **WHAT:** `empty_logic_line_fix::EmptyLogicLineFixer` fires only when the located `LogicLine` carries none of `stmt_block()`/`await_stmt()`/`return_stmt()`/`temp_decl()`/`assignment()` and no `Expr` child either — the one `E014` raise site (`logic_line.rs`'s trailing catch-all) that is genuinely effect-free, out of **fifteen** raise sites total across three files: `logic_line.rs`'s own five (the catch-all plus four malformed-partial `~ temp`/`~ x =` shapes), `logic_block.rs`'s six `~ { … }` block-statement mirrors (`TempDecl`/`Assignment`/`ForStmt` missing a name/target/value), and `control_flow.rs`'s four native mirrors. The four `logic_line.rs` malformed-partial sites are refused by the same five-accessor structural check. The six `logic_block.rs` sites are refused by a *different* mechanism, not that check: they diagnose at the inner `TempDecl`/`Assignment`/`ForStmt` node's own range rather than the enclosing `LogicLine`'s, so the fixer's exact-range `LogicLine` lookup never matches there and returns early before the five accessors are even consulted. The fixer never fires on a native file at all: native's own "nothing after `~`" shape parses as an `EXPR_STMT` with a missing operand and raises `E015`, not `E014` — there is no native CST shape this fixer's own code is ever raised for; `control_flow.rs`'s four native `E014` sites are excluded by the same ink-only dialect gate. The deletion range extends to the whole physical line (back through any leading indentation, forward through trailing whitespace and the line break) **only when the located node's own range is itself confined to one physical line and carries no `LINE_COMMENT`/`BLOCK_COMMENT` trivia token** — a comment (single-line trailing, or a multi-line `/* … */` that pulls several physical lines into the node's own range) withholds the fix outright rather than being deleted along with the line.
 - **WHY:** The five accessors being `None` is only reachable one way in the grammar (`atom()`'s catch-all returning `false`, consuming nothing and building no node) — proven from the CST, not read off the diagnostic message, per the issue's "re-establish effect-freedom itself" requirement. Extending to the whole physical line matters because the `LogicLine` node's own range starts at the `~` token, not at the line's start — a fix that deleted only the node's own range on an indented line (e.g. inside a choice body) would leave the leading indentation glued onto the next line's content instead of removing a clean line, which is not what "delete the line" means and is not proven safe by the flush-left fixture alone. The comment guard was added on review: `Parser::skip_ws` treats `LINE_COMMENT`/`BLOCK_COMMENT` as trivia and attaches it into the `LogicLine`'s own token run, so `~ // TODO: …` passed the five-accessor check exactly like a genuinely bare `~` and the fix silently deleted the author's comment — measured before the fix (`~ // TODO: bump the score here` produced one `Safe` fix whose applied result dropped the `TODO` text entirely), which is not `Safe` by `docs/autofix-spec.md` §3's own definition (Safe requires no lost text). A multi-line `/* … */` compounded this: because it is one trivia token, the `LogicLine` node's own range already spanned every line the comment covered, so the pre-review "whole physical line" extension deleted all of them, not one.
+
+## Auto-fix: a tested end-to-end usability pathway before more fixer implementations
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** auto-fix (studio surfaces, brink fix, LSP) / process
+- **SCOPE:** moderate — sequencing of the #3374 epic
+- **WHAT:** With a handful of Safe fixers working (E025 add-import, E014,
+  E092, E095, E110, E031/E176 after waves D–F), the next work is wiring
+  and proving the *usability* of auto-fix end to end — the Problems-panel
+  Fix row and "Fix all safe (N)", the editor and Problems context menus,
+  the command palette, fix-on-save under the app setting, `brink fix`
+  over a real project, and LSP quickfixes — each covered by an e2e or
+  integration test on a fixture project that actually carries fixable
+  diagnostics, plus the usability bugs the reviews surfaced (#3447,
+  #3459, #3462, #3463, #3464). The remaining fixer implementations
+  (#3429 and the Suggested/Placeholder tiers) are backlogged until that
+  pathway exists and is tested.
+- **WHY:** Maintainer, 2026-09-03: "if we have a handful of fixes
+  working, i'd like to start working on wiring through the actual
+  usability of these, and then we can backlog the remaining fix
+  implementations, once they have a tested end-to-end pathway to be
+  usable." Every fixer PR so far was verified through Rust
+  `EditorSession` tests and vitest, never by an author clicking Fix on a
+  real project; more fixers add nothing an author can use until the
+  pathway is proven, and the pathway's own bugs (fixes offered for
+  `[lints]`-allowed codes, fix-on-save persisting only the focused file)
+  are already known.
