@@ -3489,11 +3489,23 @@ fn fix_code_actions(
 ) -> Vec<tower_lsp::lsp_types::CodeActionOrCommand> {
     let cx = brink_ide::fix::FixCx::new(db);
     let at = rowan::TextSize::from(offset);
-    let Some(diagnostics) = db.diagnostics(file_id) else {
+    let Some(raw_diagnostics) = db.diagnostics(file_id) else {
         return Vec::new();
     };
     let Some(source) = db.source(file_id) else {
         return Vec::new();
+    };
+    // The Problems panel never shows a suppressed diagnostic (`[lints]
+    // allow`), so a quickfix must not offer to fix one either — the same
+    // rule `brink_ide::fix::batch::collect` already applies.
+    let diagnostics = match db.suppressions(file_id) {
+        Some(sup) => brink_ir::suppressions::apply_suppressions(
+            file_id,
+            source,
+            raw_diagnostics.to_vec(),
+            sup,
+        ),
+        None => raw_diagnostics.to_vec(),
     };
     let doc_idx = LineIndex::new(source);
     let mut seen: Vec<FixIdentity> = Vec::new();
@@ -3532,14 +3544,18 @@ fn fix_code_actions(
                 continue;
             }
 
-            let diagnostics_field = convert::diagnostic_to_lsp(d, &doc_idx, types, lints)
-                .map(|lsp_diag| vec![lsp_diag]);
+            // A `[lints] allow`-suppressed diagnostic is never published to
+            // the client (#3173) — a quickfix action must not claim to
+            // discharge one the Problems panel never showed.
+            let Some(lsp_diag) = convert::diagnostic_to_lsp(d, &doc_idx, types, lints) else {
+                continue;
+            };
 
             out.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
                 CodeAction {
                     title: fix.title,
                     kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: diagnostics_field,
+                    diagnostics: Some(vec![lsp_diag]),
                     edit: Some(WorkspaceEdit {
                         changes: Some(changes),
                         ..Default::default()
@@ -3571,8 +3587,16 @@ fn fix_code_actions(
 /// whose open buffers had not actually changed — visible as a diagnostic
 /// that vanishes before the editor's own text does, and permanently wrong if
 /// the offered edit is never applied. The scratch session mirrors the live
-/// project's [`AnalysisOptions`] and every loaded file's current source, so
-/// the fixes it computes agree with what the live diagnostics show.
+/// project's [`AnalysisOptions`] and every loaded file's current source —
+/// **but not its native/ink roots or compile entry**: `IdeSession` exposes
+/// no root or entry setter, so native module identity here mints from each
+/// file's full absolute path rather than the live project's mounted root,
+/// and with no entry configured, fix selection falls back to every loaded
+/// file (including the mounted stdlib) instead of the live compile closure.
+/// The fixes computed here can therefore diverge from what the live
+/// diagnostics show; closing that gap is tracked as issue #3458, which
+/// milestone 8 must land before the first `Safe` fixer makes this path live
+/// (`docs/autofix-spec.md` §7).
 fn fix_all_workspace_edit(
     db: &brink_db::ProjectDb,
     select: &brink_ide::fix::Select,
@@ -3612,11 +3636,16 @@ fn fix_all_workspace_edit(
         if final_source == original {
             continue;
         }
+        // A batch is all-or-nothing (§4): a file that can't be represented
+        // in the edit abandons the whole batch rather than shipping a
+        // WorkspaceEdit with the rest silently applied — the same failure
+        // this sibling function's quickfix arm treats as fatal to its own
+        // fix (`resolvable = false` + `break`, above).
         let Ok(uri) = Url::from_file_path(path) else {
-            continue;
+            return None;
         };
         let Ok(len) = u32::try_from(original.len()) else {
-            continue;
+            return None;
         };
         let idx = LineIndex::new(original);
         let whole = rowan::TextRange::up_to(rowan::TextSize::from(len));
@@ -3648,6 +3677,20 @@ fn fix_all_workspace_edit(
 fn fix_all_action(db: &brink_db::ProjectDb) -> Option<tower_lsp::lsp_types::CodeActionOrCommand> {
     let select =
         brink_ide::fix::Select::all().with_tiers(vec![brink_ide::fix::Applicability::Safe]);
+
+    // No registered fixer can produce anything at this selection's tiers
+    // today (every fixer declares `Suggested`, not `Safe` — §9's first-wave
+    // `Safe` candidates haven't landed) — bail before paying for a
+    // whole-project scratch-session analysis whose result is guaranteed
+    // `None`. Sound because `fixes_from` asserts per-instance applicability
+    // never exceeds the fixer's declared max (`Fixer::max_applicability`).
+    if !brink_ide::fix::FIXERS
+        .iter()
+        .any(|f| select.admits_tier(f.max_applicability()))
+    {
+        return None;
+    }
+
     let policy = brink_ide::fix::FixPolicy::default();
     let edit = fix_all_workspace_edit(db, &select, &policy)?;
 
@@ -4466,6 +4509,67 @@ mod tests {
         assert_eq!(
             edits[0].new_text, TOWN_AFTER,
             "both imports must land, in fix_all's own round order"
+        );
+    }
+
+    /// Review finding on PR #3455 (backend.rs:3615/3618, the two arms that
+    /// resolve a changed file into a `TextEdit`): a file whose path can't
+    /// round-trip through [`Url::from_file_path`] must abandon the whole
+    /// batch (`return None`), not just be dropped from it — a `fix_all`
+    /// pass spans the whole compilation (§4), so a `WorkspaceEdit` missing
+    /// one of its files is a *partial* multi-file change silently applied
+    /// to the author's tree, exactly the failure the sibling quickfix arm
+    /// (`fix_code_actions`'s `resolvable = false` + `break`) already treats
+    /// as fatal to its own fix.
+    ///
+    /// Two independent host files each reference an unimported public knot
+    /// from their own sibling provider module — one pair lives under an
+    /// absolute directory (`/questA.ink`, `/townA.ink`), the other under a
+    /// relative one (`questB.ink`, `villageB.ink`), so `resolve_include_path`
+    /// (`brink-db/src/db.rs`) still joins each pair correctly while only the
+    /// second host's path fails `Url::from_file_path`. Before the fix this
+    /// returned `Some(WorkspaceEdit)` carrying only `townA.ink`'s fix,
+    /// silently dropping `villageB.ink`'s; the fix makes it `None`.
+    #[test]
+    fn fix_all_workspace_edit_abandons_the_whole_batch_when_one_file_path_is_not_a_url() {
+        use brink_ide::fix::{FixMode, FixPolicy, Select};
+        use brink_ide::session::IdeSession;
+        use brink_ir::DiagnosticCode;
+
+        const QUEST_A: &str = "#@module(questA)\n== ambushA ==\n#@public\nGotcha!\n-> DONE\n";
+        const TOWN_A: &str =
+            "#@module(townA)\nINCLUDE questA.ink\n== square ==\nHi\n* [Fight] -> ambushA\n";
+        const QUEST_B: &str = "#@module(questB)\n== ambushB ==\n#@public\nGotcha!\n-> DONE\n";
+        const VILLAGE_B: &str =
+            "#@module(villageB)\nINCLUDE questB.ink\n== hamlet ==\nYo\n* [Fight] -> ambushB\n";
+
+        // `/townA.ink` is absolute (`Url::from_file_path` succeeds);
+        // `villageB.ink` has no leading `/` (it fails) — both providers sit
+        // alongside their own host so `resolve_include_path` still joins
+        // each `INCLUDE` correctly within its own pair.
+        let files: [(&str, &str); 4] = [
+            ("/questA.ink", QUEST_A),
+            ("/townA.ink", TOWN_A),
+            ("questB.ink", QUEST_B),
+            ("villageB.ink", VILLAGE_B),
+        ];
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        for (path, src) in files {
+            session.update_source(path, src.to_owned());
+        }
+        for (path, src) in files {
+            session.update_and_analyze(path, src.to_owned());
+        }
+
+        let select = Select::all();
+        let policy = FixPolicy::new().with(DiagnosticCode::E025, FixMode::Auto);
+        let edit = fix_all_workspace_edit(session.db(), &select, &policy);
+        assert!(
+            edit.is_none(),
+            "one file's fix cannot be represented as a URL, so the whole \
+             batch must be abandoned rather than shipping townA.ink's fix \
+             alone: {edit:?}"
         );
     }
 }

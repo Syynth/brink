@@ -3835,6 +3835,128 @@ fn quickfix_actions_for_two_fixable_diagnostics() {
     assert_eq!(e081_diags[0]["code"], "E081");
 }
 
+/// [`two_fixable_diagnostics_source`], prefixed with a file-scoped
+/// `// brink-disable-file E081` directive — every returned offset shifts by
+/// the directive line's own length, computed once here rather than
+/// re-literalized at each call site.
+fn two_fixable_diagnostics_source_with_e081_suppressed() -> (String, usize, usize) {
+    let (base_source, e080_at, e081_at) = two_fixable_diagnostics_source();
+    let directive = "// brink-disable-file E081\n";
+    let source = format!("{directive}{base_source}");
+    let shift = directive.len();
+    (source, e080_at + shift, e081_at + shift)
+}
+
+/// Review finding on PR #3455 (backend.rs:3535, `fix_code_actions`): a
+/// suppressed diagnostic must not get a quick-fix either — the Problems
+/// panel never shows one (`convert::diagnostic_to_lsp` returns `None` for a
+/// `[lints] allow`-leveled code, #3173; `apply_suppressions` drops a
+/// directive-suppressed one outright, #3259) — so a quickfix that fired
+/// anyway would offer to fix something the client never displayed. The loop
+/// previously read raw `db.diagnostics(file_id)` with no
+/// `apply_suppressions` call at all, unlike both sibling roads that already
+/// applied it (the publish path and `brink_ide::fix::batch::collect`), so a
+/// diagnostic suppressed everywhere else still got a quick-fix here.
+///
+/// `// brink-disable-file Exxx` (not the finding's literal
+/// `[lints] E081 = "allow"`) is the suppression mechanism exercised here.
+/// `E081`'s base severity is `Error`, and
+/// `brink_ir::DiagnosticCode::is_overridable` refuses a `[lints]` override
+/// for any `Error`-base code outright (`E081` is not among the `Warning`-arm
+/// codes in `DiagnosticCode::severity`) — a project can no more
+/// `[lints]`-allow-suppress `E081` than it can `deny`-promote it further, so
+/// that literal case can never reach `fix_code_actions`'s suppression branch
+/// at all, and none of the four fixers registered today
+/// (`E025`/`E080`/`E081`/`E063`, `brink_ide::fix::FIXERS`) targets a code
+/// that is `[lints]`-overridable in practice. The file-scoped directive
+/// carries no such restriction — only the `@[allow(…)]` annotation scope is
+/// `Warning`-only (`brink_ir::suppressions::AllowScope::codes`'s own doc) —
+/// and reaches the exact same `apply_suppressions` call this fix adds, so it
+/// exercises the identical production wiring the finding names. The
+/// unsuppressed `E080` at its own position in the same file still gets its
+/// one quick-fix, proving the directive is targeted, not a blanket break of
+/// the whole action list.
+#[test]
+fn quickfix_is_suppressed_for_a_directive_suppressed_diagnostic() {
+    let root = unique_tmp_dir("quickfix-suppressed");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let (source, e080_offset, e081_offset) = two_fixable_diagnostics_source_with_e081_suppressed();
+    let uri = format!("file://{}", root.join("two_fixable.ink").display());
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "ink", "version": 1, "text": source,
+            }},
+        }),
+    );
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, 2000);
+
+    let e080_pos = position_at(&source, e080_offset);
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": e080_pos, "end": e080_pos},
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (e080_resp, _) = recv_response(&mut stdout, 2);
+
+    let e081_pos = position_at(&source, e081_offset);
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": e081_pos, "end": e081_pos},
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (e081_resp, _) = recv_response(&mut stdout, 3);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let e080_quickfixes: Vec<&Value> = e080_resp["result"]
+        .as_array()
+        .expect("array of code actions")
+        .iter()
+        .filter(|a| a["kind"] == "quickfix")
+        .collect();
+    assert_eq!(
+        e080_quickfixes.len(),
+        1,
+        "E080 is not suppressed, so it must still get its quick-fix: {e080_quickfixes:?}"
+    );
+
+    let e081_quickfixes: Vec<&Value> = e081_resp["result"]
+        .as_array()
+        .expect("array of code actions")
+        .iter()
+        .filter(|a| a["kind"] == "quickfix")
+        .collect();
+    assert!(
+        e081_quickfixes.is_empty(),
+        "// brink-disable-file E081 must suppress the E081 quick-fix: {e081_quickfixes:?}"
+    );
+}
+
 /// `source.fixAll.brink` (`docs/autofix-spec.md` §7) is gated behind an
 /// explicit `context.only` ask — `fix_all` walks the whole compilation,
 /// which a routine lightbulb-menu request (`only` absent) should not pay
