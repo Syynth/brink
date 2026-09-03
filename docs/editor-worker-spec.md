@@ -371,6 +371,9 @@ egresses).
   main thread in this package. Its call pattern is bursty request/response
   on user action, not per-keystroke. Moving it can be its own later
   package behind the same client pattern if profiling ever demands it.
+- **Prose checking** was out of scope for this package because it did not
+  exist when it was written; it has since been moved to a worker of its
+  own — see §15.
 - **brink-lsp / desktop-native transports**: unaffected; the LSP already
   runs out of process.
 - **Multi-project / multi-worker**: one worker per `ProjectSession`.
@@ -490,3 +493,54 @@ with a reason. Migration: issue #3110.
 Small documents (< the 1000-line deferral threshold) keep the legacy
 synchronous rebuild road — bounded incremental cost, zero behavior
 change for the mock/test surface; large documents are fully worker-fed.
+
+## 15. The prose worker (#3491, 2026-09-03)
+
+A **second, independent** worker, not a capability of the session worker
+above. Prose checking landed in PR #3177, after W5 closed, and ran the
+`brink-prose` wasm module synchronously on the main thread behind a
+700 ms debounce. Measured on main before this section: one check took
+**651 ms** on a real 1,125-line `.ink` file and **4.8 s** (p95) on the
+8k-line `?fixture=perf` document, each landing as a co-located
+`browser.longtask` of the same size. §1's goal — a main thread
+structurally unable to block on analysis — held for the compiler and was
+simply not true for prose.
+
+**Separate rather than merged into the session worker**, for the reason
+the crate itself is separate (`crates/brink-prose`, module docs): the
+module is 6.5 MB gzipped against `brink-web`'s 2.6 MB, and it is loaded
+only if someone actually checks prose. Putting it behind the session
+worker would tie the 6.5 MB download to boot, or make the session
+worker's boot conditional on a feature most consumers never use.
+
+As landed:
+
+- `packages/brink-studio/src/prose-worker.ts` — the worker entry. The
+  wasm module is `import()`ed **inside the worker**, on the first
+  request; a load failure is remembered, never retried.
+- `packages/brink-studio/src/prose-checker.ts` — the client.
+  `ProseChecker.check` is unchanged (it was already async, for exactly
+  this), so `@brink-lang/editor` needed no interface change.
+- **Coalescing**: at most one request is in flight and at most one is
+  waiting. A waiting request that a newer edit supersedes is rejected
+  with `ProseCheckSuperseded` before it is ever posted — the editor
+  treats a rejection as "leave the previous squiggles standing", which
+  is the honest answer for a check that never ran. An in-flight wasm
+  call cannot be interrupted; it can only be the last one that runs.
+- **Fallback, same posture as §8's**: no `Worker` global (jsdom, node), a
+  bundler that left `new URL(..., import.meta.url)` alone, or a worker
+  crash all route to the in-process checker. Checking degrades in speed,
+  never into silence.
+- **The cost is now visible**: `prose.check` is a permanent perf span in
+  `packages/ink-editor/src/prose.ts`, annotated with the document
+  length. Its absence for four days after PR #3177 is why the regression
+  survived a perf baseline (§11.5's "perf judge" measures what has a
+  name).
+
+Also in that change, and independent of the worker: `brink-prose`'s
+`check` caches the merged dictionary and the curated `LintGroup` across
+calls (thread-local, invalidated when the project's words or the dialect
+change), so several hundred rules are constructed once per configuration
+rather than once per keystroke pause. The `LintGroup`'s own per-chunk
+LRU then survives between calls too, which is a first, partial answer to
+the incremental checking the issue lists as its item 3.

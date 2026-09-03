@@ -4980,3 +4980,25 @@
   the 3px bars a fiddly target and the gaps spent width on nothing; a
   single legend-style hover reads the whole nesting at once, and sitting
   next to the text the rails line up with the structure they describe.
+
+## Prose checking runs in its own worker, not the session worker
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** editor-perf (`packages/brink-studio/src/prose-worker.ts`, `prose-checker.ts`, `crates/brink-prose`)
+- **SCOPE:** moderate — where prose checking runs; its results and the `ProseChecker` interface are unchanged
+- **WHAT:** The `brink-prose` wasm module moves off the main thread into a
+  **second, independent** Web Worker rather than becoming a capability of the
+  session worker (`docs/editor-worker-spec.md` §15). The worker imports the
+  module lazily, on the first check; a check superseded by a newer edit is
+  dropped before it is posted; no-`Worker` environments and worker crashes
+  fall back to the in-process road. Separately, `brink-prose` caches the
+  merged dictionary and the curated `LintGroup` across calls, keyed on the
+  project's words and the dialect.
+- **WHY:** Measured on main (#3491): one check took 651 ms on a real
+  1,125-line file and 4.8 s p95 on the 8k-line perf fixture, all on the main
+  thread, 700 ms after the author stopped typing. The work is genuinely
+  O(document) and cannot be made free — it can only be moved. It stays a
+  SEPARATE worker for the same reason the crate is separate: 6.5 MB gzipped
+  against `brink-web`'s 2.6 MB, downloaded only if someone checks prose, so
+  folding it into the session worker would either tie that download to boot
+  or make boot conditional on a feature most consumers never use.
