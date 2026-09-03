@@ -502,7 +502,10 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
   "over-supplied args" suggests, so the fixer deletes the **leading**
   excess and keeps the trailing `expected` — see
   `crates/internal/brink-ide/src/arity_trim_fix.rs`'s module doc for the
-  empirical proof); empty choice `* []` → `* ->` (#3365).
+  empirical proof; withheld outright — no fix offered — when a leading
+  argument isn't provably pure, when the call's own return value isn't
+  popped in isolation from a larger expression, or when the target
+  declares a `ref` parameter); empty choice `* []` → `* ->` (#3365).
 - **Suggested**: E026 duplicate list item → delete (changes host state);
   E033 unreachable after divert → delete; E035/E054/E188 shadowing or
   colliding name → rename (rides the rename machinery, cross-file);

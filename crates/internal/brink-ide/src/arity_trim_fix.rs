@@ -59,8 +59,16 @@
 //! ignored", just naming the *other* end of the list than a first read of
 //! "over-supplied args" suggests) and keep the trailing `expected` — the
 //! ones the callee actually receives. Safety therefore hinges on the
-//! **leading** (dropped) arguments being free of any call or assignment,
-//! not the trailing ones.
+//! **leading** (dropped) arguments being free of a nested call (or, on
+//! ink, an `++`/`--` increment — the only other expression-position
+//! mutation either frontend's grammar admits; native has neither a
+//! postfix operator nor any way for a bare `=` assignment, which is
+//! statement-only there, to reach inside an argument's expression subtree
+//! — see [`native_is_pure`]'s doc), not the trailing ones. It also hinges
+//! on the call's own return value being popped in isolation and on the
+//! resolved target declaring no `ref` param — both BLOCKING review
+//! findings, see [`ink_call_is_isolated`]/[`native_call_is_isolated`] and
+//! [`expected_param_count`]'s doc.
 //!
 //! # Scope
 //!
@@ -72,13 +80,28 @@
 //! (`brink_syntax::ast::FunctionCall` / `brink_syntax_native::ast::CallExpr`)
 //! for `E031`, and a divert/tunnel-call/thread-start
 //! (`DivertTargetWithArgs`/`ThreadStart` on ink,
-//! `DivertTarget`/`Splice` on native) for `E176`. A tunnel-*redirect*
-//! (`->-> target(args)`, whose args live on the `Return` statement rather
-//! than on a divert-target node — see
-//! `brink_ir::symbols::project::Projector::walk_return`) is not
-//! structurally reachable from a plain descendants search for either of
-//! those node types and is left unfixed (narrower applicability, not a
-//! downgrade — `fixes` simply returns nothing for it).
+//! `DivertTarget`/`Splice` on native) for `E176`.
+//!
+//! **Correction (review finding, was wrong in an earlier revision of this
+//! doc):** a tunnel *redirect* (`->-> target(args)`) was believed
+//! unreachable here because `brink_ir::symbols::project::Projector::
+//! walk_return` re-derives its HIR-level `arg_count` from a separate
+//! `onwards_args` field rather than from a `DivertTargetWithArgs`'s own
+//! `ArgList` — true at the HIR level, but the CST underneath it still
+//! parses `->-> target(args)` as a real `DivertTargetWithArgs` (nested in
+//! a `TunnelOnwardsNode`, `brink_ir::hir::lower::divert`'s
+//! `lower_divert`), with its `ArgList` intact and its `.path()` range
+//! matching the diagnostic's anchor exactly like a plain divert's. So
+//! `ink_divert_args`'s plain descendants search finds it after all — and
+//! the codegen for it (`container.rs`'s `StmtKind::Return` arm) pushes
+//! `onwards_args` in source order exactly like an ordinary divert's args,
+//! then `Opcode::TunnelReturn`, which never pops them itself (`vm.rs`) —
+//! they are left for the target's own param-binding prologue to consume,
+//! same LIFO trailing-wins convention as everywhere else in this module.
+//! Confirmed empirically: `-> a -> / === a === / ->-> b(5, 3) / === b(x)
+//! === / {x} / -> END` and the same program trimmed to `->-> b(3)` both
+//! print `3` — see `e176_ink_tunnel_onwards_redirect_drops_the_leading_excess_argument`
+//! below. This shape is fixed, not left alone.
 //!
 //! Under-supply (`got < expected`) has no mechanical rewrite (there is no
 //! value to synthesize) and is left alone, same as `creation_site_fix`'s
@@ -158,11 +181,32 @@ fn trim_fix(db: &ProjectDb, d: &Diagnostic, code: DiagnosticCode, is_divert: boo
 /// exactly the `ResolvedRef::range` `resolve_function`/`resolve_divert`
 /// pushed alongside the diagnostic (issue #1561's range contract), so a
 /// plain equality lookup on the same file's resolution map finds it.
+///
+/// Returns `None` — no fix — when any declared param is `ref` (BLOCKING
+/// finding): `lower_call_args` decides ref-ness **positionally against the
+/// declared params**
+/// (`crates/internal/brink-ir/src/lir/lower/expr.rs`: `let is_ref =
+/// params.get(i).is_some_and(|p| p.is_ref);`), while the runtime binds the
+/// call's arguments by **trailing** position (this module's own "Runtime
+/// binding order" doc). Trimming the leading excess re-indexes every
+/// remaining argument against that positional decision, so a `ref` param
+/// can silently end up bound to a plain value (or vice versa) — flipping
+/// write-back rather than preserving it. Repro: `VAR hp = 10` +
+/// `=== function heal(ref h, amt) === / ~ h = h + amt / ~ return h` +
+/// `~ temp r = heal(hp, hp, 5)` — before the fix arg0 (`hp`, a pointer)
+/// binds nothing (the callee binds only its trailing 2 args), so `{hp}`
+/// stays `10`; the offered trim (`heal(hp, 5)`) would make arg0 bind `h`
+/// for real, changing `{hp}` to `15`. Not observably equivalent — withhold
+/// the fix entirely rather than risk it.
 fn expected_param_count(db: &ProjectDb, d: &Diagnostic) -> Option<usize> {
     let (resolutions, _) = db.resolve(d.file)?;
     let target = resolutions.iter().find(|r| r.range == d.range)?.target;
     let index = db.symbol_index();
-    Some(index.symbols.get(&target)?.params.len())
+    let symbol = index.symbols.get(&target)?;
+    if symbol.params.iter().any(|p| p.is_ref) {
+        return None;
+    }
+    Some(symbol.params.len())
 }
 
 /// One call/divert-with-args site as observed from either frontend's CST:
@@ -176,9 +220,11 @@ struct ArgsShape {
     /// `expected == 0` (there is no "first kept argument" to anchor on).
     close_paren: usize,
     /// Each supplied argument's own `(range, is_pure)`, in source order.
-    /// "Pure" means free of a nested call or assignment anywhere in its
-    /// subtree — see this module's doc for why it is the *leading*
-    /// arguments (the ones a `Safe` trim here deletes) that must be pure.
+    /// "Pure" means free of a nested call (or, on ink, an `++`/`--`
+    /// increment) anywhere in its subtree — see [`ink_is_pure`]/
+    /// [`native_is_pure`] and this module's doc for why it is the
+    /// *leading* arguments (the ones a `Safe` trim here deletes) that must
+    /// be pure.
     args: Vec<(TextRange, bool)>,
 }
 
@@ -245,6 +291,39 @@ fn ink_is_pure(node: &brink_syntax::SyntaxNode) -> bool {
     })
 }
 
+/// Whether `fc`'s return value is popped in **isolation** — nothing else
+/// shares the same evaluation's stack region beneath it (BLOCKING finding:
+/// "the call is the entire RHS of a `~` assignment").
+///
+/// Only the direct RHS of a `~ temp` decl or a `~` assignment qualifies.
+/// A call nested inside a larger expression — `~ temp r = 1 +
+/// greet("Al", "Bob")` — is **not** isolated: `Infix` pushes `1` first,
+/// then evaluates `greet(...)` (which leaves the leaked leading arg `"Al"`
+/// sitting *beneath* the call's own return value, per this module's
+/// "Runtime binding order" doc), so the stack right before `+` fires reads
+/// `[1, "Al", "Hi Bob"]` — `Add` pops the top two (`"Hi Bob"` and `"Al"`),
+/// not `1` and `"Hi Bob"`, and `1` is left stranded. Trimming the leading
+/// arg removes that corruption entirely, so the trimmed program computes
+/// `1 + "Hi Bob"` instead of the diagnosed program's actual `"Al" + "Hi
+/// Bob"` — a different result, not an equivalent one. Confirmed empirically
+/// (not just reasoned about): see
+/// `e031_no_fix_when_the_call_is_not_the_entire_rhs` below.
+fn ink_call_is_isolated(fc: &brink_syntax::ast::FunctionCall) -> bool {
+    use brink_syntax::ast::{Assignment, AstNode as _, TempDecl};
+    let Some(parent) = fc.syntax().parent() else {
+        return false;
+    };
+    match parent.kind() {
+        brink_syntax::SyntaxKind::TEMP_DECL => TempDecl::cast(parent)
+            .and_then(|t| t.value())
+            .is_some_and(|v| v.syntax().text_range() == fc.syntax().text_range()),
+        brink_syntax::SyntaxKind::ASSIGNMENT => Assignment::cast(parent)
+            .and_then(|a| a.value())
+            .is_some_and(|v| v.syntax().text_range() == fc.syntax().text_range()),
+        _ => false,
+    }
+}
+
 fn ink_call_args(source: &str, target_range: TextRange) -> Option<ArgsShape> {
     use brink_syntax::ast::{AstNode as _, FunctionCall};
 
@@ -256,6 +335,9 @@ fn ink_call_args(source: &str, target_range: TextRange) -> Option<ArgsShape> {
         .descendants()
         .filter_map(FunctionCall::cast)
         .find(|fc| fc.identifier().map(|i| i.syntax().text_range()) == Some(target_range))?;
+    if !ink_call_is_isolated(&fc) {
+        return None;
+    }
     let arg_list = fc.arg_list()?;
     let close_paren = crate::text::closing_paren_offset(fc.syntax())?;
     let args = arg_list
@@ -310,14 +392,22 @@ fn ink_divert_args(source: &str, target_range: TextRange) -> Option<ArgsShape> {
 
 // ── native frontend ──────────────────────────────────────────────────────
 
+/// Only `CALL_EXPR` — native has no expression-position mutation to guard
+/// against. `ASSIGN_STMT` was checked here until a review finding: native's
+/// `arg_list` parses each argument with `expression(p)`
+/// (`parser/expr.rs::arg_list`), and `ASSIGN_STMT` is only ever produced by
+/// the statement dispatcher (`parser/stmt.rs::logic_line`/`assign_stmt`),
+/// which nothing in the expression grammar calls into — no block-expression
+/// production exists for an argument to smuggle one in through. So
+/// `ASSIGN_STMT` can never appear in an argument's subtree, and checking
+/// for it was an untested, unreachable defensive branch (native has no
+/// `POSTFIX_EXPR` either — no `++`/`--`; ink's own predicate below guards
+/// that instead of an assignment shape, for the same "expression-position
+/// mutation" reason).
 fn native_is_pure(node: &brink_syntax_native::SyntaxNode) -> bool {
-    !node.descendants().any(|n| {
-        matches!(
-            n.kind(),
-            brink_syntax_native::SyntaxKind::CALL_EXPR
-                | brink_syntax_native::SyntaxKind::ASSIGN_STMT
-        )
-    })
+    !node
+        .descendants()
+        .any(|n| n.kind() == brink_syntax_native::SyntaxKind::CALL_EXPR)
 }
 
 /// The `(`/`)` boundary of a native `ArgList` — unlike ink's `ArgList`
@@ -351,6 +441,26 @@ fn native_arg_list_bounds(
     Some((open_end, close_start))
 }
 
+/// The native counterpart of [`ink_call_is_isolated`] — same reasoning,
+/// against `LetStmt`/`AssignStmt`'s own `value()` (a bare `SyntaxNode`,
+/// unlike ink's `Expr`-typed accessors — native's own convention, see
+/// `LetStmt::value`/`AssignStmt::value`'s doc comments).
+fn native_call_is_isolated(call: &brink_syntax_native::ast::CallExpr) -> bool {
+    use brink_syntax_native::ast::{AssignStmt, AstNode as _, LetStmt};
+    let Some(parent) = call.syntax().parent() else {
+        return false;
+    };
+    match parent.kind() {
+        brink_syntax_native::SyntaxKind::LET_STMT => LetStmt::cast(parent)
+            .and_then(|l| l.value())
+            .is_some_and(|v| v.text_range() == call.syntax().text_range()),
+        brink_syntax_native::SyntaxKind::ASSIGN_STMT => AssignStmt::cast(parent)
+            .and_then(|a| a.value())
+            .is_some_and(|v| v.text_range() == call.syntax().text_range()),
+        _ => false,
+    }
+}
+
 fn native_call_args(source: &str, target_range: TextRange) -> Option<ArgsShape> {
     use brink_syntax_native::ast::{AstNode as _, CallExpr};
 
@@ -362,6 +472,9 @@ fn native_call_args(source: &str, target_range: TextRange) -> Option<ArgsShape> 
         .descendants()
         .filter_map(CallExpr::cast)
         .find(|c| c.callee().map(|p| p.syntax().text_range()) == Some(target_range))?;
+    if !native_call_is_isolated(&call) {
+        return None;
+    }
     let arg_list = call.arg_list()?;
     let (zero_start, close_paren) = native_arg_list_bounds(&arg_list)?;
     let args = arg_list
@@ -635,6 +748,262 @@ mod tests {
         assert_eq!(
             applied(src, &fixes[0]),
             "flow accuse(who) {\n  I accuse {who}!\n}\n\nflow main() {\n  -> accuse(\"Poirot\")\n}\n"
+        );
+    }
+
+    // ── review findings: soundness narrowing ────────────────────────────
+
+    #[test]
+    fn e031_no_fix_when_the_call_is_not_the_entire_rhs() {
+        // BLOCKING finding: `1 + greet(...)` is not isolated. `greet`
+        // leaks its leading arg `"Al"` onto the shared stack beneath its
+        // own return value; `+`'s pop then reads that leaked value as its
+        // other operand instead of `1` (before any fix: `Add` pops
+        // `"Hi Bob"` and `"Al"`, and `1` is left stranded). Trimming the
+        // leading arg would remove that leak entirely and compute
+        // `1 + "Hi Bob"` instead — a different result from the diagnosed
+        // program's actual one, so no fix may be offered here.
+        let src =
+            format!("{GREET}=== main ===\n~ temp r = 1 + greet(\"Al\", \"Bob\")\n{{r}}\n-> DONE\n");
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", &src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("greet(\"Al\"").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    #[test]
+    fn e031_native_no_fix_when_the_call_is_not_the_entire_rhs() {
+        // Native counterpart — proves `native_call_is_isolated` guards the
+        // same shape (`~ let r = 1 + greet(...)`), not just ink's.
+        let src = "fn greet(name) >{\n  return \"Hi \" + name\n}\n\nflow main() {\n  ~ let r = 1 + greet(\"Al\", \"Bob\")\n  {r}\n  -> END\n}\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.brink", src);
+        let file = session.file_id("test.brink").expect("file id");
+        let off = u32::try_from(src.find("greet(\"Al\"").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    #[test]
+    fn e031_no_fix_when_the_target_declares_a_ref_param() {
+        // BLOCKING finding: `heal`'s `ref h` binds by *declared* position
+        // (`lower_call_args`) while the runtime binds the *value* by
+        // *trailing* position — trimming the leading args re-indexes which
+        // supplied argument lands on `h`, flipping write-back. Before any
+        // fix, arg0 (`hp`, a pointer) binds nothing since the callee only
+        // binds its trailing 2 args, so `{hp}` stays `10`; the withheld
+        // trim (`heal(hp, 5)`) would make arg0 bind `h` for real and
+        // `{hp}` become `15`. No fix may be offered here.
+        let src = "VAR hp = 10\n=== function heal(ref h, amt) ===\n~ h = h + amt\n~ return h\n\n=== main ===\n~ temp r = heal(hp, hp, 5)\n{hp}\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("heal(hp, hp").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    // ── review finding: `expected == 0` arm coverage ─────────────────────
+
+    const SHOUT: &str = "=== function shout() ===\n~ return \"Yo!\"\n\n";
+
+    #[test]
+    fn e031_ink_zero_params_drops_every_argument() {
+        // `build_trim_fix`'s `expected == 0` arm: a zero-declared-param
+        // target over-supplied with one argument trims to a bare `()`,
+        // and the result must still parse and clear the diagnostic.
+        let src = format!("{SHOUT}=== main ===\n~ temp r = shout(\"extra\")\n{{r}}\n-> DONE\n");
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", &src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("shout(\"extra\")").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(&src, &fixes[0]);
+        assert_eq!(
+            patched,
+            format!("{SHOUT}=== main ===\n~ temp r = shout()\n{{r}}\n-> DONE\n")
+        );
+
+        let after = session_with(brink_analyzer::Dialect::Brink, "test.ink", &patched);
+        let after_file = after.file_id("test.ink").expect("file id");
+        let parse = brink_syntax::parse(&patched);
+        assert!(
+            parse.errors().is_empty(),
+            "trimmed source must still parse cleanly: {:?}",
+            parse.errors()
+        );
+        let diags = after.db().diagnostics(after_file).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E031),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn e031_native_zero_params_drops_every_argument() {
+        let src = "fn shout() >{\n  return \"Yo!\"\n}\n\nflow main() {\n  ~ let r = shout(\"extra\")\n  {r}\n  -> END\n}\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.brink", src);
+        let file = session.file_id("test.brink").expect("file id");
+        let off = u32::try_from(src.find("shout(\"extra\")").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(fixes.len(), 1);
+        let patched = applied(src, &fixes[0]);
+        assert_eq!(
+            patched,
+            "fn shout() >{\n  return \"Yo!\"\n}\n\nflow main() {\n  ~ let r = shout()\n  {r}\n  -> END\n}\n"
+        );
+
+        let after = session_with(brink_analyzer::Dialect::Brink, "test.brink", &patched);
+        let after_file = after.file_id("test.brink").expect("file id");
+        let parse = brink_syntax_native::parse(&patched);
+        assert!(
+            parse.errors().is_empty(),
+            "trimmed source must still parse cleanly: {:?}",
+            parse.errors()
+        );
+        let diags = after.db().diagnostics(after_file).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E031),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn e176_ink_zero_params_drops_every_argument() {
+        // A weave `Label` (`- (lbl)`) declares no params at all — the
+        // `E176` shape of the same `expected == 0` arm.
+        let src = "=== target ===\n= stitch\n- (lbl)\nHello\n-> DONE\n\n=== main ===\n-> target.stitch.lbl(\"extra\")\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("target.stitch.lbl").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        let patched = applied(src, &fixes[0]);
+        assert_eq!(
+            patched,
+            "=== target ===\n= stitch\n- (lbl)\nHello\n-> DONE\n\n=== main ===\n-> target.stitch.lbl()\n"
+        );
+
+        let after = session_with(brink_analyzer::Dialect::Brink, "test.ink", &patched);
+        let after_file = after.file_id("test.ink").expect("file id");
+        let parse = brink_syntax::parse(&patched);
+        assert!(
+            parse.errors().is_empty(),
+            "trimmed source must still parse cleanly: {:?}",
+            parse.errors()
+        );
+        let diags = after.db().diagnostics(after_file).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E176),
+            "{diags:?}"
+        );
+    }
+
+    // ── review finding: sibling shapes ───────────────────────────────────
+
+    #[test]
+    fn e176_ink_thread_start_drops_the_leading_excess_argument() {
+        // `ink_divert_args` handles `ThreadStart` (`<- knot(args)`) as well
+        // as a plain divert — previously untested.
+        let src = format!("{ACCUSE}=== main ===\n<- accuse(\"Hastings\", \"Poirot\")\n");
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", &src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off =
+            u32::try_from(src.find("accuse(\"Hastings\"").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert_eq!(fixes[0].code, DiagnosticCode::E176);
+        assert_eq!(
+            applied(&src, &fixes[0]),
+            format!("{ACCUSE}=== main ===\n<- accuse(\"Poirot\")\n")
+        );
+    }
+
+    #[test]
+    fn e176_native_splice_drops_the_leading_excess_argument() {
+        // `native_divert_args` handles `Splice` (native's `<- knot(args)`
+        // inside a `{? … }` choice point) — previously untested.
+        let src = "flow options(a, b) {\n  {a} {b}\n}\n\nflow main() {\n  {?\n    <- options(\"gold\", 2, 3)\n  }\n}\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.brink", src);
+        let file = session.file_id("test.brink").expect("file id");
+        let off = u32::try_from(src.find("options(\"gold\"").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert_eq!(fixes[0].code, DiagnosticCode::E176);
+        assert_eq!(
+            applied(src, &fixes[0]),
+            "flow options(a, b) {\n  {a} {b}\n}\n\nflow main() {\n  {?\n    <- options(2, 3)\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn e176_ink_tunnel_call_drops_the_leading_excess_argument() {
+        // The tunnel-call spelling (`-> knot(args) ->`) reuses the same
+        // `DivertTargetWithArgs` node a plain divert does — previously
+        // untested as its own shape.
+        let src =
+            format!("{ACCUSE}=== main ===\n-> accuse(\"Hastings\", \"Poirot\") ->\n-> DONE\n");
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", &src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off =
+            u32::try_from(src.find("accuse(\"Hastings\"").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert_eq!(fixes[0].code, DiagnosticCode::E176);
+        assert_eq!(
+            applied(&src, &fixes[0]),
+            format!("{ACCUSE}=== main ===\n-> accuse(\"Poirot\") ->\n-> DONE\n")
+        );
+    }
+
+    #[test]
+    fn e176_ink_tunnel_onwards_redirect_drops_the_leading_excess_argument() {
+        // Correction (review finding): a tunnel *redirect* (`->->
+        // target(args)`) is reachable after all — see this module's
+        // "Correction" doc above for why the earlier "left unfixed" claim
+        // was wrong, and `brink play` on `before`/`after` (both print `3`)
+        // for the empirical proof behind it.
+        let src = "-> a ->\n=== a ===\n->-> b(5, 3)\n=== b(x) ===\n{x}\n-> END\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("b(5, 3)").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        assert_eq!(
+            fixes.len(),
+            1,
+            "{:?}",
+            fixes.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert_eq!(fixes[0].code, DiagnosticCode::E176);
+        assert_eq!(
+            applied(src, &fixes[0]),
+            "-> a ->\n=== a ===\n->-> b(3)\n=== b(x) ===\n{x}\n-> END\n"
         );
     }
 }
