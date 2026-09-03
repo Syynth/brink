@@ -586,4 +586,8 @@ a read, not a write — the message still names the right operation because
 `ReadCollector` (shared with `E193`) only discounts a plain `Set` target as
 "not a read", never a compound one."#,
     ),
+    (
+        DiagnosticCode::E110,
+        r"`#@effects(…)` was the original tag-channel spelling of a knot/stitch's effects assertion. The `@[effects(…)]` annotation is the final NS-A2 form (`docs/stdlib-spec.md` §9.2, ruled 2026-07-18), and the two spellings are **not** interchangeable text: `#@effects(…)` keeps the legacy **colon** argument grammar (`reads: gold, hp`) frozen forever, while `@[effects(…)]` uses the amended **paren-clause** grammar (`reads(gold, hp)`, 2026-07-19). The tag spelling still parses — nothing about the assertion's meaning changes — but every new definition should use the annotation spelling, and this warning is how an existing `#@effects(…)` site is found.",
+    ),
 ];
