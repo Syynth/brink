@@ -93,12 +93,19 @@ describe("unified drive loop (W5/#3298)", () => {
     // The W7 paced default (F13) would pump line-by-line — this pin is
     // about the "all at once" batch road, so switch pacing off.
     const session = scriptedSession([BP]);
+    // One line per wasm call (ruled 2026-09-02): the free-run is a loop of
+    // run-to-line calls until a stop that is not "landed on a line".
+    session.debugRunToLine
+      .mockReturnValueOnce(outcome({ type: "step" }))
+      .mockReturnValueOnce(outcome({ type: "step" }))
+      .mockReturnValue(outcome({ type: "terminal" }));
     const { store, provider } = bind(session);
     provider.setAuto(true);
     store.getState().setSessionPaced(0);
 
     store.getState().revealNext();
-    expect(session.debugRun).toHaveBeenCalled();
+    expect(session.debugRun).not.toHaveBeenCalled();
+    expect(session.debugRunToLine).toHaveBeenCalledTimes(3);
   });
 
   it("a breakpoint hit pauses the session; Continue (debugRunToLine) resumes", () => {

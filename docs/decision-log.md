@@ -4829,3 +4829,20 @@
 - **SCOPE:** moderate
 - **WHAT:** (1) The Player's reading surface follows direction C of the design pass — modern, colour-led: each speaker's block hangs off a rule in the speaker's palette colour with the name as a small label, asides inside the block, choices as cards carrying their `*`/`+` marker. Directions A (Manuscript) and B (Screenplay) are dropped. (2) The provenance affordance is a small icon button, absolutely positioned so it hangs below the row's edge over the next row, revealing `file:line` as a tooltip on hover — not a text chip in the row. (3) Hovering a transcript line highlights its source line in the editor (distinct from the follow band). (4) The transcript shows a line's tags. (5) Still open: a visual element that ties the choice cards to the transcript rows — "we're closer to good choices here, but I want something more." (6) Narration reads at full strength; action lines are the dimmed ones — "action is dimmed, narration isn't" (this reverses the Player's current italic-muted narration). (7) The provenance button is present only while its row is hovered. (8) The spine (the rail the speaker segments and choice nodes share — accepted: "that's neat") reacts to the line kind: solid coloured for a speaker, plain for narration, dotted along action text. The echo ring sits on the centre of its text line.
 - **WHY:** Maintainer, on the canvas: "C is pretty good. it's not quite there, but we can drop the other two from consideration"; the link "should be an icon button that when hovered reveals the filename:line"; "hovering the line should highlight in the editor, as well"; "i'd like to see tags in the example".
+
+## Fix on save is an app-scope ceiling, default off, resolved through `effective_fix_policy`
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** studio-ui, brink-web
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** The studio's "Fix on save" setting is `off | safe | project`, defaults to **off**, and lives with the other app-scope editor settings (`brink-studio.editor.v1`) — never in `brink.toml`. It resolves as a CEILING over the project's `[fix]` table rather than as a tier filter: `safe` maps to the ceiling `"ask"` and `project` to `"auto"`, and both go through `ProjectConfig::effective_fix_policy(code, ceiling)` rather than any intersection re-derived at the call site. An unrecognized persisted value lands on `off`. The on-save run pushes no undo entry and raises no toast of its own.
+- **WHY:** `docs/autofix-spec.md` §6.2 marks the ceiling relationship TENTATIVE and asks for it to stay resolved in exactly one function, so the relationship can change in one place. The default-off half is not tentative: an editor that silently rewrites a manuscript on every Ctrl-S is not a default anyone opted into. `safe` is expressed as a ceiling rather than `Select{tiers:["safe"]}` because a tier filter would ALSO withdraw a Safe fix the project turned `"off"` — the project's own opinion has to keep applying underneath the personal one.
+
+## `fix_all` over wasm restores the session; the report carries the sources to write
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-web, studio-ui
+- **SCOPE:** moderate
+- **WHAT:** `EditorSession::fix_all` rolls the batch loop's intermediate rewrites back before returning, and reports `files: [{ path, new_source }]` instead. The host applies them through its own seam, exactly as it applies `apply_fix`'s `StructuralResult`.
+- **WHY:** The studio's apply seam (`applyMoveResult`) snapshots each file for undo *as it writes*. A session left holding the fixed text would make that snapshot capture the fixed text, and Undo after "Fix all safe" would restore nothing. Keeping the wasm query side-effect-free also makes it the same shape as every sibling on that boundary, so a host cannot be surprised by which of them mutate.

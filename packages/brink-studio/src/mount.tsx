@@ -157,6 +157,7 @@ import {
   settingsSections,
   isConfigPath,
   registerStoryGraphCommand,
+  type FixStoreState,
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
@@ -171,6 +172,7 @@ import { runtimeValueNote } from "./runtime-hover.js";
 import { localStorageSaveStore, type SaveStore } from "@brink/studio-store";
 import { CONFIG_FILE, configDiagnostics, malformedCueDiagnostics } from "./dialect-diagnostics.js";
 import { registerFileCommands } from "./file-commands.js";
+import { registerFixCommands } from "./fix-commands.js";
 import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 import { studioProseChecker } from "./prose-checker.js";
@@ -269,6 +271,10 @@ export interface MountStudioOptions {
    * view (see `@brink-lang/editor`).
    */
   dialect?: DialogueDialect | null;
+  /** The host's font list for Settings › Player › Font (#3438/#3439): the
+   *  desktop app enumerates the machine's fonts; the web has none and
+   *  gets the curated list. Family names, resolved on demand. */
+  systemFonts?: () => Promise<readonly string[]>;
   /**
    * File-content egress (issue #154): called with batched change
    * notifications whenever project files change in the session — CM6 edits,
@@ -1109,10 +1115,14 @@ export async function mountStudio(
     onProseLints: (path, lints) => {
       store.getState().setProseDiagnostics(path, toProseDiagnostics(path, lints));
     },
-    onDocEdited: (docKey, groupId) =>
+    onDocEdited: (docKey, groupId) => {
       editorGroups
         .getState()
-        .pinTab(groupId, documentKey({ typeId: INK_FILE_TYPE_ID, docId: docKey })),
+        .pinTab(groupId, documentKey({ typeId: INK_FILE_TYPE_ID, docId: docKey }));
+      // An edit pauses follow (#3437): the author took the wheel. Run /
+      // Restart or the toggle resumes it.
+      if (store.getState().followInEditor) store.getState().setFollowPaused(true);
+    },
     onViewFocused: (_docKey, groupId) => editorGroups.getState().focusGroup(groupId),
     onFocusedViewChange: (view) => {
       (window as unknown as Record<string, unknown>).__brinkView = view ?? undefined;
@@ -1245,6 +1255,21 @@ export async function mountStudio(
   registerFileCommands(commands, {
     project,
     documents,
+    notify: (n) => void notifications.notify(n),
+    // Read fresh per save (docs/autofix-spec.md §6.2) — changing the
+    // setting takes effect on the next Ctrl-S, not the next reload.
+    fixOnSave: () => store.getState().fixOnSave,
+  });
+
+  // Auto-fix batch commands (docs/autofix-spec.md §7): "Fix all safe in
+  // project" / "…in this file". `activeDocKey` is the focused group's ink
+  // tab; a symbol tab's key is "path::symbol", so the file is the prefix.
+  registerFixCommands(commands, {
+    getState: () => store.getState() as unknown as FixStoreState,
+    activePath: () => {
+      const key = store.getState().activeDocKey;
+      return key === "" ? null : (key.split("::")[0] ?? null);
+    },
     notify: (n) => void notifications.notify(n),
   });
   documentsRef = documents;
@@ -1709,6 +1734,18 @@ export async function mountStudio(
     store.getState().setSessionPaced(player.pacedRevealMs);
     store.getState().setPlayerFontSize(player.fontSize);
     store.getState().setSaveLocationDefault(player.saveLocation);
+    store.getState().setFollowInEditor(player.followInEditor);
+    store.getState().setPlayerFontFamily(player.fontFamily);
+    store.getState().setPlayerLineHeight(player.lineHeight);
+    store.getState().setPlayerMeasure(player.measure);
+    store.getState().setShowProvenance(player.showProvenance);
+    store.getState().setShowChoiceMarkers(player.showChoiceMarkers);
+    if (options.systemFonts) {
+      void options
+        .systemFonts()
+        .then((fonts) => store.getState().setHostFonts(fonts))
+        .catch(() => store.getState().setHostFonts(null));
+    }
   }
 
   // Checkpoint stores (W14/#3307): the embedder/desktop host may supply
@@ -1793,6 +1830,21 @@ export async function mountStudio(
         kind: "program",
         address: encodeProgramAddress(containerIdx, offset),
       }),
+    // Follow (#3437): scroll every open view of the source to the line,
+    // WITHOUT focus and WITHOUT opening anything — the Player is driving,
+    // and opening the file would land it over the Player's own document
+    // in a single-group layout (caught by the player-document e2e). A
+    // file that is not open is simply not followed; a pause/breakpoint
+    // still reveals-and-opens as before.
+    followSource: (source) => {
+      const point = store.getState()._resolveSourceBytes?.(
+        source.file,
+        source.range_start,
+        source.range_end,
+      );
+      if (!point) return;
+      documents.scrollTo(source.file, point.start);
+    },
   });
 
   // Restore the persisted editor settings (Settings → Editor). After initialize,
@@ -1806,6 +1858,7 @@ export async function mountStudio(
     store.getState().setAutoOpenForm(editor.autoOpenForm);
     store.getState().setEditorFontSize(editor.fontSize);
     store.getState().setAppFontSize(editor.appFontSize);
+    store.getState().setFixOnSave(editor.fixOnSave);
   }
   // Problems panel view preferences (ruled 2026-08-25: grouped by default,
   // and the toggles persist). The filter text deliberately does not.

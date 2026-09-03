@@ -28,6 +28,64 @@ function targets() {
   } satisfies DebugRefreshTargets;
 }
 
+describe("subscribeDebugRefresh — follow the Player (#3437)", () => {
+  const src = { file: "main.ink", range_start: 10, range_end: 20 };
+  const line = (text: string, withSource = true) =>
+    ({ text, kind: "line" as const, tags: [], ...(withSource ? { source: src } : {}) });
+
+  it("a newly revealed line scrolls the editor to its source while playing with follow on", () => {
+    const store = createStudioStore();
+    store.setState({ sessionStatus: "running", followInEditor: true } as never);
+    const t = { ...targets(), followSource: vi.fn<(s: typeof src) => void>() };
+    subscribeDebugRefresh(store, t);
+    store.setState({ sessionLines: [line("One")] } as never);
+    expect(t.followSource).toHaveBeenCalledWith(src);
+    expect(t.refreshExecutionHighlight).toHaveBeenCalled();
+  });
+
+  it("follows the newest line that HAS a source, not a source-less notice", () => {
+    const store = createStudioStore();
+    store.setState({ sessionStatus: "running", followInEditor: true } as never);
+    const t = { ...targets(), followSource: vi.fn<(s: typeof src) => void>() };
+    subscribeDebugRefresh(store, t);
+    const other = { file: "main.ink", range_start: 30, range_end: 40 };
+    store.setState({
+      sessionLines: [line("One"), { ...line("Two"), source: other }, line("notice", false)],
+    } as never);
+    expect(t.followSource).toHaveBeenLastCalledWith(other);
+  });
+
+  it("does not follow when off, when paused by an edit, at a debugger pause, or when idle", () => {
+    for (const state of [
+      { sessionStatus: "running", followInEditor: false },
+      { sessionStatus: "running", followInEditor: true, followPaused: true },
+      { sessionStatus: "running", followInEditor: true, sessionPaused: true },
+      { sessionStatus: "none", followInEditor: true },
+    ]) {
+      const store = createStudioStore();
+      store.setState(state as never);
+      const t = { ...targets(), followSource: vi.fn<(s: typeof src) => void>() };
+      subscribeDebugRefresh(store, t);
+      store.setState({ sessionLines: [line("One")] } as never);
+      expect(t.followSource, JSON.stringify(state)).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a hover change and a follow flip refresh the highlight; a new run lifts an edit's pause", () => {
+    const store = createStudioStore();
+    store.setState({ sessionStatus: "none", followInEditor: true, followPaused: true } as never);
+    const t = targets();
+    subscribeDebugRefresh(store, t);
+    store.getState().setSessionHoverSource(src);
+    expect(t.refreshExecutionHighlight).toHaveBeenCalledTimes(1);
+    store.getState().setFollowInEditor(false);
+    expect(t.refreshExecutionHighlight).toHaveBeenCalledTimes(2);
+    store.setState({ followInEditor: true, followPaused: true } as never);
+    store.setState({ sessionStatus: "running" } as never);
+    expect(store.getState().followPaused).toBe(false);
+  });
+});
+
 describe("subscribeDebugRefresh (W4/#3297, W6/#3299)", () => {
   it("terminates when the sync itself setStates synchronously (the live stack overflow)", () => {
     const store = createStudioStore();

@@ -94,6 +94,7 @@ describe("editor font size persistence", () => {
       showInlayHints: false,
       fontSize: 18,
       appFontSize: 12,
+      fixOnSave: "off",
     });
     const loaded = loadEditorSettings(storage);
     expect(loaded.fontSize).toBe(18);

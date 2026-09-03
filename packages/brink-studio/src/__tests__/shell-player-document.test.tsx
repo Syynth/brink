@@ -319,6 +319,102 @@ describe("PlayerPane as a document view", () => {
     expect(dispatched).toEqual(["story.start"]);
   });
 
+  it("reading surface (#3436): speaker block on the spine, dotted action, echo ring, choice cards with markers, no stripes", () => {
+    const commands = new CommandRegistry();
+    commands.register({ id: "story.choose", title: "Story: Choose", run: () => undefined });
+    const store = createStudioStore();
+    const dialect = {
+      version: 1,
+      name: "test",
+      elements: [
+        {
+          kind: "character",
+          nature: "narrative",
+          source: { pattern: "^(?<lead>@)(?<speaker>[^:]*)(?<tail>:<>)$", content_group: "speaker", hidden: ["lead", "tail"], template: "@${speaker}:<>" },
+          emitted: { pattern: "^@(?<speaker>[^:]*):\\s*", content_group: "speaker", reserved_prefix: true },
+          malformed: [],
+        },
+        {
+          kind: "action",
+          nature: "narrative",
+          source: { prefix: "> ", content_role: "content" },
+          emitted: { pattern: "^>\\s*(?<content>.*)$", content_group: "content", reserved_prefix: true },
+          malformed: [],
+        },
+        { kind: "dialogue", nature: "narrative" },
+      ],
+      chain: [{ after: ["character", "dialogue"], is: ["narrative"], becomes: "dialogue", carry: ["speaker"], run_ends_at: ["action", "choices"] }],
+      transitions: [],
+      templates: { entries: [] },
+    };
+    store.setState({
+      projectDialect: dialect,
+      sessionStatus: "awaiting-choice",
+      sessionText: [],
+      sessionLines: [
+        { text: "The lights dim.", kind: "line" as const, tags: [] },
+        { text: "@MARA: We wait.", kind: "line" as const, tags: [] },
+        { text: "> She listens.", kind: "line" as const, tags: [] },
+        { text: "> Go now", kind: "marker" as const, tags: [], choiceKind: "sticky" as const },
+      ],
+      sessionChoices: [
+        { index: 0, text: "Stay", tags: [], sticky: false },
+        { index: 1, text: "Run", tags: [], sticky: true },
+        { index: 2, text: "Older host", tags: [] },
+      ],
+    } as never);
+    const el = mount(commands, store, playerView("group-1"));
+
+    // The spine wraps the transcript and the choices.
+    expect(el.querySelector(".player-spine .story-text")).not.toBeNull();
+    expect(el.querySelector(".player-spine .choices")).not.toBeNull();
+    // Speaker block carries its palette class (the rail segment's colour) and the label.
+    const run = el.querySelector(".player-run")!;
+    expect(run.className).toMatch(/speaker-\d/);
+    expect(run.querySelector(".player-run-cue")?.textContent).toBe("MARA");
+    // Action row is the dimmed kind; narration is a plain kind-line row.
+    expect(el.querySelector(".player-line-row.dialect-action p")?.textContent).toBe("> She listens.");
+    // The echo: ring with the sticky glyph, textual "> " dropped.
+    const echo = el.querySelector(".player-line-row.is-echo")!;
+    expect(echo.querySelector(".player-echo-ring")?.textContent).toBe("+");
+    expect(echo.querySelector("p")?.textContent).toBe("Go now");
+    // Cards: markers as written; an older host's choice has none.
+    const cards = Array.from(el.querySelectorAll<HTMLButtonElement>(".choices .player-choice"));
+    expect(cards.map((c) => c.querySelector(".player-choice-mark")?.textContent ?? null)).toEqual(["*", "+", null]);
+    expect(cards.map((c) => c.className.includes("is-sticky"))).toEqual([false, true, false]);
+    // No provenance button without a hover.
+    expect(el.querySelector(".player-provenance")).toBeNull();
+  });
+
+  it("Follow in editor (#3437): the toolbar toggle flips the store and persists; hovering a row sets the hover source", () => {
+    const commands = new CommandRegistry();
+    const store = createStudioStore();
+    const src = { file: "main.ink", range_start: 1, range_end: 5 };
+    store.setState({
+      sessionStatus: "running",
+      sessionText: ["The lights dim."],
+      sessionLines: [{ text: "The lights dim.", kind: "line" as const, tags: [], source: src }],
+    } as never);
+    const el = mount(commands, store, playerView("group-1"));
+    const follow = el.querySelector<HTMLButtonElement>(".player-follow-btn")!;
+    expect(follow.getAttribute("aria-pressed")).toBe("true");
+    act(() => follow.click());
+    expect(store.getState().followInEditor).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem("brink-studio.player.v1") ?? "{}").followInEditor).toBe(false);
+    act(() => follow.click());
+    expect(store.getState().followInEditor).toBe(true);
+
+    const row = el.querySelector<HTMLDivElement>(".player-line-row")!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(store.getState().sessionHoverSource).toEqual(src);
+    act(() => {
+      row.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    });
+    expect(store.getState().sessionHoverSource).toBeNull();
+  });
+
   it("two instances render the same session; choices dispatch story.choose", () => {
     const commands = new CommandRegistry();
     const chosen: unknown[] = [];

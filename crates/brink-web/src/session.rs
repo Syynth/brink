@@ -732,6 +732,31 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The knot or `knot.stitch` the story is executing in —
+    /// [`brink_runtime::Story::current_path`] (ink's `currentPathString`
+    /// without weave indices). `undefined` before the first line or when no
+    /// named container holds the position. As in ink, it is where the story
+    /// IS: read it BEFORE a continue to know where the coming line is from.
+    #[must_use]
+    pub fn current_path(&self) -> Option<String> {
+        self.session
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.story().current_path())
+    }
+
+    /// [`current_path`](Self::current_path) for a named flow.
+    pub fn flow_current_path(&self, name: &str) -> Result<Option<String>, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        session
+            .story()
+            .current_path_flow(name)
+            .map_err(|e| JsError::new(&format!("flow error: {e}")))
+    }
+
     /// Per-flow debug snapshot (State View) for a named flow.
     pub fn flow_debug_snapshot(&self, name: &str) -> Result<String, JsError> {
         let borrow = self.session.borrow();
@@ -1936,6 +1961,59 @@ mod debug_control_tests {
                 .contains("Second line."),
             "debug-road provenance must cover the line's source too"
         );
+    }
+
+    /// `current_path` (#3389 follow-up): ink's `currentPathString` shape —
+    /// undefined at the root, then the knot/stitch the story is IN after a
+    /// line (the next content's location), so a host reads it before the
+    /// continue that delivers a line to know where that line is from.
+    #[test]
+    fn current_path_reports_the_knot_the_story_is_in() {
+        let src = "-> top\n=== top ===\nOne.\n-> inner\n= inner\nTwo.\n-> elsewhere\n=== elsewhere ===\nThree.\n-> END\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        assert_eq!(session.current_path(), None);
+        let _ = session.continue_single().expect("One.");
+        assert_eq!(session.current_path().as_deref(), Some("top.inner"));
+        let _ = session.continue_single().expect("Two.");
+        assert_eq!(session.current_path().as_deref(), Some("elsewhere"));
+    }
+
+    /// #3435: a choice carries `sticky` (as written) and `source` on both
+    /// the journaled road (`Step::Choices`) and the debug road (snapshot).
+    #[test]
+    fn choices_carry_kind_and_source_on_both_roads() {
+        let src = "-> top\n=== top ===\nPick.\n* [Once only] -> top\n+ [Sticky one] -> top\n";
+        let session = WebSession::new(&debug_bytes(src), None, None).expect("session constructs");
+        let _ = json(&session.continue_single().expect("the line"));
+        let stop = json(&session.continue_single().expect("the choices"));
+        assert_eq!(stop["type"], serde_json::json!("choices"), "{stop}");
+        let choices = stop["choices"].as_array().expect("choices");
+        assert_eq!(choices.len(), 2);
+        assert_eq!(
+            choices[0]["sticky"],
+            serde_json::json!(false),
+            "`*` is once-only: {stop}"
+        );
+        assert_eq!(
+            choices[1]["sticky"],
+            serde_json::json!(true),
+            "`+` is sticky: {stop}"
+        );
+        for (c, label) in choices.iter().zip(["Once only", "Sticky one"]) {
+            let s = c["source"]["range_start"].as_u64().expect("range_start");
+            let e = c["source"]["range_end"].as_u64().expect("range_end");
+            let at = &src[usize::try_from(s).expect("usize")..usize::try_from(e).expect("usize")];
+            assert!(
+                at.contains(label),
+                "source must cover the choice's own text, got {at:?}"
+            );
+        }
+
+        let snap = json(&session.debug_snapshot().expect("snapshot"));
+        let pending = snap["pending_choices"].as_array().expect("pending_choices");
+        assert_eq!(pending[0]["sticky"], serde_json::json!(false));
+        assert_eq!(pending[1]["sticky"], serde_json::json!(true));
+        assert_eq!(pending[1]["source"]["file"], serde_json::json!("main.ink"));
     }
 
     // ── W16/#3309: live value editing ───────────────────────────────────

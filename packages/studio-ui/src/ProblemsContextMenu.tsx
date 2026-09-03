@@ -33,6 +33,15 @@ import {
 } from "./suppressDiagnostic.js";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
+import {
+  applyOfferedFix,
+  indexFixOffers,
+  offersForDiagnostic,
+  pullFixOffers,
+  tierLabel,
+  type FixProject,
+  type FixStoreState,
+} from "./fixActions.js";
 
 export interface ProblemsMenuTarget {
   x: number;
@@ -86,7 +95,36 @@ export function ProblemsContextMenu({
     docs?.triggerCompile();
   };
 
+  /**
+   * Every auto-fix offered for THIS diagnostic (`docs/autofix-spec.md` §7 —
+   * "the row's context menu lists every offered fix beside the existing
+   * suppress items").
+   *
+   * Pulled for the whole compilation and looked up by the diagnostic's
+   * identity, the same road `ProblemsView`'s per-row button takes — the menu
+   * mounts on right-click only, so this runs once per opening.
+   */
+  const fixOffers = useMemo(() => {
+    const project = storeApi.getState()._project as FixProject | null;
+    return offersForDiagnostic(indexFixOffers(pullFixOffers(project)), target.diagnostic);
+  }, [storeApi, target.diagnostic]);
+
   const items: { label: string; run: () => void; disabled?: boolean }[] = [];
+
+  // Fixes first: the menu's job is to get the problem GONE, and suppressing
+  // it is the fallback when it cannot be. Each entry names the tier, so
+  // "changes meaning" is visible before the click rather than after.
+  for (const offer of fixOffers) {
+    items.push({
+      label: `${offer.fix.title} — ${tierLabel(offer.fix.applicability)}`,
+      run: () => {
+        void applyOfferedFix(
+          storeApi.getState() as unknown as FixStoreState,
+          offer,
+        );
+      },
+    });
+  }
 
   if (code !== undefined && path !== undefined && isSuppressible(defaultSeverity)) {
     items.push({

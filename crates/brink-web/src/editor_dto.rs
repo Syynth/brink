@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::compile::DiagnosticJs;
@@ -479,6 +479,87 @@ pub(crate) struct FixJs {
     pub(crate) edits: Vec<FileEditJs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) caret: Option<FixCaretJs>,
+}
+
+/// One offered fix paired with the diagnostic site it discharges
+/// (`docs/autofix-spec.md` §7's Problems-panel surface). `start`/`end` are
+/// the DIAGNOSTIC's own UTF-16 range in `path` — the key a Problems row
+/// matches on — while the fix's own edits may land elsewhere entirely (§4).
+#[derive(Serialize)]
+pub(crate) struct FixOfferJs {
+    /// The diagnostic code, e.g. `"E025"`. Same value as `fix.code`; carried
+    /// separately so a row can be matched without looking inside the fix.
+    pub(crate) code: String,
+    /// Project-relative path of the file the DIAGNOSTIC is reported in.
+    pub(crate) path: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    /// Whether `fix_all` would apply this fix unattended under the current
+    /// project policy — `FixPolicy::admits`. A surface counting "Fix all
+    /// safe (N)" must not count a fix this is false for.
+    pub(crate) batchable: bool,
+    pub(crate) fix: FixJs,
+}
+
+/// Where a batched fix was taken: the diagnostic it discharged.
+///
+/// Deliberately carries no offsets. A `Report`'s `applied` sites are ranges
+/// in the source revision the round that took them saw, and every later
+/// round rewrote that source — resolving them against the session's CURRENT
+/// text would report positions that never existed. The panel re-renders from
+/// a fresh compile anyway; what a report line needs is the code and the file.
+#[derive(Serialize)]
+pub(crate) struct FixSiteJs {
+    pub(crate) code: String,
+    pub(crate) path: String,
+}
+
+/// A file `fix_all` rewrote, and its full new text — the host's write list.
+#[derive(Serialize)]
+pub(crate) struct FixFileJs {
+    pub(crate) path: String,
+    pub(crate) new_source: String,
+}
+
+/// `brink_ide::fix::Report` over the wasm boundary, plus the sources to write
+/// (`docs/autofix-spec.md` §5).
+#[derive(Serialize)]
+pub(crate) struct FixReportJs {
+    pub(crate) applied: Vec<FixSiteJs>,
+    pub(crate) skipped_overlap: u32,
+    pub(crate) remaining: Vec<FixSiteJs>,
+    pub(crate) rounds: u8,
+    pub(crate) cap_hit: bool,
+    /// Every file whose text actually changed, with its full new source.
+    pub(crate) files: Vec<FixFileJs>,
+    /// Why nothing ran, when the request itself was unusable (unparseable
+    /// JSON, a path this session never loaded). Absent on every real run.
+    ///
+    /// Carried INSIDE the report rather than answered as a different shape:
+    /// `fix_all` is a `#[wasm_bindgen]` entry point taking caller JSON, and
+    /// a host that had to discriminate two shapes would be one forgotten
+    /// branch away from reading `applied`/`files` off an error object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+}
+
+/// The caller's selection for a batch query (`brink_ide::fix::Select` plus
+/// §6.2's app-scope ceiling). Every field is optional; `{}` means the whole
+/// compilation, every code, every tier, no app opinion.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct FixSelectJs {
+    /// Diagnostic codes to restrict to, e.g. `["E025"]`. An unrecognized
+    /// spelling selects nothing rather than everything — see
+    /// `fix_batch::parse_codes`.
+    pub(crate) codes: Option<Vec<String>>,
+    /// Tiers to restrict to: `"safe"` | `"suggested"` | `"placeholder"`.
+    pub(crate) tiers: Option<Vec<String>>,
+    /// Restrict to one file — "fix all in this file".
+    pub(crate) path: Option<String>,
+    /// The app-scope ceiling (§6.2): `"off"` | `"ask"` | `"auto"`. Only ever
+    /// LOWERS what the project's `[fix]` table allows.
+    pub(crate) ceiling: Option<String>,
 }
 
 #[derive(Serialize)]

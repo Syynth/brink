@@ -185,6 +185,7 @@ export {
   qualifiedInkPath,
   headerName,
   lineActionsAt,
+  fixActionsAt,
   refreshBreakpoints,
 } from "./play-from-here.js";
 export { identifierAt, augmentHoverWithRuntimeValue } from "./hover-runtime.js";
@@ -198,6 +199,7 @@ export type {
   TextMenuRequest,
   IdentityMenuSection,
   LineMenuAction,
+  FixMenuAction,
   BreakpointGutterMarker,
 } from "./play-from-here.js";
 

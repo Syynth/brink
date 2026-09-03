@@ -195,6 +195,7 @@ mod tests {
             global_map: HashMap::new(),
             name_table: vec![],
             address_by_path: HashMap::new(),
+            container_paths: HashMap::new(),
             root_idx: 0,
             list_literals: vec![],
             literal_pool: vec![],

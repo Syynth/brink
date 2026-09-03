@@ -155,7 +155,7 @@ test.describe("player document", () => {
     // Choose inside the document: drive to the merchant choice and pick it; the
     // choice echoes into the transcript.
     await continueToChoice(pane, "Browse his wares");
-    await expect(pane.locator(".story-text")).toContainText("> Browse his wares");
+    await expect(pane.locator(".story-text")).toContainText("Browse his wares");
   });
 
   test("story.openPlayer focuses the existing tab instead of duplicating", async ({
@@ -231,6 +231,6 @@ test.describe("player document", () => {
     await expect(panes.nth(1).locator(".story-text")).toContainText("Toppled Temple");
 
     await continueToChoice(panes.nth(1), "Push past him");
-    await expect(panes.nth(0).locator(".story-text")).toContainText("> Push past him");
+    await expect(panes.nth(0).locator(".story-text")).toContainText("Push past him");
   });
 });

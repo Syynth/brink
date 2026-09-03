@@ -12,9 +12,11 @@
 import { useRef, type ReactElement } from "react";
 import { ensureToolWindowOpen, useShell } from "@brink/studio-shell";
 import type { EditorTextMenuRequest } from "@brink/studio-store";
+import type { Applicability } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
 import { saveEditorSettings } from "./SettingsDocument.js";
 import { useContextMenuDismiss } from "./BinderContextMenu.js";
+import { FIX_ALL_SAFE_FILE_COMMAND_ID, tierLabel } from "./fixActions.js";
 
 interface TextMenuItem {
   label: string;
@@ -43,7 +45,7 @@ function EditorTextMenu({
   onClose: () => void;
 }): ReactElement {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { layout } = useShell();
+  const { layout, commands } = useShell();
   useContextMenuDismiss(menuRef, closeTextMenu);
   const formGlyph = useStudioStore((s) => s.formGlyph);
   const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
@@ -51,6 +53,7 @@ function EditorTextMenu({
   const showInlayHints = useStudioStore((s) => s.showInlayHints);
   const editorFontSize = useStudioStore((s) => s.editorFontSize);
   const appFontSize = useStudioStore((s) => s.appFontSize);
+  const fixOnSave = useStudioStore((s) => s.fixOnSave);
   const setShowGutters = useStudioStore((s) => s.setShowGutters);
   // Break on write (W18/#3311, maintainer follow-up): the editor menu
   // offers the same verb the Debugger panel's variable rows carry, when
@@ -68,6 +71,25 @@ function EditorTextMenu({
     );
   });
 
+  // Fix group (docs/autofix-spec.md §7), FIRST: when the pointer is on a
+  // diagnostic, making the problem go away outranks navigating away from
+  // it. Each entry names its tier, so "changes meaning" is visible before
+  // the click. The trailing "Fix all safe in this file" is the studio's
+  // own — the editor cannot know about the batch road — and appears only
+  // alongside at least one offered fix, so it never turns an ordinary
+  // right-click into a batch-rewrite affordance.
+  const fixItems: TextMenuItem[] = (textMenu.fixActions ?? []).map((a) => ({
+    label: `${a.label} — ${tierLabel(a.tier as Applicability)}`,
+    shortcut: "",
+    run: a.run,
+  }));
+  if (fixItems.length > 0) {
+    fixItems.push({
+      label: "Fix all safe in this file",
+      shortcut: "",
+      run: () => commands.dispatch(FIX_ALL_SAFE_FILE_COMMAND_ID),
+    });
+  }
   // Group order per the context-menu spec: Navigate · Rename · Text.
   const identity = textMenu.identity;
   const identityItems: TextMenuItem[] = identity
@@ -133,6 +155,7 @@ function EditorTextMenu({
           showInlayHints,
           fontSize: editorFontSize,
           appFontSize,
+          fixOnSave,
         });
       },
     },
@@ -145,6 +168,21 @@ function EditorTextMenu({
       style={{ left: textMenu.x, top: textMenu.y }}
       role="menu"
     >
+      {fixItems.map((item) => (
+        <div key={item.label} role="presentation">
+          <div
+            role="menuitem"
+            className="brink-context-menu-item"
+            onClick={() => {
+              closeTextMenu();
+              item.run();
+            }}
+          >
+            {item.label}
+          </div>
+        </div>
+      ))}
+      {fixItems.length > 0 && <div className="brink-context-menu-separator" />}
       {identityItems.map((item) => (
         <div key={item.label} role="presentation">
           <div

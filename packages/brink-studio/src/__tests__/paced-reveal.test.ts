@@ -172,14 +172,18 @@ describe("paced auto-reveal (W7/#3300 F13)", () => {
 
     const session = (provider as unknown as { session: ReturnType<typeof scriptedSession> })
       .session;
-    expect(session.continueToPause).toHaveBeenCalledTimes(1);
+    // One line per wasm call (ruled 2026-09-02, "TS steps single lines"):
+    // the batch road steps continueSingle until the stop, never the
+    // wasm-side batch.
+    expect(session.continueToPause).not.toHaveBeenCalled();
+    expect(session.continueSingle).toHaveBeenCalledTimes(3);
     expect(store.getState().sessionText.join(" ")).toContain("one");
     expect(store.getState().sessionText.join(" ")).toContain("two");
     // One shot — the mode toggle it replaced must NOT flip.
     expect(store.getState().sessionAuto).toBe(false);
     // …and the next ordinary reveal is single-line again.
     store.getState().revealNext();
-    expect(session.continueToPause).toHaveBeenCalledTimes(1);
+    expect(session.continueToPause).not.toHaveBeenCalled();
   });
 
   it("continueMaximally honors the paced setting — pump to the stop, auto untouched", () => {
