@@ -907,3 +907,350 @@ I accuse {who}!
         assert_eq!(session.fix_count("{}"), 0);
     }
 }
+
+/// The `?fixture=fixable` studio project, pinned.
+///
+/// The studio's playground seeds these five files from `FIXABLE_FIXTURE` in
+/// `packages/brink-studio/src/main.tsx`, and
+/// `packages/brink-studio/e2e/auto-fix.spec.ts` drives every auto-fix
+/// surface over them. The sources below are **byte-identical** to that
+/// registry entry, the way the editor acceptance gate's fixture mirrors
+/// `?fixture=native`: an e2e that asserts "Fix all safe (5)" is only as
+/// trustworthy as the claim that the fixture really produces five Safe fixes
+/// and one suppressed sixth, and that claim is checked here, in Rust,
+/// against a real `EditorSession` rather than in a browser.
+#[cfg(test)]
+mod fixable_fixture {
+    use super::super::EditorSession;
+
+    const BRINK_TOML: &str = "\
+[project]
+entry = \"main.ink\"
+dialect = \"brink\"
+types = \"gradual\"
+
+[lints]
+E110 = \"allow\"
+";
+
+    const MAIN: &str = "\
+INCLUDE prologue.ink
+INCLUDE market.ink
+INCLUDE quest.ink
+
+#@public
+VAR gold = 12
+
+-> prologue
+";
+
+    const PROLOGUE: &str = "\
+=== prologue ===
+#@was(prologue)
+#@effects(reads: gold, writes: gold)
+The road out of town is quiet.
+~
+~ gold = gold + 1
+You have {gold} coins.
+-> dead_end
+
+=== dead_end ===
+-> DONE
+This line can never be reached.
+";
+
+    const MARKET: &str = "\
+#@module(market)
+
+=== function greet(name) ===
+~ return \"Hello, \" + name
+
+=== square ===
+The market square is loud.
+~ temp hail = greet(\"friend\", \"stranger\")
+{hail}
+-> accuse(\"Hastings\", \"Poirot\")
+
+=== accuse(who) ===
+I accuse {who}!
+-> haggle
+";
+
+    const QUEST: &str = "\
+#@module(quest)
+
+=== haggle ===
+#@public
+You haggle over the price of a lantern.
+-> DONE
+";
+
+    /// The fixture, mounted the way the playground mounts it: sources first,
+    /// then `brink.toml`.
+    fn fixture(toml: &str) -> EditorSession {
+        let mut session = EditorSession::new();
+        session.update_file("main.ink", MAIN);
+        session.update_file("prologue.ink", PROLOGUE);
+        session.update_file("market.ink", MARKET);
+        session.update_file("quest.ink", QUEST);
+        let applied = session.apply_project_config(toml);
+        assert!(applied.is_ok(), "fixture brink.toml must parse: {toml}");
+        assert!(session.set_active_file("main.ink"));
+        session
+    }
+
+    /// Every code the Problems panel would render, in the panel's own order.
+    fn problem_codes(session: &mut EditorSession) -> Vec<String> {
+        let compiled: serde_json::Value =
+            serde_json::from_str(&session.compile_project("main.ink")).expect("JSON");
+        compiled["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| d["code"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// Every offered fix's `(code, path, tier)`, in offer order.
+    fn offers(session: &EditorSession) -> Vec<(String, String, String)> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&session.fix_offers("{}")).expect("JSON");
+        parsed
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|o| {
+                (
+                    o["code"].as_str().unwrap_or_default().to_owned(),
+                    o["path"].as_str().unwrap_or_default().to_owned(),
+                    o["fix"]["applicability"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// The closed diagnostic set the e2e counts against — every row the
+    /// Problems panel shows, and nothing else.
+    #[test]
+    fn the_fixture_produces_exactly_the_documented_diagnostics() {
+        let mut session = fixture(BRINK_TOML);
+        let mut codes = problem_codes(&mut session);
+        codes.sort();
+        assert_eq!(
+            codes,
+            vec!["E014", "E025", "E031", "E033", "E092", "E095", "E176"],
+            "the fixture's diagnostic set is CLOSED — update main.tsx's table \
+             and the e2e counts together with this list"
+        );
+        // …and the `[lints]`-allowed code is NOT among them.
+        assert!(
+            !codes.contains(&"E110".to_owned()),
+            "E110 is `allow`ed: it must have no Problems row: {codes:?}"
+        );
+    }
+
+    /// One fix per Safe-fixable row, one Suggested import, and E033 — the
+    /// no-fixer warning — offering nothing.
+    ///
+    /// Sorted before comparing: the offer order is the compilation's file
+    /// order, which is the closure once a compile has run and id order
+    /// before one. Which of the two this fixture is in is not what this test
+    /// is about.
+    #[test]
+    fn the_fixture_offers_one_fix_per_fixable_row() {
+        let session = fixture(BRINK_TOML);
+        let mut got = offers(&session);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("E014".into(), "prologue.ink".into(), "safe".into()),
+                ("E025".into(), "market.ink".into(), "suggested".into()),
+                ("E031".into(), "market.ink".into(), "safe".into()),
+                ("E092".into(), "main.ink".into(), "safe".into()),
+                ("E095".into(), "prologue.ink".into(), "safe".into()),
+                ("E176".into(), "market.ink".into(), "safe".into()),
+            ],
+        );
+    }
+
+    /// **The e2e's headline number.** "Fix all safe (5)" — five, not six:
+    /// `E110` has a Safe fixer and a live diagnostic, and is excluded purely
+    /// because `[lints]` turned it off (issue #3459).
+    #[test]
+    fn fix_all_safe_counts_five_not_the_suppressed_sixth() {
+        let session = fixture(BRINK_TOML);
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 5);
+    }
+
+    /// The same fixture with the `[lints]` line removed counts SIX — the
+    /// difference is the whole regression, and it proves the count above is
+    /// not five for some unrelated reason.
+    #[test]
+    fn without_the_allow_line_the_suppressed_sixth_comes_back() {
+        let session =
+            fixture("[project]\nentry = \"main.ink\"\ndialect = \"brink\"\ntypes = \"gradual\"\n");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 6);
+        let codes: Vec<String> = offers(&session).into_iter().map(|(c, _, _)| c).collect();
+        assert!(codes.contains(&"E110".to_owned()), "{codes:?}");
+    }
+
+    /// "Fix all safe" over the whole project, end to end: five fixes in one
+    /// batch, and the resulting sources are the ones the e2e reads back out
+    /// of the editor.
+    #[test]
+    fn fix_all_safe_rewrites_the_three_files_and_leaves_the_rest() {
+        let mut session = fixture(BRINK_TOML);
+        let report: serde_json::Value =
+            serde_json::from_str(&session.fix_all(r#"{"tiers":["safe"]}"#)).expect("JSON");
+        assert_eq!(report.get("error"), None, "{report:?}");
+        assert_eq!(report["cap_hit"], false, "{report:?}");
+        assert_eq!(report["applied"].as_array().expect("applied").len(), 5);
+
+        let files = report["files"].as_array().expect("files");
+        let mut written: Vec<(String, String)> = files
+            .iter()
+            .map(|f| {
+                (
+                    f["path"].as_str().unwrap_or_default().to_owned(),
+                    f["new_source"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        written.sort();
+        assert_eq!(
+            written,
+            vec![
+                (
+                    "main.ink".to_owned(),
+                    "\
+INCLUDE prologue.ink
+INCLUDE market.ink
+INCLUDE quest.ink
+
+VAR gold = 12
+
+-> prologue
+"
+                    .to_owned()
+                ),
+                (
+                    "market.ink".to_owned(),
+                    "\
+#@module(market)
+
+=== function greet(name) ===
+~ return \"Hello, \" + name
+
+=== square ===
+The market square is loud.
+~ temp hail = greet(\"stranger\")
+{hail}
+-> accuse(\"Poirot\")
+
+=== accuse(who) ===
+I accuse {who}!
+-> haggle
+"
+                    .to_owned()
+                ),
+                (
+                    "prologue.ink".to_owned(),
+                    "\
+=== prologue ===
+#@effects(reads: gold, writes: gold)
+The road out of town is quiet.
+~ gold = gold + 1
+You have {gold} coins.
+-> dead_end
+
+=== dead_end ===
+-> DONE
+This line can never be reached.
+"
+                    .to_owned()
+                ),
+            ],
+            "the batch must NOT rewrite the `allow`ed `#@effects` line"
+        );
+    }
+
+    /// After the batch, the five fixed codes are gone from the Problems
+    /// panel and nothing new took their place — the full post-fix list, not
+    /// just an absence check on one code.
+    #[test]
+    fn the_batch_clears_exactly_the_rows_it_fixed() {
+        let mut session = fixture(BRINK_TOML);
+        let report: serde_json::Value =
+            serde_json::from_str(&session.fix_all(r#"{"tiers":["safe"]}"#)).expect("JSON");
+        let files = report["files"].as_array().expect("files").clone();
+        for file in &files {
+            let path = file["path"].as_str().unwrap_or_default().to_owned();
+            let source = file["new_source"].as_str().unwrap_or_default().to_owned();
+            session.update_file(&path, &source);
+        }
+        let mut left = problem_codes(&mut session);
+        left.sort();
+        assert_eq!(
+            left,
+            vec!["E025", "E033"],
+            "only the Suggested import and the no-fixer warning may remain"
+        );
+    }
+
+    /// `[fix] E014 = "off"` — the Settings ▸ Lints "Fix" column's write —
+    /// drops the count by exactly one and withdraws that row's Fix button,
+    /// and `"auto"` puts it back.
+    #[test]
+    fn the_fix_column_withdraws_one_row_and_restores_it() {
+        let mut session = fixture(BRINK_TOML);
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 5);
+
+        let off = format!("{BRINK_TOML}\n[fix]\nE014 = \"off\"\n");
+        let applied = session.apply_project_config(&off);
+        assert!(applied.is_ok(), "{off}");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 4);
+        let codes: Vec<String> = offers(&session).into_iter().map(|(c, _, _)| c).collect();
+        assert!(!codes.contains(&"E014".to_owned()), "{codes:?}");
+
+        let auto = format!("{BRINK_TOML}\n[fix]\nE014 = \"auto\"\n");
+        let applied = session.apply_project_config(&auto);
+        assert!(applied.is_ok(), "{auto}");
+        assert_eq!(session.fix_count(r#"{"tiers":["safe"]}"#), 5);
+        let codes: Vec<String> = offers(&session).into_iter().map(|(c, _, _)| c).collect();
+        assert!(codes.contains(&"E014".to_owned()), "{codes:?}");
+    }
+
+    /// Fix-on-save at the "Safe only" ceiling (§6.2) rewrites only the file
+    /// it was asked for, and applies nothing at "off".
+    #[test]
+    fn fix_on_save_is_per_file_and_respects_the_ceiling() {
+        let mut session = fixture(BRINK_TOML);
+
+        let off: serde_json::Value =
+            serde_json::from_str(&session.fix_all(r#"{"path":"prologue.ink","ceiling":"off"}"#))
+                .expect("JSON");
+        assert_eq!(off["files"].as_array().expect("files").len(), 0, "{off:?}");
+
+        let safe: serde_json::Value =
+            serde_json::from_str(&session.fix_all(r#"{"path":"prologue.ink","ceiling":"ask"}"#))
+                .expect("JSON");
+        let files = safe["files"].as_array().expect("files");
+        assert_eq!(files.len(), 1, "{safe:?}");
+        assert_eq!(files[0]["path"], "prologue.ink");
+        let written = files[0]["new_source"].as_str().unwrap_or_default();
+        assert!(
+            !written.contains("#@was(prologue)") && !written.contains("\n~\n"),
+            "the Safe fixes must have landed: {written:?}"
+        );
+        assert!(
+            written.contains("#@effects(reads: gold, writes: gold)"),
+            "the `allow`ed E110 line must survive a save: {written:?}"
+        );
+    }
+}

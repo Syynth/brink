@@ -179,6 +179,94 @@ pub flow main() {
 `,
 };
 
+// Deterministic auto-fix project, loaded via `?fixture=fixable` — the
+// fixture the `auto-fix.spec.ts` e2e drives (`docs/autofix-spec.md` §7).
+//
+// ⚠ EVERY diagnostic below is deliberate, and the set is CLOSED: the e2e
+// asserts exact counts against it, and `fixable_fixture` in
+// `crates/brink-web/src/editor/fix_batch.rs` pins the same four sources
+// byte-for-byte through a real `EditorSession`. Change one side and the
+// other goes red — that is the point. The inventory:
+//
+//   | code | file          | tier      | what it is                        |
+//   |------|---------------|-----------|-----------------------------------|
+//   | E025 | market.ink    | Suggested | cross-module ref with no IMPORT   |
+//   | E014 | prologue.ink  | Safe      | effect-free `~` line              |
+//   | E095 | prologue.ink  | Safe      | `#@was` naming its own name       |
+//   | E110 | prologue.ink  | Safe      | deprecated `#@effects(…)` spelling|
+//   | E092 | main.ink      | Safe      | `#@public` restating the default  |
+//   | E031 | market.ink    | Safe      | extra call argument               |
+//   | E176 | market.ink    | Safe      | extra divert-with-args argument   |
+//   | E033 | prologue.ink  | (none)    | unreachable code — NO fixer       |
+//
+// `brink.toml` turns E110 to `"allow"`, so it has no Problems row: "Fix all
+// safe" is **5**, not 6. That gap is issue #3459 — before its fix the batch
+// counted the invisible E110 too.
+//
+// The project does not compile: E025 is `Error`-severity by design (it is
+// the import fixer's own diagnostic). The Problems panel still lists every
+// row, which is all these surfaces need.
+const FIXABLE_FIXTURE: Record<string, string> = {
+  // `dialect = "brink"` because every directive below is a brink extension;
+  // `types = "gradual"` keeps strict-mode diagnostics out of a fixture whose
+  // whole value is a closed diagnostic set.
+  "brink.toml": `[project]
+entry = "main.ink"
+dialect = "brink"
+types = "gradual"
+
+[lints]
+E110 = "allow"
+`,
+  // No `#@module` here, so this file's module is an undeclared stem module,
+  // whose default visibility is Public (docs/modules-spec.md §4) — which is
+  // exactly what makes the `#@public` below redundant (E092).
+  "main.ink": `INCLUDE prologue.ink
+INCLUDE market.ink
+INCLUDE quest.ink
+
+#@public
+VAR gold = 12
+
+-> prologue
+`,
+  "prologue.ink": `=== prologue ===
+#@was(prologue)
+#@effects(reads: gold, writes: gold)
+The road out of town is quiet.
+~
+~ gold = gold + 1
+You have {gold} coins.
+-> dead_end
+
+=== dead_end ===
+-> DONE
+This line can never be reached.
+`,
+  "market.ink": `#@module(market)
+
+=== function greet(name) ===
+~ return "Hello, " + name
+
+=== square ===
+The market square is loud.
+~ temp hail = greet("friend", "stranger")
+{hail}
+-> accuse("Hastings", "Poirot")
+
+=== accuse(who) ===
+I accuse {who}!
+-> haggle
+`,
+  "quest.ink": `#@module(quest)
+
+=== haggle ===
+#@public
+You haggle over the price of a lantern.
+-> DONE
+`,
+};
+
 // ── Bootstrap ──────────────────────────────────────────────────
 
 // HMR guard (dev only). Under Vite HMR an update that reaches this entry
@@ -224,16 +312,18 @@ async function main(): Promise<void> {
         ? NESTED_FIXTURE
         : fixture === "native"
           ? NATIVE_FIXTURE
-          : fixture === "perf"
-            // The synthetic studio-scale + large-file measurement project
-            // (measure-first ruling, 2026-08-24) — see perf-fixture.ts.
-            ? generatePerfFixture()
-            : {
-                "brink.toml": DEMO_CONFIG,
-                "main.ink": MAIN_INK,
-                "toppled-temple.ink": toppledTemple,
-                "scratch/cut-scene.ink": DEMO_DRAFT,
-              });
+          : fixture === "fixable"
+            ? FIXABLE_FIXTURE
+            : fixture === "perf"
+              // The synthetic studio-scale + large-file measurement project
+              // (measure-first ruling, 2026-08-24) — see perf-fixture.ts.
+              ? generatePerfFixture()
+              : {
+                  "brink.toml": DEMO_CONFIG,
+                  "main.ink": MAIN_INK,
+                  "toppled-temple.ink": toppledTemple,
+                  "scratch/cut-scene.ink": DEMO_DRAFT,
+                });
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");
