@@ -165,9 +165,9 @@ fn suggested_with_explicit_code_list_promotes_just_that_code() {
 
 // ── the project's own `[fix]` table (no CLI flag at all) ──────────────
 //
-// Regression for the review finding on PR #3453: deleting `fix.rs`'s whole
-// `for fixer in FIXERS { match config.effective_fix_policy(...) }` block
-// left every test above still green, because none of them exercises
+// Regression for the review finding on PR #3453: deleting `fix.rs`'s
+// `if let Some(mode) = FixMode::from_config(config.effective_fix_policy(...))`
+// block left every test above still green, because none of them exercises
 // `brink.toml`'s `[fix]` table without also passing `--suggested` (which
 // promotes independently of it). These do not pass `--suggested` at all.
 
@@ -354,6 +354,109 @@ fn diff_flag_emits_a_git_apply_able_patch_and_writes_nothing() {
     git(&dir, &["apply", "out.diff"]);
     let applied = fs::read_to_string(dir.join("before.ink")).unwrap();
     assert_eq!(applied, expected);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── --diff composes with --dry-run; a cap_hit run always explains its
+// exit code — regression for issue #3463 ("brink fix --diff silently
+// ignores --dry-run and prints no report on cap_hit") ────────────────
+
+/// `--diff --dry-run` together: the diff still goes to stdout as a clean
+/// `git apply`-able patch, nothing is written to disk (as either flag alone
+/// already promises), and the report — which `--diff` alone used to drop on
+/// the floor entirely — is printed to stderr instead of being silently
+/// discarded.
+#[test]
+fn diff_and_dry_run_compose_clean_patch_to_stdout_and_report_to_stderr() {
+    let dir = e025_project("diff-dry-run");
+    let before = fs::read_to_string(dir.join("before.ink")).unwrap();
+    let expected = expected_source();
+
+    let out = brink()
+        .args(["fix", "before.ink", "--suggested", "--diff", "--dry-run"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let diff = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        diff.contains("IMPORT { ambush } FROM quest"),
+        "diff should add the import line: {diff}"
+    );
+    assert!(
+        !diff.contains("fix(es) applied"),
+        "stdout must stay a clean patch — the report must not land there: {diff}"
+    );
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("1 fix(es) applied"),
+        "--diff must not silently swallow --dry-run's report — it goes to \
+         stderr instead: {stderr}"
+    );
+
+    // Nothing was written to disk — both flags promise this independently.
+    let after = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(
+        after, before,
+        "--diff --dry-run together must still write nothing"
+    );
+
+    // stdout is a clean, `git apply`-able patch against the untouched tree.
+    fs::write(dir.join("out.diff"), &diff).unwrap();
+    git(&dir, &["init", "-q", "."]);
+    git(&dir, &["apply", "--check", "out.diff"]);
+    git(&dir, &["apply", "out.diff"]);
+    let applied = fs::read_to_string(dir.join("before.ink")).unwrap();
+    assert_eq!(applied, expected);
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A capped run (`--max-rounds 0` with a fix still admitted) must exit `1`
+/// and explain why on stderr, even under `--diff` — before this fix, the
+/// `--diff` branch never called `print_report` at all, so a capped run
+/// exited `1` with nothing on stdout or stderr explaining it (the bug
+/// `--diff` in this issue's title describes).
+#[test]
+fn diff_with_cap_hit_exits_1_and_explains_why_on_stderr() {
+    let dir = e025_project("diff-cap-hit");
+
+    let out = brink()
+        .args([
+            "fix",
+            "before.ink",
+            "--suggested",
+            "--diff",
+            "--max-rounds",
+            "0",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a round cap of 0 with an admitted fix must hit the cap: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("cap hit"),
+        "the exit-1 must be explained on stderr, not silent: {stderr}"
+    );
+    assert!(
+        stderr.contains("E025"),
+        "the report should name the diagnostic still admitting a fix: {stderr}"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
