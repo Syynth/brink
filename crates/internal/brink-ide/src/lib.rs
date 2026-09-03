@@ -41,6 +41,7 @@ pub mod rename_detection;
 pub mod semantic_tokens;
 pub mod session;
 pub mod signature;
+pub mod stale_was_fix;
 pub mod stdlib;
 pub mod story_graph;
 pub mod structural_delete;
