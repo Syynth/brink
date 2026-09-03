@@ -36,6 +36,7 @@ pub mod inlay_hints;
 pub mod line_convert;
 pub mod navigation;
 pub mod passage;
+pub mod redundant_visibility_fix;
 pub mod rename;
 pub mod rename_detection;
 pub mod semantic_tokens;

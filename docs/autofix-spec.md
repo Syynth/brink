@@ -540,7 +540,16 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
 - **Safe**: E014 bare `~` → delete the line; E092 redundant
-  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
+  `#@public`/`#@private` → delete the directive line (issue #3424,
+  `RedundantVisibilityFixer`,
+  `crates/internal/brink-ide/src/redundant_visibility_fix.rs`; ink-only —
+  a native file's module is always `declared` (defaults `Private`), so
+  native's own `pub` mark can never be redundant in practice and this
+  diagnostic cannot fire there, but the fixer still checks the dialect
+  first since it only ever parses with the ink grammar; also offers
+  nothing for a stacked pair of conflicting visibility directives, itself
+  also `E093` and ambiguous about which line the diagnostic means);
+  E095 self-alias `#@was` → delete;
   E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
   (issue #3428 — the classic call/divert convention these two codes
