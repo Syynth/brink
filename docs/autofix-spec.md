@@ -359,6 +359,32 @@ anything.
   half exists, because the currency change forced it — the three migrated
   fixers would otherwise have gone dark over LSP. `diagnostics: [d]` and
   `source.fixAll.brink` remain this surface's own milestone.
+  *As built (#3422, milestone 7):* both remaining halves. `fix_code_actions`
+  inlines the diagnostic-dispatch loop `fixes_at` runs (rather than calling
+  it) so it can pair each collapsed `Fix` with the diagnostic that produced
+  it, and attaches that as the action's single-element `diagnostics`.
+  `source.fixAll.brink` is `fix_all(Select{tiers: [Safe]}, FixPolicy::
+  default())` — `[fix]`-table promotion does not reach it yet, since
+  reconciling `brink.toml`'s table with `brink_ide::fix::policy::FixPolicy`
+  is #3447's, not built here (§6.1) — run on a private scratch
+  `IdeSession` that mirrors the live project's `AnalysisOptions` and every
+  loaded file's current source, **never the live db**: a `codeAction`
+  request fires continually to populate a client's lightbulb menu, not only
+  right before an edit is accepted, so a batching pass that mutated the live
+  project here would silently pre-fix files whose open buffers had not
+  actually changed. The fixpoint's final state is reduced to one whole-file
+  `TextEdit` per changed file (not a minimal per-line diff) — simple and
+  always valid, at the cost of not preserving an unrelated concurrent edit
+  to the same file made between the request and the client applying it, the
+  same trade-off any whole-document formatter edit already accepts. The
+  action itself is computed only when a `codeAction` request's
+  `context.only` explicitly names `source.fixAll.brink` (or a shared
+  prefix, `"source"`/`"source.fixAll"`) — the whole-compilation pass it
+  runs is too expensive to pay on every unfiltered lightbulb-menu request,
+  and VS Code's own fix-on-save always sends that filter. No registered
+  fixer declares `Safe` yet (§9's first-wave candidates are a later
+  milestone), so `source.fixAll.brink` is a correct no-op today — it starts
+  batching the moment the first one lands, with no further LSP-side change.
 - **wasm DTO** (`@brink-lang/web`): `FixJs { code, title,
   applicability, edits: FileEditJs[], caret? }`. *As built (#3377):*
   `fixes_at` / `fixes_at_doc` return it (offsets are UTF-16 file-absolute,

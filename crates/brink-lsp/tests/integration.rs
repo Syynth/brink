@@ -3683,3 +3683,257 @@ flow main() {
          formatter path exists (#2360), got: {resp:?}"
     );
 }
+
+// ── §7 milestone 7 (#3422): quickfix code actions + `source.fixAll.brink` ──
+
+/// Convert a byte offset into `source` to an LSP `{line, character}`
+/// position. ASCII-only test fixtures, so byte index and UTF-16 code unit
+/// index coincide.
+fn position_at(source: &str, byte_offset: usize) -> Value {
+    let mut line = 0u32;
+    let mut character = 0u32;
+    for (i, ch) in source.char_indices() {
+        if i == byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += 1;
+        }
+    }
+    json!({ "line": line, "character": character })
+}
+
+/// One `.ink` document carrying two independently fixable diagnostics:
+/// `E080` (an unbound `ref` param with an unambiguous durable global to
+/// bind) and `E081` (a creation-site call supplying more arguments than the
+/// callee declares) — the same shapes `brink_ide::fix::obligations`'s
+/// `e080_fixture`/`e081_fixture` each pin alone, combined into one file so a
+/// single session carries both at once. Returns the source and the byte
+/// offset of a diagnostic-covered position for each.
+fn two_fixable_diagnostics_source() -> (String, usize, usize) {
+    let heal_ref = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n";
+    let double = "=== function double(x) ===\n~ return x + x\n\n";
+    let source = format!(
+        "{heal_ref}VAR hp = 10\n{double}=== main ===\n~ temp f = #fn(heal)\n\
+         ~ temp g = #fn(double, 1, 2)\n-> DONE\n"
+    );
+    let e080_at = source.find("#fn(heal)").expect("fixture has a heal call") + 5;
+    let e081_at = source.find("2)").expect("fixture has a trailing extra arg");
+    (source, e080_at, e081_at)
+}
+
+/// `docs/autofix-spec.md` §7, milestone 7 (#3422): each fixable diagnostic
+/// gets its own quick-fix `CodeAction`, titled from `Fix::title`, carrying
+/// the diagnostic it discharges (`CodeAction.diagnostics` — the half of §7
+/// left unbuilt at #3377 alongside `source.fixAll.brink`). Two diagnostics
+/// in one file, at two different cursor positions, prove the action list
+/// carries both, each correctly linked to its own diagnostic.
+#[test]
+fn quickfix_actions_for_two_fixable_diagnostics() {
+    let root = unique_tmp_dir("two-fixable-diagnostics");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let (source, e080_offset, e081_offset) = two_fixable_diagnostics_source();
+    let uri = format!("file://{}", root.join("two_fixable.ink").display());
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "ink", "version": 1, "text": source,
+            }},
+        }),
+    );
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, 2000);
+
+    let e080_pos = position_at(&source, e080_offset);
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": e080_pos, "end": e080_pos},
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (e080_resp, _) = recv_response(&mut stdout, 2);
+
+    let e081_pos = position_at(&source, e081_offset);
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": e081_pos, "end": e081_pos},
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (e081_resp, _) = recv_response(&mut stdout, 3);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    // The ink surface also offers unrelated `source`-kind actions at any
+    // cursor (`sort_knots`/`format_knot` — see `code_actions_sort_knots`
+    // above), so filter to `quickfix` before counting: this test is about
+    // the diagnostic-keyed fixes, not the full action list.
+    let e080_quickfixes: Vec<&Value> = e080_resp["result"]
+        .as_array()
+        .expect("array of code actions")
+        .iter()
+        .filter(|a| a["kind"] == "quickfix")
+        .collect();
+    assert_eq!(
+        e080_quickfixes.len(),
+        1,
+        "expected exactly one E080 quick-fix, got: {e080_quickfixes:?}"
+    );
+    assert_eq!(
+        e080_quickfixes[0]["title"],
+        "Bind `hp` as the ref argument for `heal`"
+    );
+    let e080_diags = e080_quickfixes[0]["diagnostics"]
+        .as_array()
+        .expect("action carries the diagnostic it discharges");
+    assert_eq!(e080_diags.len(), 1, "{e080_diags:?}");
+    assert_eq!(e080_diags[0]["code"], "E080");
+
+    let e081_quickfixes: Vec<&Value> = e081_resp["result"]
+        .as_array()
+        .expect("array of code actions")
+        .iter()
+        .filter(|a| a["kind"] == "quickfix")
+        .collect();
+    assert_eq!(
+        e081_quickfixes.len(),
+        1,
+        "expected exactly one E081 quick-fix, got: {e081_quickfixes:?}"
+    );
+    assert_eq!(
+        e081_quickfixes[0]["title"],
+        "Remove extra argument(s) — `double` declares 1 parameter(s)"
+    );
+    let e081_diags = e081_quickfixes[0]["diagnostics"]
+        .as_array()
+        .expect("action carries the diagnostic it discharges");
+    assert_eq!(e081_diags.len(), 1, "{e081_diags:?}");
+    assert_eq!(e081_diags[0]["code"], "E081");
+}
+
+/// `source.fixAll.brink` (`docs/autofix-spec.md` §7) is gated behind an
+/// explicit `context.only` ask — `fix_all` walks the whole compilation,
+/// which a routine lightbulb-menu request (`only` absent) should not pay
+/// for — and, with today's registry carrying no `Safe`-tier fixer yet (§9's
+/// first-wave candidates are a later milestone), correctly comes back empty
+/// rather than erroring or fabricating a batch. The actual batching
+/// mechanics `fix_all_action` calls (`fix_all_workspace_edit`) are proven to
+/// converge multiple colliding fixes into one edit by
+/// `fix_all_workspace_edit_batches_two_colliding_fixes_into_one_edit` in
+/// `src/backend.rs`'s own test module, with a policy that promotes a
+/// registered `Suggested`-tier fixer — the only way to demonstrate that
+/// today, since no `Safe`-tier fixer exists for this test to promote nothing
+/// over.
+#[test]
+fn fix_all_brink_is_gated_behind_explicit_only_and_empty_with_no_safe_fixer() {
+    let root = unique_tmp_dir("fix-all-brink-gating");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let (source, e080_offset, _e081_offset) = two_fixable_diagnostics_source();
+    let uri = format!("file://{}", root.join("two_fixable.ink").display());
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "ink", "version": 1, "text": source,
+            }},
+        }),
+    );
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, 2000);
+
+    let pos = position_at(&source, e080_offset);
+
+    // No `only` at all — a routine lightbulb request must never carry the
+    // (expensive, whole-compilation) `source.fixAll.brink` action.
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": pos, "end": pos},
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (no_only_resp, _) = recv_response(&mut stdout, 2);
+
+    // Explicit ask: still empty today, since nothing registered is
+    // `Safe`-tier — never a crash, never a fabricated edit.
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {"start": pos, "end": pos},
+                "context": {"diagnostics": [], "only": ["source.fixAll.brink"]},
+            },
+        }),
+    );
+    let (only_resp, _) = recv_response(&mut stdout, 3);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let no_only_actions = no_only_resp["result"]
+        .as_array()
+        .expect("array of code actions");
+    assert!(
+        no_only_actions
+            .iter()
+            .all(|a| a["kind"] != "source.fixAll.brink"),
+        "an unfiltered request must never carry source.fixAll.brink: {no_only_actions:?}"
+    );
+
+    // The server does not filter its other action kinds by `only` (the ink
+    // surface's `sort_knots`/`format_knot` `source`-kind actions still come
+    // back regardless — a real client applies its own `only` filtering on
+    // receipt, as the LSP spec permits), so this asserts on the
+    // `source.fixAll.brink` entry specifically rather than the whole list.
+    let only_fix_all: Vec<&Value> = only_resp["result"]
+        .as_array()
+        .expect("array of code actions")
+        .iter()
+        .filter(|a| a["kind"] == "source.fixAll.brink")
+        .collect();
+    assert!(
+        only_fix_all.is_empty(),
+        "no Safe-tier fixer is registered yet, so an explicit \
+         source.fixAll.brink ask must come back empty, not erroring or \
+         fabricating an edit: {only_fix_all:?}"
+    );
+}
