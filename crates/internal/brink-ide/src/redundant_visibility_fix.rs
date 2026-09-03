@@ -342,23 +342,24 @@ mod tests {
     /// that the diagnostic clears.
     fn resolved_visibility(session: &IdeSession, name: &str) -> Visibility {
         let index = session.db().symbol_index();
-        let ids = index
-            .by_name
-            .get(name)
-            .unwrap_or_else(|| panic!("no symbol named `{name}` in the index"));
+        let ids = index.by_name.get(name);
+        assert!(ids.is_some(), "no symbol named `{name}` in the index");
+        let ids = ids.expect("just asserted above");
         assert_eq!(
             ids.len(),
             1,
             "expected exactly one symbol named `{name}`, got {ids:?}"
         );
-        index
-            .symbols
-            .get(&ids[0])
-            .unwrap_or_else(|| panic!("id in by_name but not in symbols: {:?}", ids[0]))
-            .visibility
+        let info = index.symbols.get(&ids[0]);
+        assert!(
+            info.is_some(),
+            "id in by_name but not in symbols: {:?}",
+            ids[0]
+        );
+        info.expect("just asserted above").visibility
     }
 
-    fn only_fix<'a>(fixes: &'a [Fix]) -> &'a Fix {
+    fn only_fix(fixes: &[Fix]) -> &Fix {
         assert_eq!(
             fixes.len(),
             1,
