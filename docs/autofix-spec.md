@@ -540,15 +540,22 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
 - **Safe**: E014 bare `~` → delete the line; E092 redundant
-  `#@public`/`#@private` → delete the directive line (issue #3424,
-  `RedundantVisibilityFixer`,
+  `#@public`/`#@private` → delete the directive line, including any
+  leading indentation on it (issue #3424, `RedundantVisibilityFixer`,
   `crates/internal/brink-ide/src/redundant_visibility_fix.rs`; ink-only —
   a native file's module is always `declared` (defaults `Private`), so
-  native's own `pub` mark can never be redundant in practice and this
-  diagnostic cannot fire there, but the fixer still checks the dialect
-  first since it only ever parses with the ink grammar; also offers
-  nothing for a stacked pair of conflicting visibility directives, itself
-  also `E093` and ambiguous about which line the diagnostic means);
+  native's own `pub` mark can never be redundant in practice on the
+  `ProjectDb`/compile roads and this diagnostic cannot fire there, but the
+  fixer still checks the dialect first since it only ever parses with the
+  ink grammar; also offers nothing for a stacked pair of conflicting
+  visibility directives, itself also `E093` and ambiguous about which line
+  the diagnostic means, nor for an `@[public]`/`@[private]`
+  annotation-channel mark anywhere in the leading run — it rides the same
+  directive list a `#@…` tag line resolves against, so it can be the
+  redundant `chosen` mark or conflict with one, but this fixer's only edit
+  shape is deleting a tag line; a leading-run tag line a *following*
+  `VAR`/`CONST`/`LIST`/`EXTERNAL` claims for itself is excluded from the
+  knot/stitch's own count, not misattributed to it);
   E095 self-alias `#@was` → delete;
   E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim

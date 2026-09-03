@@ -38,7 +38,13 @@
 //! directive is the line's sole tag — this module deletes the entire
 //! `TAG_LINE` node (its trailing newline included, since the parser folds it
 //! into the same node) rather than special-casing a shared line that cannot
-//! occur here.
+//! occur here. The deleted span also extends left over an immediately
+//! preceding pure-indentation `WHITESPACE` token, when there is one:
+//! `source_file`/`knot_body`/`stitch_body` all `p.skip_ws()` *before*
+//! dispatching into `line()`, so an indented `    #@public` line's leading
+//! spaces are a sibling token before the `TAG_LINE` node, not inside it —
+//! deleting only the node's own range would otherwise glue that indentation
+//! onto the line that follows.
 //!
 //! # Scope — ink only
 //!
@@ -49,19 +55,25 @@
 //! is no "tag" and no "line" there for the issue's fix shape ("remove the
 //! tag … keep other tags on the line") to remove.
 //!
-//! In practice `E092` cannot even fire for native today:
-//! `brink_db::queries::module_map_query`'s own doc says a native file's
-//! module is always marked `declared` ("so it always qualifies
-//! `DefinitionId`"), and a declared module defaults `Private` — so native's
-//! own visibility mark (`Some(VisibilityMark::Public)`, the only non-`None`
-//! value native lowering ever produces, per `hir::emit_native::pub_prefix`'s
-//! doc) is always a real override, never a redundant restatement. Still,
-//! this fixer checks `ProjectDb::is_native` first and returns nothing for a
-//! native file unconditionally, as defense-in-depth rather than a
-//! narrowing of any reachable shape: everything below only ever parses with
-//! the *ink* grammar (`brink_syntax::parse`), so running it over native
-//! source on the strength of "well, `E092` shouldn't reach here" would risk
-//! a bogus range match instead of visibly doing nothing.
+//! On the `ProjectDb`/compile roads this fixer actually runs on, `E092`
+//! cannot even fire for native today: `brink_db::queries::module_map_query`'s
+//! own doc says a native file's module is always marked `declared` ("so it
+//! always qualifies `DefinitionId`"), and a declared module defaults
+//! `Private` — so native's own visibility mark
+//! (`Some(VisibilityMark::Public)`, the only non-`None` value native
+//! lowering ever produces, per `hir::emit_native::pub_prefix`'s doc) is
+//! always a real override, never a redundant restatement. (A narrower
+//! harness road — direct `lower_native::lower` over a single file with no
+//! `module { }` wrapper, as `hir::emit_native`'s and `brink-respell`'s own
+//! round-trip tests use — *can* raise `E092` on native source: that harness
+//! always sees an undeclared module, so a top-level `pub` there is a real
+//! redundant restatement. Neither the editor nor `brink compile` reach that
+//! road.) Still, this fixer checks `ProjectDb::is_native` first and returns
+//! nothing for a native file unconditionally, as defense-in-depth rather
+//! than a narrowing of any reachable shape: everything below only ever
+//! parses with the *ink* grammar (`brink_syntax::parse`), so running it
+//! over native source on the strength of "well, `E092` shouldn't reach
+//! here" would risk a bogus range match instead of visibly doing nothing.
 //!
 //! # Locating the directive
 //!
@@ -222,11 +234,28 @@ fn classify_tag_line(tl: &ast::TagLine) -> LineKind {
         .chars()
         .take_while(|c| *c != '(' && !c.is_whitespace())
         .collect();
+    // `bare` already implies `!dynamic` (a dynamic tag's `rest` always
+    // carries the `{…}` child text, so `rest.len() == name.len()` cannot
+    // hold once `name` stops at the first `{`-triggering whitespace/paren).
     let bare = !dynamic && rest.len() == name.len();
-    if bare && !dynamic && (name == "private" || name == "public") {
-        LineKind::Visibility(tl.syntax().text_range())
+    if bare && (name == "private" || name == "public") {
+        LineKind::Visibility(line_range_including_indent(tl))
     } else {
         LineKind::OtherDirective
+    }
+}
+
+/// `tl`'s own range extended left over an immediately preceding
+/// pure-indentation `WHITESPACE` token, if there is one — see the module
+/// doc's note on why the tag line's own `TAG_LINE` node never includes its
+/// line's leading indentation.
+fn line_range_including_indent(tl: &ast::TagLine) -> TextRange {
+    let range = tl.syntax().text_range();
+    match tl.syntax().prev_sibling_or_token() {
+        Some(rowan::NodeOrToken::Token(tok)) if tok.kind() == SyntaxKind::WHITESPACE => {
+            TextRange::new(tok.text_range().start(), range.end())
+        }
+        _ => range,
     }
 }
 
@@ -273,11 +302,27 @@ fn find_visibility_before(decl: &SyntaxNode) -> Option<TextRange> {
 
 /// [`hir::lower::directive::leading_body_directives`]'s forward scan,
 /// reimplemented the same way: walk `body`'s children from the start,
-/// skipping trivia, `EMPTY_LINE`s and `ANNOTATION_LINE`s, and collecting
-/// consecutive single-directive `TAG_LINE`s (a plain or `Mixed` tag line does
-/// *not* end the leading run — it simply is not itself a directive) until a
-/// real content node is hit. Returns the range of the sole visibility line
-/// found, or `None` when there isn't exactly one.
+/// skipping trivia and `EMPTY_LINE`s, and collecting consecutive
+/// single-directive `TAG_LINE`s (a plain or `Mixed` tag line does *not* end
+/// the leading run — it simply is not itself a directive) until a real
+/// content node is hit. Returns the range of the sole visibility line found,
+/// or `None` when there isn't exactly one.
+///
+/// Two shapes count toward the "exactly one" total but never become
+/// `found` — mirroring the real function faithfully means the fixer must
+/// see them, even though it has no edit for either:
+///
+/// - a `TAG_LINE` this run's own `attached_declaration` filter excludes
+///   (see [`tag_line_claimed_by_declaration`]) belongs to a following
+///   `VAR`/`CONST`/`LIST`/`EXTERNAL`'s own `directives_before` lookback, not
+///   the knot/stitch — it is skipped entirely, not counted;
+/// - an `@[public]`/`@[private]` annotation line (see
+///   [`is_bare_visibility_annotation`]) rides the *same* directive list
+///   `visibility_from_directives` resolves against (`leading_body_directives`
+///   collects `ANNOTATION_LINE`s alongside tag-channel directives, matched
+///   by name alone) — so it counts toward the total, forcing a decline
+///   whenever one is present, alone or alongside a `#@…` tag directive,
+///   since this fixer's only edit shape is deleting a tag line.
 fn find_visibility_in_leading_run(body: &SyntaxNode) -> Option<TextRange> {
     let mut found: Option<TextRange> = None;
     let mut count = 0usize;
@@ -289,11 +334,24 @@ fn find_visibility_in_leading_run(body: &SyntaxNode) -> Option<TextRange> {
                 }
             }
             rowan::NodeOrToken::Node(node) => match node.kind() {
-                SyntaxKind::EMPTY_LINE | SyntaxKind::ANNOTATION_LINE => {}
+                SyntaxKind::EMPTY_LINE => {}
+                SyntaxKind::ANNOTATION_LINE => {
+                    if let Some(al) = ast::AnnotationLine::cast(node)
+                        && is_bare_visibility_annotation(&al)
+                    {
+                        count += 1;
+                    }
+                }
                 SyntaxKind::TAG_LINE => {
                     let Some(tl) = ast::TagLine::cast(node) else {
                         break;
                     };
+                    if tag_line_claimed_by_declaration(tl.syntax()) {
+                        // Belongs to a following declaration's own lookback
+                        // (`hir::lower::directive::attached_declaration`),
+                        // not this leading run — excluded, not counted.
+                        continue;
+                    }
                     match classify_tag_line(&tl) {
                         LineKind::Visibility(range) => {
                             count += 1;
@@ -307,6 +365,69 @@ fn find_visibility_in_leading_run(body: &SyntaxNode) -> Option<TextRange> {
         }
     }
     (count == 1).then_some(found).flatten()
+}
+
+/// Is `al` a bare `@[public]`/`@[private]` annotation line — the annotation
+/// channel's counterpart of a visibility-shaped `#@public`/`#@private` tag
+/// line? `hir::lower::directive::leading_body_directives` collects an
+/// `ANNOTATION_LINE`'s parsed directive into the *same* list a tag-channel
+/// directive lands in, and `visibility_from_directives` matches by name
+/// alone — so `@[public]`/`@[private]` can become the `chosen` visibility
+/// mark, or conflict (`E093`) with one, exactly like the tag spelling can.
+/// This fixer has no edit for it (the issue's fix shape only removes a
+/// `#@…` tag line), so a hit here only ever contributes to the leading
+/// run's directive *count*, never to a fix location.
+fn is_bare_visibility_annotation(al: &ast::AnnotationLine) -> bool {
+    if al.arg_text().is_some() {
+        return false;
+    }
+    al.name_token()
+        .is_some_and(|t| matches!(t.text(), "private" | "public"))
+}
+
+/// `hir::lower::directive::attached_declaration`'s forward walk,
+/// reimplemented against public `brink_syntax` AST: from `tag_line`, walk
+/// forward through trivia, `EMPTY_LINE`s, and further single-directive
+/// `TAG_LINE`s (mirroring the real `is_directive_line`'s "transparent" set)
+/// to see whether the next real node is a `VAR`/`CONST`/`LIST`/`EXTERNAL`
+/// declaration — the shape `leading_body_directives` excludes from a
+/// knot/stitch's own leading run because it belongs to that declaration's
+/// own `directives_before` lookback instead. (Not `STRUCT_DECL`: the real
+/// `is_attachable_decl` has no such arm either — a pre-existing
+/// `hir::lower::directive` inconsistency, out of this fixer's scope.)
+fn tag_line_claimed_by_declaration(tag_line: &SyntaxNode) -> bool {
+    let mut cursor = tag_line.next_sibling_or_token();
+    while let Some(el) = cursor {
+        match el {
+            rowan::NodeOrToken::Token(tok) => {
+                if !is_trivia_token(tok.kind()) {
+                    return false;
+                }
+                cursor = tok.next_sibling_or_token();
+            }
+            rowan::NodeOrToken::Node(node) => {
+                if node.kind() == SyntaxKind::EMPTY_LINE {
+                    cursor = node.next_sibling_or_token();
+                    continue;
+                }
+                if let Some(tl) = ast::TagLine::cast(node.clone()) {
+                    if matches!(classify_tag_line(&tl), LineKind::NotDirective) {
+                        return false;
+                    }
+                    cursor = node.next_sibling_or_token();
+                    continue;
+                }
+                return matches!(
+                    node.kind(),
+                    SyntaxKind::VAR_DECL
+                        | SyntaxKind::CONST_DECL
+                        | SyntaxKind::LIST_DECL
+                        | SyntaxKind::EXTERNAL_DECL
+                );
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -605,5 +726,131 @@ mod tests {
         let off = u32::try_from(src.find("secret").expect("cursor site")).expect("fits");
         let cx = FixCx::new(session.db());
         assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    // ── narrowing: an `@[public]`/`@[private]` annotation shares the same
+    // ── directive list a `#@public`/`#@private` tag line resolves against
+    // ── (`leading_body_directives` collects both, `visibility_from_directives`
+    // ── matches by name alone) — adversarial review of #3467 found the old
+    // ── mirror ignored `ANNOTATION_LINE` entirely, so it could offer a fix
+    // ── that changes the *resolved* visibility instead of preserving it.
+
+    #[test]
+    fn e092_tag_then_conflicting_annotation_declines() {
+        // `#@public` (chosen — first, undeclared module default Public, so
+        // redundant/E092) then `@[private]` (conflicts, E093). The old mirror
+        // only saw the tag line (count 1) and offered to delete it — which
+        // would leave `@[private]` as the sole surviving directive and flip
+        // the resolved visibility to Private. Must decline instead.
+        let src = "=== ambush ===\n#@public\n@[private]\nGotcha!\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E092),
+            "fixture must actually raise E092: {diags:?}"
+        );
+        let off = u32::try_from(src.find("ambush").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    #[test]
+    fn e092_leading_annotation_then_tag_declines() {
+        // `@[public]` (chosen — first) then `#@public` (conflicts, E093). The
+        // old mirror ignored the annotation entirely, saw only one tag line,
+        // and offered to delete it — which does not clear `E092` at all
+        // (the annotation alone is still the redundant chosen mark).
+        let src = "=== ambush ===\n@[public]\n#@public\nHi\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E092),
+            "fixture must actually raise E092: {diags:?}"
+        );
+        let off = u32::try_from(src.find("ambush").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    #[test]
+    fn e092_bare_visibility_annotation_alone_declines() {
+        // `@[public]` alone in the leading run is itself a redundant
+        // override (undeclared module, default Public) — `E092` fires, but
+        // this fixer's only edit shape is deleting a `#@…` tag line, so it
+        // must decline rather than silently do nothing *and* claim a fix
+        // exists. The old mirror skipped `ANNOTATION_LINE` unconditionally,
+        // so `count` stayed 0 and it already declined here — this pins that
+        // behaviour is preserved by the new annotation-aware counting.
+        let src = "=== ambush ===\n@[public]\nHi\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E092),
+            "fixture must actually raise E092: {diags:?}"
+        );
+        let off = u32::try_from(src.find("ambush").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        assert!(fixes_at(&cx, file, off).is_empty());
+    }
+
+    // ── narrowing: a leading-run tag line claimed by a following
+    // ── declaration belongs to that declaration, not the knot ────────────
+
+    #[test]
+    fn e092_knot_leading_run_excludes_a_tag_line_attached_to_a_following_var() {
+        // Adversarial review of #3467: the old mirror counted every
+        // visibility tag line in the leading run toward the knot's own
+        // total, without excluding one a following `VAR`/`CONST`/`LIST`/
+        // `EXTERNAL` claims via `attached_declaration` — so this fixture's
+        // *first* `#@private` (the knot's own — the next significant
+        // sibling is a plain `# roomtag` tag line, not the VAR, so it is
+        // NOT excluded) and *second* `#@private` (claimed by `VAR score`,
+        // directly adjacent) both counted, forcing a false decline via
+        // count == 2 for the knot's own diagnostic.
+        let src = "#@module(quest)\nStart {score}.\n-> ambush\n\n=== ambush ===\n#@private\n# roomtag\n#@private\nVAR score = 0\nHi\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        let e092_count = diags
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E092)
+            .count();
+        assert_eq!(
+            e092_count, 2,
+            "expected E092 on both `ambush` and `score`: {diags:?}"
+        );
+
+        // `src.find("ambush")` would match the `-> ambush` divert first; the
+        // knot header's own occurrence is the one after `=== `.
+        let ambush_off =
+            u32::try_from(src.find("=== ambush").expect("cursor site") + 4).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, ambush_off);
+        let fix = only_fix(&fixes);
+        // Deletes exactly the FIRST `#@private` — the knot's own — leaving
+        // the second (`score`'s own) untouched.
+        assert_eq!(
+            applied(src, fix),
+            "#@module(quest)\nStart {score}.\n-> ambush\n\n=== ambush ===\n# roomtag\n#@private\nVAR score = 0\nHi\n-> DONE\n"
+        );
+    }
+
+    // ── nit: the deleted span also swallows the tag line's own leading
+    // ── indentation, so a fix on an indented directive doesn't leave stray
+    // ── whitespace glued to the following line ────────────────────────────
+
+    #[test]
+    fn e092_indented_tag_line_removes_its_own_leading_whitespace_too() {
+        let src = "    #@public\nVAR score = 0\nHello, world.\n-> DONE\n";
+        let session = session_with(brink_analyzer::Dialect::Brink, "test.ink", src);
+        let file = session.file_id("test.ink").expect("file id");
+        let off = u32::try_from(src.find("score").expect("cursor site")).expect("fits");
+        let cx = FixCx::new(session.db());
+        let fixes = fixes_at(&cx, file, off);
+        let fix = only_fix(&fixes);
+        assert_eq!(applied(src, fix), "VAR score = 0\nHello, world.\n-> DONE\n");
     }
 }
