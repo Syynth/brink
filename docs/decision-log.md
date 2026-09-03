@@ -4862,3 +4862,11 @@
 - **SCOPE:** moderate
 - **WHAT:** `EditorSession::fix_all` rolls the batch loop's intermediate rewrites back before returning, and reports `files: [{ path, new_source }]` instead. The host applies them through its own seam, exactly as it applies `apply_fix`'s `StructuralResult`.
 - **WHY:** The studio's apply seam (`applyMoveResult`) snapshots each file for undo *as it writes*. A session left holding the fixed text would make that snapshot capture the fixed text, and Undo after "Fix all safe" would restore nothing. Keeping the wasm query side-effect-free also makes it the same shape as every sibling on that boundary, so a host cannot be surprised by which of them mutate.
+
+## E095 Safe fix needs no narrowing — the self-alias value is already unread by construction
+- **WHEN:** 2026-09-02
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide auto-fix (`docs/autofix-spec.md` §9, #3425, milestone 8 of #3374)
+- **SCOPE:** minor/local
+- **WHAT:** The `Safe` fixer for `E095` (`#@was(name)` naming a definition's own current name) simply deletes the stale tag line, with no additional withholding condition — unlike `E031`/`E176`'s several narrowing guards.
+- **WHY:** Every lowering site that reads `#@was` (`hir::lower::structure::{knot,stitch}`, `decl::{var,constant,list,external}`, and the file-level module record) already compares the old name against the target's current name *before* storing anything — on a self-alias match it diagnoses `E095` and leaves the `was` field `None` for that occurrence, so the value the fix deletes was never read by codegen, the alias table, or the exported line table in the first place. There is no shape where removing it could change compiled behavior, so no per-shape safety guard is needed the way `E031`/`E176`'s runtime-binding-order guards were.

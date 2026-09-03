@@ -504,3 +504,20 @@ pub(crate) fn e176_fixture() -> FixFixture {
         at: ("test.ink", at),
     }
 }
+
+/// E095: a knot's `#@was(greet)` names its own current name (`greet`) —
+/// nothing to migrate. `crate::stale_was_fix`'s own module doc: every call
+/// site that reads a `#@was` compares the old name against the current one
+/// *before* storing anything, so a self-aliasing occurrence never reaches
+/// codegen at all — deleting the tag removes a value nothing downstream
+/// reads.
+pub(crate) fn e095_fixture() -> FixFixture {
+    let src = "=== greet ===\n#@was(greet)\nHello!\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "#@was(greet)");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
