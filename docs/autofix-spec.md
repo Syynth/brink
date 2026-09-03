@@ -258,6 +258,32 @@ never fixes a suppressed diagnostic: `collect` runs
 `brink_ir::suppressions::apply_suppressions` first, so it sees what the
 Problems panel sees.
 
+**A fix surface must intersect the caller's own severity resolution — RULED
+(issue #3459).** "Sees what the Problems panel sees" has *two* filters, not
+one. `apply_suppressions` covers the `@[allow(…)]` / `#@allow` source
+channel; the second is `brink_analyzer::effective_severity`, which answers
+`None` for a code the project's `[lints]` table set to `"allow"` (#3173) and
+whose diagnostic the panel therefore never renders at all.
+`ProjectDb::diagnostics` is the RAW list and carries both kinds. A surface
+that reads it without applying the second filter offers, counts and applies
+fixes for problems the author cannot see: a `Warning`-base fixable code
+turned `"allow"` was fix-counted into "Fix all safe (N)" and batch-applied
+with no matching row.
+
+The rule is therefore: **every fix surface subtracts the codes its own
+diagnostic road suppresses, before any other narrowing.** It is a
+subtraction rather than a whitelist, so it applies to an unrestricted
+selection and cannot be reversed by a caller naming the code explicitly.
+
+*As built:* `Select::excluded_codes` (`brink_ide::fix::select`) carries the
+subtraction and `Select::matches` applies it, so `fix_offers`, `fix_count`
+(the `N`), `fix_all` and the cursor menu all inherit it from one place.
+`brink-web` fills it from `EditorSession::suppressed_codes`, which asks
+`effective_severity` about every `DiagnosticCode::ALL` member rather than
+re-deriving which `[lints]` levels suppress. The severity policy is
+per-caller, not global — the CLI resolves its own `AnalysisOptions` — which
+is why the set is an input to `Select` and not something `collect` invents.
+
 ## 6. Policy — what is batchable, and when the editor acts
 
 ### 6.1 `brink.toml [fix]` — project-owned, RULED
@@ -350,6 +376,15 @@ anything.
   a per-row **Fix** (and the row's context menu lists every offered
   fix beside the existing suppress items); a header **Fix all safe
   (N)** for the compilation, `N` from `max_applicability` counts.
+  *As built (#3459):* the wasm road behind all four studio surfaces
+  (`fix_offers`, `fix_count`, `fix_all`, `fixes_at_path`) applies the §5
+  severity intersection, so `N` counts exactly the Fix buttons on screen.
+  It had not: the LSP surface below got that filter with #3422 and the
+  studio's did not, so a `[lints] "allow"` code inflated `N` and was
+  batch-applied with no row. `?fixture=fixable` (`main.tsx`) is the
+  end-to-end fixture — a closed diagnostic set including one allowed,
+  Safe-fixable code — driven by `e2e/auto-fix.spec.ts` and pinned in Rust
+  by `fixable_fixture` in `crates/brink-web/src/editor/fix_batch.rs`.
 - **Command palette**: Fix all safe (file / project).
 - **On save**: §6.2's policy, run on the save road before the write.
 - **LSP** (`brink-lsp`): each `Fix` → `CodeAction { kind: quickfix,

@@ -4904,3 +4904,34 @@
   pathway is proven, and the pathway's own bugs (fixes offered for
   `[lints]`-allowed codes, fix-on-save persisting only the focused file)
   are already known.
+
+## A fix surface must intersect its own diagnostic road's severity resolution
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** auto-fix (`brink-web` fix road, `brink-ide::fix::select`)
+- **SCOPE:** moderate
+- **WHAT:** Every auto-fix surface subtracts the diagnostic codes its own
+  road suppresses before any other narrowing. `ProjectDb::diagnostics` is
+  the RAW per-file list and carries two kinds of suppressed diagnostic:
+  the `@[allow(…)]` / `#@allow` source channel (already handled by
+  `brink_ir::suppressions::apply_suppressions`) and a `[lints] X = "allow"`
+  project setting, which `brink_analyzer::effective_severity` answers
+  `None` for and which the Problems panel therefore never renders. The
+  subtraction lives on `Select::excluded_codes`, so `fix_offers`,
+  `fix_count` (the `N` in "Fix all safe (N)"), `fix_all` and the cursor
+  menu inherit it from one place; `brink-web` fills it by asking
+  `effective_severity` about every `DiagnosticCode::ALL` member rather than
+  re-deriving which levels suppress. It is a subtraction, not a `codes`
+  whitelist, so it also applies to an unrestricted selection and a caller
+  naming the code explicitly cannot reverse it. Recorded in
+  `docs/autofix-spec.md` §5 and §7.
+- **WHY:** Issue #3459. PR #3454's own docs claimed `fix_offers` shows
+  "exactly what the Problems panel sees", and it did not: a `Warning`-base
+  fixable code turned `"allow"` was fix-counted into "Fix all safe (N)" and
+  batch-rewritten with no visible row to explain the edit — an editor
+  silently changing a manuscript over a problem the author had explicitly
+  turned off. The severity policy is per-caller (the CLI resolves its own
+  `AnalysisOptions`), which is why the suppressed set is an *input* to
+  `Select` rather than something `collect` derives; the LSP surface had
+  already reached the same conclusion independently in #3422, and this
+  makes the rule the spec's rather than one surface's.
