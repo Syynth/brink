@@ -2097,6 +2097,27 @@ pub enum DiagnosticCode {
     /// way to `allow` — because the admission invariant that tier requires
     /// is met: downgraded, brink produces a working program.
     E194,
+
+    /// A choice with neither display/bracket text nor a divert (#3365),
+    /// matching inklecate's own "Choice is completely empty" warning
+    /// (`InkParser/InkParser_Choices.cs:86,90`).
+    ///
+    /// Raised from `hir::lower::choice::LowerChoice::lower_choice` (the ink
+    /// surface only — see this code's doc page for why the native `{? … }`
+    /// surface is deliberately not wired to it), where the same-line
+    /// evidence the check needs — whether a `->`/divert token was written at
+    /// all, even an empty one — is still available. Once lowered into
+    /// `hir::Choice`, an explicit-but-empty divert (`* ->`) and no divert at
+    /// all (`* []`) are indistinguishable (both leave no `Stmt::Divert` in
+    /// the choice's body), so the check cannot be reconstructed later from
+    /// the HIR alone the way `E034`'s all-fallback check can.
+    ///
+    /// Fires only when the choice has none of: a label, a condition, a
+    /// same-line divert (with or without a target), or actual text in any
+    /// of its three content regions (`start`/`bracket`/`inner`). `Warning`,
+    /// `[lints]`-overridable, matching the sibling markup/shadow-warning
+    /// family (`E164`/`E188`/…) — the story still compiles.
+    E195,
 }
 
 impl DiagnosticCode {
@@ -2303,6 +2324,7 @@ impl DiagnosticCode {
         Self::E192,
         Self::E193,
         Self::E194,
+        Self::E195,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2506,6 +2528,7 @@ impl DiagnosticCode {
             Self::E192 => "E192",
             Self::E193 => "E193",
             Self::E194 => "E194",
+            Self::E195 => "E195",
         }
     }
 
@@ -2840,6 +2863,7 @@ impl DiagnosticCode {
             }
             Self::E193 => "`temp` read on a path its declaration does not dominate",
             Self::E194 => "a knot's temp is not visible from its stitches",
+            Self::E195 => "choice has neither display text nor a divert",
         }
     }
 
@@ -2918,7 +2942,13 @@ impl DiagnosticCode {
             // missing-variable default and warns), and the ruling asks
             // specifically for a `[lints]`-overridable warning so a project
             // that leans on the pattern deliberately can turn it down.
-            | Self::E193 => Severity::Warning,
+            | Self::E193
+            // E195 (#3365): a choice with no text and no divert compiles
+            // and plays — inklecate's own C# parser only ever *warns* on
+            // this shape too (`InkParser_Choices.cs`), never rejects it —
+            // so `Warning`-tier, `[lints]`-overridable like the rest of
+            // this family.
+            | Self::E195 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -3246,6 +3276,7 @@ impl DiagnosticCode {
             "E192" => Some(Self::E192),
             "E193" => Some(Self::E193),
             "E194" => Some(Self::E194),
+            "E195" => Some(Self::E195),
             _ => None,
         }
     }
