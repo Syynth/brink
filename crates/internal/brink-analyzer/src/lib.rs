@@ -411,6 +411,29 @@ impl AnalysisOptions {
                 Err(warning) => warnings.push(warning),
             }
         }
+        // `[fix]` (issue #3447): `config.fix` is a `BTreeMap`, so this walk
+        // is deterministic. There is nothing to store on `self` — no
+        // `AnalysisOptions` field consumes a fix policy (the real consumers,
+        // `brink-web`'s `EditorSession::fix_policy` and `brink-cli`'s `fix`
+        // subcommand, read `ProjectConfig::fix`/`effective_fix_policy`
+        // directly) — this loop exists purely to run every configured code
+        // through the same "resolve against the real code set, warn rather
+        // than silently drop" gate `[lints]` gets above, closing the gap
+        // `docs/autofix-spec.md` §6.1 names: an unrecognized `[fix]` code
+        // was accepted by `brink-project-config` (dependency-free of
+        // `DiagnosticCode` by design, #1234) and never validated anywhere
+        // downstream. Landing the check here — rather than inside
+        // `EditorSession::fix_policy`/`brink-cli`'s `fix` command — means
+        // both `AnalysisOptions::apply_project_config`'s callers pick it up
+        // for free: `brink_environment::resolve_options` (the compile road)
+        // and `brink-web`'s `apply_parsed_config` (the studio/db road,
+        // feeding `onProjectConfigWarnings`), the same two roads `[lints]`'s
+        // own unrecognized-code warning already reaches.
+        for code in config.fix.keys() {
+            if let Err(warning) = validate_fix_code(code) {
+                warnings.push(warning);
+            }
+        }
         // Replace, not merge (issue #1397) — see the doc comment above for
         // why: a code (or `deny-warnings`) omitted from `config` must
         // resolve to its base severity, not whatever a prior call left in
@@ -491,6 +514,31 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
         ))),
         None => Err(ConfigWarning(format!(
             "[lints] `{code}` is not a recognized diagnostic code; ignored"
+        ))),
+    }
+}
+
+/// Validate a `[fix]` table code against the real [`DiagnosticCode`] set
+/// (issue #3447) — the `[fix]`-table sibling of [`validate_lint_code`],
+/// same "warn, never silently drop" [`ConfigWarning`] channel and same
+/// wording shape (`docs/autofix-spec.md` §6.1 names this exact function as
+/// the still-owed follow-up to #3419's *value*-only validation).
+///
+/// Unlike [`validate_lint_code`] there is no [`DiagnosticCode::is_overridable`]
+/// gate here: `[lints]` restricts *which* codes may have their severity
+/// downgraded (a hard error can't be silenced), but `[fix]` only ever
+/// changes whether an already-registered fixer is offered/batched — it
+/// never touches severity, so a code's overridability says nothing about
+/// whether it may carry a fix policy. Every real code is eligible,
+/// including an `Error`-default one: `brink_ide::fix::policy::FixPolicy`
+/// (the type this resolves into, per `[fix]`'s own #3418 consumer) is the
+/// layer that actually decides whether a fixer exists and which tier it
+/// is — this function only rejects a code the compiler has never heard of.
+fn validate_fix_code(code: &str) -> Result<(), ConfigWarning> {
+    match DiagnosticCode::from_str_code(code) {
+        Some(_) => Ok(()),
+        None => Err(ConfigWarning(format!(
+            "[fix] `{code}` is not a recognized diagnostic code; ignored"
         ))),
     }
 }
@@ -2487,6 +2535,80 @@ EXTERNAL add_state(who)
 
         assert!(warnings.is_empty());
         assert_eq!(options.lints.overrides.get("E157"), Some(&LintLevel::Warn));
+    }
+
+    // ── AnalysisOptions::apply_project_config: `[fix]` code validation
+    // (issue #3447 — `[lints]`'s sibling gap named by
+    // `docs/autofix-spec.md` §6.1) ──
+
+    #[test]
+    fn apply_project_config_rejects_unknown_fix_code() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        // Not a real `DiagnosticCode` — never parses. Same fixture
+        // `apply_project_config_rejects_unknown_lint_code` uses for `[lints]`.
+        config
+            .fix
+            .insert("E9999".to_owned(), brink_project_config::FixPolicy::Auto);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("E9999"), "{warnings:?}");
+        assert!(
+            warnings[0].0.contains("[fix]"),
+            "the warning must name the table it came from, not `[lints]`'s \
+             wording: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn apply_project_config_rejects_misspelled_fix_code_case() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        // `DiagnosticCode::from_str_code` is case-sensitive — a lowercase
+        // spelling of a real code is not itself a real code.
+        config
+            .fix
+            .insert("e014".to_owned(), brink_project_config::FixPolicy::Off);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("e014"), "{warnings:?}");
+    }
+
+    #[test]
+    fn apply_project_config_accepts_an_error_default_fix_code() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        // Unlike `[lints]`, `[fix]` has no `is_overridable` gate — a code
+        // whose default severity is `Error` (E001) is still a real,
+        // fix-policy-eligible code.
+        assert_eq!(
+            brink_ir::DiagnosticCode::E001.severity(),
+            brink_ir::Severity::Error
+        );
+        config
+            .fix
+            .insert("E001".to_owned(), brink_project_config::FixPolicy::Auto);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn apply_project_config_reports_no_warnings_for_a_valid_fix_code() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        config
+            .fix
+            .insert("E014".to_owned(), brink_project_config::FixPolicy::Off);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     // ── AnalysisOptions::apply_project_config: `[project] conventions`

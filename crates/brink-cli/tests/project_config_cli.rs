@@ -225,6 +225,49 @@ fn compile_unknown_config_key_is_a_warning_not_a_compile_failure() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Issue #3447: an unrecognized code in `[fix]` must warn `brink compile`,
+/// never fail it — the exact same "warn, never silently drop" contract
+/// `compile_unknown_config_key_is_a_warning_not_a_compile_failure` above
+/// pins for an unrecognized `[project]` key, now for `[fix]`
+/// (`AnalysisOptions::apply_project_config`'s new `[fix]`-code gate in
+/// `brink-analyzer`, reached through `brink_environment::resolve_options` —
+/// the compile road `docs/autofix-spec.md` §6.1 named this gap against).
+#[test]
+fn compile_unrecognized_fix_code_is_a_warning_not_a_compile_failure() {
+    let dir = project_dir("compile-fix-unknown-code");
+    // Plain ink (no extension syntax) so a config warning is the only thing
+    // that could make this fail.
+    let story = write_story(&dir, "Hello.\n-> END\n");
+    write_config(&dir, "[fix]\nE9999 = \"auto\"\n");
+
+    // Same `RUST_LOG=warn` requirement as the unknown-key case above:
+    // `tracing_subscriber::fmt()`'s default `EnvFilter` only lets `ERROR`
+    // through.
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an unrecognized [fix] code must warn, not fail compilation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("E9999"),
+        "unrecognized-[fix]-code warning must name the offending code, got \
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("[fix]"),
+        "the warning must name the table it came from, got stdout: {stdout}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// #1369 (house rule 11): a malformed `brink.toml` must fail `brink compile`
 /// and the error must name `brink.toml`, not just report a bare parse
 /// error — the CLI-visible, black-box proof of `LoadError::Config`'s

@@ -297,12 +297,23 @@ per-code entries) is not built yet. Validated the same way `[lints]`'s value
 is (`"off" | "ask" | "auto"`, a wrong TOML type or an unrecognized spelling
 is a `ConfigError`, never a panic; an unrecognized *code* is accepted here
 regardless — this crate stays dependency-free of the real `DiagnosticCode`
-set, same split `validate_lint_code` uses). The diagnostic `[lints]` raises
-for an unrecognized *code* (`validate_lint_code`, in `brink-analyzer`) is
-still owed for `[fix]` — nothing consumes `ProjectConfig::fix` yet to hang
-it off, so it's tracked as a follow-up rather than built here (#3447, to
-land when a fix-policy engine first reads the table and reconciles it with
-milestone 3's type). `ProjectConfig::effective_fix_policy(code,
+set, same split `validate_lint_code` uses).
+
+*As built (#3447):* the diagnostic `[lints]` raises for an unrecognized
+*code* is no longer owed for `[fix]`. `AnalysisOptions::apply_project_config`
+(`brink-analyzer`) gained a `validate_fix_code` sibling to
+`validate_lint_code` — same "resolve against the real `DiagnosticCode` set,
+never silently drop" `ConfigWarning` channel and wording shape, minus
+`validate_lint_code`'s `is_overridable` gate (a fix policy never touches a
+code's severity, so every real code — including an `Error`-default one — is
+eligible to carry one). The check runs over every `[fix]` key inside
+`apply_project_config` itself, which both of `[lints]`'s own reader roads
+already call — `brink_environment::resolve_options` (the compile road) and
+`brink-web`'s `EditorSession::apply_parsed_config` (the studio/db road) —
+so an unrecognized `[fix]` code now warns on the exact same two channels an
+unrecognized `[lints]` code already did, with no new call site needed at
+either of milestone 3's/4's actual consumers
+(`EditorSession::fix_policy`/`brink-cli`'s `fix` subcommand). `ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix
