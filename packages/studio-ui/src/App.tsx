@@ -53,6 +53,10 @@ function App({ children }: { children?: ReactNode }) {
   // Player prose size (W13/#3306): 0 = follow the app scale — the var
   // stays unset so player.css's fallback (`--bs-font-prose`) applies.
   const playerFontSize = useStudioStore((s) => s.playerFontSize);
+  // Reading knobs (#3438): same road as the size — unset means the theme.
+  const playerFontFamily = useStudioStore((s) => s.playerFontFamily);
+  const playerLineHeight = useStudioStore((s) => s.playerLineHeight);
+  const playerMeasure = useStudioStore((s) => s.playerMeasure);
 
   return (
     <div
@@ -66,6 +70,11 @@ function App({ children }: { children?: ReactNode }) {
           ...(playerFontSize > 0
             ? { "--bs-player-font-size": `${playerFontSize}px` }
             : {}),
+          ...(playerFontFamily !== "" ? { "--bs-player-font-family": playerFontFamily } : {}),
+          ...(playerLineHeight > 0
+            ? { "--bs-player-line-height": (playerLineHeight / 10).toFixed(1) }
+            : {}),
+          ...(playerMeasure > 0 ? { "--bs-player-measure": `${playerMeasure.toString()}ch` } : {}),
         } as CSSProperties
       }
       ref={rootRef}

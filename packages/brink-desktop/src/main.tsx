@@ -39,6 +39,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { systemFonts } from "./system-fonts.js";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -390,6 +391,9 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     // Host commands backing the update toast's buttons — toast actions
     // dispatch command ids, so the buttons need real commands.
     extensions: { commands: UPDATE_COMMANDS },
+    // The machine's fonts for Settings › Player › Font (#3439); the web
+    // build has no such list and shows the curated one.
+    systemFonts: () => systemFonts().then((fonts) => (fonts.length === 0 ? [] : fonts)),
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the

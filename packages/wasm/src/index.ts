@@ -2022,6 +2022,21 @@ export class StoryRunnerHandle {
     return this.runner.did_safe_exit();
   }
 
+  /**
+   * The knot or `knot.stitch` the story is executing in — ink's
+   * `currentPathString` without weave indices; `null` at the root. It is
+   * where the story IS: after a delivered line the runtime sits at the
+   * next content, so read it BEFORE the continue that delivers a line to
+   * know where that line comes from.
+   */
+  currentPath(): string | null {
+    return this.runner.current_path() ?? null;
+  }
+
+  flowCurrentPath(name: string): string | null {
+    return this.runner.flow_current_path(name) ?? null;
+  }
+
   /** Structured, name-resolved snapshot of the runtime's current state. */
   debugSnapshot(): DebugState {
     return JSON.parse(this.runner.debug_snapshot()) as DebugState;
@@ -2539,6 +2554,7 @@ interface FlowHost {
   continueFlowMaximally(name: string): Line[];
   chooseFlow(name: string, index: number): void;
   flowDebugSnapshot(name: string): DebugState;
+  flowCurrentPath(name: string): string | null;
   destroyFlow(name: string): void;
 }
 
@@ -2591,6 +2607,11 @@ export class FlowHandle {
   /** Per-flow debug snapshot (State View) for this flow. */
   debugSnapshot(): DebugState {
     return this.host.flowDebugSnapshot(this.name);
+  }
+
+  /** The knot/stitch this flow is in — see {@link StoryRunnerHandle.currentPath}. */
+  currentPath(): string | null {
+    return this.host.flowCurrentPath(this.name);
   }
 
   /** Destroy this flow. The handle is inert afterward. */
@@ -2989,6 +3010,15 @@ export class StorySessionHandle {
    * `continueFlowMaximally` (issue #1573). */
   didSafeExit(): boolean {
     return this.session.did_safe_exit();
+  }
+
+  /** See {@link StoryRunnerHandle.currentPath}. */
+  currentPath(): string | null {
+    return this.session.current_path() ?? null;
+  }
+
+  flowCurrentPath(name: string): string | null {
+    return this.session.flow_current_path(name) ?? null;
   }
 
   /** Set a global variable. Turn-boundary only: throws mid-turn (drain the

@@ -112,8 +112,17 @@ export interface TranscriptLine {
   /** Per-line tags (`OutputLine.tags`) — the Player's tags toggle. */
   tags: string[];
   /** Where the line came from in the author's source (transcript
-   * provenance, spec §F9) — byte range, convert before editor use. */
+   * provenance, spec §F9) — byte range, convert before editor use. On a
+   * `marker` row this is the CHOICE's own source (#3435). */
   source?: SourceLocation;
+  /** On a choice echo (`kind: "marker"`): how the choice was written —
+   *  `*` once-only or `+` sticky (#3435). The Player draws the glyph. */
+  choiceKind?: "once" | "sticky";
+  /** The knot / `knot.stitch` this line came from (#3389 follow-up):
+   *  the runtime's `currentPath()` read just before the continue that
+   *  delivered it. Absent on restored history and on the first line of a
+   *  run from the root. The Player resets speaker runs when it changes. */
+  path?: string;
 }
 
 /** A transcript line's source, in editor terms (W7/#3300): 0-based
@@ -131,8 +140,15 @@ export function transcriptLine(
   text: string,
   tags: string[] = [],
   source?: SourceLocation,
+  path?: string | null,
 ): TranscriptLine {
-  return { text, kind: "line", tags, ...(source ? { source } : {}) };
+  return {
+    text,
+    kind: "line",
+    tags,
+    ...(source ? { source } : {}),
+    ...(path ? { path } : {}),
+  };
 }
 
 /** Studio-side message row helper (errors, notices). */
