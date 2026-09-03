@@ -540,8 +540,38 @@ Sorted from the 31 Warning-default codes plus the compat-parity issues
 (#3363–#3366); each is its own sub-issue under #3374.
 
 - **Safe**: E014 bare `~` → delete the line; E092 redundant
-  `#@public`/`#@private` → delete; E095 self-alias `#@was` → delete;
-  E110 `#@effects(…)` → `@[effects(…)]`; E172 tag-channel `#@…` →
+  `#@public`/`#@private` → delete the directive line, including any
+  leading indentation on it (issue #3424, `RedundantVisibilityFixer`,
+  `crates/internal/brink-ide/src/redundant_visibility_fix.rs`; ink-only —
+  a native file's module is always `declared` (defaults `Private`), so
+  native's own `pub` mark can never be redundant in practice on the
+  `ProjectDb`/compile roads and this diagnostic cannot fire there, but the
+  fixer still checks the dialect first since it only ever parses with the
+  ink grammar; also offers nothing for a stacked pair of conflicting
+  visibility directives, itself also `E093` and ambiguous about which line
+  the diagnostic means, nor for an `@[public]`/`@[private]`
+  annotation-channel mark anywhere in the leading run — it rides the same
+  directive list a `#@…` tag line resolves against, so it can be the
+  redundant `chosen` mark or conflict with one, but this fixer's only edit
+  shape is deleting a tag line; a leading-run tag line a *following*
+  `VAR`/`CONST`/`LIST`/`EXTERNAL` claims for itself is excluded from the
+  knot/stitch's own count, not misattributed to it);
+  E095 self-alias `#@was` → delete
+  (issue #3425 — withheld outright — no fix offered — when the same
+  physical tag line is also a *live* rename for a different owner than
+  the one that self-aliased: a file-level module self-alias whose line
+  also attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` with a
+  differently-named `#@was` argument, or a declaration-level self-alias
+  whose file's leading run carries a differently-named `#@module` —
+  see `crates/internal/brink-ide/src/stale_was_fix.rs`'s module doc);
+  E110 `#@effects(…)` → `@[effects(…)]` (issue #3426 — the two spellings
+  do not share an argument grammar: the tag spelling freezes the legacy
+  **colon** shape (`reads: gold, hp`) forever, while the annotation uses
+  the amended **paren-clause** shape (`reads(gold, hp)`), so the fixer
+  translates the parsed assertion rather than copying its argument text —
+  see `crates/internal/brink-ide/src/effects_tag_fix.rs`'s module doc;
+  withheld when the tag is dynamic, has no argument list, or fails to
+  parse under the legacy grammar); E172 tag-channel `#@…` →
   native annotation spelling; E031/E176 over-supplied args → trim
   (issue #3428 — the classic call/divert convention these two codes
   cover binds the **trailing** supplied argument, not the leading one

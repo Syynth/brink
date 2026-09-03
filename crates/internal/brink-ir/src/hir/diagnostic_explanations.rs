@@ -102,6 +102,15 @@ This mechanism is shared LIR lowering, reached from both source surfaces: ink's 
 **Plain classic temps behave differently.** A *classic* `temp` — one declared directly in a knot/stitch body, not inside a nested block — used before its own declaring statement is a forward reference on the flow graph, not a lexical-scope defect: it lives in the same call frame, so since issue #3362 it resolves to that frame's own slot (`temp_slot_raw`) and is reported as [E193](E193.md), a `[lints]`-overridable warning, while the runtime reads the still-unset slot as ink's missing-variable default. (Until #3362 it emitted a hashed `GetGlobal`/`RefGlobal` id — matching how the converter's own hashing works — with no compile diagnostic at all, which failed at link with `unresolved global`.) A block-scoped temp read after its block closes gets the opposite treatment on purpose — it is unambiguously a real defect, and one that was never expressible in inklecate at all, so it is refused at compile time instead of deferred to a runtime fault (the #680 root cause this diagnostic replaced)."#,
     ),
     (
+        DiagnosticCode::E092,
+        r"`brink-analyzer::manifest::insert_symbol`'s `effective_visibility` applies
+declaration-flips-default (`docs/modules-spec.md` §4): a declared module
+(`#@module(name)` present) defaults `Private`; an undeclared stem-module
+defaults `Public`. An explicit `#@private`/`#@public` override that names
+exactly that default changes nothing — the effective visibility is the same
+either way — so it warns rather than silently doing nothing.",
+    ),
+    (
         DiagnosticCode::E156,
         r#"Brink lambdas capture **by value, always** (RULED 2026-07-19, `docs/decision-log.md` "Lambdas ruled: Rust pipes under the RustScript north star"): there is no `move` keyword because move semantics are the only mode, and there are no reference captures in v1.
 
@@ -631,5 +640,9 @@ see, so wiring it in as written would warn on completely ordinary native
 code. Native already has its own, unambiguous slot for "no visible option"
 — `else { … }` — which lowers with `is_fallback: true` and needs no warning
 about being empty; it is supposed to be."#,
+    ),
+    (
+        DiagnosticCode::E110,
+        r"`#@effects(…)` was the original tag-channel spelling of a knot/stitch's effects assertion. The `@[effects(…)]` annotation is the final NS-A2 form (`docs/stdlib-spec.md` §9.2, ruled 2026-07-18), and the two spellings are **not** interchangeable text: `#@effects(…)` keeps the legacy **colon** argument grammar (`reads: gold, hp`) frozen forever, while `@[effects(…)]` uses the amended **paren-clause** grammar (`reads(gold, hp)`, 2026-07-19). The tag spelling still parses — nothing about the assertion's meaning changes — but every new definition should use the annotation spelling, and this warning is how an existing `#@effects(…)` site is found.",
     ),
 ];

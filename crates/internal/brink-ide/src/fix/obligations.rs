@@ -487,6 +487,21 @@ pub(crate) fn e031_fixture() -> FixFixture {
     }
 }
 
+/// E110: a knot's leading `#@effects(reads: mood)` deprecated tag spelling
+/// (`effects_tag_fix`'s own module doc). The cursor sits inside the tag —
+/// `d.range` is the whole tag's own range (`parse_directive_tag`), so any
+/// offset the tag covers finds it.
+pub(crate) fn e110_fixture() -> FixFixture {
+    let src = "VAR mood = 5\n\n-> greet\n\n=== greet ===\n#@effects(reads: mood)\nMood is {mood}.\n-> END\n".to_owned();
+    let at = offset_of(&src, "#@effects");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
 /// E176: a divert-with-args (`-> accuse("Hastings", "Poirot")`) over-supplies
 /// `accuse`'s one declared param. `arity_trim_fix`'s own module doc: the
 /// runtime binds the *trailing* supplied argument here, not the leading one
@@ -497,6 +512,43 @@ pub(crate) fn e176_fixture() -> FixFixture {
         "=== accuse(who) ===\nI accuse {who}!\n-> DONE\n\n=== main ===\n-> accuse(\"Hastings\", \"Poirot\")\n"
             .to_owned();
     let at = offset_of(&src, "accuse(\"Hastings\"");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
+/// E092: an undeclared module defaults `Public`
+/// (`docs/modules-spec.md` §4), so `#@public` above `VAR score` restates
+/// it. The cursor sits on `score`'s own identifier — `insert_symbol`
+/// anchors the diagnostic on `DeclaredSymbol::range`, the declaration's
+/// name span (issue #3424, `crates/brink-lsp/src/convert.rs`'s
+/// `is_unnecessary` doc has the full account of why that range is the
+/// name, not the directive).
+pub(crate) fn e092_fixture() -> FixFixture {
+    let src = "#@public\nVAR score = 0\nHello, world.\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "score");
+    FixFixture {
+        files: vec![("test.ink", src)],
+        dialect: Dialect::Brink,
+        types: None,
+        at: ("test.ink", at),
+    }
+}
+
+/// E095: a knot's `#@was(greet)` names its own current name (`greet`) —
+/// nothing to migrate, and this line attaches to no following declaration
+/// (`crate::stale_was_fix`'s narrowing guard doesn't apply). `crate::stale_was_fix`'s
+/// own module doc: every call site that reads a `#@was` compares the old
+/// name against the current one *before* storing anything, so a
+/// self-aliasing occurrence never reaches *that owner's* alias-table
+/// codegen — deleting the tag removes a value that codegen path never
+/// read.
+pub(crate) fn e095_fixture() -> FixFixture {
+    let src = "=== greet ===\n#@was(greet)\nHello!\n-> DONE\n".to_owned();
+    let at = offset_of(&src, "#@was(greet)");
     FixFixture {
         files: vec![("test.ink", src)],
         dialect: Dialect::Brink,
