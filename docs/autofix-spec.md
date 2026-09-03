@@ -519,6 +519,22 @@ save. Six decisions the sketch left open, decided here:
   push an undo entry or a toast of its own — an implicit action on every
   Ctrl-S would make both noise.
 
+*As built (#3462):* `file.save`'s host-save write narrows to the focused
+path — correct for an ordinary edit, but fix-on-save's batch (like any
+other batch apply) can rewrite files OTHER than the one being saved (a
+cross-file fix), and those were staying staged and silently unpersisted —
+"saved" while a sibling file the same batch touched stayed dirty with no
+warning. `runFixOnSave` already reports every path it actually rewrote;
+`file.save` now checks that return, and when it names more than the
+focused path, routes the write through the SAME per-path confirm→retire
+algorithm `file.saveAll` uses (`brink-studio/src/file-commands.ts`'s
+`hostSaveBatch`, shared by both commands rather than duplicated), narrowed
+to exactly the touched set — not every dirty file, which is Save All's job,
+not an implicit side effect of Ctrl-S. A toast names the OTHER file(s)
+written; the focused file's own `Saved <path>` notice, and fix-on-save's
+still-deliberate no-toast-of-its-own rule for the file being saved, are
+unchanged.
+
 ## 8. `brink fix` — RULED
 
 Its own subcommand (not a `--fix` flag on `compile`): it needs its own
