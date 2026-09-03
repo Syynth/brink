@@ -299,6 +299,9 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const resolveSourceBytes = useStudioStore((s) => s._resolveSourceBytes);
   const saveCurrentState = useStudioStore((s) => s.saveCurrentState);
   const choices = useStudioStore((s) => s.sessionChoices);
+  // The run generation keys the timeline: a restart remounts every row so
+  // the first line fades back in, the same entrance Stop → Run plays.
+  const run = useStudioStore((s) => s.sessionRun);
   // One-shot fast-forward (RULED 2026-08-30) — no sticky auto mode.
   const revealMaximally = useStudioStore((s) => s.revealMaximally);
   // Transport (W5/#3298): render the debug cluster only for a debug-capable
@@ -414,12 +417,19 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   // Continue, so the flip-back shows what was there rather than a blank.
   const lastFirstChoice = useRef<string>("");
   if (choices.length > 0) lastFirstChoice.current = choices[0]?.text ?? "";
+  const runSeen = useRef(run);
   useLayoutEffect(() => {
     const el = choicesRef.current;
     const pane = playerRef.current;
     if (!el || !pane) {
       choicesTop.current = null;
       return;
+    }
+    // A new run is a fresh timeline: the block appears where it is, it
+    // does not slide down from where the previous run left it.
+    if (runSeen.current !== run) {
+      runSeen.current = run;
+      choicesTop.current = null;
     }
     // Where the block VISIBLY was: the last render's settled position plus
     // whatever slide is still in flight — a paced reveal lands a line
@@ -846,7 +856,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
       </div>
       <div className="player" ref={playerRef} onScroll={handleScroll}>
         {idle && <PlayerLauncher />}
-        <div className={"player-spine" + (idle ? " is-idle" : "")}>
+        <div key={run} className={"player-spine" + (idle ? " is-idle" : "")}>
         {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
             the head of the rail, so the rail reads as a line of play from
             the first line, not as a bracket around whatever is on screen. */}

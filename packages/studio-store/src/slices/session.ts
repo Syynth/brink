@@ -85,6 +85,13 @@ export function sanitizeFontFamily(input: string): string {
 export interface SessionSlice {
   /** Lifecycle status — "none" means no session exists (placeholder UIs). */
   sessionStatus: SessionStatus;
+  /**
+   * Run generation: bumps on every start, restart and session switch. The
+   * Player keys its timeline on it so a restart REMOUNTS the transcript —
+   * the first line fades back in exactly as it does after Stop → Run
+   * (feedback 2026-09-02), instead of the old rows being reused in place.
+   */
+  sessionRun: number;
   /** Append-only transcript TEXT for the current run (cleared on
    * restart) — derived from `sessionLines`; kept as the stable
    * text-only view for consumers that only need strings. */
@@ -329,6 +336,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       activeSessionId: entry.id,
       capabilities: entry.provider.capabilities,
     });
+    set((s) => ({ sessionRun: s.sessionRun + 1 }));
     mirror(set, entry.provider.getSnapshot(), true);
     // Debug session slice (#3232): a switch is a different provider, so its
     // armed breakpoints/capability must be re-read, not carried over.
@@ -337,6 +345,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
   return {
     sessionStatus: "none",
+    sessionRun: 0,
     sessionText: [],
     sessionLines: [],
     sessionPacedMs: 150,
@@ -472,7 +481,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       } else if (get().activeSessionId !== DEFAULT_SESSION_ID) {
         setActive(DEFAULT_SESSION_ID);
       }
-      set({ _sessionBytes: bytes });
+      set((s) => ({ _sessionBytes: bytes, sessionRun: s.sessionRun + 1 }));
       entry?.provider.start?.(bytes);
       // A start swaps the provider's internal wasm session — the runtime
       // breakpoint set dies with the old one, so the anchors must re-arm
@@ -547,6 +556,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       // restart means a fresh start on the latest available program — preferring
       // the newest compile, falling back to the session's own bytes.
       if (provider instanceof LocalSessionProvider && provider.hasLiveRunner()) {
+        set((s) => ({ sessionRun: s.sessionRun + 1 }));
         provider.restart();
         return;
       }
