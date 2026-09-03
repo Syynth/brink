@@ -221,10 +221,14 @@ Same dependency-free split as `[lints]`: `brink-project-config` validates
 the *value* (a wrong TOML type, or a spelling outside the three above, is a
 compile error — never a panic) but not the *code*. For `[lints]`, a
 downstream crate raises that diagnostic (`validate_lint_code`, in
-`brink-analyzer`); `[fix]` still owes the same diagnostic but doesn't
-raise it yet — tracked in issue #3447, to land when #3418's fix-policy
-engine first reads `ProjectConfig::fix`. Until then, an unrecognized
-`[fix]` code is accepted and silently ignored.
+`brink-analyzer`); as of issue #3447, `[fix]` gets the same treatment from
+a `validate_fix_code` sibling in the same crate. An unrecognized `[fix]`
+code is a warning, never a compile failure or a panic — `[fix] `E9999` is
+not a recognized diagnostic code; ignored` — surfaced through
+`AnalysisOptions::apply_project_config`'s returned warnings on both of
+`[lints]`'s own reader roads: `brink_environment::resolve_options` (the
+compile road) and `EditorSession::apply_parsed_config` (the studio/db
+road, `@brink-lang/web`'s Problems panel).
 
 An app (the Studio, an embedder) may pass its own *ceiling* — a personal
 "how far may fix-on-save go" setting, in the same three-way space — which

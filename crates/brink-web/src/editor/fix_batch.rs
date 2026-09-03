@@ -121,7 +121,11 @@ impl EditorSession {
                 // A code this compiler doesn't know. `[fix]` accepts it (the
                 // config crate is dependency-free of the real code set) and
                 // no fixer can ever match it, so there is nothing to record.
-                // Surfacing it as a diagnostic is #3447's job.
+                // #3447 surfaces this as a `ConfigWarning` already, at the
+                // point `configured_fix` above was populated (`brink-web`'s
+                // `apply_parsed_config`, via `AnalysisOptions::apply_project_config`'s
+                // `validate_fix_code` gate in `brink-analyzer`) — nothing
+                // further to do here.
                 continue;
             };
             // `FixMode::from_config` is the one place `brink_project_config`'s
