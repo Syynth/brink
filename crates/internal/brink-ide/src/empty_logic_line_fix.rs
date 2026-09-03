@@ -9,10 +9,15 @@
 //!
 //! # Which `E014` sites this covers
 //!
-//! `E014` is not one CST shape — `hir::lower::content::logic_line`'s
-//! `impl LowerBody for ast::LogicLine` raises it from **five** call sites,
-//! and `hir::lower_native::control_flow` raises it from three more on the
-//! native surface. Only one of the eight is "a logic line with no effect" in
+//! `E014` is not one CST shape and is raised from **fifteen** call sites
+//! across three files, not one shape or a single small cluster:
+//! `hir::lower::content::logic_line`'s `impl LowerBody for ast::LogicLine`
+//! (five: a bare `~` line's own five accessor checks), `hir::lower::content::
+//! logic_block`'s `~ { … }` block-statement lowerers (six: `TempDecl`'s
+//! missing identifier/name and `ForStmt`'s missing identifier/name, two each,
+//! plus `Assignment`'s missing target/value inside a block), and
+//! `hir::lower_native::control_flow` (four, not three, on the native
+//! surface). Only **one** of the fifteen is "a logic line with no effect" in
 //! the sense this fixer discharges — the trailing catch-all
 //! (`logic_line.rs`'s last statement, `Err(sink.diagnose(range,
 //! DiagnosticCode::E014))`), reached only when **none** of
@@ -22,20 +27,34 @@
 //! expression at all (a bare `~` immediately followed by end-of-line, or by
 //! a token `atom()` doesn't start an expression with).
 //!
-//! The other seven sites raise the identical `E014` code from a
-//! **malformed** partial parse: `self.temp_decl()` is `Some` but its
-//! `identifier()` is empty (`~ temp = 5` — a name failed to parse), or
-//! `self.assignment()` is `Some` but its `target()`/`value()` is missing
-//! (`~ x =` with nothing after the `=`), and the native-surface mirrors
-//! (`LetStmt`/`AssignStmt`/`ForStmt` missing their name/place/value). Those
-//! are error-recovery diagnostics over a real (partial) construct, not an
-//! effect-free line — deleting `~ x =` when `x`'s old value might still be
-//! read downstream, or deleting `~ temp =` when the right-hand side might
-//! carry a call, is not "no effect", so a `Safe` fixer must never touch
-//! them. [`empty_logic_line_deletion`]'s structural check — every one of
-//! those five accessors must be `None` — is exactly what excludes them: any
-//! of the five being non-`None` is *itself* one of the other seven sites,
-//! never this one.
+//! The other **four** sites in `logic_line.rs` itself raise the identical
+//! `E014` code from a **malformed** partial parse: `self.temp_decl()` is
+//! `Some` but its `identifier()` is empty (`~ temp = 5` — a name failed to
+//! parse), or `self.assignment()` is `Some` but its `target()`/`value()` is
+//! missing (`~ x =` with nothing after the `=`). Those are error-recovery
+//! diagnostics over a real (partial) construct, not an effect-free line —
+//! deleting `~ x =` when `x`'s old value might still be read downstream, or
+//! deleting `~ temp =` when the right-hand side might carry a call, is not
+//! "no effect", so a `Safe` fixer must never touch them.
+//! [`empty_logic_line_deletion`]'s structural check — every one of those
+//! five accessors must be `None` — is exactly what excludes them: any of the
+//! five being non-`None` is *itself* one of those four sites, never this
+//! one.
+//!
+//! `logic_block.rs`'s six block-statement sites (`~ { temp = 5 }` missing a
+//! name, `~ { x = }` missing a target/value, `~ { for = in y {} }` missing a
+//! loop variable's name) are excluded by a *different* mechanism than the
+//! accessor check above, because they never reach it: each one diagnoses at
+//! the **inner** `TempDecl`/`Assignment`/`ForStmt` node's own
+//! `.syntax().text_range()`, not the enclosing `LogicLine`'s range, so
+//! [`empty_logic_line_deletion`]'s exact-range lookup (`find(|ll|
+//! ll.syntax().text_range() == target_range)`) never finds a `LogicLine` at
+//! that range at all and the leading `?` returns `None` before the five
+//! accessors are even consulted. `control_flow.rs`'s four native sites are
+//! narrowed the same way this module's "Why native never reaches this
+//! fixer" section below describes: the dialect gate in [`fix`] refuses
+//! before any structural check runs, for these as for the ordinary
+//! bare-`~` shape.
 //!
 //! # Why native never reaches this fixer
 //!
@@ -125,9 +144,11 @@ fn is_blank(bytes: &[u8]) -> bool {
 
 /// The deletion range for a genuinely effect-free `~` line at `target_range`,
 /// or `None` when the shape at that range is not provably this fixer's own
-/// (either it is one of `E014`'s other seven raise sites — a malformed
-/// partial construct — or something else entirely sits there, or the line is
-/// not clean enough on either side of the node to delete safely).
+/// (either it is one of `E014`'s other fourteen raise sites — a malformed
+/// partial construct, on either surface, or a `~ { … }` block statement whose
+/// range never matches a `LogicLine` at all — or something else entirely
+/// sits there, or the line is not clean enough on either side of the node to
+/// delete safely).
 ///
 /// `target_range` is `d.range` verbatim — `logic_line.rs`'s five call sites
 /// all diagnose at `self.syntax().text_range()`, the whole `LogicLine` node's
@@ -161,7 +182,9 @@ fn is_blank(bytes: &[u8]) -> bool {
 /// (`brink_test_harness::fix`) failing, not as this fixer silently trusting
 /// something it didn't check.
 fn empty_logic_line_deletion(source: &str, target_range: TextRange) -> Option<TextRange> {
+    use brink_syntax::SyntaxKind;
     use brink_syntax::ast::{AstNode as _, Expr, LogicLine};
+    use rowan::NodeOrToken;
 
     let parse = brink_syntax::parse(source);
     let tree = parse.tree();
@@ -181,6 +204,36 @@ fn empty_logic_line_deletion(source: &str, target_range: TextRange) -> Option<Te
         return None;
     }
     if line.syntax().children().any(|c| Expr::cast(c).is_some()) {
+        return None;
+    }
+
+    // A comment is trivia to the parser (`Parser::skip_ws`), so it is
+    // swallowed into this node's own token run rather than surfacing as a
+    // child the checks above would see — deleting the line would silently
+    // drop the author's authored text, which is never `Safe` (review
+    // finding on #3423: `~ // TODO: ...` and `~ /* keep this note */` both
+    // lower to a childless `LogicLine` here, same as a genuinely bare `~`).
+    let has_comment_trivia = line.syntax().children_with_tokens().any(|c| {
+        matches!(
+            c,
+            NodeOrToken::Token(t)
+                if t.kind() == SyntaxKind::LINE_COMMENT || t.kind() == SyntaxKind::BLOCK_COMMENT
+        )
+    });
+    if has_comment_trivia {
+        return None;
+    }
+
+    // A block comment spans multiple physical lines as one trivia token, so
+    // the check above is not a complete backstop against multi-line content
+    // hiding in this node — refuse outright whenever the node's own range
+    // covers more than one physical line. `docs/decision-log.md`'s "the
+    // deletion range extends to the whole physical line" ruling is about
+    // extending a single-line node's range to that line's own boundaries,
+    // never about deleting several lines that happened to parse into one
+    // node.
+    let node_text = &source[usize::from(target_range.start())..usize::from(target_range.end())];
+    if node_text.trim_end_matches('\n').contains('\n') {
         return None;
     }
 
@@ -325,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn e014_no_fix_at_end_of_file_with_no_trailing_newline() {
+    fn e014_drops_a_bare_tilde_at_eof_with_no_trailing_newline() {
         // A bare `~` as the very last byte of the file: the node's own range
         // reaches EOF directly (no newline to delete), and there is nothing
         // to extend into either side. Still a valid, if degenerate, `Safe`
@@ -340,7 +393,7 @@ mod tests {
         assert_eq!(applied(src, &fixes[0]), "Hello.\n");
     }
 
-    // ── narrowing: the other seven `E014` raise sites are refused ────────
+    // ── narrowing: the other fourteen `E014` raise sites are refused ─────
 
     #[test]
     fn e014_no_fix_when_temp_decl_is_missing_its_identifier() {
@@ -408,6 +461,90 @@ mod tests {
         session.update_source("test.brink", src.to_string());
         session.update_and_analyze("test.brink", src.to_string());
         let file = session.file_id("test.brink").expect("file id");
+        let diags = session
+            .db()
+            .diagnostics(file)
+            .expect("diagnostics")
+            .to_vec();
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
+        let cx = FixCx::new(session.db());
+        let offered = crate::fix::fixes_for(&cx, target);
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn e014_no_fix_when_the_bare_tilde_carries_a_trailing_line_comment() {
+        // A comment is trivia to the parser and is swallowed into the
+        // `LogicLine`'s own token run, so the five accessors and the
+        // `Expr`-child scan alone cannot see it. Deleting the line would
+        // silently drop the author's `TODO`, which is not `Safe` — review
+        // finding on #3423.
+        let src =
+            "VAR score = 0\nHello.\n~ // TODO: bump the score here\nScore is {score}.\n-> DONE\n";
+        let session = ink_session(src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session
+            .db()
+            .diagnostics(file)
+            .expect("diagnostics")
+            .to_vec();
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
+        let cx = FixCx::new(session.db());
+        let offered = crate::fix::fixes_for(&cx, target);
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn e014_no_fix_when_the_bare_tilde_carries_a_multiline_block_comment() {
+        // A multi-line `/* … */` is one `BLOCK_COMMENT` trivia token, so the
+        // `LogicLine` node's own range spans several physical lines. Even
+        // setting the comment-token check aside, the multi-physical-line
+        // guard must refuse this on its own — deleting the node's whole
+        // range here would drop three authored lines, not one. Review
+        // finding on #3423.
+        let src = "VAR score = 0\nHello.\n~ /* keep\n   this note\n   please */\nScore is {score}.\n-> DONE\n";
+        let session = ink_session(src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session
+            .db()
+            .diagnostics(file)
+            .expect("diagnostics")
+            .to_vec();
+        let found = diags.iter().find(|d| d.code == DiagnosticCode::E014);
+        assert!(found.is_some(), "expected an E014 diagnostic: {diags:?}");
+        let target = found.expect("just asserted above");
+        let cx = FixCx::new(session.db());
+        let offered = crate::fix::fixes_for(&cx, target);
+        assert!(
+            offered.is_empty(),
+            "{:?}",
+            offered.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn e014_no_fix_for_a_malformed_block_statement_temp_decl() {
+        // `~ { temp = 5 }` — a `~ { … }` block-statement `TempDecl` missing
+        // its name. `logic_block.rs`'s `lower_block_temp_decl` raises `E014`
+        // at the inner `TempDecl` node's own range, not any `LogicLine`'s,
+        // so `empty_logic_line_deletion`'s exact-range `LogicLine` lookup
+        // never finds a match here — pinning that this is what excludes the
+        // shape, not the five-accessor check (which never runs).
+        let src = "VAR score = 0\n=== main ===\n~ {\n  temp = 5\n}\nScore is {score}.\n-> DONE\n";
+        let session = ink_session(src);
+        let file = session.file_id("test.ink").expect("file id");
         let diags = session
             .db()
             .diagnostics(file)

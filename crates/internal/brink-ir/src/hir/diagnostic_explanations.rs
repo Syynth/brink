@@ -27,11 +27,15 @@ the compiled program, so the compiler flags it rather than silently
 dropping it.
 
 `E014` also covers a handful of unrelated **malformed** partial parses that
-happen to share the code — a `~ temp` whose name failed to parse, or a `~
-x =` assignment missing its right-hand side (see the native mirrors too:
-`let`/`assign`/`for` missing their name, place, or value). Those are
-error-recovery diagnostics over a real, if broken, construct — not an
-empty line — and the auto-fix below is careful to tell the two apart.",
+happen to share the code — fourteen other raise sites in total, across
+three files: `~ temp` and `~ x =` (target/value) shapes with a missing
+name or value in `hir::lower::content::logic_line`, the `~ { … }`
+block-statement mirrors (`TempDecl`/`Assignment`/`ForStmt`) in
+`hir::lower::content::logic_block`, and the native surface's own
+`let`/`assign`/`for` mirrors missing their name, place, or value in
+`hir::lower_native::control_flow`. Those are error-recovery diagnostics
+over a real, if broken, construct — not an empty line — and the auto-fix
+below is careful to tell the two apart.",
     ),
     (
         DiagnosticCode::E031,
