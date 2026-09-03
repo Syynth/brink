@@ -308,7 +308,9 @@ discharge its own diagnostic, 2 usage/IO error.")]
         #[arg(long)]
         dry_run: bool,
         /// Emit a `git apply`-able unified diff instead of writing — to
-        /// stdout, or to FILE if given. Implies no disk write.
+        /// stdout, or to FILE if given. Implies no disk write. Composes with
+        /// --dry-run (the report goes to stderr, stdout stays a clean patch)
+        /// and always explains a cap-hit exit-1 on stderr, --dry-run or not.
         #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
         diff: Option<String>,
         /// Promote the Suggested tier to batchable for this run. Bare:

@@ -38,7 +38,12 @@ pub struct FixOpts {
     /// Print the report; write nothing to disk.
     pub dry_run: bool,
     /// Emit a unified diff instead of writing — `"-"` for stdout, a path to
-    /// write it to a file. Implies no disk write, same as `dry_run`.
+    /// write it to a file. Implies no disk write, same as `dry_run`. Composes
+    /// with `dry_run` rather than silently overriding it: the diff goes to
+    /// its destination, nothing is written, and the report goes to stderr
+    /// (never stdout, which must stay a clean `git apply`-able patch) —
+    /// likewise whenever `cap_hit` is set, so a capped run always explains
+    /// its exit-1, `--dry-run` or not (issue #3463).
     pub diff: Option<String>,
     /// `None`: don't promote the Suggested tier. `Some("*")`: promote every
     /// Suggested-max fixer for this run — except one the project's `[fix]`
@@ -120,6 +125,19 @@ fn run_inner(opts: &FixOpts) -> Result<ExitCode, String> {
         } else {
             std::fs::write(dest, diff).map_err(|e| format!("{dest}: {e}"))?;
         }
+        // `--diff` implies no disk write, same as `--dry-run` — but it must
+        // not silently win over `--dry-run` and swallow the report, and a
+        // capped run must never exit 1 with nothing explaining why (issue
+        // #3463). The diff itself may already be on stdout (`dest == "-"`),
+        // and that stream must stay a clean `git apply`-able patch (the same
+        // contract `--placeholder` already keeps, above) — so the report
+        // goes to stderr here, unconditionally of the destination, whenever
+        // there is something to say: `--dry-run` asked for it, or `cap_hit`
+        // means the `1` exit code needs an explanation.
+        if opts.dry_run || report.cap_hit {
+            let mut err = io::stderr().lock();
+            print_report(&mut err, &session, &report)?;
+        }
     } else if opts.dry_run {
         print_report(&mut out, &session, &report)?;
     } else {
@@ -173,17 +191,13 @@ fn build_policy(
     let mut policy = FixPolicy::new();
     for fixer in FIXERS {
         let code = fixer.code();
-        match config.effective_fix_policy(code.as_str(), None) {
-            brink_project_config::FixPolicy::Off => policy.set(code, FixMode::Off),
-            brink_project_config::FixPolicy::Auto => policy.set(code, FixMode::Auto),
-            // `Ask` is the neutral value — both "the file doesn't mention
-            // this code" and an explicit `= "ask"` resolve to it, and both
-            // mean "the tier default governs" (a Safe fixer still batches).
-            // Recording an `Ask` override here would instead force a
-            // Safe-max fixer down to non-batchable, which is exactly the
-            // regression `docs/autofix-spec.md` §6.1's TOML comment rules
-            // out ("absent ⇒ ask: … batchable (Safe)").
-            brink_project_config::FixPolicy::Ask => {}
+        // `FixMode::from_config` is the one place `brink_project_config`'s
+        // `Off`/`Auto`/`Ask` maps onto this crate's own `FixMode` — see its
+        // doc comment for why `Ask` elides to "no override" rather than
+        // `FixMode::Ask` (issue #3464: this bridge used to be hand-rolled
+        // here and independently in `brink-web`'s `fix_batch.rs`).
+        if let Some(mode) = FixMode::from_config(config.effective_fix_policy(code.as_str(), None)) {
+            policy.set(code, mode);
         }
     }
     match suggested {

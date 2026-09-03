@@ -531,6 +531,20 @@ fixer registered today (milestone 6) declares `Applicability::Placeholder`,
 so this listing has no positive-path test yet — tracked as issue #3456,
 alongside the native (`.brink`) write-path fixture gap noted below.
 
+`--diff` composes with `--dry-run` rather than one silently overriding the
+other (issue #3463): the diff still goes to its destination, nothing is
+written, and the report — which `--diff` alone does not print, matching the
+pipeable-patch contract above — is printed to **stderr** when `--dry-run`
+asked for it, same stream as `--placeholder`'s listing and for the same
+reason (stdout must stay a clean `git apply`-able patch). A capped run
+(`Report::cap_hit`, non-zero exit) always prints the report to stderr under
+`--diff` too, `--dry-run` or not — the exit code must never go unexplained.
+`brink-project-config`'s `FixPolicy -> brink_ide::fix::policy::FixMode`
+bridge described two paragraphs up (`Off`/`Auto` recorded, `Ask` elided) is
+a single function, `FixMode::from_config`, that this CLI and the wasm batch
+surface (`brink-web`'s `fix_batch.rs`, §7) both call — it used to be
+hand-rolled identically in each (issue #3464).
+
 The report itself names `applied`/`skipped_overlap` sites by file path only,
 never a line:col: their `FixSite.range` was captured against whichever
 round's source was current *then*, and a later round's own edits shift
