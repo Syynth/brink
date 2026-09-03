@@ -66,6 +66,7 @@ function makeFakeProject(
   provider: TauriFileProviderInstance,
   initial: Record<string, string>,
   fixAll: () => FakeFixReport,
+  hasHostSave: () => boolean = () => true,
 ): ProjectSession {
   const buffer = new Map(Object.entries(initial));
   const baseline = new Map(Object.entries(initial));
@@ -79,7 +80,7 @@ function makeFakeProject(
     dirtyPaths: (): string[] =>
       [...buffer.keys()].filter((p) => buffer.get(p) !== baseline.get(p)).sort(),
     flushFileChanges: (): unknown[] => [],
-    hasHostSave: (): boolean => true,
+    hasHostSave,
     save: (paths?: string[]): Promise<void> => provider.requestSave(paths),
     readProviderFile: (path: string): Promise<string> => provider.readFile(path),
     markFilesSaved: (paths: Iterable<string>): void => {
@@ -173,6 +174,44 @@ describe("fix-on-save cross-file save routing (#3462)", () => {
     expect(messages.some((m) => m.includes("still unsaved"))).toBe(false);
   });
 
+  it("narrows the host-save write to the touched set — an unrelated dirty file is never swept in", async () => {
+    const { provider, disk } = makeProviderWithDisk();
+    const project = makeFakeProject(
+      provider,
+      { "a.brink": "orig a", "b.brink": "orig b", "c.brink": "orig c" },
+      () => ({
+        files: [
+          { path: "a.brink", new_source: "fixed a" },
+          { path: "b.brink", new_source: "fixed b" },
+        ],
+      }),
+    );
+
+    // A third file, dirty for reasons unrelated to this save or its fix
+    // batch — exactly what an implicit Save All would sweep in, and
+    // exactly what `file.save`'s cross-file branch must NOT touch (the PR
+    // #3487 review: `hostSaveBatch(touched, touched, ...)` must differ
+    // observably from `hostSaveBatch(touched, undefined, ...)`, which the
+    // two-file test above cannot distinguish since every file it stages is
+    // in `touched`).
+    project.applyEdit("c.brink", "someone else's edit");
+
+    const notifications = dispatchSave(project, "a.brink");
+    await settle();
+
+    expect(disk.get("a.brink")).toBe("fixed a");
+    expect(disk.get("b.brink")).toBe("fixed b");
+    // `c.brink` must never reach disk via this save...
+    expect(disk.has("c.brink")).toBe(false);
+    // ...and must still be reported dirty afterward — a real Save All is
+    // the only thing that may clear it.
+    expect(project.dirtyPaths()).toContain("c.brink");
+
+    const messages = notifications.map((n) => n.message);
+    expect(messages).toContain("Saved a.brink");
+    expect(messages.some((m) => m.includes("b.brink"))).toBe(true);
+  });
+
   it("a single-file fix batch (or none): only the focused file is written, and no extra toast names another file", async () => {
     const { provider, disk } = makeProviderWithDisk();
     const project = makeFakeProject(
@@ -195,5 +234,34 @@ describe("fix-on-save cross-file save routing (#3462)", () => {
 
     const messages = notifications.map((n) => n.message);
     expect(messages).toEqual(["Saved a.brink"]); // no second, "also wrote" toast
+  });
+
+  it("no-host-save path (the playground): every touched file retires, with the same two-toast shape as the host-save branch", async () => {
+    const { provider } = makeProviderWithDisk();
+    const project = makeFakeProject(
+      provider,
+      { "a.brink": "orig a", "b.brink": "orig b" },
+      () => ({
+        files: [
+          { path: "a.brink", new_source: "fixed a" },
+          { path: "b.brink", new_source: "fixed b" },
+        ],
+      }),
+      () => false, // no host save — `file-commands.ts`'s `else` branch
+    );
+
+    const notifications = dispatchSave(project, "a.brink");
+    await settle();
+
+    // Both files retire even without a host save to await.
+    expect(project.dirtyPaths()).toEqual([]);
+
+    // The exact same two-message shape the host-save branch produces:
+    // the focused file's own "Saved" notice, then a second toast naming
+    // the other file the fix batch touched.
+    expect(notifications.map((n) => n.message)).toEqual([
+      "Saved a.brink",
+      "Fix on save also wrote b.brink",
+    ]);
   });
 });

@@ -111,7 +111,7 @@ export function registerFileCommands(
   const markSavedAndNotify = (paths: string[], focus: string): void => {
     // SAVE-PATH markFilesSaved: file.save, file.save (settled)
     // (checked against src/__tests__/save-paths.ts by
-    // src/__tests__/save-path-enrolment.test.ts, issue #2480.) All
+    // src/__tests__/save-path-enrolment.test.ts, issue #2480.) Two ids for
     // three callers of `markSavedAndNotify` — the settled branch, the
     // disk-confirmed branch, and the no-host-save branch — retire
     // through this one call site, so both `file.save` drivers sweep it.
@@ -165,12 +165,31 @@ export function registerFileCommands(
       const current = project.getFiles();
       const settled = paths.filter((path) => current[path] === before[path]);
       const moved = paths.filter((path) => current[path] !== before[path]);
+      // `moved` diverging from its pre-save snapshot doesn't by itself mean
+      // each of those writes raced a genuine mid-flight edit (issue #2435):
+      // `requestSave` calls are serialized (`TauriFileProvider`, #2403), so
+      // a write queued behind another in-flight one can legitimately pick
+      // up a later edit and persist `current`, not `before`. Confirm each
+      // against the provider's own disk content rather than trusting the
+      // pre-save snapshot — a path with a genuine mid-write divergence
+      // still fails this check, since disk then holds the OLD content the
+      // write persisted, not `current`. `current[path] !== undefined`
+      // additionally guards a rejected read from vacuously matching a path
+      // also absent from the pre-read snapshot.
       const confirmed = await Promise.all(
         moved.map(async (path) => {
           const onDisk = await project.readProviderFile(path).catch(() => undefined);
           return current[path] !== undefined && onDisk === current[path] ? path : null;
         }),
       );
+      // Synchronous mark-time filter: `current` (captured before the
+      // disk-confirmation reads above) is only trustworthy for a path that
+      // hasn't moved on AGAIN while those reads were in flight — a settled
+      // path can drift during that same await just as easily as a moved
+      // one. Re-reading right here, one more time, immediately before
+      // `markFilesSaved`, catches that window the same way the single-file
+      // `file.save` guard does.
+      //
       // ⚠ This read and the `markFilesSaved` below are ONE synchronous step
       // — no `await` may be introduced between them (docs/embedder-api.md
       // "Dirty state", "Confirm and retire in ONE synchronous step"; pinned
