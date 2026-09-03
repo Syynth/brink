@@ -410,10 +410,12 @@
    over the next row — present only while its row is hovered (the pane
    resolves `point` for the hovered row alone). `file:line` is its
    tooltip; ⌘-click on the row does the same jump. */
+/* Top-right corner of the row, inside its padding (feedback 2026-09-02) —
+   never over the text and never hanging into the neighbouring row. */
 .brink-studio .player .player-provenance {
   position: absolute;
-  right: calc(var(--player-pad-x) + 14px);
-  bottom: -11px;
+  right: 6px;
+  top: 4px;
   z-index: 2;
   width: 22px;
   height: 22px;
