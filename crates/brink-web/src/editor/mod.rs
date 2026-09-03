@@ -1195,9 +1195,9 @@ impl EditorSession {
     /// be one (#2334 review — this restores the pre-#2334 invariant that
     /// `apply_parsed_config` itself never pushes `lints`).
     ///
-    /// Returns the `[lints]`/non-overridable-code warning strings (unknown
-    /// top-level/`[project]` key warnings are the caller's own — parsed
-    /// alongside `config`, not part of it).
+    /// Returns the `[lints]`/non-overridable-code and `[fix]`/unrecognized-
+    /// code warning strings (unknown top-level/`[project]` key warnings are
+    /// the caller's own — parsed alongside `config`, not part of it).
     fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
         // No need to seed `lints` from the session's current policy:
         // `apply_project_config` replaces `.lints` wholesale from `config`

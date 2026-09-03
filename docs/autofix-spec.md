@@ -313,7 +313,9 @@ already call — `brink_environment::resolve_options` (the compile road) and
 so an unrecognized `[fix]` code now warns on the exact same two channels an
 unrecognized `[lints]` code already did, with no new call site needed at
 either of milestone 3's/4's actual consumers
-(`EditorSession::fix_policy`/`brink-cli`'s `fix` subcommand). `ProjectConfig::effective_fix_policy(code,
+(`EditorSession::fix_policy`/`brink-cli`'s `fix` subcommand).
+
+`ProjectConfig::effective_fix_policy(code,
 app_ceiling: Option<FixPolicy>)` is the one function this section and
 §6.2 both resolve through — `FixPolicy` is declared `Off < Ask < Auto`
 so the intersection is just `project.min(ceiling)`. The studio's Fix
@@ -385,7 +387,8 @@ anything.
   `source.fixAll.brink` is `fix_all(Select{tiers: [Safe]}, FixPolicy::
   default())` — `[fix]`-table promotion does not reach it yet, since
   reconciling `brink.toml`'s table with `brink_ide::fix::policy::FixPolicy`
-  is #3447's, not built here (§6.1) — run on a private scratch
+  is tracked as issue #3489, not built here (§6.1 covers only `[fix]`-code
+  validation, landed by #3447) — run on a private scratch
   `IdeSession` that mirrors the live project's `AnalysisOptions` and every
   loaded file's current source — **but not its native/ink roots or compile
   entry**: `IdeSession` exposes no root or entry setter, so native module

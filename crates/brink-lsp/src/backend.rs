@@ -3670,8 +3670,9 @@ fn fix_all_workspace_edit(
 /// The `source.fixAll.brink` code action (`docs/autofix-spec.md` §7):
 /// [`fix_all_workspace_edit`] with `Select{tiers: [Safe]}` plus the
 /// tier-default [`FixPolicy`] — no `[fix]` promotion reaches this yet, since
-/// reconciling `brink.toml`'s table with this policy type is #3447's, not
-/// built here (`docs/autofix-spec.md` §6.1). `None` when nothing was
+/// reconciling `brink.toml`'s table with this policy type is tracked as
+/// issue #3489, not built here (`docs/autofix-spec.md` §6.1 covers only
+/// `[fix]`-code validation, landed by #3447). `None` when nothing was
 /// applied — either because no `Safe`-tier fixer is registered yet (true of
 /// every fixer today) or because the compilation is already clean.
 fn fix_all_action(db: &brink_db::ProjectDb) -> Option<tower_lsp::lsp_types::CodeActionOrCommand> {

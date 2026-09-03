@@ -293,7 +293,10 @@ impl AnalysisOptions {
     /// [`ConfigWarning`], the same "warn, never silently drop" channel
     /// unknown top-level/`[project]` keys already use. Every call site that
     /// already loops over `brink_project_config::parse_str`'s own warnings
-    /// should loop over these the same way.
+    /// should loop over these the same way. (Issue #3447: `[fix]` keys get
+    /// the same code-set gate below, via `validate_fix_code` — `[fix]` has
+    /// no overridability concept of its own, so that gate only rejects
+    /// codes the compiler has never heard of.)
     ///
     /// Lives here rather than in `brink-project-config` so that crate needs no
     /// workspace dependencies and can publish standalone (#1234) — it owns the
