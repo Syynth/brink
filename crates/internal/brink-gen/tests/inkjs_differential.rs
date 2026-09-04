@@ -115,39 +115,48 @@ fn names_a_function(s: &str) -> bool {
         .any(|w| w[0] == b'f' && w[1].is_ascii_digit())
 }
 
-/// A `=== function` section with two or more printing lines — content
-/// lines (anything that is not logic, a block marker, or blank) and
-/// statement calls to generated functions (`~ f<n>_…`, whose callee may
-/// print a line of its own: CI's first run found `~ f0_a()` twice).
+/// A `=== function` section that may print two or more lines: each
+/// content line (anything that is not logic, a block marker, or blank)
+/// counts one, and every reference to a generated function (`f<n>_…`,
+/// whose callee may print a line of its own) counts one more, whether it
+/// is a statement call (`~ f0_a()`, CI's first find), a call inside a
+/// logic line (`~ return f0_a()`, CI's second — the callee's line lands
+/// in the caller's), or an interpolation.
 fn function_printing_several_lines(src: &str) -> bool {
     let mut in_function = false;
-    let mut content = 0;
+    let mut may_print = 0;
     for line in src.lines() {
         let t = line.trim();
         if t.starts_with("=== function") {
             in_function = true;
-            content = 0;
+            may_print = 0;
             continue;
         }
         if t.starts_with("===") {
             in_function = false;
             continue;
         }
-        let statement_call =
-            t.starts_with("~ f") && t.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
         let is_content = !t.is_empty()
             && !t.starts_with('~')
             && !t.starts_with("{ ")
             && !t.starts_with('-')
             && !t.starts_with('}');
-        if in_function && (is_content || statement_call) {
-            content += 1;
-            if content >= 2 {
+        if in_function {
+            may_print += usize::from(is_content) + function_references(t);
+            if may_print >= 2 {
                 return true;
             }
         }
     }
     false
+}
+
+/// How many times `s` names a generated function (`f` followed by a digit).
+fn function_references(s: &str) -> usize {
+    s.as_bytes()
+        .windows(2)
+        .filter(|w| w[0] == b'f' && w[1].is_ascii_digit())
+        .count()
 }
 
 /// Recognises a known-divergent shape in a printed `.ink` source.
