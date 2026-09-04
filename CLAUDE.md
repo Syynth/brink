@@ -250,6 +250,7 @@ cd packages/brink-desktop/src-tauri && cargo test
 | `brink-ir` | `crates/internal/brink-ir/` | HIR, LIR, symbol tables, lowering |
 | `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis |
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR → StoryData |
+| `brink-opt` | `crates/brink-opt/` | Post-compile `.inkb` → `.inkb` optimizer (empty pass list in v1; `brink-format`-only dep) |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode exploration, diffing, corpus tests |
 | `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |

@@ -35,6 +35,25 @@ larger than "the text a player sees". At least:
 - debugger addresses, breakpoints, and the bytecode-offset map
 - effect rows under `--features effect-trace`
 - artifact determinism itself
+- **`.inkl` locale overlays** — found while building the fence, and absent
+  from every earlier draft of this list. An overlay carries a
+  `base_checksum` that must match the `.inkb` header CRC, and
+  `LocaleScopeTable` is index-aligned with `ScopeLineTable`. So **any byte
+  change to an artifact invalidates every existing `.inkl` for that story**,
+  and line-table dedup would misalign the overlays outright. Two
+  consequences: optimization must precede localization in the pipeline, and
+  this is a *different* obligation from `trace::line_identity_diff`, which
+  compares `(scope_id, index, source_hash)` and knows nothing about the
+  checksum.
+
+A second finding from the same work, recorded because it is load-bearing for
+the fence rather than for a pass: **`source_hash` is a translation-identity
+key the runtime never reads**, and `LineEntry::content` is not part of
+translation identity. That orthogonality is what lets the negative controls
+trip the trace oracle and the line-identity oracle *independently*
+(`brink_opt::control`). A future change making `source_hash`
+runtime-observable would turn `control:rehash`'s trace-clean assertion red,
+which is the correct alarm rather than a nuisance.
 
 The list must be canonical and complete before any pass can honestly
 declare what it preserves.
