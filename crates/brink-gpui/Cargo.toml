@@ -16,18 +16,21 @@ publish = false
 [workspace]
 
 [dependencies]
-# Zed's OWN gpui, from its repository, pinned to the exact commit
-# `gpui-pre` 0.3.3 is a snapshot of (`zed@5b055fa`, 2026-09-03). The
-# published `gpui` crate is stale (0.2.2, Oct 2025), so git is the only
-# current path to it — which is what Zed's own README documents.
+# Our fork of longbridge's GPUI Kit, pinned to a commit.
 #
-# `gpui-component`/`gpui-base` are VENDORED under `vendor/` with one edit
-# each: their `gpui-pre*` dependencies repointed at the Zed packages those
-# crates are snapshots of. A `[patch]` cannot do this — `gpui-pre` is
-# versioned 0.3.x while Zed's `gpui` is 0.2.2, so the patch resolves and is
-# then discarded as not satisfying `^0.3.1`.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "5b055fa789a8b8d38ac951a6e0cde272f66b4495", package = "gpui" }
-gpui-component = { path = "vendor/gpui-component", features = ["tree-sitter"] }
+# Three commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
+# a capability the upstream editor lacks rather than a rename: `Editor:
+# Sizable`, the `IntoPlot` crate lookup, and in-text inlays. They are written
+# to be upstreamable; if they land, this goes back to the crates.io version.
+#
+# A FORK REPO, not a vendored tree with a re-patching script. Upstream moves
+# are then `git merge upstream/main` with real three-way merges and real
+# conflicts, instead of string replacements that silently match nothing.
+#
+# `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
+# same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
+gpui = { package = "gpui-pre", version = "0.3.3" }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7", features = ["tree-sitter"] }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 anyhow = "1"
@@ -40,4 +43,4 @@ brink-ir = { path = "../internal/brink-ir" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-project-config = { path = "../internal/brink-project-config" }
-gpui-platform = { git = "https://github.com/zed-industries/zed", rev = "5b055fa789a8b8d38ac951a6e0cde272f66b4495", package = "gpui_platform", features = ["font-kit"] }
+gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }

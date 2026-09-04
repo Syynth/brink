@@ -292,8 +292,15 @@ about fifteen lines.
 depend on Zed directly?
 
 **Answer: directly, but only via a fork — and the fork is about NAMES, not
-code.** `./fork-to-zed.sh` does it; the spike builds and runs on Zed's own
-`gpui` at `5b055fa`.
+code.** Proven by building and running on Zed's own `gpui` at `5b055fa`.
+
+**Superseded 2026-09-04.** The Zed-direct dependency was an *investigation*,
+not a requirement, and it accounted for **15 of the 22 vendor edits**. The
+remaining 7 are capability the editor genuinely lacks. Dropping the question
+drops the 15, so `brink-gpui` now depends on `gpui-pre` through a **fork of
+the kit** (`Syynth/gpui-kit`, branch `brink`, three commits on `v0.6.0`)
+rather than a vendored tree rebuilt by a script. See "Why not a vendoring
+script" below.
 
 Why a `[patch]` cannot do it: `gpui-component`/`gpui-base` hard-wire
 `gpui = { version = "0.3.1", package = "gpui-pre" }`. The patch resolves and
@@ -370,3 +377,23 @@ cargo run --release -- ../../tests/tests_github/Boyquotes__signal_creek/assets/i
 
 Per-keystroke timings print to stderr. The spike never writes to disk —
 edits live in memory only.
+
+
+## Why not a vendoring script
+
+The first arrangement here vendored the kit crates and re-applied every edit
+with a Python script of string replacements. That is a hand-rolled
+`patch-package` with no conflict detection: the first upstream change makes a
+`.replace()` silently match nothing, and the result is a mystery build error
+rather than a merge conflict. It also lost work — regenerating `vendor/`
+during a directory move discarded the entire inlay feature, because it had
+been applied by hand and never written into the script.
+
+The fork repo is the standard answer. Our patches are real commits with real
+messages; upstream moves are `git merge upstream/main` with a real three-way
+merge; and the whole thing is a normal Cargo git dependency pinned to a rev.
+
+The three commits are written to be **upstreamable** — `Editor: Sizable` is a
+plain omission, the `IntoPlot` lookup refusing to see `gpui` is arguably a
+bug, and inlays are a feature with no workaround. If they land upstream, this
+returns to the published crate and the fork disappears.

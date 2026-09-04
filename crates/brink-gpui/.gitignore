@@ -1,5 +1,2 @@
 /target
 /BrinkGpui.app
-# Rebuilt by ./fork-to-zed.sh from the registry cache — third-party source,
-# not ours to vendor into the repo.
-/vendor
