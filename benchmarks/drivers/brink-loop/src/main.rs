@@ -2,9 +2,31 @@
 //
 // Usage: brink-loop <story.ink|story.inkb> <input.txt> [--iterations N]
 //
-// Runs the story N times in a single process, reporting total and average time.
+// Runs the story N times in a single process, reporting total and average time
+// plus the VM's own counters (`brink_runtime::Stats`).
 // Input file is 0-indexed (one choice index per line).
 // Stops when input is exhausted.
+//
+// # Why the counters matter more than the timing
+//
+// For a deterministic VM, executed-opcode count is an EXACT metric: the same
+// story and the same inputs dispatch the same opcodes on every machine, every
+// run. Wall clock is noisy and machine-dependent. So when comparing an
+// artifact against an optimized copy, `opcodes` is the primary number and
+// timing is the confirmation — and the two answer different questions:
+//
+//   - `opcodes`     — did the transform remove executed instructions at all?
+//                     The right metric for anything that removes CHEAP ops
+//                     (jump threading), where a timing delta would be noise.
+//   - `snapshot_cache_misses`, `materializations`, `frames_pushed`
+//                   — did it remove EXPENSIVE work? `EnterContainer` nulls
+//                     the call-stack snapshot cache and can force a
+//                     `materialize()`; container splicing is aimed at exactly
+//                     these, and they move where `opcodes` alone understates.
+//   - elapsed       — did any of it reach the clock?
+//
+// The run is also its own determinism check: every iteration must produce
+// identical counters, and a mismatch is reported rather than averaged away.
 
 use std::time::Instant;
 
@@ -14,7 +36,7 @@ fn run_once(
     program: std::sync::Arc<brink_runtime::Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
-) {
+) -> brink_runtime::Stats {
     let mut story = Story::<DotNetRng>::new(program, line_tables);
     let mut input_idx = 0;
 
@@ -42,6 +64,8 @@ fn run_once(
             }
         }
     }
+
+    story.stats().clone()
 }
 
 fn main() {
@@ -87,15 +111,48 @@ fn main() {
     let program = std::sync::Arc::new(program);
 
     let start = Instant::now();
+    let mut first: Option<brink_runtime::Stats> = None;
+    let mut drift = 0usize;
     for _ in 0..iterations {
-        run_once(program.clone(), line_tables.clone(), &inputs);
+        let stats = run_once(program.clone(), line_tables.clone(), &inputs);
+        match &first {
+            None => first = Some(stats),
+            // Identical inputs must dispatch identical opcodes. Anything else
+            // is nondeterminism, and averaging it away would hide it.
+            Some(f) if f.opcodes != stats.opcodes || f.steps != stats.steps => drift += 1,
+            Some(_) => {}
+        }
     }
     let elapsed = start.elapsed();
+    let s = first.unwrap_or_default();
 
     eprintln!(
         "brink-loop: {} iterations in {:.3}s ({:.3}ms avg)",
         iterations,
         elapsed.as_secs_f64(),
         elapsed.as_secs_f64() * 1000.0 / iterations as f64
+    );
+    // One line per counter, `key=value`, so two runs diff cleanly.
+    eprintln!(
+        "brink-loop-counters: opcodes={} steps={} frames_pushed={} frames_popped={} \
+threads_created={} threads_completed={} choices_presented={} choices_selected={} \
+snapshot_cache_hits={} snapshot_cache_misses={} materializations={}",
+        s.opcodes,
+        s.steps,
+        s.frames_pushed,
+        s.frames_popped,
+        s.threads_created,
+        s.threads_completed,
+        s.choices_presented,
+        s.choices_selected,
+        s.snapshot_cache_hits,
+        s.snapshot_cache_misses,
+        s.materializations,
+    );
+    assert!(
+        drift == 0,
+        "brink-loop: {drift} of {iterations} iterations dispatched a different \
+         opcode/step count from the first — the VM is nondeterministic on this \
+         story, and every counter above is meaningless until that is fixed"
     );
 }
