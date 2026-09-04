@@ -32,11 +32,22 @@ use std::time::Instant;
 
 use brink_runtime::{DotNetRng, Step, Story};
 
+/// Play the story once, returning the run's counters **and the line tables**.
+///
+/// Handing the tables back matters: they are a `Vec<Vec<LineEntry>>` that
+/// `Story::new` takes by value, so a naive `line_tables.clone()` per
+/// iteration deep-clones every `LineContent`, `audio_ref` and `slot_info` in
+/// the story. On TheIntercept that measured ~1,007 allocations per
+/// iteration — about a quarter of all allocations in a profile of this tool
+/// (#3565), i.e. the instrument built to measure allocation pressure was
+/// itself a leading source of it. `Story::into_snapshot` gives the tables
+/// back on the way out, so they are *moved* through every iteration and
+/// cloned exactly zero times.
 fn run_once(
     program: std::sync::Arc<brink_runtime::Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
-) -> brink_runtime::Stats {
+) -> (brink_runtime::Stats, Vec<Vec<brink_format::LineEntry>>) {
     let mut story = Story::<DotNetRng>::new(program, line_tables);
     let mut input_idx = 0;
 
@@ -65,7 +76,9 @@ fn run_once(
         }
     }
 
-    story.stats().clone()
+    let stats = story.stats().clone();
+    let (_, line_tables) = story.into_snapshot();
+    (stats, line_tables)
 }
 
 fn main() {
@@ -106,7 +119,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to compile {story_path}: {e}"))
             .data
     };
-    let (program, line_tables) =
+    let (program, mut line_tables) =
         brink_runtime::link(&data).unwrap_or_else(|e| panic!("failed to link: {e}"));
     let program = std::sync::Arc::new(program);
 
@@ -114,7 +127,8 @@ fn main() {
     let mut first: Option<brink_runtime::Stats> = None;
     let mut drift = 0usize;
     for _ in 0..iterations {
-        let stats = run_once(program.clone(), line_tables.clone(), &inputs);
+        let (stats, returned) = run_once(program.clone(), line_tables, &inputs);
+        line_tables = returned;
         match &first {
             None => first = Some(stats),
             // Identical inputs must dispatch identical opcodes. Anything else
