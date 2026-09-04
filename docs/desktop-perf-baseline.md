@@ -424,11 +424,16 @@ Two contracts come out of it, and both are pinned by tests:
    (`getExecutionHighlights`, `getBreakpoints`) per `EditorState`, which is
    exactly one read per render pass: host truth reaches the gutter only
    through `refreshExecutionHighlight` / `refreshBreakpoints`, and both
-   dispatch a transaction, so a new answer always arrives with a new state
-   and a state-keyed cache can never serve a stale one. Pinned by
+   dispatch a transaction, so a refreshed answer arrives with a new state
+   and the cache misses — PROVIDED every remount path re-dispatches those
+   refreshes. It does not come free: `DocumentSessions` reuses a cached
+   `EditorState` when a backgrounded tab remounts, and the whole-set
+   refreshes skip viewless slots, so `mountSlot` self-serves both (the
+   same shape as #518's overlay refresh). Read count pinned by
    `packages/ink-editor/src/__tests__/play-gutter-host-reads.test.ts`
-   (pre-fix counts scale with the viewport: 4 / 20 / 36 reads for 4- /
-   20- / 60-line documents; post-fix, 1).
+   (measured pre-fix: 36 reads for a 60-line document; post-fix, 1);
+   staleness pinned by the remount cases in
+   `packages/brink-studio/src/__tests__/document-sessions.test.ts`.
 2. **`executionHighlightsFor` takes the HIR projection as a thunk.** Only
    the choice-point branch reads it; "no session", "ended", "error",
    "degraded" and plain "running" all answer without it, so the synchronous

@@ -590,10 +590,16 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
   // whole-document query behind the studio's seam (#3490: ~38 synchronous
   // wasm `getHirSpansDoc` calls per keystroke). Both host reads are cached
   // per `EditorState`, which is exactly "once per update": the host's truth
-  // only reaches the gutter through `refreshExecutionHighlight` /
+  // reaches the gutter through `refreshExecutionHighlight` /
   // `refreshBreakpoints`, and both dispatch a transaction — so a new answer
-  // always arrives with a new state, and a cache keyed on state identity
-  // can never serve a stale one. Weak keys: states are discarded per edit.
+  // arrives with a new state and the cache misses. The invariant is
+  // CONDITIONAL, not free: a host that changes its answer while a view is
+  // unmounted leaves no transaction behind, and `DocumentSessions` reuses
+  // the cached `EditorState` (and with it THIS closure and these maps) when
+  // the tab remounts — so every remount path owes both refreshes. That is
+  // what `mountSlot` self-serves (#3490 review); without it a backgrounded
+  // tab came back showing the pre-unmount answer. Weak keys: states are
+  // discarded per edit.
   const highlightsByState = new WeakMap<EditorState, readonly ExecutionHighlight[]>();
   const breakpointsByState = new WeakMap<EditorState, readonly BreakpointGutterMarker[]>();
 

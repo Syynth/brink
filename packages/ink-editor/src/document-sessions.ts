@@ -619,6 +619,22 @@ export class DocumentSessions {
       this.refreshOverlayPrepared(slot);
     }
 
+    // #3490 (same shape as #518 above, for the two GUTTER host seams). The
+    // gutters read `getExecutionHighlights`/`getBreakpoints` once per render
+    // and cache the answer per `EditorState`; `refreshExecutionHighlight()` /
+    // `refreshBreakpoints()` above skip viewless slots, so a session that
+    // paused — or a breakpoint toggled from the Breakpoints panel, or a
+    // persisted set loading — while this tab was backgrounded left no
+    // transaction behind. Remounting reuses the CACHED state (see the
+    // `slot.state` reuse in `refreshSlotFromFile`'s sibling path), so the
+    // cache would hit and serve the pre-unmount answer: no paused arrow, no
+    // dot, until some later transaction happened to recompute the gutter.
+    // Self-serve both refreshes here, which is what makes the per-state cache
+    // safe rather than merely fast ("suppressed, never stale",
+    // `docs/live-inspector-spec.md` §5).
+    refreshExecutionHighlightInView(view);
+    refreshBreakpointsInView(view);
+
     return () => {
       this.unmountSlot(slot, { snapshot: true });
     };

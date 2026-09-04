@@ -12,5 +12,7 @@ had in view).
 Both reads are now cached per `EditorState`, which is exactly one read per
 render pass: host truth reaches the gutter only through
 `refreshExecutionHighlight` / `refreshBreakpoints`, and each dispatches a
-transaction, so a refreshed answer still arrives on the very next render. No
-API change.
+transaction, so a refreshed answer arrives on the very next render; mounting
+a view re-dispatches both refreshes, so a tab backgrounded while the answer
+changed (a session pausing, a breakpoint toggled elsewhere) still repaints on
+return. No API change.
