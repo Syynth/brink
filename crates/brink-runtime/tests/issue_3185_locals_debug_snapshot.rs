@@ -349,3 +349,65 @@ fn native_nested_tunnels_report_per_frame_shadowed_locals() {
          — shadowing must not corrupt the enclosing frame's own binding"
     );
 }
+
+// ── #3395: a lift-order hoist temp reaches the snapshot flagged `synthetic` ──
+//
+// The wire row (`DebugLocalEntry::synthetic`, pinned in brink-ir's
+// `issue_3185_locals_table.rs`) must survive resolution into the frame's
+// `DebugLocal`s, and an authored temp beside it must NOT be flagged — the
+// studio's locals views filter on exactly this bit.
+
+#[test]
+fn hoisted_lift_order_temp_is_reported_synthetic_beside_an_authored_one() {
+    let src = "\
+VAR n = 0\n\
+-> k\n\
+=== function bump() ===\n\
+~ n = n + 1\n\
+~ return n\n\
+=== k ===\n\
+~ temp mine = 4\n\
+{bump()}{n == 1:yes|no}\n\
+* [Continue]\n\
+    -> END\n\
+";
+    let data = compiled_ink(src);
+    let mut story = story_for(&data);
+    run_to_choices(&mut story);
+
+    let snap = story.debug_snapshot();
+    let frame = snap
+        .call_stack
+        .iter()
+        .find(|f| f.location.as_deref() == Some("k"))
+        .unwrap_or_else(|| {
+            let locations: Vec<Option<&str>> = snap
+                .call_stack
+                .iter()
+                .map(|f| f.location.as_deref())
+                .collect();
+            panic!("k's frame must be on the call stack at the choice: {locations:?}")
+        });
+    let locals = frame
+        .locals
+        .as_ref()
+        .expect("DebugInfo was requested, frame locals must be Some");
+
+    let mine = local(locals, "mine");
+    assert!(!mine.synthetic, "an authored `~ temp` is never synthetic");
+    assert!(matches!(mine.value, DebugValue::Int(4)));
+
+    let hoisted: Vec<&brink_runtime::DebugLocal> = locals
+        .iter()
+        .filter(|l| l.name.starts_with("$lift"))
+        .collect();
+    assert_eq!(
+        hoisted.len(),
+        1,
+        "one hoisted prefix interpolation: {locals:?}"
+    );
+    assert!(
+        hoisted[0].synthetic,
+        "the hoisted temp must be flagged synthetic"
+    );
+}

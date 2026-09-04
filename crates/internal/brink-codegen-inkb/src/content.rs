@@ -231,7 +231,7 @@ impl ContainerEmitter<'_> {
     ///
     /// For non-call expressions, evaluates directly — the result goes on the
     /// value stack with no fragment overhead.
-    fn emit_slot_expr(&mut self, expr: &lir::Expr) {
+    pub(super) fn emit_slot_expr(&mut self, expr: &lir::Expr) {
         if expr.is_function_call() {
             // Composition pattern:
             //   BeginFragment (compose)

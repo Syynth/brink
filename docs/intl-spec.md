@@ -98,7 +98,7 @@ struct SourceLocation {
 
 **`source_hash`** — computed via `brink_format::content_hash()` (64-bit, Rust `DefaultHasher`). For plain text, hashes the text directly. For templates, hashes a normalized form with `"{…}"` placeholders for interpolations. Computed during LIR recognition where source text is still available via `AstPtr`.
 
-**`slot_info`** — for each `Slot(n)` in a template, the compiler records the source expression that produced that slot value. This lets tooling display `{player_name}` instead of `{slot 0}`. Populated during LIR lowering. The runtime ignores this field.
+**`slot_info`** — for each `Slot(n)` in a template, the compiler records the source expression that produced that slot value. This lets tooling display `{player_name}` instead of `{slot 0}`. Populated during LIR lowering. The runtime ignores this field. **Known cosmetic gap (#3395):** an interpolation the lift-order hoist moved into a synthetic temp (`docs/compiler-spec.md`, "Normalization pass") is recorded as its temp's read, so its display name reads `$lift{n}` rather than the authored expression — only on a line that also carries a lifted inline conditional/sequence, and only for the interpolations left of it. Line identity is untouched: `source_hash` canonicalizes every interpolation to `{…}` regardless of the expression.
 
 **`audio_ref`** — an audio asset identifier associated with this line, populated by external tooling (not by the compiler). Stored alongside content so that localized versions can provide locale-specific audio. Both `.inkb` and `.inkl` carry audio refs — the localized version replaces the base.
 

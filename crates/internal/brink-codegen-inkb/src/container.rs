@@ -120,11 +120,24 @@ impl ContainerEmitter<'_> {
                 }
             }
 
-            lir::StmtKind::DeclareTemp { slot, value, .. } => {
-                if let Some(expr) = value {
-                    self.emit_expr(expr, false);
-                } else {
-                    self.emit(Opcode::PushNull);
+            lir::StmtKind::DeclareTemp {
+                slot,
+                value,
+                synthetic,
+                ..
+            } => {
+                match value {
+                    // #3395: a hoisted interpolation keeps display-position
+                    // semantics — a direct call's printed output is captured
+                    // into the value (the same composition a call in a slot
+                    // gets), so `{$liftN}` later emits it where the original
+                    // `{f()}` stood instead of the text landing ahead of the
+                    // line. An authored `~ temp x = f()` is NOT composed:
+                    // ink emits that call's text into the output stream
+                    // immediately, and so does this.
+                    Some(expr) if *synthetic => self.emit_slot_expr(expr),
+                    Some(expr) => self.emit_expr(expr, false),
+                    None => self.emit(Opcode::PushNull),
                 }
                 self.emit(Opcode::DeclareTemp(*slot));
             }

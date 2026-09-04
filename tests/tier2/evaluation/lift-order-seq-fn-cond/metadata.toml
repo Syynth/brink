@@ -4,10 +4,9 @@ mode = "runtime"
 [source]
 origin = "brink"
 original_id = "lift-order-seq-fn-cond"
-expected_mismatch = "#3395"
-notes = "Locks in the C#-oracle-correct behavior as a permanent regression target for #3395. See `expected_mismatch` above — while flagged, this case's episodes are not required to clear RATCHET_EPISODE_COUNT; if it ever fully matches the oracle, `oracle_snapshots` fails outright until the flag is removed and the ratchet is raised."
+notes = "Locks in the C#-oracle-correct behavior as a permanent regression target for #3395 (fixed: the lift now hoists every prefix interpolation into a synthetic temp ahead of the construct, so the condition sees the call's side effect)."
 
 [classification]
 tier = 2
 feature = "evaluation"
-tags = ["evaluation", "lift-order", "sequences", "function", "conditional", "known-mismatch"]
+tags = ["evaluation", "lift-order", "sequences", "function", "conditional"]

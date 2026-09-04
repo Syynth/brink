@@ -87,15 +87,26 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 /// Measured: CASES 380 pass / 10 fail / 414 total, EPISODES 5622 pass /
 /// 1012 mismatch / 2 missing.
 ///
-/// Since issue #3402, "the two #3395 expected mismatches above remain" is no
-/// longer prose this constant has to be trusted against: those two cases'
-/// `metadata.toml` files carry `[source] expected_mismatch = "#3395"`, and
-/// `oracle_snapshots()` below asserts that no flagged case has quietly
-/// started matching the oracle in full. When #3395 is eventually fixed, that
-/// assertion fails — naming the case — until the flag is removed and this
-/// constant is raised in the same change, so the two can never drift apart
-/// silently again.
-const RATCHET_EPISODE_COUNT: usize = 5622;
+/// Since issue #3402, an expected-mismatch case is no longer prose this
+/// constant has to be trusted against: such a case's `metadata.toml`
+/// carries `[source] expected_mismatch = "#NNNN"`, and `oracle_snapshots()`
+/// below asserts that no flagged case has quietly started matching the
+/// oracle in full — the assertion fails, naming the case, until the flag is
+/// removed and this constant is raised in the same change, so the two can
+/// never drift apart silently.
+///
+/// Raised 5622 -> 5624 on 2026-09-04: the #3395 fix (the lift hoists every
+/// interpolation left of a lifted inline construct into a synthetic temp
+/// ahead of the construct, so a condition or sequence selection runs AFTER
+/// the prefix's side effects, where ink runs it) flips exactly the two
+/// #3395 expected mismatches, one episode each, and their flags are removed
+/// in the same change:
+///   tier2/evaluation/lift-order-fn-then-cond (#3395, flipped)
+///   tier2/evaluation/lift-order-seq-fn-cond (#3395, flipped)
+/// No other snapshot moved; no expected-mismatch flags remain. Measured:
+/// CASES 382 pass / 8 fail / 414 total, EPISODES 5624 pass / 1010 mismatch
+/// / 2 missing.
+const RATCHET_EPISODE_COUNT: usize = 5624;
 
 #[test]
 #[expect(clippy::too_many_lines)]
