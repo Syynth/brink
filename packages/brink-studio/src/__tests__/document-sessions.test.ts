@@ -21,6 +21,7 @@ import {
 } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -140,6 +141,58 @@ describe("DocumentSessions", () => {
 
   afterEach(() => {
     harness.cleanup();
+  });
+
+  describe("gutter host seams across a remount (#3490)", () => {
+    // The gutters read their host hooks ONCE per render and cache the answer
+    // per `EditorState`. `DocumentSessions` reuses a cached state when a
+    // backgrounded tab remounts, and `refreshExecutionHighlight()` /
+    // `refreshBreakpoints()` skip viewless slots — so an answer that changed
+    // while the tab was away left no transaction behind, and the cache would
+    // serve the pre-unmount answer forever. `mountSlot` self-serves both
+    // refreshes; these pin that.
+    it("shows a paused arrow that arrived while the tab was backgrounded", async () => {
+      let highlights: readonly { line: number; kind: string }[] = [];
+      const h = await createHarness({ "main.ink": MAIN_INK }, {
+        // The play gutter — which draws both markers — mounts only when a
+        // play handler is wired (`extensions.ts`'s `if (options.onPlayFrom)`).
+        onPlayFrom: () => {},
+        getExecutionHighlights: () => highlights as never,
+      });
+      try {
+        const first = h.mount("main.ink", "group-1");
+        expect(first.view.dom.querySelectorAll(".brink-exec-arrow-paused")).toHaveLength(0);
+        first.dispose(); // backgrounded: the slot keeps its EditorState
+
+        highlights = [{ line: 3, kind: "paused" }]; // the session pauses, viewless
+
+        const second = h.mount("main.ink", "group-1"); // reuses the cached state
+        expect(second.view.dom.querySelectorAll(".brink-exec-arrow-paused")).toHaveLength(1);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it("shows a breakpoint dot toggled while the tab was backgrounded", async () => {
+      let marks: readonly { line: number; state: string }[] = [];
+      const h = await createHarness({ "main.ink": MAIN_INK }, {
+        onPlayFrom: () => {},
+        getBreakpoints: () => marks as never,
+        onToggleBreakpoint: () => {},
+      });
+      try {
+        const first = h.mount("main.ink", "group-1");
+        expect(first.view.dom.querySelectorAll(".brink-breakpoint-dot")).toHaveLength(0);
+        first.dispose();
+
+        marks = [{ line: 2, state: "bound" }];
+
+        const second = h.mount("main.ink", "group-1");
+        expect(second.view.dom.querySelectorAll(".brink-breakpoint-dot")).toHaveLength(1);
+      } finally {
+        h.cleanup();
+      }
+    });
   });
 
   describe("mounting", () => {
@@ -437,6 +490,110 @@ describe("DocumentSessions", () => {
       harness.project.getSession().updateFile("main.ink", without);
       harness.documents.invalidateFile("main.ink");
       expect(docText(view)).toBe(without);
+    });
+
+    // #3496: a one-line fix mid-file must not scroll the editor away from
+    // the edit — `refreshSlotFromFile`'s fallback (no precise edit list is
+    // available here, only the rewritten full source) is a minimal
+    // common-prefix/suffix diff, not a blind `[0, len)` replace.
+    it("reloads via a minimal diff: a caret/scroll past the change survive untouched", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      const tailAnchor = MAIN_INK.lastIndexOf("-> END"); // after "Once upon a time."
+      view.dispatch({ selection: { anchor: tailAnchor } });
+      view.scrollDOM.scrollTop = 40;
+
+      const target = "Once upon a time.";
+      const replacement = "Once upon a midnight dreary.";
+      const changed = MAIN_INK.replace(target, replacement);
+      harness.project.getSession().updateFile("main.ink", changed);
+      harness.documents.invalidateFile("main.ink");
+
+      expect(docText(view)).toBe(changed);
+      // The whole edit lies before the caret; a minimal diff shifts it by
+      // exactly the length delta instead of collapsing it to the start (what
+      // a `{ from: 0, to: doc.length, insert: content }` replace would do —
+      // every old position is inside the deleted range).
+      const delta = replacement.length - target.length;
+      expect(view.state.selection.main.head).toBe(tailAnchor + delta);
+      // A whole-document replace re-lays out the entire viewport from
+      // scratch; a change confined to one line leaves the scroller's own
+      // pixel offset alone.
+      expect(view.scrollDOM.scrollTop).toBe(40);
+    });
+
+    it("undo after a reload restores exactly the edited range, not the whole file", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      const changed = MAIN_INK.replace("Once upon a time.", "Once upon a midnight dreary.");
+      harness.project.getSession().updateFile("main.ink", changed);
+      harness.documents.invalidateFile("main.ink");
+      expect(docText(view)).toBe(changed);
+
+      expect(undo(view)).toBe(true);
+      expect(docText(view)).toBe(MAIN_INK);
+    });
+  });
+
+  describe("applyEditsToViews (#3496)", () => {
+    it("dispatches a precise edit directly: selection/scroll outside the change are untouched", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      const tailAnchor = MAIN_INK.lastIndexOf("-> END"); // after "Once upon a time."
+      view.dispatch({ selection: { anchor: tailAnchor } });
+      view.scrollDOM.scrollTop = 55;
+
+      const target = "Once upon a time.";
+      const start = MAIN_INK.indexOf(target);
+      const end = start + target.length;
+      const text = "Once upon a midnight dreary.";
+      // `applyMoveResult` writes the rewritten full source into the session
+      // BEFORE threading the known edits to the view layer — mirror that
+      // ordering here.
+      const newSource = MAIN_INK.slice(0, start) + text + MAIN_INK.slice(end);
+      harness.project.getSession().updateFile("main.ink", newSource);
+
+      harness.documents.applyEditsToViews("main.ink", [{ start, end, text }]);
+
+      expect(docText(view)).toBe(newSource);
+      const delta = text.length - (end - start);
+      expect(view.state.selection.main.head).toBe(tailAnchor + delta);
+      expect(view.scrollDOM.scrollTop).toBe(55);
+    });
+
+    it("one undoable step: undo restores exactly the edited range", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      const target = "Once upon a time.";
+      const start = MAIN_INK.indexOf(target);
+      const end = start + target.length;
+      const text = "Once upon a midnight dreary.";
+      const newSource = MAIN_INK.slice(0, start) + text + MAIN_INK.slice(end);
+      harness.project.getSession().updateFile("main.ink", newSource);
+
+      harness.documents.applyEditsToViews("main.ink", [{ start, end, text }]);
+      expect(docText(view)).toBe(newSource);
+
+      expect(undo(view)).toBe(true);
+      expect(docText(view)).toBe(MAIN_INK);
+      // A second undo has nothing left of this apply to unwind.
+      expect(undo(view)).toBe(false);
+    });
+
+    it("falls back to a diff-based reload when the given edits don't reconstruct the session's real content", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      const newSource = MAIN_INK.replace("Once upon a time.", "Something else entirely.");
+      harness.project.getSession().updateFile("main.ink", newSource);
+
+      // A bogus edit list (stale offsets) must never desync the view from
+      // the session — it must fall back to the reload instead of committing
+      // a document that disagrees with `getFileSource`.
+      harness.documents.applyEditsToViews("main.ink", [{ start: 0, end: 3, text: "xyz" }]);
+
+      expect(docText(view)).toBe(newSource);
+    });
+
+    it("with no edits, behaves exactly like invalidateFile", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      harness.project.getSession().updateFile("main.ink", "replaced\n");
+      harness.documents.applyEditsToViews("main.ink", []);
+      expect(docText(view)).toBe("replaced\n");
     });
   });
 

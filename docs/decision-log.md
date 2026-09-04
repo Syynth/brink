@@ -574,7 +574,6 @@
 - **WHAT:** Eliminate the LIR planning pass by stamping synthetic container `DefinitionId`s on HIR nodes in a lightweight post-HIR-lowering pass. The LIR lowerer reads pre-assigned IDs directly from HIR nodes instead of re-walking the tree with synchronized counters. This also enables a context split (immutable env / mutable allocators / scoped block state) and trait-based architecture for LIR lowering.
 - **WHY:** The planner/lowerer counter-synchronization coupling has been the biggest source of compiler heartburn. Both passes must walk the HIR in exactly the same order with identical counter logic — if they diverge, container IDs silently mismatch and diverts point to wrong targets. Pushing structural identity upstream means LIR lowering becomes a simple tree walk with no planning pass, no counter coordination, and no scope-path threading for ID derivation.
 
-
 ## bevy-brink loading modes
 - **WHEN:** 2026-04-24
 - **PROJECT:** brink
@@ -582,7 +581,6 @@
 - **SCOPE:** architectural
 - **WHAT:** The Bevy asset integration has two modes. Dev mode loads `.ink` source files; the loader tracks the transitive INCLUDE graph and hot-reloads the compiled program when any file in that graph changes (typical projects go ~3 imports deep). Release mode loads precompiled `.inkb` (bytecode) plus `.inkl` (localized line tables) — no compiler in the shipped binary.
 - **WHY:** Dev ergonomics require tight iteration on ink source with live reload. Release requires fast startup, smaller binaries without the compiler, and swappable localization via the runtime's existing program / line-table split.
-
 
 ## Expose runtime primitives for direct orchestration
 - **WHEN:** 2026-04-24
@@ -4534,7 +4532,6 @@
   of lifted function calls, #3395) can silently reintroduce the bug with
   nothing in CI to catch it.
 
-
 ## Uninitialized `~ temp` reads play, and warn twice
 - **WHEN:** 2026-09-01
 - **PROJECT:** brink
@@ -4779,7 +4776,6 @@
   `sequence-cloned-into-glued-line`,
   `sequence-shared-across-mixed-claim-branches`); ratchet 5619 → 5622.
 
-
 ## Conventions editor: teach-by-example is the design direction
 - **WHEN:** 2026-09-02
 - **PROJECT:** brink
@@ -4980,6 +4976,36 @@
   the 3px bars a fiddly target and the gaps spent width on nothing; a
   single legend-style hover reads the whole nesting at once, and sitting
   next to the text the rails line up with the structure they describe.
+
+## A gutter's per-line callback never reads a host hook
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (`packages/ink-editor/src/play-from-here.ts`,
+  `packages/brink-studio/src/execution-highlights.ts`)
+- **SCOPE:** moderate — a standing contract for every host seam a
+  CodeMirror gutter reads, not just this one
+- **WHAT:** `gutter({ lineMarker })` runs once per visible line, so a host
+  hook must be read once per render and shared across the lines, never
+  called from inside the callback. Host truth reaches a gutter only
+  through an explicit refresh effect, and a refresh dispatches a
+  transaction — so caching a host answer per `EditorState` is exactly
+  "once per render". That cache is only safe while every path that can
+  show a view re-dispatches the refreshes: a host answer that changes
+  while the view is unmounted leaves no transaction behind, and a reused
+  `EditorState` would serve the pre-unmount answer, so mounting must
+  self-serve them (found on this PR's review; the same hole #518 fixed
+  for the overlay). Corollary for the
+  other side of the seam: a host callback must not eagerly evaluate an
+  expensive argument the policy consults on only one branch — pass a
+  thunk (`executionHighlightsFor`'s HIR projection).
+- **WHY:** Measured on #3490: the play gutter's arrow-vs-dot decision
+  called the studio's `getExecutionHighlights` once per visible line, and
+  that hook eagerly pulled the file's HIR projection — 10,045 synchronous
+  whole-document `getHirSpansDoc` wasm calls across a 228-keystroke burst
+  on a 1,125-line file (~38 per keystroke, p50 input latency 48 ms), all
+  of them computing an answer that was `[]` because no session was
+  running. The cost is invisible at review time because the callback
+  itself looks like a cheap lookup; the multiplier lives in CodeMirror.
 
 ## Lift-order hoist: prefix interpolations evaluate into hidden temps before a lifted construct; a direct call keeps display-position capture
 - **WHEN:** 2026-09-04 (implements the 2026-09-02 #3395 ruling, option B)
