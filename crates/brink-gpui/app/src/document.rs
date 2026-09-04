@@ -19,8 +19,7 @@ use brink_gpui_model::tokens::TokenCache;
 use brink_ir::LineIndex;
 use gpui::prelude::*;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, SharedString, Subscription, Task,
-    WeakEntity, Window,
+    App, Context, Entity, EventEmitter, SharedString, Subscription, Task, WeakEntity, Window,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{
@@ -258,7 +257,7 @@ fn to_lsp_diagnostic(
 /// tree-sitter grammar anywhere. `styles` must return ordered,
 /// non-overlapping runs that FULLY COVER the asked range, with
 /// `HighlightStyle::default()` in the gaps.
-struct BrinkHighlighter {
+pub struct BrinkHighlighter {
     project: WeakEntity<Project>,
     path: SharedString,
     cache: TokenCache,
@@ -267,7 +266,11 @@ struct BrinkHighlighter {
 }
 
 impl BrinkHighlighter {
-    fn new(project: WeakEntity<Project>, path: SharedString) -> Self {
+    /// One highlighter per open view of a file. The Continuous view builds
+    /// its own per section, which is why this is not private: every section
+    /// is a different file on screen at once, so a highlighter that followed
+    /// "the active file" would paint them all the same.
+    pub fn new(project: WeakEntity<Project>, path: SharedString) -> Self {
         let cache = TokenCache::new(&path);
         Self {
             project,

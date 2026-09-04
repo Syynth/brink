@@ -5,6 +5,7 @@
 //! thing that goes in the centre — the shell does not, and must not.
 
 mod binder;
+mod continuous;
 mod document;
 mod icons;
 mod problems;
@@ -22,6 +23,7 @@ use gpui::{
 use gpui_component::{Root, TitleBar};
 
 use crate::binder::{Binder, BinderEvent};
+use crate::continuous::ContinuousView;
 use crate::document::Document;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
@@ -33,6 +35,10 @@ actions!(brink, [Save]);
 struct Studio {
     project: Entity<Project>,
     workspace: Entity<Workspace>,
+    /// The manuscript — the whole project as one scroller. A centre panel
+    /// like any document, so the dock's own tab bar switches to it; it is
+    /// not a mode the editor is put into.
+    manuscript: Entity<ContinuousView>,
     /// Open documents, newest last. A `Document` is itself a dock panel, so
     /// the centre's `TabGroup` provides the tabs — this list exists to find
     /// an already-open file and to know what to save.
@@ -46,6 +52,7 @@ impl Studio {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
 
         let binder = cx.new(|cx| Binder::new(project.clone(), window, cx));
+        let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
         let problems = cx.new(|cx| Problems::new(project.clone(), cx));
 
         workspace.update(cx, |workspace, cx| {
@@ -93,6 +100,12 @@ impl Studio {
             |this, binder, event: &BinderEvent, window, cx| {
                 let BinderEvent::Open { path, offset } = event;
                 this.open(path, *offset, window, cx);
+                // The manuscript's per-file editors do not scroll — its list
+                // does — so revealing a file there is a separate move from
+                // opening its document.
+                this.manuscript.update(cx, |manuscript, cx| {
+                    manuscript.reveal(path, cx);
+                });
                 // Revealing an offset focuses the editor, which would kill
                 // the Binder's own arrow-key navigation after the first
                 // click. A panel click opens the document but keeps focus in
@@ -110,11 +123,18 @@ impl Studio {
             },
         );
 
+        // Added before any document so it is the leftmost centre tab, and
+        // before the project opens so it is subscribed when the files land.
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_center(manuscript.clone(), window, cx);
+        });
+
         project.update(cx, |project, _| project.open(root));
 
         Self {
             project,
             workspace,
+            manuscript,
             documents: Vec::new(),
             _subscriptions: vec![on_project, on_binder, on_problem],
         }
