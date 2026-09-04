@@ -417,7 +417,10 @@ impl ContainerEmitter<'_> {
         // 1. Display text (combined start + choice_only) — pushed first.
         //    Tags must be emitted INSIDE the display eval so the runtime
         //    routes them to the choice (via fragment tags or current_tags),
-        //    not to the output line.
+        //    not to the output line. Whitespace runs stay verbatim here
+        //    (issue #3508, `in_choice_display`); the start text's OUTPUT
+        //    copy is a separate content statement and collapses as usual.
+        self.in_choice_display = true;
         if let Some(ref emission) = choice.display_emission {
             // Recognized display — fragment with tags inside.
             self.emit_fragment_recognized_line_with_tags(emission, &choice.tags);
@@ -435,6 +438,7 @@ impl ContainerEmitter<'_> {
             self.emit_tags(&choice.tags);
             self.emit(Opcode::EndStringEval);
         }
+        self.in_choice_display = false;
 
         // 2. Condition — pushed second (on top for runtime to pop first)
         if let Some(ref cond) = choice.condition {

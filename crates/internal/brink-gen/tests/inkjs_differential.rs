@@ -47,21 +47,13 @@ const CASES: u32 = 32;
 /// matches none is a new finding and fails with the shrunk source. This is
 /// `metadata.toml`'s `expected_mismatch` (#3402) applied to generated
 /// stories: the shapes keep running through brink, and the entry is removed
-/// (the run then finds nothing to count) once the issue is fixed.
+/// (the run then finds nothing to count) once the issue is fixed. Empty as of
+/// 2026-09-04: #3507 and #3508, the first run's two findings, are fixed.
 ///
 /// The cost is stated plainly: a story that matches a predicate could fail
 /// for a DIFFERENT reason and be counted here — so keep predicates narrow,
 /// and read the per-run tally as a signal, not as noise.
-const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[(
-    // `* [a  0]`: ink presents `a  0`, brink `a 0`.
-    "#3508 whitespace runs in choice text are collapsed",
-    |src| {
-        src.lines().any(|l| {
-            let t = l.trim_start();
-            (t.starts_with('*') || t.starts_with('+')) && t.contains("  ")
-        })
-    },
-)];
+const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[];
 
 /// Recognises a known-divergent shape in a printed `.ink` source.
 type SourcePredicate = fn(&str) -> bool;

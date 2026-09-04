@@ -7,6 +7,3 @@ source = "proptest"
 property = "inkjs_differential"
 oracle-source = "inkjs"
 issue = "#3508"
-
-[source]
-expected_mismatch = "#3508"
