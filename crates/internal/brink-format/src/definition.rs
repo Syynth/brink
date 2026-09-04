@@ -604,6 +604,13 @@ pub struct DebugLocalEntry {
     /// The declaring range, if known: `(file_idx, range_start, range_len)`,
     /// the same triple shape entries use (§2.2).
     pub declaring_range: Option<(u32, u32, u32)>,
+    /// A temp the compiler minted rather than the author (issue #3395: the
+    /// lift-order hoist's `$liftN` temps — `docs/debugger-spec.md` §3).
+    /// The studio's locals view hides these rows; the value is real and
+    /// still resolvable by slot for tooling that wants it. Wire: bit 1 of
+    /// the row's flags byte (section version 2), `false` for every row a
+    /// version-1 writer produced.
+    pub synthetic: bool,
 }
 
 /// One container's `DebugInfo` table (`docs/debugger-spec.md` §2.2): the

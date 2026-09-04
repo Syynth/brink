@@ -597,7 +597,12 @@ fn parse_debug_local_entry(pair: P<'_>) -> Result<DebugLocalEntry, InktParseErro
         col: 0,
     })?;
     let name = unescape_string(name_pair.as_str());
-    let declaring_range = match inner.next() {
+    let mut next = inner.next();
+    let synthetic = matches!(&next, Some(p) if p.as_rule() == Rule::debug_synthetic);
+    if synthetic {
+        next = inner.next();
+    }
+    let declaring_range = match next {
         Some(range_pair) if range_pair.as_rule() == Rule::debug_range => {
             let mut r = range_pair.into_inner();
             let mut next_u32 = |ctx: &str| -> Result<u32, InktParseError> {
@@ -619,6 +624,7 @@ fn parse_debug_local_entry(pair: P<'_>) -> Result<DebugLocalEntry, InktParseErro
         slot,
         name,
         declaring_range,
+        synthetic,
     })
 }
 

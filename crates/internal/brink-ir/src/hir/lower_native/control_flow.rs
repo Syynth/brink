@@ -245,6 +245,7 @@ pub(super) fn lower_temp_decl(
             .type_annotation()
             .as_ref()
             .and_then(super::types::lower_type_annotation),
+        synthetic: false,
     })
 }
 

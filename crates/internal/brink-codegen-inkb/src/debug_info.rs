@@ -69,6 +69,10 @@ pub(crate) struct RawLocal {
     /// `None` for parameters (no per-param source range in LIR — see
     /// above); `Some(stmt.provenance)` for a `~ temp` declaration.
     pub declaring_range: Option<Provenance>,
+    /// [`brink_ir::lir::StmtKind::DeclareTemp`]'s `synthetic` — a
+    /// compiler-minted temp (#3395) the debugger hides; always `false` for
+    /// a parameter.
+    pub synthetic: bool,
 }
 
 /// Per-`emit()`-call debug-info recording state, held alongside
@@ -188,6 +192,7 @@ impl DebugCollector {
                                 u32::from(p.range.len()),
                             )
                         }),
+                        synthetic: l.synthetic,
                     })
                     .collect();
                 DebugContainerTable { entries, locals }

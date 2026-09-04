@@ -1312,6 +1312,7 @@ impl<R: StoryRng> Story<R> {
                             slot: local.slot,
                             name: local.name.clone(),
                             value: resolver.debug_value(value),
+                            synthetic: local.synthetic,
                         },
                     );
                 }

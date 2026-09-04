@@ -86,7 +86,9 @@ debug_container = { "(" ~ "dcontainer" ~ integer ~ debug_entry* ~ debug_locals? 
 // entry: bytecode_offset file_idx range_start range_len kind_token flags
 debug_entry = { "(" ~ "entry" ~ integer ~ integer ~ integer ~ integer ~ integer ~ integer ~ ")" }
 debug_locals = { "(" ~ "locals" ~ debug_local_entry* ~ ")" }
-debug_local_entry = { "(" ~ "local" ~ integer ~ string ~ debug_range? ~ ")" }
+// local: slot "name" synthetic? (range file_idx start len)?   [#3395: synthetic]
+debug_local_entry = { "(" ~ "local" ~ integer ~ string ~ debug_synthetic? ~ debug_range? ~ ")" }
+debug_synthetic = { "synthetic" }
 debug_range = { "(" ~ "range" ~ integer ~ integer ~ integer ~ ")" }
 
 effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }

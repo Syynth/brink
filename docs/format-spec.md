@@ -530,7 +530,7 @@ Each offset table entry (8 bytes):
 | `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
 | `0x0F` | Alias table (M-3) | Section-local version byte, then per entry: old `DefinitionId` → new `DefinitionId`, sorted by old. Always present (possibly empty). See below. |
 | `0x10` | Frame shapes (FS-3) | Section-local version byte, then per `await` site: the site's stable `DefinitionId` (the synthesized continuation container) + its name-keyed crossing-local slots (`NameId`s), sorted by site. **Optional** — omitted when empty. See below. |
-| `0x11` | DebugInfo (D1/#3179, shipped D6/#3184) | Section-local version byte, section-local file table, then per `Containers` entry (lockstep by `container_idx`): an entry table (`bytecode_offset`, `file_idx`, `range_start`, `range_len`, `kind_token`, `flags`) plus a `LocalsTable`. **Optional** — omitted entirely for a release export. See below. |
+| `0x11` | DebugInfo (D1/#3179, shipped D6/#3184) | Section-local version byte (**2** since #3395: the `LocalsTable` row's `has_range` byte became a flags byte — bit 0 has-range, bit 1 `synthetic`, reserved bits rejected), section-local file table, then per `Containers` entry (lockstep by `container_idx`): an entry table (`bytecode_offset`, `file_idx`, `range_start`, `range_len`, `kind_token`, `flags`) plus a `LocalsTable` (`docs/debugger-spec.md` §3). **Optional** — omitted entirely for a release export. See below. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
