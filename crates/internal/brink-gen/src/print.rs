@@ -111,6 +111,7 @@ pub fn expr(e: &Expr) -> String {
         Expr::Bin(l, op, r) => format!("({} {} {})", expr(l), binop(*op), expr(r)),
         Expr::Call { name, args } => call_text(name, args),
         Expr::ListFn(f, arg) => format!("{}({})", list_fn(*f), expr(arg)),
+        Expr::Random { min, max } => format!("RANDOM({min}, {max})"),
     }
 }
 
@@ -197,6 +198,12 @@ fn line_text(parts: &[Part]) -> String {
                     let _ = write!(s, "{{{}:{then}}}", expr(cond));
                 }
             },
+            // `{a|b}`, `{&a|b}`, `{!a|b}`, `{~a|b}` (rule 13). The
+            // alternatives carry no `:` by construction, so a marker-less
+            // sequence can never re-read as a conditional.
+            Part::Seq { kind, alts } => {
+                let _ = write!(s, "{{{}{}}}", kind.marker(), alts.join("|"));
+            }
         }
     }
     s

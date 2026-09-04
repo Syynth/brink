@@ -89,6 +89,37 @@
 //!     yields an int; `==`/`!=` compare two values of the same list type.
 //!     `+=`/`-=` write through a list target like an int one.
 //!
+//! # Sequences and randomness
+//!
+//! 13. A **sequence** ([`Part::Seq`]) is inline content with two or more
+//!     alternatives and a [`SeqKind`] marker — `{a|b}` stopping, `{&a|b}`
+//!     cycle, `{!a|b}` once, `{~a|b}` shuffle. At least one alternative is
+//!     non-empty, and no two empty ones are adjacent: an empty alternative
+//!     is legal in ink and prints nothing, but two in a row spell `||`,
+//!     which ink lexes as the or-operator. A sequence never affects termination: it changes
+//!     what a line prints on a revisit, not where control goes.
+//!     Alternatives are letters, digits and spaces only, because ink tries
+//!     a `{…}` as an expression before it tries it as a sequence and any
+//!     punctuation can commit it to the wrong reading (`{a?|a}` does not
+//!     compile under inklecate; brink accepts it).
+//!     `RANDOM(min, max)` ([`Expr::Random`]) is an int expression whose
+//!     bounds are literals with `min <= max` — ink raises a story error
+//!     when they are the other way round — and it stands only in a printed
+//!     interpolation. Anywhere else (a choice condition, an assignment, a
+//!     temp, a conditional's condition, a function's return) a drawn value
+//!     could reach a choice guard and the choices offered at a point would
+//!     stop being a function of state alone; the harness's explorer is an
+//!     exhaustive DFS with no state dedup, so a guard that flickers
+//!     between visits multiplies its episode count without bound. Both
+//!     sequences and `RANDOM` consume the story RNG, so this tier is what
+//!     puts brink's `DotNetRng` and the oracle's `System.Random` shim head
+//!     to head.
+//! 14. A line's sequences multiply into whole-line variants and their
+//!     product stays within [`VARIANT_CAP`] — the compiler enumerates each
+//!     variant as a line-table entry and rejects a breach outright (E191),
+//!     a `once` sequence counting one extra for its exhausted empty
+//!     variant.
+//!
 //! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
@@ -288,6 +319,12 @@ pub enum Expr {
     },
     /// `LIST_COUNT(x)` and friends (rule 12).
     ListFn(ListFn, Box<Expr>),
+    /// `RANDOM(min, max)` — an int, bounds inclusive, `min <= max`
+    /// (rule 13).
+    Random {
+        min: i32,
+        max: i32,
+    },
 }
 
 /// How an assignment writes its target.
@@ -298,6 +335,31 @@ pub enum AssignOp {
     Add,
     /// `-=` — int targets only.
     Sub,
+}
+
+/// Which alternative a [`Part::Seq`] shows on each visit (rule 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeqKind {
+    /// `{a|b}` — each in turn, then the last one forever.
+    Stopping,
+    /// `{&a|b}` — each in turn, then round again.
+    Cycle,
+    /// `{!a|b}` — each in turn, then nothing.
+    Once,
+    /// `{~a|b}` — one at random, every visit.
+    Shuffle,
+}
+
+impl SeqKind {
+    /// The marker ink writes before the first alternative.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Stopping => "",
+            Self::Cycle => "&",
+            Self::Once => "!",
+            Self::Shuffle => "~",
+        }
+    }
 }
 
 /// One piece of a content line.
@@ -311,6 +373,12 @@ pub enum Part {
         cond: Expr,
         then: String,
         otherwise: Option<String>,
+    },
+    /// `{a|b}` and its marked forms — a sequence of plain-text
+    /// alternatives, at least two of them (rule 13).
+    Seq {
+        kind: SeqKind,
+        alts: Vec<String>,
     },
 }
 
@@ -644,8 +712,71 @@ fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
             (_, t @ Ty::List(_)) => Ok(t),
             (f, t) => Err(Invalid(format!("{f:?} of {t:?}"))),
         },
+        Expr::Random { min, max } => {
+            if min <= max {
+                Ok(Ty::Int)
+            } else {
+                Err(Invalid(format!("RANDOM({min}, {max}) has min > max")))
+            }
+        }
         Expr::Bin(l, op, r) => type_bin(l, *op, r, scope),
     }
+}
+
+/// The compiler's per-line cap on enumerated whole-line variants —
+/// `brink_ir::lir::lower::recognize::VARIANT_CAP`, a hard error (E191,
+/// #3274) when a line's sequences multiply past it. Mirrored here rather
+/// than imported: `brink-gen` depends on no compiler crate, and a change
+/// on that side shows up as a smoke-lane failure, which is the signal
+/// wanted.
+pub const VARIANT_CAP: usize = 32;
+
+/// A line's sequences multiply into whole-line variants; a `once`
+/// sequence counts one extra for its exhausted empty variant (rule 13).
+fn line_variant_product(parts: &[Part]) -> usize {
+    parts.iter().fold(1usize, |acc, p| match p {
+        Part::Seq { kind, alts } => {
+            acc.saturating_mul(alts.len() + usize::from(*kind == SeqKind::Once))
+        }
+        _ => acc,
+    })
+}
+
+/// A sequence's alternatives (rule 13): at least two, at least one of them
+/// non-empty, and none carrying a character that would re-parse the
+/// sequence as something else.
+fn validate_seq(alts: &[String]) -> Result<(), Invalid> {
+    if alts.len() < 2 {
+        return Err(Invalid(format!(
+            "sequence with {} alternative(s); ink needs two",
+            alts.len()
+        )));
+    }
+    if alts.iter().all(String::is_empty) {
+        return Err(Invalid("sequence whose alternatives are all empty".into()));
+    }
+    // `||` is ink's or-operator, so two empty alternatives in a row do not
+    // parse as a sequence at all.
+    if alts.windows(2).any(|w| w[0].is_empty() && w[1].is_empty()) {
+        return Err(Invalid(
+            "sequence with two empty alternatives in a row (`||`)".into(),
+        ));
+    }
+    for alt in alts {
+        // Letters, digits and spaces only: ink tries a `{…}` as an
+        // expression before it tries it as a sequence, so punctuation can
+        // commit it to the wrong reading — `{a?|a}` fails to compile with
+        // "Expected right side of `?` expression but saw `|a}`".
+        if let Some(bad) = alt
+            .chars()
+            .find(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && *c != ' ')
+        {
+            return Err(Invalid(format!(
+                "sequence alternative contains `{bad}`: {alt:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The type of a binary expression (rules 5 and 12).
@@ -966,6 +1097,12 @@ fn validate_items(
                 if parts.is_empty() {
                     return Err(Invalid(format!("empty content line in flow {flow}")));
                 }
+                if line_variant_product(parts) > VARIANT_CAP {
+                    return Err(Invalid(format!(
+                        "content line enumerates to {} whole-line variants, over the {VARIANT_CAP} cap",
+                        line_variant_product(parts)
+                    )));
+                }
                 for p in parts {
                     match p {
                         Part::Text(t) => {
@@ -982,6 +1119,7 @@ fn validate_items(
                                 return Err(Invalid("empty inline-conditional branch".into()));
                             }
                         }
+                        Part::Seq { alts, .. } => validate_seq(alts)?,
                     }
                 }
             }
