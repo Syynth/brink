@@ -3370,7 +3370,15 @@ fn handle_shuffle_with_hash<R: crate::rng::StoryRng>(
     for i in 0..=iteration_index {
         let chosen = random_values[i as usize] as usize % unpicked.len();
         let chosen_index = unpicked[chosen];
-        unpicked.swap_remove(chosen);
+        // ORDER-PRESERVING removal, matching the reference's
+        // `unpickedIndices.RemoveAt(chosen)` / `splice(chosen, 1)` (#3538).
+        // `swap_remove` would be cheaper but moves the last element into the
+        // hole, permuting the survivors — so every draw after the first
+        // indexes a differently-ordered list than ink's and picks a different
+        // element, while the first draw still agrees. That is exactly the
+        // shape the corpus showed: within one loop, iteration 0 matched and
+        // the rest were shuffled among themselves.
+        unpicked.remove(chosen);
 
         if i == iteration_index {
             flow.value_stack.push(Value::Int(chosen_index));
