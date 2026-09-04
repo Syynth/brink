@@ -181,6 +181,11 @@ impl CallStack {
     }
 
     pub fn last_mut(&mut self) -> Option<&mut CallFrame> {
+        // A mutable frame is about to change: a snapshot taken before
+        // this write no longer describes the stack (issue #3528 — a temp
+        // written after `<- thread` forked the stack was missing from the
+        // next choice's fork, served from the stale cache).
+        self.cached_snapshot = None;
         if !self.own.is_empty() {
             return self.own.last_mut();
         }
@@ -209,6 +214,8 @@ impl CallStack {
     /// Get a mutable reference to a frame by absolute index.
     /// Materializes the inherited prefix if the target is in it.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
+        // See `last_mut`: any mutable access stales the cached snapshot.
+        self.cached_snapshot = None;
         let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
         if index < inherited_len {
             self.materialize();
