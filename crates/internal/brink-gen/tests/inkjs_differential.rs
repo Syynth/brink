@@ -47,13 +47,151 @@ const CASES: u32 = 32;
 /// matches none is a new finding and fails with the shrunk source. This is
 /// `metadata.toml`'s `expected_mismatch` (#3402) applied to generated
 /// stories: the shapes keep running through brink, and the entry is removed
-/// (the run then finds nothing to count) once the issue is fixed. Empty as of
-/// 2026-09-04: #3507 and #3508, the first run's two findings, are fixed.
+/// (the run then finds nothing to count) once the issue is fixed. #3507 and
+/// #3508, the first run's two findings, are fixed; the functions tier's
+/// first run (2026-09-04) added #3519.
 ///
 /// The cost is stated plainly: a story that matches a predicate could fail
 /// for a DIFFERENT reason and be counted here — so keep predicates narrow,
 /// and read the per-run tally as a signal, not as noise.
-const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[];
+const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
+    // A function whose body holds a multi-line conditional block: its
+    // branch starts with a newline that C# drops while the function has
+    // produced no output yet, and brink keeps when the enclosing line
+    // already has content (a second call in the same expression).
+    ("#3519", function_with_conditional_block),
+    // Content (text or an interpolation), then an inline conditional whose
+    // condition calls a function: the lift evaluates the condition (and
+    // the call's output) before the prefix is emitted.
+    ("#3521", prefix_then_conditional_calling_a_function),
+    // A function ending in a spring before glue (`{x} <>`): C#'s
+    // function-end trim skips over the glue and removes the space; brink's
+    // stops at the glue.
+    ("#3522", function_ending_in_spring_before_glue),
+    // A block conditional whose condition calls a function: the call's
+    // output ends without a newline (function-end trim), and brink's
+    // `- else:` arm lacks the leading newline inklecate gives every arm.
+    ("#3523", block_conditional_calling_a_function),
+    // A function printing two or more lines: called in an interpolation,
+    // its output is one fragment, and the newline inside it never becomes
+    // a line boundary.
+    ("#3524", function_printing_several_lines),
+    // Content, then an interpolation whose expression is not a bare call
+    // but contains one: the call's output is not composed into the slot
+    // and lands before the line's text.
+    ("#3525", prefix_then_slot_containing_a_call),
+];
+
+/// A content line with content (text or an earlier `{…}`) before a
+/// `{cond:…}` whose condition names a generated function (`f<n>_`).
+fn prefix_then_conditional_calling_a_function(src: &str) -> bool {
+    src.lines().any(|line| {
+        let mut rest = line;
+        let mut seen_content = false;
+        while let Some(open) = rest.find('{') {
+            seen_content |= !rest[..open].trim().is_empty();
+            let inner = &rest[open + 1..];
+            let Some(close) = inner.find('}') else { break };
+            let body = &inner[..close];
+            if seen_content
+                && body
+                    .split_once(':')
+                    .is_some_and(|(cond, _)| names_a_function(cond))
+            {
+                return true;
+            }
+            seen_content = true;
+            rest = &inner[close + 1..];
+        }
+        false
+    })
+}
+
+/// A content line with content before a `{expr}` slot (no `:`, so not a
+/// conditional) whose expression names a generated function but is not a
+/// bare call.
+fn prefix_then_slot_containing_a_call(src: &str) -> bool {
+    src.lines().any(|line| {
+        let mut rest = line;
+        let mut seen_content = false;
+        while let Some(open) = rest.find('{') {
+            seen_content |= !rest[..open].trim().is_empty();
+            let inner = &rest[open + 1..];
+            let Some(close) = inner.find('}') else { break };
+            let body = &inner[..close];
+            let bare_call = body.starts_with('f') && body.ends_with(')') && !body.contains(' ');
+            if seen_content && !body.contains(':') && names_a_function(body) && !bare_call {
+                return true;
+            }
+            seen_content = true;
+            rest = &inner[close + 1..];
+        }
+        false
+    })
+}
+
+/// `f<digit>` — the generator's function names are `f{i}_{base}`.
+fn names_a_function(s: &str) -> bool {
+    s.as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b'f' && w[1].is_ascii_digit())
+}
+
+/// A `{ cond:` block-opening line whose condition names a generated
+/// function.
+fn block_conditional_calling_a_function(src: &str) -> bool {
+    src.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("{ ") && t.ends_with(':') && names_a_function(t)
+    })
+}
+
+/// A `=== function` section with two or more content lines (anything
+/// that is not logic, a block marker, or blank).
+fn function_printing_several_lines(src: &str) -> bool {
+    let mut in_function = false;
+    let mut content = 0;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("=== function") {
+            in_function = true;
+            content = 0;
+            continue;
+        }
+        if t.starts_with("===") {
+            in_function = false;
+            continue;
+        }
+        if in_function
+            && !t.is_empty()
+            && !t.starts_with('~')
+            && !t.starts_with("{ ")
+            && !t.starts_with('-')
+            && !t.starts_with('}')
+        {
+            content += 1;
+            if content >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A `} <>` line inside a `=== function` section.
+fn function_ending_in_spring_before_glue(src: &str) -> bool {
+    src.find("=== function")
+        .is_some_and(|at| src[at..].lines().any(|l| l.trim_end().ends_with("} <>")))
+}
+
+/// A `{ cond:` block line inside a `=== function` section.
+fn function_with_conditional_block(src: &str) -> bool {
+    src.find("=== function").is_some_and(|at| {
+        src[at..]
+            .lines()
+            .any(|l| l.trim_start().starts_with("{ ") && l.trim_end().ends_with(':'))
+    })
+}
 
 /// Recognises a known-divergent shape in a printed `.ink` source.
 type SourcePredicate = fn(&str) -> bool;

@@ -24,8 +24,8 @@
 use proptest::prelude::*;
 
 use crate::model::{
-    AssignOp, BinOp, Choice, Divert, Exit, Expr, Item, Knot, Literal, Part, Stitch, Story, Tail,
-    Ty, VarDecl, Weave,
+    AssignOp, BinOp, Choice, Divert, Exit, Expr, FnSig, Function, Item, Knot, Literal, Param, Part,
+    Stitch, Story, Tail, Ty, VarDecl, Weave,
 };
 
 /// Biasing knobs — **data**, so a property names the profile it wants
@@ -47,6 +47,15 @@ pub struct Profile {
     pub max_vars: usize,
     /// Expression nesting depth (0 = literals and variables only).
     pub max_expr_depth: usize,
+    /// Whether content lines may carry inline conditionals
+    /// (`{cond: a|b}`). Off for the respell route, whose emitter does not
+    /// yet spell them (`hir::emit_native`'s refused shapes).
+    pub inline_conditionals: bool,
+    /// Functions per story (0 = none). Function `i` may call only
+    /// functions `< i` (`crate::model` rule 8).
+    pub max_functions: usize,
+    /// Parameters per function.
+    pub max_params: usize,
 }
 
 impl Profile {
@@ -60,12 +69,16 @@ impl Profile {
         max_choice_depth: 2,
         max_vars: 3,
         max_expr_depth: 2,
+        inline_conditionals: true,
+        max_functions: 2,
+        max_params: 2,
     };
 
     /// Structure only — no variables, so no expressions can be decoded
     /// beyond literals: the shape the first tier shipped with.
     pub const STRUCTURE: Self = Self {
         max_vars: 0,
+        max_functions: 0,
         ..Self::DEFAULT
     };
 
@@ -78,6 +91,16 @@ impl Profile {
     /// cannot run) lands behind a knob here, not in the differential by
     /// accident.
     pub const PLAIN_INK: Self = Self::DEFAULT;
+
+    /// The subset the ink → `.brink` respeller emits today: structure only,
+    /// no inline conditionals in content. `tests/equivalence.rs`'s
+    /// `trace(P) = trace(respell(P))` property runs on it so the property
+    /// is not vacuous while the emitter's supported shapes grow (#1951's
+    /// holes, #1976's springs); widen it as they land.
+    pub const RESPELLABLE: Self = Self {
+        inline_conditionals: false,
+        ..Self::STRUCTURE
+    };
 }
 
 impl Default for Profile {
@@ -108,6 +131,10 @@ pub enum RawExpr {
     Neg(Box<RawExpr>),
     Not(Box<RawExpr>),
     Bin(Box<RawExpr>, u8, Box<RawExpr>),
+    /// A call in expression position: the byte indexes the callable
+    /// functions returning the wanted type; the args decode against the
+    /// callee's parameters (missing ones become literals, extras drop).
+    Call(u8, Vec<RawExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +172,8 @@ pub enum RawItem {
         then: Vec<RawItem>,
         otherwise: Option<Vec<RawItem>>,
     },
+    /// `~ f(args)`: the byte indexes the callable void functions.
+    Call(u8, Vec<RawExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -187,11 +216,22 @@ pub struct RawVar {
     pub init: u8,
 }
 
+/// A function before typing: each parameter is `(type byte, by_ref)`; the
+/// return, when present, is `(expr, type byte)`.
+#[derive(Debug, Clone)]
+pub struct RawFunction {
+    pub name: String,
+    pub params: Vec<(u8, bool)>,
+    pub body: Vec<RawItem>,
+    pub ret: Option<(RawExpr, u8)>,
+}
+
 /// The unresolved story: independent values only.
 #[derive(Debug, Clone)]
 pub struct RawStory {
     pub vars: Vec<RawVar>,
     pub knots: Vec<RawKnot>,
+    pub functions: Vec<RawFunction>,
 }
 
 // ─── Leaf strategies ─────────────────────────────────────────────────
@@ -219,7 +259,9 @@ fn arb_raw_exit() -> impl Strategy<Value = RawExit> {
     ]
 }
 
-fn arb_raw_expr(depth: usize) -> BoxedStrategy<RawExpr> {
+/// `calls`: whether a call may appear (off when the profile has no
+/// functions, so the skeleton carries no dead entropy).
+fn arb_raw_expr(depth: usize, calls: bool) -> BoxedStrategy<RawExpr> {
     let leaf = prop_oneof![
         2 => any::<u8>().prop_map(RawExpr::Lit),
         3 => any::<u8>().prop_map(RawExpr::Var),
@@ -227,22 +269,33 @@ fn arb_raw_expr(depth: usize) -> BoxedStrategy<RawExpr> {
     if depth == 0 {
         return leaf.boxed();
     }
-    let inner = arb_raw_expr(depth - 1);
+    let inner = arb_raw_expr(depth - 1, calls);
+    let call_weight = u32::from(calls) * 2;
     prop_oneof![
         3 => leaf,
         1 => inner.clone().prop_map(|e| RawExpr::Neg(Box::new(e))),
         1 => inner.clone().prop_map(|e| RawExpr::Not(Box::new(e))),
-        4 => (inner.clone(), any::<u8>(), inner)
+        4 => (inner.clone(), any::<u8>(), inner.clone())
             .prop_map(|(l, op, r)| RawExpr::Bin(Box::new(l), op, Box::new(r))),
+        call_weight => (any::<u8>(), prop::collection::vec(inner, 0..=2))
+            .prop_map(|(f, args)| RawExpr::Call(f, args)),
     ]
     .boxed()
 }
 
+fn arb_expr_for(p: Profile) -> BoxedStrategy<RawExpr> {
+    arb_raw_expr(p.max_expr_depth, p.max_functions > 0)
+}
+
 fn arb_raw_part(p: Profile) -> impl Strategy<Value = RawPart> {
+    // Weight 0 removes the arm without a second strategy type
+    // (`prop_oneof!` rejects an all-zero table, and the text arm keeps it
+    // positive).
+    let cond_weight = u32::from(p.inline_conditionals);
     prop_oneof![
         4 => arb_text().prop_map(RawPart::Text),
-        2 => (arb_raw_expr(p.max_expr_depth), any::<u8>()).prop_map(|(e, t)| RawPart::Interp(e, t)),
-        1 => (arb_raw_expr(p.max_expr_depth), arb_text(), prop::option::weighted(0.5, arb_text()))
+        2 => (arb_expr_for(p), any::<u8>()).prop_map(|(e, t)| RawPart::Interp(e, t)),
+        cond_weight => (arb_expr_for(p), arb_text(), prop::option::weighted(0.5, arb_text()))
             .prop_map(|(cond, then, otherwise)| RawPart::Cond { cond, then, otherwise }),
     ]
 }
@@ -254,16 +307,21 @@ fn arb_raw_item(p: Profile, in_cond: bool) -> BoxedStrategy<RawItem> {
         prop::bool::weighted(0.15),
     )
         .prop_map(|(parts, glue)| RawItem::Line { parts, glue });
-    let assign = (any::<u8>(), any::<u8>(), arb_raw_expr(p.max_expr_depth))
+    let assign = (any::<u8>(), any::<u8>(), arb_expr_for(p))
         .prop_map(|(target, op, value)| RawItem::Assign { target, op, value });
+    let call_weight = u32::from(p.max_functions > 0);
+    let call = (
+        any::<u8>(),
+        prop::collection::vec(arb_expr_for(p), 0..=p.max_params),
+    )
+        .prop_map(|(f, args)| RawItem::Call(f, args));
     if in_cond {
-        return prop_oneof![4 => line, 2 => assign].boxed();
+        return prop_oneof![4 => line, 2 => assign, call_weight => call].boxed();
     }
-    let temp = (any::<u8>(), arb_raw_expr(p.max_expr_depth))
-        .prop_map(|(ty, init)| RawItem::Temp { ty, init });
+    let temp = (any::<u8>(), arb_expr_for(p)).prop_map(|(ty, init)| RawItem::Temp { ty, init });
     let branch = || prop::collection::vec(arb_raw_item(p, true), 1..=2);
     let cond = (
-        arb_raw_expr(p.max_expr_depth),
+        arb_expr_for(p),
         branch(),
         prop::option::weighted(0.5, branch()),
     )
@@ -272,7 +330,7 @@ fn arb_raw_item(p: Profile, in_cond: bool) -> BoxedStrategy<RawItem> {
             then,
             otherwise,
         });
-    prop_oneof![4 => line, 2 => assign, 1 => temp, 1 => cond].boxed()
+    prop_oneof![4 => line, 2 => assign, 1 => temp, 1 => cond, call_weight => call].boxed()
 }
 
 fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
@@ -287,7 +345,7 @@ fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
         let choice = (
             arb_text(),
             prop::bool::weighted(0.5),
-            prop::option::weighted(0.3, arb_raw_expr(p.max_expr_depth)),
+            prop::option::weighted(0.3, arb_expr_for(p)),
             arb_raw_weave(p, depth_left - 1),
         )
             .prop_map(|(label, sticky, condition, body)| RawChoice {
@@ -338,13 +396,34 @@ fn arb_raw_var() -> impl Strategy<Value = RawVar> {
     })
 }
 
+fn arb_raw_function(p: Profile) -> impl Strategy<Value = RawFunction> {
+    let param = (any::<u8>(), prop::bool::weighted(0.3));
+    (
+        arb_name_base(),
+        prop::collection::vec(param, 0..=p.max_params),
+        prop::collection::vec(arb_raw_item(p, false), 0..=p.max_items),
+        prop::option::weighted(0.6, (arb_expr_for(p), any::<u8>())),
+    )
+        .prop_map(|(name, params, body, ret)| RawFunction {
+            name,
+            params,
+            body,
+            ret,
+        })
+}
+
 /// A raw skeleton under `profile`.
 pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
     (
         prop::collection::vec(arb_raw_var(), 0..=profile.max_vars),
         prop::collection::vec(arb_raw_knot(profile), 1..=profile.max_knots.max(1)),
+        prop::collection::vec(arb_raw_function(profile), 0..=profile.max_functions),
     )
-        .prop_map(|(vars, knots)| RawStory { vars, knots })
+        .prop_map(|(vars, knots, functions)| RawStory {
+            vars,
+            knots,
+            functions,
+        })
 }
 
 // ─── Decode ──────────────────────────────────────────────────────────
@@ -358,13 +437,28 @@ struct Site {
     may_fall_through: bool,
 }
 
-/// Names in scope while decoding: globals first, then temps as declared.
+/// Names in scope while decoding: globals first, then parameters (inside
+/// a function) and temps as declared; plus the functions callable from
+/// here (rule 8: every function from flow code, only earlier ones from a
+/// function body).
 #[derive(Clone, Default)]
 struct Env {
     vars: Vec<(String, Ty)>,
+    funcs: Vec<FnSig>,
 }
 
 impl Env {
+    /// The `n`-th callable function whose return type is `ret` (`None`
+    /// for a void function), wrapping.
+    fn pick_fn(&self, ret: Option<Ty>, n: u8) -> Option<&FnSig> {
+        let matching: Vec<&FnSig> = self.funcs.iter().filter(|f| f.ret == ret).collect();
+        if matching.is_empty() {
+            None
+        } else {
+            Some(matching[usize::from(n) % matching.len()])
+        }
+    }
+
     /// The `n`-th name of type `ty`, wrapping.
     fn pick(&self, ty: Ty, n: u8) -> Option<&str> {
         let of_ty: Vec<&str> = self
@@ -421,9 +515,50 @@ fn small_positive(raw: &RawExpr, salt: u8) -> Expr {
     Expr::Lit(Literal::Int(1 + i32::from(n % 9)))
 }
 
+/// The index a raw argument contributes when a `ref` parameter needs a
+/// variable picked: its own leaf byte, or `salt` for a compound.
+fn ref_index(raw: Option<&RawExpr>, salt: u8) -> u8 {
+    match raw {
+        Some(RawExpr::Lit(n) | RawExpr::Var(n) | RawExpr::Call(n, _)) => *n,
+        _ => salt,
+    }
+}
+
+/// Decode the arguments of a call to `sig`: one per parameter, typed for
+/// it; a `ref` parameter needs a visible variable of its type and yields
+/// `None` when there is none (the call cannot be made).
+fn decode_args(sig: &FnSig, raw: &[RawExpr], env: &Env) -> Option<Vec<Expr>> {
+    let mut args = Vec::with_capacity(sig.params.len());
+    for (i, (ty, by_ref)) in sig.params.iter().enumerate() {
+        let salt = u8::try_from(i).unwrap_or(u8::MAX);
+        let raw_arg = raw.get(i);
+        if *by_ref {
+            let name = env.pick(*ty, ref_index(raw_arg, salt))?;
+            args.push(Expr::Var(name.to_owned()));
+        } else {
+            args.push(match raw_arg {
+                Some(r) => decode_expr(r, *ty, env),
+                None => Expr::Lit(literal(*ty, salt)),
+            });
+        }
+    }
+    Some(args)
+}
+
 fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
     match raw {
         RawExpr::Lit(n) => Expr::Lit(literal(want, *n)),
+        RawExpr::Call(f, args) => env
+            .pick_fn(Some(want), *f)
+            .and_then(|sig| {
+                decode_args(sig, args, env).map(|args| Expr::Call {
+                    name: sig.name.clone(),
+                    args,
+                })
+            })
+            // No callable function of this type (or no variable for a
+            // `ref` parameter): read the byte as a literal instead.
+            .unwrap_or_else(|| Expr::Lit(literal(want, *f))),
         RawExpr::Var(n) => env.pick(want, *n).map_or_else(
             || Expr::Lit(literal(want, *n)),
             |name| Expr::Var(name.to_owned()),
@@ -570,6 +705,16 @@ fn decode_items(
                 });
                 env.vars.push((name, ty));
             }
+            RawItem::Call(f, args) => {
+                if let Some(sig) = env.pick_fn(None, *f)
+                    && let Some(args) = decode_args(sig, args, env)
+                {
+                    out.push(Item::Call {
+                        name: sig.name.clone(),
+                        args,
+                    });
+                }
+            }
             RawItem::Cond {
                 cond,
                 then,
@@ -666,6 +811,61 @@ fn decode_weave(
     Weave { items, tail }
 }
 
+/// Decode the functions in order: function `i` decodes against the
+/// signatures of functions `< i` only, so the call graph is a DAG (rule 8).
+/// Returns the functions and their signatures.
+fn decode_functions(
+    raw: &[RawFunction],
+    global_vars: &[(String, Ty)],
+) -> (Vec<Function>, Vec<FnSig>) {
+    let mut functions: Vec<Function> = Vec::with_capacity(raw.len());
+    let mut sigs: Vec<FnSig> = Vec::with_capacity(raw.len());
+    for (fi, f) in raw.iter().enumerate() {
+        let params: Vec<Param> = f
+            .params
+            .iter()
+            .enumerate()
+            .map(|(pi, (ty, by_ref))| Param {
+                name: format!("p{pi}"),
+                ty: ty_of(*ty),
+                by_ref: *by_ref,
+            })
+            .collect();
+        let mut env = Env {
+            vars: global_vars.to_vec(),
+            funcs: sigs.clone(),
+        };
+        env.vars
+            .extend(params.iter().map(|p| (p.name.clone(), p.ty)));
+        let mut temps = 0;
+        let mut body = decode_items(&f.body, &mut env, false, &mut temps);
+        let ret = f
+            .ret
+            .as_ref()
+            .map(|(e, ty)| decode_expr(e, ty_of(*ty), &env));
+        if body.is_empty() && ret.is_none() {
+            // Rule 8: never an empty function.
+            body.push(Item::Line {
+                parts: vec![Part::Text("noop".to_owned())],
+                glue: false,
+            });
+        }
+        let function = Function {
+            name: format!("f{fi}_{}", f.name),
+            params,
+            body,
+            ret,
+        };
+        sigs.push(FnSig {
+            name: function.name.clone(),
+            params: function.params.iter().map(|p| (p.ty, p.by_ref)).collect(),
+            ret: f.ret.as_ref().map(|(_, ty)| ty_of(*ty)),
+        });
+        functions.push(function);
+    }
+    (functions, sigs)
+}
+
 /// Turn a raw skeleton into a valid [`Story`]: names made unique, every
 /// exit resolved into the legal range for its site, every expression typed
 /// for its position against the names in scope, every rule of
@@ -680,8 +880,12 @@ pub fn decode(raw: &RawStory) -> Story {
             init: literal(ty_of(v.ty), v.init),
         })
         .collect();
+    let global_vars: Vec<(String, Ty)> =
+        vars.iter().map(|v| (v.name.clone(), v.init.ty())).collect();
+    let (functions, sigs) = decode_functions(&raw.functions, &global_vars);
     let globals = Env {
-        vars: vars.iter().map(|v| (v.name.clone(), v.init.ty())).collect(),
+        vars: global_vars,
+        funcs: sigs,
     };
     // Pass 1: the layout — flow table in linear order.
     let mut table = Vec::new();
@@ -736,7 +940,11 @@ pub fn decode(raw: &RawStory) -> Story {
             }
         })
         .collect();
-    Story { vars, knots }
+    Story {
+        vars,
+        knots,
+        functions,
+    }
 }
 
 /// A story under `profile`: validates by construction.
