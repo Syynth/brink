@@ -11,6 +11,7 @@ pub mod explorer;
 pub mod fence;
 pub mod fix;
 pub mod ground_truth;
+pub mod inkjs;
 pub mod mutate;
 pub mod oracle;
 pub mod runner;
@@ -25,7 +26,9 @@ pub use fix::{
     FixFixture, FixFixtureError, SafeFixConfig, SafeFixReport, SafeVerdict, assert_safe_fix,
     check_safe_fix, load_fix_fixture,
 };
-pub use oracle::{OracleDiff, OracleEpisode, diff_oracle, load_oracle_episodes};
+pub use oracle::{
+    OracleDiff, OracleEpisode, diff_oracle, load_oracle_episodes, load_oracle_episodes_from_dir,
+};
 pub use runner::{RunConfig, record, run_text};
 pub use trace::{
     LineIdentityDiff, RunSpec, Trace, TraceConfig, TraceDiff, TraceError, differential,
