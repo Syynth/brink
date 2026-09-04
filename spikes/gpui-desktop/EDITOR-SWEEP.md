@@ -22,14 +22,50 @@ also no custom gutter API: line numbers and the fold column are the gutter.
 covers colouring and underlining. It does not cover **putting a thing in the
 line**.
 
-Bucketing the package by what it needs:
+### Measuring it properly
+
+The first pass of this sweep bucketed by module and got the answer badly
+wrong — it counted any module that renders anything as widget-dependent. The
+right test is which CodeMirror decoration kind a module actually uses:
+`Decoration.mark`/`.line` is **pure styling** and maps onto `TextDecoration`
+today; `Decoration.replace`/`.widget` is the capability that is missing.
+Counting that way:
+
+| Module | mark/line | replace/widget | Verdict |
+|---|---:|---:|---|
+| `argument-widgets.ts` | 0 | 15 | **Widget** |
+| `inline-name-input.ts` | 0 | 2 | **Widget** |
+| `rename.ts` | 1 | 3 | **Widget** |
+| `extract-actions.ts` | 0 | 4 | **Widget** |
+| `inlay-hints.ts` | 0 | 3 | **Widget** |
+| `screenplay.ts` | 4 | 3 | Mixed — see below |
+| `hir-overlay.ts` | 5 | 0 | Styling |
+| `inline-markup.ts` | 2 | 0 | Styling |
+| `search-card.ts` | 2 | 0 | Styling |
+| `execution-highlight.ts` | 1 | 0 | Styling |
+| `references.ts` | 1 | 0 | Styling |
+
+And seven modules use **no decorations at all** — `search-results-buffer`
+(465), `argument-form` (490), `color-picker-ui` (225), `color-widget` (56),
+`widget-registry`/`-modal`/`-popover` (264). These are overlay and
+composition UI, not editor capability: GPUI does popovers natively, and a
+buffer-of-buffers is the same `list`-of-editors the Continuous view already
+uses.
+
+**`screenplay.ts`'s only widget is `EmptySigilWidget`**, which hides the
+`:<>` suffix. Maintainer ruling (2026-09-04): **that hiding can go** — the
+cue/screenplay treatment only has to colour and highlight correctly. Drop
+it and the module is its four `mark` decorations, i.e. pure styling.
+
+### Corrected buckets
 
 | Class | Lines | Share |
 |---|---:|---:|
-| Needs in-text widgets or custom gutters — **no seam today** | 6,988 | 33% |
-| Maps onto an existing `gpui-base` seam | 3,976 | 19% |
+| Truly needs in-text widgets | 2,518 | 12% |
+| Needs a custom gutter (separate, easier axis) | ~1,025 | 5% |
+| Styling, overlay or composition — seam exists | ~5,650 | 27% |
 | Plumbing, not editor capability | 8,864 | 42% |
-| (remainder: small helpers) | ~1,300 | 6% |
+| (remainder: small helpers) | ~3,000 | 14% |
 
 ## What ports directly — proven, not predicted
 
@@ -55,32 +91,29 @@ multi-line selection, a context menu, and a search session.
 
 ## What has no seam
 
-**In-text widgets.** Everything here is a CM6 `WidgetType`:
+**In-text widgets — 2,518 lines, five modules.** These place an element in
+the text flow and cannot be expressed as styling:
 
 | Module | Lines | What it puts in the line |
 |---|---:|---|
-| `argument-widgets.ts` + `argument-form.ts` | 1,610 | Per-call argument chips and forms — the argument-widget spec's whole surface |
-| `inline-name-input.ts` | 590 | The in-editor rename chip with a "⚠ breaks N" badge |
-| `search-results-buffer.ts` + `search-card.ts` | 843 | Editable result cards — *nested editors as widgets* |
-| `hir-overlay.ts` | 605 | Structural marks with `data-*` identity + rails |
-| `inline-markup.ts` | 453 | Host-defined inline markup rules |
-| `screenplay.ts` | 376 | Hidden sigil suffixes (`:<>`), i.e. atomic/replaced ranges |
-| `inlay-hints.ts` | 142 | Inlay hints — also absent from `gpui-base`'s LSP set |
-| `color-picker-ui.ts` + `color-widget.ts` | 281 | The HSV picker popover |
-| `widget-registry` / `-modal` / `-popover` | ~200 | The registry hosts attach widgets through |
+| `argument-widgets.ts` | 1,120 | Per-call argument chips — the argument-widget spec's inline surface |
+| `inline-name-input.ts` | 590 | The in-editor rename chip with its "⚠ breaks N" badge |
+| `rename.ts` | 412 | The rename affordance around it |
+| `extract-actions.ts` | 254 | The extract prompt |
+| `inlay-hints.ts` | 142 | Inlay hints — also missing from `gpui-base`'s LSP set |
 
-**Custom gutters.** `play-from-here.ts` (816), `host-gutter.ts` (209),
-`gutter-layout.ts` (331) — the hover-revealed ▶ run icon, breakpoints, and
-the published host gutter-marker API. `gpui-base` has one gutter and it is
-not extensible.
+**Custom gutters — a separate and much easier axis.** `play-from-here.ts`
+(816) and `host-gutter.ts` (209) need per-line gutter markers;
+`gutter-layout.ts` (331) is a WebKit workaround that simply disappears. The
+gutter already renders per-line elements (fold icons) through a
+host-supplied renderer, so generalising it is contained work.
 
-**Whole components with no counterpart:** `conflict-view.ts` (234) wraps
-`@codemirror/merge`'s 2-way MergeView; there is no GPUI merge view.
+**Absent LSP providers:** signature help and inlay hints. `lsp/` has
+completions, hover, definitions, code actions, document colors and semantic
+tokens — adding two more follows an established shape.
 
-**Absent LSP providers:** signature help and inlay hints (`lsp/` has
-completions, hover, definitions, code actions, document colors, semantic
-tokens — and nothing else), so `signature-help.ts` and `inlay-hints.ts` have
-no home even before the widget question.
+**One whole component:** `conflict-view.ts` (234) wraps
+`@codemirror/merge`'s 2-way MergeView; there is no GPUI equivalent.
 
 ## What disappears
 
@@ -105,40 +138,34 @@ that ports as ordinary Rust rather than disappearing.
 ## Tractability
 
 **The question is not "can GPUI do this" — it is "are we willing to own an
-editor widget."** Round 4 already established that using `gpui-component` at
-all means vendoring it. Once vendored, adding what is missing is *our*
-work in *our* fork:
+editor widget."** Round 4 established that using `gpui-component` at all
+means vendoring it. Once vendored, what is missing is our work in our fork,
+and it is not equally hard:
 
-- **In-text widgets** are the load-bearing item. `gpui-base` already lays
-  out per-line shaped text with fold-collapsed ranges and paints elements in
-  the gutter; inserting a measured element into a line means teaching the
-  line layout about a third span kind. That is real editor work — the fold
-  map and wrap map both have to see it — and it is the single largest
-  unknown in this evaluation. **It has not been prototyped, and it should be
-  the next spike if this goes further.**
-- **Custom gutters** are much easier: the gutter already renders per-line
-  elements (fold icons) via a host-supplied renderer. Generalising that to
-  a per-line marker API is a contained change.
-- **Signature help / inlay hints** are new providers alongside six that
-  already exist, following the same shape.
+- **Custom gutters** — contained. The gutter already paints per-line
+  elements via a host-supplied renderer; generalising that to arbitrary
+  markers is a bounded change on a surface that already exists.
+- **Signature help / inlay hints as providers** — two more alongside six,
+  following the same shape.
+- **In-text widgets** — the one real unknown. `gpui-base` lays out per-line
+  shaped text with fold-collapsed ranges; inserting a measured element into
+  a line means teaching the line layout a third span kind that both the fold
+  map and the wrap map have to see. **Not prototyped. This is the next
+  probe if this goes further.**
 
 ## Honest reading
 
-- **Two thirds of the editor package is either already proven on the native
-  side or evaporates.** The direct-seam work is wiring, and the spike ran
-  four of those seams for real.
-- **One third rests on a capability that does not exist**, and the most
-  distinctive parts of the authoring surface — argument widgets, the HIR
-  overlay, screenplay sigils, editable search cards, play-from-here — are
-  exactly that third. These are not incidental features; several are ruled
-  spec surfaces.
-- **The decision is therefore about the widget layer, not about GPUI.**
-  If in-text widgets are tractable in the fork, the rest follows from work
-  already demonstrated. If they are not, the native editor cannot host the
-  studio's authoring surface as specified, and no amount of framework choice
-  changes that.
-
-**Recommended next probe, if any:** implement one in-text widget end to end
-in the vendored `gpui-base` — an inlay hint is the smallest honest test,
-an argument chip the real one. Everything else in this sweep is estimable;
-that is not.
+- **Roughly 85% of the editor package is already proven, evaporates, or maps
+  onto a seam that exists.** The plumbing does not port because a native
+  editor has no wasm boundary to survive; the styling maps onto
+  `TextDecoration`; the overlay and composition UI is ordinary GPUI, of
+  which this spike has already built two examples.
+- **12% genuinely needs in-text widgets**, and it is concentrated: argument
+  widgets are two thirds of it. The HIR overlay, inline markup, execution
+  highlight, references and (with the sigil-hiding dropped) screenplay are
+  all *styling* — they were miscounted in the first pass of this sweep.
+- **So the decision narrows to one question:** can the vendored editor learn
+  to put an element inside a line? If yes, everything else here is wiring or
+  contained work. If no, the argument-widget surface specifically cannot be
+  hosted natively as specified — and that is a much smaller blast radius
+  than "one third of the editor".
