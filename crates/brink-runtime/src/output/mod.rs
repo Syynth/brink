@@ -437,20 +437,28 @@ impl OutputBuffer {
     /// `TrimWhitespaceFromFunctionEnd`: on function return, remove
     /// trailing `Newline`, `Spring`, and whitespace-only text so that
     /// function output doesn't inject unwanted line breaks.
+    ///
+    /// `Glue` is transparent to the walk, as it is to the C# loop (which
+    /// `continue`s past every non-text object): the glue stays, and the
+    /// whitespace beneath it goes — so `{x} <>` at the end of a function
+    /// leaves `x` glued to whatever follows, not `x ` (issue #3522).
     pub(crate) fn trim_function_end(&mut self, start: usize) {
         let target = self.target();
-        while target.len() > start {
-            match target.last() {
-                Some(OutputPart::Newline | OutputPart::Spring) => {
-                    target.pop();
+        let mut i = target.len();
+        while i > start {
+            i -= 1;
+            match &target[i] {
+                OutputPart::Glue => {}
+                OutputPart::Newline | OutputPart::Spring => {
+                    target.remove(i);
                 }
-                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
-                    target.pop();
+                OutputPart::Text(s) if s.trim().is_empty() => {
+                    target.remove(i);
                 }
-                Some(OutputPart::LineRef { flags, .. })
+                OutputPart::LineRef { flags, .. }
                     if flags.contains(brink_format::LineFlags::ALL_WS) =>
                 {
-                    target.pop();
+                    target.remove(i);
                 }
                 _ => break,
             }
