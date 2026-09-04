@@ -52,32 +52,16 @@ const CASES: u32 = 32;
 /// The cost is stated plainly: a story that matches a predicate could fail
 /// for a DIFFERENT reason and be counted here — so keep predicates narrow,
 /// and read the per-run tally as a signal, not as noise.
-const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
-    (
-        // `{0} <>` then a line: ink prints `0 world`, brink `0world`.
-        "#3507 whitespace between an interpolation and `<>` is dropped",
-        |src| {
-            src.lines().any(|l| {
-                l.trim_end().ends_with("<>")
-                    && l.trim_end().trim_end_matches("<>").ends_with(' ')
-                    && l.trim_end()
-                        .trim_end_matches("<>")
-                        .trim_end()
-                        .ends_with('}')
-            })
-        },
-    ),
-    (
-        // `* [a  0]`: ink presents `a  0`, brink `a 0`.
-        "#3508 whitespace runs in choice text are collapsed",
-        |src| {
-            src.lines().any(|l| {
-                let t = l.trim_start();
-                (t.starts_with('*') || t.starts_with('+')) && t.contains("  ")
-            })
-        },
-    ),
-];
+const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[(
+    // `* [a  0]`: ink presents `a  0`, brink `a 0`.
+    "#3508 whitespace runs in choice text are collapsed",
+    |src| {
+        src.lines().any(|l| {
+            let t = l.trim_start();
+            (t.starts_with('*') || t.starts_with('+')) && t.contains("  ")
+        })
+    },
+)];
 
 /// Recognises a known-divergent shape in a printed `.ink` source.
 type SourcePredicate = fn(&str) -> bool;
