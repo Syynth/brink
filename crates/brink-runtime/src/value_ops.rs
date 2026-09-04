@@ -1027,7 +1027,7 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
     }
     // A fresh list in ink (`CallListIncrementOperation`): no origins when
     // the shift lands on nothing (issue #3532).
-    list_ops::build(program, items, vec![])
+    list_ops::build(program, items, Vec::new())
 }
 
 /// `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue #1460;
