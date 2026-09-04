@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "text": "true\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {
+        "l": ""
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "l": "a, b"
+    },
+    "turn_index": 0
+  }
+}

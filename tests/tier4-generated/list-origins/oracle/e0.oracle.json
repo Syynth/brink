@@ -1,0 +1,37 @@
+{
+  "steps": [
+    {
+      "text": ".\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "a, b.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "0.\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "l": "a",
+      "m": "c"
+    },
+    "turn_index": 0
+  }
+}

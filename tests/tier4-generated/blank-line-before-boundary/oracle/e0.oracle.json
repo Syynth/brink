@@ -1,0 +1,20 @@
+{
+  "steps": [
+    {
+      "text": "a\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "e": ""
+    },
+    "turn_index": 0
+  }
+}
