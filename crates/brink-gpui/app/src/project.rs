@@ -43,6 +43,10 @@ pub struct Project {
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
     warnings: Vec<String>,
+    /// Whether any analysis has landed. Distinct from `closure_known`,
+    /// which is false whenever `brink.toml` names no entry however many
+    /// times the project has analyzed.
+    analyzed: bool,
     revision: u64,
     last_analyze_ms: f64,
     worst_analyze_ms: f64,
@@ -82,6 +86,7 @@ impl Project {
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
             warnings: Vec::new(),
+            analyzed: false,
             revision: 0,
             last_analyze_ms: 0.0,
             worst_analyze_ms: 0.0,
@@ -104,6 +109,7 @@ impl Project {
                     self.kinds.clear();
                     self.drafts.clear();
                     self.closure.clear();
+                    self.analyzed = false;
                     cx.emit(ProjectEvent::Opened {
                         elapsed_ms: opened.elapsed_ms,
                     });
@@ -115,6 +121,7 @@ impl Project {
                 self.kinds = analyzed.kinds;
                 self.drafts = analyzed.drafts.into_iter().collect();
                 self.closure = analyzed.closure.into_iter().collect();
+                self.analyzed = true;
                 self.last_analyze_ms = analyzed.elapsed_ms;
                 self.worst_analyze_ms = self.worst_analyze_ms.max(analyzed.elapsed_ms);
                 cx.emit(ProjectEvent::Analyzed);
@@ -180,6 +187,11 @@ impl Project {
     #[must_use]
     pub fn in_story(&self, path: &str) -> bool {
         self.closure.contains(path)
+    }
+
+    #[must_use]
+    pub fn has_analyzed(&self) -> bool {
+        self.analyzed
     }
 
     #[must_use]

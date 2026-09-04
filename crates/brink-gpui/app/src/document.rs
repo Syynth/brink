@@ -530,8 +530,10 @@ impl gpui_component::dock::Panel for Document {
 
 impl gpui::Render for Document {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        gpui::div()
-            .size_full()
-            .child(gpui_component::input::Editor::new(&self.editor))
+        gpui_component::v_flex().size_full().child(
+            gpui_component::input::Editor::new(&self.editor)
+                .flex_1()
+                .bordered(false),
+        )
     }
 }

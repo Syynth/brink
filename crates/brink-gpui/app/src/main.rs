@@ -63,7 +63,8 @@ impl Studio {
                 // the bottom dock (`docs/gpui-studio-spec.md` §4.1).
                 ToolWindowSpec::new("problems", "Problems", RailSlot::LEFT_LOWER)
                     .icon(icons::WARNING_MARK)
-                    .size(px(160.)),
+                    .size(px(160.))
+                    .open(),
                 problems.clone(),
                 window,
                 cx,

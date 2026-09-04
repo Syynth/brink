@@ -93,11 +93,14 @@ impl Render for Problems {
                 .p_3()
                 .text_xs()
                 .text_color(muted)
-                .child(if project.closure_known() {
+                .child(if project.has_analyzed() {
                     "No problems."
                 } else {
-                    // Distinct from "no problems": nothing has been analyzed
-                    // yet, so nothing is known either way.
+                    // Distinct from "no problems": nothing is known either
+                    // way until an analysis has landed. NOT keyed on the
+                    // compile closure, which is empty whenever `brink.toml`
+                    // names no entry however many times the project has
+                    // analyzed.
                     "Not analyzed yet."
                 })
                 .into_any_element();

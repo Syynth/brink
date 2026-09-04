@@ -7,7 +7,7 @@
 use gpui::prelude::*;
 use gpui::{App, Entity, IntoElement, Render, SharedString, Window, div, px};
 use gpui_component::dock::{DockArea, DockPlacement, Panel};
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::rail::{RailButton, rail};
 use crate::region::RailEdge;
@@ -152,6 +152,9 @@ impl Render for Workspace {
 
         v_flex()
             .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .child(TitleBar::new().child(gpui_component::label::Label::new("brink")))
             .child(
                 h_flex()
                     .flex_1()

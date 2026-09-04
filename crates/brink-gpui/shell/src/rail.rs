@@ -10,7 +10,7 @@
 //! the region model.
 
 use gpui::prelude::*;
-use gpui::{App, Pixels, SharedString, Window, div, px, svg};
+use gpui::{App, Hsla, Pixels, SharedString, Window, div, px, svg};
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants as _},
@@ -51,22 +51,30 @@ where
             buttons
                 .iter()
                 .filter(|b| b.slot.edge == edge && b.slot.group == g)
-                .map(|b| button(b, on_click.clone())),
+                .map(|b| {
+                    button(
+                        b,
+                        theme.foreground,
+                        theme.muted_foreground,
+                        on_click.clone(),
+                    )
+                }),
         )
     };
 
+    let occupied = buttons.iter().any(|b| b.slot.edge == edge);
     v_flex()
-        .w(RAIL_WIDTH)
+        .when(occupied, |s| s.w(RAIL_WIDTH))
         .h_full()
         .py_1()
         .gap_1()
         .items_center()
         .justify_between()
         .bg(theme.sidebar)
-        .when(edge == RailEdge::Left, |s| {
+        .when(occupied && edge == RailEdge::Left, |s| {
             s.border_r_1().border_color(theme.border)
         })
-        .when(edge == RailEdge::Right, |s| {
+        .when(occupied && edge == RailEdge::Right, |s| {
             s.border_l_1().border_color(theme.border)
         })
         // Upper group flows from the top; the lower group is pinned to the
@@ -80,11 +88,14 @@ where
 /// toolkit's hover, focus, tooltip and toggled states instead of
 /// re-deriving them here — `toggled` is what makes an open tool window read
 /// as pressed.
-fn button<F>(b: &RailButton, on_click: F) -> impl IntoElement
+fn button<F>(b: &RailButton, on: Hsla, off: Hsla, on_click: F) -> impl IntoElement
 where
     F: Fn(&SharedString, &mut Window, &mut App) + 'static,
 {
     let id = b.id.clone();
+    // A Button's variant colours its own label; a child `svg` does not pick
+    // that up through the cascade, so the tint is set here explicitly.
+    let colour = if b.active { on } else { off };
     Button::new(SharedString::from(format!("rail-{}", b.id)))
         .ghost()
         .compact()
@@ -93,15 +104,15 @@ where
         .on_click(move |_, window, cx| on_click(&id, window, cx))
         .child(match b.icon {
             // A complete SVG document, painted as a monochrome mask tinted
-            // by the button's own text colour — so the icon follows the
-            // toggled state without being told about it.
+            // by `colour` — only the alpha the shape covers matters.
             Some(src) => svg()
                 .size(ICON_SIZE)
-                .text_color(gpui::rgba(0x0000_0000))
+                .text_color(colour)
                 .data(src.as_bytes())
                 .into_any_element(),
             None => div()
                 .text_xs()
+                .text_color(colour)
                 .child(
                     b.title
                         .chars()
