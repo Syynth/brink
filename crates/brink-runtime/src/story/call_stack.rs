@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
 use crate::error::{RanOutOfContentCause, RuntimeError};
-use crate::output::OutputBuffer;
+use crate::output::{OutputBuffer, OutputMark};
 
 // ── Internal types ──────────────────────────────────────────────────────────
 
@@ -99,10 +99,13 @@ pub(crate) struct CallFrame {
     /// For `External` frames: the `DefinitionId` of the external function,
     /// used to look up the fallback container if no binding is registered.
     pub external_fn_id: Option<DefinitionId>,
-    /// For `Function` frames: the length of the active output target at
-    /// call time.  On return, trailing whitespace is trimmed back to this
-    /// point — matching the C# runtime's `TrimWhitespaceFromFunctionEnd`.
-    pub function_output_start: Option<usize>,
+    /// For `Function` frames: where the active output target stood at call
+    /// time ([`OutputMark`]). On return, trailing whitespace is trimmed
+    /// back to this point — matching the C# runtime's
+    /// `TrimWhitespaceFromFunctionEnd` — and while the function has
+    /// produced no content past it, a newline it emits is dropped
+    /// (`functionStartInOutputStream`, issue #3519).
+    pub function_output_start: Option<OutputMark>,
 }
 
 impl CallFrame {
@@ -638,7 +641,7 @@ impl Flow {
     /// fallback container. Args are pushed back onto the value stack so
     /// the fallback body's `temp=` opcodes can pop them.
     pub fn invoke_fallback(&mut self, container_idx: u32) {
-        let output_start = self.output.target_len();
+        let output_start = self.output.mark();
         let thread = self.current_thread_mut();
         if let Some(frame) = thread.call_stack.last_mut()
             && frame.frame_type == CallFrameType::External

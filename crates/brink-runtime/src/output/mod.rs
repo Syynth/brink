@@ -353,6 +353,18 @@ fn resolve_select<'a>(
     default
 }
 
+/// Where a function's output began: the active target's length at call
+/// time, plus which target it was. The two depths let a later check tell
+/// "the same target, further along" from "a different target" (a string
+/// capture or fragment that began inside the function), where the length
+/// alone would be meaningless (issue #3519).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputMark {
+    pub(crate) len: usize,
+    pub(crate) capture_depth: usize,
+    pub(crate) fragment_depth: usize,
+}
+
 /// Accumulates output text with glue resolution.
 ///
 /// The buffer is split into two storage areas:
@@ -417,6 +429,55 @@ impl OutputBuffer {
             &mut self.fragment_capture
         } else {
             &mut self.transcript
+        }
+    }
+
+    /// Where a function's output starts: the active target's length and
+    /// which target it was (by capture/fragment depth), recorded at call
+    /// time on the function's frame — see [`OutputMark`].
+    pub(crate) fn mark(&self) -> OutputMark {
+        OutputMark {
+            len: self.target_len(),
+            capture_depth: self.capture_depth,
+            fragment_depth: self.fragment_depth,
+        }
+    }
+
+    /// Push a newline emitted while `function` (the innermost function
+    /// frame's [`OutputMark`], if the top frame is a function) is active.
+    ///
+    /// Matches the C# runtime's `functionStartInOutputStream` rule
+    /// (`PushToOutputStreamIndividual`): while a function has produced no
+    /// non-whitespace output since it was entered, a newline is dropped
+    /// outright — so a function whose body begins with a conditional block
+    /// (whose branch starts with a newline) does not break the line it was
+    /// called from, even when that line already holds content from an
+    /// earlier call (issue #3519). Once the function has printed, or when a
+    /// string capture / fragment began inside it (C#'s `BeginString`
+    /// exception — the mark no longer names the active target), the
+    /// ordinary [`Self::push_newline`] rules apply.
+    pub(crate) fn push_newline_in_function(&mut self, function: Option<OutputMark>) {
+        if let Some(mark) = function
+            && mark.capture_depth == self.capture_depth
+            && mark.fragment_depth == self.fragment_depth
+            && self
+                .target_ref()
+                .get(mark.len..)
+                .is_some_and(|since_call| !since_call.iter().any(OutputPart::is_content))
+        {
+            return;
+        }
+        self.push_newline();
+    }
+
+    /// The active push target, read-only — same priority as [`Self::target`].
+    fn target_ref(&self) -> &Vec<OutputPart> {
+        if self.capture_depth > 0 {
+            &self.capture
+        } else if self.fragment_depth > 0 {
+            &self.fragment_capture
+        } else {
+            &self.transcript
         }
     }
 

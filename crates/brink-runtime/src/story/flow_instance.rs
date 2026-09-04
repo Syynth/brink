@@ -1050,7 +1050,7 @@ impl FlowInstance {
         // capture scratch space and never reaches the transcript.
         self.flow.output.begin_capture();
 
-        let output_start = self.flow.output.target_len();
+        let output_start = self.flow.output.mark();
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),
@@ -1185,7 +1185,7 @@ impl FlowInstance {
         let choice_floor = self.flow.pending_choices.len();
 
         self.flow.output.begin_capture();
-        let output_start = self.flow.output.target_len();
+        let output_start = self.flow.output.mark();
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),

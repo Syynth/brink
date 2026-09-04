@@ -183,7 +183,17 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.output.push_value_ref(val);
         }
         Opcode::EmitNewline => {
-            flow.output.push_newline();
+            // C# consults the TOP call-stack element only: a tunnel or
+            // thread entered from a function is its own boundary.
+            let function = flow.current_thread().call_stack.last().and_then(|frame| {
+                matches!(
+                    frame.frame_type,
+                    CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+                )
+                .then_some(frame.function_output_start)
+                .flatten()
+            });
+            flow.output.push_newline_in_function(function);
         }
         Opcode::Spring => {
             note_effect_emit(flow, program);
@@ -774,7 +784,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Function output goes directly to the active output target.
             // Record the target length so trailing whitespace can be
             // trimmed on return (matching C#'s TrimWhitespaceFromFunctionEnd).
-            let output_start = flow.output.target_len();
+            let output_start = flow.output.mark();
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
@@ -911,7 +921,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         context.set_turn_count(id, context.turn_index());
                     }
 
-                    let output_start = flow.output.target_len();
+                    let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
                     thread.call_stack.push(CallFrame {
@@ -1000,7 +1010,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         context.increment_visit(id);
                         context.set_turn_count(id, context.turn_index());
                     }
-                    let output_start = flow.output.target_len();
+                    let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
                     thread.call_stack.push(CallFrame {
@@ -1931,7 +1941,7 @@ fn enter_fn_value(
         context.increment_visit(target);
         context.set_turn_count(target, context.turn_index());
     }
-    let output_start = flow.output.target_len();
+    let output_start = flow.output.mark();
     let current_pos = current_position(flow)?;
     let thread = flow.current_thread_mut();
     thread.call_stack.push(CallFrame {
@@ -2645,7 +2655,7 @@ fn call_callback<R: crate::rng::StoryRng>(
     if capture_output {
         flow.output.begin_capture();
     }
-    let output_start = flow.output.target_len();
+    let output_start = flow.output.mark();
 
     // In-story dispatch counts visits, exactly like `enter_fn_value`.
     let counting_flags = program.container(container_idx).counting_flags;
@@ -3023,7 +3033,7 @@ fn pop_call_frame(
         // Trim trailing whitespace from the function's output region,
         // matching the C# runtime's TrimWhitespaceFromFunctionEnd.
         if let Some(start) = popped.function_output_start {
-            flow.output.trim_function_end(start);
+            flow.output.trim_function_end(start.len);
         }
         if !is_explicit_return {
             // Implicit return: function returns void.
