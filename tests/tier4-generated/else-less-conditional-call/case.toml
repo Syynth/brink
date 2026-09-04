@@ -8,5 +8,3 @@ property = "inkjs_differential"
 oracle-source = "inkjs"
 issue = "#3530"
 
-[source]
-expected_mismatch = "#3530"
