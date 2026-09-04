@@ -3470,6 +3470,7 @@ on:
             vec![
                 "studio-changeset-guard".to_owned(),
                 "check".to_owned(),
+                "inkjs-sanction".to_owned(),
                 "wasm-test".to_owned(),
                 "test".to_owned(),
                 "test-bench-counters".to_owned(),
