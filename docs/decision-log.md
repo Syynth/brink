@@ -5052,3 +5052,11 @@
 - **SCOPE:** small
 - **WHAT:** On function return the trailing-whitespace trim now skips over `Glue` parts instead of stopping at them, removing the `Spring`/`Newline`/whitespace-only text beneath: `{0} <>` at the end of a function followed by `a` prints `0a` (ink), not `0 a`. Found by the functions tier of the program generator; four compile-and-play regression tests pin the shape and its neighbours (text before the glue keeps its own space, a newline under the glue goes, the same in a display-position call) against inkjs; the oracle ratchet is unchanged at 5624.
 - **WHY:** The C# loop `continue`s past every non-text object and only `break`s on non-whitespace text; brink's `break` on the first non-whitespace *part* conflated "a glue object" with "text that ends the trim". Matching the walk, not the outcome of one case, is the fix that stays correct for the next shape.
+
+## Every multi-line conditional arm starts with a newline (#3523)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** compiler (`hir::lower::conditional::{multiline, conditional_with_expr}`) — `docs/compiler-spec.md` "HIR responsibilities"
+- **SCOPE:** small
+- **WHAT:** The explicit arms of a multi-line conditional (`- cond:`, `- else:`, switch arms) now lower with a leading `Stmt::EndOfLine`, as the implicit first arm of `{ cond:` (its first-newline rule) and every block-sequence branch (`lower_block_sequence`) already did. inklecate compiles every multi-line branch body as `["\n", "^text", "\n", …]`, verified across the switch, cond-list, branchless-with-else and content-on-the-marker-line forms with inkjs. The runtime's newline dedupe hides the newline whenever output already ends in one; a printing function called in the condition is the shape that exposes it (`{ (1 < f()): x - else: b }` with `f` printing `a` is `a` / `b` in ink and was `ab` in brink). Six compile-and-play regression tests pin the forms; the oracle ratchet is unchanged at 5624.
+- **WHY:** Found by the functions tier of the program generator. The three lowering sites disagreed with each other, not just with inklecate: the fix makes the rule uniform ("a multi-line arm starts with a newline") rather than special-casing the one shape that showed.
