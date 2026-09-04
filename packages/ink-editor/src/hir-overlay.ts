@@ -16,7 +16,10 @@
  *    of concentric bars — one per container covering the line, outermost →
  *    innermost — each bar class-addressed (`brink-hir-rail`,
  *    `brink-hir-rail-<kind>`, `data-depth`). No inline styles (headless
- *    taxonomy, see editor-consumer-guide).
+ *    taxonomy, see editor-consumer-guide). The gutter itself sorts
+ *    RIGHTMOST, adjacent to `.cm-content`, via `Prec.lowest` (RULED
+ *    2026-09-03); hovering it shows ONE tooltip listing the whole stack
+ *    outermost-first, not a tooltip per bar.
  * 3. **Identity queries + occurrences** (phase 5): `hirSpanAt` /
  *    `hirIdentityAt` read the StateField; the occurrences layer highlights
  *    every span sharing the identity under the cursor (`brink-hir-occurrence`,
@@ -32,6 +35,7 @@
  */
 
 import {
+  Prec,
   StateEffect,
   StateField,
   type EditorState,
@@ -294,9 +298,13 @@ interface RailInfo {
 
 // ── Rail tooltip (a real floating tooltip, not `title`) ─────────────
 //
-// One shared element per document; shown on rail hover, positioned beside
-// the gutter at the pointer's row. Styled by the host via
-// `.brink-rail-tooltip` (studio editor.css).
+// One shared element per document; shown on hovering the rails column
+// (RULED 2026-09-03 — decision-log "Structural rails: rightmost gutter, one
+// compact hover for the whole stack"): ONE tooltip per line, listing every
+// container in that line's stack outermost first, rather than a tooltip per
+// bar. Positioned beside the gutter at the pointer's row. Styled by the
+// host via `.brink-rail-tooltip` / `.brink-rail-tooltip-entry` (studio
+// editor.css).
 
 let railTooltip: HTMLElement | null = null;
 
@@ -305,23 +313,32 @@ function hideRailTooltip(): void {
   railTooltip = null;
 }
 
-function showRailTooltip(anchor: HTMLElement, info: RailInfo): void {
+/** Show the whole-stack tooltip for `anchor`'s line. `stack` is
+ *  outermost-first (the same order the wire's `HirLineContainerJs` already
+ *  carries — see `crates/brink-web/src/editor_dto.rs`), so the list reads
+ *  top-to-bottom the way the bars read left-to-right. */
+function showRailTooltip(anchor: HTMLElement, stack: readonly RailInfo[]): void {
   hideRailTooltip();
+  if (stack.length === 0) return;
   const tip = document.createElement("div");
   tip.className = "brink-rail-tooltip";
-  const label = tip.appendChild(document.createElement("div"));
-  label.className = "brink-rail-tooltip-label";
-  const dot = label.appendChild(document.createElement("span"));
-  dot.className =
-    `brink-rail-tooltip-dot brink-hir-rail-${info.kind}` +
-    (info.hue !== undefined ? ` brink-rail-c${info.hue}` : "");
-  label.appendChild(document.createTextNode(info.label === "" ? "(empty line)" : info.label));
-  const meta = tip.appendChild(document.createElement("div"));
-  meta.className = "brink-rail-tooltip-meta";
-  meta.textContent =
-    info.startLine === info.endLine
-      ? `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · line ${info.startLine}`
-      : `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · lines ${info.startLine}–${info.endLine}`;
+  for (const info of stack) {
+    const entry = tip.appendChild(document.createElement("div"));
+    entry.className = "brink-rail-tooltip-entry";
+    const label = entry.appendChild(document.createElement("div"));
+    label.className = "brink-rail-tooltip-label";
+    const dot = label.appendChild(document.createElement("span"));
+    dot.className =
+      `brink-rail-tooltip-dot brink-hir-rail-${info.kind}` +
+      (info.hue !== undefined ? ` brink-rail-c${info.hue}` : "");
+    label.appendChild(document.createTextNode(info.label === "" ? "(empty line)" : info.label));
+    const meta = entry.appendChild(document.createElement("div"));
+    meta.className = "brink-rail-tooltip-meta";
+    meta.textContent =
+      info.startLine === info.endLine
+        ? `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · line ${info.startLine}`
+        : `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · lines ${info.startLine}–${info.endLine}`;
+  }
   // Inside the .brink-studio root, or the --bs-* tokens don't resolve and
   // the chrome (background, border, shadow) silently disappears.
   (anchor.closest(".brink-studio") ?? document.body).appendChild(tip);
@@ -372,11 +389,14 @@ function railLabel(kind: string, raw: string): string {
 
 /**
  * The rails column's fixed width: one lane (a 3px bar inside the layer's
- * `0 2px` padding). Constant BY DESIGN — see `RailMarker.toDOM`. Anything
- * that makes this depend on the open file's nesting depth reintroduces the
- * sideways prose shift on file open.
+ * `0 1px` padding — RULED 2026-09-03, decision-log "Structural rails":
+ * lanes pack with no gap between bars, so this shrank from 7px alongside
+ * the CSS `gap: 2px` -> `0` and `padding: 0 2px` -> `0 1px`). Constant BY
+ * DESIGN — see `RailMarker.toDOM`. Anything that makes this depend on the
+ * open file's nesting depth reintroduces the sideways prose shift on file
+ * open.
  */
-export const RAIL_LANE_WIDTH_PX = 7;
+export const RAIL_LANE_WIDTH_PX = 5;
 
 class RailMarker extends GutterMarker {
   constructor(private readonly stack: readonly RailInfo[]) {
@@ -437,9 +457,14 @@ class RailMarker extends GutterMarker {
         `brink-hir-rail brink-hir-rail-${c.kind}` +
         (c.hue !== undefined ? ` brink-rail-c${c.hue}` : "");
       bar.setAttribute("data-depth", String(c.depth));
-      bar.addEventListener("pointerenter", () => showRailTooltip(bar, c));
-      bar.addEventListener("pointerleave", hideRailTooltip);
     }
+    // ONE hover target for the whole line (RULED 2026-09-03 — replaces a
+    // per-bar `mouseenter`/`showRailTooltip(bar, oneContainer)`): the
+    // listener lives on the WRAPPER, not on each bar, and passes the full
+    // outermost-first stack so a single tooltip lists every container the
+    // line belongs to. A bar itself carries no listener of its own.
+    wrap.addEventListener("pointerenter", () => showRailTooltip(wrap, this.stack));
+    wrap.addEventListener("pointerleave", hideRailTooltip);
     return wrap;
   }
 
@@ -588,18 +613,35 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
       },
       provide: (f) => EditorView.decorations.from(f),
     }),
-    gutter({
-      class: "brink-hir-rail-gutter",
-      lineMarker(view, line) {
-        if (!isPerfEnabled()) return buildLineMarker(view, line);
-        const t0 = performance.now();
-        try {
-          return buildLineMarker(view, line);
-        } finally {
-          accumulateRailsTime(t0, performance.now() - t0);
-        }
-      },
-      lineMarkerChange: (update) => update.docChanged || update.startState.field(field) !== update.state.field(field),
-    }),
+    // Position (RULED 2026-09-03, decision-log "Structural rails: rightmost
+    // gutter, one compact hover for the whole stack"): the rails gutter is
+    // the RIGHTMOST gutter, directly adjacent to `.cm-content` — after line
+    // numbers and the play/breakpoint/host gutters, however those are
+    // composed relative to this one in the extension tree (`setup.ts`'s
+    // `brinkBasicSetup` and `extensions.ts`'s `ideCompartment` both
+    // register gutters at DEFAULT precedence around this call, on either
+    // side of it depending on the caller). `Prec.lowest` is CM's own gutter
+    // ordering mechanism for exactly this — the `activeGutters` facet
+    // renders gutters in precedence-then-declaration order (lowest last),
+    // regardless of tree position — so this holds without depending on
+    // `setup.ts`/`extensions.ts` composing this call last, and without any
+    // CSS reordering (which would desync `detachedGutters`' width
+    // measurement from the rendered order).
+    Prec.lowest(
+      gutter({
+        class: "brink-hir-rail-gutter",
+        lineMarker(view, line) {
+          if (!isPerfEnabled()) return buildLineMarker(view, line);
+          const t0 = performance.now();
+          try {
+            return buildLineMarker(view, line);
+          } finally {
+            accumulateRailsTime(t0, performance.now() - t0);
+          }
+        },
+        lineMarkerChange: (update) =>
+          update.docChanged || update.startState.field(field) !== update.state.field(field),
+      }),
+    ),
   ];
 }
