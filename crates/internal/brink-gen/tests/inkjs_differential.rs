@@ -76,6 +76,10 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // its output is one fragment, and the newline inside it never becomes
     // a line boundary.
     ("#3524", function_printing_several_lines),
+    // Content, then an interpolation whose expression is not a bare call
+    // but contains one: the call's output is not composed into the slot
+    // and lands before the line's text.
+    ("#3525", prefix_then_slot_containing_a_call),
 ];
 
 /// A content line with content (text or an earlier `{…}`) before a
@@ -94,6 +98,29 @@ fn prefix_then_conditional_calling_a_function(src: &str) -> bool {
                     .split_once(':')
                     .is_some_and(|(cond, _)| names_a_function(cond))
             {
+                return true;
+            }
+            seen_content = true;
+            rest = &inner[close + 1..];
+        }
+        false
+    })
+}
+
+/// A content line with content before a `{expr}` slot (no `:`, so not a
+/// conditional) whose expression names a generated function but is not a
+/// bare call.
+fn prefix_then_slot_containing_a_call(src: &str) -> bool {
+    src.lines().any(|line| {
+        let mut rest = line;
+        let mut seen_content = false;
+        while let Some(open) = rest.find('{') {
+            seen_content |= !rest[..open].trim().is_empty();
+            let inner = &rest[open + 1..];
+            let Some(close) = inner.find('}') else { break };
+            let body = &inner[..close];
+            let bare_call = body.starts_with('f') && body.ends_with(')') && !body.contains(' ');
+            if seen_content && !body.contains(':') && names_a_function(body) && !bare_call {
                 return true;
             }
             seen_content = true;

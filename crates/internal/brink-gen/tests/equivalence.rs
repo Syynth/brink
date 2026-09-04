@@ -113,10 +113,12 @@ const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
         // A nested binary expression loses its parentheses (`0 - (0 + 1)`
         // → `0 - 0 + 1`). The generator's printer parenthesises every
         // binary node, so a nested one shows as an operator followed by
-        // `(`, or as `((`.
+        // `(`, or as `((` — or, under a unary operator, as `-(`
+        // (`-(0 + 1)` → `-0 + 1`, the first CI run's finding).
         "#3518 nested binary expression loses its parentheses",
         |src| {
             src.contains("((")
+                || src.contains("-(")
                 || [
                     "+", "-", "*", "/", "mod", "and", "or", "==", "!=", "<", "<=", ">", ">=",
                 ]
