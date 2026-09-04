@@ -774,6 +774,9 @@ struct DebugLocalJs {
     slot: u16,
     name: String,
     value: DebugValueJs,
+    /// Mirrors `brink_runtime::debug::DebugLocal::synthetic` (#3395) —
+    /// `@brink-lang/wasm-types`' `DebugLocal.synthetic`.
+    synthetic: bool,
 }
 
 /// Structured mirror of `brink_runtime::debug::DebugValue`
@@ -922,6 +925,7 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
                             slot: l.slot,
                             name: l.name,
                             value: debug_value_to_js(l.value),
+                            synthetic: l.synthetic,
                         })
                         .collect()
                 }),

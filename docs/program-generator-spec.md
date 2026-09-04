@@ -100,6 +100,20 @@ The tier is self-contained like `tests/tier1-native/`: **not** part of
 moves through an explicit promotion. A maintainer-local step may
 re-bless a golden with the C# oracle and flip `oracle-source`.
 
+**Status (2026-09-04, #3380 route 1 landed).** `tests/tier4-generated/`
+exists with `scripts/promote-generated.mjs` (`pnpm promote:generated`:
+`--story` or `--from-log` a failing run's `--- source ---` block; refuses
+when brink cannot compile the story or the inkjs oracle cannot golden it;
+writes `story.ink`, `oracle/`, `case.toml`; bumps `GENERATED_CASE_COUNT`;
+`--rebless-csharp` runs `tools/ink-oracle` and flips `oracle-source`).
+The must-pass target is `brink-test-harness`'s `tier4_generated.rs`, with
+`[source] expected_mismatch` carrying the corpus's two-way discipline, and
+`corpus_report` prints the tier in its own section. The shared corpus
+walk prunes the directory by name (`corpus::GENERATED_TIER_DIR`). First
+cases: the two #3507 shapes (passing), the #3508 choice-text shape and
+the #3510 empty-then-branch shape (expected mismatches). Route 2
+(coverage-novel capture) is filed separately with the proposed signal.
+
 ## 6. The reference harness — RULED: inkjs
 
 The differential `trace(brink(P)) == trace(reference(P))` for generated
@@ -119,6 +133,44 @@ for the rank-2 reference; the C# runtime remains the tie-breaker
 seed mapping between inkjs and the harness is proven before draws
 enter the differential profile (#3379 states which).
 
+**Status (2026-09-04, #3379 landed).** `tools/inkjs-oracle` is a port
+of `tools/ink-oracle`'s crawler (same DFS, same episode JSON) onto
+`inkjs/compiler`, and the sanction is
+`crates/internal/brink-test-harness/tests/inkjs_sanction.rs`: **414 of
+414** oracle cases match — 400 byte for byte, 14 after two
+normalisations that forgive presentational artefacts of the *reference*
+(the C# tool's no-`onError` error wrapper and absolute source paths;
+double-precision float printing, `0.6666666666666666` vs `0.6666667`),
+documented and unit-tested in `brink_test_harness::inkjs`. Two facts
+that sanction measured:
+
+- **There is no RNG seed mapping; there is a replacement.** inkjs ships
+  a Park–Miller generator where the C# runtime uses `new
+  System.Random(seed)` (Knuth subtractive) for every shuffle, `RANDOM`
+  and `LIST_RANDOM`. Same seeds, different sequences, every draw
+  diverges. `tools/inkjs-oracle/dotnet-random.mjs` ports .NET's
+  generator (the same port `brink-runtime`'s `rng.rs` carries) and
+  installs it over inkjs's `engine/PRNG` export; only then do the
+  shuffle and `LIST_RANDOM` goldens match. The bundled `inkjs/full`
+  cannot be patched this way, which is why the tool imports the
+  unbundled compiler module.
+- **Warn-and-continue is the default** (§6's requirement), with
+  `--strict-warnings` reproducing the C# tool's no-handler mode; no
+  checked-in golden needed the strict mode to match.
+
+The differential itself is
+`crates/internal/brink-gen/tests/inkjs_differential.rs` over
+`Profile::PLAIN_INK`, compared by the harness's `diff_oracle` (the
+corpus ratchet's own comparison). Its first run found two brink
+divergences from ink — whitespace between an interpolation and `<>`
+dropped (#3507), and whitespace runs in choice text collapsed
+(#3508) — carried as issue-keyed `KNOWN_DIVERGENCES` there until each
+gets its C#-golden corpus case and fix. Lanes per §7: the sanction is
+per PR (`ci.yml`, `inkjs-sanction`); the differential is nightly
+(`inkjs-differential.yml`, 512 cases, advisory). Both are opt-in
+locally behind `BRINK_INKJS_ORACLE=1` after `npm ci` in
+`tools/inkjs-oracle`.
+
 ## 7. Feature order, crate, lanes
 
 - **Crate**: `crates/internal/brink-gen`, its own workspace member —
@@ -134,6 +186,118 @@ enter the differential profile (#3379 states which).
   compiles through both roads with identical bytes and explores to
   termination); nightly runs use large counts and carry the inkjs
   differential.
+
+**Status (2026-09-04, functions tier landed).** The ladder stands at
+structure (#3378) → variables, expressions, conditionals → **functions**:
+`Story::functions` holds `=== function f(a, ref b) ===` definitions with
+typed parameters, bodies of items (lines, assignments, temps, conditional
+blocks, statement calls — no tail, so no divert or choice, as ink
+requires), and an optional `~ return expr`. Calls are typed like any
+expression (`Expr::Call` in expression position for value functions,
+`Item::Call` as a `~ f(x)` statement for void ones); a `ref` argument is a
+visible variable of the parameter's type. The call graph is a DAG by
+construction — function `i` calls only functions `< i`, flow code calls
+any — so every call terminates without a step-limit crutch. `Profile`
+gains `max_functions` (2 in `DEFAULT`/`PLAIN_INK`, 0 in `STRUCTURE` and
+`RESPELLABLE`) and `max_params` (2). The tier's first differential run
+(300 stories) found five divergences, each filed with a one-line
+reproduction and carried as a `KNOWN_DIVERGENCES` predicate in
+`tests/inkjs_differential.rs`: #3519 (a function's leading newline is
+kept when the line already has content), #3521 (the #3395 lift runs a
+printing call in a lifted construct's condition before the line's
+prefix — the "reverse shape" the ruling left owed; needs a ruling),
+#3522 (function-end trim stops at glue), #3523 (a multi-line `- else:`
+arm lacks inklecate's leading newline), #3524 (a multi-line function
+output in an interpolation is one `Step::Line`). None is a generator
+defect; all five surface only when a function *prints* — the shapes
+the hand-written corpus covers thinly.
+
+**Status (2026-09-04, tunnels-and-threads tier landed).** Every knot
+carries a `FlowKind`: the entry is a plain knot; a **tunnel** knot is
+entered only by `-> t ->` (`Item::TunnelCall`) and its weaves leave by
+`->->` (`Exit::TunnelReturn`), `-> END`, or a divert within the tunnel
+flows under the back-edge rules; a **thread** knot is entered only by
+`<- t` (`Item::Thread`) from a plain knot's weave and leaves by
+`-> DONE`, `-> END`, or a divert within the thread flows. Tunnel calls
+from flow code and threads may name any tunnel; from inside tunnel knot
+`i` only a tunnel knot `> i`, so tunnel calls form a DAG like function
+calls do. Diverts never cross kinds — one flow table, each kind a
+contiguous range the decoder resolves raw exits within. `Profile` gains
+`max_tunnels` (2) and `max_threads` (1), both 0 in `STRUCTURE` and
+`RESPELLABLE`. First differential run: #3527 (`Choice.index` counted an
+invisible fallback merged ahead of the main flow's choices by a thread),
+fixed with the tier.
+
+**Status (2026-09-04, lists tier landed).** `Story::lists` holds
+`LIST name = a, (b), c` declarations; each is a global of its own
+`Ty::List(i)` whose values are subsets of its items, item names unique
+across the story (`li{i}_{j}`, so no item can collide with a list, knot,
+var or function name). Expressions: list literals `(a, b)`, single
+items, `+`/`-` (union/difference, the right operand an item half the
+time), `^`, `?`/`!?` → bool, `LIST_COUNT` → int, `LIST_MIN`/`LIST_MAX`/
+`LIST_ALL`/`LIST_INVERT`; `+=`/`-=` write through a list target;
+`==`/`!=` compare same-typed values; temps and function parameters may
+be list-typed, `VAR`s stay int/bool/str. An empty list is reachable only
+through operations (a literal is never `()`), which is where ink's
+empty-list spelling gets exercised. The tier's differential runs found
+five runtime defects, all fixed with it: #3531 (containment with an
+empty operand), #3532 (list origins), #3533 (a blank line before a turn
+boundary — plus its sibling #3534, tag-only lines) and #3536 (a
+function ending in a value that renders empty). One is carried as a
+predicate instead: #3535, glue reaching across a blank line, which
+predates the tier and which an empty-list interpolation is simply the
+first thing to hit often. `Profile` gains `max_lists` (1) and
+`max_list_items` (4), 0 lists in `STRUCTURE`/`RESPELLABLE`; the respell
+property treats `LIST` like `VAR` under #3517 (a host-readable global
+respelled private).
+
+**Status (2026-09-04, sequences tier landed).** `Part::Seq` is inline
+content with two or more plain-text alternatives and a `SeqKind` marker —
+`{a|b}` stopping, `{&a|b}` cycle, `{!a|b}` once, `{~a|b}` shuffle — and
+`Expr::Random` is `RANDOM(min, max)`, an int whose literal bounds are
+ordered at decode time (ink raises a story error when `min > max`).
+`Profile` gains `max_seq_alts` (3) and `allow_random`, both off in
+`STRUCTURE`/`RESPELLABLE`. Two constraints shape the tier, and both are
+rules of the model rather than bugs found:
+
+- **Alternatives are letters, digits and spaces only, and no two empty
+  ones are adjacent** (rule 13). ink's parser tries a `{…}` as an
+  expression before it tries it as a sequence, so punctuation can commit
+  it to the wrong reading: the tier's differential runs produced `{a?|a}`
+  ("Expected right side of `?` expression but saw `|a}`") and `{alt||}`
+  ("Expected right side of `||` expression but saw `}`" — `||` is ink's
+  or-operator), both of which inklecate rejects and brink compiles
+  happily. A single empty alternative between non-empty ones is fine and
+  is generated deliberately, since it is the shape that prints nothing.
+  The leniency gap those two shapes expose — brink accepting sequences
+  ink's own grammar cannot express — is recorded here, not filed: how
+  strict brink's parser should be is a maintainer's call, and nothing in
+  the corpus settles it.
+- **`RANDOM` stands only in a printed interpolation** (rule 13). Anywhere
+  else a drawn value can reach a choice guard — directly, or through a
+  variable an assignment wrote — and the set of choices offered at a point
+  stops being a function of state alone. The harness's explorer is an
+  exhaustive DFS with no state dedup, so a guard that flickers between
+  visits multiplies the episode count until the smoke lane's 4,096 cap
+  trips. `strategy::confine_random` strips the draw everywhere but the one
+  admissible position.
+
+The tier's differential also re-found one runtime divergence, filed as
+#3538 and carried as a predicate: a shuffle's seed is the sequence
+container's path hash, and brink's container paths are not inklecate's,
+so the two pick different permutations. It predates the tier —
+`tests/tier2/conditional/shuffle` is 0/1 against the C# oracle and
+`tests/tier2/sequences/I107-shuffle-stack-muddying` 0/2 — and fixing it
+means adopting ink's container path scheme for seeding, which wants a
+ruling first.
+
+A third bound is the compiler's, not ink's: a line's sequences enumerate
+into whole-line variants and `lir::lower::recognize` rejects a product
+over `VARIANT_CAP` (32) with a hard error (E191), a `once` sequence
+counting one extra for its exhausted empty variant. The generator honours
+the same bound (rule 14, `strategy::cap_line_variants`): a sequence that
+would breach it loses alternatives, and becomes plain text if two are
+still too many.
 
 ## 8. Not covered
 

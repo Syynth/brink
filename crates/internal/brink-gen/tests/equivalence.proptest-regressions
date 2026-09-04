@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 591fc7990beb39ae8107c49c4b48f25f854f14886052aebb53dfe2a286330f8c # shrinks to story = Story { vars: [], knots: [Knot { name: "a_k0", root: Weave { items: [], tail: Exit(Divert(Divert { knot: 0, stitch: Some(0) })) }, stitches: [Stitch { name: "a_s0", body: Weave { items: [], tail: Choices { choices: [Choice { sticky: false, condition: Some(Not(Lit(Bool(true)))), label: "a", body: Weave { items: [], tail: Exit(End) } }], fallback: Some(End), gather: None } } }] }] }
+cc 9344cfbebd1648057f6a57f5970977193f06494504e7679ecf8e402e77620a65 # shrinks to story = Story { vars: [VarDecl { name: "v0_a", init: Int(0) }], knots: [Knot { name: "a_k0", root: Weave { items: [], tail: Exit(End) }, stitches: [] }] }

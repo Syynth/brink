@@ -102,6 +102,28 @@ describe("guardedInstall (decision table)", () => {
     assert.match(stderr, /wasm-pack build crates\/brink-web --target web --out-dir www\/pkg/);
   });
 
+  // The 201000ee shape: only the SECOND registered package is unbuilt. The
+  // refusal must name that package's build command and must NOT tell the
+  // reader to rebuild the one that is already there — the 0.5.1 release
+  // attempt died on exactly that misdirection.
+  it("names only the unbuilt packages' build commands in the refusal", () => {
+    assert.ok(WASM_PACKAGES.length >= 2, "this case needs at least two registered packages");
+    const [built, ...unbuilt] = WASM_PACKAGES;
+    const { code, installCalls, stderr } = harness({ checkPkg: () => unbuilt });
+
+    assert.equal(code, 1);
+    assert.equal(installCalls.length, 0);
+    assert.match(stderr, /REFUSING TO INSTALL/);
+    for (const pkg of unbuilt) {
+      assert.ok(stderr.includes(pkg.buildCommand), `refusal must name ${pkg.buildCommand}`);
+      assert.ok(stderr.includes(pkg.pkgDir), `refusal must name ${pkg.pkgDir} as not built`);
+    }
+    assert.ok(
+      !stderr.includes(built.buildCommand),
+      `refusal must not send the reader to rebuild the already-built ${built.id}`,
+    );
+  });
+
   // The #2593 shape itself: pnpm claims success, nothing was written.
   it("fails non-zero when pnpm exits 0 but wrote no node_modules at all", () => {
     const { code, stderr } = harness({
@@ -246,7 +268,7 @@ describe("sanitizeInstallArgs", () => {
  * repoRoot from its own location, so copying it into the fixture is what
  * points it at the fixture — no test-only env knob in production code.
  */
-function makeFixture({ withPkg }) {
+function makeFixture({ withPkg, onlyPkgs = null }) {
   const root = scratchDir("guarded-install-e2e-");
 
   mkdirSync(join(root, "scripts"), { recursive: true });
@@ -258,8 +280,10 @@ function makeFixture({ withPkg }) {
     // EVERY registered package (#3208), driven from the registry rather than
     // a hardcoded path — a fixture that builds only brink-web would make
     // these tests fail the moment a second wasm package is added, which is
-    // the wrong signal: the guard working is not a fixture bug.
+    // the wrong signal: the guard working is not a fixture bug. `onlyPkgs`
+    // narrows that to a subset, for the partially-built case.
     for (const pkg of WASM_PACKAGES) {
+      if (onlyPkgs !== null && !onlyPkgs.includes(pkg.id)) continue;
       const pkgDir = join(root, pkg.pkgDir);
       mkdirSync(pkgDir, { recursive: true });
       for (const file of pkg.files) {
@@ -359,6 +383,32 @@ describe("scripts/guarded-install.mjs end to end (real script, stubbed pnpm)", (
       output,
       /pnpm install:checked/,
       "the refusal output should point at the guarded entry point instead",
+    );
+  });
+
+  // The partially-built tree (201000ee): first registered package built,
+  // every later one missing. The real script must refuse, and its
+  // remediation must name the missing builds — not the one already done.
+  it("names the missing package, not the built one, when only the first is built", () => {
+    assert.ok(WASM_PACKAGES.length >= 2, "this case needs at least two registered packages");
+    const [built, ...missing] = WASM_PACKAGES;
+    const root = makeFixture({ withPkg: true, onlyPkgs: [built.id] });
+    const { binDir, markerPath } = makePnpmStub(root, { exitCode: 0, writeTree: true });
+
+    const { status, output } = runRealScript(root, binDir);
+
+    assert.notEqual(status, 0, "a partially-built tree must FAIL");
+    assert.match(output, /REFUSING TO INSTALL/);
+    assert.equal(existsSync(markerPath), false, "pnpm must never have been spawned");
+    for (const pkg of missing) {
+      assert.ok(output.includes(pkg.buildCommand), `refusal must name ${pkg.buildCommand}`);
+    }
+    // The refusal block is what a reader acts on; check-wasm-pkg's per-package
+    // report above it prints only for packages that are actually missing, so
+    // the built package's build command must appear nowhere in the output.
+    assert.ok(
+      !output.includes(built.buildCommand),
+      `output must not send the reader to rebuild the already-built ${built.id}:\n${output}`,
     );
   });
 

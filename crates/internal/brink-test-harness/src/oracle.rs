@@ -95,9 +95,15 @@ pub fn load_oracle_episodes(case_dir: &Path) -> Result<Vec<OracleEpisode>, Strin
     if !oracle_dir.is_dir() {
         return Err(format!("no oracle/ directory in {}", case_dir.display()));
     }
+    load_oracle_episodes_from_dir(&oracle_dir)
+}
 
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&oracle_dir)
-        .map_err(|e| format!("read oracle dir: {e}"))?
+/// The `*.oracle.json` files directly inside `dir`, in the order
+/// [`load_oracle_episodes_from_dir`] loads them (path order, so `e10` sorts
+/// before `e2` — consumers that care about order key by `choice_path`).
+pub fn oracle_episode_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("read oracle dir {}: {e}", dir.display()))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
@@ -108,6 +114,14 @@ pub fn load_oracle_episodes(case_dir: &Path) -> Result<Vec<OracleEpisode>, Strin
         })
         .collect();
     paths.sort();
+    Ok(paths)
+}
+
+/// Load every `*.oracle.json` directly inside `dir` — the C# oracle's
+/// `oracle/` output, or the inkjs oracle's `--output-dir` (`crate::inkjs`),
+/// which writes the same files.
+pub fn load_oracle_episodes_from_dir(dir: &Path) -> Result<Vec<OracleEpisode>, String> {
+    let paths = oracle_episode_files(dir)?;
 
     let mut episodes = Vec::with_capacity(paths.len());
     for path in &paths {

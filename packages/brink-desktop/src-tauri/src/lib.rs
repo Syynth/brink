@@ -3470,6 +3470,7 @@ on:
             vec![
                 "studio-changeset-guard".to_owned(),
                 "check".to_owned(),
+                "inkjs-sanction".to_owned(),
                 "wasm-test".to_owned(),
                 "test".to_owned(),
                 "test-bench-counters".to_owned(),
@@ -3573,35 +3574,55 @@ on:
         );
     }
 
-    /// Every wasm-pack build command named in `scripts/check-wasm-pkg.mjs`.
+    /// Every wasm-pack build command `scripts/check-wasm-pkg.mjs`'s
+    /// `WASM_PACKAGES` registry names, composed exactly as the script
+    /// composes them.
     ///
     /// Parsed rather than duplicated so the workflow guard and the install
-    /// guard cannot disagree about which wasm outputs exist. Matched on the
-    /// COMMAND TEXT rather than the `buildCommand:` key: the registry spells
-    /// one entry as a shared `BUILD_COMMAND` constant and wraps another
-    /// across lines, so a key-based parse silently returned nothing — caught
-    /// only because the call site asserts a minimum count. Scanning for the
-    /// literal is invariant to how any future entry is formatted.
+    /// guard cannot disagree about which wasm outputs exist. This used to
+    /// scan for the command as a string literal; #3505 made every entry's
+    /// `buildCommand` derive from its `crateDir` through `buildCommandFor`,
+    /// which left no literal to find and made this parse silently return
+    /// nothing — caught only because the call site asserts a minimum count
+    /// (the desktop-smoke lane went red on the first PR after it merged).
+    /// Reading `crateDir` plus the template is the shape that survives
+    /// either spelling: an entry cannot exist without its `crateDir`, and
+    /// the template is the one place the command's flags live.
     fn registered_wasm_build_commands() -> Vec<String> {
-        // The OPENING QUOTE is part of the needle. Without it this also
-        // matched the same command written in the file's own header prose,
-        // and swept up the paragraph after it as a "command".
-        const NEEDLE: &str = "\"wasm-pack build crates/";
+        const NEEDLE: &str = "crateDir: \"";
         let registry = std::fs::read_to_string(repo_root().join("scripts/check-wasm-pkg.mjs"))
             .expect("scripts/check-wasm-pkg.mjs should be readable from the repo root");
+
+        // Since #3505 every entry's `buildCommand` is DERIVED from its
+        // `crateDir` through `buildCommandFor`, so the registry no longer
+        // holds the command as a string literal. Read the two halves it does
+        // hold — the template `buildCommandFor` returns, and each entry's
+        // `crateDir: "…"` — and compose them the way the script does, so a
+        // registered crate still cannot be forgotten here, and a change to
+        // the template (a new flag, a new out-dir) reaches this guard too.
+        let template = registry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("return `")?.strip_suffix("`;"))
+            .expect(
+                "scripts/check-wasm-pkg.mjs's buildCommandFor should return one backtick template",
+            );
+        assert!(
+            template.contains("${crateDir}"),
+            "buildCommandFor's template must interpolate `${{crateDir}}`, got {template:?}"
+        );
 
         let mut commands: Vec<String> = Vec::new();
         let mut rest = registry.as_str();
         while let Some(at) = rest.find(NEEDLE) {
-            let from = &rest[at + 1..];
-            // The literal ends at its closing quote; a command never contains one.
+            let from = &rest[at + NEEDLE.len()..];
+            // The literal ends at its closing quote; a path never contains one.
             if let Some(end) = from.find('"') {
-                let command = from[..end].trim().to_owned();
+                let command = template.replace("${crateDir}", from[..end].trim());
                 if !commands.contains(&command) {
                     commands.push(command);
                 }
             }
-            rest = &from[NEEDLE.len()..];
+            rest = from;
         }
         commands
     }

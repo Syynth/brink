@@ -19,7 +19,7 @@ use brink_test_harness::{Episode, ExploreConfig};
 /// Returns true if the case's metadata.toml has `mode = "compile_error"`.
 fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
     let meta_path = case_dir.join("metadata.toml");
-    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
+    std::fs::read_to_string(meta_path).is_ok_and(|s| {
         s.lines()
             .any(|line| line.trim() == r#"mode = "compile_error""#)
     })
@@ -27,9 +27,7 @@ fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
 
 fn has_empty_source(case_dir: &std::path::Path) -> bool {
     let ink_path = case_dir.join("story.ink");
-    std::fs::read_to_string(ink_path)
-        .ok()
-        .is_some_and(|s| s.trim().is_empty())
+    std::fs::read_to_string(ink_path).is_ok_and(|s| s.trim().is_empty())
 }
 
 fn tests_dir() -> PathBuf {
@@ -362,6 +360,7 @@ fn corpus_report() {
     print_expected_mismatch_report(&flagged);
 
     native_corpus_report();
+    generated_corpus_report();
 }
 
 /// Issue #3402: list every case pinning a `[source] expected_mismatch`
@@ -651,4 +650,88 @@ fn flagged_case_that_fails_to_compile_still_appears_in_the_backlog() {
         )],
         "a flagged case that fails to compile must still appear in the backlog"
     );
+}
+
+/// `tests/tier4-generated/` — the capture tier (issue #3380): shrunk
+/// generated stories with an inkjs- or C#-blessed golden. Its own section,
+/// never folded into the oracle CASES/EPISODES totals (the shared corpus
+/// walk prunes the directory — `corpus::GENERATED_TIER_DIR`), and the same
+/// run path `tier4_generated.rs` uses, so the two cannot disagree.
+#[expect(
+    clippy::print_stdout,
+    reason = "this is a diagnostic report, not production output"
+)]
+fn generated_corpus_report() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests");
+    let dirs = brink_test_harness::corpus::collect_generated_cases(&root);
+    if dirs.is_empty() {
+        return;
+    }
+    let config = ExploreConfig {
+        max_depth: 20,
+        max_episodes: 1000,
+    };
+    let mut pass = 0usize;
+    let mut rows: Vec<(String, &str, String)> = Vec::new();
+    for dir in &dirs {
+        let case = match brink_test_harness::corpus::load_generated_case(dir) {
+            Ok(c) => c,
+            Err(e) => {
+                rows.push((dir.display().to_string(), "✗", e));
+                continue;
+            }
+        };
+        let flag = brink_test_harness::corpus::expected_mismatch_issue_in(&dir.join("case.toml"));
+        let matched = brink_test_harness::load_oracle_episodes(dir)
+            .and_then(|goldens| {
+                compile_and_explore_from_ink(&dir.join("story.ink"), &config)
+                    .map(|(_, actual)| (goldens, actual))
+            })
+            .map(|(goldens, actual)| {
+                let by_path = index_by_choice_path(&actual);
+                goldens.len() == actual.len()
+                    && goldens.iter().all(|g| {
+                        by_path
+                            .get(g.choice_path.as_slice())
+                            .is_some_and(|b| brink_test_harness::diff_oracle(g, b).matches)
+                    })
+            });
+        let detail = format!(
+            "{} · {} · golden by {}{}",
+            case.provenance.source,
+            case.provenance.property,
+            case.provenance.oracle_source,
+            case.provenance
+                .issue
+                .as_deref()
+                .map(|i| format!(" · {i}"))
+                .unwrap_or_default()
+        );
+        let mark = match (matched, flag) {
+            (Ok(true), None) => {
+                pass += 1;
+                "✓"
+            }
+            (Ok(false), Some(_)) => "⏳ expected mismatch",
+            (Ok(true), Some(_)) => "⚠ NOW MATCHES — remove expected_mismatch",
+            (Ok(false), None) => "✗",
+            (Err(_), _) => "✗ (error)",
+        };
+        rows.push((case.name, mark, detail));
+    }
+    println!();
+    println!("============================================================");
+    println!(
+        "  TIER4-GENERATED (capture tier, NOT in the ratchet, issue #3380) — {pass}/{} \
+         cases passing",
+        rows.len()
+    );
+    println!("============================================================");
+    for (name, mark, detail) in &rows {
+        println!("  {mark} {name}  [{detail}]");
+    }
 }

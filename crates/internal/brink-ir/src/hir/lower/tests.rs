@@ -308,6 +308,49 @@ fn accumulator_content_with_glue_suppresses_eol() {
     );
 }
 
+/// Issue #3507: the whitespace trivia between an inline construct and `<>`
+/// lowers to a `Spring`; after TEXT the space is already in the text, and
+/// with no whitespace there is no spring.
+#[test]
+fn whitespace_between_inline_construct_and_glue_lowers_to_a_spring() {
+    use crate::ContentPart;
+    let parts_of = |source: &str| -> Vec<&'static str> {
+        let (block, diags) = lower_body(source);
+        assert!(diags.is_empty(), "{source:?}: {diags:?}");
+        let Some(Stmt::Content(c)) = block.stmts.first() else {
+            panic!(
+                "{source:?}: expected a leading Content stmt, got {:?}",
+                block.stmts
+            );
+        };
+        c.parts
+            .iter()
+            .map(|p| match p {
+                ContentPart::Text(_) => "text",
+                ContentPart::Glue => "glue",
+                ContentPart::Spring => "spring",
+                ContentPart::Interpolation(_) => "interp",
+                ContentPart::InlineConditional(_) => "cond",
+                ContentPart::InlineSequence(_) => "seq",
+                ContentPart::Span(_) => "span",
+            })
+            .collect()
+    };
+    assert_eq!(parts_of("{0} <>\nworld\n"), ["interp", "spring", "glue"]);
+    assert_eq!(parts_of("{0}  <>\nworld\n"), ["interp", "spring", "glue"]);
+    assert_eq!(parts_of("{0}<>\nworld\n"), ["interp", "glue"]);
+    assert_eq!(parts_of("{true:x} <>\nworld\n"), ["cond", "spring", "glue"]);
+    assert_eq!(parts_of("{a|b} <>\nworld\n"), ["seq", "spring", "glue"]);
+    // The second glue follows a glue, not content: one spring only.
+    assert_eq!(
+        parts_of("{0} <> <>\nworld\n"),
+        ["interp", "spring", "glue", "glue"]
+    );
+    // After TEXT the lexer already folded the space into the text.
+    assert_eq!(parts_of("hello <>\nworld\n"), ["text", "glue"]);
+    assert_eq!(parts_of("{0} x <>\nworld\n"), ["interp", "text", "glue"]);
+}
+
 #[test]
 fn accumulator_logic_line_with_call_emits_eol() {
     // A function call in a logic line triggers EndOfLine

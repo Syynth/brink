@@ -99,6 +99,47 @@ jobs:
       # actually *executes* them (#672 workstream D).
       - run: cargo check -p brink-web --all-targets --target wasm32-unknown-unknown
 
+  # The inkjs sanction (issue #3379, docs/program-generator-spec.md §6):
+  # `tools/inkjs-oracle` — the C# oracle crawler ported onto inkjs 2.4.0
+  # with the .NET `System.Random` generator installed — must replay EVERY
+  # checked-in C# oracle golden (tier1–3 plus the GitHub-corpus cases that
+  # carry one) and match. inkjs is not on CLAUDE.md's trust hierarchy; this
+  # lane is what earns it standing as the reference's stand-in for sessions
+  # without `dotnet`, and it is the floor the generated-story differential
+  # (inkjs-differential.yml, nightly) rests on. Deterministic and fast
+  # (one crawl per corpus root, ~15s total), so it runs per PR.
+  #
+  # `npm ci` is the node analogue of `--locked` (see benchmarks-inkjs.yml):
+  # only an explicit package-lock.json change can move the inkjs version the
+  # sanction was measured against. No pnpm here — tools/inkjs-oracle is a
+  # plain npm project outside the pnpm workspace, like benchmarks/drivers/inkjs.
+  inkjs-sanction:
+    name: inkjs sanction
+    runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): a
+    # harness build plus a few seconds of node.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - name: Install inkjs oracle
+        working-directory: tools/inkjs-oracle
+        run: npm ci
+      - name: Test inkjs oracle (.NET Random port, explorer)
+        working-directory: tools/inkjs-oracle
+        run: node --test
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Sanction inkjs against every C# oracle golden
+        run: cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
+        env:
+          BRINK_INKJS_ORACLE: "1"
+
   # Executes the `#[wasm_bindgen_test]` suite under Node (the `check` job
   # above only type-checks it for wasm32 — it never ran, so PR #620's
   # Record→null marshal regression would not have been caught by any CI

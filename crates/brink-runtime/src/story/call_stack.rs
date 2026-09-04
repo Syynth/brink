@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
 use crate::error::{RanOutOfContentCause, RuntimeError};
-use crate::output::OutputBuffer;
+use crate::output::{OutputBuffer, OutputMark};
 
 // ── Internal types ──────────────────────────────────────────────────────────
 
@@ -99,10 +99,13 @@ pub(crate) struct CallFrame {
     /// For `External` frames: the `DefinitionId` of the external function,
     /// used to look up the fallback container if no binding is registered.
     pub external_fn_id: Option<DefinitionId>,
-    /// For `Function` frames: the length of the active output target at
-    /// call time.  On return, trailing whitespace is trimmed back to this
-    /// point — matching the C# runtime's `TrimWhitespaceFromFunctionEnd`.
-    pub function_output_start: Option<usize>,
+    /// For `Function` frames: where the active output target stood at call
+    /// time ([`OutputMark`]). On return, trailing whitespace is trimmed
+    /// back to this point — matching the C# runtime's
+    /// `TrimWhitespaceFromFunctionEnd` — and while the function has
+    /// produced no content past it, a newline it emits is dropped
+    /// (`functionStartInOutputStream`, issue #3519).
+    pub function_output_start: Option<OutputMark>,
 }
 
 impl CallFrame {
@@ -178,6 +181,11 @@ impl CallStack {
     }
 
     pub fn last_mut(&mut self) -> Option<&mut CallFrame> {
+        // A mutable frame is about to change: a snapshot taken before
+        // this write no longer describes the stack (issue #3528 — a temp
+        // written after `<- thread` forked the stack was missing from the
+        // next choice's fork, served from the stale cache).
+        self.cached_snapshot = None;
         if !self.own.is_empty() {
             return self.own.last_mut();
         }
@@ -206,6 +214,8 @@ impl CallStack {
     /// Get a mutable reference to a frame by absolute index.
     /// Materializes the inherited prefix if the target is in it.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
+        // See `last_mut`: any mutable access stales the cached snapshot.
+        self.cached_snapshot = None;
         let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
         if index < inherited_len {
             self.materialize();
@@ -347,6 +357,12 @@ pub(crate) struct Flow {
     /// pending choices — the story passed through an empty choice set.
     /// Cleared at the start of each `continue_single` call.
     pub did_unsafe_yield: bool,
+    /// Has a `Step::Line` been handed out since this turn began (issue
+    /// #3533)? Set by `make_output_line`, cleared wherever `next_block_id`
+    /// starts a fresh run (a choice, a resume from `Done`, a host jump).
+    /// Decides whether trailing blank lines at a yield are ink's dropped
+    /// lookahead (yes) or a turn's first — and kept — `Continue` (no).
+    pub line_delivered_this_turn: bool,
     /// The call-stack-derived cause captured the moment execution hit the
     /// content-exhaustion boundary ([`crate::vm::handle_frame_exhaustion`])
     /// that produced the terminal `Done` — mirrors C#'s inline
@@ -638,7 +654,7 @@ impl Flow {
     /// fallback container. Args are pushed back onto the value stack so
     /// the fallback body's `temp=` opcodes can pop them.
     pub fn invoke_fallback(&mut self, container_idx: u32) {
-        let output_start = self.output.target_len();
+        let output_start = self.output.mark();
         let thread = self.current_thread_mut();
         if let Some(frame) = thread.call_stack.last_mut()
             && frame.frame_type == CallFrameType::External

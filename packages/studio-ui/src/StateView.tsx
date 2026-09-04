@@ -44,12 +44,16 @@ function FrameLocals({ frame }: { frame: DebugFrame }) {
       <p className="sv-locals-none sv-dim">no debug info for this frame</p>
     ) : null;
   }
-  if (frame.locals.length === 0) return null;
+  // #3395: compiler-minted temps (the lift-order hoist's `$liftN`) are
+  // hidden, per `docs/debugger-spec.md` §3 — same rule as the Debugger
+  // panel's FrameLocals.
+  const locals = frame.locals.filter((l) => !l.synthetic);
+  if (locals.length === 0) return null;
 
   return (
     <table className="sv-locals">
       <tbody>
-        {frame.locals.map((l) => (
+        {locals.map((l) => (
           // Keyed by SLOT, not name: the slot is the frame-unique
           // identity, and a future codegen that reused a name across
           // sibling scopes would otherwise collide.

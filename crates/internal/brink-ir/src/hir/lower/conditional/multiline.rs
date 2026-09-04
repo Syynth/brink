@@ -3,7 +3,7 @@ use brink_syntax::ast::{self, AstNode};
 use crate::Provenance;
 use crate::provenance::NodeClass;
 
-use crate::{Block, CondBranch, CondKind, Conditional};
+use crate::{Block, CondBranch, CondKind, Conditional, Stmt};
 
 use super::super::block::lower_branch_body;
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -59,9 +59,12 @@ fn lower_if_else_branches(
                 b.condition().and_then(|e| e.lower_expr(scope, sink).ok())
             };
             let branch_ptr = scope.prov(NodeClass::ConditionalBranch, b.syntax());
-            let body = b.body().map_or_else(Block::default, |body| {
+            let mut body = b.body().map_or_else(Block::default, |body| {
                 lower_branch_body(body.syntax(), scope, sink)
             });
+            // Every multi-line arm starts with a newline in inklecate's
+            // output (issue #3523), as in `lower_block_sequence`.
+            body.stmts.insert(0, Stmt::EndOfLine);
             CondBranch {
                 ptr: branch_ptr,
                 condition,

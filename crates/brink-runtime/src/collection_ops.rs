@@ -814,7 +814,8 @@ pub(crate) fn weighted_new(flow: &mut Flow) -> Result<(), RuntimeError> {
         });
     }
     let mut entries = Vec::with_capacity(items.len() / 2);
-    for pair in items.chunks_exact(2) {
+    let (pairs, _) = items.as_chunks::<2>();
+    for pair in pairs {
         let weight = match &pair[0] {
             Value::Int(w) if *w >= 1 => *w,
             Value::Int(w) => {
@@ -1244,6 +1245,7 @@ mod tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
+            line_delivered_this_turn: false,
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,

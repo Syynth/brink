@@ -84,6 +84,7 @@ fn lower_block_temp_decl(
         name,
         value,
         annotation,
+        synthetic: false,
     }))
 }
 
