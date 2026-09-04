@@ -13,6 +13,16 @@ use crate::explorer::ExploreConfig;
 /// policy [`Walk`] applies by construction (issue #1433).
 const CASE_DATA_DIRS: [&str; 2] = ["episodes", "oracle"];
 
+/// `tests/tier4-generated/` — the capture tier (issue #3380,
+/// `docs/program-generator-spec.md` §5): shrunk generated stories with a
+/// golden the inkjs oracle produced (or the C# oracle re-blessed). Its
+/// cases carry `oracle/*.oracle.json` exactly like a curated case, so the
+/// shared walk below prunes the directory by name: the tier is
+/// self-contained with its own must-pass target (`tier4_generated.rs`) and
+/// must never leak into `RATCHET_EPISODE_COUNT`, the sanction, or the
+/// respell sweep. [`collect_generated_cases`] is the one way in.
+pub const GENERATED_TIER_DIR: &str = "tier4-generated";
+
 /// Recursively find directories containing `story.ink`.
 pub fn collect_test_cases(root: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
@@ -78,8 +88,14 @@ pub fn is_compile_error_case(case_dir: &Path) -> bool {
 /// silently returning `None`. Reverting to "unflagged" on a misplaced or
 /// mistyped flag is exactly the silent drift issue #3402 exists to kill.
 pub fn expected_mismatch_issue(case_dir: &Path) -> Option<String> {
-    let meta_path = case_dir.join("metadata.toml");
-    let text = std::fs::read_to_string(&meta_path).ok()?;
+    expected_mismatch_issue_in(&case_dir.join("metadata.toml"))
+}
+
+/// [`expected_mismatch_issue`] over an explicit metadata file — the capture
+/// tier's `case.toml` (issue #3380) carries the same `[source]
+/// expected_mismatch` field with the same rules.
+pub fn expected_mismatch_issue_in(meta_path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(meta_path).ok()?;
     let doc: toml::Value = toml::from_str(&text).ok()?;
     let table = doc.as_table()?;
 
@@ -193,7 +209,11 @@ fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>, predicate: impl Fn(&Pat
         out.push(dir.to_path_buf());
     }
 
-    for entry in Walk::new(dir).prune_also(CASE_DATA_DIRS).flatten() {
+    for entry in Walk::new(dir)
+        .prune_also(CASE_DATA_DIRS)
+        .prune_also([GENERATED_TIER_DIR])
+        .flatten()
+    {
         if entry.is_dir() && predicate(entry.path()) {
             out.push(entry.into_path());
         }
@@ -1121,4 +1141,102 @@ mod expected_mismatch_tests {
             MismatchFlagVerdict::UnexpectedlyFixed
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The capture tier (issue #3380)
+// ---------------------------------------------------------------------------
+
+/// Where a `tests/tier4-generated/` case came from and who blessed its
+/// golden — the `[provenance]` table of its `case.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedProvenance {
+    /// `"proptest"` (a shrunk counterexample) or `"probe"` (a hand-minimised
+    /// story from reference-differential probing).
+    pub source: String,
+    /// The property that failed (`"inkjs_differential"`, …) or the probe.
+    pub property: String,
+    /// The proptest seed, when one was recorded.
+    pub seed: Option<String>,
+    /// `"inkjs"` — the golden came from `tools/inkjs-oracle` — or `"csharp"`
+    /// once a maintainer re-blessed it with the C# oracle.
+    pub oracle_source: String,
+    /// The issue the case reproduces, when it reproduces one.
+    pub issue: Option<String>,
+}
+
+/// One case of the capture tier: its directory, name and provenance. The
+/// expected-mismatch flag is read separately through
+/// [`expected_mismatch_issue_in`] on `case.toml`, the same road the curated
+/// corpus takes for `metadata.toml`.
+#[derive(Debug, Clone)]
+pub struct GeneratedCase {
+    pub dir: PathBuf,
+    pub name: String,
+    pub provenance: GeneratedProvenance,
+}
+
+/// The case directories directly under `<tests>/tier4-generated/`, sorted —
+/// every directory there that carries a `case.toml`.
+pub fn collect_generated_cases(tests_root: &Path) -> Vec<PathBuf> {
+    let root = tests_root.join(GENERATED_TIER_DIR);
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("case.toml").is_file())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// Parse a capture-tier case's `case.toml`.
+///
+/// # Errors
+/// A missing or malformed file, or a `[provenance]` table missing a required
+/// key, is an error naming the case — never a silently defaulted case.
+pub fn load_generated_case(dir: &Path) -> Result<GeneratedCase, String> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let meta_path = dir.join("case.toml");
+    let text = std::fs::read_to_string(&meta_path)
+        .map_err(|e| format!("{name}: read {}: {e}", meta_path.display()))?;
+    let doc: toml::Value =
+        toml::from_str(&text).map_err(|e| format!("{name}: parse {}: {e}", meta_path.display()))?;
+    let prov = doc
+        .get("provenance")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{name}: case.toml has no [provenance] table"))?;
+    let required = |key: &str| -> Result<String, String> {
+        prov.get(key)
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{name}: [provenance] {key} is missing or not a string"))
+    };
+    let optional = |key: &str| {
+        prov.get(key)
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    let oracle_source = required("oracle-source")?;
+    if oracle_source != "inkjs" && oracle_source != "csharp" {
+        return Err(format!(
+            "{name}: [provenance] oracle-source must be \"inkjs\" or \"csharp\", not {oracle_source:?}"
+        ));
+    }
+    let provenance = GeneratedProvenance {
+        source: required("source")?,
+        property: required("property")?,
+        seed: optional("seed"),
+        oracle_source,
+        issue: optional("issue"),
+    };
+    Ok(GeneratedCase {
+        dir: dir.to_path_buf(),
+        name,
+        provenance,
+    })
 }
