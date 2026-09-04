@@ -5,7 +5,7 @@
 A narrative language, compiler, runtime, and studio in Rust — with **two source surfaces sharing one pipeline**:
 
 - **`.brink` — the native surface** (`brink-syntax-native`): the language the project is actually building. Modules, typed mode, conventions/prose-dialect, structs, lambdas.
-- **`.ink` — the compatibility surface** (`brink-syntax`): Inkle's ink, maintained so existing stories keep working.
+- **`.ink` — the ink surface** (`brink-syntax`): Inkle's ink, a **full peer of the native surface** (ruled 2026-09-04). Not a compatibility shim being kept alive: a first-class way to author for brink, held to the same standard as `.brink`.
 
 Both parse to their own CST, then converge: → HIR lower (`brink-ir::hir`) → analyze (`brink-analyzer`) → LIR lower (`brink-ir::lir`) → bytecode codegen (`brink-codegen-inkb`) → `StoryData` (`brink-format`) → link + execute (`brink-runtime`). Above that sits the **authoring stack**: `brink-ide`/`brink-db` (queries), `brink-web` (wasm), the TypeScript editor packages, and **brink-desktop** (Tauri).
 
@@ -13,9 +13,11 @@ A parallel **converter** pipeline (`.ink.json` → `brink-json` → `brink-conve
 
 ## Current state
 
-**The project's center is the NATIVE surface and the authoring experience** (ruled 2026-08-07, `docs/decision-log.md` "Oracle conformance is no longer the core metric"): the `.brink` language (conventions, prose dialect, modules, typed mode), the editor packages (`@brink-lang/editor` / `@brink-lang/studio` / `@brink-lang/web`), and the **brink-desktop** Tauri studio (`packages/brink-desktop/`, `docs/desktop-shell-spec.md`). Progress is measured there — by what an author can do in the editor and what the native language can express.
+**The project's center is the AUTHORING EXPERIENCE, across BOTH surfaces** (ruled 2026-09-04, superseding the surface half of 2026-08-07's "Oracle conformance is no longer the core metric"): the editor packages (`@brink-lang/editor` / `@brink-lang/studio` / `@brink-lang/web`), the **brink-desktop** Tauri studio (`packages/brink-desktop/`, `docs/desktop-shell-spec.md`), and the two languages an author writes in — `.brink` (conventions, prose dialect, modules, typed mode) and `.ink`. The maintainer's own initial use case is **as much strict ink as native**. Progress is measured by what an author can do, in either surface.
 
-**Ink compatibility is a maintained floor, not the goal.** The oracle ratchet (`RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/oracle_snapshots.rs`, currently 5,608 of 6,619 C#-oracle episodes) stays CI-enforced as a **regression floor**: it must never move down, and unexpected movement in either direction is still stop-and-report. But the residual ~1,000 mismatched episodes are not the priority backlog, and "the gap" is not the measure of progress — the C# oracle only sees the ink-compat subset, which the native surface has outgrown.
+What the 2026-08-07 ruling still holds: **the oracle ratchet is not the measure of progress.** `RATCHET_EPISODE_COUNT` (`crates/internal/brink-test-harness/tests/oracle_snapshots.rs`) stays CI-enforced as a **regression floor** — it must never move down, and unexpected movement in either direction is still stop-and-report. But a percentage is not a plan, and the C# oracle only sees the shapes the corpus happens to hold.
+
+What changed is why the residual mismatches matter. They are no longer "the compat subset the native surface has outgrown" — they are **defects in a peer surface**, and each one is a real story an author cannot write. They are worked by root cause, driven by the generator and the corpus rather than by the ratchet number (see "Conformance gaps" below).
 
 The **editor acceptance gate** (`crates/brink-web/src/editor/acceptance_gate.rs`) carries the same standing as the ratchet for the editor path: one canonical native project, both analysis roads, zero diagnostics plus positive queries. Its fixture is byte-identical to the studio's `?fixture=native` — keep them in sync.
 
@@ -25,7 +27,7 @@ Runtime restructuring is **complete** (all 9 steps of `docs/runtime-restructurin
 
 - **Native surface + authoring** — conventions/prose-dialect semantics, editor features, desktop stages (D3: export, `brink-cli` sidecar, file associations).
 - **`bevy-brink` integration** — the runtime as a Bevy plugin plus the external-function binding facility (ink↔engine). See `docs/bevy-brink.md`.
-- **Ink-compat maintenance** — the ratchet holds; residual oracle mismatches are taken opportunistically, not as a driving backlog.
+- **Ink surface conformance** — the ratchet holds as a floor, and open divergences are worked as defects. The `brink-gen` program generator plus the inkjs differential (`docs/program-generator-spec.md`) is the instrument that finds them; `tests/tier4-generated/` is where each one is pinned.
 
 ## Trust hierarchy
 
@@ -34,7 +36,9 @@ Runtime restructuring is **complete** (all 9 steps of `docs/runtime-restructurin
 3. **C# ink oracle** (`tools/ink-oracle/`, `oracle/*.oracle.json`) — golden episodes from the C# runtime. In-tree, reachable everywhere.
 4. **Brink compiler** — under test, not trusted. In-tree, reachable everywhere.
 
-Not on the hierarchy but **sanctioned as a stand-in for rank 2** (`docs/program-generator-spec.md` §6, #3379): `tools/inkjs-oracle/` — the C# oracle crawler ported onto inkjs with .NET's `System.Random` installed — reproduces every checked-in golden (CI's `inkjs-sanction` job keeps that true). In a cloud session it is the way to ask "what does ink print here?" for a shape the corpus does not settle: `node tools/inkjs-oracle/oracle.mjs story.ink --output-dir <dir>` after `npm ci` there. Its answer is evidence for a maintainer ruling, not the ruling; where brink and inkjs disagree, the C# runtime breaks the tie.
+Not on the hierarchy but **sanctioned as a stand-in for rank 2** (`docs/program-generator-spec.md` §6, #3379): `tools/inkjs-oracle/` — the C# oracle crawler ported onto inkjs with .NET's `System.Random` installed — reproduces every checked-in golden (CI's `inkjs-sanction` job keeps that true, with `KNOWN_DIVERGENCES` empty). In a cloud session it is the way to ask "what does ink print here?" for a shape the corpus does not settle: `node tools/inkjs-oracle/oracle.mjs story.ink --output-dir <dir>` after `npm ci` there.
+
+**Trust its answer** (ruled 2026-09-04). The alternative — vendoring `dotnet` so a cloud session could run the C# runtime directly — was considered and **declined**: not worth the toolchain weight, given inkjs reproduces every golden we have. So where brink and inkjs disagree, treat inkjs as right and brink as the defect, and open the issue. That is a working assumption, not an infallibility claim: a *specific* case where inkjs looks wrong is worth surfacing for a maintainer ruling, and the C# runtime remains the tie-breaker in principle — it is simply not something to go install.
 
 Ranks 1–2 are the two highest-authority sources, and they are exactly the two a cloud/remote session cannot open. When a question routes there (e.g. a parser-semantics call: does ink actually require some construct?) and you're in a cloud session, do not guess from a lower-ranked source while describing it as settled: check the in-tree corpus first — `tests/tier{1,2,3}/**/story.ink` plus the checked-in `oracle/*.oracle.json` episodes (curated, oracle-backed) **and** `tests/tests_github/` plus `tests/tests_patched/` (real-world `.ink` used for parser smoke tests and lossless roundtrip validation — see `docs/book/src/contributing/test-corpus.md` §"GitHub corpus"). If the corpus settles it, cite the file. If it doesn't, say the question is unsettled here and surface it for a maintainer ruling rather than deciding it. (Same accounting as "Cloud / fresh-environment sessions" already does for `dotnet`/the oracle generator.)
 
@@ -63,7 +67,9 @@ Most work lands here. The discipline that matters:
 3. **The editor acceptance gate is the invariant** (`crates/brink-web/src/editor/acceptance_gate.rs`) — extend it when new behavior is ruled; never weaken it.
 4. **Verify through a real consumer.** Rust-level tests over a real `EditorSession`, not a browser screenshot: the playground has silently lied before (it once never applied `brink.toml` at all, #2324).
 
-### Ink-compat conformance (secondary — see "Current state")
+### Conformance gaps (the ink surface)
+
+**A discovered gap gets a minimal repro in the corpus FIRST** (ruled 2026-09-04). Before the root-cause analysis, before the fix, before the issue is even fully written: minimise the case, promote it into `tests/tier4-generated/` with `pnpm promote:generated`, and let the tier carry it. A gap not yet fixed is promoted with `--expected-mismatch` and its issue number — the tier checks expectations **both ways**, so a case flagged as mismatching that starts matching is a *failure*, which is how a silent fix gets noticed. This applies to every gap, whoever found it: the generator's differential, a corpus sweep, a bug report, or a shape you tripped over by hand.
 
 When working an oracle mismatch (making failing episodes pass):
 
