@@ -47,6 +47,10 @@ pub struct Profile {
     pub max_vars: usize,
     /// Expression nesting depth (0 = literals and variables only).
     pub max_expr_depth: usize,
+    /// Whether content lines may carry inline conditionals
+    /// (`{cond: a|b}`). Off for the respell route, whose emitter does not
+    /// yet spell them (`hir::emit_native`'s refused shapes).
+    pub inline_conditionals: bool,
 }
 
 impl Profile {
@@ -60,6 +64,7 @@ impl Profile {
         max_choice_depth: 2,
         max_vars: 3,
         max_expr_depth: 2,
+        inline_conditionals: true,
     };
 
     /// Structure only — no variables, so no expressions can be decoded
@@ -78,6 +83,16 @@ impl Profile {
     /// cannot run) lands behind a knob here, not in the differential by
     /// accident.
     pub const PLAIN_INK: Self = Self::DEFAULT;
+
+    /// The subset the ink → `.brink` respeller emits today: structure only,
+    /// no inline conditionals in content. `tests/equivalence.rs`'s
+    /// `trace(P) = trace(respell(P))` property runs on it so the property
+    /// is not vacuous while the emitter's supported shapes grow (#1951's
+    /// holes, #1976's springs); widen it as they land.
+    pub const RESPELLABLE: Self = Self {
+        inline_conditionals: false,
+        ..Self::STRUCTURE
+    };
 }
 
 impl Default for Profile {
@@ -239,10 +254,14 @@ fn arb_raw_expr(depth: usize) -> BoxedStrategy<RawExpr> {
 }
 
 fn arb_raw_part(p: Profile) -> impl Strategy<Value = RawPart> {
+    // Weight 0 removes the arm without a second strategy type
+    // (`prop_oneof!` rejects an all-zero table, and the text arm keeps it
+    // positive).
+    let cond_weight = u32::from(p.inline_conditionals);
     prop_oneof![
         4 => arb_text().prop_map(RawPart::Text),
         2 => (arb_raw_expr(p.max_expr_depth), any::<u8>()).prop_map(|(e, t)| RawPart::Interp(e, t)),
-        1 => (arb_raw_expr(p.max_expr_depth), arb_text(), prop::option::weighted(0.5, arb_text()))
+        cond_weight => (arb_raw_expr(p.max_expr_depth), arb_text(), prop::option::weighted(0.5, arb_text()))
             .prop_map(|(cond, then, otherwise)| RawPart::Cond { cond, then, otherwise }),
     ]
 }

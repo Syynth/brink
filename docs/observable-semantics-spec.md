@@ -232,6 +232,23 @@ serves, each its own target:
 - `trace(P) = trace(fix(P))` for every *Safe* auto-fix;
 - compile-road agreement (`compile_path` vs `brink_environment::compile`).
 
+**Status (2026-09-04).** The formatter and respeller properties are
+`crates/internal/brink-gen/tests/equivalence.rs`, per-PR. The formatter
+is *Safe* over the `plain_ink` profile: trace-equal AND identity-preserving
+(§2.2) on every generated story (300 measured). The respeller is not yet:
+its first run found four emitter defects, carried as issue-keyed known
+divergences until fixed — a text-less fallback choice spelled as an `else`
+arm (#3515), `not` spelled as a bare word with its operand's parentheses
+dropped (#3516), an ink `VAR` respelled to a module-private native `var`
+that the host cannot read, which needs a ruling on `pub var` (#3517), and
+nested binary expressions losing their parentheses so values change
+(#3518). The emitter also refuses most `plain_ink` stories outright
+(inline conditionals in content, springs — #1951's holes, #1976), so the
+property runs with a non-vacuity floor on `Profile::RESPELLABLE`
+(structure only, no inline conditionals) and prints its tally by
+construct for the record; the compile-road property is
+`brink-gen/tests/smoke.rs`'s `both_roads_agree`.
+
 ## 5. What "safe" means for a source transformation
 
 A transformation is **Safe** iff it satisfies §2 (observable
