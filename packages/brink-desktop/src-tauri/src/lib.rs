@@ -3588,6 +3588,7 @@ on:
     /// either spelling: an entry cannot exist without its `crateDir`, and
     /// the template is the one place the command's flags live.
     fn registered_wasm_build_commands() -> Vec<String> {
+        const NEEDLE: &str = "crateDir: \"";
         let registry = std::fs::read_to_string(repo_root().join("scripts/check-wasm-pkg.mjs"))
             .expect("scripts/check-wasm-pkg.mjs should be readable from the repo root");
 
@@ -3609,7 +3610,6 @@ on:
             "buildCommandFor's template must interpolate `${{crateDir}}`, got {template:?}"
         );
 
-        const NEEDLE: &str = "crateDir: \"";
         let mut commands: Vec<String> = Vec::new();
         let mut rest = registry.as_str();
         while let Some(at) = rest.find(NEEDLE) {
