@@ -23,9 +23,10 @@
 
 use proptest::prelude::*;
 
+use crate::model;
 use crate::model::{
     AssignOp, BinOp, Choice, Divert, Exit, Expr, FlowKind, FnSig, Function, Item, Knot, ListDecl,
-    ListFn, Literal, Param, Part, Stitch, Story, Tail, Ty, VarDecl, Weave,
+    ListFn, Literal, Param, Part, SeqKind, Stitch, Story, Tail, Ty, VarDecl, Weave,
 };
 
 /// Biasing knobs — **data**, so a property names the profile it wants
@@ -66,6 +67,11 @@ pub struct Profile {
     pub max_lists: usize,
     /// Items per `LIST` (at least 1).
     pub max_list_items: usize,
+    /// Alternatives per inline sequence (`{a|b}`, `crate::model` rule 13);
+    /// fewer than 2 means no sequences at all, since ink needs two.
+    pub max_seq_alts: usize,
+    /// Whether expressions may draw `RANDOM(min, max)` (rule 13).
+    pub allow_random: bool,
 }
 
 impl Profile {
@@ -86,6 +92,8 @@ impl Profile {
         max_threads: 1,
         max_lists: 1,
         max_list_items: 4,
+        max_seq_alts: 3,
+        allow_random: true,
     };
 
     /// Structure only — no variables, so no expressions can be decoded
@@ -96,6 +104,8 @@ impl Profile {
         max_tunnels: 0,
         max_threads: 0,
         max_lists: 0,
+        max_seq_alts: 0,
+        allow_random: false,
         ..Self::DEFAULT
     };
 
@@ -108,6 +118,25 @@ impl Profile {
     /// cannot run) lands behind a knob here, not in the differential by
     /// accident.
     pub const PLAIN_INK: Self = Self::DEFAULT;
+
+    /// The profile `tests/smoke.rs`'s exhaustive-exploration property uses.
+    ///
+    /// [`Self::DEFAULT`] bounds a story's SIZE but not its choice TREE:
+    /// four knots with two stitches each, a choice set per weave with up
+    /// to three choices nested two deep, gathers that chain another set,
+    /// and back-edges that re-enter all of it. The product reaches tens of
+    /// thousands of paths — one `DEFAULT` story measured 39,844, with and
+    /// without its sequences, since the harness's DFS branches on choices
+    /// alone — which no per-case exhaustive walk can afford. Flattening
+    /// the nesting to one level and giving each knot a single stitch keeps
+    /// every construction rule (1–4) under test on a tree that can be
+    /// walked to the end.
+    pub const EXHAUSTIBLE: Self = Self {
+        max_choice_depth: 1,
+        max_stitches: 1,
+        max_knots: 3,
+        ..Self::DEFAULT
+    };
 
     /// The subset the ink → `.brink` respeller emits today: structure only,
     /// no inline conditionals in content. `tests/equivalence.rs`'s
@@ -152,6 +181,8 @@ pub enum RawExpr {
     /// functions returning the wanted type; the args decode against the
     /// callee's parameters (missing ones become literals, extras drop).
     Call(u8, Vec<RawExpr>),
+    /// `RANDOM(min, max)`: the two bytes become the bounds, ordered.
+    Random(u8, u8),
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +194,12 @@ pub enum RawPart {
         cond: RawExpr,
         then: String,
         otherwise: Option<String>,
+    },
+    /// The byte picks the [`SeqKind`](crate::model::SeqKind); the
+    /// alternatives are plain text (rule 13).
+    Seq {
+        kind: u8,
+        alts: Vec<String>,
     },
 }
 
@@ -279,6 +316,23 @@ fn arb_text() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9 ,.!?;:]{0,29}".prop_map(|s| s.trim_end().to_owned())
 }
 
+/// A sequence alternative (rule 13): letters, digits and spaces only, plus
+/// one empty alternative in five (ink allows those; they print nothing).
+///
+/// The alphabet is this narrow because ink's parser tries a `{…}` as an
+/// EXPRESSION before it tries it as a sequence, so punctuation in an
+/// alternative can commit it to the wrong reading and fail the compile —
+/// `{a?|a}` is rejected with "Expected right side of `?` expression but
+/// saw `|a}`" (found by this tier's first differential run; brink itself
+/// accepts it). `:` would make it a conditional, `|`/`{`/`}` would nest,
+/// and `<`/`>` would glue.
+fn arb_alt_text() -> impl Strategy<Value = String> {
+    prop_oneof![
+        4 => "[a-z][a-z0-9 ]{0,9}".prop_map(|s: String| s.trim_end().to_owned()),
+        1 => Just(String::new()),
+    ]
+}
+
 /// Names are made unique by suffixing the flow's own indices — the base is
 /// only for readability of a shrunk story.
 fn arb_name_base() -> impl Strategy<Value = String> {
@@ -296,15 +350,18 @@ fn arb_raw_exit() -> impl Strategy<Value = RawExit> {
 
 /// `calls`: whether a call may appear (off when the profile has no
 /// functions, so the skeleton carries no dead entropy).
-fn arb_raw_expr(depth: usize, calls: bool) -> BoxedStrategy<RawExpr> {
+fn arb_raw_expr(depth: usize, calls: bool, random: bool) -> BoxedStrategy<RawExpr> {
+    let random_weight = u32::from(random);
     let leaf = prop_oneof![
         2 => any::<u8>().prop_map(RawExpr::Lit),
         3 => any::<u8>().prop_map(RawExpr::Var),
+        random_weight => (any::<u8>(), any::<u8>())
+            .prop_map(|(a, b)| RawExpr::Random(a, b)),
     ];
     if depth == 0 {
         return leaf.boxed();
     }
-    let inner = arb_raw_expr(depth - 1, calls);
+    let inner = arb_raw_expr(depth - 1, calls, random);
     let call_weight = u32::from(calls) * 2;
     prop_oneof![
         3 => leaf,
@@ -319,7 +376,7 @@ fn arb_raw_expr(depth: usize, calls: bool) -> BoxedStrategy<RawExpr> {
 }
 
 fn arb_expr_for(p: Profile) -> BoxedStrategy<RawExpr> {
-    arb_raw_expr(p.max_expr_depth, p.max_functions > 0)
+    arb_raw_expr(p.max_expr_depth, p.max_functions > 0, p.allow_random)
 }
 
 fn arb_raw_part(p: Profile) -> impl Strategy<Value = RawPart> {
@@ -327,11 +384,15 @@ fn arb_raw_part(p: Profile) -> impl Strategy<Value = RawPart> {
     // (`prop_oneof!` rejects an all-zero table, and the text arm keeps it
     // positive).
     let cond_weight = u32::from(p.inline_conditionals);
+    let seq_weight = u32::from(p.max_seq_alts >= 2);
+    let seq_alts = p.max_seq_alts.max(2);
     prop_oneof![
         4 => arb_text().prop_map(RawPart::Text),
         2 => (arb_expr_for(p), any::<u8>()).prop_map(|(e, t)| RawPart::Interp(e, t)),
         cond_weight => (arb_expr_for(p), arb_text(), prop::option::weighted(0.5, arb_text()))
             .prop_map(|(cond, then, otherwise)| RawPart::Cond { cond, then, otherwise }),
+        seq_weight => (any::<u8>(), prop::collection::vec(arb_alt_text(), 2..=seq_alts))
+            .prop_map(|(kind, alts)| RawPart::Seq { kind, alts }),
     ]
 }
 
@@ -695,6 +756,174 @@ fn decode_args(sig: &FnSig, raw: &[RawExpr], env: &Env) -> Option<Vec<Expr>> {
     Some(args)
 }
 
+/// `RANDOM`'s bounds: a small window around zero, ordered so `min <= max`
+/// (ink raises a story error the other way round).
+fn random_bounds(a: u8, b: u8) -> (i32, i32) {
+    let x = i32::from(a % 20) - 5;
+    let y = i32::from(b % 20) - 5;
+    (x.min(y), x.max(y))
+}
+
+/// A sequence part (rule 13). The strategy already bounds the alternative
+/// count and alphabet; this repairs the one shape it can still produce —
+/// every alternative empty, which ink accepts but which prints nothing at
+/// all and so would make the part invisible.
+fn decode_seq(kind: u8, alts: &[String]) -> Part {
+    let kind = match kind % 4 {
+        0 => SeqKind::Stopping,
+        1 => SeqKind::Cycle,
+        2 => SeqKind::Once,
+        _ => SeqKind::Shuffle,
+    };
+    let mut alts: Vec<String> = alts.to_vec();
+    while alts.len() < 2 {
+        alts.push(String::new());
+    }
+    if alts.iter().all(String::is_empty) {
+        "alt".clone_into(&mut alts[0]);
+    }
+    // Two empty alternatives in a row spell `||`, which ink lexes as the
+    // or-operator: `{alt||}` is rejected with "Expected right side of
+    // `||` expression but saw `}`" (found by this tier's differential).
+    // One empty alternative between two non-empty ones is fine.
+    for i in 1..alts.len() {
+        if alts[i].is_empty() && alts[i - 1].is_empty() {
+            alts[i] = format!("alt{i}");
+        }
+    }
+    Part::Seq { kind, alts }
+}
+
+/// Rule 13: a draw never decides which choices exist.
+///
+/// `RANDOM` survives only in a printed interpolation. Anywhere else — a
+/// choice condition, an assignment, a temp, a conditional's condition, a
+/// function's return — a drawn value could reach a choice guard, directly
+/// or through a variable, and the set of choices offered at a point would
+/// stop being a function of state alone. The harness's explorer is an
+/// exhaustive DFS with no state dedup, so a guard that flickers between
+/// visits multiplies the episode count until the smoke lane's cap trips;
+/// worse, "which choices exist" would depend on the draw order, which is
+/// not what this tier is meant to test. Stripping replaces the draw with
+/// its lower bound, which is always a well-typed int.
+fn confine_random(story: &mut Story) {
+    for knot in &mut story.knots {
+        confine_weave(&mut knot.root);
+        for stitch in &mut knot.stitches {
+            confine_weave(&mut stitch.body);
+        }
+    }
+    for f in &mut story.functions {
+        confine_items(&mut f.body);
+        if let Some(ret) = &mut f.ret {
+            strip_random(ret);
+        }
+    }
+}
+
+fn confine_weave(weave: &mut Weave) {
+    confine_items(&mut weave.items);
+    if let Tail::Choices {
+        choices, gather, ..
+    } = &mut weave.tail
+    {
+        for c in choices {
+            if let Some(cond) = &mut c.condition {
+                strip_random(cond);
+            }
+            confine_weave(&mut c.body);
+        }
+        if let Some(g) = gather {
+            confine_weave(g);
+        }
+    }
+}
+
+fn confine_items(items: &mut [Item]) {
+    for item in items {
+        match item {
+            Item::Line { parts, .. } => {
+                for part in parts.iter_mut() {
+                    // `Part::Interp` is the one place a draw may stand;
+                    // `Text` and `Seq` carry no expression at all.
+                    if let Part::Cond { cond, .. } = part {
+                        strip_random(cond);
+                    }
+                }
+            }
+            Item::Assign { value, .. } | Item::Temp { init: value, .. } => strip_random(value),
+            Item::Cond {
+                cond,
+                then,
+                otherwise,
+            } => {
+                strip_random(cond);
+                confine_items(then);
+                if let Some(o) = otherwise {
+                    confine_items(o);
+                }
+            }
+            Item::Call { args, .. } => {
+                for a in args {
+                    strip_random(a);
+                }
+            }
+            Item::TunnelCall(_) | Item::Thread(_) => {}
+        }
+    }
+}
+
+/// Replace every `RANDOM(min, max)` in `e` with `min`.
+fn strip_random(e: &mut Expr) {
+    match e {
+        Expr::Random { min, .. } => *e = Expr::Lit(Literal::Int(*min)),
+        Expr::Neg(inner) | Expr::Not(inner) | Expr::ListFn(_, inner) => strip_random(inner),
+        Expr::Bin(l, _, r) => {
+            strip_random(l);
+            strip_random(r);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                strip_random(a);
+            }
+        }
+        Expr::Lit(_) | Expr::Var(_) | Expr::Item { .. } => {}
+    }
+}
+
+/// Hold a line's sequences under the compiler's variant cap (rule 13).
+/// `lir::lower::recognize` enumerates a content line's inline sequences
+/// into whole-line variants and rejects a product over
+/// [`VARIANT_CAP`](brink_ir::lir::lower::recognize::VARIANT_CAP) (32) with
+/// a hard error, a `once` sequence counting one extra for its exhausted
+/// empty variant. A sequence that would breach the bound loses
+/// alternatives; if two are still too many it becomes plain text, which
+/// enumerates to one.
+fn cap_line_variants(parts: &mut [Part]) {
+    let mut product = 1usize;
+    for part in parts.iter_mut() {
+        let Part::Seq { kind, alts } = part else {
+            continue;
+        };
+        let dim = |n: usize| n + usize::from(*kind == SeqKind::Once);
+        if product.saturating_mul(dim(alts.len())) <= model::VARIANT_CAP {
+            product = product.saturating_mul(dim(alts.len()));
+            continue;
+        }
+        if product.saturating_mul(dim(2)) <= model::VARIANT_CAP {
+            product = product.saturating_mul(dim(2));
+            alts.truncate(2);
+            if alts.iter().all(String::is_empty) {
+                "alt".clone_into(&mut alts[0]);
+            }
+            continue;
+        }
+        // Still too many: plain text enumerates to one variant.
+        let text = alts.iter().find(|a| !a.is_empty()).cloned();
+        *part = Part::Text(text.unwrap_or_else(|| "alt".to_owned()));
+    }
+}
+
 fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
     match raw {
         RawExpr::Lit(n) => Expr::Lit(env.literal(want, *n)),
@@ -725,82 +954,99 @@ fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
             Ty::List(_) => Expr::ListFn(ListFn::Max, Box::new(decode_expr(inner, want, env))),
             Ty::Int | Ty::Str => decode_expr(inner, want, env),
         },
-        RawExpr::Bin(l, op, r) => match want {
-            // With lists in the story, one shape in five is `LIST_COUNT`.
-            Ty::Int if !env.lists.is_empty() && op % 5 == 4 => {
-                let list = usize::from(op / 5) % env.lists.len();
-                Expr::ListFn(ListFn::Count, Box::new(decode_expr(l, Ty::List(list), env)))
+        // `RANDOM` is an int; under any other wanted type the bytes read
+        // as a literal, exactly as an uncallable `Call` does.
+        RawExpr::Random(a, b) => {
+            if want == Ty::Int {
+                let (lo, hi) = random_bounds(*a, *b);
+                Expr::Random { min: lo, max: hi }
+            } else {
+                Expr::Lit(env.literal(want, *a))
             }
-            Ty::Int => match op % 4 {
-                0 => Expr::Bin(
-                    Box::new(decode_expr(l, Ty::Int, env)),
-                    BinOp::Add,
-                    Box::new(decode_expr(r, Ty::Int, env)),
-                ),
-                1 => Expr::Bin(
-                    Box::new(decode_expr(l, Ty::Int, env)),
-                    BinOp::Sub,
-                    Box::new(decode_expr(r, Ty::Int, env)),
-                ),
-                2 => Expr::Bin(
-                    Box::new(decode_expr(l, Ty::Int, env)),
-                    BinOp::Mul,
-                    Box::new(small_positive(r, *op)),
-                ),
-                _ => Expr::Bin(
-                    Box::new(decode_expr(l, Ty::Int, env)),
-                    BinOp::Mod,
-                    Box::new(small_positive(r, *op)),
-                ),
-            },
-            // With lists in the story, two shapes in ten are `?` / `!?`.
-            Ty::Bool if !env.lists.is_empty() && op % 10 >= 8 => {
-                let list = Ty::List(usize::from(op / 10) % env.lists.len());
-                let bin = if op % 10 == 8 {
-                    BinOp::Has
-                } else {
-                    BinOp::Hasnt
-                };
-                Expr::Bin(
-                    Box::new(decode_expr(l, list, env)),
-                    bin,
-                    Box::new(decode_expr(r, list, env)),
-                )
-            }
-            Ty::Bool => {
-                let (bin, operand) = match op % 8 {
-                    0 => (BinOp::Eq, env.ty_of(op / 8)),
-                    1 => (BinOp::Ne, env.ty_of(op / 8)),
-                    2 => (BinOp::Lt, Ty::Int),
-                    3 => (BinOp::Gt, Ty::Int),
-                    4 => (BinOp::Le, Ty::Int),
-                    5 => (BinOp::Ge, Ty::Int),
-                    6 => (BinOp::And, Ty::Bool),
-                    _ => (BinOp::Or, Ty::Bool),
-                };
-                Expr::Bin(
-                    Box::new(decode_expr(l, operand, env)),
-                    bin,
-                    Box::new(decode_expr(r, operand, env)),
-                )
-            }
-            // No binary operator yields a string: read the left operand.
-            Ty::Str => decode_expr(l, Ty::Str, env),
-            // Union, difference, intersection; the right operand of `+`/`-`
-            // is a single item half the time.
-            Ty::List(list) => {
-                let bin = [BinOp::Add, BinOp::Sub, BinOp::Intersect][usize::from(op % 3)];
-                let rhs = match (bin, r.as_ref()) {
-                    (BinOp::Add | BinOp::Sub, RawExpr::Lit(n) | RawExpr::Var(n))
-                        if n.is_multiple_of(2) =>
-                    {
-                        env.item(list, *n)
-                    }
-                    _ => decode_expr(r, want, env),
-                };
-                Expr::Bin(Box::new(decode_expr(l, want, env)), bin, Box::new(rhs))
-            }
+        }
+        RawExpr::Bin(l, op, r) => decode_bin(l, *op, r, want, env),
+    }
+}
+
+/// [`decode_expr`]'s binary arm: which operator a byte reads as depends
+/// on the wanted type, and under a list type on whether the story has
+/// any lists at all.
+fn decode_bin(l: &RawExpr, op: u8, r: &RawExpr, want: Ty, env: &Env) -> Expr {
+    match want {
+        // With lists in the story, one shape in five is `LIST_COUNT`.
+        Ty::Int if !env.lists.is_empty() && op % 5 == 4 => {
+            let list = usize::from(op / 5) % env.lists.len();
+            Expr::ListFn(ListFn::Count, Box::new(decode_expr(l, Ty::List(list), env)))
+        }
+        Ty::Int => match op % 4 {
+            0 => Expr::Bin(
+                Box::new(decode_expr(l, Ty::Int, env)),
+                BinOp::Add,
+                Box::new(decode_expr(r, Ty::Int, env)),
+            ),
+            1 => Expr::Bin(
+                Box::new(decode_expr(l, Ty::Int, env)),
+                BinOp::Sub,
+                Box::new(decode_expr(r, Ty::Int, env)),
+            ),
+            2 => Expr::Bin(
+                Box::new(decode_expr(l, Ty::Int, env)),
+                BinOp::Mul,
+                Box::new(small_positive(r, op)),
+            ),
+            _ => Expr::Bin(
+                Box::new(decode_expr(l, Ty::Int, env)),
+                BinOp::Mod,
+                Box::new(small_positive(r, op)),
+            ),
         },
+        // With lists in the story, two shapes in ten are `?` / `!?`.
+        Ty::Bool if !env.lists.is_empty() && op % 10 >= 8 => {
+            let list = Ty::List(usize::from(op / 10) % env.lists.len());
+            let bin = if op % 10 == 8 {
+                BinOp::Has
+            } else {
+                BinOp::Hasnt
+            };
+            Expr::Bin(
+                Box::new(decode_expr(l, list, env)),
+                bin,
+                Box::new(decode_expr(r, list, env)),
+            )
+        }
+        Ty::Bool => {
+            let (bin, operand) = match op % 8 {
+                0 => (BinOp::Eq, env.ty_of(op / 8)),
+                1 => (BinOp::Ne, env.ty_of(op / 8)),
+                2 => (BinOp::Lt, Ty::Int),
+                3 => (BinOp::Gt, Ty::Int),
+                4 => (BinOp::Le, Ty::Int),
+                5 => (BinOp::Ge, Ty::Int),
+                6 => (BinOp::And, Ty::Bool),
+                _ => (BinOp::Or, Ty::Bool),
+            };
+            Expr::Bin(
+                Box::new(decode_expr(l, operand, env)),
+                bin,
+                Box::new(decode_expr(r, operand, env)),
+            )
+        }
+        // No binary operator yields a string: read the left operand.
+        Ty::Str => decode_expr(l, Ty::Str, env),
+        // Union, difference, intersection; the right operand of `+`/`-`
+        // is a single item half the time.
+        Ty::List(list) => {
+            let bin = [BinOp::Add, BinOp::Sub, BinOp::Intersect][usize::from(op % 3)];
+            let rhs = match (bin, r) {
+                (BinOp::Add | BinOp::Sub, RawExpr::Lit(n) | RawExpr::Var(n))
+                    if n.is_multiple_of(2) =>
+                {
+                    env.item(list, *n)
+                }
+                _ => decode_expr(r, want, env),
+            };
+            Expr::Bin(Box::new(decode_expr(l, want, env)), bin, Box::new(rhs))
+        }
     }
 }
 
@@ -849,6 +1095,7 @@ fn decode_items(
                 let parts = parts
                     .iter()
                     .map(|p| match p {
+                        RawPart::Seq { kind, alts } => decode_seq(*kind, alts),
                         RawPart::Text(t) => Part::Text(t.clone()),
                         RawPart::Interp(e, ty) => Part::Interp(decode_expr(e, env.ty_of(*ty), env)),
                         RawPart::Cond {
@@ -862,6 +1109,8 @@ fn decode_items(
                         },
                     })
                     .collect();
+                let mut parts: Vec<Part> = parts;
+                cap_line_variants(&mut parts);
                 out.push(Item::Line { parts, glue: *glue });
             }
             RawItem::Assign { target, op, value } => {
@@ -1256,12 +1505,15 @@ pub fn decode(raw: &RawStory) -> Story {
             }
         })
         .collect();
-    Story {
+    let mut story = Story {
         vars,
         knots,
         functions,
         lists,
-    }
+    };
+    // Rule 13: a draw never decides which choices exist.
+    confine_random(&mut story);
+    story
 }
 
 /// A story under `profile`: validates by construction.

@@ -251,6 +251,54 @@ first thing to hit often. `Profile` gains `max_lists` (1) and
 property treats `LIST` like `VAR` under #3517 (a host-readable global
 respelled private).
 
+**Status (2026-09-04, sequences tier landed).** `Part::Seq` is inline
+content with two or more plain-text alternatives and a `SeqKind` marker —
+`{a|b}` stopping, `{&a|b}` cycle, `{!a|b}` once, `{~a|b}` shuffle — and
+`Expr::Random` is `RANDOM(min, max)`, an int whose literal bounds are
+ordered at decode time (ink raises a story error when `min > max`).
+`Profile` gains `max_seq_alts` (3) and `allow_random`, both off in
+`STRUCTURE`/`RESPELLABLE`. Two constraints shape the tier, and both are
+rules of the model rather than bugs found:
+
+- **Alternatives are letters, digits and spaces only, and no two empty
+  ones are adjacent** (rule 13). ink's parser tries a `{…}` as an
+  expression before it tries it as a sequence, so punctuation can commit
+  it to the wrong reading: the tier's differential runs produced `{a?|a}`
+  ("Expected right side of `?` expression but saw `|a}`") and `{alt||}`
+  ("Expected right side of `||` expression but saw `}`" — `||` is ink's
+  or-operator), both of which inklecate rejects and brink compiles
+  happily. A single empty alternative between non-empty ones is fine and
+  is generated deliberately, since it is the shape that prints nothing.
+  The leniency gap those two shapes expose — brink accepting sequences
+  ink's own grammar cannot express — is recorded here, not filed: how
+  strict brink's parser should be is a maintainer's call, and nothing in
+  the corpus settles it.
+- **`RANDOM` stands only in a printed interpolation** (rule 13). Anywhere
+  else a drawn value can reach a choice guard — directly, or through a
+  variable an assignment wrote — and the set of choices offered at a point
+  stops being a function of state alone. The harness's explorer is an
+  exhaustive DFS with no state dedup, so a guard that flickers between
+  visits multiplies the episode count until the smoke lane's 4,096 cap
+  trips. `strategy::confine_random` strips the draw everywhere but the one
+  admissible position.
+
+The tier's differential also re-found one runtime divergence, filed as
+#3538 and carried as a predicate: a shuffle's seed is the sequence
+container's path hash, and brink's container paths are not inklecate's,
+so the two pick different permutations. It predates the tier —
+`tests/tier2/conditional/shuffle` is 0/1 against the C# oracle and
+`tests/tier2/sequences/I107-shuffle-stack-muddying` 0/2 — and fixing it
+means adopting ink's container path scheme for seeding, which wants a
+ruling first.
+
+A third bound is the compiler's, not ink's: a line's sequences enumerate
+into whole-line variants and `lir::lower::recognize` rejects a product
+over `VARIANT_CAP` (32) with a hard error (E191), a `once` sequence
+counting one extra for its exhausted empty variant. The generator honours
+the same bound (rule 14, `strategy::cap_line_variants`): a sequence that
+would breach it loses alternatives, and becomes plain text if two are
+still too many.
+
 ## 8. Not covered
 
 - Native generation and the respell route are sequenced last (§7);
