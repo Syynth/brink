@@ -74,17 +74,49 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     ("#3535", glue_and_a_possibly_empty_line),
 ];
 
-/// A story that both uses glue and has a line that is exactly one
-/// interpolation while a `LIST` exists to make that line render empty —
-/// the only value the generator can produce that renders as nothing.
+/// A story that both uses glue and has a line made only of `{…}` groups
+/// while a `LIST` exists to make those groups render empty — a list value
+/// is the only thing the generator can print as nothing, and a whole line
+/// of them is a blank line the glue has to reach across.
 fn glue_and_a_possibly_empty_line(src: &str) -> bool {
     if !src.contains("<>") || !src.lines().any(|l| l.trim_start().starts_with("LIST ")) {
         return false;
     }
-    src.lines().any(|line| {
-        let t = line.trim();
-        t.starts_with('{') && t.ends_with('}') && t.matches('{').count() == 1
-    })
+    src.lines().any(|line| is_all_interpolations(line.trim()))
+}
+
+/// Is `line` nothing but `{…}` groups (with an optional trailing `<>`)?
+/// Groups nest, so the scan counts braces rather than looking for the
+/// first `}` — `{false:a}{LIST_MAX(l)}` is two groups, and CI found that
+/// exact shape when the predicate only admitted one.
+fn is_all_interpolations(line: &str) -> bool {
+    let mut rest = line.strip_suffix("<>").unwrap_or(line).trim_end();
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        if !rest.starts_with('{') {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { return false };
+        rest = rest[end..].trim_start();
+    }
+    true
 }
 
 /// A line that is exactly one `{cond:then}` inline conditional with no `|`
