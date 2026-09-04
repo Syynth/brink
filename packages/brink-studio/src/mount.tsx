@@ -2009,6 +2009,10 @@ export async function mountStudio(
       detachEditorPersistence?.();
       documents.flushAll();
       project.flushFileChanges();
+      // #3491 review: the prose worker holds a 6.5 MB wasm instance and a
+      // now-cached rule set; nothing else reaches it, so a host that mounts
+      // and unmounts would leak one per mount.
+      studioProseChecker.dispose();
       root.unmount();
     },
   };

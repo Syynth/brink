@@ -371,6 +371,9 @@ egresses).
   main thread in this package. Its call pattern is bursty request/response
   on user action, not per-keystroke. Moving it can be its own later
   package behind the same client pattern if profiling ever demands it.
+- **Prose checking** was out of scope for this package because it did not
+  exist when it was written; it has since been moved to a worker of its
+  own — see §15.
 - **brink-lsp / desktop-native transports**: unaffected; the LSP already
   runs out of process.
 - **Multi-project / multi-worker**: one worker per `ProjectSession`.
@@ -490,3 +493,94 @@ with a reason. Migration: issue #3110.
 Small documents (< the 1000-line deferral threshold) keep the legacy
 synchronous rebuild road — bounded incremental cost, zero behavior
 change for the mock/test surface; large documents are fully worker-fed.
+
+## 15. The prose worker (#3491, 2026-09-03)
+
+A **second, independent** worker, not a capability of the session worker
+above. Prose checking landed in PR #3177, after W5 closed, and ran the
+`brink-prose` wasm module synchronously on the main thread behind a
+700 ms debounce. Measured on main before this section: one check took
+**651 ms** on a real 1,125-line `.ink` file and **4.8 s** (p95) on the
+8k-line `?fixture=perf` document, each landing as a co-located
+`browser.longtask` of the same size. §1's goal — a main thread
+structurally unable to block on analysis — held for the compiler and was
+simply not true for prose.
+
+**Separate rather than merged into the session worker**, for the reason
+the crate itself is separate (`crates/brink-prose`, module docs): the
+module is 6.5 MB gzipped against `brink-web`'s 2.6 MB, and it is loaded
+only if someone actually checks prose. Putting it behind the session
+worker would tie the 6.5 MB download to boot, or make the session
+worker's boot conditional on a feature most consumers never use.
+
+As landed:
+
+- `packages/brink-studio/src/prose-worker.ts` — the worker entry. The
+  wasm module is `import()`ed **inside the worker**, on the first
+  request; a load failure is remembered, never retried.
+- `packages/brink-studio/src/prose-checker.ts` — the client.
+  `ProseChecker.check` is unchanged (it was already async, for exactly
+  this), so `@brink-lang/editor` needed no interface change.
+- **Coalescing**: at most one request is in flight and at most one is
+  waiting. A waiting request that a newer edit supersedes is rejected
+  with `ProseCheckSuperseded` before it is ever posted — the editor
+  treats a rejection as "leave the previous squiggles standing", which
+  is the honest answer for a check that never ran. An in-flight wasm
+  call cannot be interrupted; it can only be the last one that runs.
+- **Fallback, same posture as §8's**: no `Worker` global (jsdom, node), a
+  bundler that left `new URL(..., import.meta.url)` alone, or a worker
+  crash all route to the in-process checker. Checking degrades in speed,
+  never into silence. A failure to load the wasm module *inside* a
+  healthy worker deliberately does NOT fall back — the in-process road
+  resolves the same specifier and would fail the same way, for another
+  6.5 MB of fetch. It rejects, which the editor reads as "no new
+  squiggles", the same thing an unregistered checker gives.
+- **The cost is now visible**: `prose.check` is a permanent perf span in
+  `packages/ink-editor/src/prose.ts`, annotated with the document
+  length. Its absence for four days after PR #3177 is why the regression
+  survived a perf baseline (§11.5's "perf judge" measures what has a
+  name).
+
+**Measured, one machine, same session, `?fixture=perf`** — the arms
+differ only in this section's change, with the `prose.check` span present
+in both so the two are directly comparable:
+
+| scenario | arm | `prose.check` | `browser.longtask` p95 / max |
+|---|---|---|---|
+| fast-scroll | before | 6,382 ms | 6,465 / 6,465 ms |
+| fast-scroll | after | 5,812 ms | **184 / 184 ms** |
+| typing-burst | before | 6,608 ms | 543 / 6,689 ms |
+| typing-burst | after | 5,850 ms (p95 of 2) | 460 / **760 ms** |
+
+Read it as: the *check* did not get faster — it got off the thread that
+owns input. On some runs the FIRST check is measurably *slower* (the
+review measured 3,883 → 4,372 ms on fast-scroll): a cold check now pays
+worker spawn plus a second instantiation of the 6.5 MB module, on its
+own critical path. The dictionary/rule-set cache pays that back from the
+second check on (project-open's `prose.check` p50 fell 1,023 → 735 ms),
+and none of it is on the keystroke path either way. `fast-scroll` is the clean isolation, one check with little
+else running: the co-located long task collapses from 6,465 ms to
+184 ms.
+
+`typing-burst`'s p95 moved little **in this run**, and that was read at
+the time as a property of the scenario. A second, independent set of
+runs (#3491's review, another session, same machine class) contradicts
+that: there `browser.longtask` p95 went 686 → 295 ms, `input.keydown`
+p95 696 → 312 ms, and the longtask total halved (121,682 → 60,307 ms).
+The before-arm p95 of 543 ms recorded above is the outlier, not the
+rule — it sits below the p50 of 431–476 ms this section cites for the
+same runs, which is itself a sign the sample was small and noisy.
+
+So: `fast-scroll` remains the clean isolation (one check, little else
+running), and *max* is the most stable statistic across both sets. But
+do not expect `typing-burst`'s p95 to be insensitive to prose — on a run
+where the per-keystroke cost is not itself dominating, it moves a lot.
+Re-run both arms rather than trusting either set of numbers here.
+
+Also in that change, and independent of the worker: `brink-prose`'s
+`check` caches the merged dictionary and the curated `LintGroup` across
+calls (thread-local, invalidated when the project's words or the dialect
+change), so several hundred rules are constructed once per configuration
+rather than once per keystroke pause. The `LintGroup`'s own per-chunk
+LRU then survives between calls too, which is a first, partial answer to
+the incremental checking the issue lists as its item 3.
