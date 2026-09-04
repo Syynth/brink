@@ -38,6 +38,13 @@ pub struct IdeSession {
     /// rather than analysis input: drafts are a *reporting* concept
     /// (`crate::drafts`), and changing them needs no re-analyze.
     draft_globs: Vec<String>,
+    /// What the last applied `brink.toml` resolved to
+    /// (`crate::project_settings`).
+    pub(crate) settings: crate::project_settings::ProjectSettings,
+    /// The lint policy the FILE resolved to, before any CLI/API override
+    /// tier is layered on top — the base a host reapplies its overrides
+    /// against (#1417).
+    file_lint_policy: LintPolicy,
     /// Files mounted from the stdlib rather than authored by the user
     /// ([`Self::mount_stdlib`]). They are tracked because several surfaces
     /// have to exclude them — a mounted file is never the author's draft,
@@ -139,6 +146,8 @@ impl IdeSession {
         Self {
             db: ProjectDb::new(),
             draft_globs: Vec::new(),
+            settings: crate::project_settings::ProjectSettings::default(),
+            file_lint_policy: LintPolicy::default(),
             mounted_std_ids: std::collections::BTreeSet::new(),
             host_manifest: None,
             host_values: crate::HostValues::new(),
@@ -178,6 +187,17 @@ impl IdeSession {
     /// Forget a mounted id — for a host that removes files from the session.
     pub fn unmount_std(&mut self, id: FileId) {
         self.mounted_std_ids.remove(&id);
+    }
+
+    /// The file-resolved lint policy — see the field.
+    pub(crate) fn set_file_lint_policy(&mut self, lints: LintPolicy) {
+        self.file_lint_policy = lints;
+    }
+
+    /// The lint policy `brink.toml` resolved to, before overrides.
+    #[must_use]
+    pub fn file_lint_policy(&self) -> &LintPolicy {
+        &self.file_lint_policy
     }
 
     /// `[project] drafts` globs (`crate::drafts`).

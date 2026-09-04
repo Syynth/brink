@@ -39,6 +39,7 @@ pub mod inlay_hints;
 pub mod line_convert;
 pub mod navigation;
 pub mod passage;
+pub mod project_settings;
 pub mod redundant_visibility_fix;
 pub mod rename;
 pub mod rename_detection;

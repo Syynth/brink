@@ -89,17 +89,6 @@ pub struct EditorSession {
     dialect_explicit: bool,
     /// Same as `dialect_explicit`, for `set_type_policy` (#1005).
     types_explicit: bool,
-    /// The `[lints]` policy last resolved from an applied `brink.toml`
-    /// (issue #1417) — the baseline `set_lint_overrides`/
-    /// `set_deny_warnings_override` layer their explicit overrides on top
-    /// of, via `reapply_lint_overrides`. Tracked separately from
-    /// `self.session.lint_policy()` (the *combined*, already-overridden
-    /// result actually in effect) so an override can be **cleared** and
-    /// correctly revert to the file's policy — recomputing on top of the
-    /// already-combined policy would make a cleared override "stick"
-    /// (the same accumulation bug #1397 fixed for the file tier itself).
-    /// Defaults to `LintPolicy::default()` (no file ever applied).
-    file_lint_policy: brink_analyzer::LintPolicy,
     /// Explicit CLI/API-tier per-code lint-level overrides (issue #1417),
     /// set via `set_lint_overrides`. The wasm counterpart of the
     /// compiler CLI's repeatable `--deny`/`--warn`/`--allow` flags (#1373)
@@ -135,84 +124,11 @@ pub struct EditorSession {
     /// ruled cost compensation (`(line text, projection revision)`
     /// memoization). See `explain_match.rs`'s own doc.
     explain_cache: brink_ir::ExplainMatchCache,
-    /// `[project] entry` from the most recently applied `brink.toml` (issue
-    /// #2331, ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s
-    /// `entryFile`") — set wholesale from `config.entry` on every
-    /// `apply_project_config`/`discover_project_config` call in
-    /// `apply_parsed_config`, mirroring `conventions`' own no-precedence,
-    /// always-replace handling (there is no explicit-API tier to check
-    /// first, unlike `dialect`/`types`). `None` means the file didn't set
-    /// it (or no file was found), in which case [`Self::configured_entry`]
-    /// tells the host nothing and it falls back to its own constructor-time
-    /// entry argument. This crate doesn't validate the path against the
-    /// session's actual file set — that's `ProjectSession`'s job
-    /// (`packages/ink-editor/src/project-session.ts`), which is the one
-    /// place that knows whether the named path resolves to a real project
-    /// file.
-    configured_entry: Option<String>,
-    /// `[project] drafts` from the most recently applied `brink.toml`
-    /// (issue #3145): the path globs half of draft status. Empty means no
-    /// file is a draft — which is also what a *missing* `brink.toml` means,
-    /// so this is cleared on the no-config-found path exactly like
-    /// [`Self::configured_entry`], and for the same reason: a stale glob
-    /// list would keep silencing a file's out-of-scope banner after the
-    /// config that declared it went away.
-    ///
-    /// The other half is reachability, which only [`Self::draft_paths`]
-    /// can supply — see that method.
-    /// `[project] indent` from the most recently applied `brink.toml`
-    /// (#3149) — the editor's `indentUnit` reads this so it cannot disagree
-    /// with what the formatter will write. Same wholesale-replace and
-    /// clear-on-missing-config rules as [`Self::configured_entry`]: a stale
-    /// width would silently reintroduce exactly the formatter/editor
-    /// disagreement the ruling removed. `None` means the file set no
-    /// `indent`, in which case the host applies the shared default.
-    configured_indent: Option<u8>,
-    /// `[prose] dialect` from the applied `brink.toml` (#3211) — which
-    /// English the prose checker judges by. Same wholesale-replace and
-    /// clear-on-missing-config rules as [`Self::configured_indent`]: a stale
-    /// dialect would underline a British author's whole manuscript, which is
-    /// exactly the failure this key exists to prevent. `None` means the file
-    /// set no dialect, in which case the host applies the default.
-    configured_prose_dialect: Option<brink_project_config::ProseDialect>,
-    /// `[fix]` from the applied `brink.toml` (`docs/autofix-spec.md` §6.1,
-    /// #3419) — the project's per-code fix policy, keyed by the raw code
-    /// string as written in the file. Same wholesale-replace and
-    /// clear-on-missing-config rules as [`Self::configured_indent`]: a code
-    /// whose `[fix]` entry was deleted must stop being promoted (or
-    /// withdrawn), not stay stuck at what the previous file said. Read by
-    /// [`Self::fix_policy`] (`editor/fix_batch.rs`), which resolves it
-    /// through `ProjectConfig::effective_fix_policy` against the host's
-    /// optional app-scope ceiling (§6.2).
-    configured_fix: std::collections::BTreeMap<String, brink_project_config::FixPolicy>,
-    /// `[prose] enable` from the applied `brink.toml` (#3211). Same
-    /// wholesale-replace and clear-on-missing rules; `None` means the file
-    /// set none, in which case the host applies its own default (on).
-    configured_prose_enable: Option<bool>,
-    /// `[dialogue]` from the applied `brink.toml`, RESOLVED (#3387, RULED
-    /// 2026-08-30): the preset merged and affix sugar compiled — the one
-    /// artifact the editor views and the Player read. Same wholesale-
-    /// replace and clear-on-missing-config rules as the fields above.
-    /// `None` = the project declares no dialect, which per "No dialect by
-    /// default" means NONE is registered (plain lines), never the preset.
-    configured_dialogue: Option<brink_ir::DialogueDialect>,
-    /// Why the declared `[dialogue]` did NOT resolve (#3391) — the
-    /// resolver's readable message — or `None` when it resolved or the
-    /// project declares none. Kept as STATE (not just a one-shot warning)
-    /// because `apply_project_config`'s warnings are a delta against the
-    /// previous call (#2333): a Problems panel needs the current truth on
-    /// every read, not only the moment it changed.
-    configured_dialogue_error: Option<String>,
     /// The directory of the most recently DISCOVERED `brink.toml` (session
     /// path convention), so `dialogue = "path.json"` resolves relative to
     /// the file that named it. `None` after `apply_project_config` (host-
     /// supplied text has no location) — the path is then tried as-is.
     config_dir: Option<String>,
-    /// `[prose] dictionary` from the applied `brink.toml` — the author's own
-    /// word list. Same wholesale-replace and clear-on-missing rules: a word
-    /// removed from the file must stop being a known word, or "remove from
-    /// dictionary" would appear to do nothing until a reload.
-    configured_prose_dictionary: Vec<String>,
     /// The full warning-string set returned by the most recent
     /// `apply_project_config`/`discover_project_config` call (issue #2333)
     /// — read by [`Self::dedupe_config_warnings`], the shared filter both
@@ -285,18 +201,9 @@ impl EditorSession {
             dialect: brink_analyzer::Dialect::StrictInk,
             dialect_explicit: false,
             types_explicit: false,
-            file_lint_policy: brink_analyzer::LintPolicy::default(),
             lint_overrides: BTreeMap::new(),
             deny_warnings_override: None,
             explain_cache: brink_ir::ExplainMatchCache::new(),
-            configured_entry: None,
-            configured_indent: None,
-            configured_prose_dialect: None,
-            configured_fix: std::collections::BTreeMap::new(),
-            configured_prose_dictionary: Vec::new(),
-            configured_prose_enable: None,
-            configured_dialogue: None,
-            configured_dialogue_error: None,
             config_dir: None,
             last_config_warnings: BTreeSet::new(),
         }
@@ -701,18 +608,10 @@ impl EditorSession {
             // field's contract is different because a stale entry silently
             // repoints compilation/the initial tab at a file the current
             // tree no longer names one.
-            self.configured_entry = None;
-            self.session.set_draft_globs(Vec::new());
-            self.configured_indent = None;
-            self.configured_prose_dialect = None;
-            self.configured_prose_enable = None;
-            self.configured_prose_dictionary.clear();
-            // #3387: a vanished `brink.toml` takes its dialect with it —
+            // #3387: a vanished `brink.toml` takes its dialect with it too —
             // "no dialect by default" applies again.
-            self.configured_dialogue = None;
-            self.configured_dialogue_error = None;
+            self.session.clear_project_config();
             self.config_dir = None;
-            self.session.clear_dialect();
             // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
             // leave a stale `last_config_warnings` set behind — otherwise a
             // *new* `brink.toml` that happens to reintroduce the same
@@ -757,7 +656,7 @@ impl EditorSession {
     /// the project's actual file set.
     #[must_use]
     pub fn configured_entry(&self) -> Option<String> {
-        self.configured_entry.clone()
+        self.session.project_settings().entry.clone()
     }
 
     /// `[project] indent` from the applied `brink.toml` (#3149), or `None`
@@ -770,7 +669,7 @@ impl EditorSession {
     /// baked the resolved number in.
     #[must_use]
     pub fn configured_indent(&self) -> Option<u8> {
-        self.configured_indent
+        self.session.project_settings().indent
     }
 
     /// `[prose] dialect` as written, or `None` when the file set none.
@@ -780,7 +679,10 @@ impl EditorSession {
     /// takes — one vocabulary end to end, so a rename has to break both.
     #[must_use]
     pub fn configured_prose_dialect(&self) -> Option<String> {
-        self.configured_prose_dialect.map(|d| d.as_str().to_owned())
+        self.session
+            .project_settings()
+            .prose_dialect
+            .map(|d| d.as_str().to_owned())
     }
 
     /// `[prose] enable`, or `None` when the file set none.
@@ -790,7 +692,7 @@ impl EditorSession {
     /// would make a future default change invisible to every consumer.
     #[must_use]
     pub fn configured_prose_enable(&self) -> Option<bool> {
-        self.configured_prose_enable
+        self.session.project_settings().prose_enable
     }
 
     /// `[prose] dictionary` — the author's own word list, as a JSON string
@@ -801,7 +703,8 @@ impl EditorSession {
     /// disagree with their file every time they hand-grouped it.
     #[must_use]
     pub fn configured_prose_dictionary(&self) -> String {
-        serde_json::to_string(&self.configured_prose_dictionary).unwrap_or_else(|_| "[]".to_owned())
+        serde_json::to_string(&self.session.project_settings().prose_dictionary)
+            .unwrap_or_else(|_| "[]".to_owned())
     }
 
     /// `[dialogue]` from the applied `brink.toml`, RESOLVED, as a JSON
@@ -811,7 +714,9 @@ impl EditorSession {
     /// the Player; it is the single artifact both read.
     #[must_use]
     pub fn configured_dialogue_dialect(&self) -> Option<String> {
-        self.configured_dialogue
+        self.session
+            .project_settings()
+            .dialogue
             .as_ref()
             .and_then(|d| serde_json::to_string(d).ok())
     }
@@ -819,7 +724,7 @@ impl EditorSession {
     /// Why `[dialogue]` did not resolve (#3391), or `None` — see the field.
     #[must_use]
     pub fn configured_dialogue_error(&self) -> Option<String> {
-        self.configured_dialogue_error.clone()
+        self.session.project_settings().dialogue_error.clone()
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1167,139 +1072,25 @@ impl EditorSession {
     /// code warning strings (unknown top-level/`[project]` key warnings are
     /// the caller's own — parsed alongside `config`, not part of it).
     fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
-        // No need to seed `lints` from the session's current policy:
-        // `apply_project_config` replaces `.lints` wholesale from `config`
-        // (issue #1397), so a throwaway `AnalysisOptions::default()` is
-        // enough — `dialect_overridden`/`types_overridden` are passed
-        // `true` (irrelevant to lint resolution; `dialect`/`types` are
-        // resolved separately below), so this call touches nothing but
-        // `.lints`/`.conventions`.
-        let mut lint_options = brink_analyzer::AnalysisOptions::default();
-        let lint_warnings = lint_options.apply_project_config(config, true, true);
-        self.file_lint_policy = lint_options.lints.clone();
-
-        // `dialect`/`types` (#1005 precedence): an explicit
-        // `set_language_dialect`/`set_type_policy` call always wins over
-        // the file: when `*_explicit` is true, keep exactly what's already
-        // registered (`self.dialect`/`self.session.type_policy_override()`)
-        // rather than anything `config` says. Otherwise the file supplies a
-        // *default* — `config`'s value if it sets one, else whatever was
-        // already registered (an unset key leaves the field untouched, the
-        // same "unset means untouched" rule `AnalysisOptions::
-        // apply_project_config` documents for these two fields).
-        // `type_policy_override()` (not `session.type_policy()`, the
-        // dialect-keyed *effective* value) is read here so an unset
-        // override round-trips as `None`, never gets frozen into an
-        // explicit choice by this reconstruction.
-        let resolved = brink_analyzer::AnalysisOptions {
-            dialect: if self.dialect_explicit {
-                self.dialect
-            } else {
-                config.dialect.unwrap_or(self.dialect)
-            },
-            types: if self.types_explicit {
-                self.session.type_policy_override()
-            } else {
-                config.types.or_else(|| self.session.type_policy_override())
-            },
-            // See this function's doc comment: deliberately the session's
-            // own current value, never `lint_options.lints` — this field
-            // must not trip `apply_analysis_options`'s change guard.
-            lints: self.session.lint_policy().clone(),
-            conventions: lint_options.conventions,
-            host_manifest: None,
-            external_check: brink_analyzer::ExternalCheckSeverity::default(),
-            semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
-            // D6/#3229: the session's own value, NOT a hardcoded `false`.
-            // `apply_analysis_options` ignores this field entirely (see its
-            // destructuring comment), so what is written here changes
-            // nothing — but writing `false` would tell the next reader that
-            // re-reading `brink.toml` turns a live debug session's compiles
-            // back off, which is exactly the behaviour that method's
-            // ignore-rather-than-honour posture exists to prevent.
-            emit_debug_info: self.session.emit_debug_info(),
-        };
+        // The resolution lives at the session layer
+        // (`brink_ide::project_settings`) so both studio surfaces resolve a
+        // `brink.toml` identically. What stays here is what is genuinely the
+        // host's: the explicit-call precedence tier it tracks, and the
+        // CLI/API lint overrides that outrank the file.
+        let warnings = self.session.apply_project_config(
+            config,
+            self.dialect_explicit,
+            self.types_explicit,
+            self.config_dir.as_deref(),
+        );
         // Keep this session's own dialect cache (read by completion/
-        // signature-help gating, see the field doc) in lockstep with what
-        // was just resolved — a no-op when `dialect_explicit` (both sides
-        // already equal `self.dialect`).
-        self.dialect = resolved.dialect;
-        self.session.apply_analysis_options(&resolved);
-
-        // `[project] entry` (issue #2331): wholesale-replace, same
-        // no-precedence-tier reasoning `apply_analysis_options` uses for
-        // `conventions` — an `entry` key removed from `brink.toml` between
-        // two calls must actually clear `configured_entry`, not stay stuck
-        // at a stale value. `Self::configured_entry` is the read side hosts
-        // poll after discovery to learn whether the file named an entry
-        // file at all.
-        self.configured_entry.clone_from(&config.entry);
-        // `[project] drafts` (#3145): same wholesale-replace rule and the
-        // same reason — globs removed from the file must stop applying.
-        self.session.set_draft_globs(config.drafts.clone());
-        // `[project] indent` (#3149): same wholesale-replace rule.
-        self.configured_indent = config.indent;
-        // `[prose] dialect` (#3211): same wholesale-replace rule.
-        self.configured_prose_dialect = config.prose_dialect;
-        // `[fix]` (#3419/#3420): same wholesale-replace rule — a removed
-        // entry must stop applying, exactly like `[lints]`'s own tier.
-        self.configured_fix.clone_from(&config.fix);
-        self.configured_prose_enable = config.prose_enable;
-        self.configured_prose_dictionary
-            .clone_from(&config.prose_dictionary);
-        // `[dialogue]` (#3387, RULED): resolve and register — or, absent,
-        // register NOTHING. Precedence is "the project file wins": the
-        // TS views read `configured_dialogue_dialect()` after discovery
-        // and pass it down, so a mount-time embedder option only ever
-        // fills in for a project that declares nothing.
-        let mut dialogue_warnings: Vec<String> = Vec::new();
-        if let Some(dialogue) = config.dialogue.as_ref() {
-            let db = self.session.db();
-            let dir = self.config_dir.clone();
-            let read_file = |path: &str| -> Option<String> {
-                let candidates = match dir.as_deref() {
-                    Some("") | None => vec![path.to_owned()],
-                    Some(d) => vec![format!("{d}/{path}"), path.to_owned()],
-                };
-                candidates.iter().find_map(|key| {
-                    db.file_ids().find_map(|id| {
-                        (db.file_path(id)? == key).then(|| db.source(id).map(str::to_owned))?
-                    })
-                })
-            };
-            match brink_ide::dialect_config::resolve_dialogue_config(dialogue, &read_file) {
-                Ok(dialect) => {
-                    self.session.set_dialect_config(dialect.clone());
-                    self.configured_dialogue = Some(dialect);
-                    self.configured_dialogue_error = None;
-                }
-                Err(message) => {
-                    // Loud, never silent: the previous dialect (if any) is
-                    // dropped rather than left stale under a config the
-                    // author is actively editing.
-                    dialogue_warnings.push(format!("[dialogue]: {message}"));
-                    self.session.clear_dialect();
-                    self.configured_dialogue = None;
-                    self.configured_dialogue_error = Some(message);
-                }
-            }
-        } else {
-            self.session.clear_dialect();
-            self.configured_dialogue = None;
-            self.configured_dialogue_error = None;
-        }
-        // #1417: the CLI/API tier (`set_lint_overrides`/
-        // `set_deny_warnings_override`) always wins over what the file
-        // above just resolved — reapplied here so a `brink.toml` reload
-        // can never silently drop a previously-set explicit override.
-        // `reapply_lint_overrides` is the one place that actually pushes
-        // `lints` into `self.session` (see this function's doc comment).
+        // signature-help gating) in lockstep with what was just resolved.
+        self.dialect = self.session.language_dialect();
+        // #1417: the CLI/API tier always wins over what the file just
+        // resolved — reapplied here so a `brink.toml` reload can never
+        // silently drop a previously-set explicit override.
         let override_warnings = self.reapply_lint_overrides();
-        dialogue_warnings
-            .into_iter()
-            .chain(lint_warnings.into_iter().map(|w| w.0))
-            .chain(override_warnings)
-            .collect()
+        warnings.into_iter().chain(override_warnings).collect()
     }
 
     /// Filter a freshly computed `brink.toml`-driven warning set down to
@@ -1328,11 +1119,11 @@ impl EditorSession {
     /// Resolve this session's effective `[lints]` policy by layering the
     /// explicit CLI/API-tier overrides (`self.lint_overrides`/
     /// `.deny_warnings_override`, issue #1417) on top of
-    /// `self.file_lint_policy` — via the same
+    /// `self.session.file_lint_policy()` — via the same
     /// `AnalysisOptions::apply_lint_overrides` seam `brink compile`'s
     /// `--deny`/`--warn`/`--allow` (#1373) and `brink-lsp`'s
     /// `initializationOptions.lints` (#1417) already use, reused rather
-    /// than reimplemented. Recomputes from `self.file_lint_policy` (not
+    /// than reimplemented. Recomputes from `self.session.file_lint_policy()` (not
     /// `self.session.lint_policy()`, the already-combined result) every
     /// call, so a cleared override actually reverts instead of "sticking"
     /// on top of its own prior application (the same accumulation bug
@@ -1341,7 +1132,7 @@ impl EditorSession {
     /// own no-redundant-reanalyze guard). Returns the override warnings.
     fn reapply_lint_overrides(&mut self) -> Vec<String> {
         let mut options = brink_analyzer::AnalysisOptions {
-            lints: self.file_lint_policy.clone(),
+            lints: self.session.file_lint_policy().clone(),
             ..brink_analyzer::AnalysisOptions::default()
         };
         let warnings =
