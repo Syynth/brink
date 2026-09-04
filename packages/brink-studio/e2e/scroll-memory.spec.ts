@@ -56,6 +56,26 @@ test.describe("scroll memory", () => {
     expect(Math.abs((await scrollTop(page)) - before)).toBeLessThan(TOLERANCE_PX);
   });
 
+  test("a closed tab reopens where it was left", async ({ page }) => {
+    await openFile(page, "large.ink");
+    await page.locator(".cm-content").first().click();
+    await page.evaluate(() => {
+      const s = document.querySelector(".cm-scroller");
+      if (s) s.scrollTop = 3200;
+    });
+    await page.waitForTimeout(500);
+    const before = await scrollTop(page);
+    expect(before).toBeGreaterThan(1000);
+
+    // Close the tab outright — its slot (and cached EditorState) is dropped.
+    await page.locator(".brink-tab.active .brink-tab-close").first().click();
+    await page.waitForTimeout(400);
+    await openFile(page, "large.ink");
+    await page.waitForTimeout(800);
+
+    expect(Math.abs((await scrollTop(page)) - before)).toBeLessThan(TOLERANCE_PX);
+  });
+
   test("it holds across repeated switches without accumulating drift", async ({ page }) => {
     await openFile(page, "large.ink");
     await page.locator(".cm-content").first().click();

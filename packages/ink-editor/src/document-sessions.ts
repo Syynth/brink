@@ -394,6 +394,12 @@ interface ViewSlot {
   extensions: Extension[] | null;
 }
 
+/** Documents whose last scroll offset is remembered after their tab closes.
+ *  A number per document: generous enough that reopening anything from a
+ *  session's working set lands correctly, small enough to stay a rounding
+ *  error against one cached `EditorState`. */
+const SCROLL_MEMORY_LIMIT = 200;
+
 function slotId(docKey: string, groupId: string): string {
   return `${groupId}\u0000${docKey}`;
 }
@@ -449,6 +455,13 @@ export class DocumentSessions {
   private readonly symbolHints = new Map<string, { start: number; end: number }>();
   private focusedSlotId: string | null = null;
   private readonly pendingReveals = new Map<string, PendingReveal>();
+  /** Where a document was last scrolled to, by docKey — kept when its slot
+   *  is dropped so CLOSING and reopening a tab lands where you left, not at
+   *  the top (#3559). Deliberately not the slot: dropping a slot is the
+   *  unbounded-growth guard for cached `EditorState`s (the heavy part), and
+   *  this is one number per document. Bounded by `SCROLL_MEMORY_LIMIT`,
+   *  oldest-touched first. */
+  private readonly scrollMemory = new Map<string, number>();
   private lastCompileDelivered: CompileResult | null = null;
   /** Inline form-glyph mode — applied to new views and switched live (Settings). */
   private formGlyph: FormGlyphMode = DEFAULT_FORM_GLYPH_MODE;
@@ -603,7 +616,9 @@ export class DocumentSessions {
         handle: null,
         view: null,
         state: null,
-        scrollTop: 0,
+        // A tab reopened after being closed has no slot left (retainSlots
+        // dropped it), but the document's last offset survives here.
+        scrollTop: this.scrollMemory.get(docKey) ?? 0,
         scrollSnapshot: null,
         extensions: null,
       };
@@ -762,6 +777,19 @@ export class DocumentSessions {
         const alive = key.includes("\u0000") ? live.has(key) : liveDocKeys.has(key);
         if (!alive) this.pendingReveals.delete(key);
       }
+    }
+  }
+
+  /** Record a document's last scroll offset, evicting the oldest entry
+   *  once the memory is full (insertion order = touch order, since a
+   *  re-record deletes first). */
+  private rememberScroll(docKey: string, scrollTop: number): void {
+    this.scrollMemory.delete(docKey);
+    this.scrollMemory.set(docKey, scrollTop);
+    while (this.scrollMemory.size > SCROLL_MEMORY_LIMIT) {
+      const oldest = this.scrollMemory.keys().next();
+      if (oldest.done === true) break;
+      this.scrollMemory.delete(oldest.value);
     }
   }
 
@@ -1193,6 +1221,7 @@ export class DocumentSessions {
         slot.state = slot.view.state;
         slot.scrollTop = slot.view.scrollDOM.scrollTop;
         slot.scrollSnapshot = slot.view.scrollSnapshot();
+        this.rememberScroll(slot.docKey, slot.scrollTop);
       }
       slot.view.destroy();
       slot.view = null;
