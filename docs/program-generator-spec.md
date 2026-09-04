@@ -239,7 +239,14 @@ time), `^`, `?`/`!?` → bool, `LIST_COUNT` → int, `LIST_MIN`/`LIST_MAX`/
 `==`/`!=` compare same-typed values; temps and function parameters may
 be list-typed, `VAR`s stay int/bool/str. An empty list is reachable only
 through operations (a literal is never `()`), which is where ink's
-empty-list spelling gets exercised. `Profile` gains `max_lists` (1) and
+empty-list spelling gets exercised. The tier's differential runs found
+five runtime defects, all fixed with it: #3531 (containment with an
+empty operand), #3532 (list origins), #3533 (a blank line before a turn
+boundary — plus its sibling #3534, tag-only lines) and #3536 (a
+function ending in a value that renders empty). One is carried as a
+predicate instead: #3535, glue reaching across a blank line, which
+predates the tier and which an empty-list interpolation is simply the
+first thing to hit often. `Profile` gains `max_lists` (1) and
 `max_list_items` (4), 0 lists in `STRUCTURE`/`RESPELLABLE`; the respell
 property treats `LIST` like `VAR` under #3517 (a host-readable global
 respelled private).

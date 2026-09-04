@@ -68,7 +68,24 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // calls a function: the lift emits no end-of-line on the untaken side,
     // and the call's output loses its newline.
     ("#3530", else_less_conditional_calling_a_function),
+    // Glue somewhere in the story and a line that can render empty (a
+    // list interpolation): ink's glue reaches across the blank line to
+    // join the lines either side of it, brink's stops at it.
+    ("#3535", glue_and_a_possibly_empty_line),
 ];
+
+/// A story that both uses glue and has a line that is exactly one
+/// interpolation while a `LIST` exists to make that line render empty —
+/// the only value the generator can produce that renders as nothing.
+fn glue_and_a_possibly_empty_line(src: &str) -> bool {
+    if !src.contains("<>") || !src.lines().any(|l| l.trim_start().starts_with("LIST ")) {
+        return false;
+    }
+    src.lines().any(|line| {
+        let t = line.trim();
+        t.starts_with('{') && t.ends_with('}') && t.matches('{').count() == 1
+    })
+}
 
 /// A line that is exactly one `{cond:then}` inline conditional with no `|`
 /// arm, whose condition names a generated function.
