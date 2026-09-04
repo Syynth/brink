@@ -20,9 +20,14 @@ Writing the catalogue before the framework is deliberate. The
 alternative — guessing at generic "bait" shapes and hoping they match
 some future pass — gets the dependency backwards.
 
-**Not in this catalogue:** reachability pruning. That is the compiler
-deciding what to ship, not the optimizer making what ships cheaper
-(`docs/reachability-prune-spec.md`).
+**Not in this catalogue:** anything the *compiler* does. Reachability
+pruning is the compiler deciding what to ship, not the optimizer making
+what ships cheaper (`docs/reachability-prune-spec.md`) — and so are
+constant folding and dead-branch elimination, which need types,
+provenance and lowering's invariants that no artifact carries. Those
+transforms live in the compiler's own LIR layer, which is what the
+2026-08-06 ruling's `LIR → passes → LIR` mechanism was for. This
+catalogue is the artifact-level list only.
 
 ## The per-pass document template
 

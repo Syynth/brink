@@ -1,6 +1,7 @@
 # Reachability pruning — a compiler emission step
 
-**Status: PROPOSED (needs ruling).** Four questions in §6.
+**Status: PROPOSED (needs ruling).** Four questions in §7, plus an
+open structural question in §6.
 
 The compiler must not ship the parts of the universal `std/` mount a
 project never reaches (#2228). This is **not** an optimizer pass: it is
@@ -8,6 +9,14 @@ the compiler deciding what belongs in the artifact at all
 (`docs/optimizer-spec.md` §7 draws that boundary). The 2026-08-06
 ruling's own wording — *codegen emits only definitions reachable from
 the artifact's roots* — describes exactly this step.
+
+It is also the **first inhabitant of the compiler's own LIR transform
+layer**, and 08-06's `LIR → passes → LIR` mechanism is meant for that
+layer. Constant folding and dead-branch elimination — the transforms
+that ruling named as needing somewhere to live — belong beside this one:
+they need types, provenance and lowering's invariants, so they can never
+move to the post-compile optimizer. §6 keeps that question open rather
+than answering it from a sample of one.
 
 ## 1. Behavior
 
@@ -23,8 +32,10 @@ artifact's `debug_info` is `Option` and absent from release builds. This
 is the reason the prune stays here while the optimizer moved to the
 artifact.
 
-**It is unconditional.** No config, no level, no pass list. Not shipping
-the mount is correctness of emission, not a tuning choice.
+**It is unconditional.** Not shipping the mount is correctness of
+emission, not a tuning choice, so there is no level to set. Whether it
+sits behind a general pass mechanism is a separate question (§6) — being
+unconditional does not require being a one-off hook.
 
 **Ink projects are unaffected**, and not because they reference nothing:
 `brink_environment::collect_sources` gives an ink entry the
@@ -163,7 +174,27 @@ executable.
    and both need editing to say it is gone, retiring #2228's evidence
    note.
 
-## 6. Questions for the ruling
+## 6. Does this layer get a pass mechanism, and when?
+
+Open, deliberately. 08-06 ruled that whole-program compiler work needs a
+general stage rather than a one-off hook, and the reason was foresight
+about constant folding and dead-branch elimination, not about the prune.
+With one transform in hand, both readings are defensible:
+
+- **Build the mechanism now.** It is cheapest with one inhabitant, and
+  the ruling already asked for it. The risk is designing a pass contract
+  from a sample of one — the same trap `docs/optimizer-framework-spec.md`
+  is deferred to avoid.
+- **Build a single step now, generalise on the second transform.**
+  Converting one step into the first entry of a pass list is a small,
+  mechanical change, and by then there is a second inhabitant to design
+  against.
+
+Nothing in this document depends on the answer: the reachability walk,
+its roots, its edges and its constraints are identical either way. The
+choice only decides where the code sits.
+
+## 7. Questions for the ruling
 
 1. **`use` as a root** (§1.1.3): an explicit import ships the symbol even
    when uncalled. Alternative: only calls and diverts count, and a host

@@ -29,8 +29,17 @@ each transform is a pure function with no iteration-order dependence.
 The ruling's own wording — *codegen emits only definitions reachable* —
 already describes an emission step, and that is what the prune becomes.
 
-**Superseded:** the mechanism. The optimizer is not a LIR pass stage, and
-the prune is not one of its passes.
+**Not superseded, but re-scoped:** the mechanism. `LIR → passes → LIR`
+remains available to the **compiler**, and that ruling's reason for
+wanting it — "future whole-program work (constant folding, dead-branch
+elimination) otherwise has nowhere to live" — still holds for exactly
+those transforms, which need types, provenance and lowering's invariants
+and so can never be done post-compile. What changes is only that **the
+optimizer is not that stage**: it does not live at LIR, and the prune is
+not one of its passes. Whether the compiler's side generalises into a
+pass list now or stays a single step until a second transform arrives is
+an open question for `docs/reachability-prune-spec.md`, not this
+document.
 
 Why the placement moved: of five candidate optimizations, four operate on
 things that **do not exist at LIR**.
@@ -156,8 +165,14 @@ Stated so nobody designs a pass that needs it:
 
 Reachability pruning is the compiler deciding what to ship, which is why
 it moved out of this document. If a future transform is answering *what
-belongs in the artifact*, it is a compiler step; if it is answering *how
-cheaply the same artifact can say the same thing*, it is a pass here.
+belongs in the artifact*, it is a compiler transform; if it is answering
+*how cheaply the same artifact can say the same thing*, it is a pass
+here.
+
+That test puts constant folding and dead-branch elimination on the
+compiler's side too — they change what the artifact says, using type and
+provenance information this crate cannot see. They are not in this
+document's catalogue, and the mechanism they will want is 08-06's.
 
 ## 8. Bring-up order
 
