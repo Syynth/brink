@@ -3,26 +3,30 @@
 **Status: OPEN — this list grows.** Nothing here is committed to; an
 entry is a candidate until its own document is ruled.
 
-This is the list of what we intend to optimize, and it is the artifact
-the rest of the optimizer derives from:
+This is the list of what we intend the optimizer
+(`docs/optimizer-spec.md`) to do, and it is the artifact the rest
+derives from:
 
 - the **generator knobs** exist to emit each entry's input shape
   (`docs/program-generator-spec.md`), so a pass without an entry here has
   no way to be property-tested;
 - the **metrics** exist to show each entry's target moved
-  (`docs/lir-optimizer-spec.md` §5);
+  (`docs/optimizer-spec.md` §3);
 - the **observable-surface contract**, when it is written
   (`docs/optimizer-framework-spec.md`), is the union of what these
   entries collide with.
 
-Writing the catalogue first is deliberate. The alternative — guessing at
-generic "bait" shapes and hoping they match some future pass — was the
-earlier plan, and it gets the dependency backwards.
+Writing the catalogue before the framework is deliberate. The
+alternative — guessing at generic "bait" shapes and hoping they match
+some future pass — gets the dependency backwards.
+
+**Not in this catalogue:** reachability pruning. That is the compiler
+deciding what to ship, not the optimizer making what ships cheaper
+(`docs/reachability-prune-spec.md`).
 
 ## The per-pass document template
 
-Every entry graduates into a document with these sections, in this
-order. `docs/optimizer-pass-prune.md` is the worked example.
+Every entry graduates into a document with these sections, in order:
 
 1. **Behavior** — what it does, precisely enough to implement.
 2. **Constraints** — every observable it collides with, and the
@@ -30,102 +34,118 @@ order. `docs/optimizer-pass-prune.md` is the worked example.
    *bulk* of the work: the rewrite is usually trivial once you know what
    you are allowed to touch.
 3. **Generator** — the knob that emits its input shape, and the property
-   it makes possible. The standard pair: *traces agree between
-   `OptLevel::None` and `Default`*, **and** *the pass's metric actually
-   moved*. The second half is what catches a pass that silently does
+   it makes possible. The standard pair: *traces agree between the
+   optimized and unoptimized artifact*, **and** *the pass's metric
+   actually moved*. The second half catches a pass that silently does
    nothing.
 4. **Questions for the ruling.**
 
 ## The catalogue
 
-| Pass | Target metric | Collides with | Can run on the LIR seam? | Status |
-|---|---|---|---|---|
-| prune unreachable | containers, name table | nothing (nothing reachable is removed) | yes | `optimizer-pass-prune.md`, needs ruling |
-| dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | **no — see below** | candidate |
-| inline containers | containers, instructions | visit counts, save keys, debugger addresses, line-table anchors | yes | candidate |
-| eliminate redundant pure work | instructions | effect rows (which are also the proof) | yes | candidate |
-
-### prune unreachable
-
-Native-only: an ink project never carries the mount. Fully specified in
-its own document; four open questions.
+| Pass | Target metric | Collides with | Status |
+|---|---|---|---|
+| dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | candidate — likely first |
+| peephole | bytecode bytes | choice indices, effect rows, debug offsets | candidate |
+| literal-pool / name-table compaction | pool sizes, artifact bytes | id stability, save-state keys | candidate |
+| eliminate redundant pure work | bytecode bytes | effect rows (which are also the proof) | candidate — blocked on a ruling |
+| inline containers | containers, bytecode bytes | visit counts, save keys, debug addresses, line-table anchors | candidate — probably not worth it |
 
 ### dedup line table
 
 Glued cues and other repeated content produce repeated line-table
 entries, so the same string reaches a translator more than once. Merging
-identical units does not lose any — it removes work a translator is
-currently paying for twice — which is why this pass is worth calling out
-against the prune's "never lose a translatable unit" constraint. The two
-are compatible: that constraint forbids *losing* units, not *merging*
-them.
+identical units removes work a translator is currently paying for twice.
 
-**Its metric is the only one in the system denominated in human cost**
-rather than bytes, which makes it the most valuable entry here and the
-hardest to evaluate from a size report alone.
+**Its metric is the only one denominated in human cost rather than
+machine cost**, which makes it the most valuable entry here.
 
-Three fields of `brink_format::LineEntry` block a naive text-keyed merge:
+The duplication is not a property of the table — it is how entries are
+born. In `brink-codegen-inkb`, `intern_string` consults a lookup map
+while `add_line` / `add_template_line` append one row per occurrence site
+with no lookup at all. The two sit next to each other in the same
+emitter.
+
+That has a consequence worth stating: **this could be fixed in codegen
+instead**, by giving line entries the interning their neighbours already
+have. Whether it belongs there (born deduplicated) or here (deduplicated
+after the fact, on artifacts the compiler never saw) is this entry's
+first question. Doing it in the optimizer keeps it toggleable and applies
+it to existing artifacts; doing it in codegen is smaller and earlier.
+
+Three fields of `LineEntry` block a naive text-keyed merge:
 
 - **`audio_ref`** — identical text with different VO takes. Merging
   collapses two distinct VO slots.
 - **`source_hash`** — per-unit staleness detection. A merged unit can no
   longer say *which* source changed.
 - **`source_location`** — the debugger and explain-match anchor. A merged
-  entry is one-to-many and needs a provenance list, not a single site.
+  entry is one-to-many and needs a provenance list.
 
-And the standing i18n trap: identical source text frequently needs
-*different* translations by context. Deduplicating by text takes that
-choice away from the translator, so the key is at most
-`(content, audio_ref, …)` with an explicit per-unit opt-out.
+Plus the standing i18n trap: identical source text frequently needs
+*different* translations by context, so the key is at most
+`(content, audio_ref, …)` with a per-unit opt-out.
 
-**Where it can run is an open problem.** `lir::Program` has no line
-table — codegen builds those while emitting `StoryData`
-(`docs/lir-optimizer-spec.md` §2). So this is not a LIR pass as the
-stage currently defines one. Three shapes, none chosen:
+And a scope question: `scope_line_table` is **per-scope**, so
+deduplicating within a scope is the conservative reading. Going global
+merges more units but merges them across contexts — which is the
+translator-context concern again, at a larger radius.
 
-1. a LIR pass that canonicalises *content* so codegen naturally emits
-   fewer entries;
-2. an interning step inside codegen, where the entries are born;
-3. a post-codegen `StoryData` transform — which would mean the optimizer
-   has two stages, not one.
+### peephole
 
-That question belongs in this pass's own document, and it may send the
-stage's definition back for revision. It is the clearest example of why
-the framework document is deferred until real passes have pushed on it.
+The reason the optimizer is post-compile at all: bytecode does not exist
+until codegen, so this can live nowhere else.
 
-### inline containers
+Constraints are the ones the runtime can observe from instruction
+sequences rather than from definitions: **choice indices** (#3527
+established these are observable), **effect rows** if they are contract
+rather than debug surface, and **debug offsets**, since `DebugInfo` maps
+bytecode offsets to source and any instruction removed shifts the ones
+after it.
 
-The transformation is trivial and the eligibility analysis is the whole
-pass. A container may not be inlined when anything reads its visit or
-turn count (`{knot}`, `TURNS_SINCE`), when a save can name it, when it
-carries line-table entries the intl pipeline exports, when it is an
-author-labelled target, or when a debugger address anchors to it. What
-remains after those exclusions is worth measuring before committing to
-the pass at all.
+That last one is the practical difficulty: a peephole that rewrites
+instructions must rewrite the debug map with them or drop it.
+
+### literal-pool / name-table compaction
+
+Unreferenced pool entries after other passes have run — and after the
+compiler's prune, which deliberately leaves name-table slots unused
+rather than renumbering. Collides with id stability: compaction *is*
+renumbering, so anything holding an id across the boundary (save-state
+keys above all) has to be considered.
 
 ### eliminate redundant pure work
 
 Effect rows record what a chunk reads and writes, so they are the
-evidence that two evaluations are redundant — the analysis this pass
-needs already exists in some form. They are *also* observable under
-`--features effect-trace`, with `t2_ground_truth_effects` pinning them.
-Eliminating work changes the trace.
+evidence that two evaluations are redundant — and `StoryData` ships
+`effect_rows`, so the evidence is right there in the artifact.
 
-So this entry cannot be specified without first ruling: **is the effect
+They are *also* observable under `--features effect-trace`, with
+`t2_ground_truth_effects` pinning them, and eliminating work changes the
+trace. So this entry cannot be specified without ruling: **is the effect
 trace part of the behavioral contract, or a debug surface an optimizer
-may perturb?** That is the sharpest of the deferred framework questions
-and this pass is what forces it.
+may perturb?** It is the sharpest deferred framework question, and this
+pass is what forces it.
 
-## Not yet catalogued: anything ink-facing
+### inline containers
 
-Every entry above is native-facing or surface-neutral. With ink a peer
-surface, the optimizer as catalogued does nothing for an ink program:
-the prune has no mount to remove, and the one lever that would touch an
-ink artifact — dropping unreachable author content — is refused on
-translation-surface grounds (`optimizer-pass-prune.md` §2.1).
+Listed for completeness and scepticism. The transformation is trivial;
+the eligibility analysis is the whole pass. A container may not be
+inlined when anything reads its visit or turn count (`{knot}`,
+`TURNS_SINCE`), when a save can name it, when it carries line-table
+entries the intl pipeline exports, when it is author-labelled, or when a
+debugger address anchors to it.
 
-That is a real gap, stated rather than hidden. Filling it means passes
-whose targets are ink-shaped — choice-table compaction, constant folding
-of author expressions, output-fragment coalescing — each of which needs
-its own observable-behavior argument against the ratchet. That is a
-larger conversation than #2336 and wants its own ruling.
+What survives those exclusions is probably small. Measure before
+committing.
+
+## Surface neutrality
+
+Every entry above operates on artifacts, so **the optimizer serves ink
+and native equally**. This was not true of the earlier design: when the
+optimizer was a LIR stage whose only pass was the mount prune, it did
+nothing for ink at all, permanently and by construction.
+
+Moving it post-compile dissolved that asymmetry rather than papering
+over it. The one native-only transform — the prune — is now correctly
+filed as a compiler step, where being native-only is unremarkable
+because it is a fact about the mount rather than about optimization.
