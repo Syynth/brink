@@ -5100,3 +5100,11 @@
 - **SCOPE:** small
 - **WHAT:** `CallStack::last_mut` and `get_mut` now clear `cached_snapshot` like `push`/`pop`/`materialize` already did. Sequence that exposed it: `<- t` forks the main thread (caching its frames), `~ temp t0 = 1` writes into the top frame through `last_mut` (cache untouched, now stale), the next choice's `fork_thread` hits the cache, and `choose` restores frames without `t0` — `{t0}` after the choice printed `0` where ink prints `1`. Every other path was safe by accident: a thread restored by `choose` has an empty `own`, so its first write materializes and clears the cache — which is why no corpus case saw it. Four compile-and-play regression tests pin the temp-after-spawn, printing-thread, temp-before-spawn and reassign-after-spawn shapes against inkjs; the oracle ratchet is unchanged at 5624.
 - **WHY:** Found by the tunnels-and-threads tier of the program generator. A cache keyed on "no push/pop since" is a cache keyed on the wrong invariant: the frames are mutable in place, so the only safe invalidation is on every `&mut CallFrame` handed out.
+
+## List containment is false when either operand is empty (#3531)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** runtime (`list_ops::{list_contains, list_not_contains}`) — `docs/runtime-spec.md` "List containment with empty operands"
+- **SCOPE:** small
+- **WHAT:** `?` and `!?` now return `false` / `true` whenever either list operand is empty, matching ink's `InkList.Contains` (which short-circuits on an empty list on either side) instead of the vacuous subset test that made `l ? ()` `true`. Found by the lists tier of the program generator on its first run (`~ l -= (l ^ (l ^ l))` then `{(l !? l)}`). A compile-and-play regression test pins all six empty/non-empty combinations for both operators against inkjs; the oracle ratchet is unchanged at 5624.
+- **WHY:** The corpus never asks whether a list contains nothing; the generator, which empties lists by arithmetic, does. The reference's answer is a deliberate special case, not a mathematical accident, so brink follows it exactly.

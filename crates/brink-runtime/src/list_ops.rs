@@ -12,7 +12,10 @@ use crate::program::Program;
 use crate::state::ContextAccess;
 use crate::story::Flow;
 
-/// `ListContains` (`?`): `[lhs, rhs]` → `Bool(rhs ⊆ lhs)`
+/// `ListContains` (`?`): `[lhs, rhs]` → `Bool(rhs ⊆ lhs)`, except that an
+/// EMPTY operand on either side is `false` — ink's `InkList.Contains`
+/// returns false when either list is empty rather than the vacuous
+/// subset answer (issue #3531: `l ? ()` is `false`, `l !? ()` is `true`).
 ///
 /// Also handles string operands: `"hello" ? "ell"` → substring check.
 pub(crate) fn list_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
@@ -23,13 +26,14 @@ pub(crate) fn list_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
     } else {
         let rhs = to_list(rhs)?;
         let lhs = to_list(lhs)?;
-        rhs.items.iter().all(|id| lhs.items.contains(id))
+        list_has(&lhs, &rhs)
     };
     flow.value_stack.push(Value::Bool(result));
     Ok(())
 }
 
-/// `ListNotContains` (`!?`): `[lhs, rhs]` → `Bool(¬(rhs ⊆ lhs))`
+/// `ListNotContains` (`!?`): `[lhs, rhs]` → the negation of
+/// [`list_contains`], empty operands included (`() !? ()` is `true`).
 ///
 /// Also handles string operands.
 pub(crate) fn list_not_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
@@ -40,10 +44,18 @@ pub(crate) fn list_not_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
     } else {
         let rhs = to_list(rhs)?;
         let lhs = to_list(lhs)?;
-        !rhs.items.iter().all(|id| lhs.items.contains(id))
+        !list_has(&lhs, &rhs)
     };
     flow.value_stack.push(Value::Bool(result));
     Ok(())
+}
+
+/// ink's `InkList.Contains(other)`: false when either list is empty,
+/// otherwise every item of `other` is in `list`.
+fn list_has(list: &ListValue, other: &ListValue) -> bool {
+    !list.items.is_empty()
+        && !other.items.is_empty()
+        && other.items.iter().all(|id| list.items.contains(id))
 }
 
 /// `ListIntersect` (`L^`): `[a, b]` → `List(a ∩ b)`

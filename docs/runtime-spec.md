@@ -889,3 +889,8 @@ Key semantics from the reference C# ink implementation relevant to execution:
 - **Visit counting:** per-container granularity. Any container (knot, stitch, gather, choice target) can independently track visits and turn indices. `countingAtStartOnly` prevents overcounting on mid-container re-entry.
 - **Stitch fall-through:** stitches do NOT fall through to each other at execution time. Only the first stitch is reachable via the implicit divert; all others require explicit `-> stitch_name`.
 - **Choices inside conditional blocks:** at runtime, choices inside conditionals participate in the outer choice point via loose end propagation (matching the reference compiler's `Weave.cs` `PassLooseEndsToAncestors`). The HIR keeps conditional blocks opaque; codegen/runtime handles the weave transparency.
+
+
+### List containment with empty operands
+
+`?` / `!?` follow ink's `InkList.Contains`: the answer is `false` whenever **either** operand is empty (`l ? ()`, `() ? l`, `() ? ()` are all `false`; `!?` is the exact negation, so those are `true`). brink's earlier vacuous subset test made `l ? ()` `true` (issue #3531, found by the program generator's lists tier).
