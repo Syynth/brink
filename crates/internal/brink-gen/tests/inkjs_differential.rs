@@ -98,8 +98,10 @@ fn names_a_function(s: &str) -> bool {
         .any(|w| w[0] == b'f' && w[1].is_ascii_digit())
 }
 
-/// A `=== function` section with two or more content lines (anything
-/// that is not logic, a block marker, or blank).
+/// A `=== function` section with two or more printing lines — content
+/// lines (anything that is not logic, a block marker, or blank) and
+/// statement calls to generated functions (`~ f<n>_…`, whose callee may
+/// print a line of its own: CI's first run found `~ f0_a()` twice).
 fn function_printing_several_lines(src: &str) -> bool {
     let mut in_function = false;
     let mut content = 0;
@@ -114,13 +116,14 @@ fn function_printing_several_lines(src: &str) -> bool {
             in_function = false;
             continue;
         }
-        if in_function
-            && !t.is_empty()
+        let statement_call =
+            t.starts_with("~ f") && t.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
+        let content = !t.is_empty()
             && !t.starts_with('~')
             && !t.starts_with("{ ")
             && !t.starts_with('-')
-            && !t.starts_with('}')
-        {
+            && !t.starts_with('}');
+        if in_function && (content || statement_call) {
             content += 1;
             if content >= 2 {
                 return true;
