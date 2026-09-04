@@ -109,6 +109,7 @@ brink-db = { path = "crates/internal/brink-db", version = "0.0.16" }
 brink-driver = { path = "crates/internal/brink-driver", version = "0.0.16" }
 brink-environment = { path = "crates/internal/brink-environment", version = "0.0.16" }
 brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.16" }
+brink-respell = { path = "crates/internal/brink-respell", version = "0.0.16" }
 brink-format = { path = "crates/internal/brink-format", version = "0.0.16" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.16" }
 brink-intl = { path = "crates/internal/brink-intl", version = "0.0.16" }

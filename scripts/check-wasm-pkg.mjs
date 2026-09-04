@@ -112,8 +112,18 @@ export const REQUIRED_FILES = [
   "brink_web_bg.wasm.d.ts",
 ];
 
-export const BUILD_COMMAND =
-  "wasm-pack build crates/brink-web --target web --out-dir www/pkg";
+/**
+ * The `wasm-pack build` invocation for one registered crate — every build
+ * command in the registry below is derived from its `crateDir` through this,
+ * so a script that needs the crate list (scripts/setup-dev.sh's opt-in
+ * frontend stage) and a message that needs the command string
+ * (scripts/guarded-install.mjs's refusal) cannot drift apart.
+ */
+export function buildCommandFor(crateDir) {
+  return `wasm-pack build ${crateDir} --target web --out-dir www/pkg`;
+}
+
+export const BUILD_COMMAND = buildCommandFor("crates/brink-web");
 
 /**
  * Every `file:`-linked wasm-pack output in the repo.
@@ -135,6 +145,8 @@ export const BUILD_COMMAND =
 export const WASM_PACKAGES = [
   {
     id: "brink-web",
+    /** The crate `wasm-pack build` is pointed at, repo-relative. */
+    crateDir: "crates/brink-web",
     /** The wasm-pack output directory, repo-relative. */
     pkgDir: "crates/brink-web/www/pkg",
     /** Where the `file:` dependency resolves to, repo-relative. */
@@ -147,6 +159,7 @@ export const WASM_PACKAGES = [
   },
   {
     id: "brink-prose",
+    crateDir: "crates/brink-prose",
     pkgDir: "crates/brink-prose/www/pkg",
     // The studio is the only consumer: the checker is dynamically imported
     // so it code-splits out of the main bundle, which is the whole point of
@@ -161,8 +174,7 @@ export const WASM_PACKAGES = [
       "brink_prose_bg.wasm",
       "brink_prose_bg.wasm.d.ts",
     ],
-    buildCommand:
-      "wasm-pack build crates/brink-prose --target web --out-dir www/pkg",
+    buildCommand: buildCommandFor("crates/brink-prose"),
   },
 ];
 

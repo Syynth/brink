@@ -37,7 +37,7 @@ pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{
     WeaveItem, fold_weave, lower, lower_declarations, lower_single_knot, lower_top_level,
 };
-pub use normalize::normalize_file;
+pub use normalize::{SYNTHETIC_TEMP_PREFIX, is_synthetic_temp_name, normalize_file};
 pub use spans::expr_span;
 pub use stamp::{root_content_scope_path, stamp_container_ids};
 pub use types::*;

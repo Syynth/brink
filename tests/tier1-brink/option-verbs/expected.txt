@@ -3,6 +3,7 @@ f2 is .
 f3 is .
 f1 matched at six.
 f2 is absent.
+
 after bare f2 interpolation.
 index of 1 is some(1), of 9 is .
 min some(1), max some(3).

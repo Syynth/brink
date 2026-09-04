@@ -100,7 +100,7 @@ token-based, then we switch to OIDC:
    cargo publish --workspace             # claim + publish all ~20 crates
    ```
 
-   (`cargo publish --workspace` was stabilized in Rust 1.90; our pinned 1.97
+   (`cargo publish --workspace` was stabilized in Rust 1.90; our pinned 1.98
    has it. It handles ordering only — release-plz still owns version bumps,
    changelogs, tags, and the OIDC flow for ongoing releases.)
 2. **Register trusted publishers** — for *each* published crate, go to its

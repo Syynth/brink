@@ -2992,6 +2992,18 @@ pub struct TempDecl {
     /// surface only in this slice — not yet wired into body inference (that
     /// would touch `infer::body::BodyCtx`, out of scope per #638).
     pub annotation: Option<TypeExpr>,
+    /// `true` for a temp the compiler minted itself — today only
+    /// [`super::normalize`]'s lift-order hoist (issue #3395), which
+    /// evaluates every interpolation left of a lifted inline construct into
+    /// one of these so the construct's condition runs *after* them, where
+    /// ink runs it. Never `true` for an authored `~ temp`. Carried through
+    /// LIR's `DeclareTemp` into the `DebugInfo` locals table (`synthetic`
+    /// row flag, `docs/debugger-spec.md` §3) so the debugger can hide it,
+    /// and read by codegen to give the temp's value display-position
+    /// semantics (a direct call's printed output is captured into the
+    /// value, not emitted early — `docs/compiler-spec.md`, "Normalization
+    /// pass").
+    pub synthetic: bool,
 }
 
 /// `~ x = expr` or `~ x += expr`

@@ -36,8 +36,8 @@ pub mod print;
 pub mod strategy;
 
 pub use model::{
-    AssignOp, BinOp, Choice, Divert, Exit, Expr, Item, Knot, Literal, Part, Stitch, Story, Tail,
-    Ty, VarDecl, Weave,
+    AssignOp, BinOp, Choice, Divert, Exit, Expr, Item, Knot, Literal, Part, SeqKind, Stitch, Story,
+    Tail, Ty, VarDecl, Weave,
 };
 pub use print::print_ink;
 pub use strategy::{Profile, RawStory, arb_raw_story, arb_story, arb_story_with, decode};

@@ -231,8 +231,12 @@ impl ContainerEmitter<'_> {
     ///
     /// For non-call expressions, evaluates directly — the result goes on the
     /// value stack with no fragment overhead.
-    fn emit_slot_expr(&mut self, expr: &lir::Expr) {
-        if expr.is_function_call() {
+    pub(super) fn emit_slot_expr(&mut self, expr: &lir::Expr) {
+        // A call anywhere in the slot — `{f()}` or `{f() == "x"}` alike
+        // (issue #3525) — composes its printed output into the slot, where
+        // ink evaluates it; a bare evaluation would push that text ahead
+        // of the line's earlier content.
+        if expr.contains_function_call() {
             // Composition pattern:
             //   BeginFragment (compose)
             //     BeginFragment (side effects)

@@ -295,12 +295,17 @@ function FrameLocals({
       <p className="sv-locals-none sv-dim">no debug info for this frame</p>
     ) : null;
   }
-  if (frame.locals.length === 0) return null;
+  // #3395: compiler-minted temps (the lift-order hoist's `$liftN`) are
+  // real slots but not the author's — hidden here, per
+  // `docs/debugger-spec.md` §3. A frame whose only locals are synthetic
+  // renders nothing, exactly like a frame with none.
+  const locals = frame.locals.filter((l) => !l.synthetic);
+  if (locals.length === 0) return null;
 
   return (
     <table className="sv-locals">
       <tbody>
-        {frame.locals.map((l) => {
+        {locals.map((l) => {
           const seed = scalarSeed(l.value);
           return (
             <tr key={l.slot}>

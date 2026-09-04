@@ -132,6 +132,7 @@ impl FlowInstance {
                 skipping_choice: false,
                 did_safe_exit: false,
                 did_unsafe_yield: false,
+                line_delivered_this_turn: false,
                 ran_out_of_content_cause: RanOutOfContentCause::default(),
                 exec_mode: ExecMode::default(),
                 pure_callback: crate::story::PureCallbackState::default(),
@@ -419,7 +420,11 @@ impl FlowInstance {
                     .take_first_line(program, line_tables, resolver)
         {
             return Ok(StepOutcome::Step(make_output_line(
-                &self.flow, text, tags, element, source,
+                &mut self.flow,
+                text,
+                tags,
+                element,
+                source,
             )));
         }
 
@@ -463,6 +468,7 @@ impl FlowInstance {
             self.status = StoryStatus::Active;
             // A fresh run begins wherever the story resumes from `Done`.
             self.flow.next_block_id += 1;
+            self.flow.line_delivered_this_turn = false;
         }
 
         // Clear flags — will be set during this cycle if relevant.
@@ -612,12 +618,34 @@ impl FlowInstance {
         if self.status != StoryStatus::WaitingForChoice {
             return Err(RuntimeError::NotWaitingForChoice);
         }
+        // `index` numbers the VISIBLE choices (what `Step::Choices` hands
+        // out and what C#'s `ChooseChoiceIndex` takes); an invisible
+        // fallback ahead of a visible choice — a thread's `+ ->` merged in
+        // front of the main flow's choices — sits in `pending_choices`
+        // but never in that numbering (issue #3527).
+        let position = self
+            .flow
+            .pending_choices
+            .iter()
+            .enumerate()
+            .filter(|(_, pc)| !pc.flags.is_invisible_default)
+            .nth(index)
+            .map(|(position, _)| position);
+        let Some(position) = position else {
+            let available = self
+                .flow
+                .pending_choices
+                .iter()
+                .filter(|pc| !pc.flags.is_invisible_default)
+                .count();
+            return Err(RuntimeError::InvalidChoiceIndex { index, available });
+        };
         select_choice(
             &mut self.flow,
             context,
             &mut self.status,
             &mut self.stats,
-            index,
+            position,
         )
     }
 
@@ -772,6 +800,7 @@ impl FlowInstance {
         // this method's own doc comment) — a fresh run begins at the
         // target (`BlockId`, §3.7/§8d.2).
         self.flow.next_block_id += 1;
+        self.flow.line_delivered_this_turn = false;
 
         // Push the arguments in declaration order; the target's prologue
         // (`DeclareTemp`) binds them, exactly as `begin_function_eval` and an
@@ -1050,7 +1079,7 @@ impl FlowInstance {
         // capture scratch space and never reaches the transcript.
         self.flow.output.begin_capture();
 
-        let output_start = self.flow.output.target_len();
+        let output_start = self.flow.output.mark();
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),
@@ -1185,7 +1214,7 @@ impl FlowInstance {
         let choice_floor = self.flow.pending_choices.len();
 
         self.flow.output.begin_capture();
-        let output_start = self.flow.output.target_len();
+        let output_start = self.flow.output.mark();
         let boundary = CallFrame {
             return_address: None,
             temps: Vec::new(),
@@ -1522,6 +1551,7 @@ fn select_choice(
     stats.choices_selected += 1;
     // A fresh run begins at the chosen branch (`BlockId`, §3.7/§8d.2).
     flow.next_block_id += 1;
+    flow.line_delivered_this_turn = false;
 
     Ok(())
 }
@@ -1602,7 +1632,12 @@ fn flush_remaining(
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
 ) -> FlushedRemaining {
-    let lines = flow.output.flush_lines(program, line_tables, resolver);
+    let lines = flow.output.flush_lines_at_yield(
+        program,
+        line_tables,
+        resolver,
+        flow.line_delivered_this_turn,
+    );
     let mut text = String::new();
     let mut tags = Vec::new();
     let mut element = BTreeMap::new();
@@ -1640,12 +1675,13 @@ fn flush_remaining(
 /// distinct, separately-tractable gap this PR does not close — see
 /// `docs/decision-log.md`/this issue's follow-up notes.
 fn make_output_line(
-    flow: &Flow,
+    flow: &mut Flow,
     text: String,
     tags: Vec<String>,
     data: BTreeMap<String, String>,
     source: Option<brink_format::SourceLocation>,
 ) -> Step {
+    flow.line_delivered_this_turn = true;
     let element = if data.is_empty() {
         Element::narrative()
     } else {
@@ -1672,10 +1708,12 @@ fn collect_choices(
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
 ) -> Vec<Choice> {
+    // `index` counts visible choices only — C#'s `currentChoices`
+    // numbering, and what `choose` takes (issue #3527).
     flow.pending_choices
         .iter()
+        .filter(|pc| !pc.flags.is_invisible_default)
         .enumerate()
-        .filter(|(_, pc)| !pc.flags.is_invisible_default)
         .map(|(i, pc)| {
             let display_text = match &pc.display {
                 ChoiceDisplay::Text(s) => s.clone(),

@@ -362,8 +362,8 @@ impl<R: StoryRng> Story<R> {
     fn resolved_choices_for(&self, flow: &Flow) -> Vec<Choice> {
         flow.pending_choices
             .iter()
+            .filter(|pc| !pc.flags.is_invisible_default)
             .enumerate()
-            .filter(|(_, pc)| !pc.flags.is_invisible_default)
             .map(|(i, pc)| {
                 let display_text = match &pc.display {
                     ChoiceDisplay::Text(s) => s.clone(),
@@ -1312,6 +1312,7 @@ impl<R: StoryRng> Story<R> {
                             slot: local.slot,
                             name: local.name.clone(),
                             value: resolver.debug_value(value),
+                            synthetic: local.synthetic,
                         },
                     );
                 }
@@ -1789,12 +1790,13 @@ impl<R: StoryRng> Story<R> {
         // flushed — this is how the line before a choice point is
         // delivered on the production road, and it must be here too.
         if self.default.status != StoryStatus::Active && self.default.flow.output.has_unread() {
-            for (text, tags, _element, source) in
-                self.default
-                    .flow
-                    .output
-                    .flush_lines(&self.program, &self.line_tables, resolver)
-            {
+            let delivered = self.default.flow.line_delivered_this_turn;
+            for (text, tags, _element, source) in self.default.flow.output.flush_lines_at_yield(
+                &self.program,
+                &self.line_tables,
+                resolver,
+                delivered,
+            ) {
                 out.push((text, tags, source));
             }
         }
@@ -2884,16 +2886,15 @@ mod tests {
         }
     }
 
-    /// `Choice.index` (the live, visible choice list) must be the *raw*
-    /// `pending_choices` position, not the post-filter enumeration position —
-    /// an invisible-default fallback choice (`* ->`) mixed in with visible
-    /// choices occupies a `pending_choices` slot but never appears in the
-    /// visible list, so the visible indices can skip values. This is exactly
-    /// what `select_choice`/`choose` expects (it indexes `pending_choices`
-    /// directly) — a caller must never re-derive the index from array
-    /// position over the visible list alone.
+    /// `Choice.index` (the live, visible choice list) numbers the visible
+    /// choices contiguously — C#'s `currentChoices[i].index` — and
+    /// `choose` maps that number to the `pending_choices` position: an
+    /// invisible-default fallback choice (`* ->`) mixed in with visible
+    /// choices occupies a `pending_choices` slot but never a visible index
+    /// (issue #3527; this reverses the earlier raw-position contract, which
+    /// made the visible indices skip a value the reference never skips).
     #[test]
-    fn choice_index_is_raw_pending_choices_position_with_invisible_default_mixed_in() {
+    fn choice_index_is_the_visible_position_with_invisible_default_mixed_in() {
         let src = "-(start)\n\
              * [First] -> a\n\
              * -> b\n\
@@ -2904,24 +2905,26 @@ mod tests {
         let mut story = story_from_source(src);
         let choices = step_until_choices(&mut story);
 
-        // The invisible-default fallback (raw index 1) is filtered out of the
-        // visible list, so the visible choices' indices skip it: 0, then 2.
+        // The invisible-default fallback (pending position 1) is filtered
+        // out of the visible list and takes no index: 0, then 1.
         assert_eq!(
             choices.iter().map(|c| c.index).collect::<Vec<_>>(),
-            vec![0, 2],
-            "visible choice indices must be the raw pending_choices positions, not 0,1,..: {choices:?}"
+            vec![0, 1],
+            "visible choice indices must be contiguous: {choices:?}"
         );
         assert_eq!(story.default.flow.pending_choices.len(), 3);
 
-        // Choosing the raw index of the second visible entry must select
-        // the "Third" branch, not the invisible-default fallback.
-        story.choose(choices[1].index).expect("choose by raw index");
+        // Choosing the second visible entry by its index must select the
+        // "Third" branch, not the invisible-default fallback.
+        story
+            .choose(choices[1].index)
+            .expect("choose by visible index");
         let text = step_until_choices_or_end(&mut story);
         assert!(text.contains("Went C"), "expected the Third branch: {text}");
     }
 
     /// `DebugSnapshot.pending_choices[].index` must agree with the live
-    /// `Choice.index` — both derive from the same pre-filter pass over
+    /// `Choice.index` — both derive from the same visible-choice pass over
     /// `pending_choices` (`resolved_choices_for`). A studio consumer restoring
     /// a Choice[] from a `DebugSnapshot` (rather than a live `Choice` list)
     /// depends on this to dispatch `choose()` correctly.

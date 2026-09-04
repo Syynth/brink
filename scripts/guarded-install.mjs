@@ -71,12 +71,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
-  BUILD_COMMAND,
-  WASM_PACKAGES,
-  checkWasmPkg,
-  checkWasmPkgLink,
-} from "./check-wasm-pkg.mjs";
+import { WASM_PACKAGES, checkWasmPkg, checkWasmPkgLink } from "./check-wasm-pkg.mjs";
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
 const defaultRepoRoot = resolve(here, "..");
@@ -166,12 +161,16 @@ export function guardedInstall({
   repoRoot = defaultRepoRoot,
   args = [],
   nodeModulesDir = join(repoRoot, "node_modules"),
-  // EVERY registered wasm package, not just brink-web (#3208). `.every` with
-  // the call first would short-circuit and hide the second package's state;
-  // `.reduce` runs them all so one invocation reports the full picture, the
-  // same contract check-wasm-pkg's own main-guard keeps.
-  checkPkg = () =>
-    WASM_PACKAGES.reduce((ok, pkg) => checkWasmPkg({ repoRoot, pkg }) && ok, true),
+  // EVERY registered wasm package, not just brink-web (#3208). A `.filter`
+  // runs the check for all of them — a short-circuiting `.every` would hide
+  // the second package's state — so one invocation reports the full
+  // picture, the same contract check-wasm-pkg's own main-guard keeps.
+  //
+  // Returns the UNBUILT packages (empty = precondition holds), so the
+  // refusal below can name exactly the build commands that are missing. A
+  // plain boolean is still accepted from an injected `checkPkg` (the tests
+  // pass `() => false`); it is read as "every registered package".
+  checkPkg = () => WASM_PACKAGES.filter((pkg) => !checkWasmPkg({ repoRoot, pkg })),
   checkLink = () =>
     WASM_PACKAGES.reduce((ok, pkg) => checkWasmPkgLink({ repoRoot, pkg }) && ok, true),
   runInstall = (installArgs) => defaultRunInstall(installArgs, repoRoot),
@@ -190,17 +189,24 @@ export function guardedInstall({
   // Deliberately BEFORE pnpm runs. Letting pnpm run first and diagnosing
   // afterwards would leave a partially-written tree behind on the failure
   // path, which is the state #2479 was about.
-  if (!checkPkg()) {
+  const unbuilt = unbuiltPackages(checkPkg());
+  if (unbuilt.length > 0) {
+    // Name EVERY missing build, not a hardcoded brink-web one: the 0.5.1
+    // release attempt died on a refusal that said "build brink-web" while
+    // the missing artifact was brink-prose (201000ee), which sends a reader
+    // to build the one thing that is already built.
     error(
       [
         "",
-        "[guarded-install] REFUSING TO INSTALL — the wasm-pack output packages/wasm",
-        "links against is not built yet, so `pnpm install` would resolve nothing and",
+        "[guarded-install] REFUSING TO INSTALL — a wasm-pack output that a workspace",
+        "package links against is not built yet, so `pnpm install` would resolve nothing and",
         "write nothing (#2593). Nothing was installed; the tree is unchanged.",
+        "",
+        `Not built: ${unbuilt.map((pkg) => pkg.pkgDir).join(", ")}`,
         "",
         "Build it first, then re-run this command:",
         "",
-        `    ${BUILD_COMMAND}`,
+        ...unbuilt.map((pkg) => `    ${pkg.buildCommand}`),
         "",
       ].join("\n"),
     );
@@ -222,7 +228,7 @@ export function guardedInstall({
         "ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND, the wasm-pack output went missing",
         "between the check above and the install itself; rebuild it with:",
         "",
-        `    ${BUILD_COMMAND}`,
+        ...WASM_PACKAGES.map((pkg) => `    ${pkg.buildCommand}`),
         "",
       ].join("\n"),
     );
@@ -264,7 +270,7 @@ export function guardedInstall({
         "Failing non-zero rather than letting this scroll past — a warning here is",
         "exactly how #2479 survived three separate reports. Rebuild wasm and retry:",
         "",
-        `    ${BUILD_COMMAND}`,
+        ...WASM_PACKAGES.map((pkg) => `    ${pkg.buildCommand}`),
         "    pnpm install:checked",
         "",
       ].join("\n"),
@@ -272,8 +278,20 @@ export function guardedInstall({
     return 1;
   }
 
-  log("[guarded-install] install verified: node_modules present and brink-web linked");
+  log(
+    `[guarded-install] install verified: node_modules present and ${WASM_PACKAGES.map((pkg) => pkg.depName).join(", ")} linked`,
+  );
   return 0;
+}
+
+/**
+ * Normalise a `checkPkg` result to the list of unbuilt packages: an array is
+ * taken as-is, `true` means none, and `false` means every registered package
+ * (the only thing a boolean can honestly say).
+ */
+function unbuiltPackages(result) {
+  if (Array.isArray(result)) return result;
+  return result ? [] : WASM_PACKAGES;
 }
 
 /**

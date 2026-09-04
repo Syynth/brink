@@ -108,6 +108,7 @@ impl LowerBody for ast::LogicLine {
                 name,
                 value,
                 annotation,
+                synthetic: false,
             }));
         }
 
