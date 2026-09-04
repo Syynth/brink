@@ -1,7 +1,8 @@
 # The story optimizer
 
-**Status: PROPOSED (needs ruling).** This supersedes part of the
-2026-08-06 ruling — see §1.
+**Status: RULED 2026-09-04.** §9's three questions are answered; step 1 of
+§8 is implemented (§10). This supersedes part of the 2026-08-06 ruling —
+see §1.
 
 The optimizer is a **post-compile `.inkb` → `.inkb` transform**. It makes
 a shipped artifact smaller and cheaper without changing what it does. It
@@ -183,17 +184,46 @@ document's catalogue, and the mechanism they will want is 08-06's.
    is the obvious candidate: the biggest win, the clearest metric).
 3. Revisit `optimizer-framework-spec.md` once a second pass exists.
 
-## 9. Questions for the ruling
+## 9. Questions for the ruling — RULED 2026-09-04
 
-1. **Does `brink compile` run the optimizer by default?** Proposal: no —
-   `brink opt` is explicit in v1, so an artifact's provenance is never
-   ambiguous. Alternative: compile runs a default pass set, with
-   `--no-opt` to suppress.
-2. **Is the optimized artifact distinguishable?** Proposal: a flag in the
-   artifact header recording that it was optimized and by which passes,
-   so a bug report can say. Alternative: nothing, and the artifact is
-   opaque.
-3. **Per-pass toggles now or later?** Proposal: `--passes=` from the
-   start, because a post-compile tool makes bisection cheap and it costs
-   nothing to expose. This is the one place the framework document's
-   deferral could reasonably be pre-empted.
+1. **Does `brink compile` run the optimizer by default?** **No.** `brink opt`
+   is a separate, explicit step, so an artifact's provenance is never
+   ambiguous.
+2. **Is the optimized artifact distinguishable?** **Deferred**, and it costs
+   nothing to defer: `.inkb`'s house rule exempts a new **optional section,
+   omitted when empty**, from a `VERSION` bump, so the marker is exactly as
+   cheap to add later as now — and later it can record real pass names
+   instead of a bare flag. (Next free section tag is `0x13`, pinned by
+   `from_u8_rejects_unclaimed_section_tag`.)
+3. **Per-pass toggles now or later?** **Later** — this departs from the
+   proposal above. `OptConfig { passes: PassSet }` exists in the API, but no
+   CLI flag exposes it while the pass list is empty: a toggle grammar with no
+   inhabitants cannot be tested and risks being designed wrong, which is the
+   same trap `optimizer-framework-spec.md` is deferred to avoid.
+
+## 10. What v1 shipped
+
+Step 1 of §8, and only that. `crates/brink-opt` with an empty pass list,
+`ArtifactStats`, and the fence:
+
+| | |
+|---|---|
+| `brink-opt/src/{lib,stats,control}.rs` | the crate, the measurement, and the negative-control passes |
+| `brink-test-harness/src/opt_fence.rs` | `judge()` — the single seam every check goes through |
+| `brink-test-harness/tests/opt_corpus_fence.rs` | tier1–3 and tier1-native under the optimizer |
+| `brink-test-harness/tests/opt_negative_control.rs` | the control matrix — what makes the fence's greenness evidence |
+| `brink-gen/tests/opt_equivalence.rs` | the generator property and its non-vacuity control |
+
+`brink-opt` is `publish = false` while the pass list is empty, and **there is
+no `brink opt` subcommand yet**: `brink-cli` is publishable, a published crate
+cannot depend on an unpublished one, and CI's publishable check would not
+catch that (it verifies each publishable crate exists on crates.io, not that
+its dependencies do). The subcommand lands with the first real pass, when the
+crate is worth hand-publishing.
+
+**One §5 claim needed correcting.** "An empty optimizer is provably
+byte-identical" reads as though the whole fence is a tautology in v1. Four of
+its five obligations are. The fifth is not: the road is
+`read_inkb → optimize → write_inkb`, so with no passes byte-identity asserts
+**`write_inkb ∘ read_inkb == id`**, which nothing else in the tree checked.
+It now holds over 419 real corpus artifacts, measured.
