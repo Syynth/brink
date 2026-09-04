@@ -144,6 +144,13 @@ test.describe("story graph document", () => {
   test("live overlay: highlight + visit badge while running, plain graph when stopped", async ({
     page,
   }) => {
+    // The two overlay waits below each ask for 15s, and the suite's own
+    // test timeout is 15s (`playwright.config.ts`) — so those budgets were
+    // dead on arrival: the test was killed at 15s total, setup included,
+    // and the generous wait never applied (CI failure 2026-09-04, run
+    // 33863806712). Raise the test's own budget past the sum of what it
+    // waits for, as the recompile test below already does.
+    test.setTimeout(60_000);
     // Start BEFORE opening the graph — the takeover hides the Player, so
     // the start affordance must be clicked while it is still visible.
     await ensureStoryStarted(page);
