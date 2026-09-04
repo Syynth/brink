@@ -535,6 +535,28 @@ written; the focused file's own `Saved <path>` notice, and fix-on-save's
 still-deliberate no-toast-of-its-own rule for the file being saved, are
 unchanged.
 
+*As built (#3496):* applying a fix used to reload every touched file's
+mounted views wholesale — `documents.invalidateFile(path)` dispatched a
+single `{ from: 0, to: doc.length, insert: content }` change, which maps
+every existing selection to the insertion point and forces the whole
+viewport to re-lay out, so pressing **Fix** on a diagnostic elsewhere in a
+long file scrolled the editor away from the edit. `applyMoveResult` now
+threads a fix's own precise `edits` (the wasm DTO's `FixJs.edits`, UTF-16
+file-absolute ranges — the same ones a `Fix` already carries, see this
+section's wasm-DTO bullet above) through to
+`DocumentSessions.applyEditsToViews(path, edits)`, which dispatches them as
+one minimal, sorted `changes` set: CM6 maps the existing selection through
+the change set (its default), and no `scrollIntoView` effect is added, so a
+mounted view's caret and scroll position survive an edit elsewhere in the
+file. A caller with no precise edit list (a structural op — rename / move /
+promote / demote / reorder, which carries only a whole-file `new_source` /
+`cross_file_edits`) still goes through `invalidateFile`, whose own fallback
+now computes a minimal common-prefix/suffix diff rather than a blind
+whole-document replace, so undo, an external file change, and a structural
+op's reload all keep the caret/scroll stable too — only a `Fix`'s own apply
+gets the fully precise multi-range path, since it is the only caller that
+already knows the edits rather than only the result.
+
 ## 8. `brink fix` — RULED
 
 Its own subcommand (not a `--fix` flag on `compile`): it needs its own

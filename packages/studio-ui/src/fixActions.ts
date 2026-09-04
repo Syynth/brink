@@ -22,6 +22,7 @@ import type {
   Applicability,
   Diagnostic,
   Fix,
+  FixEdit,
   FixOffer,
   FixReport,
   FixSelect,
@@ -51,10 +52,16 @@ export interface FixProject {
 /** The slice of the studio store this module needs. */
 export interface FixStoreState {
   _project: FixProject | null;
+  /** `edits` (#3496): a precise, already-known edit list threads through to
+   *  the document layer so it can sync mounted views with a minimal change
+   *  instead of reloading the whole file (preserving scroll position,
+   *  selection, and undo granularity) — optional so a caller with no such
+   *  list (or a test double) still type-checks against the seam. */
   applyMoveResult: (
     result: StructuralResult,
     description: string,
     affectedPaths: string[],
+    edits?: readonly FixEdit[],
   ) => Promise<void>;
   _notify?: ((n: {
     severity: "info" | "warning" | "error";
@@ -213,7 +220,11 @@ export async function applyOfferedFix(
     notify(state, "error", `${offer.fix.title} failed: ${result.error ?? "refused"}`);
     return;
   }
-  await state.applyMoveResult(result, offer.fix.title, [offer.path]);
+  // #3496: the fix's own edits are already known precisely (UTF-16
+  // file-absolute ranges) — hand them to the apply seam so it can sync
+  // mounted views with a minimal change instead of a whole-document
+  // replace, keeping the editor's scroll position and selection put.
+  await state.applyMoveResult(result, offer.fix.title, [offer.path], offer.fix.edits);
 }
 
 /**
