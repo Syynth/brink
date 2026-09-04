@@ -243,3 +243,54 @@ fn container_with_no_params_or_temps_gets_an_empty_locals_row() {
         table.locals
     );
 }
+
+// ─── 4. #3395: a temp the lift-order hoist minted is flagged `synthetic` ───
+//    (and an authored one is not), so the debugger can hide it.
+
+#[test]
+fn hoisted_lift_order_temp_is_flagged_synthetic_and_authored_temps_are_not() {
+    let src = "VAR n = 0\n-> k\n=== function bump() ===\n~ n = n + 1\n~ return n\n=== k ===\n~ temp mine = 1\n{bump()}{n == 1:yes|no}\n-> END\n";
+    let program = lower_ink(src, "story.ink");
+    let data = emit_with_debug_info(&program);
+    let idx = container_idx_named(&data, "k");
+    let table = &data
+        .debug_info
+        .as_ref()
+        .expect("debug info requested")
+        .containers[idx];
+
+    let mine = local_named(&table.locals, "mine");
+    assert!(!mine.synthetic, "an authored `~ temp` is never synthetic");
+
+    let hoisted: Vec<&brink_format::DebugLocalEntry> = table
+        .locals
+        .iter()
+        .filter(|l| brink_ir::hir::is_synthetic_temp_name(&l.name))
+        .collect();
+    assert_eq!(
+        hoisted.len(),
+        1,
+        "exactly one prefix interpolation was hoisted: {:?}",
+        table.locals
+    );
+    assert!(
+        hoisted[0].synthetic,
+        "the hoisted temp must be flagged synthetic"
+    );
+    assert_ne!(
+        hoisted[0].slot, mine.slot,
+        "the hoisted temp gets its own slot"
+    );
+    // Its declaring range is the line it was hoisted out of, not a
+    // fabricated one — an author stepping into it lands on the line.
+    let (file_idx, start, len) = hoisted[0]
+        .declaring_range
+        .expect("a `~ temp` statement carries a declaring range");
+    let file = &data.debug_info.as_ref().unwrap().files[file_idx as usize];
+    assert_eq!(file.path, "story.ink");
+    let text = &src[start as usize..(start + len) as usize];
+    assert!(
+        text.contains("{bump()}"),
+        "declaring range must cover the hoisted line, got {text:?}"
+    );
+}

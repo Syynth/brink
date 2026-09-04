@@ -129,6 +129,21 @@ impl OutputPart {
             _ => false,
         }
     }
+
+    /// Issue #3533: does this part render as something other than
+    /// whitespace? [`Self::is_content`] mirrors ink's
+    /// `outputStreamContainsContent`, where an empty `""` string still
+    /// counts (it lets the line's own newline through); this mirrors what
+    /// ink's newline lookahead treats as *extending* a line — a blank
+    /// `ValueRef` (`""`, `" "`, an empty list) never commits the line
+    /// before it, only visible text does.
+    fn is_visible(&self) -> bool {
+        match self {
+            Self::ValueRef(Value::String(s)) => !s.trim().is_empty(),
+            Self::ValueRef(Value::List(lv)) => !lv.items.is_empty(),
+            _ => self.is_content(),
+        }
+    }
 }
 
 /// Resolve a single output part to its text representation.
@@ -353,6 +368,18 @@ fn resolve_select<'a>(
     default
 }
 
+/// Where a function's output began: the active target's length at call
+/// time, plus which target it was. The two depths let a later check tell
+/// "the same target, further along" from "a different target" (a string
+/// capture or fragment that began inside the function), where the length
+/// alone would be meaningless (issue #3519).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputMark {
+    pub(crate) len: usize,
+    pub(crate) capture_depth: usize,
+    pub(crate) fragment_depth: usize,
+}
+
 /// Accumulates output text with glue resolution.
 ///
 /// The buffer is split into two storage areas:
@@ -420,6 +447,55 @@ impl OutputBuffer {
         }
     }
 
+    /// Where a function's output starts: the active target's length and
+    /// which target it was (by capture/fragment depth), recorded at call
+    /// time on the function's frame — see [`OutputMark`].
+    pub(crate) fn mark(&self) -> OutputMark {
+        OutputMark {
+            len: self.target_len(),
+            capture_depth: self.capture_depth,
+            fragment_depth: self.fragment_depth,
+        }
+    }
+
+    /// Push a newline emitted while `function` (the innermost function
+    /// frame's [`OutputMark`], if the top frame is a function) is active.
+    ///
+    /// Matches the C# runtime's `functionStartInOutputStream` rule
+    /// (`PushToOutputStreamIndividual`): while a function has produced no
+    /// non-whitespace output since it was entered, a newline is dropped
+    /// outright — so a function whose body begins with a conditional block
+    /// (whose branch starts with a newline) does not break the line it was
+    /// called from, even when that line already holds content from an
+    /// earlier call (issue #3519). Once the function has printed, or when a
+    /// string capture / fragment began inside it (C#'s `BeginString`
+    /// exception — the mark no longer names the active target), the
+    /// ordinary [`Self::push_newline`] rules apply.
+    pub(crate) fn push_newline_in_function(&mut self, function: Option<OutputMark>) {
+        if let Some(mark) = function
+            && mark.capture_depth == self.capture_depth
+            && mark.fragment_depth == self.fragment_depth
+            && self
+                .target_ref()
+                .get(mark.len..)
+                .is_some_and(|since_call| !since_call.iter().any(OutputPart::is_content))
+        {
+            return;
+        }
+        self.push_newline();
+    }
+
+    /// The active push target, read-only — same priority as [`Self::target`].
+    fn target_ref(&self) -> &Vec<OutputPart> {
+        if self.capture_depth > 0 {
+            &self.capture
+        } else if self.fragment_depth > 0 {
+            &self.fragment_capture
+        } else {
+            &self.transcript
+        }
+    }
+
     /// Length of the active push target. Used to record function output
     /// start points for trailing whitespace trim on return.
     pub(crate) fn target_len(&self) -> usize {
@@ -437,23 +513,42 @@ impl OutputBuffer {
     /// `TrimWhitespaceFromFunctionEnd`: on function return, remove
     /// trailing `Newline`, `Spring`, and whitespace-only text so that
     /// function output doesn't inject unwanted line breaks.
+    ///
+    /// `Glue` is transparent to the walk, as it is to the C# loop (which
+    /// `continue`s past every non-text object): the glue stays, and the
+    /// whitespace beneath it goes — so `{x} <>` at the end of a function
+    /// leaves `x` glued to whatever follows, not `x ` (issue #3522).
     pub(crate) fn trim_function_end(&mut self, start: usize) {
         let target = self.target();
-        while target.len() > start {
-            match target.last() {
-                Some(OutputPart::Newline | OutputPart::Spring) => {
-                    target.pop();
+        let mut i = target.len();
+        while i > start {
+            i -= 1;
+            let trimmable = match &target[i] {
+                // Glue is transparent to the trim (issue #3522), neither
+                // removed nor a stopping point.
+                OutputPart::Glue => continue,
+                OutputPart::Newline | OutputPart::Spring => true,
+                OutputPart::Text(s) => s.trim().is_empty(),
+                OutputPart::LineRef { flags, .. } => {
+                    flags.contains(brink_format::LineFlags::ALL_WS)
                 }
-                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
-                    target.pop();
-                }
-                Some(OutputPart::LineRef { flags, .. })
-                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
-                {
-                    target.pop();
-                }
-                _ => break,
+                // Issue #3536: a value that renders as whitespace — an
+                // empty list, `""`, a `none` — is trimmed exactly like
+                // whitespace text. ink stringifies values into the output
+                // stream as they are pushed, so by the time its
+                // `TrimWhitespaceFromFunctionEnd` runs an empty
+                // interpolation is an inline-whitespace `StringValue`
+                // there; brink resolves values later (the transcript holds
+                // an unresolved `ValueRef`), so the same judgement is made
+                // here from the value itself. A value that renders visibly
+                // still stops the trim.
+                part @ OutputPart::ValueRef(_) => !part.is_visible(),
+                _ => false,
+            };
+            if !trimmable {
+                break;
             }
+            target.remove(i);
         }
     }
 
@@ -740,6 +835,14 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     // consistent with `OutputPart::is_content`.
                     | OutputPart::ValueRef(Value::OptionVal(None)) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
+                    // A whitespace-only or empty line-table line is
+                    // whitespace-only text by another name (issue #3507:
+                    // a lifted arm that rendered to `" "` before glue) —
+                    // it is not content and does not block the scan,
+                    // exactly as `is_content` already classifies it.
+                    OutputPart::LineRef { flags, .. }
+                        if flags.contains(brink_format::LineFlags::ALL_WS)
+                            || flags.contains(brink_format::LineFlags::EMPTY) => {}
                     // Content (Text, LineRef, ValueRef) blocks glue scan.
                     OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
                         break;
@@ -808,11 +911,27 @@ fn resolve_parts(
     // can be dropped rather than left as a stray blank line.
     let mut line_start = 0usize;
     let mut saw_fragment_ref = false;
+    // Issue #3507: where the current line began in `out`, counting a
+    // glue-removed `Newline` too (unlike `line_start`, which only moves on
+    // a kept one). ink's glue trims the trailing newline AND every
+    // whitespace-only string after it (`TrimNewlinesFromOutputStream`), so
+    // `a` / `{false:x} <>` / `b` prints `ab`: the spring's space after the
+    // empty construct dies with the newline. When content DID land on the
+    // line (`{0} <>`), the newline is not trailing and the space survives
+    // (`0 world`).
+    let mut since_newline = 0usize;
 
     for (i, part) in parts.iter().enumerate() {
         if remove[i] {
-            if matches!(part, OutputPart::Glue) {
-                after_glue = true;
+            match part {
+                OutputPart::Glue => {
+                    after_glue = true;
+                    if out[since_newline..].trim().is_empty() {
+                        out.truncate(since_newline);
+                    }
+                }
+                OutputPart::Newline => since_newline = out.len(),
+                _ => {}
             }
             continue;
         }
@@ -854,6 +973,7 @@ fn resolve_parts(
                     }
                     saw_fragment_ref = false;
                 }
+                since_newline = out.len();
             }
             OutputPart::Glue
             | OutputPart::Checkpoint
@@ -1037,6 +1157,10 @@ fn widen_source(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass over the output parts; each arm is a distinct part kind"
+)]
 pub(crate) fn resolve_lines_annotated(
     parts: &[OutputPart],
     seed_element: BTreeMap<String, String>,
@@ -1072,11 +1196,24 @@ pub(crate) fn resolve_lines_annotated(
     let mut current_source: Option<brink_format::SourceLocation> = None;
     let mut saw_fragment_ref = false;
     let mut after_glue = false;
+    // Issue #3507 — see `resolve_parts`'s `since_newline`: the
+    // point in `current_text` where the current source line began, counting
+    // a glue-removed newline, so glue can drop whitespace-only text that
+    // followed that newline the way ink's `TrimNewlinesFromOutputStream`
+    // does.
+    let mut since_newline = 0usize;
 
     for (i, part) in parts.iter().enumerate() {
         if remove[i] {
-            if matches!(part, OutputPart::Glue) {
-                after_glue = true;
+            match part {
+                OutputPart::Glue => {
+                    after_glue = true;
+                    if current_text[since_newline..].trim().is_empty() {
+                        current_text.truncate(since_newline);
+                    }
+                }
+                OutputPart::Newline => since_newline = current_text.len(),
+                _ => {}
             }
             continue;
         }
@@ -1142,6 +1279,7 @@ pub(crate) fn resolve_lines_annotated(
                     current_text = String::new();
                     saw_fragment_ref = false;
                 }
+                since_newline = current_text.len();
             }
             OutputPart::Tag(tag) => {
                 current_tags.push(tag.clone());
@@ -1457,7 +1595,12 @@ mod tests {
 
     /// Glue should skip past whitespace-only text to find the preceding newline.
     /// Pattern: `a\n" "<>b` — the `" "` is whitespace-only and should not block
-    /// the glue from removing the newline.
+    /// the glue from removing the newline — and (issue #3507) it goes WITH
+    /// the newline: ink's `TrimNewlinesFromOutputStream` removes the trailing
+    /// newline and every whitespace-only string after it, so `a` /
+    /// `{false:x} <>` / `b` prints `ab` (inkjs 2.4.0 via
+    /// `tools/inkjs-oracle`). This test used to pin `a b`, which was the
+    /// divergence.
     #[test]
     fn glue_skips_whitespace_only_text_to_find_newline() {
         let mut buf = OutputBuffer::new();
@@ -1466,7 +1609,31 @@ mod tests {
         buf.push_text(" ");
         buf.push_glue();
         buf.push_text("b");
-        assert_eq!(buf.flush(), "a b");
+        assert_eq!(buf.flush(), "ab");
+    }
+
+    /// Issue #3507: a `Spring` between a glue-removed newline and the glue
+    /// is whitespace after that newline and dies with it (`ab`); with
+    /// content on the line the newline is not trailing, so the spring's
+    /// space survives (`0 world`).
+    #[test]
+    fn spring_before_glue_survives_only_after_line_content() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("a");
+        buf.push_newline();
+        buf.push_spring();
+        buf.push_glue();
+        buf.push_text("b");
+        assert_eq!(buf.flush(), "ab");
+
+        let mut buf = OutputBuffer::new();
+        buf.push_text("a");
+        buf.push_newline();
+        buf.push_text("0");
+        buf.push_spring();
+        buf.push_glue();
+        buf.push_text("world");
+        assert_eq!(buf.flush(), "a\n0 world");
     }
 
     // ── flush_lines tests ────────────────────────────────────────────

@@ -323,7 +323,12 @@ fn lower_block_temp_decl(decl: &hir::TempDecl, ctx: &mut LowerCtx<'_>, out: &mut
     let (slot, name) = declare_shadow_checked(&decl.name.text, decl.name.range, ctx);
     ctx.record_temp_annotation(slot, decl.annotation.as_ref());
     out.push(lir::Stmt::new(
-        lir::StmtKind::DeclareTemp { slot, name, value },
+        lir::StmtKind::DeclareTemp {
+            slot,
+            name,
+            value,
+            synthetic: decl.synthetic,
+        },
         ctx.current_stmt_provenance,
     ));
 }
@@ -806,6 +811,7 @@ fn declare_synthetic(
             slot,
             name,
             value: Some(value),
+            synthetic: false,
         },
         ctx.current_stmt_provenance,
     ));
@@ -1225,6 +1231,7 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
                 }
                 .at(ctx.current_stmt_provenance),
             ),
+            synthetic: false,
         },
         ctx.current_stmt_provenance,
     )];
@@ -1244,6 +1251,7 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
                     }
                     .at(ctx.current_stmt_provenance),
                 ),
+                synthetic: false,
             },
             ctx.current_stmt_provenance,
         ));

@@ -41,6 +41,85 @@
 //!    blocks); diverts live in tails, so conditionals never affect
 //!    termination.
 //!
+//! # Functions
+//!
+//! 8. A function (`=== function f(a, ref b) ===`) has a fixed position in
+//!    [`Story::functions`]; its body is items only (no tail, so no divert
+//!    and no choice — ink forbids both in a function) and ends in `~ return
+//!    expr` when it returns a value; the body and the return are never
+//!    both absent (inklecate rejects an empty function, "Expected at least
+//!    one line within the knot"). A call is legal from flow code to any
+//!    function, and from function `i`'s body only to functions `< i` — the
+//!    call graph is a DAG by construction, so no call can recurse and every
+//!    call terminates.
+//! 9. Calls are typed like any expression: argument types match the
+//!    parameters, a `ref` parameter's argument is a visible variable of that
+//!    type (a global, a temp, or an enclosing function's own parameter, so
+//!    the reference chain of `I096-nested-pass-by-reference` is reachable),
+//!    and a call in expression position names a function that returns a
+//!    value. A void function is called only as a statement (`~ f(x)`).
+//!
+//! # Tunnels and threads
+//!
+//! 10. Every knot has a [`FlowKind`]: the first is always a plain knot (the
+//!     entry). A **tunnel** knot is entered only by `-> t ->` (an
+//!     [`Item::TunnelCall`]) and its weaves leave by `->->`
+//!     ([`Exit::TunnelReturn`]), `-> END`, or a divert to another tunnel
+//!     flow under rules 1–2; never `-> DONE`. A tunnel call from flow code
+//!     may name any tunnel flow; from inside tunnel knot `i` only a tunnel
+//!     knot `> i`, so tunnel calls form a DAG and every call returns. A
+//!     tunnel's choices are all once-only (`*`): a tunnel flow is entered
+//!     once per call site, and a sticky choice re-offered on every entry
+//!     made the choice tree of a story with a few call sites too wide for
+//!     the smoke lane's exhaustive explorer (finite, but 4096 episodes were
+//!     not enough); once-only choices are consumed across entries.
+//! 11. A **thread** knot is entered only by `<- t` ([`Item::Thread`]) from a
+//!     plain knot's weave (never from a tunnel, a thread, or a function).
+//!     Its weaves leave by `-> DONE`, `-> END`, or a divert to another thread
+//!     flow under rules 1–2; never `->->`. Tunnel calls are legal inside
+//!     threads (any tunnel).
+//!
+//! # Lists
+//!
+//! 12. A `LIST` declaration is a global of type [`Ty::List`] (its own index)
+//!     whose values are subsets of its items; item names are unique across
+//!     the story. A list literal, an item, `+`/`-` (union/difference), `^`
+//!     (intersection), `LIST_MIN`/`LIST_MAX`/`LIST_ALL`/`LIST_INVERT` are
+//!     values of that list's type; `?`/`!?` yield bools; `LIST_COUNT`
+//!     yields an int; `==`/`!=` compare two values of the same list type.
+//!     `+=`/`-=` write through a list target like an int one.
+//!
+//! # Sequences and randomness
+//!
+//! 13. A **sequence** ([`Part::Seq`]) is inline content with two or more
+//!     alternatives and a [`SeqKind`] marker — `{a|b}` stopping, `{&a|b}`
+//!     cycle, `{!a|b}` once, `{~a|b}` shuffle. At least one alternative is
+//!     non-empty, and no two empty ones are adjacent: an empty alternative
+//!     is legal in ink and prints nothing, but two in a row spell `||`,
+//!     which ink lexes as the or-operator. A sequence never affects termination: it changes
+//!     what a line prints on a revisit, not where control goes.
+//!     Alternatives are letters, digits and spaces only, because ink tries
+//!     a `{…}` as an expression before it tries it as a sequence and any
+//!     punctuation can commit it to the wrong reading (`{a?|a}` does not
+//!     compile under inklecate; brink accepts it).
+//!     `RANDOM(min, max)` ([`Expr::Random`]) is an int expression whose
+//!     bounds are literals with `min <= max` — ink raises a story error
+//!     when they are the other way round — and it stands only in a printed
+//!     interpolation. Anywhere else (a choice condition, an assignment, a
+//!     temp, a conditional's condition, a function's return) a drawn value
+//!     could reach a choice guard and the choices offered at a point would
+//!     stop being a function of state alone; the harness's explorer is an
+//!     exhaustive DFS with no state dedup, so a guard that flickers
+//!     between visits multiplies its episode count without bound. Both
+//!     sequences and `RANDOM` consume the story RNG, so this tier is what
+//!     puts brink's `DotNetRng` and the oracle's `System.Random` shim head
+//!     to head.
+//! 14. A line's sequences multiply into whole-line variants and their
+//!     product stays within [`VARIANT_CAP`] — the compiler enumerates each
+//!     variant as a line-table entry and rejects a breach outright (E191),
+//!     a `once` sequence counting one extra for its exhausted empty
+//!     variant.
+//!
 //! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
@@ -57,6 +136,46 @@ pub struct Story {
     pub vars: Vec<VarDecl>,
     /// Knots in document order. Never empty.
     pub knots: Vec<Knot>,
+    /// Functions, printed after the knots. Function `i` may call only
+    /// functions `< i` (rule 8).
+    pub functions: Vec<Function>,
+    /// `LIST` declarations, printed after the `VAR`s (rule 12).
+    pub lists: Vec<ListDecl>,
+}
+
+/// `LIST name = a, (b), c` — a global whose values are subsets of `items`;
+/// `initial` names the items active at start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListDecl {
+    /// Unique across the story.
+    pub name: String,
+    /// Unique across the story (ink resolves items globally). Never empty.
+    pub items: Vec<String>,
+    /// Indices into `items`, ascending, no repeats.
+    pub initial: Vec<usize>,
+}
+
+/// A function: `=== function name(params) ===`, a body of items, and an
+/// optional `~ return expr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    /// Unique across the story (shares the namespace with knots and vars).
+    pub name: String,
+    pub params: Vec<Param>,
+    /// Items only — no tail (rule 8).
+    pub body: Vec<Item>,
+    /// `~ return expr` closing the body; `None` for a void function.
+    pub ret: Option<Expr>,
+}
+
+/// One function parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    /// Unique within the function; visible in its body like a temp.
+    pub name: String,
+    pub ty: Ty,
+    /// `ref name` — the argument is a variable the body writes through to.
+    pub by_ref: bool,
 }
 
 /// A knot: a root weave plus zero or more stitches.
@@ -64,8 +183,21 @@ pub struct Story {
 pub struct Knot {
     /// Unique across the story.
     pub name: String,
+    /// How the knot is entered and left (rules 10–11).
+    pub kind: FlowKind,
     pub root: Weave,
     pub stitches: Vec<Stitch>,
+}
+
+/// How a knot is entered and how its weaves may leave (rules 10–11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowKind {
+    /// A plain knot: diverted to, leaves by `-> END`/`-> DONE`/a divert.
+    Knot,
+    /// Entered by `-> t ->`, leaves by `->->`.
+    Tunnel,
+    /// Entered by `<- t`, leaves by `-> DONE`.
+    Thread,
 }
 
 /// A stitch inside a knot.
@@ -89,6 +221,8 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    /// A value of the `LIST` at this index of [`Story::lists`] (rule 12).
+    List(usize),
 }
 
 /// A literal value.
@@ -98,6 +232,12 @@ pub enum Literal {
     Bool(bool),
     /// Printable text with no quote or ink-significant characters.
     Str(String),
+    /// `(a, b)` or `()` — item names of the list at `list`, in declaration
+    /// order, no repeats (rule 12).
+    List {
+        list: usize,
+        items: Vec<String>,
+    },
 }
 
 impl Literal {
@@ -106,6 +246,7 @@ impl Literal {
             Self::Int(_) => Ty::Int,
             Self::Bool(_) => Ty::Bool,
             Self::Str(_) => Ty::Str,
+            Self::List { list, .. } => Ty::List(*list),
         }
     }
 }
@@ -134,6 +275,27 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    /// `?` — the left list contains every item of the right (rule 12).
+    Has,
+    /// `!?` — the left list contains none of the right's items.
+    Hasnt,
+    /// `^` — intersection.
+    Intersect,
+}
+
+/// A list built-in taking one list argument (rule 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListFn {
+    /// `LIST_COUNT` → int.
+    Count,
+    /// `LIST_MIN` → the argument's list type.
+    Min,
+    /// `LIST_MAX`.
+    Max,
+    /// `LIST_ALL`.
+    All,
+    /// `LIST_INVERT`.
+    Invert,
 }
 
 /// A typed expression.
@@ -145,6 +307,24 @@ pub enum Expr {
     Neg(Box<Expr>),
     Not(Box<Expr>),
     Bin(Box<Expr>, BinOp, Box<Expr>),
+    /// `f(args)` — a call to a value-returning function (rules 8–9).
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
+    /// A list item by name — a one-item value of its list's type (rule 12).
+    Item {
+        list: usize,
+        name: String,
+    },
+    /// `LIST_COUNT(x)` and friends (rule 12).
+    ListFn(ListFn, Box<Expr>),
+    /// `RANDOM(min, max)` — an int, bounds inclusive, `min <= max`
+    /// (rule 13).
+    Random {
+        min: i32,
+        max: i32,
+    },
 }
 
 /// How an assignment writes its target.
@@ -155,6 +335,31 @@ pub enum AssignOp {
     Add,
     /// `-=` — int targets only.
     Sub,
+}
+
+/// Which alternative a [`Part::Seq`] shows on each visit (rule 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeqKind {
+    /// `{a|b}` — each in turn, then the last one forever.
+    Stopping,
+    /// `{&a|b}` — each in turn, then round again.
+    Cycle,
+    /// `{!a|b}` — each in turn, then nothing.
+    Once,
+    /// `{~a|b}` — one at random, every visit.
+    Shuffle,
+}
+
+impl SeqKind {
+    /// The marker ink writes before the first alternative.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Stopping => "",
+            Self::Cycle => "&",
+            Self::Once => "!",
+            Self::Shuffle => "~",
+        }
+    }
 }
 
 /// One piece of a content line.
@@ -168,6 +373,12 @@ pub enum Part {
         cond: Expr,
         then: String,
         otherwise: Option<String>,
+    },
+    /// `{a|b}` and its marked forms — a sequence of plain-text
+    /// alternatives, at least two of them (rule 13).
+    Seq {
+        kind: SeqKind,
+        alts: Vec<String>,
     },
 }
 
@@ -190,6 +401,12 @@ pub enum Item {
         then: Vec<Item>,
         otherwise: Option<Vec<Item>>,
     },
+    /// `~ f(args)` — a call to a void function as a statement (rule 9).
+    Call { name: String, args: Vec<Expr> },
+    /// `-> t ->` — run a tunnel flow and continue here (rule 10).
+    TunnelCall(Divert),
+    /// `<- t` — start a thread at a thread flow and continue here (rule 11).
+    Thread(Divert),
 }
 
 /// How a weave ends.
@@ -219,6 +436,8 @@ pub enum Exit {
     Divert(Divert),
     End,
     Done,
+    /// `->->` — legal only inside a tunnel knot (rule 10).
+    TunnelReturn,
 }
 
 /// A resolved divert target: a knot root or one of its stitches.
@@ -298,6 +517,13 @@ impl Story {
         None
     }
 
+    /// The kind of the knot a divert lands in, or `None` if the target
+    /// does not exist.
+    pub fn flow_kind(&self, d: Divert) -> Option<FlowKind> {
+        self.flow_index(d)?;
+        self.knots.get(d.knot).map(|k| k.kind)
+    }
+
     /// The `knot` / `knot.stitch` path a divert prints as.
     pub fn path(&self, d: Divert) -> Option<String> {
         let k = self.knots.get(d.knot)?;
@@ -310,10 +536,46 @@ impl Story {
 
 // ─── Validation ──────────────────────────────────────────────────────
 
-/// Names in scope at a point: globals plus the temps declared so far.
+/// A function's signature as the type checker sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnSig {
+    pub name: String,
+    /// `(type, by_ref)` per parameter.
+    pub params: Vec<(Ty, bool)>,
+    /// `None` for a void function.
+    pub ret: Option<Ty>,
+}
+
+impl Function {
+    /// The signature, with the return type inferred from `ret` against
+    /// `vars` — the names visible at the return site: globals, parameters
+    /// and the body's temps — and `funcs`, the functions callable from
+    /// this one (those declared before it, rule 8).
+    pub fn signature(
+        &self,
+        vars: &[(String, Ty)],
+        funcs: &[FnSig],
+        lists: &[ListDecl],
+    ) -> Result<FnSig, Invalid> {
+        let ret = match &self.ret {
+            Some(e) => Some(type_of_with_lists(e, vars, funcs, lists)?),
+            None => None,
+        };
+        Ok(FnSig {
+            name: self.name.clone(),
+            params: self.params.iter().map(|p| (p.ty, p.by_ref)).collect(),
+            ret,
+        })
+    }
+}
+
+/// Names in scope at a point: globals plus the temps declared so far, and
+/// the functions callable from here (rule 8).
 #[derive(Clone)]
 struct Scope {
     vars: Vec<(String, Ty)>,
+    funcs: Vec<FnSig>,
+    lists: Vec<ListDecl>,
 }
 
 impl Scope {
@@ -324,18 +586,100 @@ impl Scope {
             .find(|(n, _)| n == name)
             .map(|(_, t)| *t)
     }
+
+    fn func(&self, name: &str) -> Option<&FnSig> {
+        self.funcs.iter().find(|f| f.name == name)
+    }
 }
 
-/// The type of `e` in `scope`, or the rule-5 violation.
-pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)]) -> Result<Ty, Invalid> {
+/// The type of `e` in `scope`, or the rule-5 violation. `funcs` are the
+/// functions callable at this point.
+pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)], funcs: &[FnSig]) -> Result<Ty, Invalid> {
+    type_of_with_lists(e, scope_vars, funcs, &[])
+}
+
+/// [`type_of`] with the story's `LIST` declarations in scope (rule 12).
+pub fn type_of_with_lists(
+    e: &Expr,
+    scope_vars: &[(String, Ty)],
+    funcs: &[FnSig],
+    lists: &[ListDecl],
+) -> Result<Ty, Invalid> {
     let scope = Scope {
         vars: scope_vars.to_vec(),
+        funcs: funcs.to_vec(),
+        lists: lists.to_vec(),
     };
     type_in(e, &scope)
 }
 
+/// Check a call's arguments against `sig` (rule 9): arity, types, and a
+/// visible variable of the right type for every `ref` parameter.
+fn check_call(name: &str, args: &[Expr], scope: &Scope) -> Result<Option<Ty>, Invalid> {
+    let Some(sig) = scope.func(name) else {
+        return Err(Invalid(format!(
+            "call to unknown or not-yet-callable function `{name}`"
+        )));
+    };
+    if sig.params.len() != args.len() {
+        return Err(Invalid(format!(
+            "`{name}` takes {} argument(s), called with {}",
+            sig.params.len(),
+            args.len()
+        )));
+    }
+    for ((pty, by_ref), arg) in sig.params.iter().zip(args) {
+        if *by_ref {
+            let Expr::Var(v) = arg else {
+                return Err(Invalid(format!(
+                    "`ref` argument to `{name}` is not a variable"
+                )));
+            };
+            match scope.lookup(v) {
+                Some(t) if t == *pty => {}
+                Some(t) => {
+                    return Err(Invalid(format!(
+                        "`ref` argument `{v}` to `{name}` is {t:?}, parameter is {pty:?}"
+                    )));
+                }
+                None => return Err(Invalid(format!("unresolved `ref` argument `{v}`"))),
+            }
+        } else {
+            let t = type_in(arg, scope)?;
+            if t != *pty {
+                return Err(Invalid(format!(
+                    "argument to `{name}` is {t:?}, parameter is {pty:?}"
+                )));
+            }
+        }
+    }
+    Ok(sig.ret)
+}
+
 fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
     match e {
+        Expr::Lit(Literal::List { list, items }) => {
+            let Some(decl) = scope.lists.get(*list) else {
+                return Err(Invalid(format!("list literal of unknown list {list}")));
+            };
+            let mut last: Option<usize> = None;
+            for item in items {
+                let Some(pos) = decl.items.iter().position(|i| i == item) else {
+                    return Err(Invalid(format!(
+                        "`{item}` is not an item of `{}`",
+                        decl.name
+                    )));
+                };
+                if last.is_some_and(|l| pos <= l) {
+                    return Err(Invalid(format!(
+                        "list literal of `{}` out of order",
+                        decl.name
+                    )));
+                }
+                last = Some(pos);
+            }
+            Ok(Ty::List(*list))
+        }
         Expr::Lit(l) => Ok(l.ty()),
         Expr::Var(name) => scope
             .lookup(name)
@@ -348,58 +692,173 @@ fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
             Ty::Bool => Ok(Ty::Bool),
             t => Err(Invalid(format!("`not` of {t:?}"))),
         },
-        Expr::Bin(l, op, r) => {
-            let lt = type_in(l, scope)?;
-            let rt = type_in(r, scope)?;
-            match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    if lt == Ty::Int && rt == Ty::Int {
-                        Ok(Ty::Int)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::Mod => {
-                    if lt != Ty::Int {
-                        return Err(Invalid(format!("mod on {lt:?}")));
-                    }
-                    match r.as_ref() {
-                        Expr::Lit(Literal::Int(n)) if *n != 0 => Ok(Ty::Int),
-                        _ => Err(Invalid("mod divisor must be a nonzero int literal".into())),
-                    }
-                }
-                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                    if lt == Ty::Int && rt == Ty::Int {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::Eq | BinOp::Ne => {
-                    if lt == rt {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::And | BinOp::Or => {
-                    if lt == Ty::Bool && rt == Ty::Bool {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
+        Expr::Call { name, args } => check_call(name, args, scope)?
+            .ok_or_else(|| Invalid(format!("void function `{name}` used as a value"))),
+        Expr::Item { list, name } => {
+            let Some(decl) = scope.lists.get(*list) else {
+                return Err(Invalid(format!("item `{name}` of unknown list {list}")));
+            };
+            if decl.items.iter().any(|i| i == name) {
+                Ok(Ty::List(*list))
+            } else {
+                Err(Invalid(format!(
+                    "`{name}` is not an item of `{}`",
+                    decl.name
+                )))
+            }
+        }
+        Expr::ListFn(f, arg) => match (f, type_in(arg, scope)?) {
+            (ListFn::Count, Ty::List(_)) => Ok(Ty::Int),
+            (_, t @ Ty::List(_)) => Ok(t),
+            (f, t) => Err(Invalid(format!("{f:?} of {t:?}"))),
+        },
+        Expr::Random { min, max } => {
+            if min <= max {
+                Ok(Ty::Int)
+            } else {
+                Err(Invalid(format!("RANDOM({min}, {max}) has min > max")))
+            }
+        }
+        Expr::Bin(l, op, r) => type_bin(l, *op, r, scope),
+    }
+}
+
+/// The compiler's per-line cap on enumerated whole-line variants —
+/// `brink_ir::lir::lower::recognize::VARIANT_CAP`, a hard error (E191,
+/// #3274) when a line's sequences multiply past it. Mirrored here rather
+/// than imported: `brink-gen` depends on no compiler crate, and a change
+/// on that side shows up as a smoke-lane failure, which is the signal
+/// wanted.
+pub const VARIANT_CAP: usize = 32;
+
+/// A line's sequences multiply into whole-line variants; a `once`
+/// sequence counts one extra for its exhausted empty variant (rule 13).
+fn line_variant_product(parts: &[Part]) -> usize {
+    parts.iter().fold(1usize, |acc, p| match p {
+        Part::Seq { kind, alts } => {
+            acc.saturating_mul(alts.len() + usize::from(*kind == SeqKind::Once))
+        }
+        _ => acc,
+    })
+}
+
+/// A sequence's alternatives (rule 13): at least two, at least one of them
+/// non-empty, and none carrying a character that would re-parse the
+/// sequence as something else.
+fn validate_seq(alts: &[String]) -> Result<(), Invalid> {
+    if alts.len() < 2 {
+        return Err(Invalid(format!(
+            "sequence with {} alternative(s); ink needs two",
+            alts.len()
+        )));
+    }
+    if alts.iter().all(String::is_empty) {
+        return Err(Invalid("sequence whose alternatives are all empty".into()));
+    }
+    // `||` is ink's or-operator, so two empty alternatives in a row do not
+    // parse as a sequence at all.
+    if alts.windows(2).any(|w| w[0].is_empty() && w[1].is_empty()) {
+        return Err(Invalid(
+            "sequence with two empty alternatives in a row (`||`)".into(),
+        ));
+    }
+    for alt in alts {
+        // Letters, digits and spaces only: ink tries a `{…}` as an
+        // expression before it tries it as a sequence, so punctuation can
+        // commit it to the wrong reading — `{a?|a}` fails to compile with
+        // "Expected right side of `?` expression but saw `|a}`".
+        if let Some(bad) = alt
+            .chars()
+            .find(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && *c != ' ')
+        {
+            return Err(Invalid(format!(
+                "sequence alternative contains `{bad}`: {alt:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The type of a binary expression (rules 5 and 12).
+fn type_bin(l: &Expr, op: BinOp, r: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
+    let lt = type_in(l, scope)?;
+    let rt = type_in(r, scope)?;
+    match op {
+        BinOp::Add | BinOp::Sub => {
+            if (lt == Ty::Int && rt == Ty::Int) || (matches!(lt, Ty::List(_)) && lt == rt) {
+                Ok(lt)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Mul => {
+            if lt == Ty::Int && rt == Ty::Int {
+                Ok(Ty::Int)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Intersect => {
+            if matches!(lt, Ty::List(_)) && lt == rt {
+                Ok(lt)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Has | BinOp::Hasnt => {
+            if matches!(lt, Ty::List(_)) && lt == rt {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Mod => {
+            if lt != Ty::Int {
+                return Err(Invalid(format!("mod on {lt:?}")));
+            }
+            match r {
+                Expr::Lit(Literal::Int(n)) if *n != 0 => Ok(Ty::Int),
+                _ => Err(Invalid("mod divisor must be a nonzero int literal".into())),
+            }
+        }
+        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+            if lt == Ty::Int && rt == Ty::Int {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Eq | BinOp::Ne => {
+            if lt == rt {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::And | BinOp::Or => {
+            if lt == Ty::Bool && rt == Ty::Bool {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
             }
         }
     }
 }
 
-/// Check every rule in the module doc. `Ok(())` means the story is a
-/// well-formed, terminating, well-typed program.
-pub fn validate(story: &Story) -> Result<(), Invalid> {
-    if story.knots.is_empty() {
-        return Err(Invalid("story has no knots".into()));
-    }
+/// A `VAR` initializer: a list literal must name items of its list, in
+/// order (rule 12).
+fn validate_literal(story: &Story, l: &Literal) -> Result<(), Invalid> {
+    let scope = Scope {
+        vars: Vec::new(),
+        funcs: Vec::new(),
+        lists: story.lists.clone(),
+    };
+    type_in(&Expr::Lit(l.clone()), &scope).map(|_| ())
+}
+
+/// Name uniqueness across `VAR`s, knots, stitches, functions, lists and
+/// list items, plus every `VAR` initializer (rule 12).
+fn validate_names(story: &Story) -> Result<(), Invalid> {
     let mut names = BTreeSet::new();
     for v in &story.vars {
         if !names.insert(v.name.as_str()) {
@@ -420,35 +879,145 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
             }
         }
     }
-    let globals = Scope {
-        vars: story
+    for f in &story.functions {
+        if !names.insert(f.name.as_str()) {
+            return Err(Invalid(format!("duplicate name `{}`", f.name)));
+        }
+    }
+    for l in &story.lists {
+        if !names.insert(l.name.as_str()) {
+            return Err(Invalid(format!("duplicate name `{}`", l.name)));
+        }
+        if l.items.is_empty() {
+            return Err(Invalid(format!("LIST `{}` has no items", l.name)));
+        }
+        for item in &l.items {
+            if !names.insert(item.as_str()) {
+                return Err(Invalid(format!("duplicate name `{item}`")));
+            }
+        }
+        if l.initial.windows(2).any(|w| w[0] >= w[1])
+            || l.initial.iter().any(|&i| i >= l.items.len())
+        {
+            return Err(Invalid(format!("bad initial items on LIST `{}`", l.name)));
+        }
+    }
+    for v in &story.vars {
+        validate_literal(story, &v.init)?;
+    }
+    Ok(())
+}
+
+/// Check every rule in the module doc. `Ok(())` means the story is a
+/// well-formed, terminating, well-typed program.
+pub fn validate(story: &Story) -> Result<(), Invalid> {
+    if story.knots.is_empty() {
+        return Err(Invalid("story has no knots".into()));
+    }
+    validate_names(story)?;
+    let global_vars: Vec<(String, Ty)> = story
+        .vars
+        .iter()
+        .map(|v| (v.name.clone(), v.init.ty()))
+        .chain(
+            story
+                .lists
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.name.clone(), Ty::List(i))),
+        )
+        .collect();
+    // Functions: each body sees globals + its params and may call only
+    // earlier functions (rule 8), so signatures are checked in order.
+    let mut sigs: Vec<FnSig> = Vec::new();
+    for (i, f) in story.functions.iter().enumerate() {
+        if f.body.is_empty() && f.ret.is_none() {
+            return Err(Invalid(format!("function `{}` is empty", f.name)));
+        }
+        let mut seen_p = BTreeSet::new();
+        for p in &f.params {
+            if !seen_p.insert(p.name.as_str()) || global_vars.iter().any(|(n, _)| *n == p.name) {
+                return Err(Invalid(format!(
+                    "parameter `{}` of `{}` duplicates a visible name",
+                    p.name, f.name
+                )));
+            }
+        }
+        let mut scope = Scope {
+            vars: global_vars.clone(),
+            funcs: sigs.clone(),
+            lists: story.lists.clone(),
+        };
+        scope
             .vars
-            .iter()
-            .map(|v| (v.name.clone(), v.init.ty()))
-            .collect(),
+            .extend(f.params.iter().map(|p| (p.name.clone(), p.ty)));
+        validate_items(story, &f.body, &mut scope, false, usize::MAX - i, None)?;
+        let sig = f.signature(&scope.vars, &sigs, &story.lists)?;
+        sigs.push(sig);
+    }
+    let globals = Scope {
+        vars: global_vars,
+        funcs: sigs,
+        lists: story.lists.clone(),
     };
+    if story.knots[0].kind != FlowKind::Knot {
+        return Err(Invalid("the entry knot must be a plain knot".into()));
+    }
     let mut flow = 0;
-    for k in &story.knots {
-        validate_weave(story, &k.root, flow, false, false, &globals)?;
+    for (ki, k) in story.knots.iter().enumerate() {
+        let ctx = FlowCtx {
+            kind: k.kind,
+            knot: ki,
+        };
+        validate_weave(story, &k.root, flow, false, false, &globals, &ctx)?;
         flow += 1;
         for s in &k.stitches {
-            validate_weave(story, &s.body, flow, false, false, &globals)?;
+            validate_weave(story, &s.body, flow, false, false, &globals, &ctx)?;
             flow += 1;
         }
     }
     Ok(())
 }
 
-fn validate_exit(story: &Story, e: Exit, flow: usize, may_go_back: bool) -> Result<(), Invalid> {
-    if let Exit::Divert(d) = e {
-        let Some(target) = story.flow_index(d) else {
-            return Err(Invalid(format!("unresolved divert {d:?} from flow {flow}")));
-        };
-        if target <= flow && !may_go_back {
-            return Err(Invalid(format!(
-                "back-edge to flow {target} from flow {flow} outside a once-only choice body"
-            )));
+/// The flow a weave belongs to, for the per-kind rules (10–11).
+#[derive(Clone, Copy)]
+struct FlowCtx {
+    kind: FlowKind,
+    knot: usize,
+}
+
+fn validate_exit(
+    story: &Story,
+    e: Exit,
+    flow: usize,
+    may_go_back: bool,
+    ctx: &FlowCtx,
+) -> Result<(), Invalid> {
+    match e {
+        Exit::Divert(d) => {
+            let Some(target) = story.flow_index(d) else {
+                return Err(Invalid(format!("unresolved divert {d:?} from flow {flow}")));
+            };
+            if story.flow_kind(d) != Some(ctx.kind) {
+                return Err(Invalid(format!(
+                    "divert from a {:?} flow {flow} into a {:?} flow {target}",
+                    ctx.kind,
+                    story.flow_kind(d)
+                )));
+            }
+            if target <= flow && !may_go_back {
+                return Err(Invalid(format!(
+                    "back-edge to flow {target} from flow {flow} outside a once-only choice body"
+                )));
+            }
         }
+        Exit::TunnelReturn if ctx.kind != FlowKind::Tunnel => {
+            return Err(Invalid(format!("`->->` outside a tunnel (flow {flow})")));
+        }
+        Exit::Done if ctx.kind == FlowKind::Tunnel => {
+            return Err(Invalid(format!("`-> DONE` inside a tunnel (flow {flow})")));
+        }
+        Exit::End | Exit::Done | Exit::TunnelReturn => {}
     }
     Ok(())
 }
@@ -462,19 +1031,77 @@ fn expect_ty(e: &Expr, want: Ty, scope: &Scope, what: &str) -> Result<(), Invali
     }
 }
 
+/// Rules 10–11 for the items that reach into another flow: a tunnel call
+/// names a tunnel (from a tunnel, a later one); a thread starts from a
+/// plain knot and names a thread knot. `ctx` is `None` inside a function,
+/// where neither is legal.
+fn validate_flow_item(
+    story: &Story,
+    item: &Item,
+    d: Divert,
+    flow: usize,
+    ctx: Option<&FlowCtx>,
+) -> Result<(), Invalid> {
+    let is_tunnel_call = matches!(item, Item::TunnelCall(_));
+    let Some(ctx) = ctx else {
+        return Err(Invalid(if is_tunnel_call {
+            "tunnel call inside a function".into()
+        } else {
+            "thread inside a function".into()
+        }));
+    };
+    if is_tunnel_call {
+        if story.flow_kind(d) != Some(FlowKind::Tunnel) {
+            return Err(Invalid(format!(
+                "tunnel call to a non-tunnel flow {d:?} from flow {flow}"
+            )));
+        }
+        if ctx.kind == FlowKind::Tunnel && d.knot <= ctx.knot {
+            return Err(Invalid(format!(
+                "tunnel call from tunnel knot {} to tunnel knot {} (not a DAG)",
+                ctx.knot, d.knot
+            )));
+        }
+    } else {
+        if ctx.kind != FlowKind::Knot {
+            return Err(Invalid(format!(
+                "thread started from a {:?} flow {flow}",
+                ctx.kind
+            )));
+        }
+        if story.flow_kind(d) != Some(FlowKind::Thread) {
+            return Err(Invalid(format!(
+                "thread to a non-thread flow {d:?} from flow {flow}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate items in order, extending `scope` with each temp. `in_cond` is
 /// true inside a conditional branch, where temps may not be declared.
 fn validate_items(
+    story: &Story,
     items: &[Item],
     scope: &mut Scope,
     in_cond: bool,
     flow: usize,
+    ctx: Option<&FlowCtx>,
 ) -> Result<(), Invalid> {
     for item in items {
         match item {
+            Item::TunnelCall(d) | Item::Thread(d) => {
+                validate_flow_item(story, item, *d, flow, ctx)?;
+            }
             Item::Line { parts, .. } => {
                 if parts.is_empty() {
                     return Err(Invalid(format!("empty content line in flow {flow}")));
+                }
+                if line_variant_product(parts) > VARIANT_CAP {
+                    return Err(Invalid(format!(
+                        "content line enumerates to {} whole-line variants, over the {VARIANT_CAP} cap",
+                        line_variant_product(parts)
+                    )));
                 }
                 for p in parts {
                     match p {
@@ -492,6 +1119,7 @@ fn validate_items(
                                 return Err(Invalid("empty inline-conditional branch".into()));
                             }
                         }
+                        Part::Seq { alts, .. } => validate_seq(alts)?,
                     }
                 }
             }
@@ -500,7 +1128,7 @@ fn validate_items(
                     return Err(Invalid(format!("assignment to unknown `{target}`")));
                 };
                 expect_ty(value, tt, scope, "assigned value")?;
-                if *op != AssignOp::Set && tt != Ty::Int {
+                if *op != AssignOp::Set && tt != Ty::Int && !matches!(tt, Ty::List(_)) {
                     return Err(Invalid(format!("{op:?} on a {tt:?} target")));
                 }
             }
@@ -516,6 +1144,13 @@ fn validate_items(
                 let t = type_in(init, scope)?;
                 scope.vars.push((name.clone(), t));
             }
+            Item::Call { name, args } => {
+                if check_call(name, args, scope)?.is_some() {
+                    return Err(Invalid(format!(
+                        "value-returning `{name}` called as a statement"
+                    )));
+                }
+            }
             Item::Cond {
                 cond,
                 then,
@@ -526,13 +1161,13 @@ fn validate_items(
                     return Err(Invalid("empty conditional block".into()));
                 }
                 let mut inner = scope.clone();
-                validate_items(then, &mut inner, true, flow)?;
+                validate_items(story, then, &mut inner, true, flow, ctx)?;
                 if let Some(o) = otherwise {
                     if o.is_empty() {
                         return Err(Invalid("empty else branch".into()));
                     }
                     let mut inner = scope.clone();
-                    validate_items(o, &mut inner, true, flow)?;
+                    validate_items(story, o, &mut inner, true, flow, ctx)?;
                 }
             }
         }
@@ -547,11 +1182,12 @@ fn validate_weave(
     may_go_back: bool,
     may_fall_through: bool,
     scope: &Scope,
+    ctx: &FlowCtx,
 ) -> Result<(), Invalid> {
     let mut scope = scope.clone();
-    validate_items(&w.items, &mut scope, false, flow)?;
+    validate_items(story, &w.items, &mut scope, false, flow, Some(ctx))?;
     match &w.tail {
-        Tail::Exit(e) => validate_exit(story, *e, flow, may_go_back),
+        Tail::Exit(e) => validate_exit(story, *e, flow, may_go_back, ctx),
         Tail::FallThrough => {
             if may_fall_through {
                 Ok(())
@@ -576,11 +1212,16 @@ fn validate_weave(
                 )));
             }
             if let Some(fb) = fallback {
-                validate_exit(story, *fb, flow, false)?;
+                validate_exit(story, *fb, flow, false, ctx)?;
             }
             for c in choices {
                 if c.label.is_empty() {
                     return Err(Invalid(format!("empty choice label in flow {flow}")));
+                }
+                if c.sticky && ctx.kind == FlowKind::Tunnel {
+                    return Err(Invalid(format!(
+                        "sticky choice inside tunnel flow {flow} (rule 10)"
+                    )));
                 }
                 if let Some(cond) = &c.condition {
                     expect_ty(cond, Ty::Bool, &scope, "choice condition")?;
@@ -588,10 +1229,12 @@ fn validate_weave(
                 // A back-edge stays legal deeper inside a once-only body
                 // (the outer once-only choice already bounds it).
                 let back = may_go_back || !c.sticky;
-                validate_weave(story, &c.body, flow, back, gather.is_some(), &scope)?;
+                validate_weave(story, &c.body, flow, back, gather.is_some(), &scope, ctx)?;
             }
             match gather {
-                Some(g) => validate_weave(story, g, flow, may_go_back, may_fall_through, &scope),
+                Some(g) => {
+                    validate_weave(story, g, flow, may_go_back, may_fall_through, &scope, ctx)
+                }
                 None => Ok(()),
             }
         }
@@ -618,12 +1261,15 @@ mod tests {
 
     fn two_knots() -> Story {
         Story {
+            functions: vec![],
+            lists: vec![],
             vars: vec![VarDecl {
                 name: "n".into(),
                 init: Literal::Int(0),
             }],
             knots: vec![
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "a".into(),
                     root: exit_weave(Exit::Divert(Divert {
                         knot: 1,
@@ -632,6 +1278,7 @@ mod tests {
                     stitches: vec![],
                 },
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "b".into(),
                     root: exit_weave(Exit::End),
                     stitches: vec![Stitch {
@@ -786,14 +1433,16 @@ mod tests {
                     BinOp::Add,
                     Box::new(int(1))
                 ),
-                &scope
+                &scope,
+                &[]
             ),
             Ok(Ty::Int)
         );
         assert_eq!(
             type_of(
                 &Expr::Bin(Box::new(Expr::Var("n".into())), BinOp::Lt, Box::new(int(1))),
-                &scope
+                &scope,
+                &[]
             ),
             Ok(Ty::Bool)
         );
@@ -804,7 +1453,8 @@ mod tests {
                     BinOp::Add,
                     Box::new(int(1))
                 ),
-                &scope
+                &scope,
+                &[]
             )
             .is_err()
         );
@@ -815,11 +1465,12 @@ mod tests {
                     BinOp::Mod,
                     Box::new(int(0))
                 ),
-                &scope
+                &scope,
+                &[]
             )
             .is_err()
         );
-        assert!(type_of(&Expr::Var("nope".into()), &scope).is_err());
+        assert!(type_of(&Expr::Var("nope".into()), &scope, &[]).is_err());
     }
 
     #[test]

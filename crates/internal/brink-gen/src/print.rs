@@ -11,7 +11,9 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{AssignOp, BinOp, Exit, Expr, Item, Literal, Part, Story, Tail, Weave};
+use crate::model::{
+    AssignOp, BinOp, Exit, Expr, Function, Item, ListFn, Literal, Part, Story, Tail, Weave,
+};
 
 /// Print a story as `.ink` source. Never fails; an invalid story prints
 /// something, but only a [`crate::model::validate`]d one is guaranteed to
@@ -21,7 +23,22 @@ pub fn print_ink(story: &Story) -> String {
     for v in &story.vars {
         let _ = writeln!(out, "VAR {} = {}", v.name, literal(&v.init));
     }
-    if !story.vars.is_empty() {
+    for l in &story.lists {
+        let items: Vec<String> = l
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                if l.initial.contains(&i) {
+                    format!("({item})")
+                } else {
+                    item.clone()
+                }
+            })
+            .collect();
+        let _ = writeln!(out, "LIST {} = {}", l.name, items.join(", "));
+    }
+    if !story.vars.is_empty() || !story.lists.is_empty() {
         out.push('\n');
     }
     if let Some(first) = story.knots.first() {
@@ -38,7 +55,35 @@ pub fn print_ink(story: &Story) -> String {
         }
         out.push('\n');
     }
+    for f in &story.functions {
+        print_function(story, f, &mut out);
+        out.push('\n');
+    }
     out
+}
+
+fn print_function(story: &Story, f: &Function, out: &mut String) {
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|p| {
+            if p.by_ref {
+                format!("ref {}", p.name)
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect();
+    let _ = writeln!(out, "=== function {}({}) ===", f.name, params.join(", "));
+    print_items(story, &f.body, 0, out);
+    if let Some(ret) = &f.ret {
+        let _ = writeln!(out, "~ return {}", expr(ret));
+    }
+}
+
+fn call_text(name: &str, args: &[Expr]) -> String {
+    let args: Vec<String> = args.iter().map(expr).collect();
+    format!("{name}({})", args.join(", "))
 }
 
 /// Print an expression. Every binary node parenthesizes itself, so no ink
@@ -51,7 +96,7 @@ pub fn print_ink(story: &Story) -> String {
 pub fn expr(e: &Expr) -> String {
     match e {
         Expr::Lit(l) => literal(l),
-        Expr::Var(name) => name.clone(),
+        Expr::Var(name) | Expr::Item { name, .. } => name.clone(),
         Expr::Neg(inner) => match inner.as_ref() {
             Expr::Neg(_) => format!("-({})", expr(inner)),
             _ => format!("-{}", expr(inner)),
@@ -64,6 +109,19 @@ pub fn expr(e: &Expr) -> String {
             _ => format!("not {}", expr(inner)),
         },
         Expr::Bin(l, op, r) => format!("({} {} {})", expr(l), binop(*op), expr(r)),
+        Expr::Call { name, args } => call_text(name, args),
+        Expr::ListFn(f, arg) => format!("{}({})", list_fn(*f), expr(arg)),
+        Expr::Random { min, max } => format!("RANDOM({min}, {max})"),
+    }
+}
+
+fn list_fn(f: ListFn) -> &'static str {
+    match f {
+        ListFn::Count => "LIST_COUNT",
+        ListFn::Min => "LIST_MIN",
+        ListFn::Max => "LIST_MAX",
+        ListFn::All => "LIST_ALL",
+        ListFn::Invert => "LIST_INVERT",
     }
 }
 
@@ -72,6 +130,7 @@ fn literal(l: &Literal) -> String {
         Literal::Int(n) => n.to_string(),
         Literal::Bool(b) => b.to_string(),
         Literal::Str(s) => format!("\"{s}\""),
+        Literal::List { items, .. } => format!("({})", items.join(", ")),
     }
 }
 
@@ -89,6 +148,9 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::Has => "?",
+        BinOp::Hasnt => "!?",
+        BinOp::Intersect => "^",
     }
 }
 
@@ -112,6 +174,7 @@ fn exit_text(story: &Story, e: Exit) -> String {
         Exit::Divert(d) => format!("-> {}", story.path(d).unwrap_or_default()),
         Exit::End => "-> END".to_owned(),
         Exit::Done => "-> DONE".to_owned(),
+        Exit::TunnelReturn => "->->".to_owned(),
     }
 }
 
@@ -135,12 +198,18 @@ fn line_text(parts: &[Part]) -> String {
                     let _ = write!(s, "{{{}:{then}}}", expr(cond));
                 }
             },
+            // `{a|b}`, `{&a|b}`, `{!a|b}`, `{~a|b}` (rule 13). The
+            // alternatives carry no `:` by construction, so a marker-less
+            // sequence can never re-read as a conditional.
+            Part::Seq { kind, alts } => {
+                let _ = write!(s, "{{{}{}}}", kind.marker(), alts.join("|"));
+            }
         }
     }
     s
 }
 
-fn print_items(items: &[Item], depth: usize, out: &mut String) {
+fn print_items(story: &Story, items: &[Item], depth: usize, out: &mut String) {
     let ind = indent(depth);
     for item in items {
         match item {
@@ -163,16 +232,25 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
             Item::Temp { name, init } => {
                 let _ = writeln!(out, "{ind}~ temp {name} = {}", expr(init));
             }
+            Item::TunnelCall(d) => {
+                let _ = writeln!(out, "{ind}-> {} ->", story.path(*d).unwrap_or_default());
+            }
+            Item::Thread(d) => {
+                let _ = writeln!(out, "{ind}<- {}", story.path(*d).unwrap_or_default());
+            }
+            Item::Call { name, args } => {
+                let _ = writeln!(out, "{ind}~ {}", call_text(name, args));
+            }
             Item::Cond {
                 cond,
                 then,
                 otherwise,
             } => {
                 let _ = writeln!(out, "{ind}{{ {}:", expr(cond));
-                print_items(then, depth + 1, out);
+                print_items(story, then, depth + 1, out);
                 if let Some(o) = otherwise {
                     let _ = writeln!(out, "{ind}- else:");
-                    print_items(o, depth + 1, out);
+                    print_items(story, o, depth + 1, out);
                 }
                 let _ = writeln!(out, "{ind}}}");
             }
@@ -182,7 +260,7 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
 
 fn print_weave(story: &Story, w: &Weave, depth: usize, out: &mut String) {
     let ind = indent(depth);
-    print_items(&w.items, depth, out);
+    print_items(story, &w.items, depth, out);
     match &w.tail {
         Tail::Exit(e) => {
             let _ = writeln!(out, "{ind}{}", exit_text(story, *e));
@@ -227,7 +305,7 @@ fn print_weave(story: &Story, w: &Weave, depth: usize, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Choice, Divert, Knot, Stitch, VarDecl};
+    use crate::model::{Choice, Divert, FlowKind, Knot, Stitch, VarDecl};
 
     fn text(s: &str) -> Item {
         Item::Line {
@@ -244,8 +322,11 @@ mod tests {
         };
         let story = Story {
             vars: vec![],
+            functions: vec![],
+            lists: vec![],
             knots: vec![
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "start".into(),
                     root: Weave {
                         items: vec![Item::Line {
@@ -287,6 +368,7 @@ mod tests {
                     stitches: vec![],
                 },
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "next".into(),
                     root: leaf(Exit::Done),
                     stitches: vec![Stitch {
@@ -348,6 +430,8 @@ leaf
     fn prints_vars_expressions_and_conditionals() {
         let n = || Expr::Var("n".into());
         let story = Story {
+            functions: vec![],
+            lists: vec![],
             vars: vec![
                 VarDecl {
                     name: "n".into(),
@@ -359,6 +443,7 @@ leaf
                 },
             ],
             knots: vec![Knot {
+                kind: FlowKind::Knot,
                 name: "k".into(),
                 root: Weave {
                     items: vec![

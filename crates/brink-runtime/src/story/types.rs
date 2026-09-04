@@ -217,6 +217,10 @@ pub enum StepOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub text: String,
+    /// Position among the choices presented — the value [`Story::choose`]
+    /// takes. Numbers the visible choices contiguously (an invisible
+    /// fallback never occupies a slot), matching C#'s `Choice.index` /
+    /// `ChooseChoiceIndex` (issue #3527).
     pub index: usize,
     pub tags: Vec<String>,
     /// `+` (sticky, offered again) vs `*` (once-only) in the source — the

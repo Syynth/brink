@@ -409,6 +409,9 @@ fn write_debug_info(w: &mut dyn fmt::Write, debug_info: Option<&DebugInfoSection
                     local.slot,
                     escape_string(&local.name)
                 )?;
+                if local.synthetic {
+                    write!(w, " synthetic")?;
+                }
                 if let Some((file_idx, range_start, range_len)) = local.declaring_range {
                     write!(w, " (range {file_idx} {range_start} {range_len})")?;
                 }

@@ -4,7 +4,7 @@ use brink_syntax::ast::{self, AstNode};
 use crate::Provenance;
 use crate::provenance::{KindToken, NodeClass};
 
-use crate::{Block, CondBranch, CondKind, Conditional, DiagnosticCode, Expr};
+use crate::{Block, CondBranch, CondKind, Conditional, DiagnosticCode, Expr, Stmt};
 
 use super::super::block::{lower_branch_body, wrap_content_as_block};
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -85,9 +85,11 @@ fn lower_conditional_with_expr(
             } else {
                 b.condition().and_then(|e| e.lower_expr(scope, sink).ok())
             };
-            let body = b.body().map_or_else(Block::default, |body| {
+            let mut body = b.body().map_or_else(Block::default, |body| {
                 lower_branch_body(body.syntax(), scope, sink)
             });
+            // Every multi-line arm starts with a newline (issue #3523).
+            body.stmts.insert(0, Stmt::EndOfLine);
             branches.push(CondBranch {
                 ptr: scope.prov(NodeClass::ConditionalBranch, b.syntax()),
                 condition: cond_expr,
@@ -163,9 +165,13 @@ fn lower_branchless_body(
         && let Some(ml_branch) = else_branch.branch()
     {
         let else_ptr = scope.prov(NodeClass::ConditionalBranch, ml_branch.syntax());
-        let else_body = ml_branch.body().map_or_else(Block::default, |body| {
+        let mut else_body = ml_branch.body().map_or_else(Block::default, |body| {
             lower_branch_body(body.syntax(), scope, sink)
         });
+        // The `- else:` arm starts with a newline like every multi-line arm
+        // (issue #3523); the implicit first arm gets its own from
+        // `BranchlessCondBody::lower_block`'s first-newline rule.
+        else_body.stmts.insert(0, Stmt::EndOfLine);
         branches.push(CondBranch {
             ptr: else_ptr,
             condition: None,

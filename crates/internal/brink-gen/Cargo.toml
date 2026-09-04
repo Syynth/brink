@@ -17,6 +17,11 @@ proptest.workspace = true
 brink-compiler = { workspace = true, features = ["test-util"] }
 brink-runtime = { workspace = true }
 brink-test-harness = { workspace = true }
+# The source-transformation equivalence properties (`tests/equivalence.rs`,
+# docs/observable-semantics-spec.md §4.1): the formatter and the respeller
+# are the transformations under test.
+brink-fmt = { workspace = true }
+brink-respell = { workspace = true }
 
 [lints]
 workspace = true

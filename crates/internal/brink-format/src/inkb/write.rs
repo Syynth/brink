@@ -750,7 +750,16 @@ pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
 /// `docs/debugger-spec.md` §2.2) — independent of the `.inkb` format
 /// `VERSION`, so the entry encoding can grow (e.g. the reserved `NodeId`
 /// column, §1.3) without another whole-format bump.
-pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 1;
+pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 2;
+
+/// `DebugLocalEntry` row flags (section version 2). Version 1 wrote a bare
+/// `has_range` 0/1 byte in this position; version 2 keeps that as bit 0 and
+/// adds bit 1 (#3395). Any other bit set is a decode error — a strict
+/// reader, so a future bit graduates through a section version, never by
+/// being silently tolerated.
+pub(crate) const LOCAL_FLAG_HAS_RANGE: u8 = 0b01;
+pub(crate) const LOCAL_FLAG_SYNTHETIC: u8 = 0b10;
+pub(crate) const LOCAL_FLAGS_KNOWN: u8 = LOCAL_FLAG_HAS_RANGE | LOCAL_FLAG_SYNTHETIC;
 
 /// Section-local version of the `LineVariantGroups` encoding (#3273) —
 /// bump to grow the record without a format-wide `VERSION` bump.
@@ -843,14 +852,22 @@ pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
         for local in &table.locals {
             write_u16(buf, local.slot);
             write_str(buf, &local.name);
-            match local.declaring_range {
-                Some((file_idx, range_start, range_len)) => {
-                    write_u8(buf, 1);
-                    write_varint(buf, u64::from(file_idx));
-                    write_varint(buf, u64::from(range_start));
-                    write_varint(buf, u64::from(range_len));
-                }
-                None => write_u8(buf, 0),
+            // Flags byte (section version 2): bit 0 = a declaring range
+            // follows, bit 1 = `synthetic` (#3395). Version 1 wrote a bare
+            // `has_range` 0/1 here — the same bit, so the layout is
+            // unchanged and only the meaning of bit 1 is new.
+            let mut flags = 0u8;
+            if local.declaring_range.is_some() {
+                flags |= LOCAL_FLAG_HAS_RANGE;
+            }
+            if local.synthetic {
+                flags |= LOCAL_FLAG_SYNTHETIC;
+            }
+            write_u8(buf, flags);
+            if let Some((file_idx, range_start, range_len)) = local.declaring_range {
+                write_varint(buf, u64::from(file_idx));
+                write_varint(buf, u64::from(range_start));
+                write_varint(buf, u64::from(range_len));
             }
         }
     }

@@ -56,7 +56,24 @@ async function openStoryGraph(page: Page): Promise<void> {
   await expect(graphNode(page, "intro")).toBeAttached();
 }
 
-test.describe("story graph document", () => {
+// SKIPPED 2026-09-04 (maintainer's call): the story graph is being
+// rebuilt, so these five tests pin an implementation on its way out —
+// and one of them is intermittently red against it, reddening unrelated
+// PRs. It failed three times on a docs-only branch whose entire diff was
+// markdown.
+//
+// The whole document is skipped rather than the one flaky test, because
+// the reason is the feature's state, not that test's timing. The timing
+// bug that WAS real is fixed and still in place below (`test.setTimeout`
+// — the two 15s waits used to sit inside a 15s test budget). It was not
+// the cause: `data-current` is simply never set on some runs, across 34
+// locator resolutions, which no timeout can fix.
+//
+// Restore when the graph is rebuilt — tracked in #3541. The
+// studio's story-graph UNIT tests (`src/__tests__/story-graph.test.ts`,
+// `shell-story-graph.test.tsx`) are untouched and still run, so the
+// model and the shell wiring stay covered.
+test.describe.skip("story graph document", () => {
   // The default (toppled-temple) project: its startup compile succeeds, so
   // the graph data lands. Since W7/#3300 (no auto-start) the session is
   // started explicitly where a test needs the live overlay.
@@ -144,6 +161,13 @@ test.describe("story graph document", () => {
   test("live overlay: highlight + visit badge while running, plain graph when stopped", async ({
     page,
   }) => {
+    // The two overlay waits below each ask for 15s, and the suite's own
+    // test timeout is 15s (`playwright.config.ts`) — so those budgets were
+    // dead on arrival: the test was killed at 15s total, setup included,
+    // and the generous wait never applied (CI failure 2026-09-04, run
+    // 33863806712). Raise the test's own budget past the sum of what it
+    // waits for, as the recompile test below already does.
+    test.setTimeout(60_000);
     // Start BEFORE opening the graph — the takeover hides the Player, so
     // the start affordance must be clicked while it is still visible.
     await ensureStoryStarted(page);

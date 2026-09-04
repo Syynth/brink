@@ -725,11 +725,29 @@ LocalsTable:
 LocalEntry:
   slot: u16                             (matches DeclareTemp/GetTemp/SetTemp)
   name: string                          (codec::write_str/read_str)
-  has_range: u8                         (0 or 1)
-  file_idx: varint                      (present only if has_range == 1)
-  range_start: varint                   (present only if has_range == 1)
-  range_len: varint                     (present only if has_range == 1)
+  flags: u8                             (section version 2 — bit 0 has_range,
+                                          bit 1 synthetic; reserved bits 2–7
+                                          REJECTED, unlike the entry table's
+                                          tolerated reserved flag bits;
+                                          section version 1 wrote a bare
+                                          has_range 0/1 here — same bit)
+  file_idx: varint                      (present only if has_range)
+  range_start: varint                   (present only if has_range)
+  range_len: varint                     (present only if has_range)
 ```
+
+**`synthetic` (issue #3395, RULED 2026-09-02).** A row whose temp the
+compiler minted rather than the author: today, the lift-order hoist's
+`$lift{n}` temps (`docs/compiler-spec.md`, "Normalization pass" —
+`hir::TempDecl::synthetic` → `lir::StmtKind::DeclareTemp::synthetic` →
+this bit). The row is real — slot, live value, a declaring range that
+anchors to the content line the interpolation was hoisted out of — and
+stays on the wire so a consumer that wants every slot can read it; the
+runtime's `DebugLocal::synthetic` and `@brink-lang/wasm-types`'
+`DebugLocal.synthetic` carry it through, and **the studio's locals views
+(Debugger panel, State View) filter these rows out**, so an author only
+sees the variables they wrote. A frame whose only locals are synthetic
+renders exactly like a frame with none.
 
 ## 4. Frame semantics for step in/over/out
 
