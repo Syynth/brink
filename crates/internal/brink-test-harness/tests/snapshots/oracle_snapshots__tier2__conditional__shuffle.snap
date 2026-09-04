@@ -4,9 +4,9 @@ expression: case_snapshot
 ---
 case: tier2/conditional/shuffle
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === FAIL
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
 > "King of Spades.\n" [Choices: "Try again" (0) -> 0]
 > "\n" [Continue]
 > "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
@@ -39,25 +39,13 @@ passing: 0/1
 > "\n" [Continue]
 > "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
 > "\n" [Continue]
-> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
-> "\n" [Continue]
 > "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
 > "\n" [Continue]
 > "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
 > "\n" [Continue]
-> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
-> "\n" [Continue]
 > "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
 outcome: InputsExhausted
-  step 32: text differs
-    oracle: "2 of Diamonds.\n"
-    brink:  "King of Spades.\n"
-  step 34: text differs
-    oracle: "King of Spades.\n"
-    brink:  "2 of Diamonds.\n"
-  step 38: text differs
-    oracle: "2 of Diamonds.\n"
-    brink:  "King of Spades.\n"
-  step 40: text differs
-    oracle: "King of Spades.\n"
-    brink:  "2 of Diamonds.\n"
