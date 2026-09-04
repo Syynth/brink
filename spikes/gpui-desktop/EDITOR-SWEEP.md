@@ -239,8 +239,29 @@ chip that opens a popover.
   widgets are two thirds of it. The HIR overlay, inline markup, execution
   highlight, references and (with the sigil-hiding dropped) screenplay are
   all *styling* — they were miscounted in the first pass of this sweep.
-- **So the decision narrows to one question:** can the vendored editor learn
-  to put an element inside a line? If yes, everything else here is wiring or
-  contained work. If no, the argument-widget surface specifically cannot be
-  hosted natively as specified — and that is a much smaller blast radius
-  than "one third of the editor".
+- **That question is now closed.** The vendored editor puts chips inside a
+  line, they draw their own content, and they are clickable. Ruled
+  sufficient 2026-09-04 (`docs/decision-log.md`, "In-text chips are a
+  sufficient widget bar for a native editor"): a nested in-line element is
+  not required, because argument widgets and the colour picker both
+  decompose into a chip plus a popover.
+
+## Where that leaves the evaluation
+
+No blocking technical unknown remains in the editor. What is left is not a
+feasibility question:
+
+- **Volume.** The studio's UI is a rewrite, not a port — the specs carry
+  over, the code does not, and this sweep only covers `ink-editor`. The
+  shell, binder, player, debugger, graph and settings are their own
+  inventories.
+- **Ownership.** Using this stack means maintaining a fork of `gpui-base` /
+  `gpui-component` (round 4), now with editor changes of our own in it.
+- **Two consumers, not one.** `@brink-lang/web` and `@brink-lang/editor` are
+  published packages with an external embedder, and the editor acceptance
+  gate guards the wasm session. A native shell is a third consumer unless
+  the web surface is deliberately retired.
+- **Mobile.** GPUI forecloses the iOS/Android option the 2026-08-06 Tauri
+  ruling deliberately kept open.
+
+Those are judgement calls, not spikes.
