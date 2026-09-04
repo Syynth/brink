@@ -11,7 +11,9 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{AssignOp, BinOp, Exit, Expr, Item, Literal, Part, Story, Tail, Weave};
+use crate::model::{
+    AssignOp, BinOp, Exit, Expr, Function, Item, Literal, Part, Story, Tail, Weave,
+};
 
 /// Print a story as `.ink` source. Never fails; an invalid story prints
 /// something, but only a [`crate::model::validate`]d one is guaranteed to
@@ -38,7 +40,35 @@ pub fn print_ink(story: &Story) -> String {
         }
         out.push('\n');
     }
+    for f in &story.functions {
+        print_function(f, &mut out);
+        out.push('\n');
+    }
     out
+}
+
+fn print_function(f: &Function, out: &mut String) {
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|p| {
+            if p.by_ref {
+                format!("ref {}", p.name)
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect();
+    let _ = writeln!(out, "=== function {}({}) ===", f.name, params.join(", "));
+    print_items(&f.body, 0, out);
+    if let Some(ret) = &f.ret {
+        let _ = writeln!(out, "~ return {}", expr(ret));
+    }
+}
+
+fn call_text(name: &str, args: &[Expr]) -> String {
+    let args: Vec<String> = args.iter().map(expr).collect();
+    format!("{name}({})", args.join(", "))
 }
 
 /// Print an expression. Every binary node parenthesizes itself, so no ink
@@ -64,6 +94,7 @@ pub fn expr(e: &Expr) -> String {
             _ => format!("not {}", expr(inner)),
         },
         Expr::Bin(l, op, r) => format!("({} {} {})", expr(l), binop(*op), expr(r)),
+        Expr::Call { name, args } => call_text(name, args),
     }
 }
 
@@ -163,6 +194,9 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
             Item::Temp { name, init } => {
                 let _ = writeln!(out, "{ind}~ temp {name} = {}", expr(init));
             }
+            Item::Call { name, args } => {
+                let _ = writeln!(out, "{ind}~ {}", call_text(name, args));
+            }
             Item::Cond {
                 cond,
                 then,
@@ -244,6 +278,7 @@ mod tests {
         };
         let story = Story {
             vars: vec![],
+            functions: vec![],
             knots: vec![
                 Knot {
                     name: "start".into(),
@@ -348,6 +383,7 @@ leaf
     fn prints_vars_expressions_and_conditionals() {
         let n = || Expr::Var("n".into());
         let story = Story {
+            functions: vec![],
             vars: vec![
                 VarDecl {
                     name: "n".into(),

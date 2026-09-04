@@ -187,6 +187,31 @@ locally behind `BRINK_INKJS_ORACLE=1` after `npm ci` in
   termination); nightly runs use large counts and carry the inkjs
   differential.
 
+**Status (2026-09-04, functions tier landed).** The ladder stands at
+structure (#3378) → variables, expressions, conditionals → **functions**:
+`Story::functions` holds `=== function f(a, ref b) ===` definitions with
+typed parameters, bodies of items (lines, assignments, temps, conditional
+blocks, statement calls — no tail, so no divert or choice, as ink
+requires), and an optional `~ return expr`. Calls are typed like any
+expression (`Expr::Call` in expression position for value functions,
+`Item::Call` as a `~ f(x)` statement for void ones); a `ref` argument is a
+visible variable of the parameter's type. The call graph is a DAG by
+construction — function `i` calls only functions `< i`, flow code calls
+any — so every call terminates without a step-limit crutch. `Profile`
+gains `max_functions` (2 in `DEFAULT`/`PLAIN_INK`, 0 in `STRUCTURE` and
+`RESPELLABLE`) and `max_params` (2). The tier's first differential run
+(300 stories) found five divergences, each filed with a one-line
+reproduction and carried as a `KNOWN_DIVERGENCES` predicate in
+`tests/inkjs_differential.rs`: #3519 (a function's leading newline is
+kept when the line already has content), #3521 (the #3395 lift runs a
+printing call in a lifted construct's condition before the line's
+prefix — the "reverse shape" the ruling left owed; needs a ruling),
+#3522 (function-end trim stops at glue), #3523 (a multi-line `- else:`
+arm lacks inklecate's leading newline), #3524 (a multi-line function
+output in an interpolation is one `Step::Line`). None is a generator
+defect; all five surface only when a function *prints* — the shapes
+the hand-written corpus covers thinly.
+
 ## 8. Not covered
 
 - Native generation and the respell route are sequenced last (§7);

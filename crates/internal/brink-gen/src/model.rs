@@ -41,6 +41,24 @@
 //!    blocks); diverts live in tails, so conditionals never affect
 //!    termination.
 //!
+//! # Functions
+//!
+//! 8. A function (`=== function f(a, ref b) ===`) has a fixed position in
+//!    [`Story::functions`]; its body is items only (no tail, so no divert
+//!    and no choice — ink forbids both in a function) and ends in `~ return
+//!    expr` when it returns a value; the body and the return are never
+//!    both absent (inklecate rejects an empty function, "Expected at least
+//!    one line within the knot"). A call is legal from flow code to any
+//!    function, and from function `i`'s body only to functions `< i` — the
+//!    call graph is a DAG by construction, so no call can recurse and every
+//!    call terminates.
+//! 9. Calls are typed like any expression: argument types match the
+//!    parameters, a `ref` parameter's argument is a visible variable of that
+//!    type (a global, a temp, or an enclosing function's own parameter, so
+//!    the reference chain of `I096-nested-pass-by-reference` is reachable),
+//!    and a call in expression position names a function that returns a
+//!    value. A void function is called only as a statement (`~ f(x)`).
+//!
 //! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
@@ -57,6 +75,32 @@ pub struct Story {
     pub vars: Vec<VarDecl>,
     /// Knots in document order. Never empty.
     pub knots: Vec<Knot>,
+    /// Functions, printed after the knots. Function `i` may call only
+    /// functions `< i` (rule 8).
+    pub functions: Vec<Function>,
+}
+
+/// A function: `=== function name(params) ===`, a body of items, and an
+/// optional `~ return expr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    /// Unique across the story (shares the namespace with knots and vars).
+    pub name: String,
+    pub params: Vec<Param>,
+    /// Items only — no tail (rule 8).
+    pub body: Vec<Item>,
+    /// `~ return expr` closing the body; `None` for a void function.
+    pub ret: Option<Expr>,
+}
+
+/// One function parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    /// Unique within the function; visible in its body like a temp.
+    pub name: String,
+    pub ty: Ty,
+    /// `ref name` — the argument is a variable the body writes through to.
+    pub by_ref: bool,
 }
 
 /// A knot: a root weave plus zero or more stitches.
@@ -145,6 +189,11 @@ pub enum Expr {
     Neg(Box<Expr>),
     Not(Box<Expr>),
     Bin(Box<Expr>, BinOp, Box<Expr>),
+    /// `f(args)` — a call to a value-returning function (rules 8–9).
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
 }
 
 /// How an assignment writes its target.
@@ -190,6 +239,8 @@ pub enum Item {
         then: Vec<Item>,
         otherwise: Option<Vec<Item>>,
     },
+    /// `~ f(args)` — a call to a void function as a statement (rule 9).
+    Call { name: String, args: Vec<Expr> },
 }
 
 /// How a weave ends.
@@ -310,10 +361,40 @@ impl Story {
 
 // ─── Validation ──────────────────────────────────────────────────────
 
-/// Names in scope at a point: globals plus the temps declared so far.
+/// A function's signature as the type checker sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnSig {
+    pub name: String,
+    /// `(type, by_ref)` per parameter.
+    pub params: Vec<(Ty, bool)>,
+    /// `None` for a void function.
+    pub ret: Option<Ty>,
+}
+
+impl Function {
+    /// The signature, with the return type inferred from `ret` against
+    /// `vars` — the names visible at the return site: globals, parameters
+    /// and the body's temps — and `funcs`, the functions callable from
+    /// this one (those declared before it, rule 8).
+    pub fn signature(&self, vars: &[(String, Ty)], funcs: &[FnSig]) -> Result<FnSig, Invalid> {
+        let ret = match &self.ret {
+            Some(e) => Some(type_of(e, vars, funcs)?),
+            None => None,
+        };
+        Ok(FnSig {
+            name: self.name.clone(),
+            params: self.params.iter().map(|p| (p.ty, p.by_ref)).collect(),
+            ret,
+        })
+    }
+}
+
+/// Names in scope at a point: globals plus the temps declared so far, and
+/// the functions callable from here (rule 8).
 #[derive(Clone)]
 struct Scope {
     vars: Vec<(String, Ty)>,
+    funcs: Vec<FnSig>,
 }
 
 impl Scope {
@@ -324,14 +405,63 @@ impl Scope {
             .find(|(n, _)| n == name)
             .map(|(_, t)| *t)
     }
+
+    fn func(&self, name: &str) -> Option<&FnSig> {
+        self.funcs.iter().find(|f| f.name == name)
+    }
 }
 
-/// The type of `e` in `scope`, or the rule-5 violation.
-pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)]) -> Result<Ty, Invalid> {
+/// The type of `e` in `scope`, or the rule-5 violation. `funcs` are the
+/// functions callable at this point.
+pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)], funcs: &[FnSig]) -> Result<Ty, Invalid> {
     let scope = Scope {
         vars: scope_vars.to_vec(),
+        funcs: funcs.to_vec(),
     };
     type_in(e, &scope)
+}
+
+/// Check a call's arguments against `sig` (rule 9): arity, types, and a
+/// visible variable of the right type for every `ref` parameter.
+fn check_call(name: &str, args: &[Expr], scope: &Scope) -> Result<Option<Ty>, Invalid> {
+    let Some(sig) = scope.func(name) else {
+        return Err(Invalid(format!(
+            "call to unknown or not-yet-callable function `{name}`"
+        )));
+    };
+    if sig.params.len() != args.len() {
+        return Err(Invalid(format!(
+            "`{name}` takes {} argument(s), called with {}",
+            sig.params.len(),
+            args.len()
+        )));
+    }
+    for ((pty, by_ref), arg) in sig.params.iter().zip(args) {
+        if *by_ref {
+            let Expr::Var(v) = arg else {
+                return Err(Invalid(format!(
+                    "`ref` argument to `{name}` is not a variable"
+                )));
+            };
+            match scope.lookup(v) {
+                Some(t) if t == *pty => {}
+                Some(t) => {
+                    return Err(Invalid(format!(
+                        "`ref` argument `{v}` to `{name}` is {t:?}, parameter is {pty:?}"
+                    )));
+                }
+                None => return Err(Invalid(format!("unresolved `ref` argument `{v}`"))),
+            }
+        } else {
+            let t = type_in(arg, scope)?;
+            if t != *pty {
+                return Err(Invalid(format!(
+                    "argument to `{name}` is {t:?}, parameter is {pty:?}"
+                )));
+            }
+        }
+    }
+    Ok(sig.ret)
 }
 
 fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
@@ -348,6 +478,8 @@ fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
             Ty::Bool => Ok(Ty::Bool),
             t => Err(Invalid(format!("`not` of {t:?}"))),
         },
+        Expr::Call { name, args } => check_call(name, args, scope)?
+            .ok_or_else(|| Invalid(format!("void function `{name}` used as a value"))),
         Expr::Bin(l, op, r) => {
             let lt = type_in(l, scope)?;
             let rt = type_in(r, scope)?;
@@ -420,12 +552,46 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
             }
         }
     }
-    let globals = Scope {
-        vars: story
+    for f in &story.functions {
+        if !names.insert(f.name.as_str()) {
+            return Err(Invalid(format!("duplicate name `{}`", f.name)));
+        }
+    }
+    let global_vars: Vec<(String, Ty)> = story
+        .vars
+        .iter()
+        .map(|v| (v.name.clone(), v.init.ty()))
+        .collect();
+    // Functions: each body sees globals + its params and may call only
+    // earlier functions (rule 8), so signatures are checked in order.
+    let mut sigs: Vec<FnSig> = Vec::new();
+    for (i, f) in story.functions.iter().enumerate() {
+        if f.body.is_empty() && f.ret.is_none() {
+            return Err(Invalid(format!("function `{}` is empty", f.name)));
+        }
+        let mut seen_p = BTreeSet::new();
+        for p in &f.params {
+            if !seen_p.insert(p.name.as_str()) || global_vars.iter().any(|(n, _)| *n == p.name) {
+                return Err(Invalid(format!(
+                    "parameter `{}` of `{}` duplicates a visible name",
+                    p.name, f.name
+                )));
+            }
+        }
+        let mut scope = Scope {
+            vars: global_vars.clone(),
+            funcs: sigs.clone(),
+        };
+        scope
             .vars
-            .iter()
-            .map(|v| (v.name.clone(), v.init.ty()))
-            .collect(),
+            .extend(f.params.iter().map(|p| (p.name.clone(), p.ty)));
+        validate_items(&f.body, &mut scope, false, usize::MAX - i)?;
+        let sig = f.signature(&scope.vars, &sigs)?;
+        sigs.push(sig);
+    }
+    let globals = Scope {
+        vars: global_vars,
+        funcs: sigs,
     };
     let mut flow = 0;
     for k in &story.knots {
@@ -515,6 +681,13 @@ fn validate_items(
                 }
                 let t = type_in(init, scope)?;
                 scope.vars.push((name.clone(), t));
+            }
+            Item::Call { name, args } => {
+                if check_call(name, args, scope)?.is_some() {
+                    return Err(Invalid(format!(
+                        "value-returning `{name}` called as a statement"
+                    )));
+                }
             }
             Item::Cond {
                 cond,
@@ -618,6 +791,7 @@ mod tests {
 
     fn two_knots() -> Story {
         Story {
+            functions: vec![],
             vars: vec![VarDecl {
                 name: "n".into(),
                 init: Literal::Int(0),
@@ -786,14 +960,16 @@ mod tests {
                     BinOp::Add,
                     Box::new(int(1))
                 ),
-                &scope
+                &scope,
+                &[]
             ),
             Ok(Ty::Int)
         );
         assert_eq!(
             type_of(
                 &Expr::Bin(Box::new(Expr::Var("n".into())), BinOp::Lt, Box::new(int(1))),
-                &scope
+                &scope,
+                &[]
             ),
             Ok(Ty::Bool)
         );
@@ -804,7 +980,8 @@ mod tests {
                     BinOp::Add,
                     Box::new(int(1))
                 ),
-                &scope
+                &scope,
+                &[]
             )
             .is_err()
         );
@@ -815,11 +992,12 @@ mod tests {
                     BinOp::Mod,
                     Box::new(int(0))
                 ),
-                &scope
+                &scope,
+                &[]
             )
             .is_err()
         );
-        assert!(type_of(&Expr::Var("nope".into()), &scope).is_err());
+        assert!(type_of(&Expr::Var("nope".into()), &scope, &[]).is_err());
     }
 
     #[test]
