@@ -1,21 +1,26 @@
 # The GPUI-native studio (decision log 2026-09-04, "The GPUI-native app is
-# the destination").
+# the destination"), laid out in the three tiers ruled the same day
+# (`docs/gpui-studio-spec.md` §2).
 #
-# DELIBERATELY ITS OWN WORKSPACE (the empty `[workspace]` table below), and
-# also named in the root workspace's `exclude` — both are needed, because the
-# root's `crates/brink-*` members glob would otherwise pull gpui's entire
-# dependency graph into every `cargo test --workspace` and every CI lane, for
-# zero coverage benefit. Same arrangement as `packages/brink-desktop/src-tauri`,
-# which only escapes by virtue of living outside the glob.
-[package]
-name = "brink-gpui"
+# DELIBERATELY ITS OWN WORKSPACE, and also named in the root workspace's
+# `exclude` — both are needed, because the root's `crates/brink-*` members
+# glob would otherwise pull gpui's entire dependency graph into every
+# `cargo test --workspace` and every CI lane, for zero coverage benefit.
+# Same arrangement as `packages/brink-desktop/src-tauri`, which only escapes
+# by virtue of living outside the glob.
+#
+# One exclusion entry covers all three members because they are nested here
+# rather than sitting beside each other under `crates/`.
+[workspace]
+resolver = "3"
+members = ["model", "shell", "app"]
+
+[workspace.package]
 version = "0.0.0"
 edition = "2024"
 publish = false
 
-[workspace]
-
-[dependencies]
+[workspace.dependencies]
 # Our fork of longbridge's GPUI Kit, pinned to a commit.
 #
 # Three commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
@@ -31,16 +36,24 @@ publish = false
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
 gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7", features = ["tree-sitter"] }
+gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 anyhow = "1"
 # Same rowan the root workspace pins (TextSize/TextRange).
 rowan = "0.16.1"
+# The worker boundary (`docs/gpui-studio-spec.md` §3.3). Same crate
+# gpui-base itself uses, so no second async runtime enters the graph.
+async-channel = "2.3.1"
+
+brink-gpui-model = { path = "model" }
+brink-gpui-shell = { path = "shell" }
 
 brink-ide = { path = "../internal/brink-ide" }
 brink-db = { path = "../internal/brink-db" }
 brink-ir = { path = "../internal/brink-ir" }
+brink-syntax = { path = "../internal/brink-syntax" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-project-config = { path = "../internal/brink-project-config" }
-gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
+brink-environment = { path = "../internal/brink-environment" }

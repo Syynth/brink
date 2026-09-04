@@ -755,6 +755,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-compiler"
+version = "0.0.16"
+dependencies = [
+ "brink-codegen-inkb",
+ "brink-driver",
+ "brink-format",
+ "brink-ir",
+ "rowan",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "brink-db"
 version = "0.0.16"
 dependencies = [
@@ -780,6 +793,21 @@ dependencies = [
  "brink-ir",
  "brink-project-config",
  "brink-source-tree",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "brink-environment"
+version = "0.0.16"
+dependencies = [
+ "brink-compiler",
+ "brink-driver",
+ "brink-ir",
+ "brink-project-config",
+ "brink-source-tree",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -811,14 +839,46 @@ dependencies = [
  "brink-analyzer",
  "brink-db",
  "brink-driver",
+ "brink-gpui-model",
+ "brink-gpui-shell",
  "brink-ide",
  "brink-ir",
  "brink-project-config",
+ "brink-syntax",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
  "lsp-types",
  "rowan",
+]
+
+[[package]]
+name = "brink-gpui-model"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "brink-analyzer",
+ "brink-db",
+ "brink-driver",
+ "brink-environment",
+ "brink-ide",
+ "brink-ir",
+ "brink-project-config",
+ "brink-syntax",
+ "gpui-pre",
+ "lsp-types",
+ "rowan",
+]
+
+[[package]]
+name = "brink-gpui-shell"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "brink-gpui-model",
+ "gpui-component",
+ "gpui-pre",
 ]
 
 [[package]]
