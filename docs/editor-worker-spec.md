@@ -553,17 +553,29 @@ in both so the two are directly comparable:
 | typing-burst | after | 5,850 ms (p95 of 2) | 460 / **760 ms** |
 
 Read it as: the *check* did not get faster — it got off the thread that
-owns input. `fast-scroll` is the clean isolation, one check with little
+owns input. On some runs the FIRST check is measurably *slower* (the
+review measured 3,883 → 4,372 ms on fast-scroll): a cold check now pays
+worker spawn plus a second instantiation of the 6.5 MB module, on its
+own critical path. The dictionary/rule-set cache pays that back from the
+second check on (project-open's `prose.check` p50 fell 1,023 → 735 ms),
+and none of it is on the keystroke path either way. `fast-scroll` is the clean isolation, one check with little
 else running: the co-located long task collapses from 6,465 ms to
 184 ms.
 
-`typing-burst`'s **p95 barely moves, and that is not this change
-failing**. Its p95 is set by ~238 per-keystroke long tasks whose p50 is
-already 431–476 ms in both arms — the separate per-keystroke cost
-tracked elsewhere, which prose never contributed to. What this change
-owns there is the *max*: 6,689 ms → 760 ms. Anyone re-running these must
-compare max, or use `fast-scroll`, rather than reading `typing-burst`'s
-p95 as a prose number.
+`typing-burst`'s p95 moved little **in this run**, and that was read at
+the time as a property of the scenario. A second, independent set of
+runs (#3491's review, another session, same machine class) contradicts
+that: there `browser.longtask` p95 went 686 → 295 ms, `input.keydown`
+p95 696 → 312 ms, and the longtask total halved (121,682 → 60,307 ms).
+The before-arm p95 of 543 ms recorded above is the outlier, not the
+rule — it sits below the p50 of 431–476 ms this section cites for the
+same runs, which is itself a sign the sample was small and noisy.
+
+So: `fast-scroll` remains the clean isolation (one check, little else
+running), and *max* is the most stable statistic across both sets. But
+do not expect `typing-burst`'s p95 to be insensitive to prose — on a run
+where the per-keystroke cost is not itself dominating, it moves a lot.
+Re-run both arms rather than trusting either set of numbers here.
 
 Also in that change, and independent of the worker: `brink-prose`'s
 `check` caches the merged dictionary and the curated `LintGroup` across

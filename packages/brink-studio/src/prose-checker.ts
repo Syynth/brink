@@ -83,15 +83,20 @@ interface Pending {
  * `spawn` is called at most once, on the first check — keeping the lazy
  * posture the interface promises.
  */
+/** A checker whose backing worker can be torn down (#3491 review). */
+export type DisposableProseChecker = ProseChecker & { dispose(): void };
+
 export function createWorkerProseChecker(
   spawn: () => ProseWorkerLike | null,
   fallback: ProseChecker,
-): ProseChecker {
+): DisposableProseChecker {
   let worker: ProseWorkerLike | null = null;
   let spawned = false;
   /** The worker crashed or could not be created; every later check goes to
    *  the in-process road rather than to a dead port. */
   let broken = false;
+  /** One console warning per checker for a worker-side check failure. */
+  let warnedCheckFailure = false;
   let nextId = 1;
   let inFlight: (Pending & { id: number }) | null = null;
   let queued: (Pending & { request: ProseCheckRequest }) | null = null;
@@ -101,6 +106,19 @@ export function createWorkerProseChecker(
     inFlight = null;
     queued = null;
     for (const p of pending) p?.reject(error);
+  }
+
+  /** Tear the worker down (#3491 review): a host that mounts and unmounts
+   *  the studio otherwise leaks a worker holding the 6.5 MB wasm instance
+   *  and — new with the cache — a rule set that now outlives each call.
+   *  Pending checks reject as they do on a crash; a later check respawns. */
+  function dispose(): void {
+    fail(new Error("prose checker disposed"));
+    worker?.terminate();
+    worker = null;
+    spawned = false;
+    broken = false;
+    warnedCheckFailure = false;
   }
 
   function ensureWorker(): ProseWorkerLike | null {
@@ -120,7 +138,22 @@ export function createWorkerProseChecker(
       if (inFlight === null || inFlight.id !== response.id) return;
       const settled = inFlight;
       inFlight = null;
-      if ("error" in response) settled.reject(new Error(response.error));
+      if ("error" in response) {
+        // #3491 review: a wasm load failure INSIDE a healthy worker used to
+        // reach `loadProse`'s catch and print "[prose] checker unavailable".
+        // On the worker road it lands here instead, and `prose.ts` drops a
+        // failed check silently by design — so without this the symptom is
+        // "the squiggles just stopped" with nothing in the console. Warn
+        // once: the same failure recurs on every debounce tick.
+        if (!warnedCheckFailure) {
+          warnedCheckFailure = true;
+          console.warn(
+            "[prose] check failed in the worker; prose checking is off",
+            response.error,
+          );
+        }
+        settled.reject(new Error(response.error));
+      }
       else settled.resolve(response.lints);
       pump();
     });
@@ -144,6 +177,7 @@ export function createWorkerProseChecker(
   }
 
   return {
+    dispose,
     check(request: ProseCheckRequest): Promise<ProseLint[]> {
       const live = ensureWorker();
       if (live === null) return fallback.check(request);
@@ -241,14 +275,14 @@ export function createProseWorker(): ProseWorkerLike | null {
 }
 
 /** The studio's checker. */
-export const studioProseChecker: ProseChecker = createWorkerProseChecker(
+export const studioProseChecker: DisposableProseChecker = createWorkerProseChecker(
   createProseWorker,
   inProcessProseChecker,
 );
 
-/** Whether the in-process module has been loaded — for the status surface
- *  and tests. The worker road loads its own copy inside the worker, where
- *  this realm cannot see it. */
-export function proseCheckerLoaded(): boolean {
-  return loading !== null && !failed;
-}
+/* `proseCheckerLoaded()` used to live here. It read this realm's `loading`,
+ * which the worker road never sets, so in the studio it was permanently
+ * `false` while checking worked — a trap for whoever wires the status
+ * surface next. It had no callers; removed rather than left lying (#3491
+ * review). A status surface should ask the worker.
+ */
