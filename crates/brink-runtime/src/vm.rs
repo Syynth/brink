@@ -3403,6 +3403,7 @@ mod tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
+            line_delivered_this_turn: false,
             exec_mode: ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,

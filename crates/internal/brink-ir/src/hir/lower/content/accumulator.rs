@@ -292,13 +292,19 @@ impl<B: BodyBackend> Integrate<TagLineOutput> for ContentAccumulator<B> {
             return HandleResult::Inline;
         }
         self.flush();
+        // Issue #3534: a tag-only line contributes its tags and NOTHING
+        // else — ink's parser appends a line's `"\n"` only when the line
+        // is not pure tags (`lineIsPureTag`), so the tags ride the next
+        // line's newline. No `EndOfLine` here, and the tags are not
+        // "content" for the surrounding block's own newline bookkeeping
+        // either (a multi-line block's trailing newline is keyed on
+        // `last_was_content`).
         self.backend.push_stmt(Stmt::Content(Content {
             ptr: None,
             parts: Vec::new(),
             tags: output.tags,
         }));
-        self.last_pushed_was_content = true;
-        self.push_eol();
+        self.last_pushed_was_content = false;
         HandleResult::Block
     }
 }

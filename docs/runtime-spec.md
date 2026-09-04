@@ -898,3 +898,15 @@ Key semantics from the reference C# ink implementation relevant to execution:
 ### List origins
 
 A `ListValue` carries `items` and `origins`, but only an **empty** list's stored origins mean anything: a non-empty list's origins are recomputed from its items on every read (`list_ops::effective_origins`, ink's `InkList.originNames`). Producers follow ink's constructors (`list_ops::build`): `^`, `LIST_MIN`/`LIST_MAX`/`LIST_ALL`/`LIST_INVERT` and `list + int` start from a fresh list — **no** origins when the result is empty; `+` and `-` start from a copy of the left operand, so an empty result keeps its origins; `LIST_RANGE` of an empty input is fresh, of a non-empty input keeps the input's origins even when the range empties it. Assigning an empty list to a global or an existing temp — directly or through a `ref` — replaces the new value's origins with the old value's (`retain_origins_on_assign`, ink's `RetainListOriginsForAssignment`), unconditionally: `~ g = m - m` on a `g` holding `(a)` still enumerates `l` under `LIST_ALL`, and on a `g` holding `()` with no origins enumerates nothing. `DeclareTemp` does not retain (ink would when a same-named temp already exists, but a brink temp slot is reused across the knots of one frame, so the slot's previous value is not evidence of a same-named temp). Issue #3532, found by the program generator's lists tier.
+
+### Blank lines at a turn boundary
+
+A *blank* line is one that renders as whitespace only — an empty-string or empty-list interpolation on a line of its own, `{" "}`, a `none` value. ink evaluates the lines following a delivered one inside the same `Continue`: a blank line's newline is dropped there, because the output stream still ends in the delivered newline. It comes back only when non-whitespace content follows, at which point ink's `CalculateNewlineOutputStateChange` reports `ExtendedBeyondNewline`, rewinds the state snapshot to just after the delivered newline, and the next `Continue` re-evaluates the blank line on a fresh stream. At `END`, `DONE`, a choice point or content exhaustion nothing follows, so trailing blank lines are simply gone.
+
+brink reproduces this at read time (issue #3533, found by the program generator's lists tier), in two halves:
+
+- A completed line is takeable only once **visible** content follows its newline (`OutputPart::is_visible` — a blank `ValueRef` is content for `is_content`, ink's `outputStreamContainsContent`, but never *extends* a line). So a blank line is not handed out on the strength of more blank content after it.
+- The yield-time flush (`flush_lines_at_yield`) drops trailing blank lines when a line was already delivered this turn (`Flow::line_delivered_this_turn`, cleared wherever `next_block_id` starts a fresh run). With nothing delivered yet, the turn's first `Continue` keeps exactly one — which is why a story that opens on a blank line still prints it, and why a run of leading blank lines collapses to one.
+
+A line carrying tags is never blank for this rule: a tag extends the line in ink's lookahead the same way visible text does.
+

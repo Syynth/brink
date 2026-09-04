@@ -129,6 +129,21 @@ impl OutputPart {
             _ => false,
         }
     }
+
+    /// Issue #3533: does this part render as something other than
+    /// whitespace? [`Self::is_content`] mirrors ink's
+    /// `outputStreamContainsContent`, where an empty `""` string still
+    /// counts (it lets the line's own newline through); this mirrors what
+    /// ink's newline lookahead treats as *extending* a line — a blank
+    /// `ValueRef` (`""`, `" "`, an empty list) never commits the line
+    /// before it, only visible text does.
+    fn is_visible(&self) -> bool {
+        match self {
+            Self::ValueRef(Value::String(s)) => !s.trim().is_empty(),
+            Self::ValueRef(Value::List(lv)) => !lv.items.is_empty(),
+            _ => self.is_content(),
+        }
+    }
 }
 
 /// Resolve a single output part to its text representation.
