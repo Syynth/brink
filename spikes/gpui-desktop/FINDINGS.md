@@ -1,6 +1,6 @@
 # Spike — a GPUI-native brink studio (Zed-style)
 
-**Date:** 2026-09-04 · **Status:** two rounds complete, no ruling requested yet ·
+**Date:** 2026-09-04 · **Status:** three rounds complete, no ruling requested yet ·
 **Base:** rebased onto `main` @ `ecfea3c9b` ·
 **Code:** `spikes/gpui-desktop/` (its own cargo workspace, untracked by the
 root one — same exclusion pattern as `packages/brink-desktop/src-tauri`)
@@ -190,6 +190,76 @@ absent by construction, not fixed.**
 
 Zed's own `crates/project_panel` (21k lines) was used as the implementation
 reference for the drag wiring and `uniform_list` usage.
+
+## Round 3 — the Continuous view
+
+The manuscript view: every file in one scroller, headings between them
+(`packages/studio-shell/src/continuous-view.tsx`, ruled 2026-08-26).
+`src/continuous.rs`, ~240 lines.
+
+### Stacked or concatenated?
+
+The studio's ruling is **stacked** — one document per file — because one
+synthetic buffer would need span translation across the whole IDE surface,
+and every feature would have to know about it.
+
+Zed took the other road and it is the road its diff and project-search views
+scroll: `crates/multi_buffer`, one buffer composed of excerpts from many
+files. It works there because exactly one place owns the mapping and the
+editor is written against it. But it is **17,589 lines** wired into Zed's own
+buffer/language stack — `gpui-component`'s editor cannot be pointed at it,
+and writing our own lands back on the 2026-08-26 objection. **So the port
+keeps the stack, and the ruling survives.**
+
+### Virtualisation works, at the file level
+
+`gpui-base`'s editor derives its visible line range from **its own height**
+(`element.rs`: `viewport_bottom = viewport_top + input_height`), so a
+content-sized editor lays out every line it holds. Stacking 44 of those would
+lay out the whole project every frame.
+
+GPUI's `list` element (variable-height, unlike `uniform_list`) fixes that at
+the file level: sections mount as they approach the viewport and never
+before. On the 44-file project, **1 section is live at rest; 8 after scrolling
+through eight files; 0.2–1.1 ms to mount each**. A 15,852-line file mounts in
+**16–42 ms** and scrolls — though its highlighter re-derives all **36,348**
+tokens (~12 ms) on each recompute, which is the naive full-file pass round 1
+already flagged, now on the largest possible input.
+
+### Three bugs, one root cause
+
+A stacked view has to know each section's exact content height, and getting
+it wrong is not cosmetic — it changes what scrolls.
+
+1. **A gap after every file.** A code editor reserves empty space below its
+   last line: `empty_bottom_height`, which at the default
+   `scroll_beyond_last_line: None` is **half the viewport**. Each section's
+   viewport is its whole file, so every file got half its own height of blank
+   space after it. Fixed by pinning `scroll_beyond_last_line(Some(0))` on
+   every section but the last — that padding belongs at the end of the
+   manuscript, not after every chapter.
+2. **The wheel scrolled one file instead of the manuscript.** Sections were
+   16px short, because gpui-component pads a multi-line input by
+   `Size::input_py()` (8px top and bottom). A section that can scroll *at
+   all* consumes the wheel. The editor itself is well behaved —
+   `on_scroll_wheel` calls `stop_propagation` **only if its offset actually
+   changed** — so once a section genuinely cannot scroll, the event reaches
+   the list. Fixed by adding the padding to the section height.
+3. **Half a pixel per line.** The row height is
+   `mono_font_size (13) × 1.5 = 19.5px`, not the 20 I assumed; on a
+   1,300-line file that alone is 650px of slack.
+
+### The one structural limit
+
+With soft wrap **on**, a section's height is its *wrapped* row count. That
+lives in `InputBaseState::display_map`, which is `pub(super)` — a consumer
+cannot read it, and `line_height()` alone is not enough. So sections either
+run unwrapped (what this spike does, at the cost of horizontal scrolling on
+long prose lines) or gpui-base publishes a content height.
+
+**That is the whole ask: one accessor.** It is a small, specific upstream
+gap rather than an architectural obstacle — but until it exists, a wrapped
+manuscript cannot be sized correctly from outside the crate.
 
 ## What a port would actually cost
 

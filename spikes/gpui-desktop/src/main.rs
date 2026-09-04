@@ -15,6 +15,7 @@
 //! rules on. It is a probe, not a product.
 
 mod binder;
+mod continuous;
 mod icons;
 
 use std::{
@@ -311,6 +312,13 @@ struct BrinkHighlighter {
     tokens: Vec<(std::ops::Range<usize>, SharedString)>,
 }
 
+/// A highlighter pinned to ONE file — what the Continuous view's sections
+/// need, where every section is a different file at once rather than a
+/// single editor following the active one.
+fn section_highlighter(project: Shared, path: &str) -> BrinkHighlighter {
+    BrinkHighlighter::new(project, Rc::new(RefCell::new(path.to_owned())))
+}
+
 impl BrinkHighlighter {
     fn new(project: Shared, active: ActiveKey) -> Self {
         Self {
@@ -592,6 +600,11 @@ struct Workspace {
     active_index: usize,
     binder: Entity<binder::Binder>,
     editor: Entity<EditorState>,
+    /// The Continuous view, built lazily the first time it is shown — the
+    /// three editor views are alternative occupants of the editor root area
+    /// (ruled 2026-08-26), not co-resident panes.
+    continuous: Option<Entity<continuous::ContinuousView>>,
+    continuous_active: bool,
     problems: Vec<(u32, String, String)>,
     last_analyze_ms: f64,
     worst_analyze_ms: f64,
@@ -650,6 +663,10 @@ impl Workspace {
                 // navigation after the first click. A panel click opens the
                 // document but keeps focus in the panel — Zed's project-panel
                 // behaviour, and the studio's.
+                if let Some(view) = this.continuous.clone() {
+                    let path = path.clone();
+                    view.update(cx, |view, cx| view.reveal(&path, cx));
+                }
                 let handle = binder.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             },
@@ -661,6 +678,8 @@ impl Workspace {
             active_index: 0,
             binder,
             editor,
+            continuous: None,
+            continuous_active: false,
             problems: Vec::new(),
             last_analyze_ms: 0.0,
             worst_analyze_ms: 0.0,
@@ -801,9 +820,28 @@ impl Render for Workspace {
             .child(format!("{} files", files.len()))
             .child(format!("analyze {:.1} ms", self.last_analyze_ms))
             .child(format!("worst {:.1} ms", self.worst_analyze_ms))
-            .child(SharedString::from(
-                "GPUI spike — semantic tokens / hover / completion live",
-            ));
+            .child(
+                div()
+                    .id("view-toggle")
+                    .px_2()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted))
+                    .child(if self.continuous_active {
+                        "view: Continuous"
+                    } else {
+                        "view: Code"
+                    })
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.continuous_active = !this.continuous_active;
+                        if this.continuous_active && this.continuous.is_none() {
+                            let project = this.project.clone();
+                            this.continuous =
+                                Some(cx.new(|cx| continuous::ContinuousView::new(project, cx)));
+                        }
+                        cx.notify();
+                    })),
+            );
 
         v_flex()
             .size_full()
@@ -816,7 +854,12 @@ impl Render for Workspace {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(Editor::new(&self.editor).flex_1().bordered(false))
+                        .map(|el| match self.continuous.clone() {
+                            Some(view) if self.continuous_active => {
+                                el.child(div().flex_1().min_h_0().child(view))
+                            }
+                            _ => el.child(Editor::new(&self.editor).flex_1().bordered(false)),
+                        })
                         .child(problems),
                 ),
             )
