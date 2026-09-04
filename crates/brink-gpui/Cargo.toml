@@ -1,8 +1,14 @@
-# SPIKE: GPUI-native desktop shell feasibility (Zed-style), 2026-09-03.
-# Deliberately its own workspace (same pattern as packages/brink-desktop/src-tauri):
-# gpui's dependency graph must not join the root workspace.
+# The GPUI-native studio (decision log 2026-09-04, "The GPUI-native app is
+# the destination").
+#
+# DELIBERATELY ITS OWN WORKSPACE (the empty `[workspace]` table below), and
+# also named in the root workspace's `exclude` — both are needed, because the
+# root's `crates/brink-*` members glob would otherwise pull gpui's entire
+# dependency graph into every `cargo test --workspace` and every CI lane, for
+# zero coverage benefit. Same arrangement as `packages/brink-desktop/src-tauri`,
+# which only escapes by virtue of living outside the glob.
 [package]
-name = "brink-gpui-spike"
+name = "brink-gpui"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -28,10 +34,10 @@ anyhow = "1"
 # Same rowan the root workspace pins (TextSize/TextRange).
 rowan = "0.16.1"
 
-brink-ide = { path = "../../crates/internal/brink-ide" }
-brink-db = { path = "../../crates/internal/brink-db" }
-brink-ir = { path = "../../crates/internal/brink-ir" }
-brink-analyzer = { path = "../../crates/internal/brink-analyzer" }
-brink-driver = { path = "../../crates/internal/brink-driver" }
-brink-project-config = { path = "../../crates/internal/brink-project-config" }
+brink-ide = { path = "../internal/brink-ide" }
+brink-db = { path = "../internal/brink-db" }
+brink-ir = { path = "../internal/brink-ir" }
+brink-analyzer = { path = "../internal/brink-analyzer" }
+brink-driver = { path = "../internal/brink-driver" }
+brink-project-config = { path = "../internal/brink-project-config" }
 gpui-platform = { git = "https://github.com/zed-industries/zed", rev = "5b055fa789a8b8d38ac951a6e0cde272f66b4495", package = "gpui_platform", features = ["font-kit"] }

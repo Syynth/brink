@@ -5159,7 +5159,7 @@
 ## In-text chips are a sufficient widget bar for a native editor
 - **WHEN:** 2026-09-04
 - **PROJECT:** brink
-- **SYSTEM:** cross-system — GPUI native desktop evaluation (`spikes/gpui-desktop/`, `EDITOR-SWEEP.md`)
+- **SYSTEM:** cross-system — GPUI native desktop evaluation (`crates/brink-gpui/`, `EDITOR-SWEEP.md`; the spike lived at `spikes/gpui-desktop/` when this was written)
 - **SCOPE:** architectural (scopes a possible future port; nothing is committed to yet)
 - **WHAT:** For the purpose of judging whether a GPUI-native editor could host brink's authoring surfaces, the widget capability proven in the spike — an **in-text chip**: text spliced into the shaped line, styled with its own run, able to draw its own content (a painted quad at the chip's own bounds), clickable with the click consumed rather than moving the caret — is **good enough**. A *nested element* inside a line (one with its own layout and children, e.g. an editable input mid-line) is explicitly NOT required.
 - **WHY:** The surfaces that motivated the question are argument widgets and the colour picker, and both decompose into a chip plus a popover: the chip carries the affordance and its drawing, the popover carries the editing. GPUI does popovers natively. Holding out for a full nested-view widget would price in the hardest part of a CodeMirror `WidgetType` for a capability the authoring surfaces do not actually need. This bounds the editor question for any future port: the fork must carry inlays and chips, not a general in-line view system.
@@ -5167,7 +5167,7 @@
 ## The GPUI-native app is the destination; the web studio is transitional
 - **WHEN:** 2026-09-04
 - **PROJECT:** brink
-- **SYSTEM:** cross-system — studio/desktop architecture (`spikes/gpui-desktop/`, `docs/desktop-shell-spec.md`, `docs/studio-shell-spec.md`)
+- **SYSTEM:** cross-system — studio/desktop architecture (`crates/brink-gpui/` — `spikes/gpui-desktop/` when this was written — `docs/desktop-shell-spec.md`, `docs/studio-shell-spec.md`)
 - **SCOPE:** architectural
 - **WHAT:** The GPUI-native desktop app is intended to **replace** the studio, not to join it as a third consumer. Until it covers what the Tauri/webview studio covers, the two coexist with the native app deliberately narrower — but that coexistence is a **transition, not an end state**, and every choice is made for the replacement. Concretely: the native app is the destination authoring surface; the web studio is maintained, not grown; and nothing may be built that forecloses full replacement.
 - **WHY:** The maintainer's judgement after driving the spike — "the app feels SO much better in GPUI and almost looks nicer already" — is the deciding evidence, and the five spike rounds found no blocking capability behind it: the engine drives a native editor at ~1.14 ms per keystroke, the Binder reaches near-parity in a third of the code, the manuscript view works, in-text chips are proven, and the studio's CSS maps onto GPUI with two absent features across four uses. What remains is volume, which is a schedule cost rather than a technical risk. Choosing the destination now (rather than drifting into a permanent two-implementation split) is what keeps the transition bounded: it settles that authoring features go native-first once the native app can host them, that the web studio freezes rather than accumulates, and that the editor acceptance gate must move down from the wasm `EditorSession` onto the engine both surfaces share.

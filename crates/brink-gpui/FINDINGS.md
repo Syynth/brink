@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04 · **Status:** three rounds complete, no ruling requested yet ·
 **Base:** rebased onto `main` @ `ecfea3c9b` ·
-**Code:** `spikes/gpui-desktop/` (its own cargo workspace, untracked by the
+**Code:** `crates/brink-gpui/` (its own cargo workspace, untracked by the
 root one — same exclusion pattern as `packages/brink-desktop/src-tauri`)
 
 ## The question
@@ -363,7 +363,7 @@ of the work is the part it skipped:
 ## Reproducing
 
 ```bash
-cd spikes/gpui-desktop
+cd crates/brink-gpui
 cargo run --release -- ../../tests/tier1-native/conventions-cross-file
 cargo run --release -- ../../tests/tests_github/Boyquotes__signal_creek/assets/ink
 ```

@@ -1,8 +1,9 @@
-//! SPIKE — a GPUI-native brink studio shell, Zed-style.
+//! The GPUI-native brink studio.
 //!
-//! Question under test: can the existing Rust analysis engine (`brink-ide` /
-//! `brink-db`) be driven directly from a native GPUI window, with a real code
-//! editor widget, WITHOUT the wasm + CodeMirror + React stack in between?
+//! Ruled the destination surface on 2026-09-04 (`docs/decision-log.md`, "The
+//! GPUI-native app is the destination"); the web studio is transitional. It
+//! drives the same analysis engine every other consumer does — `brink-ide`'s
+//! `IdeSession` — with no wasm boundary in between.
 //!
 //! What this proves out:
 //! - a window with a file list, a code editor, a problems strip, a status bar
@@ -947,7 +948,7 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(TitleBar::new().child(Label::new("brink — GPUI spike")))
+            .child(TitleBar::new().child(Label::new("brink")))
             .child(
                 h_flex().flex_1().min_h_0().child(sidebar).child(
                     v_flex()
