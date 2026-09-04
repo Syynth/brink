@@ -53,6 +53,7 @@ brink-ide = { path = "../internal/brink-ide" }
 brink-db = { path = "../internal/brink-db" }
 brink-ir = { path = "../internal/brink-ir" }
 brink-syntax = { path = "../internal/brink-syntax" }
+brink-syntax-native = { path = "../internal/brink-syntax-native" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-project-config = { path = "../internal/brink-project-config" }

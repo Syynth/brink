@@ -21,6 +21,7 @@ brink-ide.workspace = true
 brink-db.workspace = true
 brink-ir.workspace = true
 brink-syntax.workspace = true
+brink-syntax-native.workspace = true
 brink-analyzer.workspace = true
 brink-driver.workspace = true
 brink-project-config.workspace = true
