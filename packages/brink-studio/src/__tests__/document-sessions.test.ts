@@ -143,6 +143,58 @@ describe("DocumentSessions", () => {
     harness.cleanup();
   });
 
+  describe("gutter host seams across a remount (#3490)", () => {
+    // The gutters read their host hooks ONCE per render and cache the answer
+    // per `EditorState`. `DocumentSessions` reuses a cached state when a
+    // backgrounded tab remounts, and `refreshExecutionHighlight()` /
+    // `refreshBreakpoints()` skip viewless slots — so an answer that changed
+    // while the tab was away left no transaction behind, and the cache would
+    // serve the pre-unmount answer forever. `mountSlot` self-serves both
+    // refreshes; these pin that.
+    it("shows a paused arrow that arrived while the tab was backgrounded", async () => {
+      let highlights: readonly { line: number; kind: string }[] = [];
+      const h = await createHarness({ "main.ink": MAIN_INK }, {
+        // The play gutter — which draws both markers — mounts only when a
+        // play handler is wired (`extensions.ts`'s `if (options.onPlayFrom)`).
+        onPlayFrom: () => {},
+        getExecutionHighlights: () => highlights as never,
+      });
+      try {
+        const first = h.mount("main.ink", "group-1");
+        expect(first.view.dom.querySelectorAll(".brink-exec-arrow-paused")).toHaveLength(0);
+        first.dispose(); // backgrounded: the slot keeps its EditorState
+
+        highlights = [{ line: 3, kind: "paused" }]; // the session pauses, viewless
+
+        const second = h.mount("main.ink", "group-1"); // reuses the cached state
+        expect(second.view.dom.querySelectorAll(".brink-exec-arrow-paused")).toHaveLength(1);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it("shows a breakpoint dot toggled while the tab was backgrounded", async () => {
+      let marks: readonly { line: number; state: string }[] = [];
+      const h = await createHarness({ "main.ink": MAIN_INK }, {
+        onPlayFrom: () => {},
+        getBreakpoints: () => marks as never,
+        onToggleBreakpoint: () => {},
+      });
+      try {
+        const first = h.mount("main.ink", "group-1");
+        expect(first.view.dom.querySelectorAll(".brink-breakpoint-dot")).toHaveLength(0);
+        first.dispose();
+
+        marks = [{ line: 2, state: "bound" }];
+
+        const second = h.mount("main.ink", "group-1");
+        expect(second.view.dom.querySelectorAll(".brink-breakpoint-dot")).toHaveLength(1);
+      } finally {
+        h.cleanup();
+      }
+    });
+  });
+
   describe("mounting", () => {
     it("mounts a file view with the full file content", () => {
       const { view } = harness.mount("main.ink", "group-1");
