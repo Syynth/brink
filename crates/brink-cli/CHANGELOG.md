@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-cli-v0.0.16...brink-cli-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(brink-cli)* brink fix subcommand (auto-fix M6)
+- @brink-lang/dialect package + resolved dialect.json compile output ([#3393](https://github.com/Syynth/brink/pull/3393))
+- *(cli)* `brink debug` — a terminal debugger ([#3248](https://github.com/Syynth/brink/pull/3248))
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- one indent width, defaulting to 4, read by everything that indents ([#3167](https://github.com/Syynth/brink/pull/3167))
+
+### Fixed
+
+- *(brink-project-config)* validate [fix] table codes, warn on unrecognized ([#3447](https://github.com/Syynth/brink/pull/3447))
+- *(brink-cli)* review findings on brink fix M6 (PR #3453)
+- *(brink-cli)* fix_cli.rs clippy lint-expectation cleanup
+- *(3184)* clear the clippy failures the build could not gate
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- Merge pull request #3486 from Syynth/auto/issue-3447
+- Merge branch 'main' into dialect/3393-package-output
+- Merge branch 'main' into show/prose
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-cli-v0.0.11...brink-cli-v0.0.15) - 2026-08-23
 
 ### Added

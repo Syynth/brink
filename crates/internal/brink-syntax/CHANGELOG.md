@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.16...brink-syntax-v0.0.17) - 2026-09-04
+
+### Fixed
+
+- *(brink-syntax)* apply cargo fmt to new author_warning tests
+- *(brink-syntax)* gate branch TODO on line-start, stop at unmatched }
+- *(brink-syntax)* recognize TODO lines inside conditional branches ([#3353](https://github.com/Syynth/brink/pull/3353))
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.15...brink-syntax-v0.0.16) - 2026-08-25
 
 ### Added

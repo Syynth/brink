@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-ide-v0.0.16...brink-ide-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(brink-ide)* auto-fix batching — apply_round / fix_all, Select, FixPolicy, Report
+- run_ends_at — the emitted-side run rule + shared runsOf helper ([#3388](https://github.com/Syynth/brink/pull/3388))
+- project-declared dialogue dialect — brink.toml [dialogue], default none ([#3387](https://github.com/Syynth/brink/pull/3387))
+- *(studio)* debug info on by default for studio compiles (W1, #3294)
+- *(ir,db)* anonymous weave containers reach the overlay projection with codegen's ids ([#3234](https://github.com/Syynth/brink/pull/3234))
+- *(ide,web,editor)* make hover-card references navigable
+- *(debugger)* per-session debug-info compile toggle ([#3229](https://github.com/Syynth/brink/pull/3229))
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- *(brink-ir)* give the escape's backslash its own token, and fix native ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3157](https://github.com/Syynth/brink/pull/3157))
+- *(studio,editor,brink-ir)* Manuscript + Inky themes, role token types, color design doc ([#3121](https://github.com/Syynth/brink/pull/3121))
+
+### Fixed
+
+- *(brink-web,brink-ide)* align the cursor menu on BOTH suppression channels
+- *(review)* correct PR #3484 review findings
+- *(brink-cli)* --diff composes with --dry-run/cap_hit; share the fix-policy bridge
+- *(brink-ide)* review findings on the E014 empty-logic-line fixer ([#3423](https://github.com/Syynth/brink/pull/3423))
+- *(brink-ide)* narrow StaleWasFixer for the module/decl #@was overlap
+- *(brink-ide)* Safe auto-fix for E095 stale #@was self-alias ([#3425](https://github.com/Syynth/brink/pull/3425))
+- *(brink-ide)* review findings on the E025 import placement ([#3448](https://github.com/Syynth/brink/pull/3448))
+- *(brink-ide)* E025 import placement - position after INCLUDE blocks not before
+- *(brink-ide)* re-derive in_file's whole-file range per fix_all round
+- *(lsp,cli)* flatten hover link refs for consumers that cannot resolve them
+- *(ide,analyzer)* name the RNG cell `rng` instead of leaking its handle
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+- *(brink-ir)* never tokenize a character inside an escape ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3154](https://github.com/Syynth/brink/pull/3154))
+
+### Other
+
+- pin the toolchain to Rust 1.98.1 and fix its new clippy findings
+- Merge remote-tracking branch 'origin/main' into train-fix
+- Merge remote-tracking branch 'origin/main' into train-fix
+- Merge remote-tracking branch 'origin/main' into train-fix
+- Merge remote-tracking branch 'origin/main' into auto/issue-3448
+- Merge pull request #3440 from Syynth/auto/issue-3417
+- Merge pull request #3433 from Syynth/auto/issue-3418
+- Merge branch 'main' into auto/issue-3377
+- *(editor)* WebKit rails-gutter layout fix + dispatch instrumentation + delimiter tokens ([#3118](https://github.com/Syynth/brink/pull/3118))
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-ide-v0.0.15...brink-ide-v0.0.16) - 2026-08-25
 
 ### Added
