@@ -116,6 +116,14 @@ size. The residual O(file) term is the lex-only segmentation pass, ~10x
 cheaper than parsing; it stays under 1 ms through ~6k-line files and is
 itself incrementalizable later if a real project needs it.
 
+**Native files are not incremental yet.** `segment_file` is ink-only — so
+is `brink-db`'s own `semantic_tokens_query`, which takes a whole-file walk
+for `.brink` — and a native file therefore pays 2.1 ms at 700 lines and
+12.4 ms at 8,400. The primary surface is the one without the fast path.
+`TokenCache::is_incremental` reports this rather than hiding it, and
+**#3562** carries the fix; where a native segment boundary falls is a
+language question and wants a ruling before implementation.
+
 **Worker thread — the project.** It owns the single `IdeSession` outright.
 `IdeSession` is already `Send` (`brink-lsp` runs it as
 `Arc<Mutex<NativeProjects>>` under a multi-threaded server), so it *moves*
