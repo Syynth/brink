@@ -389,6 +389,21 @@ pub(crate) struct OutputMark {
 ///   and function return value capture. Drained by `end_capture`.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputBuffer {
+    /// Reusable scan buffer for [`Self::has_completed_line`]'s glue pass.
+    ///
+    /// Not state: it carries nothing between calls and every call refills it
+    /// from scratch. It exists purely so the scan stops allocating.
+    /// `has_completed_line` runs once per VM step and used to build a fresh
+    /// `vec![false; unread.len()]` each time — measured at 467,587 `calloc`
+    /// calls against 466,851 steps on `crucible-8` (#3565), i.e. one zeroed
+    /// heap allocation per step, in a runtime whose profile is ~30%
+    /// allocator traffic.
+    ///
+    /// `RefCell` rather than `&mut self`: the six call sites reach this
+    /// through several different borrow paths, and widening the receiver
+    /// would cascade borrow conflicts through `FlowInstance` for a buffer
+    /// that is observably pure.
+    line_scan: core::cell::RefCell<Vec<bool>>,
     /// Append-only output log. Parts are never removed.
     pub(crate) transcript: Vec<OutputPart>,
     /// Read cursor into transcript. Advances on take/flush.
@@ -423,6 +438,7 @@ pub(crate) struct OutputBuffer {
 impl OutputBuffer {
     pub fn new() -> Self {
         Self {
+            line_scan: core::cell::RefCell::new(Vec::new()),
             transcript: Vec::new(),
             cursor: 0,
             capture: Vec::new(),

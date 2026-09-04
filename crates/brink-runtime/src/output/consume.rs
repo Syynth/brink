@@ -9,7 +9,6 @@
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use brink_format::{LineEntry, PluralResolver};
@@ -40,7 +39,12 @@ impl OutputBuffer {
         }
 
         // Run glue marking pass to determine which newlines survive.
-        let mut remove = vec![false; unread.len()];
+        // The buffer is reused across calls (see `OutputBuffer::line_scan`):
+        // this runs once per VM step, and allocating it here was one zeroed
+        // allocation per step (#3565).
+        let mut remove = self.line_scan.borrow_mut();
+        remove.clear();
+        remove.resize(unread.len(), false);
         mark_glue_removals(unread, &mut remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
@@ -130,7 +134,11 @@ impl OutputBuffer {
                 return None;
             }
 
-            let mut remove = vec![false; unread.len()];
+            // Same reused buffer as `has_completed_line` (#3565) — this is
+            // the identical glue scan, one line further along.
+            let mut remove = self.line_scan.borrow_mut();
+            remove.clear();
+            remove.resize(unread.len(), false);
             mark_glue_removals(unread, &mut remove);
 
             // Find the split point: the first surviving Newline (not removed,
