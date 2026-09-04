@@ -118,12 +118,12 @@ fn function_printing_several_lines(src: &str) -> bool {
         }
         let statement_call =
             t.starts_with("~ f") && t.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
-        let content = !t.is_empty()
+        let is_content = !t.is_empty()
             && !t.starts_with('~')
             && !t.starts_with("{ ")
             && !t.starts_with('-')
             && !t.starts_with('}');
-        if in_function && (content || statement_call) {
+        if in_function && (is_content || statement_call) {
             content += 1;
             if content >= 2 {
                 return true;
