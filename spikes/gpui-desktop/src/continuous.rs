@@ -37,10 +37,11 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ListAlignment, ListState,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div, list, px,
+    ParentElement as _, Render, SharedString, Styled as _, Window, div, list,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, h_flex,
+    ActiveTheme as _, Sizable as _, h_flex,
     input::{Editor, EditorState, InputHighlighter},
     v_flex,
 };
@@ -58,13 +59,18 @@ type Section = (Entity<EditorState>, f32);
 const LINE_HEIGHT_FACTOR: f32 = 1.5;
 
 /// gpui-component pads a multi-line input by `Size::input_py()` — 8px top and
-/// bottom at the default Medium size (`sizing.rs`). A section that forgets it
-/// is 16px shorter than its content, so the editor's own viewport is smaller
-/// than what it holds and the wheel scrolls THE SECTION instead of the
-/// manuscript. That is the whole of the "scroll happens within one file"
-/// bug: `on_scroll_wheel` stops propagation only when its offset actually
-/// moved, so as long as a section cannot scroll, the event reaches the list.
-const INPUT_PY: f32 = 8.0;
+/// bottom at the default Medium size (`sizing.rs`). Padding AROUND a section
+/// reads as half a line of dead space above every file, so sections run at
+/// `XSmall`, whose `input_py()` is zero, and the section is exactly its rows.
+///
+/// Getting this wrong is not cosmetic. A section that can scroll at all
+/// swallows the wheel: `on_scroll_wheel` stops propagation only when its own
+/// offset actually moved, so only an exactly-sized section lets the event
+/// through to the manuscript list.
+const SECTION_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
+
+/// Height of the boundary heading between two files.
+const HEADING_HEIGHT: f32 = 30.0;
 
 /// A section is sized to its file's content, so the OUTER list is the only
 /// scroller — the same arrangement as the studio's, where the per-file
@@ -80,7 +86,17 @@ const INPUT_PY: f32 = 8.0;
 /// manuscript. Sections therefore run unwrapped until gpui-base publishes a
 /// content height.
 fn section_height(source: &str, line_height: f32) -> f32 {
-    source.lines().count().max(1) as f32 * line_height
+    display_rows(source) as f32 * line_height
+}
+
+/// Rows the editor will actually draw.
+///
+/// NOT `str::lines()`: that drops the empty final line a trailing newline
+/// creates, while the editor renders it. One row short is enough to clip the
+/// file's last line AND leave the section scrollable by that row — which is
+/// the residual "extra scrolling" after the padding fix.
+fn display_rows(source: &str) -> usize {
+    source.split('\n').count().max(1)
 }
 
 /// Rows of scroll-past-the-end, on the LAST section only.
@@ -106,6 +122,16 @@ pub struct ContinuousView {
     /// How many sections have ever been built, and the cost of the last one
     /// — the number that answers "is this viable".
     mounted: Rc<RefCell<(usize, f64)>>,
+    /// The editor's REAL row height, once one section has laid out.
+    ///
+    /// `mono_font_size * 1.5` is what gpui-component asks for, but the row
+    /// height it actually lays out with is rounded, and being a fraction of a
+    /// pixel short per row is enough — over a screenful — to leave a section
+    /// scrollable, which makes it swallow the wheel again. So the constant is
+    /// only ever a first guess: the first laid-out section reports the true
+    /// value through `EditorState::line_height()` and every section is
+    /// re-measured against it.
+    measured_line_height: Option<f32>,
 }
 
 impl ContinuousView {
@@ -119,6 +145,7 @@ impl ContinuousView {
             editors: Rc::new(RefCell::new(HashMap::new())),
             list,
             mounted: Rc::new(RefCell::new((0, 0.0))),
+            measured_line_height: None,
         }
     }
 
@@ -136,6 +163,7 @@ impl ContinuousView {
         project: &Shared,
         path: &str,
         is_last: bool,
+        line_height_override: Option<f32>,
         window: &mut Window,
         cx: &mut App,
     ) -> Section {
@@ -144,10 +172,10 @@ impl ContinuousView {
             .file_id(path)
             .and_then(|id| project.borrow().session.source(id).map(str::to_owned))
             .unwrap_or_default();
-        let line_height = f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR;
+        let line_height = line_height_override
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
         let trailing = if is_last { TRAILING_ROWS } else { 0 };
-        let height =
-            section_height(&source, line_height) + trailing as f32 * line_height + 2.0 * INPUT_PY;
+        let height = section_height(&source, line_height) + trailing as f32 * line_height;
         let key: SharedString = path.to_owned().into();
         let project = project.clone();
         let state = cx.new(|cx| {
@@ -180,76 +208,128 @@ impl EventEmitter<BinderEvent> for ContinuousView {}
 
 impl Render for ContinuousView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (surface, border, muted, fg) = (
-            theme.background,
-            theme.border,
-            theme.muted_foreground,
-            theme.foreground,
-        );
+        let surface = cx.theme().background;
         let files = self.files.clone();
         let count = files.len();
         let project = self.project.clone();
         let editors = self.editors.clone();
         let mounted = self.mounted.clone();
+        let measured = self.measured_line_height;
 
-        v_flex().size_full().bg(surface).child(
-            list(self.list.clone(), move |index, window, cx| {
-                let Some(path) = files.get(index).cloned() else {
-                    return div().into_any_element();
-                };
-                let started = Instant::now();
-                let fresh = !editors.borrow().contains_key(&path);
-                let (editor, height) = editors
-                    .borrow_mut()
-                    .entry(path.clone())
-                    .or_insert_with(|| {
-                        let is_last = index + 1 == count;
-                        ContinuousView::build_editor(&project, &path, is_last, window, cx)
-                    })
-                    .clone();
-                if fresh {
-                    let mut stats = mounted.borrow_mut();
-                    stats.0 += 1;
-                    stats.1 = started.elapsed().as_secs_f64() * 1e3;
-                    eprintln!(
-                        "continuous: mounted section {} ({}) in {:.2} ms — {} live",
-                        stats.0, path, stats.1, stats.0
-                    );
+        // Adopt the real row height as soon as any section has laid out, and
+        // re-measure every section against it. Runs once.
+        if self.measured_line_height.is_none() {
+            let real = self
+                .editors
+                .borrow()
+                .values()
+                .find_map(|(editor, _)| editor.read(cx).line_height())
+                .map(f32::from);
+            if let Some(real) = real {
+                self.measured_line_height = Some(real);
+                let trailing = TRAILING_ROWS as f32 * real;
+                let last = self.files.last().cloned();
+                for (path, section) in self.editors.borrow_mut().iter_mut() {
+                    let rows = section.0.read(cx).text().to_string();
+                    section.1 = display_rows(&rows) as f32 * real
+                        + if Some(path) == last.as_ref() {
+                            trailing
+                        } else {
+                            0.0
+                        };
                 }
-                v_flex()
-                    .w_full()
-                    .child(
-                        // The heading between files. Not sticky: GPUI has no
-                        // `position: sticky`, and a real port would draw the
-                        // current section's heading as an overlay on the
-                        // scroller instead.
-                        h_flex()
-                            .w_full()
-                            .h(px(30.))
-                            .px_4()
-                            .gap_2()
-                            .items_center()
-                            .bg(theme_bg(cx))
-                            .border_t_1()
-                            .border_b_1()
-                            .border_color(border)
-                            .child(icons::icon(icons::FILE, px(12.), muted))
-                            .child(div().text_xs().text_color(fg).child(path.clone())),
-                    )
-                    .child(
-                        Editor::new(&editor)
-                            .bordered(false)
-                            .appearance(false)
-                            .h(px(height)),
-                    )
-                    .into_any_element()
+                self.list.remeasure();
+                cx.notify();
+            }
+        }
+
+        // The file the top of the scroller is currently inside — `list`
+        // reports its topmost visible item, which is exactly that.
+        let sticky = self
+            .files
+            .get(self.list.logical_scroll_top().item_ix)
+            .cloned();
+
+        v_flex()
+            .size_full()
+            .bg(surface)
+            .relative()
+            .child(
+                list(self.list.clone(), move |index, window, cx| {
+                    let Some(path) = files.get(index).cloned() else {
+                        return div().into_any_element();
+                    };
+                    let started = Instant::now();
+                    let fresh = !editors.borrow().contains_key(&path);
+                    let (editor, height) = editors
+                        .borrow_mut()
+                        .entry(path.clone())
+                        .or_insert_with(|| {
+                            let is_last = index + 1 == count;
+                            ContinuousView::build_editor(
+                                &project, &path, is_last, measured, window, cx,
+                            )
+                        })
+                        .clone();
+                    if fresh {
+                        let mut stats = mounted.borrow_mut();
+                        stats.0 += 1;
+                        stats.1 = started.elapsed().as_secs_f64() * 1e3;
+                        eprintln!(
+                            "continuous: mounted section {} ({}) in {:.2} ms — {} live",
+                            stats.0, path, stats.1, stats.0
+                        );
+                    }
+                    v_flex()
+                        .w_full()
+                        .child(heading(&path, cx))
+                        .child(
+                            Editor::new(&editor)
+                                .bordered(false)
+                                .appearance(false)
+                                .with_size(SECTION_SIZE)
+                                .h(px(height)),
+                        )
+                        .into_any_element()
+                })
+                .flex_1(),
+            )
+            .when_some(sticky, |el, path| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .child(heading(&path, cx)),
+                )
             })
-            .flex_1(),
-        )
     }
 }
 
-fn theme_bg(cx: &App) -> gpui::Hsla {
-    cx.theme().sidebar
+/// The boundary between two files.
+///
+/// GPUI has no `position: sticky`, so the manuscript draws this twice: inline
+/// at each boundary, and again as an overlay pinned to the top of the
+/// scroller showing whichever file is currently under it — which is what
+/// makes the heading read as sticky.
+fn heading(path: &str, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    h_flex()
+        .w_full()
+        .h(px(HEADING_HEIGHT))
+        .px_4()
+        .gap_2()
+        .items_center()
+        .bg(theme.sidebar)
+        .border_t_1()
+        .border_b_1()
+        .border_color(theme.border)
+        .child(icons::icon(icons::FILE, px(12.), theme.muted_foreground))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.foreground)
+                .child(path.to_owned()),
+        )
 }

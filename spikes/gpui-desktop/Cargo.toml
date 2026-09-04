@@ -10,11 +10,18 @@ publish = false
 [workspace]
 
 [dependencies]
-# gpui-component tracks longbridge's `gpui-pre` publish of Zed's gpui
-# (crates.io `gpui` itself is stale at 0.2.2 / Oct 2025). The rename makes
-# `gpui::` in this crate the same crate gpui-component links against.
-gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { version = "0.6.0", features = ["tree-sitter"] }
+# Zed's OWN gpui, from its repository, pinned to the exact commit
+# `gpui-pre` 0.3.3 is a snapshot of (`zed@5b055fa`, 2026-09-03). The
+# published `gpui` crate is stale (0.2.2, Oct 2025), so git is the only
+# current path to it — which is what Zed's own README documents.
+#
+# `gpui-component`/`gpui-base` are VENDORED under `vendor/` with one edit
+# each: their `gpui-pre*` dependencies repointed at the Zed packages those
+# crates are snapshots of. A `[patch]` cannot do this — `gpui-pre` is
+# versioned 0.3.x while Zed's `gpui` is 0.2.2, so the patch resolves and is
+# then discarded as not satisfying `^0.3.1`.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "5b055fa789a8b8d38ac951a6e0cde272f66b4495", package = "gpui" }
+gpui-component = { path = "vendor/gpui-component", features = ["tree-sitter"] }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 anyhow = "1"
@@ -27,4 +34,4 @@ brink-ir = { path = "../../crates/internal/brink-ir" }
 brink-analyzer = { path = "../../crates/internal/brink-analyzer" }
 brink-driver = { path = "../../crates/internal/brink-driver" }
 brink-project-config = { path = "../../crates/internal/brink-project-config" }
-gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
+gpui-platform = { git = "https://github.com/zed-industries/zed", rev = "5b055fa789a8b8d38ac951a6e0cde272f66b4495", package = "gpui_platform", features = ["font-kit"] }

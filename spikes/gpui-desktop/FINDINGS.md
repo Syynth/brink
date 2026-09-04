@@ -258,8 +258,78 @@ run unwrapped (what this spike does, at the cost of horizontal scrolling on
 long prose lines) or gpui-base publishes a content height.
 
 **That is the whole ask: one accessor.** It is a small, specific upstream
-gap rather than an architectural obstacle — but until it exists, a wrapped
-manuscript cannot be sized correctly from outside the crate.
+gap rather than an architectural obstacle — and round 4 removes it, because
+once the crate is vendored the accessor is ours to add.
+
+### Round 3b — finishing the manuscript
+
+Driving it surfaced three more sizing faults, each the same shape: a section
+that is even slightly the wrong height either clips its last line or stays
+scrollable, and a scrollable section swallows the wheel.
+
+- **Half a line above every file.** `Editor` has no size of its own, so
+  `Input` renders it at Medium and pads it 8px top and bottom. Padding
+  *around* a section is dead space in a manuscript. Fixed by giving `Editor`
+  a size (a vendor edit) so a section can ask for `XSmall`, whose padding is
+  zero — after which the section is exactly its rows.
+- **The last line clipped.** `str::lines()` drops the empty final line a
+  trailing newline creates; the editor draws it. One row short is enough to
+  clip that line *and* leave the section scrollable.
+- **Still a fraction short.** `mono_font_size * 1.5` is what gpui-component
+  *asks* for; the row height it lays out with is rounded. The fix is to stop
+  guessing: the first laid-out section reports the true value through
+  `EditorState::line_height()`, and every section is re-measured against it.
+
+Also added: a **sticky heading**. GPUI has no `position: sticky`, so the
+manuscript draws the boundary heading twice — inline at each boundary, and
+again as an overlay pinned to the top of the scroller showing whichever file
+`ListState::logical_scroll_top()` reports. That reads as sticky and costs
+about fifteen lines.
+
+## Round 4 — depending on Zed's own gpui
+
+**Question:** must we take longbridge's `gpui-pre` republish, or can we
+depend on Zed directly?
+
+**Answer: directly, but only via a fork — and the fork is about NAMES, not
+code.** `./fork-to-zed.sh` does it; the spike builds and runs on Zed's own
+`gpui` at `5b055fa`.
+
+Why a `[patch]` cannot do it: `gpui-component`/`gpui-base` hard-wire
+`gpui = { version = "0.3.1", package = "gpui-pre" }`. The patch resolves and
+Cargo then **discards it** — Zed's `gpui` is version **0.2.2**, which does
+not satisfy `^0.3.1`. `gpui-pre` renumbered to 0.3.x, and that alone
+forecloses substitution.
+
+What the fork costs — four crates vendored, and every edit a naming edit:
+
+| Crate | Edit |
+|---|---|
+| `gpui-base` | 6 dependency tables repointed at Zed's git |
+| `gpui-component` | 7 (deps + sibling paths) |
+| `gpui-kit-assets` | 1 — it depends on `gpui-pre` too, which would otherwise link **two** copies of gpui |
+| `gpui-component-macros` | 1 — `IntoPlot` resolves its paths by looking up a dependency whose package is literally `gpui-kit` or `gpui-pre`, so the macro is unusable against the crate those are snapshots *of*. Renaming the dependency does not help: `proc-macro-crate` matches the real package name, not the alias. |
+
+Two blind alleys worth recording: aliasing the same crate under two names is
+refused by Cargo ("depends on crate `gpui` multiple times with different
+names"), and `extern crate gpui_pre as gpui;` does not satisfy the macro
+either, for the same package-name reason.
+
+**How small is the fork, really?** `gpui-pre` 0.3.3 snapshots `zed@5b055fa`
+(2026-09-03 — the same day it was published), and **89 of its 90 source
+files are byte-identical** to Zed's. The lone difference is `action.rs`,
+where the `actions!` macro emits `$crate::Action` instead of `gpui::Action`
+so the crate works under a different name. This is a rename, not a fork of
+the framework.
+
+**What forking actually buys.** Not independence from Zed — `gpui` is
+pre-1.0 and its own README warns of frequent breaking changes either way.
+It buys **the ability to fix the editor**: `display_map` being `pub(super)`
+was the one structural limit round 3 hit, and `Editor` having no size was
+what put half a line above every file. Both are ours to change once the
+crate is vendored. The dependency that actually decides this evaluation is
+not the framework — it is `gpui-base`'s editor widget, which no amount of
+depending-on-Zed-directly replaces.
 
 ## What a port would actually cost
 
