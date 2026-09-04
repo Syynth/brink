@@ -35,8 +35,8 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Root, TitleBar, h_flex,
     input::{
-        CompletionProvider, Editor, EditorState, HoverProvider, InputEvent, InputHighlighter, Rope,
-        RopeExt,
+        CompletionProvider, Editor, EditorState, HoverProvider, Inlay, InputEvent,
+        InputHighlighter, Rope, RopeExt,
     },
     label::Label,
     v_flex,
@@ -259,6 +259,62 @@ impl Project {
         brink_ide::document::document_symbols(hir, manifest, source)
             .into_iter()
             .map(|s| convert_symbol(&s))
+            .collect()
+    }
+}
+
+impl Project {
+    /// Inlay hints for a file — parameter names at call sites, the real
+    /// `brink-ide` query, not a stand-in.
+    fn inlay_hints(&self, key: &str) -> Vec<(usize, String)> {
+        let Some(id) = self.session.file_id(key) else {
+            return Vec::new();
+        };
+        let (Some(analysis), Some(source)) = (self.session.analysis(), self.session.source(id))
+        else {
+            return Vec::new();
+        };
+        let full = rowan::TextRange::new(
+            rowan::TextSize::from(0),
+            rowan::TextSize::from(u32::try_from(source.len()).unwrap_or(u32::MAX)),
+        );
+        let hints = if self.session.is_native(id) {
+            match self.session.syntax_root_native(id) {
+                Some(root) => brink_ide::inlay_hints::inlay_hints_native(
+                    &root,
+                    analysis,
+                    self.session.db(),
+                    id,
+                    full,
+                    None,
+                ),
+                None => Vec::new(),
+            }
+        } else {
+            match self.session.syntax_root(id) {
+                Some(root) => brink_ide::inlay_hints::inlay_hints(
+                    &root,
+                    analysis,
+                    self.session.db(),
+                    id,
+                    full,
+                    None,
+                ),
+                None => Vec::new(),
+            }
+        };
+        hints
+            .into_iter()
+            .map(|h| {
+                // brink's labels already carry their own `:`; padding_right
+                // asks for a trailing space, not another colon.
+                let label = if h.padding_right {
+                    format!("{} ", h.label)
+                } else {
+                    h.label
+                };
+                (usize::from(h.offset), label)
+            })
             .collect()
     }
 }
@@ -767,11 +823,32 @@ impl Workspace {
                 (d.range.start.line, code, d.message.clone())
             })
             .collect();
+        // In-text inlays (the CM6 `WidgetType` question): parameter-name
+        // hints from `brink_ide::inlay_hints`, drawn inside the line although
+        // the buffer does not contain them.
+        let hints = self.project.borrow().inlay_hints(&key);
+        let hint_color = cx.theme().muted_foreground;
+        let hint_bg = cx.theme().muted.opacity(0.7);
+        let inlays: Vec<Inlay> = hints
+            .into_iter()
+            .map(|(offset, text)| Inlay {
+                offset,
+                text: text.into(),
+                style: gpui::HighlightStyle {
+                    color: Some(hint_color),
+                    background_color: Some(hint_bg),
+                    ..Default::default()
+                },
+            })
+            .collect();
+        eprintln!("inlays: {}", inlays.len());
+
         editor.update(cx, |state, cx| {
             if let Some(set) = state.diagnostics_mut() {
                 set.reset(&rope);
                 set.extend(diagnostics);
             }
+            state.set_inlays(inlays, cx);
             cx.notify();
         });
         cx.notify();

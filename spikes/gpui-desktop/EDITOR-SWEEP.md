@@ -147,11 +147,59 @@ and it is not equally hard:
   markers is a bounded change on a surface that already exists.
 - **Signature help / inlay hints as providers** — two more alongside six,
   following the same shape.
-- **In-text widgets** — the one real unknown. `gpui-base` lays out per-line
-  shaped text with fold-collapsed ranges; inserting a measured element into
-  a line means teaching the line layout a third span kind that both the fold
-  map and the wrap map have to see. **Not prototyped. This is the next
-  probe if this goes further.**
+- **In-text widgets** — **PROVEN, 2026-09-04.** See below.
+
+## Round 5 — in-text widgets, proven
+
+The sweep called this the one thing it could not estimate. It is now built
+and running: `EditorState::set_inlays()` in the vendored `gpui-base`, fed by
+the real `brink_ide::inlay_hints` query, drawing parameter-name chips inside
+the line — text the buffer does not contain, displacing what follows it.
+
+**It took two edits, not an architecture.**
+
+1. **Rendering** — splice the inlay's text and its own `TextRun` into the
+   shaped line at layout time (`element.rs::layout_lines`). A `TextRun`
+   already carries `color`, `background_color`, `font`, `underline`, so an
+   inlay is a *styled chip* without needing an element at all.
+2. **Coordinate translation** — the shaped line now holds text the buffer
+   does not, so display offsets and buffer offsets diverge. `LineLayout`
+   records the inlays it spliced and translates in both directions
+   (`to_display` / `to_buffer`). Everything outside keeps working in buffer
+   coordinates.
+
+The translation turned out to be **three call sites in one file**
+(`text_wrapper.rs`): `x_for_index` (caret/selection painting),
+`closest_index_for_position` and `index_for_position` (click → offset).
+Missing one is exactly as visible as you would hope — clicking after an
+inlay landed the caret N characters late, where N was the inlay's length —
+and fixing it made the caret land precisely where clicked.
+
+**Verified by driving it:** clicking immediately before `call_sign`, which
+follows a `chan:` inlay, and typing put the character at that exact buffer
+position (`radio(chan: Xcall_sign, …)`).
+
+### What this does and does not settle
+
+- **Settles:** inlay hints (142 lines) work today. So does any affordance
+  that is *styled text in the line* — which, given `TextRun`'s background
+  and colour, covers a chip. The offset-mapping problem, the part that
+  looked structural, is small and localised.
+- **Does not settle:** an arbitrary *interactive element* inside a line (a
+  colour swatch you click, an embedded control). That needs the layout to
+  reserve advance width for a measured element and paint it there — the
+  splice point is the same, but the painting is not.
+- **Known gap:** wrap points are computed from buffer text without inlays,
+  so soft wrap plus inlays wraps slightly early. Fine for the unwrapped
+  sections the manuscript view uses; a real implementation would feed inlay
+  widths into the wrapper.
+
+**Revised verdict on the 12%:** the argument-widget surface is chips and
+forms. Chips are proven. The forms are popovers, which GPUI does natively
+and this spike has already built twice. What remains genuinely unproven is
+narrower than "in-text widgets": it is *interactive elements embedded in a
+line*, and it is not obvious that brink's surfaces need them rather than a
+chip that opens a popover.
 
 ## Honest reading
 
