@@ -8,6 +8,7 @@ pub mod creation_site_fix;
 pub mod dialect_config;
 pub mod dir_rename;
 pub mod document;
+pub mod drafts;
 pub mod effects;
 pub mod effects_tag_fix;
 pub mod empty_logic_line_fix;

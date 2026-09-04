@@ -130,36 +130,6 @@ pub struct EditorSession {
     /// already-present-wins precedent — so the mount stays invisible only
     /// until a project file shadows it.
     ///
-    /// Also the read-only enforcement fence (issue #2306, ruled 2026-08-06
-    /// "Mounted stdlib presents as a read-only library node"): `is_read_only`,
-    /// `update_document`, and `auto_import_apply_include_doc` all consult
-    /// this same set to refuse editing the mounted copy through a doc
-    /// handle — a route not gated by any of the three listings above (e.g. a
-    /// handle opened via goto-def navigation into an inherited symbol, or
-    /// completion-accept auto-import in a fragment/document view).
-    /// `update_file` is deliberately left unguarded: it is the host's
-    /// whole-file "this is the content now" API, and a real project file
-    /// placed at a mounted key is legal, deliberate shadowing (see
-    /// `EditorSession::new`'s doc above) that must keep winning by
-    /// construction-time ordering, not be rejected because the id is still
-    /// (momentarily) mounted. `update_source` — the singleton-session
-    /// counterpart, including its fragment-splice branch — is **also** left
-    /// unguarded here: it has no in-repo caller today (the editor package
-    /// drives everything through per-view doc handles), but as published
-    /// `@brink-lang/web` surface an external embedder using the singleton
-    /// API directly can still reach the same silent-fork hole this PR
-    /// otherwise closes. That gap is a known, disclosed follow-up, not
-    /// something this PR claims to close. The by-id "editor route" hole
-    /// named in #2306 — a bulk TS-level path like project-wide
-    /// search/replace calling `updateFile` on an unshadowed mounted path —
-    /// is closed one layer up, in `ProjectSession.applyEdit`
-    /// (`packages/ink-editor/src/project-session.ts`), which checks
-    /// `isReadOnly` before writing; that seam sits above every bulk-edit
-    /// caller (search replace, results-buffer edits, binder undo) while
-    /// leaving `ProjectSession.initialize()`/`addFile()`/external-change
-    /// sync — which call `updateFile` directly, exactly like a legitimate
-    /// shadow — untouched.
-    mounted_std_ids: BTreeSet<brink_ir::FileId>,
     /// The explain-match query's memoized cache (issue #2113, NS-T seam
     /// 3/6) — kept on the session so it survives across keystrokes, per the
     /// ruled cost compensation (`(line text, projection revision)`
@@ -190,7 +160,6 @@ pub struct EditorSession {
     ///
     /// The other half is reachability, which only [`Self::draft_paths`]
     /// can supply — see that method.
-    draft_globs: Vec<String>,
     /// `[project] indent` from the most recently applied `brink.toml`
     /// (#3149) — the editor's `indentUnit` reads this so it cannot disagree
     /// with what the formatter will write. Same wholesale-replace and
@@ -298,11 +267,12 @@ impl EditorSession {
     #[wasm_bindgen(constructor)]
     pub fn new() -> EditorSession {
         let mut session = IdeSession::new();
-        let mut mounted_std_ids = BTreeSet::new();
         for (key, text) in brink_environment::stdlib_sources() {
             session.update_source(key, (*text).to_owned());
             if let Some(id) = session.file_id(key) {
-                mounted_std_ids.insert(id);
+                // Which files are the author's is a session-layer fact —
+                // rules are written against it (drafts, rename, delete).
+                session.mark_mounted_std(id);
             }
         }
         EditorSession {
@@ -318,10 +288,8 @@ impl EditorSession {
             file_lint_policy: brink_analyzer::LintPolicy::default(),
             lint_overrides: BTreeMap::new(),
             deny_warnings_override: None,
-            mounted_std_ids,
             explain_cache: brink_ir::ExplainMatchCache::new(),
             configured_entry: None,
-            draft_globs: Vec::new(),
             configured_indent: None,
             configured_prose_dialect: None,
             configured_fix: std::collections::BTreeMap::new(),
@@ -357,7 +325,7 @@ impl EditorSession {
         // #2231 review finding): a real edit at a mounted stdlib key's
         // path un-mounts it.
         if let Some(id) = self.session.file_id(&self.active_path) {
-            self.mounted_std_ids.remove(&id);
+            self.session.unmount_std(id);
         }
     }
 
@@ -374,7 +342,7 @@ impl EditorSession {
     pub fn update_file(&mut self, path: &str, source: &str) {
         timed_update_and_analyze(&mut self.session, path, source.to_owned());
         if let Some(id) = self.session.file_id(path) {
-            self.mounted_std_ids.remove(&id);
+            self.session.unmount_std(id);
         }
     }
 
@@ -734,7 +702,7 @@ impl EditorSession {
             // repoints compilation/the initial tab at a file the current
             // tree no longer names one.
             self.configured_entry = None;
-            self.draft_globs.clear();
+            self.session.set_draft_globs(Vec::new());
             self.configured_indent = None;
             self.configured_prose_dialect = None;
             self.configured_prose_enable = None;
@@ -1150,7 +1118,7 @@ impl EditorSession {
     pub(crate) fn write_source_no_analysis(&mut self, path: &str, source: &str) {
         self.session.update_source(path, source.to_owned());
         if let Some(id) = self.session.file_id(path) {
-            self.mounted_std_ids.remove(&id);
+            self.session.unmount_std(id);
         }
     }
 
@@ -1268,7 +1236,7 @@ impl EditorSession {
         self.configured_entry.clone_from(&config.entry);
         // `[project] drafts` (#3145): same wholesale-replace rule and the
         // same reason — globs removed from the file must stop applying.
-        self.draft_globs.clone_from(&config.drafts);
+        self.session.set_draft_globs(config.drafts.clone());
         // `[project] indent` (#3149): same wholesale-replace rule.
         self.configured_indent = config.indent;
         // `[prose] dialect` (#3211): same wholesale-replace rule.
@@ -2022,7 +1990,7 @@ mod tests {
             "a refused auto_import_apply_include_doc must not mutate the mounted copy"
         );
         assert!(
-            s.mounted_std_ids.contains(&s.session.file_id(key).unwrap()),
+            s.session.is_mounted_std(s.session.file_id(key).unwrap()),
             "a refused write must not un-mount the stdlib file"
         );
     }
@@ -3009,7 +2977,7 @@ mod tests {
         s.update_file("main.ink", GRAPH_MAIN);
         s.update_file("mounted.ink", "=== waypoint ===\n-> END\n");
         let mounted_id = s.session.file_id("mounted.ink").unwrap();
-        s.mounted_std_ids.insert(mounted_id);
+        s.session.mark_mounted_std(mounted_id);
 
         let json = s.story_graph();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

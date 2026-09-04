@@ -229,7 +229,7 @@ impl EditorSession {
             .filter_map(|id| {
                 db.file_path(id).map(|p| ProjectFileJs {
                     path: p.to_owned(),
-                    mounted: self.mounted_std_ids.contains(&id),
+                    mounted: self.session.is_mounted_std(id),
                 })
             })
             .collect();
@@ -261,6 +261,6 @@ impl EditorSession {
     pub fn is_read_only(&self, path: &str) -> bool {
         self.session
             .file_id(path)
-            .is_some_and(|id| self.mounted_std_ids.contains(&id))
+            .is_some_and(|id| self.session.is_mounted_std(id))
     }
 }
