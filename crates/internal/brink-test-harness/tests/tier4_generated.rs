@@ -43,7 +43,7 @@ use brink_test_harness::{Episode, ExploreConfig, diff_oracle, load_oracle_episod
 /// The number of cases under `tests/tier4-generated/`. Moved ONLY by
 /// `scripts/promote-generated.mjs` (or the removal of a case), so a case
 /// can never appear or vanish without a diff here.
-const GENERATED_CASE_COUNT: usize = 4;
+const GENERATED_CASE_COUNT: usize = 20;
 
 fn tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
