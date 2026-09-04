@@ -353,6 +353,18 @@ fn resolve_select<'a>(
     default
 }
 
+/// Where a function's output began: the active target's length at call
+/// time, plus which target it was. The two depths let a later check tell
+/// "the same target, further along" from "a different target" (a string
+/// capture or fragment that began inside the function), where the length
+/// alone would be meaningless (issue #3519).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputMark {
+    pub(crate) len: usize,
+    pub(crate) capture_depth: usize,
+    pub(crate) fragment_depth: usize,
+}
+
 /// Accumulates output text with glue resolution.
 ///
 /// The buffer is split into two storage areas:
@@ -420,6 +432,55 @@ impl OutputBuffer {
         }
     }
 
+    /// Where a function's output starts: the active target's length and
+    /// which target it was (by capture/fragment depth), recorded at call
+    /// time on the function's frame — see [`OutputMark`].
+    pub(crate) fn mark(&self) -> OutputMark {
+        OutputMark {
+            len: self.target_len(),
+            capture_depth: self.capture_depth,
+            fragment_depth: self.fragment_depth,
+        }
+    }
+
+    /// Push a newline emitted while `function` (the innermost function
+    /// frame's [`OutputMark`], if the top frame is a function) is active.
+    ///
+    /// Matches the C# runtime's `functionStartInOutputStream` rule
+    /// (`PushToOutputStreamIndividual`): while a function has produced no
+    /// non-whitespace output since it was entered, a newline is dropped
+    /// outright — so a function whose body begins with a conditional block
+    /// (whose branch starts with a newline) does not break the line it was
+    /// called from, even when that line already holds content from an
+    /// earlier call (issue #3519). Once the function has printed, or when a
+    /// string capture / fragment began inside it (C#'s `BeginString`
+    /// exception — the mark no longer names the active target), the
+    /// ordinary [`Self::push_newline`] rules apply.
+    pub(crate) fn push_newline_in_function(&mut self, function: Option<OutputMark>) {
+        if let Some(mark) = function
+            && mark.capture_depth == self.capture_depth
+            && mark.fragment_depth == self.fragment_depth
+            && self
+                .target_ref()
+                .get(mark.len..)
+                .is_some_and(|since_call| !since_call.iter().any(OutputPart::is_content))
+        {
+            return;
+        }
+        self.push_newline();
+    }
+
+    /// The active push target, read-only — same priority as [`Self::target`].
+    fn target_ref(&self) -> &Vec<OutputPart> {
+        if self.capture_depth > 0 {
+            &self.capture
+        } else if self.fragment_depth > 0 {
+            &self.fragment_capture
+        } else {
+            &self.transcript
+        }
+    }
+
     /// Length of the active push target. Used to record function output
     /// start points for trailing whitespace trim on return.
     pub(crate) fn target_len(&self) -> usize {
@@ -437,20 +498,28 @@ impl OutputBuffer {
     /// `TrimWhitespaceFromFunctionEnd`: on function return, remove
     /// trailing `Newline`, `Spring`, and whitespace-only text so that
     /// function output doesn't inject unwanted line breaks.
+    ///
+    /// `Glue` is transparent to the walk, as it is to the C# loop (which
+    /// `continue`s past every non-text object): the glue stays, and the
+    /// whitespace beneath it goes — so `{x} <>` at the end of a function
+    /// leaves `x` glued to whatever follows, not `x ` (issue #3522).
     pub(crate) fn trim_function_end(&mut self, start: usize) {
         let target = self.target();
-        while target.len() > start {
-            match target.last() {
-                Some(OutputPart::Newline | OutputPart::Spring) => {
-                    target.pop();
+        let mut i = target.len();
+        while i > start {
+            i -= 1;
+            match &target[i] {
+                OutputPart::Glue => {}
+                OutputPart::Newline | OutputPart::Spring => {
+                    target.remove(i);
                 }
-                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
-                    target.pop();
+                OutputPart::Text(s) if s.trim().is_empty() => {
+                    target.remove(i);
                 }
-                Some(OutputPart::LineRef { flags, .. })
+                OutputPart::LineRef { flags, .. }
                     if flags.contains(brink_format::LineFlags::ALL_WS) =>
                 {
-                    target.pop();
+                    target.remove(i);
                 }
                 _ => break,
             }
