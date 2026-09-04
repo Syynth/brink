@@ -76,20 +76,25 @@ pub fn lower_content_node_children(
 /// Only an inline construct earns the spring: after TEXT the space is
 /// already in the text, after another `Glue` there is nothing to separate.
 pub(super) fn push_glue(parts: &mut Vec<ContentPart>, ws_before_glue: bool) {
-    if ws_before_glue
-        && matches!(
-            parts.last(),
-            Some(
-                ContentPart::Interpolation(_)
-                    | ContentPart::InlineConditional(_)
-                    | ContentPart::InlineSequence(_)
-                    | ContentPart::Span(_)
-            )
-        )
-    {
+    if ws_before_glue && is_inline_construct(parts.last()) {
         parts.push(ContentPart::Spring);
     }
     parts.push(ContentPart::Glue);
+}
+
+/// An interpolation, inline conditional/sequence, or markup span — a part
+/// whose rendered text is not known at lowering time, so the whitespace
+/// after it cannot be folded into text and needs a `Spring` (issue #3507).
+pub(super) fn is_inline_construct(part: Option<&ContentPart>) -> bool {
+    matches!(
+        part,
+        Some(
+            ContentPart::Interpolation(_)
+                | ContentPart::InlineConditional(_)
+                | ContentPart::InlineSequence(_)
+                | ContentPart::Span(_)
+        )
+    )
 }
 
 /// Lower optional tags into a `Vec<Tag>`.

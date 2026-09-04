@@ -740,6 +740,14 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     // consistent with `OutputPart::is_content`.
                     | OutputPart::ValueRef(Value::OptionVal(None)) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
+                    // A whitespace-only or empty line-table line is
+                    // whitespace-only text by another name (issue #3507:
+                    // a lifted arm that rendered to `" "` before glue) —
+                    // it is not content and does not block the scan,
+                    // exactly as `is_content` already classifies it.
+                    OutputPart::LineRef { flags, .. }
+                        if flags.contains(brink_format::LineFlags::ALL_WS)
+                            || flags.contains(brink_format::LineFlags::EMPTY) => {}
                     // Content (Text, LineRef, ValueRef) blocks glue scan.
                     OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
                         break;

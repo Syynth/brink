@@ -94,6 +94,13 @@ impl<B: BodyBackend> ContentAccumulator<B> {
         content_ends_with_glue(&self.parts)
     }
 
+    /// Whether the last buffered part is an inline construct — the only
+    /// thing whitespace-before-glue lowers to a `Spring` after (issue
+    /// #3507, `super::helpers::push_glue`).
+    pub fn last_part_is_inline_construct(&self) -> bool {
+        super::helpers::is_inline_construct(self.parts.last())
+    }
+
     // ── Flushing ────────────────────────────────────────────────
 
     /// Flush buffered content parts as a `Stmt::Content`.
