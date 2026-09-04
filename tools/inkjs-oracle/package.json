@@ -1,0 +1,13 @@
+{
+  "name": "brink-inkjs-oracle",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The inkjs reference oracle (docs/program-generator-spec.md §6, #3379): compiles an .ink story with inkjs's compiler and explores it exactly as tools/ink-oracle does, emitting the same *.oracle.json episode files.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "inkjs": "2.4.0"
+  }
+}
