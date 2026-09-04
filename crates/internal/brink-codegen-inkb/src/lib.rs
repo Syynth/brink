@@ -653,14 +653,22 @@ fn walk_container(
                 slot: param.slot,
                 name: param.name,
                 declaring_range: None,
+                synthetic: false,
             });
         }
         for stmt in &container.body {
-            if let lir::StmtKind::DeclareTemp { slot, name, .. } = &stmt.kind {
+            if let lir::StmtKind::DeclareTemp {
+                slot,
+                name,
+                synthetic,
+                ..
+            } = &stmt.kind
+            {
                 raw_locals.push(debug_info::RawLocal {
                     slot: *slot,
                     name: *name,
                     declaring_range: Some(stmt.provenance),
+                    synthetic: *synthetic,
                 });
             }
         }

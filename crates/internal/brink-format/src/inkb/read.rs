@@ -24,7 +24,8 @@ use crate::value::{
 
 use super::write::{
     ALIAS_TABLE_SECTION_VERSION, DEBUG_INFO_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION,
-    FRAME_SHAPES_SECTION_VERSION, LINE_VARIANT_GROUPS_SECTION_VERSION,
+    FRAME_SHAPES_SECTION_VERSION, LINE_VARIANT_GROUPS_SECTION_VERSION, LOCAL_FLAG_HAS_RANGE,
+    LOCAL_FLAG_SYNTHETIC, LOCAL_FLAGS_KNOWN,
 };
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
@@ -1000,8 +1001,15 @@ pub fn read_section_debug_info(
         for _ in 0..local_count {
             let slot = read_u16(buf, &mut off)?;
             let name = read_str(buf, &mut off)?;
-            let has_range = read_u8(buf, &mut off)?;
-            let declaring_range = if has_range == 0 {
+            // Flags byte (section version 2, #3395): bit 0 = a declaring
+            // range follows, bit 1 = synthetic. Strict on the reserved bits,
+            // like `DirectEffects`' extension-flags byte.
+            let flags = read_u8(buf, &mut off)?;
+            if flags & !LOCAL_FLAGS_KNOWN != 0 {
+                return Err(DecodeError::InvalidDebugLocalFlags(flags));
+            }
+            let synthetic = flags & LOCAL_FLAG_SYNTHETIC != 0;
+            let declaring_range = if flags & LOCAL_FLAG_HAS_RANGE == 0 {
                 None
             } else {
                 #[expect(clippy::cast_possible_truncation)]
@@ -1016,6 +1024,7 @@ pub fn read_section_debug_info(
                 slot,
                 name,
                 declaring_range,
+                synthetic,
             });
         }
 

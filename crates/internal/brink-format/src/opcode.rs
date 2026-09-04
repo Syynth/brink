@@ -1028,6 +1028,11 @@ pub enum DecodeError {
     /// emits/tags/faults mask — the reserved bits (3–7) are rejected until
     /// a section version graduates them.
     InvalidEffectDimensions(u8),
+    /// A `DebugLocalEntry` row's flags byte (`DebugInfo` section version 2,
+    /// #3395) carried a set bit outside the known has-range/synthetic mask
+    /// — the reserved bits (2–7) are rejected until a section version
+    /// graduates them, same discipline as `InvalidEffectDimensions`.
+    InvalidDebugLocalFlags(u8),
     /// A `ContainerDef`'s declared `param_count` disagreed with the number
     /// of per-param name/mode metadata entries that followed it (#954,
     /// sibling of the `.inkt` reader's same guard, #745). `ContainerDef`'s
@@ -1123,6 +1128,9 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidEffectDimensions(b) => {
                 write!(f, "reserved effect-dimension flag bits set: {b:#04x}")
+            }
+            Self::InvalidDebugLocalFlags(b) => {
+                write!(f, "reserved debug-local flag bits set: {b:#04x}")
             }
             Self::ParamCountMismatch { declared, actual } => {
                 write!(

@@ -169,6 +169,10 @@ pub struct DebugLocal {
     pub slot: u16,
     pub name: String,
     pub value: DebugValue,
+    /// [`brink_format::DebugLocalEntry::synthetic`]: a compiler-minted temp
+    /// (#3395's lift-order hoist). The studio hides these rows; they are
+    /// still reported so a consumer that wants every slot can see them.
+    pub synthetic: bool,
 }
 
 /// A structured, read-only view of a runtime [`Value`] for the debugger's

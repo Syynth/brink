@@ -90,14 +90,7 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             }))
         }
 
-        hir::Stmt::TempDecl(decl) => {
-            let slot = ctx.temp_slot_raw(&decl.name.text)?;
-            let name = ctx.names.intern(&decl.name.text);
-            let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
-            ctx.visible_temps.insert(decl.name.text.clone());
-            ctx.record_temp_annotation(slot, decl.annotation.as_ref());
-            Some(lir::StmtKind::DeclareTemp { slot, name, value })
-        }
+        hir::Stmt::TempDecl(decl) => lower_temp_decl(decl, ctx),
 
         hir::Stmt::Assignment(assign) => {
             let target = lower_assign_target(&assign.target, ctx)?;
@@ -261,6 +254,23 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 /// Non-suppressible Error severity — the same shape as the other LIR fences —
 /// so a program using `await` refuses to lower to bytecode rather than
 /// silently dropping the suspension point.
+/// `~ temp x = expr` — the temp's slot was allocated by
+/// `temps::alloc_temps`; a name it does not know is silently dropped here
+/// (the `?`), which is the pre-existing contract for the whole arm.
+fn lower_temp_decl(decl: &hir::TempDecl, ctx: &mut LowerCtx<'_>) -> Option<lir::StmtKind> {
+    let slot = ctx.temp_slot_raw(&decl.name.text)?;
+    let name = ctx.names.intern(&decl.name.text);
+    let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
+    ctx.visible_temps.insert(decl.name.text.clone());
+    ctx.record_temp_annotation(slot, decl.annotation.as_ref());
+    Some(lir::StmtKind::DeclareTemp {
+        slot,
+        name,
+        value,
+        synthetic: decl.synthetic,
+    })
+}
+
 pub(super) fn emit_await_lowering_fence(ctx: &mut LowerCtx<'_>, range: TextRange) {
     ctx.diagnostics.push(Diagnostic {
         file: ctx.file,

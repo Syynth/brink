@@ -399,6 +399,13 @@ pub enum StmtKind {
         slot: u16,
         name: NameId,
         value: Option<Expr>,
+        /// Mirrors [`crate::hir::TempDecl::synthetic`]: a compiler-minted
+        /// temp (the #3395 lift-order hoist). Codegen evaluates a synthetic
+        /// temp's direct-call value through the slot composition
+        /// (`emit_slot_expr`) so the call's printed output is captured into
+        /// the value rather than emitted ahead of the line it belongs to,
+        /// and marks the `DebugInfo` locals row so the debugger hides it.
+        synthetic: bool,
     },
 
     /// `~ x = expr` / `~ x += expr` — assign to a variable.

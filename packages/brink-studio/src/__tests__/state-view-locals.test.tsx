@@ -123,6 +123,36 @@ describe("State View frame locals", () => {
     expect(tables[1].textContent).toContain("99");
   });
 
+  it("hides compiler-minted (synthetic) locals, and a frame with only those renders nothing", () => {
+    // #3395: the lift-order hoist declares `$liftN` temps the author never
+    // wrote. They are real slots (still on the wire, still resolvable), but
+    // showing them tells an author they have a variable they don't.
+    const store = withFrames([
+      frame({
+        location: "k",
+        temps: 2,
+        locals: [
+          { slot: 0, name: "$lift0", value: { type: "int", value: 1 }, synthetic: true },
+          { slot: 1, name: "gold", value: { type: "int", value: 7 } },
+        ],
+      }),
+      frame({
+        location: "only_hidden",
+        temps: 1,
+        locals: [{ slot: 0, name: "$lift1", value: { type: "int", value: 2 }, synthetic: true }],
+      }),
+    ]);
+    mount(store);
+
+    const tables = [...container!.querySelectorAll(".sv-locals")];
+    expect(tables).toHaveLength(1);
+    expect(tables[0].textContent).toContain("gold");
+    expect(tables[0].textContent).not.toContain("$lift0");
+    // The all-synthetic frame is indistinguishable from "genuinely none":
+    // no table, and no "no debug info" note either — the build CAN tell us.
+    expect(container!.querySelector(".sv-locals-none")).toBeNull();
+  });
+
   it("says so when a frame has no debug info, rather than showing nothing", () => {
     // `undefined` means the program carries no DebugInfo — a release
     // export, or a pre-D6 build. Blank would read as "no locals", which is
