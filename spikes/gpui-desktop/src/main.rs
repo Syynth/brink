@@ -689,6 +689,11 @@ impl Workspace {
                 }),
                 cx,
             );
+            // A chip is clickable: a click inside one is consumed by the
+            // inlay rather than moving the caret into the text under it.
+            state.on_inlay_click(|anchor, _window, _cx| {
+                eprintln!("inlay clicked at buffer offset {anchor}");
+            });
             let lsp = state.lsp_mut();
             lsp.hover_provider = Some(Rc::new(BrinkHover {
                 project: project.clone(),
@@ -831,14 +836,32 @@ impl Workspace {
         let hint_bg = cx.theme().muted.opacity(0.7);
         let inlays: Vec<Inlay> = hints
             .into_iter()
-            .map(|(offset, text)| Inlay {
-                offset,
-                text: text.into(),
-                style: gpui::HighlightStyle {
-                    color: Some(hint_color),
-                    background_color: Some(hint_bg),
-                    ..Default::default()
-                },
+            .map(|(offset, text)| {
+                // A chip carrying DRAWING, not just text: any hint whose
+                // parameter reads like a colour gets a filled swatch painted
+                // inside the chip, left of its label.
+                let swatch = text
+                    .to_lowercase()
+                    .contains("color")
+                    .then(|| gpui::rgb(0x4c9a2a).into());
+                // The swatch is painted over the chip's leading run, so the
+                // chip has to reserve room for it — the same thing CM6 does
+                // by giving a widget its own width.
+                let text = if swatch.is_some() {
+                    format!("  {text}")
+                } else {
+                    text
+                };
+                Inlay {
+                    offset,
+                    text: text.into(),
+                    style: gpui::HighlightStyle {
+                        color: Some(hint_color),
+                        background_color: Some(hint_bg),
+                        ..Default::default()
+                    },
+                    swatch,
+                }
             })
             .collect();
         eprintln!("inlays: {}", inlays.len());

@@ -179,6 +179,33 @@ and fixing it made the caret land precisely where clicked.
 follows a `chan:` inlay, and typing put the character at that exact buffer
 position (`radio(chan: Xcall_sign, …)`).
 
+### Round 5b — clickable, and drawing inside the chip
+
+Three follow-up questions, all answered by running code.
+
+**Is the chip clickable?** Yes. `EditorState::on_inlay_click` fires with the
+buffer offset the inlay is anchored at, and the click is **consumed** — the
+caret does not move into the text underneath. It hangs off the editor's
+existing `on_click` mode hook, next to cmd-click go-to-definition, and
+hit-tests through the same line-layout walk that maps a click to an offset.
+
+**Can we do the colour thing?** Two ways, and the first needs no fork at
+all: `DocumentColorProvider` already exists in `gpui-base` and paints
+swatches over colour literals — that is the studio's `color-widget` inline
+half, available today. Second, a swatch can now be drawn *inside a chip*
+(below), which is the affordance-not-on-a-literal case.
+
+**Can a chip contain drawing rather than only text?** Yes. `Inlay::swatch`
+paints a filled quad at the chip's **own** pixel bounds — `inlay_x_bounds`
+resolves the chip's x span, so the square is positioned relative to the CHIP,
+not to any buffer text. That is the distinction between drawing *in a
+widget* and decoration *on text*. Arbitrary `Path`/quad painting was already
+there: it is how selections, search matches and document colours are drawn.
+
+Caveat: a chip must reserve width for what it draws. The demo pads the
+inlay's text with spaces; a real implementation would give the inlay an
+explicit width instead of leaning on the font's space advance.
+
 ### What this does and does not settle
 
 - **Settles:** inlay hints (142 lines) work today. So does any affordance
