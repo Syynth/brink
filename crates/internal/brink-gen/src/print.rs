@@ -41,13 +41,13 @@ pub fn print_ink(story: &Story) -> String {
         out.push('\n');
     }
     for f in &story.functions {
-        print_function(f, &mut out);
+        print_function(story, f, &mut out);
         out.push('\n');
     }
     out
 }
 
-fn print_function(f: &Function, out: &mut String) {
+fn print_function(story: &Story, f: &Function, out: &mut String) {
     let params: Vec<String> = f
         .params
         .iter()
@@ -60,7 +60,7 @@ fn print_function(f: &Function, out: &mut String) {
         })
         .collect();
     let _ = writeln!(out, "=== function {}({}) ===", f.name, params.join(", "));
-    print_items(&f.body, 0, out);
+    print_items(story, &f.body, 0, out);
     if let Some(ret) = &f.ret {
         let _ = writeln!(out, "~ return {}", expr(ret));
     }
@@ -143,6 +143,7 @@ fn exit_text(story: &Story, e: Exit) -> String {
         Exit::Divert(d) => format!("-> {}", story.path(d).unwrap_or_default()),
         Exit::End => "-> END".to_owned(),
         Exit::Done => "-> DONE".to_owned(),
+        Exit::TunnelReturn => "->->".to_owned(),
     }
 }
 
@@ -171,7 +172,7 @@ fn line_text(parts: &[Part]) -> String {
     s
 }
 
-fn print_items(items: &[Item], depth: usize, out: &mut String) {
+fn print_items(story: &Story, items: &[Item], depth: usize, out: &mut String) {
     let ind = indent(depth);
     for item in items {
         match item {
@@ -194,6 +195,12 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
             Item::Temp { name, init } => {
                 let _ = writeln!(out, "{ind}~ temp {name} = {}", expr(init));
             }
+            Item::TunnelCall(d) => {
+                let _ = writeln!(out, "{ind}-> {} ->", story.path(*d).unwrap_or_default());
+            }
+            Item::Thread(d) => {
+                let _ = writeln!(out, "{ind}<- {}", story.path(*d).unwrap_or_default());
+            }
             Item::Call { name, args } => {
                 let _ = writeln!(out, "{ind}~ {}", call_text(name, args));
             }
@@ -203,10 +210,10 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
                 otherwise,
             } => {
                 let _ = writeln!(out, "{ind}{{ {}:", expr(cond));
-                print_items(then, depth + 1, out);
+                print_items(story, then, depth + 1, out);
                 if let Some(o) = otherwise {
                     let _ = writeln!(out, "{ind}- else:");
-                    print_items(o, depth + 1, out);
+                    print_items(story, o, depth + 1, out);
                 }
                 let _ = writeln!(out, "{ind}}}");
             }
@@ -216,7 +223,7 @@ fn print_items(items: &[Item], depth: usize, out: &mut String) {
 
 fn print_weave(story: &Story, w: &Weave, depth: usize, out: &mut String) {
     let ind = indent(depth);
-    print_items(&w.items, depth, out);
+    print_items(story, &w.items, depth, out);
     match &w.tail {
         Tail::Exit(e) => {
             let _ = writeln!(out, "{ind}{}", exit_text(story, *e));
@@ -261,7 +268,7 @@ fn print_weave(story: &Story, w: &Weave, depth: usize, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Choice, Divert, Knot, Stitch, VarDecl};
+    use crate::model::{Choice, Divert, FlowKind, Knot, Stitch, VarDecl};
 
     fn text(s: &str) -> Item {
         Item::Line {
@@ -281,6 +288,7 @@ mod tests {
             functions: vec![],
             knots: vec![
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "start".into(),
                     root: Weave {
                         items: vec![Item::Line {
@@ -322,6 +330,7 @@ mod tests {
                     stitches: vec![],
                 },
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "next".into(),
                     root: leaf(Exit::Done),
                     stitches: vec![Stitch {
@@ -395,6 +404,7 @@ leaf
                 },
             ],
             knots: vec![Knot {
+                kind: FlowKind::Knot,
                 name: "k".into(),
                 root: Weave {
                     items: vec![

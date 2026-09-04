@@ -59,6 +59,21 @@
 //!    and a call in expression position names a function that returns a
 //!    value. A void function is called only as a statement (`~ f(x)`).
 //!
+//! # Tunnels and threads
+//!
+//! 10. Every knot has a [`FlowKind`]: the first is always a plain knot (the
+//!     entry). A **tunnel** knot is entered only by `-> t ->` (an
+//!     [`Item::TunnelCall`]) and its weaves leave by `->->`
+//!     ([`Exit::TunnelReturn`]), `-> END`, or a divert to another tunnel
+//!     flow under rules 1–2; never `-> DONE`. A tunnel call from flow code
+//!     may name any tunnel flow; from inside tunnel knot `i` only a tunnel
+//!     knot `> i`, so tunnel calls form a DAG and every call returns.
+//! 11. A **thread** knot is entered only by `<- t` ([`Item::Thread`]) from a
+//!     plain knot's weave (never from a tunnel, a thread, or a function).
+//!     Its weaves leave by `-> DONE`, `-> END`, or a divert to another thread
+//!     flow under rules 1–2; never `->->`. Tunnel calls are legal inside
+//!     threads (any tunnel).
+//!
 //! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
@@ -108,8 +123,21 @@ pub struct Param {
 pub struct Knot {
     /// Unique across the story.
     pub name: String,
+    /// How the knot is entered and left (rules 10–11).
+    pub kind: FlowKind,
     pub root: Weave,
     pub stitches: Vec<Stitch>,
+}
+
+/// How a knot is entered and how its weaves may leave (rules 10–11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowKind {
+    /// A plain knot: diverted to, leaves by `-> END`/`-> DONE`/a divert.
+    Knot,
+    /// Entered by `-> t ->`, leaves by `->->`.
+    Tunnel,
+    /// Entered by `<- t`, leaves by `-> DONE`.
+    Thread,
 }
 
 /// A stitch inside a knot.
@@ -241,6 +269,10 @@ pub enum Item {
     },
     /// `~ f(args)` — a call to a void function as a statement (rule 9).
     Call { name: String, args: Vec<Expr> },
+    /// `-> t ->` — run a tunnel flow and continue here (rule 10).
+    TunnelCall(Divert),
+    /// `<- t` — start a thread at a thread flow and continue here (rule 11).
+    Thread(Divert),
 }
 
 /// How a weave ends.
@@ -270,6 +302,8 @@ pub enum Exit {
     Divert(Divert),
     End,
     Done,
+    /// `->->` — legal only inside a tunnel knot (rule 10).
+    TunnelReturn,
 }
 
 /// A resolved divert target: a knot root or one of its stitches.
@@ -347,6 +381,13 @@ impl Story {
             ix += 1 + k.stitches.len();
         }
         None
+    }
+
+    /// The kind of the knot a divert lands in, or `None` if the target
+    /// does not exist.
+    pub fn flow_kind(&self, d: Divert) -> Option<FlowKind> {
+        self.flow_index(d)?;
+        self.knots.get(d.knot).map(|k| k.kind)
     }
 
     /// The `knot` / `knot.stitch` path a divert prints as.
@@ -585,7 +626,7 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
         scope
             .vars
             .extend(f.params.iter().map(|p| (p.name.clone(), p.ty)));
-        validate_items(&f.body, &mut scope, false, usize::MAX - i)?;
+        validate_items(story, &f.body, &mut scope, false, usize::MAX - i, None)?;
         let sig = f.signature(&scope.vars, &sigs)?;
         sigs.push(sig);
     }
@@ -593,28 +634,64 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
         vars: global_vars,
         funcs: sigs,
     };
+    if story.knots[0].kind != FlowKind::Knot {
+        return Err(Invalid("the entry knot must be a plain knot".into()));
+    }
     let mut flow = 0;
-    for k in &story.knots {
-        validate_weave(story, &k.root, flow, false, false, &globals)?;
+    for (ki, k) in story.knots.iter().enumerate() {
+        let ctx = FlowCtx {
+            kind: k.kind,
+            knot: ki,
+        };
+        validate_weave(story, &k.root, flow, false, false, &globals, &ctx)?;
         flow += 1;
         for s in &k.stitches {
-            validate_weave(story, &s.body, flow, false, false, &globals)?;
+            validate_weave(story, &s.body, flow, false, false, &globals, &ctx)?;
             flow += 1;
         }
     }
     Ok(())
 }
 
-fn validate_exit(story: &Story, e: Exit, flow: usize, may_go_back: bool) -> Result<(), Invalid> {
-    if let Exit::Divert(d) = e {
-        let Some(target) = story.flow_index(d) else {
-            return Err(Invalid(format!("unresolved divert {d:?} from flow {flow}")));
-        };
-        if target <= flow && !may_go_back {
-            return Err(Invalid(format!(
-                "back-edge to flow {target} from flow {flow} outside a once-only choice body"
-            )));
+/// The flow a weave belongs to, for the per-kind rules (10–11).
+#[derive(Clone, Copy)]
+struct FlowCtx {
+    kind: FlowKind,
+    knot: usize,
+}
+
+fn validate_exit(
+    story: &Story,
+    e: Exit,
+    flow: usize,
+    may_go_back: bool,
+    ctx: &FlowCtx,
+) -> Result<(), Invalid> {
+    match e {
+        Exit::Divert(d) => {
+            let Some(target) = story.flow_index(d) else {
+                return Err(Invalid(format!("unresolved divert {d:?} from flow {flow}")));
+            };
+            if story.flow_kind(d) != Some(ctx.kind) {
+                return Err(Invalid(format!(
+                    "divert from a {:?} flow {flow} into a {:?} flow {target}",
+                    ctx.kind,
+                    story.flow_kind(d)
+                )));
+            }
+            if target <= flow && !may_go_back {
+                return Err(Invalid(format!(
+                    "back-edge to flow {target} from flow {flow} outside a once-only choice body"
+                )));
+            }
         }
+        Exit::TunnelReturn if ctx.kind != FlowKind::Tunnel => {
+            return Err(Invalid(format!("`->->` outside a tunnel (flow {flow})")));
+        }
+        Exit::Done if ctx.kind == FlowKind::Tunnel => {
+            return Err(Invalid(format!("`-> DONE` inside a tunnel (flow {flow})")));
+        }
+        Exit::End | Exit::Done | Exit::TunnelReturn => {}
     }
     Ok(())
 }
@@ -628,16 +705,68 @@ fn expect_ty(e: &Expr, want: Ty, scope: &Scope, what: &str) -> Result<(), Invali
     }
 }
 
+/// Rules 10–11 for the items that reach into another flow: a tunnel call
+/// names a tunnel (from a tunnel, a later one); a thread starts from a
+/// plain knot and names a thread knot. `ctx` is `None` inside a function,
+/// where neither is legal.
+fn validate_flow_item(
+    story: &Story,
+    item: &Item,
+    d: Divert,
+    flow: usize,
+    ctx: Option<&FlowCtx>,
+) -> Result<(), Invalid> {
+    let is_tunnel_call = matches!(item, Item::TunnelCall(_));
+    let Some(ctx) = ctx else {
+        return Err(Invalid(if is_tunnel_call {
+            "tunnel call inside a function".into()
+        } else {
+            "thread inside a function".into()
+        }));
+    };
+    if is_tunnel_call {
+        if story.flow_kind(d) != Some(FlowKind::Tunnel) {
+            return Err(Invalid(format!(
+                "tunnel call to a non-tunnel flow {d:?} from flow {flow}"
+            )));
+        }
+        if ctx.kind == FlowKind::Tunnel && d.knot <= ctx.knot {
+            return Err(Invalid(format!(
+                "tunnel call from tunnel knot {} to tunnel knot {} (not a DAG)",
+                ctx.knot, d.knot
+            )));
+        }
+    } else {
+        if ctx.kind != FlowKind::Knot {
+            return Err(Invalid(format!(
+                "thread started from a {:?} flow {flow}",
+                ctx.kind
+            )));
+        }
+        if story.flow_kind(d) != Some(FlowKind::Thread) {
+            return Err(Invalid(format!(
+                "thread to a non-thread flow {d:?} from flow {flow}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate items in order, extending `scope` with each temp. `in_cond` is
 /// true inside a conditional branch, where temps may not be declared.
 fn validate_items(
+    story: &Story,
     items: &[Item],
     scope: &mut Scope,
     in_cond: bool,
     flow: usize,
+    ctx: Option<&FlowCtx>,
 ) -> Result<(), Invalid> {
     for item in items {
         match item {
+            Item::TunnelCall(d) | Item::Thread(d) => {
+                validate_flow_item(story, item, *d, flow, ctx)?;
+            }
             Item::Line { parts, .. } => {
                 if parts.is_empty() {
                     return Err(Invalid(format!("empty content line in flow {flow}")));
@@ -699,13 +828,13 @@ fn validate_items(
                     return Err(Invalid("empty conditional block".into()));
                 }
                 let mut inner = scope.clone();
-                validate_items(then, &mut inner, true, flow)?;
+                validate_items(story, then, &mut inner, true, flow, ctx)?;
                 if let Some(o) = otherwise {
                     if o.is_empty() {
                         return Err(Invalid("empty else branch".into()));
                     }
                     let mut inner = scope.clone();
-                    validate_items(o, &mut inner, true, flow)?;
+                    validate_items(story, o, &mut inner, true, flow, ctx)?;
                 }
             }
         }
@@ -720,11 +849,12 @@ fn validate_weave(
     may_go_back: bool,
     may_fall_through: bool,
     scope: &Scope,
+    ctx: &FlowCtx,
 ) -> Result<(), Invalid> {
     let mut scope = scope.clone();
-    validate_items(&w.items, &mut scope, false, flow)?;
+    validate_items(story, &w.items, &mut scope, false, flow, Some(ctx))?;
     match &w.tail {
-        Tail::Exit(e) => validate_exit(story, *e, flow, may_go_back),
+        Tail::Exit(e) => validate_exit(story, *e, flow, may_go_back, ctx),
         Tail::FallThrough => {
             if may_fall_through {
                 Ok(())
@@ -749,7 +879,7 @@ fn validate_weave(
                 )));
             }
             if let Some(fb) = fallback {
-                validate_exit(story, *fb, flow, false)?;
+                validate_exit(story, *fb, flow, false, ctx)?;
             }
             for c in choices {
                 if c.label.is_empty() {
@@ -761,10 +891,12 @@ fn validate_weave(
                 // A back-edge stays legal deeper inside a once-only body
                 // (the outer once-only choice already bounds it).
                 let back = may_go_back || !c.sticky;
-                validate_weave(story, &c.body, flow, back, gather.is_some(), &scope)?;
+                validate_weave(story, &c.body, flow, back, gather.is_some(), &scope, ctx)?;
             }
             match gather {
-                Some(g) => validate_weave(story, g, flow, may_go_back, may_fall_through, &scope),
+                Some(g) => {
+                    validate_weave(story, g, flow, may_go_back, may_fall_through, &scope, ctx)
+                }
                 None => Ok(()),
             }
         }
@@ -798,6 +930,7 @@ mod tests {
             }],
             knots: vec![
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "a".into(),
                     root: exit_weave(Exit::Divert(Divert {
                         knot: 1,
@@ -806,6 +939,7 @@ mod tests {
                     stitches: vec![],
                 },
                 Knot {
+                    kind: FlowKind::Knot,
                     name: "b".into(),
                     root: exit_weave(Exit::End),
                     stitches: vec![Stitch {

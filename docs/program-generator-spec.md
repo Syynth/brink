@@ -212,6 +212,22 @@ output in an interpolation is one `Step::Line`). None is a generator
 defect; all five surface only when a function *prints* — the shapes
 the hand-written corpus covers thinly.
 
+**Status (2026-09-04, tunnels-and-threads tier landed).** Every knot
+carries a `FlowKind`: the entry is a plain knot; a **tunnel** knot is
+entered only by `-> t ->` (`Item::TunnelCall`) and its weaves leave by
+`->->` (`Exit::TunnelReturn`), `-> END`, or a divert within the tunnel
+flows under the back-edge rules; a **thread** knot is entered only by
+`<- t` (`Item::Thread`) from a plain knot's weave and leaves by
+`-> DONE`, `-> END`, or a divert within the thread flows. Tunnel calls
+from flow code and threads may name any tunnel; from inside tunnel knot
+`i` only a tunnel knot `> i`, so tunnel calls form a DAG like function
+calls do. Diverts never cross kinds — one flow table, each kind a
+contiguous range the decoder resolves raw exits within. `Profile` gains
+`max_tunnels` (2) and `max_threads` (1), both 0 in `STRUCTURE` and
+`RESPELLABLE`. First differential run: #3527 (`Choice.index` counted an
+invisible fallback merged ahead of the main flow's choices by a thread),
+fixed with the tier.
+
 ## 8. Not covered
 
 - Native generation and the respell route are sequenced last (§7);

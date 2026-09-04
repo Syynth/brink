@@ -24,8 +24,8 @@
 use proptest::prelude::*;
 
 use crate::model::{
-    AssignOp, BinOp, Choice, Divert, Exit, Expr, FnSig, Function, Item, Knot, Literal, Param, Part,
-    Stitch, Story, Tail, Ty, VarDecl, Weave,
+    AssignOp, BinOp, Choice, Divert, Exit, Expr, FlowKind, FnSig, Function, Item, Knot, Literal,
+    Param, Part, Stitch, Story, Tail, Ty, VarDecl, Weave,
 };
 
 /// Biasing knobs — **data**, so a property names the profile it wants
@@ -56,6 +56,12 @@ pub struct Profile {
     pub max_functions: usize,
     /// Parameters per function.
     pub max_params: usize,
+    /// Tunnel knots per story (0 = none): entered by `-> t ->`, left by
+    /// `->->` (`crate::model` rule 10).
+    pub max_tunnels: usize,
+    /// Thread knots per story (0 = none): entered by `<- t`, left by
+    /// `-> DONE` (rule 11).
+    pub max_threads: usize,
 }
 
 impl Profile {
@@ -72,6 +78,8 @@ impl Profile {
         inline_conditionals: true,
         max_functions: 2,
         max_params: 2,
+        max_tunnels: 2,
+        max_threads: 1,
     };
 
     /// Structure only — no variables, so no expressions can be decoded
@@ -79,6 +87,8 @@ impl Profile {
     pub const STRUCTURE: Self = Self {
         max_vars: 0,
         max_functions: 0,
+        max_tunnels: 0,
+        max_threads: 0,
         ..Self::DEFAULT
     };
 
@@ -174,6 +184,10 @@ pub enum RawItem {
     },
     /// `~ f(args)`: the byte indexes the callable void functions.
     Call(u8, Vec<RawExpr>),
+    /// `-> t ->`: the byte indexes the tunnel flows callable from here.
+    TunnelCall(u8),
+    /// `<- t`: the byte indexes the thread flows (plain-knot weaves only).
+    Thread(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +246,10 @@ pub struct RawStory {
     pub vars: Vec<RawVar>,
     pub knots: Vec<RawKnot>,
     pub functions: Vec<RawFunction>,
+    /// Decoded after the plain knots, as tunnel knots.
+    pub tunnels: Vec<RawKnot>,
+    /// Decoded after the tunnels, as thread knots.
+    pub threads: Vec<RawKnot>,
 }
 
 // ─── Leaf strategies ─────────────────────────────────────────────────
@@ -315,8 +333,19 @@ fn arb_raw_item(p: Profile, in_cond: bool) -> BoxedStrategy<RawItem> {
         prop::collection::vec(arb_expr_for(p), 0..=p.max_params),
     )
         .prop_map(|(f, args)| RawItem::Call(f, args));
+    let tunnel_weight = u32::from(p.max_tunnels > 0);
+    let tunnel = any::<u8>().prop_map(RawItem::TunnelCall);
+    let thread_weight = u32::from(p.max_threads > 0);
+    let thread = any::<u8>().prop_map(RawItem::Thread);
     if in_cond {
-        return prop_oneof![4 => line, 2 => assign, call_weight => call].boxed();
+        return prop_oneof![
+            4 => line,
+            2 => assign,
+            call_weight => call,
+            tunnel_weight => tunnel,
+            thread_weight => thread,
+        ]
+        .boxed();
     }
     let temp = (any::<u8>(), arb_expr_for(p)).prop_map(|(ty, init)| RawItem::Temp { ty, init });
     let branch = || prop::collection::vec(arb_raw_item(p, true), 1..=2);
@@ -330,7 +359,16 @@ fn arb_raw_item(p: Profile, in_cond: bool) -> BoxedStrategy<RawItem> {
             then,
             otherwise,
         });
-    prop_oneof![4 => line, 2 => assign, 1 => temp, 1 => cond, call_weight => call].boxed()
+    prop_oneof![
+        4 => line,
+        2 => assign,
+        1 => temp,
+        1 => cond,
+        call_weight => call,
+        tunnel_weight => tunnel,
+        thread_weight => thread,
+    ]
+    .boxed()
 }
 
 fn arb_raw_weave(p: Profile, depth_left: usize) -> BoxedStrategy<RawWeave> {
@@ -418,23 +456,42 @@ pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
         prop::collection::vec(arb_raw_var(), 0..=profile.max_vars),
         prop::collection::vec(arb_raw_knot(profile), 1..=profile.max_knots.max(1)),
         prop::collection::vec(arb_raw_function(profile), 0..=profile.max_functions),
+        prop::collection::vec(arb_raw_knot(profile), 0..=profile.max_tunnels),
+        prop::collection::vec(arb_raw_knot(profile), 0..=profile.max_threads),
     )
-        .prop_map(|(vars, knots, functions)| RawStory {
+        .prop_map(|(vars, knots, functions, tunnels, threads)| RawStory {
             vars,
             knots,
             functions,
+            tunnels,
+            threads,
         })
 }
 
 // ─── Decode ──────────────────────────────────────────────────────────
 
-/// Where a weave sits, for resolving its raw exits.
+/// Where a weave sits, for resolving its raw exits: its flow index, the
+/// range `first..end` of flows of its own kind (diverts never leave the
+/// kind — rules 10–11), and what its position allows.
 #[derive(Clone, Copy)]
 struct Site {
     flow: usize,
-    flow_count: usize,
+    first: usize,
+    end: usize,
+    kind: FlowKind,
     may_go_back: bool,
     may_fall_through: bool,
+}
+
+impl Site {
+    /// The exit a flow of this kind takes when it has nothing else to do.
+    fn default_exit(self) -> Exit {
+        match self.kind {
+            FlowKind::Knot => Exit::End,
+            FlowKind::Tunnel => Exit::TunnelReturn,
+            FlowKind::Thread => Exit::Done,
+        }
+    }
 }
 
 /// Names in scope while decoding: globals first, then parameters (inside
@@ -445,9 +502,22 @@ struct Site {
 struct Env {
     vars: Vec<(String, Ty)>,
     funcs: Vec<FnSig>,
+    /// Tunnel flows callable from here (rule 10's DAG already applied).
+    tunnels: Vec<Divert>,
+    /// Thread flows startable from here (plain-knot weaves only).
+    threads: Vec<Divert>,
 }
 
 impl Env {
+    /// The `n`-th entry of `list`, wrapping; `None` when empty.
+    fn pick_flow(list: &[Divert], n: u8) -> Option<Divert> {
+        if list.is_empty() {
+            None
+        } else {
+            Some(list[usize::from(n) % list.len()])
+        }
+    }
+
     /// The `n`-th callable function whose return type is `ret` (`None`
     /// for a void function), wrapping.
     fn pick_fn(&self, ret: Option<Ty>, n: u8) -> Option<&FnSig> {
@@ -624,25 +694,30 @@ fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
 }
 
 fn resolve_exit(raw: RawExit, site: Site, table: &[Divert]) -> Exit {
-    let forward_count = site.flow_count.saturating_sub(site.flow + 1);
+    let forward_count = site.end.saturating_sub(site.flow + 1);
+    let forward = |n: u8| {
+        if forward_count == 0 {
+            site.default_exit()
+        } else {
+            Exit::Divert(table[site.flow + 1 + usize::from(n) % forward_count])
+        }
+    };
     match raw {
         RawExit::End => Exit::End,
-        RawExit::Done => Exit::Done,
-        RawExit::Forward(n) => {
-            if forward_count == 0 {
-                Exit::End
-            } else {
-                Exit::Divert(table[site.flow + 1 + usize::from(n) % forward_count])
-            }
-        }
+        // A tunnel never leaves by `-> DONE` (rule 10): its `Done` reads
+        // as the return.
+        RawExit::Done => match site.kind {
+            FlowKind::Tunnel => Exit::TunnelReturn,
+            FlowKind::Knot | FlowKind::Thread => Exit::Done,
+        },
+        RawExit::Forward(n) => forward(n),
         RawExit::Backward(n) => {
             if site.may_go_back {
-                Exit::Divert(table[usize::from(n) % (site.flow + 1)])
-            } else if forward_count == 0 {
-                Exit::End
+                let span = site.flow + 1 - site.first;
+                Exit::Divert(table[site.first + usize::from(n) % span])
             } else {
                 // Not allowed to go back here: read the raw index forward.
-                Exit::Divert(table[site.flow + 1 + usize::from(n) % forward_count])
+                forward(n)
             }
         }
     }
@@ -704,6 +779,16 @@ fn decode_items(
                     init: decode_expr(init, ty, env),
                 });
                 env.vars.push((name, ty));
+            }
+            RawItem::TunnelCall(n) => {
+                if let Some(d) = Env::pick_flow(&env.tunnels, *n) {
+                    out.push(Item::TunnelCall(d));
+                }
+            }
+            RawItem::Thread(n) => {
+                if let Some(d) = Env::pick_flow(&env.threads, *n) {
+                    out.push(Item::Thread(d));
+                }
             }
             RawItem::Call(f, args) => {
                 if let Some(sig) = env.pick_fn(None, *f)
@@ -834,6 +919,8 @@ fn decode_functions(
         let mut env = Env {
             vars: global_vars.to_vec(),
             funcs: sigs.clone(),
+            tunnels: Vec::new(),
+            threads: Vec::new(),
         };
         env.vars
             .extend(params.iter().map(|p| (p.name.clone(), p.ty)));
@@ -866,6 +953,84 @@ fn decode_functions(
     (functions, sigs)
 }
 
+/// The flow table of a story under decode: every knot root and stitch in
+/// linear order, each kind's contiguous range within it, and the flows a
+/// tunnel call or thread may name.
+struct Layout {
+    table: Vec<Divert>,
+    ranges: Vec<(FlowKind, usize, usize)>,
+    tunnel_flows: Vec<Divert>,
+    thread_flows: Vec<Divert>,
+}
+
+impl Layout {
+    fn of(all: &[(&RawKnot, FlowKind)]) -> Self {
+        let mut table = Vec::new();
+        let mut ranges: Vec<(FlowKind, usize, usize)> = Vec::new();
+        for (ki, (k, kind)) in all.iter().enumerate() {
+            let start = table.len();
+            table.push(Divert {
+                knot: ki,
+                stitch: None,
+            });
+            for si in 0..k.stitches.len() {
+                table.push(Divert {
+                    knot: ki,
+                    stitch: Some(si),
+                });
+            }
+            match ranges.last_mut() {
+                Some((rk, _, end)) if rk == kind => *end = table.len(),
+                _ => ranges.push((*kind, start, table.len())),
+            }
+        }
+        let of_kind = |kind: FlowKind| -> Vec<Divert> {
+            table
+                .iter()
+                .copied()
+                .filter(|d| all[d.knot].1 == kind)
+                .collect()
+        };
+        let tunnel_flows = of_kind(FlowKind::Tunnel);
+        let thread_flows = of_kind(FlowKind::Thread);
+        Self {
+            table,
+            ranges,
+            tunnel_flows,
+            thread_flows,
+        }
+    }
+
+    /// `first..end` of the flows of `kind` (empty when there are none).
+    fn range_of(&self, kind: FlowKind) -> (usize, usize) {
+        self.ranges
+            .iter()
+            .find(|(k, _, _)| *k == kind)
+            .map_or((0, 0), |(_, s, e)| (*s, *e))
+    }
+
+    /// The decode environment for knot `ki` of `kind` — rules 10–11: a
+    /// tunnel calls only later tunnels; only a plain knot starts a thread.
+    fn env_for(&self, globals: &Env, kind: FlowKind, ki: usize) -> Env {
+        Env {
+            tunnels: match kind {
+                FlowKind::Tunnel => self
+                    .tunnel_flows
+                    .iter()
+                    .copied()
+                    .filter(|d| d.knot > ki)
+                    .collect(),
+                FlowKind::Knot | FlowKind::Thread => self.tunnel_flows.clone(),
+            },
+            threads: match kind {
+                FlowKind::Knot => self.thread_flows.clone(),
+                FlowKind::Tunnel | FlowKind::Thread => Vec::new(),
+            },
+            ..globals.clone()
+        }
+    }
+}
+
 /// Turn a raw skeleton into a valid [`Story`]: names made unique, every
 /// exit resolved into the legal range for its site, every expression typed
 /// for its position against the names in scope, every rule of
@@ -886,39 +1051,38 @@ pub fn decode(raw: &RawStory) -> Story {
     let globals = Env {
         vars: global_vars,
         funcs: sigs,
+        tunnels: Vec::new(),
+        threads: Vec::new(),
     };
-    // Pass 1: the layout — flow table in linear order.
-    let mut table = Vec::new();
-    for (ki, k) in raw.knots.iter().enumerate() {
-        table.push(Divert {
-            knot: ki,
-            stitch: None,
-        });
-        for si in 0..k.stitches.len() {
-            table.push(Divert {
-                knot: ki,
-                stitch: Some(si),
-            });
-        }
-    }
-    let flow_count = table.len();
+    let all: Vec<(&RawKnot, FlowKind)> = raw
+        .knots
+        .iter()
+        .map(|k| (k, FlowKind::Knot))
+        .chain(raw.tunnels.iter().map(|k| (k, FlowKind::Tunnel)))
+        .chain(raw.threads.iter().map(|k| (k, FlowKind::Thread)))
+        .collect();
+    let layout = Layout::of(&all);
     // Pass 2: decode every weave against its own flow index; temps are
     // numbered per flow.
     let mut flow = 0;
-    let knots = raw
-        .knots
+    let knots = all
         .iter()
         .enumerate()
-        .map(|(ki, k)| {
+        .map(|(ki, (k, kind))| {
+            let (first, end) = layout.range_of(*kind);
             let root_site = Site {
                 flow,
-                flow_count,
+                first,
+                end,
+                kind: *kind,
                 may_go_back: false,
                 may_fall_through: false,
             };
+            let env = layout.env_for(&globals, *kind, ki);
+            let table = &layout.table;
             flow += 1;
             let mut temps = 0;
-            let root = decode_weave(&k.root, root_site, &table, &globals, &mut temps);
+            let root = decode_weave(&k.root, root_site, table, &env, &mut temps);
             let stitches = k
                 .stitches
                 .iter()
@@ -929,12 +1093,18 @@ pub fn decode(raw: &RawStory) -> Story {
                     let mut temps = 0;
                     Stitch {
                         name: format!("{base}_s{si}"),
-                        body: decode_weave(body, site, &table, &globals, &mut temps),
+                        body: decode_weave(body, site, table, &env, &mut temps),
                     }
                 })
                 .collect();
+            let name = match kind {
+                FlowKind::Knot => format!("{}_k{ki}", k.name),
+                FlowKind::Tunnel => format!("{}_t{ki}", k.name),
+                FlowKind::Thread => format!("{}_th{ki}", k.name),
+            };
             Knot {
-                name: format!("{}_k{ki}", k.name),
+                name,
+                kind: *kind,
                 root,
                 stitches,
             }
@@ -983,7 +1153,11 @@ mod tests {
         #[test]
         fn generated_stories_respect_profile(story in arb_story()) {
             let p = Profile::DEFAULT;
-            prop_assert!(!story.knots.is_empty() && story.knots.len() <= p.max_knots);
+            let of = |kind: FlowKind| story.knots.iter().filter(|k| k.kind == kind).count();
+            prop_assert!(of(FlowKind::Knot) >= 1 && of(FlowKind::Knot) <= p.max_knots);
+            prop_assert!(of(FlowKind::Tunnel) <= p.max_tunnels);
+            prop_assert!(of(FlowKind::Thread) <= p.max_threads);
+            prop_assert!(story.functions.len() <= p.max_functions);
             prop_assert!(story.vars.len() <= p.max_vars);
             for k in &story.knots {
                 prop_assert!(k.stitches.len() <= p.max_stitches);
@@ -1051,10 +1225,12 @@ mod tests {
         // Measured: the shrinker lands on one knot, 9 printed lines (a
         // choice, its nested set with a fallback, the exits). Before the
         // skeleton-then-decode design, the same property stalled at ~220
-        // lines. Shrinking can delete but not relocate, so a stitch that
-        // hosts the offending set legitimately survives.
+        // lines. Shrinking can delete but not relocate, so a stitch — or,
+        // since the tunnels/threads tier, a tunnel or thread knot — that
+        // hosts the offending set legitimately survives next to the entry
+        // knot (which cannot be deleted).
         assert!(
-            minimal.knots.len() == 1 && line_count <= 12,
+            minimal.knots.len() <= 2 && line_count <= 12,
             "expected a minimal one-knot story, got {} knots / {line_count} lines:\n{printed}",
             minimal.knots.len()
         );
