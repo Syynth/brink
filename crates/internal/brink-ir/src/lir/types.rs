@@ -399,6 +399,13 @@ pub enum StmtKind {
         slot: u16,
         name: NameId,
         value: Option<Expr>,
+        /// Mirrors [`crate::hir::TempDecl::synthetic`]: a compiler-minted
+        /// temp (the #3395 lift-order hoist). Codegen evaluates a synthetic
+        /// temp's direct-call value through the slot composition
+        /// (`emit_slot_expr`) so the call's printed output is captured into
+        /// the value rather than emitted ahead of the line it belongs to,
+        /// and marks the `DebugInfo` locals row so the debugger hides it.
+        synthetic: bool,
     },
 
     /// `~ x = expr` / `~ x += expr` — assign to a variable.
@@ -792,6 +799,16 @@ impl Expr {
     #[must_use]
     pub fn is_function_call(&self) -> bool {
         self.kind.is_function_call()
+    }
+
+    /// Returns true if this expression is, or has anywhere inside it, a
+    /// function call that may produce text output — the operands of a
+    /// compound expression included (`f() == "x"`, `n + f()`, `not f()`),
+    /// so a slot holding one composes the call's output into the slot the
+    /// way a bare call does (issue #3525).
+    #[must_use]
+    pub fn contains_function_call(&self) -> bool {
+        self.kind.contains_function_call()
     }
 }
 
@@ -1364,6 +1381,67 @@ impl ExprKind {
                 | Self::CallVariableTemp { .. }
                 | Self::CallExternal { .. }
         )
+    }
+
+    /// See [`Expr::contains_function_call`]. Walks the operator, coalesce,
+    /// builtin-argument and function-value shapes ink-compat expressions
+    /// are built from, plus the collection constructors and indexing that
+    /// can hold a call as an operand; a call through a function value
+    /// (`CallValue`) counts as a call. The remaining native-only collection
+    /// and sequence operations (lambda-taking `SeqMap`, `SeqFold`, …) are
+    /// not walked: their callees are function values whose bodies this
+    /// predicate cannot see either way, and they are lowered on their own
+    /// composition rules.
+    pub fn contains_function_call(&self) -> bool {
+        let arg_calls = |args: &[CallArg]| {
+            args.iter().any(|a| match a {
+                CallArg::Value(e) => e.contains_function_call(),
+                CallArg::RefGlobal(_) | CallArg::RefTemp(..) | CallArg::RefProjection { .. } => {
+                    false
+                }
+            })
+        };
+        let any = |exprs: &[Expr]| exprs.iter().any(Expr::contains_function_call);
+        match self {
+            Self::Call { .. }
+            | Self::CallVariable { .. }
+            | Self::CallVariableTemp { .. }
+            | Self::CallExternal { .. }
+            | Self::CallValue { .. } => true,
+            Self::Prefix(_, e)
+            | Self::Postfix(e, _)
+            | Self::CollectionLen(e)
+            | Self::CollectionKeys(e)
+            | Self::CollectionValues(e)
+            | Self::OptionSome(e) => e.contains_function_call(),
+            Self::Infix(l, _, r) => l.contains_function_call() || r.contains_function_call(),
+            Self::Coalesce { lhs, rhs, .. } => {
+                lhs.contains_function_call() || rhs.contains_function_call()
+            }
+            Self::CallBuiltin { args, .. } => any(args),
+            Self::MakeFnValue { bound, .. } => arg_calls(bound),
+            Self::BindValue { callee, args } => callee.contains_function_call() || any(args),
+            Self::ArrayNew(items) => any(items),
+            Self::MapNew(pairs) => pairs
+                .iter()
+                .any(|(k, v)| k.contains_function_call() || v.contains_function_call()),
+            Self::Index { base, index } => {
+                base.contains_function_call() || index.contains_function_call()
+            }
+            Self::IndexSet { base, index, value } => {
+                base.contains_function_call()
+                    || index.contains_function_call()
+                    || value.contains_function_call()
+            }
+            Self::CollectionContains { container, needle } => {
+                container.contains_function_call() || needle.contains_function_call()
+            }
+            Self::String(s) => s.parts.iter().any(|part| match part {
+                StringPart::Literal(_) => false,
+                StringPart::Interpolation(e) => e.contains_function_call(),
+            }),
+            _ => false,
+        }
     }
 }
 

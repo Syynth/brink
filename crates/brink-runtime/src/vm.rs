@@ -183,7 +183,17 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.output.push_value_ref(val);
         }
         Opcode::EmitNewline => {
-            flow.output.push_newline();
+            // C# consults the TOP call-stack element only: a tunnel or
+            // thread entered from a function is its own boundary.
+            let function = flow.current_thread().call_stack.last().and_then(|frame| {
+                matches!(
+                    frame.frame_type,
+                    CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+                )
+                .then_some(frame.function_output_start)
+                .flatten()
+            });
+            flow.output.push_newline_in_function(function);
         }
         Opcode::Spring => {
             note_effect_emit(flow, program);
@@ -426,16 +436,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
             let mut val = flow.pop_value()?;
-            // Retain list origins: when assigning an empty list to a
-            // global that holds a list, preserve the old origins so
-            // LIST_ALL can still enumerate the original list definition.
-            if let Value::List(new_lv) = &mut val
-                && new_lv.items.is_empty()
-                && new_lv.origins.is_empty()
-                && let Value::List(old_lv) = context.global(idx)
-            {
-                Arc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
-            }
+            list_ops::retain_origins_on_assign(program, context.global(idx), &mut val);
             note_effect_write(flow, program, id);
             context.set_global(idx, val);
         }
@@ -455,7 +456,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::SetTemp(slot) => {
             // Write-through: if the temp holds a pointer, write the new
             // value to the pointed-to location instead.
-            let val = flow.pop_value()?;
+            let mut val = flow.pop_value()?;
             let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
@@ -469,6 +470,11 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let global_idx = program
                         .resolve_global(target_id)
                         .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    list_ops::retain_origins_on_assign(
+                        program,
+                        context.global(global_idx),
+                        &mut val,
+                    );
                     context.set_global(global_idx, val);
                 }
                 Value::TempPointer {
@@ -481,6 +487,8 @@ fn step_impl<R: crate::rng::StoryRng>(
                         .get_mut(frame_depth as usize)
                         .ok_or(RuntimeError::CallStackUnderflow)?;
                     let ti = target_slot as usize;
+                    let old = target.temps.get(ti).cloned().unwrap_or(Value::Null);
+                    list_ops::retain_origins_on_assign(program, &old, &mut val);
                     target.write_temp(ti, val);
                 }
                 // T1e (docs/t1e-spec.md §3): a projection-bound `ref`
@@ -495,6 +503,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     proj_ops::write(program, context, p.cell, &p.segments, val)?;
                 }
                 _ => {
+                    list_ops::retain_origins_on_assign(program, &current, &mut val);
                     let thread = flow.current_thread_mut();
                     let frame = thread
                         .call_stack
@@ -774,7 +783,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Function output goes directly to the active output target.
             // Record the target length so trailing whitespace can be
             // trimmed on return (matching C#'s TrimWhitespaceFromFunctionEnd).
-            let output_start = flow.output.target_len();
+            let output_start = flow.output.mark();
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
@@ -911,7 +920,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         context.set_turn_count(id, context.turn_index());
                     }
 
-                    let output_start = flow.output.target_len();
+                    let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
                     thread.call_stack.push(CallFrame {
@@ -1000,7 +1009,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         context.increment_visit(id);
                         context.set_turn_count(id, context.turn_index());
                     }
-                    let output_start = flow.output.target_len();
+                    let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
                     thread.call_stack.push(CallFrame {
@@ -1305,7 +1314,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         // ── List operations ─────────────────────────────────────────
         Opcode::ListContains => list_ops::list_contains(flow)?,
         Opcode::ListNotContains => list_ops::list_not_contains(flow)?,
-        Opcode::ListIntersect => list_ops::list_intersect(flow)?,
+        Opcode::ListIntersect => list_ops::list_intersect(flow, program)?,
         Opcode::ListAll => list_ops::list_all(flow, program)?,
         Opcode::ListInvert => list_ops::list_invert(flow, program)?,
         Opcode::ListCount => list_ops::list_count(flow)?,
@@ -1931,7 +1940,7 @@ fn enter_fn_value(
         context.increment_visit(target);
         context.set_turn_count(target, context.turn_index());
     }
-    let output_start = flow.output.target_len();
+    let output_start = flow.output.mark();
     let current_pos = current_position(flow)?;
     let thread = flow.current_thread_mut();
     thread.call_stack.push(CallFrame {
@@ -2645,7 +2654,7 @@ fn call_callback<R: crate::rng::StoryRng>(
     if capture_output {
         flow.output.begin_capture();
     }
-    let output_start = flow.output.target_len();
+    let output_start = flow.output.mark();
 
     // In-story dispatch counts visits, exactly like `enter_fn_value`.
     let counting_flags = program.container(container_idx).counting_flags;
@@ -3023,7 +3032,7 @@ fn pop_call_frame(
         // Trim trailing whitespace from the function's output region,
         // matching the C# runtime's TrimWhitespaceFromFunctionEnd.
         if let Some(start) = popped.function_output_start {
-            flow.output.trim_function_end(start);
+            flow.output.trim_function_end(start.len);
         }
         if !is_explicit_return {
             // Implicit return: function returns void.
@@ -3394,6 +3403,7 @@ mod tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
+            line_delivered_this_turn: false,
             exec_mode: ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,

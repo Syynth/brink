@@ -1,0 +1,76 @@
+name: inkjs differential
+
+# The generated-story differential (issue #3379,
+# docs/program-generator-spec.md §6–§7): brink-gen stories under the
+# `plain_ink` profile, explored by brink and by tools/inkjs-oracle (the
+# reference stand-in ci.yml's `inkjs-sanction` job proves against every C#
+# golden), must produce the same episodes.
+#
+# Nightly, not per PR — §7's ruled lane split: per-PR runs are the small
+# deterministic smoke properties in crates/internal/brink-gen/tests/smoke.rs
+# plus the sanction; the differential is randomised and a NEW finding here is
+# a bug report against brink (minimise, add a C#-golden corpus case per the
+# 2026-09-02 directive), not a reason to block an unrelated PR. Known
+# divergences are keyed on their issue in
+# crates/internal/brink-gen/tests/inkjs_differential.rs's KNOWN_DIVERGENCES
+# so this lane is green until something new appears.
+#
+# Advisory: not in branch protection's required-checks list.
+
+on:
+  schedule:
+    # Nightly at 03:30 UTC — off the hour so it does not queue behind the
+    # other scheduled gates (demo.yml 00:00, benchmarks.yml 12:00,
+    # benchmarks-inkjs.yml Monday 18:00).
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: proptest case count (PROPTEST_CASES)
+        default: "512"
+        required: false
+  # Also on a PR that touches the lane itself, so a change to the generator,
+  # the oracle port, or this file gets one run before merge.
+  pull_request:
+    paths:
+      - 'tools/inkjs-oracle/**'
+      - 'crates/internal/brink-gen/**'
+      - 'crates/internal/brink-test-harness/src/inkjs.rs'
+      - '.github/workflows/inkjs-differential.yml'
+
+# Least privilege: jobs only read the repo. Grant more per-job if ever needed.
+permissions: {}
+
+# Third-party actions are pinned to full commit SHAs (mutable tags can be
+# repointed at malicious code). The trailing comment tracks the version;
+# Dependabot bumps both together.
+jobs:
+  inkjs-differential:
+    name: inkjs differential (brink-gen plain_ink)
+    runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): a
+    # harness build plus ~0.3s per generated story.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - name: Install inkjs oracle
+        working-directory: tools/inkjs-oracle
+        run: npm ci
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Differential (brink vs inkjs on generated stories)
+        run: cargo test -p brink-gen --test inkjs_differential -- --nocapture
+        env:
+          BRINK_INKJS_ORACLE: "1"
+          # 512 on the schedule; a PR-triggered run gets the same, a manual
+          # run whatever was asked for.
+          PROPTEST_CASES: ${{ github.event.inputs.cases || '512' }}

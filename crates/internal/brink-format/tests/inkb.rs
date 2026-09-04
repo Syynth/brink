@@ -1609,7 +1609,7 @@ fn frame_shapes_rejects_unknown_section_version() {
 fn sample_debug_info() -> brink_format::DebugInfoSection {
     use brink_format::{
         DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DebugContainerTable, DebugEntry,
-        DebugFileEntry, DebugInfoSection, FileSurface,
+        DebugFileEntry, DebugInfoSection, DebugLocalEntry, FileSurface,
     };
 
     DebugInfoSection {
@@ -1661,7 +1661,36 @@ fn sample_debug_info() -> brink_format::DebugInfoSection {
                         flags: DEBUG_FLAG_IS_STMT,
                     },
                 ],
-                locals: Vec::new(),
+                // D7's locals rows, every flag combination the section
+                // version 2 flags byte can carry (#3185, #3395): a
+                // parameter (no range), an authored temp (range), a
+                // synthetic temp with and without a range.
+                locals: vec![
+                    DebugLocalEntry {
+                        slot: 0,
+                        name: "n".to_string(),
+                        declaring_range: None,
+                        synthetic: false,
+                    },
+                    DebugLocalEntry {
+                        slot: 1,
+                        name: "doubled".to_string(),
+                        declaring_range: Some((1, 10, 5)),
+                        synthetic: false,
+                    },
+                    DebugLocalEntry {
+                        slot: 2,
+                        name: "$lift0".to_string(),
+                        declaring_range: Some((1, 20, 3)),
+                        synthetic: true,
+                    },
+                    DebugLocalEntry {
+                        slot: 3,
+                        name: "$lift1".to_string(),
+                        declaring_range: None,
+                        synthetic: true,
+                    },
+                ],
             },
             DebugContainerTable {
                 entries: vec![DebugEntry {
@@ -1699,6 +1728,27 @@ fn roundtrip_debug_info_section() {
     recovered.source_checksum = data.source_checksum;
     assert_eq!(data.debug_info, recovered.debug_info);
     assert_eq!(data, recovered);
+}
+
+/// The same table through the `.inkt` text form (`(local slot "name"
+/// synthetic? (range …)?)`), so the #3395 `synthetic` marker and its
+/// absence both survive the round trip the way the binary flags byte does.
+#[test]
+fn roundtrip_debug_info_section_inkt() {
+    let mut data = i001_data();
+    data.debug_info = Some(sample_debug_info());
+
+    let mut text = String::new();
+    brink_format::write_inkt(&data, &mut text).unwrap();
+    assert!(
+        text.contains("(local 2 \"$lift0\" synthetic (range 1 20 3))"),
+        "synthetic marker precedes the range: {text}"
+    );
+    assert!(text.contains("(local 3 \"$lift1\" synthetic)"));
+    assert!(text.contains("(local 1 \"doubled\" (range 1 10 5))"));
+
+    let recovered = brink_format::read_inkt(&text).unwrap();
+    assert_eq!(data.debug_info, recovered.debug_info);
 }
 
 #[test]
@@ -1766,6 +1816,43 @@ fn debug_info_rejects_unknown_section_version() {
             version: 0xFF,
         }
     );
+}
+
+/// #3395: the locals row's flags byte (section version 2 — bit 0 has-range,
+/// bit 1 synthetic) is STRICT, unlike the entry `flags` byte below: a
+/// reserved bit set is a decode error naming the byte, the same discipline
+/// `DirectEffects`' extension-flags byte follows. Finds the byte by
+/// re-encoding a one-row table and patching the sole flags position.
+#[test]
+fn debug_info_rejects_reserved_local_flag_bits() {
+    use brink_format::{
+        DebugContainerTable, DebugLocalEntry, read_section_debug_info, write_section_debug_info,
+    };
+
+    let mut section = sample_debug_info();
+    section.containers = vec![DebugContainerTable {
+        entries: Vec::new(),
+        locals: vec![DebugLocalEntry {
+            slot: 7,
+            name: "x".to_string(),
+            declaring_range: None,
+            synthetic: true,
+        }],
+    }];
+    let mut buf = Vec::new();
+    write_section_debug_info(&section, &mut buf);
+    // The row is the last thing written: slot u16, name (u32 len + "x"),
+    // flags u8 — so the flags byte is the final byte of the buffer.
+    let flags_at = buf.len() - 1;
+    assert_eq!(buf[flags_at], 0b10, "synthetic, no range");
+
+    let index = debug_info_index_for(&buf);
+    let ok = read_section_debug_info(&buf, &index).unwrap().unwrap();
+    assert_eq!(ok.containers[0].locals, section.containers[0].locals);
+
+    buf[flags_at] = 0b110;
+    let err = read_section_debug_info(&buf, &index).unwrap_err();
+    assert_eq!(err, DecodeError::InvalidDebugLocalFlags(0b110));
 }
 
 /// §2.2's ruled, explicit departure from this format's default

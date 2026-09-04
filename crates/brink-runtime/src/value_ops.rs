@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use brink_format::{ListValue, Value};
 
 use crate::error::RuntimeError;
+use crate::list_ops;
 use crate::program::Program;
 
 /// Returns whether a value is truthy in ink semantics.
@@ -959,26 +960,30 @@ fn list_binary_op(
                     items.push(id);
                 }
             }
-            let mut origins = a.origins.clone();
-            for &id in &b.origins {
-                if !origins.contains(&id) {
-                    origins.push(id);
-                }
-            }
-            Ok(Value::List(Arc::new(ListValue { items, origins })))
+            // ink's `Union` starts from a copy of `a` (issue #3532): an
+            // empty result keeps `a`'s origins, a non-empty one derives
+            // its origins from its items.
+            let empty_origins = list_ops::effective_origins(program, a);
+            Ok(Value::List(Arc::new(list_ops::build(
+                program,
+                items,
+                empty_origins,
+            ))))
         }
         BinaryOp::Subtract => {
-            // Except (a \ b)
+            // Except (a \ b) — ink's `Without`, also a copy of `a`.
             let items: Vec<_> = a
                 .items
                 .iter()
                 .filter(|id| !b.items.contains(id))
                 .copied()
                 .collect();
-            Ok(Value::List(Arc::new(ListValue {
+            let empty_origins = list_ops::effective_origins(program, a);
+            Ok(Value::List(Arc::new(list_ops::build(
+                program,
                 items,
-                origins: a.origins.clone(),
-            })))
+                empty_origins,
+            ))))
         }
         BinaryOp::Equal => {
             let eq =
@@ -1020,10 +1025,9 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
             }
         }
     }
-    ListValue {
-        items,
-        origins: lv.origins.clone(),
-    }
+    // A fresh list in ink (`CallListIncrementOperation`): no origins when
+    // the shift lands on nothing (issue #3532).
+    list_ops::build(program, items, Vec::new())
 }
 
 /// `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue #1460;
@@ -3015,6 +3019,7 @@ mod tower_tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
+            line_delivered_this_turn: false,
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,

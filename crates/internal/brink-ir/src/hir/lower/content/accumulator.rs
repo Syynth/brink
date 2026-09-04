@@ -71,6 +71,14 @@ impl<B: BodyBackend> ContentAccumulator<B> {
         self.note_range(range);
     }
 
+    /// [`Self::push_glue`], preceded by a `Spring` when whitespace separated
+    /// the glue from an inline construct (issue #3507) — see
+    /// [`super::helpers::push_glue`].
+    pub fn push_glue_after(&mut self, range: TextRange, ws_before_glue: bool) {
+        super::helpers::push_glue(&mut self.parts, ws_before_glue);
+        self.note_range(range);
+    }
+
     pub fn push_escape(&mut self, text: &str, range: TextRange) {
         if text.len() > 1 {
             self.parts.push(ContentPart::Text(text[1..].to_string()));
@@ -84,6 +92,13 @@ impl<B: BodyBackend> ContentAccumulator<B> {
 
     pub fn ends_with_glue(&self) -> bool {
         content_ends_with_glue(&self.parts)
+    }
+
+    /// Whether the last buffered part is an inline construct — the only
+    /// thing whitespace-before-glue lowers to a `Spring` after (issue
+    /// #3507, `super::helpers::push_glue`).
+    pub fn last_part_is_inline_construct(&self) -> bool {
+        super::helpers::is_inline_construct(self.parts.last())
     }
 
     // ── Flushing ────────────────────────────────────────────────
@@ -277,13 +292,19 @@ impl<B: BodyBackend> Integrate<TagLineOutput> for ContentAccumulator<B> {
             return HandleResult::Inline;
         }
         self.flush();
+        // Issue #3534: a tag-only line contributes its tags and NOTHING
+        // else — ink's parser appends a line's `"\n"` only when the line
+        // is not pure tags (`lineIsPureTag`), so the tags ride the next
+        // line's newline. No `EndOfLine` here, and the tags are not
+        // "content" for the surrounding block's own newline bookkeeping
+        // either (a multi-line block's trailing newline is keyed on
+        // `last_was_content`).
         self.backend.push_stmt(Stmt::Content(Content {
             ptr: None,
             parts: Vec::new(),
             tags: output.tags,
         }));
-        self.last_pushed_was_content = true;
-        self.push_eol();
+        self.last_pushed_was_content = false;
         HandleResult::Block
     }
 }

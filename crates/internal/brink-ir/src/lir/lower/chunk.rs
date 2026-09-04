@@ -194,6 +194,7 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
             slot: _,
             name,
             value,
+            synthetic: _,
         } => {
             relocate(name, map);
             if let Some(v) = value {
@@ -645,6 +646,7 @@ mod tests {
                     slot: 0,
                     name: NameId(1), // local -> "fresh"
                     value: Some(lir::ExprKind::GetTemp(0, NameId(0)).at(test_provenance())), // local -> "existing"
+                    synthetic: false,
                 },
                 test_provenance(),
             )],

@@ -17,9 +17,16 @@ impl LowerBlock for ast::BranchlessCondBody {
     fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
         let mut acc = ContentAccumulator::new(DirectBackend::new(), scope.file_id);
         let mut is_multiline = false;
+        // Issue #3507: whitespace trivia between an inline construct and
+        // `<>` — see `content::helpers::push_glue`. (The else-bearing
+        // sibling, `branch.rs`, already carries such whitespace as deferred
+        // text, which codegen turns into the same `Spring`.)
+        let mut ws_before = false;
 
         for child in self.syntax().children_with_tokens() {
-            match classify_branch_child(&child) {
+            let classified = classify_branch_child(&child);
+            let ws_before_this = std::mem::take(&mut ws_before);
+            match classified {
                 BranchChild::ContentLine(cl) => {
                     acc.handle(&cl, scope, sink);
                 }
@@ -46,7 +53,7 @@ impl LowerBlock for ast::BranchlessCondBody {
                     let range = child.text_range();
                     acc.push_text(t, range);
                 }
-                BranchChild::Glue => acc.push_glue(child.text_range()),
+                BranchChild::Glue => acc.push_glue_after(child.text_range(), ws_before_this),
                 BranchChild::Escape(t) => {
                     let range = child.text_range();
                     acc.push_escape(&t, range);
@@ -63,7 +70,8 @@ impl LowerBlock for ast::BranchlessCondBody {
                         })));
                     }
                 }
-                BranchChild::Whitespace(_) | BranchChild::Trivia => {}
+                BranchChild::Whitespace(_) => ws_before = true,
+                BranchChild::Trivia => {}
                 BranchChild::Stop => break,
 
                 BranchChild::Newline => {

@@ -66,7 +66,7 @@ pub fn include_block_span(hir: &HirFile, source: &str) -> Option<IncludeBlockSpa
             let t = line.trim_start();
             !t.is_empty() && !t.starts_with("//")
         })
-        .map_or(lines.len(), |p| p);
+        .unwrap_or(lines.len());
 
     // The leading run is only a leading run if the very first piece of real
     // content is an INCLUDE.

@@ -38,23 +38,81 @@
 //!   above — and the per-lift-level revocation that used to give an
 //!   unclaimable branch its own counter is gone.
 //!
+//! ## Source-order evaluation across a lift (issue #3395, RULED 2026-09-02)
+//!
+//! Lifting evaluates the construct's own selection first — a conditional's
+//! condition, a sequence's visit-count touch or shuffle draw — and only then
+//! the branch line that carries the cloned prefix. Ink evaluates a line left
+//! to right, so a prefix interpolation with a side effect (`{bump()}{n ==
+//! 1:yes|no}`) or a prefix read the condition then mutates (`{n}{bump() ==
+//! 1:yes|no}`) observed the wrong state. The lift therefore **hoists**: every
+//! `Interpolation` left of the lifted construct (spans included) is first
+//! evaluated, in source order, into a hidden `~ temp` ([`TempDecl::synthetic`],
+//! named with [`SYNTHETIC_TEMP_PREFIX`]), and the clones spliced into the
+//! branches read that temp instead. Each expression still evaluates exactly
+//! once; stateful alternatives in the prefix stay shared clones (#3275,
+//! unchanged); the suffix is handled at the next lift level, which is where
+//! ink evaluates it anyway. A read of a temp this pass minted at an outer
+//! level is never re-hoisted — the value is immutable, so re-copying it
+//! would only multiply temps. Codegen gives a synthetic temp's direct-call
+//! value display-position semantics (the call's printed output is captured
+//! into the value the same way `emit_slot_expr` captures it for a call in a
+//! slot), so `a{shout()}{cond:…}` still prints `shout`'s text inline where
+//! ink prints it, rather than as its own earlier line.
+//!
 //! [`claims_variant_line`]: crate::lir::lower::recognize::claims_variant_line
 
 use super::types::{
-    Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceBranch,
-    SequenceType, Stmt, Tag,
+    Block, CondBranch, Conditional, Content, ContentPart, Expr, HirFile, Name, Path, Sequence,
+    SequenceBranch, SequenceType, Stmt, Tag, TempDecl,
 };
+
+/// Name prefix of every temp the lift-order hoist mints (`$lift0`,
+/// `$lift1`, …, numbered per file in hoist order). `$` is not an ink
+/// identifier character (`brink_syntax::lexer::is_ident_char` — ASCII
+/// alphanumerics, `_`, and the C# reference's Unicode letter ranges), so no
+/// authored `~ temp` can ever share a name with one, and
+/// `lir::lower::temps::alloc_temps`'s name-keyed slot dedup can never alias
+/// the two. The name is otherwise author-invisible: the debugger hides the
+/// row (`synthetic`), and only an `.inkt` dump or an XLIFF slot name
+/// (`docs/intl-spec.md`, `slot_info`) ever shows it.
+pub const SYNTHETIC_TEMP_PREFIX: &str = "$lift";
+
+/// Whether `name` is a temp [`normalize_file`]'s hoist minted (see
+/// [`SYNTHETIC_TEMP_PREFIX`]).
+#[must_use]
+pub fn is_synthetic_temp_name(name: &str) -> bool {
+    name.starts_with(SYNTHETIC_TEMP_PREFIX)
+}
+
+/// Per-file counter behind [`SYNTHETIC_TEMP_PREFIX`] names — one per
+/// [`normalize_file`] call, so names are unique within the file and
+/// deterministic across the two compile roads (both normalize each file
+/// exactly once, in the same statement order).
+#[derive(Default)]
+struct Hoister {
+    next: u32,
+}
+
+impl Hoister {
+    fn fresh(&mut self) -> String {
+        let n = self.next;
+        self.next += 1;
+        format!("{SYNTHETIC_TEMP_PREFIX}{n}")
+    }
+}
 
 // ─── Public entry point ─────────────────────────────────────────────
 
 /// Normalize an entire HIR file by lifting inline sequences/conditionals
 /// in all blocks (root, knot bodies, stitch bodies).
 pub fn normalize_file(hir: &mut HirFile) {
-    normalize_block(&mut hir.root_content);
+    let mut hoister = Hoister::default();
+    normalize_block(&mut hir.root_content, &mut hoister);
     for knot in &mut hir.knots {
-        normalize_block(&mut knot.body);
+        normalize_block(&mut knot.body, &mut hoister);
         for stitch in &mut knot.stitches {
-            normalize_block(&mut stitch.body);
+            normalize_block(&mut stitch.body, &mut hoister);
         }
     }
 }
@@ -63,7 +121,7 @@ pub fn normalize_file(hir: &mut HirFile) {
 
 /// Walk a block's statements, lifting inline constructs to block-level
 /// and recursing into contained blocks.
-fn normalize_block(block: &mut Block) {
+fn normalize_block(block: &mut Block, hoister: &mut Hoister) {
     let old_stmts = std::mem::take(&mut block.stmts);
     let mut new_stmts = Vec::with_capacity(old_stmts.len());
 
@@ -88,7 +146,7 @@ fn normalize_block(block: &mut Block) {
                 // Check if the next stmt is EndOfLine — we absorb it into branches.
                 let trailing_eol = matches!(iter.peek(), Some(Stmt::EndOfLine));
 
-                match try_lift_inline(content, trailing_eol) {
+                match try_lift_inline(content, trailing_eol, hoister) {
                     Ok(lifted_stmts) => {
                         // Consume the EndOfLine we peeked at.
                         if trailing_eol {
@@ -105,24 +163,24 @@ fn normalize_block(block: &mut Block) {
             // Recurse into contained blocks for all structural statements.
             Stmt::ChoiceSet(mut cs) => {
                 for choice in &mut cs.choices {
-                    normalize_block(&mut choice.body);
+                    normalize_block(&mut choice.body, hoister);
                 }
-                normalize_block(&mut cs.continuation);
+                normalize_block(&mut cs.continuation, hoister);
                 new_stmts.push(Stmt::ChoiceSet(cs));
             }
             Stmt::LabeledBlock(mut lb) => {
-                normalize_block(&mut lb);
+                normalize_block(&mut lb, hoister);
                 new_stmts.push(Stmt::LabeledBlock(lb));
             }
             Stmt::Conditional(mut cond) => {
                 for branch in &mut cond.branches {
-                    normalize_block(&mut branch.body);
+                    normalize_block(&mut branch.body, hoister);
                 }
                 new_stmts.push(Stmt::Conditional(cond));
             }
             Stmt::Sequence(mut seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(&mut branch.body);
+                    normalize_block(&mut branch.body, hoister);
                 }
                 new_stmts.push(Stmt::Sequence(seq));
             }
@@ -138,12 +196,12 @@ fn normalize_block(block: &mut Block) {
         match stmt {
             Stmt::Sequence(seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(&mut branch.body);
+                    normalize_block(&mut branch.body, hoister);
                 }
             }
             Stmt::Conditional(cond) => {
                 for branch in &mut cond.branches {
-                    normalize_block(&mut branch.body);
+                    normalize_block(&mut branch.body, hoister);
                 }
             }
             _ => {}
@@ -158,17 +216,28 @@ fn normalize_block(block: &mut Block) {
 ///
 /// Returns `Ok(stmts)` with the replacement statements, or `Err(content)`
 /// if no inline construct was found (caller passes through unchanged).
-fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Content> {
+fn try_lift_inline(
+    content: Content,
+    trailing_eol: bool,
+    hoister: &mut Hoister,
+) -> Result<Vec<Stmt>, Content> {
     let Some(idx) = lift_index(&content.parts) else {
         return Err(content);
     };
 
-    let prefix: Vec<ContentPart> = content.parts[..idx].to_vec();
+    let mut prefix: Vec<ContentPart> = content.parts[..idx].to_vec();
     let suffix: Vec<ContentPart> = content.parts[idx + 1..].to_vec();
     let tags = &content.tags;
     let ptr = content.ptr;
 
-    match &content.parts[idx] {
+    // #3395: evaluate the prefix's interpolations BEFORE the construct —
+    // the lifted statement below runs the construct's selection first, and
+    // ink runs the prefix first. `prefix` is rewritten in place to read the
+    // hoisted temps, so every clone spliced below shares the one
+    // evaluation.
+    let mut stmts = hoist_prefix(&mut prefix, hoister, ptr);
+
+    let lifted = match &content.parts[idx] {
         ContentPart::InlineSequence(seq) => {
             let mut branches = Vec::with_capacity(seq.branches.len() + 1);
             for (branch_idx, branch) in seq.branches.iter().enumerate() {
@@ -235,7 +304,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 seq.kind
             };
 
-            Ok(vec![Stmt::Sequence(Sequence {
+            Stmt::Sequence(Sequence {
                 ptr: seq.ptr,
                 kind,
                 branches,
@@ -244,7 +313,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 // the original it shares state with.
                 container_id: seq.container_id,
                 counter_id: seq.counter_id,
-            })])
+            })
         }
         ContentPart::InlineConditional(cond) => {
             let mut branches = Vec::with_capacity(cond.branches.len() + 1);
@@ -288,14 +357,99 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 ));
             }
 
-            Ok(vec![Stmt::Conditional(Conditional {
+            Stmt::Conditional(Conditional {
                 ptr: cond.ptr,
                 kind: cond.kind.clone(),
                 branches,
-            })])
+            })
         }
         _ => unreachable!("position() matched only InlineSequence/InlineConditional"),
+    };
+    stmts.push(lifted);
+    Ok(stmts)
+}
+
+// ─── Lift-order hoist (#3395) ───────────────────────────────────────
+
+/// Hoist every `Interpolation` in `prefix` (recursing into spans) into a
+/// synthetic `~ temp`, in source order, rewriting each one in place to read
+/// its temp. Returns the declarations, in the order they must run. See the
+/// module doc's "Source-order evaluation across a lift".
+///
+/// A bare read of a temp this pass already minted (at an outer lift level)
+/// is left alone: it is immutable after its one declaration, so re-hoisting
+/// it would only add a temp per lift level.
+///
+/// The declarations borrow the enclosing line's provenance, when it has
+/// one: the `DebugInfo` entry for a hoisted evaluation then anchors to the
+/// line it belongs to, which is where an author stepping through it expects
+/// to land. A line with no provenance (in-crate tests) gets a synthetic
+/// anchor.
+fn hoist_prefix(
+    prefix: &mut [ContentPart],
+    hoister: &mut Hoister,
+    line_ptr: Option<crate::Provenance>,
+) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    hoist_parts(prefix, hoister, line_ptr, &mut out);
+    out
+}
+
+fn hoist_parts(
+    parts: &mut [ContentPart],
+    hoister: &mut Hoister,
+    line_ptr: Option<crate::Provenance>,
+    out: &mut Vec<Stmt>,
+) {
+    for part in parts {
+        match part {
+            ContentPart::Interpolation(expr) => {
+                if is_synthetic_read(expr) {
+                    continue;
+                }
+                let text = hoister.fresh();
+                let name = Name {
+                    text: text.clone(),
+                    range: rowan::TextRange::default(),
+                };
+                let value = std::mem::replace(expr, synthetic_read(text));
+                out.push(Stmt::TempDecl(TempDecl {
+                    ptr: line_ptr.unwrap_or_else(|| {
+                        crate::Provenance::synthetic(
+                            crate::provenance::NodeClass::TempDecl,
+                            rowan::TextRange::default(),
+                        )
+                    }),
+                    name,
+                    value: Some(value),
+                    annotation: None,
+                    synthetic: true,
+                }));
+            }
+            ContentPart::Span(span) => hoist_parts(&mut span.children, hoister, line_ptr, out),
+            ContentPart::Text(_)
+            | ContentPart::Glue
+            | ContentPart::Spring
+            | ContentPart::InlineConditional(_)
+            | ContentPart::InlineSequence(_) => {}
+        }
     }
+}
+
+/// `{$liftN}` — the read that replaces a hoisted interpolation.
+fn synthetic_read(text: String) -> Expr {
+    Expr::Path(Path {
+        segments: vec![Name {
+            text,
+            range: rowan::TextRange::default(),
+        }],
+        range: rowan::TextRange::default(),
+        crosses_module_wall: false,
+    })
+}
+
+fn is_synthetic_read(expr: &Expr) -> bool {
+    matches!(expr, Expr::Path(p) if p.segments.len() == 1 && is_synthetic_temp_name(&p.segments[0].text))
 }
 
 /// Which inline construct [`try_lift_inline`] lifts.
@@ -1407,5 +1561,279 @@ mod tests {
             };
             assert_eq!(content_text(c), format!("{prefix}c"));
         }
+    }
+
+    // ─── #3395: source-order hoist ───────────────────────────────────
+
+    fn call(name: &str) -> Expr {
+        Expr::Call(
+            Path {
+                segments: vec![Name {
+                    text: name.to_string(),
+                    range: rowan::TextRange::default(),
+                }],
+                range: rowan::TextRange::default(),
+                crosses_module_wall: false,
+            },
+            Vec::new(),
+        )
+    }
+
+    fn read(name: &str) -> Expr {
+        Expr::Path(Path {
+            segments: vec![Name {
+                text: name.to_string(),
+                range: rowan::TextRange::default(),
+            }],
+            range: rowan::TextRange::default(),
+            crosses_module_wall: false,
+        })
+    }
+
+    /// The temp a `Stmt::TempDecl` declares, asserting it is synthetic.
+    fn synthetic_decl(stmt: &Stmt) -> &TempDecl {
+        let Stmt::TempDecl(decl) = stmt else {
+            panic!("expected a hoisted TempDecl, got {stmt:?}");
+        };
+        assert!(decl.synthetic, "hoisted temp must be flagged synthetic");
+        assert!(
+            super::is_synthetic_temp_name(&decl.name.text),
+            "hoisted temp name {:?} must carry the synthetic prefix",
+            decl.name.text
+        );
+        decl
+    }
+
+    /// `{bump()}{cond:yes|no}` — the #3395 headline shape. The call is
+    /// evaluated into a synthetic temp BEFORE the lifted conditional, and
+    /// both branch lines read the temp instead of re-running the call.
+    #[test]
+    fn prefix_interpolation_is_hoisted_before_the_lifted_conditional() {
+        let content = mk_content(vec![
+            ContentPart::Interpolation(call("bump")),
+            mk_inline_cond(vec![
+                (Some(read("cond")), vec![text("yes")]),
+                (None, vec![text("no")]),
+            ]),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        assert_eq!(
+            stmts.len(),
+            2,
+            "hoisted temp + lifted conditional: {stmts:?}"
+        );
+        let decl = synthetic_decl(&stmts[0]);
+        assert_eq!(decl.value, Some(call("bump")));
+        assert!(decl.annotation.is_none());
+
+        let Stmt::Conditional(cond) = &stmts[1] else {
+            panic!("expected the lifted Conditional, got {:?}", stmts[1]);
+        };
+        for branch in &cond.branches {
+            let Stmt::Content(c) = &branch.body.stmts[0] else {
+                panic!("expected a spliced line, got {:?}", branch.body.stmts);
+            };
+            assert_eq!(
+                c.parts[0],
+                ContentPart::Interpolation(read(&decl.name.text)),
+                "every clone must read the hoisted temp, not re-evaluate the call"
+            );
+            assert!(
+                !c.parts
+                    .iter()
+                    .any(|p| *p == ContentPart::Interpolation(call("bump"))),
+                "the call must evaluate exactly once"
+            );
+        }
+    }
+
+    /// `{n}{f() == 1:yes|no}` — a pure read is hoisted too: the condition's
+    /// own side effect must not be visible to the prefix.
+    #[test]
+    fn prefix_read_is_hoisted_ahead_of_an_effectful_condition() {
+        let content = mk_content(vec![
+            ContentPart::Interpolation(read("n")),
+            mk_inline_cond(vec![(Some(call("f")), vec![text("yes")])]),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        let decl = synthetic_decl(&stmts[0]);
+        assert_eq!(decl.value, Some(read("n")));
+        assert!(matches!(&stmts[1], Stmt::Conditional(_)));
+    }
+
+    /// Two interpolations left of the construct hoist in source order into
+    /// distinct temps; text and glue between them are untouched.
+    #[test]
+    fn prefix_interpolations_hoist_in_source_order_with_distinct_temps() {
+        let content = mk_content(vec![
+            text("a "),
+            ContentPart::Interpolation(call("first")),
+            ContentPart::Glue,
+            ContentPart::Interpolation(call("second")),
+            mk_inline_seq(
+                SequenceType::STOPPING,
+                vec![vec![text("x")], vec![text("y")]],
+            ),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        assert_eq!(stmts.len(), 3, "{stmts:?}");
+        let first = synthetic_decl(&stmts[0]);
+        let second = synthetic_decl(&stmts[1]);
+        assert_eq!(first.value, Some(call("first")));
+        assert_eq!(second.value, Some(call("second")));
+        assert_ne!(first.name.text, second.name.text);
+
+        let Stmt::Sequence(seq) = &stmts[2] else {
+            panic!("expected the lifted Sequence, got {:?}", stmts[2]);
+        };
+        let Stmt::Content(c) = &seq.branches[0].body.stmts[0] else {
+            panic!("expected a spliced line");
+        };
+        assert_eq!(
+            &c.parts[..4],
+            &[
+                text("a "),
+                ContentPart::Interpolation(read(&first.name.text)),
+                ContentPart::Glue,
+                ContentPart::Interpolation(read(&second.name.text)),
+            ]
+        );
+    }
+
+    /// Two constructs on one line: the outer lift hoists the prefix; the
+    /// inner lift (inside each branch) sees the outer temp's read in ITS
+    /// prefix and must not hoist it again — it hoists only the genuinely
+    /// new interpolation between the two constructs.
+    #[test]
+    fn a_synthetic_read_is_not_rehoisted_at_the_next_lift_level() {
+        let content = mk_content(vec![
+            ContentPart::Interpolation(call("a")),
+            mk_inline_cond(vec![
+                (Some(read("p")), vec![text("P")]),
+                (None, vec![text("Q")]),
+            ]),
+            ContentPart::Interpolation(call("b")),
+            mk_inline_cond(vec![
+                (Some(read("q")), vec![text("R")]),
+                (None, vec![text("S")]),
+            ]),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        assert_eq!(stmts.len(), 2, "{stmts:?}");
+        let outer = synthetic_decl(&stmts[0]);
+        let Stmt::Conditional(cond) = &stmts[1] else {
+            panic!("expected the outer Conditional");
+        };
+        for branch in &cond.branches {
+            // Inside each branch: exactly ONE new temp (for `b`), then the
+            // inner conditional whose lines read both temps.
+            let inner_stmts = &branch.body.stmts;
+            assert_eq!(inner_stmts.len(), 2, "{inner_stmts:?}");
+            let inner = synthetic_decl(&inner_stmts[0]);
+            assert_eq!(inner.value, Some(call("b")));
+            assert_ne!(inner.name.text, outer.name.text);
+            let Stmt::Conditional(inner_cond) = &inner_stmts[1] else {
+                panic!("expected the inner Conditional");
+            };
+            for ib in &inner_cond.branches {
+                let Stmt::Content(c) = &ib.body.stmts[0] else {
+                    panic!("expected a spliced line");
+                };
+                let reads: Vec<&ContentPart> = c
+                    .parts
+                    .iter()
+                    .filter(|p| matches!(p, ContentPart::Interpolation(_)))
+                    .collect();
+                assert_eq!(
+                    reads,
+                    vec![
+                        &ContentPart::Interpolation(read(&outer.name.text)),
+                        &ContentPart::Interpolation(read(&inner.name.text)),
+                    ],
+                    "reads must be the two temps, in order, with no re-hoist copy"
+                );
+            }
+        }
+    }
+
+    /// An interpolation nested in a span left of the construct hoists too —
+    /// the span keeps its shape, its child now reads the temp.
+    #[test]
+    fn span_nested_prefix_interpolation_is_hoisted() {
+        let span = ContentPart::Span(SpanPart {
+            ptr: dummy_ptr(),
+            name: "b".to_string(),
+            attrs: Vec::new(),
+            children: vec![ContentPart::Interpolation(call("f"))],
+        });
+        let content = mk_content(vec![
+            span,
+            mk_inline_cond(vec![
+                (Some(read("c")), vec![text("x")]),
+                (None, vec![text("y")]),
+            ]),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        let decl = synthetic_decl(&stmts[0]);
+        let Stmt::Conditional(cond) = &stmts[1] else {
+            panic!("expected the lifted Conditional");
+        };
+        let Stmt::Content(c) = &cond.branches[0].body.stmts[0] else {
+            panic!("expected a spliced line");
+        };
+        let ContentPart::Span(s) = &c.parts[0] else {
+            panic!("the span must survive the splice, got {:?}", c.parts[0]);
+        };
+        assert_eq!(
+            s.children,
+            vec![ContentPart::Interpolation(read(&decl.name.text))]
+        );
+    }
+
+    /// No interpolation left of the construct → nothing to hoist; the lift
+    /// is byte-identical to before #3395 (interpolations in the SUFFIX are
+    /// the next lift level's prefix, or stay inline when nothing follows).
+    #[test]
+    fn suffix_only_interpolations_are_not_hoisted() {
+        let content = mk_content(vec![
+            text("a "),
+            mk_inline_cond(vec![
+                (Some(read("c")), vec![text("x")]),
+                (None, vec![text("y")]),
+            ]),
+            ContentPart::Interpolation(call("after")),
+        ]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+        normalize_file(&mut hir);
+
+        let stmts = &hir.root_content.stmts;
+        assert_eq!(stmts.len(), 1, "no temp expected: {stmts:?}");
+        let Stmt::Conditional(cond) = &stmts[0] else {
+            panic!("expected the lifted Conditional");
+        };
+        let Stmt::Content(c) = &cond.branches[0].body.stmts[0] else {
+            panic!("expected a spliced line");
+        };
+        // `"a "` and `"x"` merged into one text part at the splice seam, so
+        // the suffix interpolation is the LAST part, still un-hoisted.
+        assert_eq!(
+            c.parts.last(),
+            Some(&ContentPart::Interpolation(call("after")))
+        );
     }
 }

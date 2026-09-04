@@ -1350,6 +1350,11 @@ export interface DebugLocal {
   slot: number;
   name: string;
   value: DebugValue;
+  /** A temp the compiler minted rather than the author (#3395: the
+   *  lift-order hoist's `$liftN` temps, `docs/debugger-spec.md` §3). The
+   *  locals views hide these rows. Always present on the wire since the
+   *  flag landed; absent (older fixtures) reads as `false`. */
+  synthetic?: boolean;
 }
 
 /** A structured, read-only view of a runtime value for the debugger's

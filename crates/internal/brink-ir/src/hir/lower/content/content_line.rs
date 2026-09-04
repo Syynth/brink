@@ -46,51 +46,7 @@ impl LowerBody for ast::ContentLine {
             && let Some(il) = mc.inline_logics().next()
             && let Some(stmt) = lower_multiline_block_from_inline(&il, scope, sink)
         {
-            let il_syntax = il.syntax().clone();
-            let mut past_promoted = false;
-            let mut trailing_parts = Vec::new();
-            for child in mc.syntax().children_with_tokens() {
-                if let rowan::NodeOrToken::Node(ref child_node) = child
-                    && *child_node == il_syntax
-                {
-                    past_promoted = true;
-                    continue;
-                }
-                if !past_promoted {
-                    continue;
-                }
-                if let rowan::NodeOrToken::Node(child_node) = child {
-                    match child_node.kind() {
-                        brink_syntax::SyntaxKind::TEXT => {
-                            let text = child_node.text().to_string();
-                            if !text.is_empty() {
-                                trailing_parts.push(ContentPart::Text(text));
-                            }
-                        }
-                        brink_syntax::SyntaxKind::GLUE_NODE => {
-                            trailing_parts.push(ContentPart::Glue);
-                        }
-                        brink_syntax::SyntaxKind::ESCAPE => {
-                            let text = child_node.text().to_string();
-                            if text.len() > 1 {
-                                trailing_parts.push(ContentPart::Text(text[1..].to_string()));
-                            }
-                        }
-                        brink_syntax::SyntaxKind::INLINE_LOGIC => {
-                            if let Some(inline) = ast::InlineLogic::cast(child_node) {
-                                lower_inline_logic_into_parts(
-                                    &inline,
-                                    &mut trailing_parts,
-                                    scope,
-                                    sink,
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
+            let trailing_parts = lower_trailing_parts(&mc, &il, scope, sink);
             let trailing_content = if trailing_parts.is_empty() {
                 None
             } else {
@@ -147,4 +103,64 @@ impl LowerBody for ast::ContentLine {
             ends_with_glue,
         })
     }
+}
+
+/// The content parts AFTER a promoted multiline block on the same line
+/// (`{cond:\n…}` followed by ` text <> …`): everything past the promoted
+/// `INLINE_LOGIC` node, lowered like `lower_content_node_children`.
+fn lower_trailing_parts(
+    mc: &ast::MixedContent,
+    il: &ast::InlineLogic,
+    scope: &LowerScope,
+    sink: &mut impl LowerSink,
+) -> Vec<ContentPart> {
+    let il_syntax = il.syntax().clone();
+    let mut past_promoted = false;
+    let mut trailing_parts = Vec::new();
+    // Issue #3507: whitespace trivia between an inline construct and
+    // `<>` — see `helpers::push_glue`.
+    let mut ws_before = false;
+    for child in mc.syntax().children_with_tokens() {
+        if let rowan::NodeOrToken::Node(ref child_node) = child
+            && *child_node == il_syntax
+        {
+            past_promoted = true;
+            continue;
+        }
+        if !past_promoted {
+            continue;
+        }
+        let rowan::NodeOrToken::Node(child_node) = child else {
+            ws_before = child.kind() == brink_syntax::SyntaxKind::WHITESPACE;
+            continue;
+        };
+        let ws_before_this = std::mem::take(&mut ws_before);
+        {
+            match child_node.kind() {
+                brink_syntax::SyntaxKind::TEXT => {
+                    let text = child_node.text().to_string();
+                    if !text.is_empty() {
+                        trailing_parts.push(ContentPart::Text(text));
+                    }
+                }
+                brink_syntax::SyntaxKind::GLUE_NODE => {
+                    super::helpers::push_glue(&mut trailing_parts, ws_before_this);
+                }
+                brink_syntax::SyntaxKind::ESCAPE => {
+                    let text = child_node.text().to_string();
+                    if text.len() > 1 {
+                        trailing_parts.push(ContentPart::Text(text[1..].to_string()));
+                    }
+                }
+                brink_syntax::SyntaxKind::INLINE_LOGIC => {
+                    if let Some(inline) = ast::InlineLogic::cast(child_node) {
+                        lower_inline_logic_into_parts(&inline, &mut trailing_parts, scope, sink);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    trailing_parts
 }

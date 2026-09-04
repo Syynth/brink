@@ -5383,6 +5383,7 @@ mod tests {
                             name: "float".to_string(),
                             range: range(12, 17),
                         }),
+                        synthetic: false,
                     }),
                     BlockStmt::Return(brink_ir::Return {
                         ptr: None,
