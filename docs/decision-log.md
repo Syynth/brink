@@ -5155,3 +5155,41 @@
 - **SCOPE:** small
 - **WHAT:** `?` and `!?` now return `false` / `true` whenever either list operand is empty, matching ink's `InkList.Contains` (which short-circuits on an empty list on either side) instead of the vacuous subset test that made `l ? ()` `true`. Found by the lists tier of the program generator on its first run (`~ l -= (l ^ (l ^ l))` then `{(l !? l)}`). A compile-and-play regression test pins all six empty/non-empty combinations for both operators against inkjs; the oracle ratchet is unchanged at 5624.
 - **WHY:** The corpus never asks whether a list contains nothing; the generator, which empties lists by arithmetic, does. The reference's answer is a deliberate special case, not a mathematical accident, so brink follows it exactly.
+
+## Ink is a full peer surface, not a compatibility floor
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** project direction — `CLAUDE.md` ("What we're building", "Current state", "Workflows")
+- **SCOPE:** architectural
+- **SUPERSEDES (in part):** "Oracle conformance is no longer the core metric" (2026-08-07). That ruling's core stands: **the ratchet percentage is not the measure of progress**, and a number going up is not a plan. What is superseded is its *surface* half — the framing of `.ink` as "a maintained floor, not the goal", and of the residual mismatches as a compat subset the native surface had outgrown.
+- **WHAT:** `.ink` and `.brink` are peers. Both are first-class ways to author for brink, held to the same standard, and the maintainer's own initial use case is as much strict ink as native. The oracle ratchet keeps its standing as a CI-enforced regression floor — never down, unexpected movement in either direction is stop-and-report — but the open divergences behind it are now **defects in a peer surface**, each one a story an author cannot write, rather than an acceptable residue.
+- **WHY:** The 2026-08-07 framing was written when native was the only surface being actively grown, and it correctly demoted the ratchet *number*. It also, incidentally, demoted the *surface* — which no longer matches what the project is for. The two demotions are separable, and only the first was intended to last.
+- **CONSEQUENCE:** ink-surface conformance is a driving track, not opportunistic maintenance. It is driven by root cause — the `brink-gen` generator and its inkjs differential find the gaps, the corpus pins them — and not by the ratchet number, which remains a floor rather than a target.
+
+## A discovered conformance gap gets a corpus repro first
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `tests/tier4-generated/`, `scripts/promote-generated.mjs` — `CLAUDE.md` "Conformance gaps"
+- **SCOPE:** process
+- **WHAT:** When a conformance gap is discovered, **the first action is a minimal repro in the corpus** — before the root-cause analysis, before the fix, before the issue text is finished. Minimise the case, promote it with `pnpm promote:generated`, let the tier carry it. A gap not yet fixed is promoted with `--expected-mismatch` and its issue number. This applies however the gap was found: the generator's differential, a corpus sweep, a bug report, or a shape tripped over by hand.
+- **WHY:** The 8-item generator plan worked — it found real divergences at a good rate — but the fixes and the issues were the artifacts, and the *cases* lived only in the differential's transient output. A gap found and then fixed left nothing behind that would notice it coming back; a gap found and not yet fixed left nothing behind at all. The generator is a search, not a suite: what it finds only becomes durable when a case is checked in.
+- **BOTH WAYS:** the tier checks a case against its declared expectation in both directions, so an `expected_mismatch` case that starts matching is a **failure**. That is deliberate — it is how a gap closed as a side effect of unrelated work gets noticed instead of silently persisting as a stale flag. Backfilled for every gap found this session in #3543 (16 cases, `GENERATED_CASE_COUNT` 4 → 20).
+
+## inkjs is trusted as the reference; `dotnet` is not vendored
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `tools/inkjs-oracle/` — `CLAUDE.md` "Trust hierarchy"
+- **SCOPE:** moderate
+- **WHAT:** Where brink and inkjs disagree, treat **inkjs as right and brink as the defect**, and open the issue. The alternative — making the C# runtime runnable in a cloud session by vendoring `dotnet` and the reference implementation — was considered and **declined**: not worth the toolchain weight and the licensing care, given that `tools/inkjs-oracle/` already reproduces every checked-in golden with `KNOWN_DIVERGENCES` empty, which CI's `inkjs-sanction` job keeps true.
+- **WHY:** The trust hierarchy's two highest ranks are exactly the two a cloud session cannot open, which left every cloud-session semantics question either blocked on the maintainer or answered by guessing from a lower rank. The sanction measured the stand-in's fidelity rather than assuming it — 414/414 cases, no divergences — which is enough to promote "evidence for a ruling" to "the answer, absent a specific reason to doubt it".
+- **NOT an infallibility claim:** a *specific* case where inkjs looks wrong is still worth surfacing for a maintainer ruling, and the C# runtime remains the tie-breaker in principle. It is simply not something to go install.
+
+## Container path hashes stay ink-compatible on both surfaces (#3538)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** compiler — container path construction, shuffle seeding
+- **SCOPE:** moderate
+- **WHAT:** brink computes **ink-compatible container path hashes**, for native as well as ink. A shuffle's seed in ink is `sequenceHash + loopIndex + storySeed`, where `sequenceHash` is the sum of the character codes of the container's *path string*; brink seeds from its own container `path_hash`, which is a different function of a different path scheme, so the two pick different permutations for the same story. The fix is to compute a path string compatible with inklecate's scheme and hash it ink's way.
+- **WHAT IT IS NOT:** the compiler's *shape* is not dictated by this. brink keeps its own container model, ids and layout; what it gains is the ability to *compute* a compatible path on demand for the purposes that need one. The constraint is on a derived value, not on the structure it is derived from.
+- **NATIVE TOO, deliberately:** the initial instinct was to let native skip the compatibility computation, since nothing in native needs to agree with inklecate. Rejected on **respelling**: `brink-respell` re-emits ink as `.brink`, so a respelled story is expected to behave like its original — and if the two surfaces seeded shuffles differently, respelling would silently change which alternative a shuffle picks. A surface-dependent seed is a surface-dependent story.
+- **WHY it matters now:** this is the bulk of the open ratchet gap, not a corner. Measured on the current corpus: 1,000 of 1,012 failing episodes are one story (`dream_on`), and 831 of its ~1,489 mismatch entries are `{~...}` shuffles. Closing it closes most of the distance.
