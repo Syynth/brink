@@ -47,6 +47,21 @@ Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/s
 
 `RATCHET_EPISODE_COUNT` in `oracle_snapshots.rs` is the minimum number of passing episodes. It only goes up — the test fails if the pass count drops below it. If a correct fix reveals previously-false passes, the ratchet can be lowered with an explanation.
 
+## The inkjs sanction
+
+The C# oracle needs `dotnet`, which cloud sessions do not have. `tools/inkjs-oracle` is the same crawler ported onto inkjs 2.4.0 (with .NET's `System.Random` installed in place of inkjs's own generator, so shuffles and `RANDOM` draw the reference's sequence). It never writes next to a golden — its job is to be *checked against* them:
+
+```sh
+cd tools/inkjs-oracle && npm ci && node --test && cd ../..
+# every C# golden in the corpus, replayed through inkjs, must match
+BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
+BRINK_CASE=shuffle BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
+# generated stories: brink vs inkjs (the nightly lane; PROPTEST_CASES raises the count)
+BRINK_INKJS_ORACLE=1 cargo test -p brink-gen --test inkjs_differential -- --nocapture
+```
+
+The sanction compares the raw episode JSON after two normalisations (the C# tool's error-message wrapper and source paths; double- vs single-precision float printing — see `brink_test_harness::inkjs`'s header for the measurement behind each). `KNOWN_DIVERGENCES` in `inkjs_sanction.rs` lists any case where the two reference runtimes genuinely disagree, with a reason, checked both ways like `expected_mismatch`; it is empty. A one-off comparison of a single story is `node tools/inkjs-oracle/oracle.mjs path/to/story.ink --output-dir /tmp/out`, then `diff -r` against the case's `oracle/`.
+
 ## GitHub corpus
 
 The `tests_github/` directory contains real-world `.ink` files from open-source projects. These are used for parser smoke tests (zero panics on any input) and lossless roundtrip validation.
