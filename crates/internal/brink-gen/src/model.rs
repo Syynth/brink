@@ -67,7 +67,12 @@
 //!     ([`Exit::TunnelReturn`]), `-> END`, or a divert to another tunnel
 //!     flow under rules 1–2; never `-> DONE`. A tunnel call from flow code
 //!     may name any tunnel flow; from inside tunnel knot `i` only a tunnel
-//!     knot `> i`, so tunnel calls form a DAG and every call returns.
+//!     knot `> i`, so tunnel calls form a DAG and every call returns. A
+//!     tunnel's choices are all once-only (`*`): a tunnel flow is entered
+//!     once per call site, and a sticky choice re-offered on every entry
+//!     made the choice tree of a story with a few call sites too wide for
+//!     the smoke lane's exhaustive explorer (finite, but 4096 episodes were
+//!     not enough); once-only choices are consumed across entries.
 //! 11. A **thread** knot is entered only by `<- t` ([`Item::Thread`]) from a
 //!     plain knot's weave (never from a tunnel, a thread, or a function).
 //!     Its weaves leave by `-> DONE`, `-> END`, or a divert to another thread
@@ -884,6 +889,11 @@ fn validate_weave(
             for c in choices {
                 if c.label.is_empty() {
                     return Err(Invalid(format!("empty choice label in flow {flow}")));
+                }
+                if c.sticky && ctx.kind == FlowKind::Tunnel {
+                    return Err(Invalid(format!(
+                        "sticky choice inside tunnel flow {flow} (rule 10)"
+                    )));
                 }
                 if let Some(cond) = &c.condition {
                     expect_ty(cond, Ty::Bool, &scope, "choice condition")?;

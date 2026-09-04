@@ -854,16 +854,20 @@ fn decode_weave(
             gather,
         } => {
             let has_gather = gather.is_some();
+            // Rule 10: a tunnel's choices are once-only, so re-entry through
+            // several call sites cannot re-offer them.
+            let in_tunnel = site.kind == FlowKind::Tunnel;
             let decoded: Vec<Choice> = choices
                 .iter()
                 .map(|c| {
+                    let sticky = c.sticky && !in_tunnel;
                     let body_site = Site {
-                        may_go_back: site.may_go_back || !c.sticky,
+                        may_go_back: site.may_go_back || !sticky,
                         may_fall_through: has_gather,
                         ..site
                     };
                     Choice {
-                        sticky: c.sticky,
+                        sticky,
                         condition: c.condition.as_ref().map(|e| decode_expr(e, Ty::Bool, &env)),
                         label: c.label.clone(),
                         body: decode_weave(&c.body, body_site, table, &env, temp_counter),
