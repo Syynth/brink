@@ -79,6 +79,16 @@
 //!     flow under rules 1–2; never `->->`. Tunnel calls are legal inside
 //!     threads (any tunnel).
 //!
+//! # Lists
+//!
+//! 12. A `LIST` declaration is a global of type [`Ty::List`] (its own index)
+//!     whose values are subsets of its items; item names are unique across
+//!     the story. A list literal, an item, `+`/`-` (union/difference), `^`
+//!     (intersection), `LIST_MIN`/`LIST_MAX`/`LIST_ALL`/`LIST_INVERT` are
+//!     values of that list's type; `?`/`!?` yield bools; `LIST_COUNT`
+//!     yields an int; `==`/`!=` compare two values of the same list type.
+//!     `+=`/`-=` write through a list target like an int one.
+//!
 //! [`validate`] checks every rule plus name uniqueness and reference
 //! resolution; the strategies in [`crate::strategy`] construct stories that
 //! satisfy them, and the crate's smoke property asserts every generated
@@ -98,6 +108,20 @@ pub struct Story {
     /// Functions, printed after the knots. Function `i` may call only
     /// functions `< i` (rule 8).
     pub functions: Vec<Function>,
+    /// `LIST` declarations, printed after the `VAR`s (rule 12).
+    pub lists: Vec<ListDecl>,
+}
+
+/// `LIST name = a, (b), c` — a global whose values are subsets of `items`;
+/// `initial` names the items active at start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListDecl {
+    /// Unique across the story.
+    pub name: String,
+    /// Unique across the story (ink resolves items globally). Never empty.
+    pub items: Vec<String>,
+    /// Indices into `items`, ascending, no repeats.
+    pub initial: Vec<usize>,
 }
 
 /// A function: `=== function name(params) ===`, a body of items, and an
@@ -166,6 +190,8 @@ pub enum Ty {
     Int,
     Bool,
     Str,
+    /// A value of the `LIST` at this index of [`Story::lists`] (rule 12).
+    List(usize),
 }
 
 /// A literal value.
@@ -175,6 +201,12 @@ pub enum Literal {
     Bool(bool),
     /// Printable text with no quote or ink-significant characters.
     Str(String),
+    /// `(a, b)` or `()` — item names of the list at `list`, in declaration
+    /// order, no repeats (rule 12).
+    List {
+        list: usize,
+        items: Vec<String>,
+    },
 }
 
 impl Literal {
@@ -183,6 +215,7 @@ impl Literal {
             Self::Int(_) => Ty::Int,
             Self::Bool(_) => Ty::Bool,
             Self::Str(_) => Ty::Str,
+            Self::List { list, .. } => Ty::List(*list),
         }
     }
 }
@@ -211,6 +244,27 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    /// `?` — the left list contains every item of the right (rule 12).
+    Has,
+    /// `!?` — the left list contains none of the right's items.
+    Hasnt,
+    /// `^` — intersection.
+    Intersect,
+}
+
+/// A list built-in taking one list argument (rule 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListFn {
+    /// `LIST_COUNT` → int.
+    Count,
+    /// `LIST_MIN` → the argument's list type.
+    Min,
+    /// `LIST_MAX`.
+    Max,
+    /// `LIST_ALL`.
+    All,
+    /// `LIST_INVERT`.
+    Invert,
 }
 
 /// A typed expression.
@@ -227,6 +281,13 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    /// A list item by name — a one-item value of its list's type (rule 12).
+    Item {
+        list: usize,
+        name: String,
+    },
+    /// `LIST_COUNT(x)` and friends (rule 12).
+    ListFn(ListFn, Box<Expr>),
 }
 
 /// How an assignment writes its target.
@@ -422,9 +483,14 @@ impl Function {
     /// `vars` — the names visible at the return site: globals, parameters
     /// and the body's temps — and `funcs`, the functions callable from
     /// this one (those declared before it, rule 8).
-    pub fn signature(&self, vars: &[(String, Ty)], funcs: &[FnSig]) -> Result<FnSig, Invalid> {
+    pub fn signature(
+        &self,
+        vars: &[(String, Ty)],
+        funcs: &[FnSig],
+        lists: &[ListDecl],
+    ) -> Result<FnSig, Invalid> {
         let ret = match &self.ret {
-            Some(e) => Some(type_of(e, vars, funcs)?),
+            Some(e) => Some(type_of_with_lists(e, vars, funcs, lists)?),
             None => None,
         };
         Ok(FnSig {
@@ -441,6 +507,7 @@ impl Function {
 struct Scope {
     vars: Vec<(String, Ty)>,
     funcs: Vec<FnSig>,
+    lists: Vec<ListDecl>,
 }
 
 impl Scope {
@@ -460,9 +527,20 @@ impl Scope {
 /// The type of `e` in `scope`, or the rule-5 violation. `funcs` are the
 /// functions callable at this point.
 pub fn type_of(e: &Expr, scope_vars: &[(String, Ty)], funcs: &[FnSig]) -> Result<Ty, Invalid> {
+    type_of_with_lists(e, scope_vars, funcs, &[])
+}
+
+/// [`type_of`] with the story's `LIST` declarations in scope (rule 12).
+pub fn type_of_with_lists(
+    e: &Expr,
+    scope_vars: &[(String, Ty)],
+    funcs: &[FnSig],
+    lists: &[ListDecl],
+) -> Result<Ty, Invalid> {
     let scope = Scope {
         vars: scope_vars.to_vec(),
         funcs: funcs.to_vec(),
+        lists: lists.to_vec(),
     };
     type_in(e, &scope)
 }
@@ -512,6 +590,28 @@ fn check_call(name: &str, args: &[Expr], scope: &Scope) -> Result<Option<Ty>, In
 
 fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
     match e {
+        Expr::Lit(Literal::List { list, items }) => {
+            let Some(decl) = scope.lists.get(*list) else {
+                return Err(Invalid(format!("list literal of unknown list {list}")));
+            };
+            let mut last: Option<usize> = None;
+            for item in items {
+                let Some(pos) = decl.items.iter().position(|i| i == item) else {
+                    return Err(Invalid(format!(
+                        "`{item}` is not an item of `{}`",
+                        decl.name
+                    )));
+                };
+                if last.is_some_and(|l| pos <= l) {
+                    return Err(Invalid(format!(
+                        "list literal of `{}` out of order",
+                        decl.name
+                    )));
+                }
+                last = Some(pos);
+            }
+            Ok(Ty::List(*list))
+        }
         Expr::Lit(l) => Ok(l.ty()),
         Expr::Var(name) => scope
             .lookup(name)
@@ -526,58 +626,108 @@ fn type_in(e: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
         },
         Expr::Call { name, args } => check_call(name, args, scope)?
             .ok_or_else(|| Invalid(format!("void function `{name}` used as a value"))),
-        Expr::Bin(l, op, r) => {
-            let lt = type_in(l, scope)?;
-            let rt = type_in(r, scope)?;
-            match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    if lt == Ty::Int && rt == Ty::Int {
-                        Ok(Ty::Int)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::Mod => {
-                    if lt != Ty::Int {
-                        return Err(Invalid(format!("mod on {lt:?}")));
-                    }
-                    match r.as_ref() {
-                        Expr::Lit(Literal::Int(n)) if *n != 0 => Ok(Ty::Int),
-                        _ => Err(Invalid("mod divisor must be a nonzero int literal".into())),
-                    }
-                }
-                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                    if lt == Ty::Int && rt == Ty::Int {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::Eq | BinOp::Ne => {
-                    if lt == rt {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
-                BinOp::And | BinOp::Or => {
-                    if lt == Ty::Bool && rt == Ty::Bool {
-                        Ok(Ty::Bool)
-                    } else {
-                        Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
-                    }
-                }
+        Expr::Item { list, name } => {
+            let Some(decl) = scope.lists.get(*list) else {
+                return Err(Invalid(format!("item `{name}` of unknown list {list}")));
+            };
+            if decl.items.iter().any(|i| i == name) {
+                Ok(Ty::List(*list))
+            } else {
+                Err(Invalid(format!(
+                    "`{name}` is not an item of `{}`",
+                    decl.name
+                )))
+            }
+        }
+        Expr::ListFn(f, arg) => match (f, type_in(arg, scope)?) {
+            (ListFn::Count, Ty::List(_)) => Ok(Ty::Int),
+            (_, t @ Ty::List(_)) => Ok(t),
+            (f, t) => Err(Invalid(format!("{f:?} of {t:?}"))),
+        },
+        Expr::Bin(l, op, r) => type_bin(l, *op, r, scope),
+    }
+}
+
+/// The type of a binary expression (rules 5 and 12).
+fn type_bin(l: &Expr, op: BinOp, r: &Expr, scope: &Scope) -> Result<Ty, Invalid> {
+    let lt = type_in(l, scope)?;
+    let rt = type_in(r, scope)?;
+    match op {
+        BinOp::Add | BinOp::Sub => {
+            if (lt == Ty::Int && rt == Ty::Int) || (matches!(lt, Ty::List(_)) && lt == rt) {
+                Ok(lt)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Mul => {
+            if lt == Ty::Int && rt == Ty::Int {
+                Ok(Ty::Int)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Intersect => {
+            if matches!(lt, Ty::List(_)) && lt == rt {
+                Ok(lt)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Has | BinOp::Hasnt => {
+            if matches!(lt, Ty::List(_)) && lt == rt {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Mod => {
+            if lt != Ty::Int {
+                return Err(Invalid(format!("mod on {lt:?}")));
+            }
+            match r {
+                Expr::Lit(Literal::Int(n)) if *n != 0 => Ok(Ty::Int),
+                _ => Err(Invalid("mod divisor must be a nonzero int literal".into())),
+            }
+        }
+        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+            if lt == Ty::Int && rt == Ty::Int {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::Eq | BinOp::Ne => {
+            if lt == rt {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
+            }
+        }
+        BinOp::And | BinOp::Or => {
+            if lt == Ty::Bool && rt == Ty::Bool {
+                Ok(Ty::Bool)
+            } else {
+                Err(Invalid(format!("{op:?} on {lt:?} and {rt:?}")))
             }
         }
     }
 }
 
-/// Check every rule in the module doc. `Ok(())` means the story is a
-/// well-formed, terminating, well-typed program.
-pub fn validate(story: &Story) -> Result<(), Invalid> {
-    if story.knots.is_empty() {
-        return Err(Invalid("story has no knots".into()));
-    }
+/// A `VAR` initializer: a list literal must name items of its list, in
+/// order (rule 12).
+fn validate_literal(story: &Story, l: &Literal) -> Result<(), Invalid> {
+    let scope = Scope {
+        vars: Vec::new(),
+        funcs: Vec::new(),
+        lists: story.lists.clone(),
+    };
+    type_in(&Expr::Lit(l.clone()), &scope).map(|_| ())
+}
+
+/// Name uniqueness across `VAR`s, knots, stitches, functions, lists and
+/// list items, plus every `VAR` initializer (rule 12).
+fn validate_names(story: &Story) -> Result<(), Invalid> {
     let mut names = BTreeSet::new();
     for v in &story.vars {
         if !names.insert(v.name.as_str()) {
@@ -603,10 +753,48 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
             return Err(Invalid(format!("duplicate name `{}`", f.name)));
         }
     }
+    for l in &story.lists {
+        if !names.insert(l.name.as_str()) {
+            return Err(Invalid(format!("duplicate name `{}`", l.name)));
+        }
+        if l.items.is_empty() {
+            return Err(Invalid(format!("LIST `{}` has no items", l.name)));
+        }
+        for item in &l.items {
+            if !names.insert(item.as_str()) {
+                return Err(Invalid(format!("duplicate name `{item}`")));
+            }
+        }
+        if l.initial.windows(2).any(|w| w[0] >= w[1])
+            || l.initial.iter().any(|&i| i >= l.items.len())
+        {
+            return Err(Invalid(format!("bad initial items on LIST `{}`", l.name)));
+        }
+    }
+    for v in &story.vars {
+        validate_literal(story, &v.init)?;
+    }
+    Ok(())
+}
+
+/// Check every rule in the module doc. `Ok(())` means the story is a
+/// well-formed, terminating, well-typed program.
+pub fn validate(story: &Story) -> Result<(), Invalid> {
+    if story.knots.is_empty() {
+        return Err(Invalid("story has no knots".into()));
+    }
+    validate_names(story)?;
     let global_vars: Vec<(String, Ty)> = story
         .vars
         .iter()
         .map(|v| (v.name.clone(), v.init.ty()))
+        .chain(
+            story
+                .lists
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.name.clone(), Ty::List(i))),
+        )
         .collect();
     // Functions: each body sees globals + its params and may call only
     // earlier functions (rule 8), so signatures are checked in order.
@@ -627,17 +815,19 @@ pub fn validate(story: &Story) -> Result<(), Invalid> {
         let mut scope = Scope {
             vars: global_vars.clone(),
             funcs: sigs.clone(),
+            lists: story.lists.clone(),
         };
         scope
             .vars
             .extend(f.params.iter().map(|p| (p.name.clone(), p.ty)));
         validate_items(story, &f.body, &mut scope, false, usize::MAX - i, None)?;
-        let sig = f.signature(&scope.vars, &sigs)?;
+        let sig = f.signature(&scope.vars, &sigs, &story.lists)?;
         sigs.push(sig);
     }
     let globals = Scope {
         vars: global_vars,
         funcs: sigs,
+        lists: story.lists.clone(),
     };
     if story.knots[0].kind != FlowKind::Knot {
         return Err(Invalid("the entry knot must be a plain knot".into()));
@@ -800,7 +990,7 @@ fn validate_items(
                     return Err(Invalid(format!("assignment to unknown `{target}`")));
                 };
                 expect_ty(value, tt, scope, "assigned value")?;
-                if *op != AssignOp::Set && tt != Ty::Int {
+                if *op != AssignOp::Set && tt != Ty::Int && !matches!(tt, Ty::List(_)) {
                     return Err(Invalid(format!("{op:?} on a {tt:?} target")));
                 }
             }
@@ -934,6 +1124,7 @@ mod tests {
     fn two_knots() -> Story {
         Story {
             functions: vec![],
+            lists: vec![],
             vars: vec![VarDecl {
                 name: "n".into(),
                 init: Literal::Int(0),

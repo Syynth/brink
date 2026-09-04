@@ -228,6 +228,22 @@ contiguous range the decoder resolves raw exits within. `Profile` gains
 invisible fallback merged ahead of the main flow's choices by a thread),
 fixed with the tier.
 
+**Status (2026-09-04, lists tier landed).** `Story::lists` holds
+`LIST name = a, (b), c` declarations; each is a global of its own
+`Ty::List(i)` whose values are subsets of its items, item names unique
+across the story (`li{i}_{j}`, so no item can collide with a list, knot,
+var or function name). Expressions: list literals `(a, b)`, single
+items, `+`/`-` (union/difference, the right operand an item half the
+time), `^`, `?`/`!?` → bool, `LIST_COUNT` → int, `LIST_MIN`/`LIST_MAX`/
+`LIST_ALL`/`LIST_INVERT`; `+=`/`-=` write through a list target;
+`==`/`!=` compare same-typed values; temps and function parameters may
+be list-typed, `VAR`s stay int/bool/str. An empty list is reachable only
+through operations (a literal is never `()`), which is where ink's
+empty-list spelling gets exercised. `Profile` gains `max_lists` (1) and
+`max_list_items` (4), 0 lists in `STRUCTURE`/`RESPELLABLE`; the respell
+property treats `LIST` like `VAR` under #3517 (a host-readable global
+respelled private).
+
 ## 8. Not covered
 
 - Native generation and the respell route are sequenced last (§7);
