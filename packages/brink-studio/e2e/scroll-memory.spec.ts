@@ -35,6 +35,13 @@ const scrollTop = (page: Page): Promise<number> =>
   page.evaluate(() => document.querySelector(".cm-scroller")?.scrollTop ?? -1);
 
 test.describe("scroll memory", () => {
+  // Each case opens files repeatedly and waits for the editor to settle
+  // between switches; the stability case does four cycles. That overruns
+  // the 15 s default on CI's runners (measured: it timed out there while
+  // finishing in ~8 s locally), so the budget is per-describe rather than
+  // per-assertion.
+  test.describe.configure({ timeout: 90_000 });
+
   test.beforeEach(async ({ page }) => {
     await page.goto("/?fixture=perf");
     await page.waitForSelector(".cm-content", { timeout: 60_000 });
