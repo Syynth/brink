@@ -5155,3 +5155,11 @@
 - **SCOPE:** small
 - **WHAT:** `?` and `!?` now return `false` / `true` whenever either list operand is empty, matching ink's `InkList.Contains` (which short-circuits on an empty list on either side) instead of the vacuous subset test that made `l ? ()` `true`. Found by the lists tier of the program generator on its first run (`~ l -= (l ^ (l ^ l))` then `{(l !? l)}`). A compile-and-play regression test pins all six empty/non-empty combinations for both operators against inkjs; the oracle ratchet is unchanged at 5624.
 - **WHY:** The corpus never asks whether a list contains nothing; the generator, which empties lists by arithmetic, does. The reference's answer is a deliberate special case, not a mathematical accident, so brink follows it exactly.
+
+## In-text chips are a sufficient widget bar for a native editor
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** cross-system — GPUI native desktop evaluation (`spikes/gpui-desktop/`, `EDITOR-SWEEP.md`)
+- **SCOPE:** architectural (scopes a possible future port; nothing is committed to yet)
+- **WHAT:** For the purpose of judging whether a GPUI-native editor could host brink's authoring surfaces, the widget capability proven in the spike — an **in-text chip**: text spliced into the shaped line, styled with its own run, able to draw its own content (a painted quad at the chip's own bounds), clickable with the click consumed rather than moving the caret — is **good enough**. A *nested element* inside a line (one with its own layout and children, e.g. an editable input mid-line) is explicitly NOT required.
+- **WHY:** The surfaces that motivated the question are argument widgets and the colour picker, and both decompose into a chip plus a popover: the chip carries the affordance and its drawing, the popover carries the editing. GPUI does popovers natively. Holding out for a full nested-view widget would price in the hardest part of a CodeMirror `WidgetType` for a capability the authoring surfaces do not actually need. This bounds the editor question for any future port: the fork must carry inlays and chips, not a general in-line view system.
