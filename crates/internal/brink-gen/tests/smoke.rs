@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use brink_compiler::Severity;
-use brink_gen::{arb_story, print_ink};
+use brink_gen::{Profile, arb_story, arb_story_with, print_ink};
 use brink_test_harness::{ExploreConfig, Outcome, explore};
 use proptest::prelude::*;
 
@@ -112,8 +112,13 @@ proptest! {
         }
     }
 
+    /// `Profile::EXHAUSTIBLE`, not the default: the default bounds a
+    /// story's size but not its choice tree, and a tree of tens of
+    /// thousands of paths cannot be walked to the end per case (see that
+    /// constant's own doc). Every construction rule this property checks
+    /// is still exercised — the tree is flatter, not simpler.
     #[test]
-    fn explores_to_termination(story in arb_story()) {
+    fn explores_to_termination(story in arb_story_with(Profile::EXHAUSTIBLE)) {
         let src = print_ink(&story);
         let out = compile(&src)?;
         let (program, line_tables) = brink_runtime::link(&out.data)

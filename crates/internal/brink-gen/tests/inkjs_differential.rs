@@ -72,7 +72,18 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // list interpolation): ink's glue reaches across the blank line to
     // join the lines either side of it, brink's stops at it.
     ("#3535", glue_and_a_possibly_empty_line),
+    // A shuffle sequence: its seed is the sequence container's path hash,
+    // and brink's container paths are not inklecate's, so the two pick
+    // different permutations.
+    ("#3538", uses_a_shuffle),
 ];
+
+/// A `{~…}` shuffle anywhere in the story (#3538). Predates this tier:
+/// `tests/tier2/conditional/shuffle` is 0/1 against the C# oracle and
+/// `tests/tier2/sequences/I107-shuffle-stack-muddying` 0/2.
+fn uses_a_shuffle(src: &str) -> bool {
+    src.contains("{~")
+}
 
 /// A story that both uses glue and has a line made only of `{…}` groups
 /// while a `LIST` exists to make those groups render empty — a list value
@@ -246,7 +257,26 @@ const EXPLORE: ExploreConfig = ExploreConfig {
 
 fn render(story: &brink_gen::Story) -> Result<(), TestCaseError> {
     let src = print_ink(story);
-    match compare(&src) {
+    // A panic anywhere in the comparison — the compiler, the explorer, the
+    // oracle bridge — is reported with the story that caused it. proptest
+    // catches the unwind either way, but its report carries only the
+    // shrunken `Story` debug dump, and the `.ink` is what anyone
+    // reproducing it actually needs.
+    let compared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compare(&src)));
+    let compared = match compared {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("<non-string panic payload>");
+            return Err(TestCaseError::fail(format!(
+                "panic while comparing: {msg}\n--- source ---\n{src}"
+            )));
+        }
+    };
+    match compared {
         Ok(()) => Ok(()),
         Err(e) => {
             let known: Vec<&str> = KNOWN_DIVERGENCES
