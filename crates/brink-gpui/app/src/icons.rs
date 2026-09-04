@@ -39,11 +39,11 @@ pub const FILE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 /// 2026-08-23 — filled = collapsed over content, outline = expanded or leaf).
 pub const FILE_FILLED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="#000" stroke="#000" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>"##;
 
-/// A draft — the same drop drawn provisionally (#3145). Unused here: a
-/// draft is `matches([project] drafts globs) && !reachable_from_entry`, and
-/// the spike does not do glob matching. Kept so the ported icon language is
-/// complete rather than silently missing a state.
-#[expect(dead_code, reason = "the drafts glob half is out of the spike's scope")]
+/// A draft — the same drop drawn provisionally (#3145): a file matching a
+/// `[project] drafts` glob that the entry does not reach ("reachability
+/// wins", 2026-08-27). Live now that `brink.toml` goes through the
+/// session-level `apply_project_config` and the compile closure is
+/// established at open; the spike could draw neither half.
 pub const FILE_DRAFT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#000" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="14 11"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>"##;
 
 /// The entry file, collapsed: the brand mark — the drop with the divert

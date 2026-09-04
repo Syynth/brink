@@ -43,7 +43,32 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::{Shared, icons};
+use crate::icons;
+use crate::project::{Project, ProjectEvent};
+
+/// One knot (with its stitches) for Structure mode — the worker's
+/// [`brink_gpui_model::query::Symbol`] with offsets widened to the `usize`
+/// the row model uses.
+#[derive(Clone, Debug)]
+pub struct SymbolNode {
+    pub name: String,
+    pub start: usize,
+    pub full_start: usize,
+    pub full_end: usize,
+    pub is_function: bool,
+    pub children: Vec<SymbolNode>,
+}
+
+fn convert_symbol(symbol: &brink_gpui_model::query::Symbol) -> SymbolNode {
+    SymbolNode {
+        name: symbol.name.clone(),
+        start: symbol.start as usize,
+        full_start: symbol.full_start as usize,
+        full_end: symbol.full_end as usize,
+        is_function: symbol.is_function,
+        children: symbol.children.iter().map(convert_symbol).collect(),
+    }
+}
 
 // ── Metrics, from `studio-ui/src/styles/binder.css` ──────────────────
 
@@ -94,6 +119,9 @@ pub struct Row {
     pub expandable: bool,
     pub expanded: bool,
     pub entry: bool,
+    /// Matched a `[project] drafts` glob and is outside the compile closure
+    /// ("reachability wins", 2026-08-27). Drawn dashed.
+    pub draft: bool,
     pub dimmed: bool,
     pub is_function: bool,
     pub marks: Marks,
@@ -226,7 +254,18 @@ impl Child {
 // ── The view ─────────────────────────────────────────────────────────
 
 pub struct Binder {
-    project: Shared,
+    project: Entity<Project>,
+    /// Per-file knots and stitches, filled asynchronously.
+    ///
+    /// Symbols are a per-file query, not part of the analysis broadcast:
+    /// shipping them for every file on every keystroke would be O(project)
+    /// for the sake of rows that are collapsed. Structure mode requests the
+    /// files it is about to draw and renders whatever has landed, so a first
+    /// expand shows the file row immediately and its knots a moment later
+    /// rather than blocking the frame.
+    symbols: HashMap<String, Vec<SymbolNode>>,
+    /// Requests in flight, so a rebuild during one does not fire a second.
+    pending_symbols: HashSet<String>,
     mode: Mode,
     collapsed: HashSet<SharedString>,
     order: HashMap<String, Vec<String>>,
@@ -248,7 +287,7 @@ pub struct Binder {
 }
 
 impl Binder {
-    pub fn new(project: Shared, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter…"));
         let sub = cx.subscribe(&filter, |this: &mut Self, state, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -256,8 +295,29 @@ impl Binder {
                 this.rebuild(cx);
             }
         });
+        // Observing the project is what replaces the spike's hand-called
+        // `rebuild()` after every mutation: the panel hears that analysis
+        // moved and redraws itself.
+        let watch = cx.subscribe(&project, |this: &mut Self, _, event: &ProjectEvent, cx| {
+            match event {
+                ProjectEvent::Opened { .. } => {
+                    this.symbols.clear();
+                    this.pending_symbols.clear();
+                    this.rebuild(cx);
+                }
+                ProjectEvent::Analyzed => {
+                    // Structure is derived from the analysis that just
+                    // moved, so what is cached is now stale by definition.
+                    this.symbols.clear();
+                    this.rebuild(cx);
+                }
+                ProjectEvent::OpenFailed(_) => {}
+            }
+        });
         let mut this = Self {
             project,
+            symbols: HashMap::new(),
+            pending_symbols: HashSet::new(),
             mode: Mode::Files,
             collapsed: HashSet::new(),
             order: HashMap::new(),
@@ -270,7 +330,7 @@ impl Binder {
             row_menu: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
-            _subs: vec![sub],
+            _subs: vec![sub, watch],
         };
         this.rebuild(cx);
         this
@@ -279,20 +339,30 @@ impl Binder {
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let project = self.project.borrow();
-        let files = project.files.clone();
-        let entry = project.entry.clone();
-        let closure = project.closure();
-        let diagnostics = project.diagnostic_points();
-        let symbols: HashMap<String, Vec<crate::SymbolNode>> = if self.mode == Mode::Structure {
-            files
-                .iter()
-                .map(|path| (path.clone(), project.symbols(path)))
-                .collect()
-        } else {
-            HashMap::new()
+        let (files, entry, closure, diagnostics, drafts) = {
+            let project = self.project.read(cx);
+            (
+                project.files().to_vec(),
+                project.entry().map(str::to_owned),
+                project
+                    .files()
+                    .iter()
+                    .filter(|p| project.in_story(p))
+                    .cloned()
+                    .collect::<HashSet<String>>(),
+                project.diagnostic_points(),
+                project
+                    .files()
+                    .iter()
+                    .filter(|p| project.is_draft(p))
+                    .cloned()
+                    .collect::<HashSet<String>>(),
+            )
         };
-        drop(project);
+        if self.mode == Mode::Structure {
+            self.request_symbols(&files, cx);
+        }
+        let symbols = self.symbols.clone();
 
         let mut file_marks: HashMap<&str, Marks> = HashMap::new();
         for (path, _, is_error) in &diagnostics {
@@ -319,6 +389,7 @@ impl Binder {
             0,
             entry.as_deref(),
             &closure,
+            &drafts,
             &file_marks,
             &symbols,
             &diagnostics,
@@ -355,8 +426,9 @@ impl Binder {
         depth: usize,
         entry: Option<&str>,
         closure: &HashSet<String>,
+        drafts: &HashSet<String>,
         file_marks: &HashMap<&str, Marks>,
-        symbols: &HashMap<String, Vec<crate::SymbolNode>>,
+        symbols: &HashMap<String, Vec<SymbolNode>>,
         diagnostics: &[(String, usize, bool)],
         matches: &dyn Fn(&str, &str) -> bool,
         out: &mut Vec<Row>,
@@ -379,6 +451,7 @@ impl Binder {
                         expandable: true,
                         expanded,
                         entry: false,
+                        draft: false,
                         dimmed: false,
                         is_function: false,
                         marks: Marks::default(),
@@ -391,6 +464,7 @@ impl Binder {
                             depth + 1,
                             entry,
                             closure,
+                            drafts,
                             file_marks,
                             symbols,
                             diagnostics,
@@ -423,6 +497,7 @@ impl Binder {
                         expandable: structure && !file_symbols.is_empty(),
                         expanded,
                         entry: Some(path.as_str()) == entry,
+                        draft: drafts.contains(path.as_str()),
                         // "closure empty means nothing to contradict": before
                         // the first analysis nothing is known to be out of
                         // scope, so no row is dimmed.
@@ -452,6 +527,7 @@ impl Binder {
                             expandable: !knot.children.is_empty(),
                             expanded: knot_expanded,
                             entry: false,
+                            draft: false,
                             dimmed: false,
                             is_function: knot.is_function,
                             marks: symbol_marks(diagnostics, &path, knot.full_start, knot.full_end),
@@ -474,6 +550,7 @@ impl Binder {
                                 expandable: false,
                                 expanded: false,
                                 entry: false,
+                                draft: false,
                                 dimmed: false,
                                 is_function: false,
                                 marks: symbol_marks(
@@ -492,6 +569,34 @@ impl Binder {
     }
 
     // ── Interaction ─────────────────────────────────────────────────
+
+    /// Ask the worker for any expanded file's symbols we do not hold yet.
+    fn request_symbols(&mut self, files: &[String], cx: &mut Context<Self>) {
+        for path in files {
+            if self.symbols.contains_key(path) || self.pending_symbols.contains(path) {
+                continue;
+            }
+            self.pending_symbols.insert(path.clone());
+            let query = self.project.read(cx).query(
+                brink_gpui_model::query::QueryKind::DocumentSymbols { path: path.clone() },
+                cx,
+            );
+            let path = path.clone();
+            cx.spawn(async move |this, cx| {
+                let answer = query.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_symbols.remove(&path);
+                    if let Ok(brink_gpui_model::query::QueryResult::DocumentSymbols(found)) = answer
+                    {
+                        this.symbols
+                            .insert(path, found.iter().map(convert_symbol).collect());
+                        this.rebuild(cx);
+                    }
+                });
+            })
+            .detach();
+        }
+    }
 
     fn toggle(&mut self, key: &SharedString, cx: &mut Context<Self>) {
         if self.collapsed.contains(key) {
@@ -647,6 +752,10 @@ impl Binder {
             RowKind::File => {
                 if row.path.ends_with(".toml") {
                     icons::DOC
+                } else if row.draft {
+                    // Dashed, whether or not the row is selected: being a
+                    // draft is a property of the file, not of the selection.
+                    icons::FILE_DRAFT
                 } else if row.entry {
                     if filled {
                         icons::FILE_ENTRY
@@ -1175,4 +1284,20 @@ fn symbol_marks(
         }
     }
     marks
+}
+
+// ── The Binder as a dock panel ───────────────────────────────────────
+
+impl EventEmitter<gpui_component::dock::PanelEvent> for Binder {}
+
+impl gpui_component::dock::BasePanel for Binder {
+    fn panel_name(&self) -> &'static str {
+        "Binder"
+    }
+}
+
+impl gpui_component::dock::Panel for Binder {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Binder")
+    }
 }

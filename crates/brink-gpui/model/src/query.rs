@@ -21,6 +21,7 @@ pub enum QueryKind {
     Hover { path: String, offset: u32 },
     Completions { path: String, offset: u32 },
     DocumentSymbols { path: String },
+    InlayHints { path: String },
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -31,7 +32,18 @@ pub enum QueryResult {
     Hover(Option<HoverInfo>),
     Completions(Vec<Completion>),
     DocumentSymbols(Vec<Symbol>),
+    InlayHints(Vec<InlayHint>),
     Unavailable,
+}
+
+/// A parameter-name hint, drawn inside the line although the buffer does
+/// not contain it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHint {
+    pub offset: u32,
+    /// Already carries its own `:`; `padding_right` is folded in here so the
+    /// editor does not have to know the convention.
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +93,44 @@ pub(crate) fn answer(session: &brink_ide::session::IdeSession, kind: &QueryKind)
             Some(found) => QueryResult::DocumentSymbols(found),
             None => QueryResult::Unavailable,
         },
+        QueryKind::InlayHints { path } => match inlay_hints(session, path) {
+            Some(found) => QueryResult::InlayHints(found),
+            None => QueryResult::Unavailable,
+        },
     }
+}
+
+fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<InlayHint>> {
+    let id = session.file_id(path)?;
+    let analysis = session.analysis()?;
+    let source = session.source(id)?;
+    let whole = rowan::TextRange::new(
+        rowan::TextSize::from(0),
+        rowan::TextSize::from(u32::try_from(source.len()).unwrap_or(u32::MAX)),
+    );
+    // The native and ink frontends are distinct nominal trees, so the
+    // dispatch is on the file's own language — feeding an ink-parsed root to
+    // the native query would silently reproduce #2280.
+    let hints = if session.is_native(id) {
+        let root = session.syntax_root_native(id)?;
+        brink_ide::inlay_hints::inlay_hints_native(&root, analysis, session.db(), id, whole, None)
+    } else {
+        let root = session.syntax_root(id)?;
+        brink_ide::inlay_hints::inlay_hints(&root, analysis, session.db(), id, whole, None)
+    };
+    Some(
+        hints
+            .into_iter()
+            .map(|h| InlayHint {
+                offset: u32::from(h.offset),
+                label: if h.padding_right {
+                    format!("{} ", h.label)
+                } else {
+                    h.label
+                },
+            })
+            .collect(),
+    )
 }
 
 fn hover(session: &brink_ide::session::IdeSession, path: &str, offset: u32) -> Option<HoverInfo> {

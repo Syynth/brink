@@ -109,6 +109,10 @@ pub struct Analyzed {
     pub kinds: BTreeMap<String, Kinds>,
     /// `[project] drafts` resolved against the compile closure.
     pub drafts: Vec<String>,
+    /// The compile closure — the files the story actually reaches. A file
+    /// the project holds but this omits is on disk and not in the story,
+    /// which absent diagnostics look exactly like, so the Binder says so.
+    pub closure: Vec<String>,
     pub elapsed_ms: f64,
 }
 
@@ -417,6 +421,7 @@ fn analyze(session: &mut IdeSession, revision: u64) -> Analyzed {
         diagnostics,
         kinds,
         drafts: session.draft_paths(),
+        closure: session.compilation_closure_paths(),
         elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
     }
 }
