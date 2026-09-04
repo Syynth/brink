@@ -523,21 +523,32 @@ impl OutputBuffer {
         let mut i = target.len();
         while i > start {
             i -= 1;
-            match &target[i] {
-                OutputPart::Glue => {}
-                OutputPart::Newline | OutputPart::Spring => {
-                    target.remove(i);
+            let trimmable = match &target[i] {
+                // Glue is transparent to the trim (issue #3522), neither
+                // removed nor a stopping point.
+                OutputPart::Glue => continue,
+                OutputPart::Newline | OutputPart::Spring => true,
+                OutputPart::Text(s) => s.trim().is_empty(),
+                OutputPart::LineRef { flags, .. } => {
+                    flags.contains(brink_format::LineFlags::ALL_WS)
                 }
-                OutputPart::Text(s) if s.trim().is_empty() => {
-                    target.remove(i);
-                }
-                OutputPart::LineRef { flags, .. }
-                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
-                {
-                    target.remove(i);
-                }
-                _ => break,
+                // Issue #3536: a value that renders as whitespace — an
+                // empty list, `""`, a `none` — is trimmed exactly like
+                // whitespace text. ink stringifies values into the output
+                // stream as they are pushed, so by the time its
+                // `TrimWhitespaceFromFunctionEnd` runs an empty
+                // interpolation is an inline-whitespace `StringValue`
+                // there; brink resolves values later (the transcript holds
+                // an unresolved `ValueRef`), so the same judgement is made
+                // here from the value itself. A value that renders visibly
+                // still stops the trim.
+                part @ OutputPart::ValueRef(_) => !part.is_visible(),
+                _ => false,
+            };
+            if !trimmable {
+                break;
             }
+            target.remove(i);
         }
     }
 
