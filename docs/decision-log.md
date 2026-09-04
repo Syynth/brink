@@ -574,7 +574,6 @@
 - **WHAT:** Eliminate the LIR planning pass by stamping synthetic container `DefinitionId`s on HIR nodes in a lightweight post-HIR-lowering pass. The LIR lowerer reads pre-assigned IDs directly from HIR nodes instead of re-walking the tree with synchronized counters. This also enables a context split (immutable env / mutable allocators / scoped block state) and trait-based architecture for LIR lowering.
 - **WHY:** The planner/lowerer counter-synchronization coupling has been the biggest source of compiler heartburn. Both passes must walk the HIR in exactly the same order with identical counter logic — if they diverge, container IDs silently mismatch and diverts point to wrong targets. Pushing structural identity upstream means LIR lowering becomes a simple tree walk with no planning pass, no counter coordination, and no scope-path threading for ID derivation.
 
-
 ## bevy-brink loading modes
 - **WHEN:** 2026-04-24
 - **PROJECT:** brink
@@ -582,7 +581,6 @@
 - **SCOPE:** architectural
 - **WHAT:** The Bevy asset integration has two modes. Dev mode loads `.ink` source files; the loader tracks the transitive INCLUDE graph and hot-reloads the compiled program when any file in that graph changes (typical projects go ~3 imports deep). Release mode loads precompiled `.inkb` (bytecode) plus `.inkl` (localized line tables) — no compiler in the shipped binary.
 - **WHY:** Dev ergonomics require tight iteration on ink source with live reload. Release requires fast startup, smaller binaries without the compiler, and swappable localization via the runtime's existing program / line-table split.
-
 
 ## Expose runtime primitives for direct orchestration
 - **WHEN:** 2026-04-24
@@ -4534,7 +4532,6 @@
   of lifted function calls, #3395) can silently reintroduce the bug with
   nothing in CI to catch it.
 
-
 ## Uninitialized `~ temp` reads play, and warn twice
 - **WHEN:** 2026-09-01
 - **PROJECT:** brink
@@ -4779,7 +4776,6 @@
   `sequence-cloned-into-glued-line`,
   `sequence-shared-across-mixed-claim-branches`); ratchet 5619 → 5622.
 
-
 ## Conventions editor: teach-by-example is the design direction
 - **WHEN:** 2026-09-02
 - **PROJECT:** brink
@@ -5003,6 +4999,35 @@
   folding it into the session worker would either tie that download to boot
   or make boot conditional on a feature most consumers never use.
 
+## A gutter's per-line callback never reads a host hook
+- **WHEN:** 2026-09-03
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (`packages/ink-editor/src/play-from-here.ts`,
+  `packages/brink-studio/src/execution-highlights.ts`)
+- **SCOPE:** moderate — a standing contract for every host seam a
+  CodeMirror gutter reads, not just this one
+- **WHAT:** `gutter({ lineMarker })` runs once per visible line, so a host
+  hook must be read once per render and shared across the lines, never
+  called from inside the callback. Host truth reaches a gutter only
+  through an explicit refresh effect, and a refresh dispatches a
+  transaction — so caching a host answer per `EditorState` is exactly
+  "once per render". That cache is only safe while every path that can
+  show a view re-dispatches the refreshes: a host answer that changes
+  while the view is unmounted leaves no transaction behind, and a reused
+  `EditorState` would serve the pre-unmount answer, so mounting must
+  self-serve them (found on this PR's review; the same hole #518 fixed
+  for the overlay). Corollary for the
+  other side of the seam: a host callback must not eagerly evaluate an
+  expensive argument the policy consults on only one branch — pass a
+  thunk (`executionHighlightsFor`'s HIR projection).
+- **WHY:** Measured on #3490: the play gutter's arrow-vs-dot decision
+  called the studio's `getExecutionHighlights` once per visible line, and
+  that hook eagerly pulled the file's HIR projection — 10,045 synchronous
+  whole-document `getHirSpansDoc` wasm calls across a 228-keystroke burst
+  on a 1,125-line file (~38 per keystroke, p50 input latency 48 ms), all
+  of them computing an answer that was `[]` because no session was
+  running. The cost is invisible at review time because the callback
+  itself looks like a cheap lookup; the multiplier lives in CodeMirror.
 
 ## Lift-order hoist: prefix interpolations evaluate into hidden temps before a lifted construct; a direct call keeps display-position capture
 - **WHEN:** 2026-09-04 (implements the 2026-09-02 #3395 ruling, option B)
@@ -5142,6 +5167,16 @@
 - **ALSO:** `Profile::EXHAUSTIBLE` is new, and `tests/smoke.rs`'s exhaustive-exploration property uses it instead of the default. `DEFAULT` bounds a story's size but not its choice tree: one default story measured **39,844 episodes** — the same with and without its sequences, since the DFS branches on choices alone — against the property's 4,096 cap. The profile flattens choice nesting to one level, gives each knot one stitch and drops to three knots; the property's runtime fell from ~60s to ~3s. This is a pre-existing hazard the tier surfaced, not one it caused.
 - **FOUND, NOT FIXED:** #3538 — a shuffle's seed is brink's container path hash, which cannot equal inklecate's path string, so the two pick different permutations. Already visible in the corpus (`tier2/conditional/shuffle` 0/1, `I107-shuffle-stack-muddying` 0/2) and carried as a `KNOWN_DIVERGENCES` predicate. Fixing it means adopting ink's container path scheme for seeding — a maintainer's ruling, not an implementation detail.
 
+## The optimizer is a post-compile `.inkb` transform; pruning is a compiler step (#2336, supersedes 2026-08-06)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** compiler / optimizer — `docs/optimizer-spec.md`, `docs/reachability-prune-spec.md`, `docs/optimizer-catalogue.md`
+- **SCOPE:** architectural
+- **SUPERSEDES (in part):** "LIR optimization stage; reachability prune is its first pass" (2026-08-06). That ruling's SUBSTANCE stands unchanged — the mount stays universal and unconditional, the shipped artifact carries only what the project reaches, mount-on-demand stays rejected, every transform is a pure function with no iteration-order dependence. Its MECHANISM is NOT discarded either: `LIR → passes → LIR` remains the right home for the compiler's own whole-program work, and the reason that ruling gave for wanting it — constant folding and dead-branch elimination otherwise have nowhere to live — still holds for exactly those transforms, which need types, provenance and lowering's invariants and can never move post-compile. What is superseded is only the identification of that stage WITH "the optimizer".
+- **WHAT:** Two things that were one. (1) **Reachability pruning is a compiler emission step**, not an optimizer pass: unconditional, no config, computed over `lir::Program` before codegen. The 2026-08-06 wording — "codegen emits only definitions reachable from the artifact's roots" — already described this. (2) **The optimizer is a post-compile `.inkb` → `.inkb` transform** in a new `brink-opt` crate depending only on `brink-format`. It is a different thing from the compiler's LIR transform layer, not a replacement for it: the two exist side by side, and whether the compiler's side generalises into a pass list now or on its second inhabitant is left open. The boundary between them: the compiler decides what to ship; the optimizer makes what ships cheaper without changing what it does.
+- **WHY:** The LIR placement was chosen when the prune was the only transform in view, and the prune is the one candidate that genuinely wants LIR (it must tell project definitions from mounted ones, and only the compiler always knows — the artifact's `debug_info` is `Option` and absent from release builds). Of the five candidates now catalogued, four operate on things that do not exist at LIR: bytecode (peephole), line tables, the literal and name pools, and — the fact that settled it — effect rows, which `StoryData` ships, so the one pass whose evidence was assumed to be compiler-only works fine on the artifact. The fence is also strictly stronger post-compile: the control is the untouched artifact byte-for-byte, rather than a second compilation that must be proven equivalent through both compile roads.
+- **ALSO:** the move dissolves an asymmetry rather than papering over it. As a LIR stage whose only pass was the mount prune, the optimizer did nothing for an ink program — permanently, by construction — which sat badly with ink as a peer surface. Operating on artifacts, it serves both surfaces equally, and the one native-only transform is now filed where being native-only is unremarkable.
+- **STILL OPEN:** each document carries its own questions — the prune's root set (`use` as a root, whether project definitions are ever pruned, the pruned-name list, id stability) and the optimizer's exposure (whether `brink compile` runs it, whether an optimized artifact is marked, per-pass toggles). The framework document (observable surface, per-pass contracts) stays deliberately deferred until two real passes have pushed on it.
 ## A function's whitespace-rendering value is trimmed at its end (#3536)
 - **WHEN:** 2026-09-04
 - **PROJECT:** brink
@@ -5178,3 +5213,76 @@
 - **SCOPE:** small
 - **WHAT:** `?` and `!?` now return `false` / `true` whenever either list operand is empty, matching ink's `InkList.Contains` (which short-circuits on an empty list on either side) instead of the vacuous subset test that made `l ? ()` `true`. Found by the lists tier of the program generator on its first run (`~ l -= (l ^ (l ^ l))` then `{(l !? l)}`). A compile-and-play regression test pins all six empty/non-empty combinations for both operators against inkjs; the oracle ratchet is unchanged at 5624.
 - **WHY:** The corpus never asks whether a list contains nothing; the generator, which empties lists by arithmetic, does. The reference's answer is a deliberate special case, not a mathematical accident, so brink follows it exactly.
+
+## A shuffle's unpicked list is removed from order-preservingly (#3538, part 1 of 2)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** runtime (`vm::handle_shuffle_with_hash`) — `docs/runtime-spec.md` §"Shuffle algorithm"
+- **SCOPE:** small
+- **WHAT:** The partial Fisher-Yates now removes the picked index with `Vec::remove` rather than `swap_remove`, matching the reference's `unpickedIndices.RemoveAt(chosen)`. `swap_remove` moves the last unpicked element into the hole, so from the second draw of a loop onward brink indexed a differently-ordered list than ink and picked a different alternative. A compile-and-play regression test pins four loops of a three-way shuffle against inkjs; the ratchet rises 5624 → 5627 (`tier2/conditional/shuffle` 0/1 → 1/1, `tier2/sequences/I107-shuffle-stack-muddying` 0/2 → 2/2).
+- **WHY the corpus took so long to convict it:** the failure signature is easy to misread. The *first* draw of every loop still agreed, because nothing has been removed yet — so a case that draws once per loop passes, and a case that draws three times shows iteration 0 matching with 1 and 2 swapped. That reads like a seeding problem, and it was filed as one.
+- **CORRECTS AN EARLIER ATTRIBUTION:** #3538 was opened against the container path hash, on the reasoning that a shuffle seeds from `path_hash` and brink's container paths are not inklecate's. That reasoning was right about the *mechanism* and wrong about *this* symptom. Measured on the case that raised it (`tier2/conditional/shuffle`): brink's path hash for the sequence container is 636, and instrumenting inkjs shows it seeding from `"test.0.0"` — the same 636. The paths already agreed; the removal did not.
+- **THE PATH-HASH BUG IS REAL AND STILL OPEN** (part 2, the ruling of the same date): a choice-free knot's sequence gets `k.0.0` from brink against inklecate's `k.0` (295 vs 201), because brink applies its implicit-stitch rule where inklecate emits no such level. The two bugs are independent and both had to be measured separately — `tests/tier4-generated/shuffle-path-hash` stays `expected_mismatch` after this fix, which is how they were told apart.
+- **SCALE, corrected:** this was described mid-session as "most of the ratchet gap". It is not. Fixing it moves the ratchet by **3 episodes**, because `tests_github/dream_on` — 1,000 of the 1,012 failing episodes — still fails every episode on unrelated divergences. What it does move is the *depth* of those failures: dream_on's snapshot loses 973 mismatch entries (10,637 → 9,664) while gaining no passing episode. A large diff and a small ratchet delta are consistent here, and the ratchet is the number that counts.
+
+## A lifted else-less conditional owes its line's newline on the all-false path (#3530)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `brink-ir` (`hir::normalize`, the `synthesized_else_branch` gate) — `docs/compiler-spec.md` §"Source-order rule" sibling bullet
+- **SCOPE:** small
+- **WHAT:** The normalization lift synthesizes an else arm for a no-else conditional whenever the line carries prefix text, suffix text, **or its own end-of-line**. Previously only the first two, so a construct alone on its line (`{f():a}`) emitted no `EndOfLine` on the untaken side and a printing condition's output ran into the next line — `ab` where ink gives `a` / `b`. Four compile-and-play tests pin the printing-false, printing-true, silent-false and silent-true cases against inkjs.
+- **WHY the newline is owed:** ink suppresses a line's `\n` only when the line produced no content, and a condition that prints IS content — the newline is a property of the line, not of the arm that ran. Synthesizing an arm holding only an `EndOfLine` is safe for the silent case because the runtime drops a newline with no content before it, so `{false:a}` still emits nothing; the two guard tests exist to keep that true.
+- **CORPUS IMPACT: none, and that is the point.** Ratchet unchanged at 5627 (its value after the #3538 removal-order fix, which this change sits on top of), no snapshot moved, 384 pass / 6 fail / 414 unchanged. The shape simply does not occur in the curated corpus — which is why the generator found it and the corpus never had. `tests/tier4-generated/else-less-conditional-call` flips from `expected_mismatch` to passing, and the tier's two-way check is what forced the flag's removal into this same change rather than letting it go stale.
+
+## Ink is a full peer surface, not a compatibility floor
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** project direction — `CLAUDE.md` ("What we're building", "Current state", "Workflows")
+- **SCOPE:** architectural
+- **SUPERSEDES (in part):** "Oracle conformance is no longer the core metric" (2026-08-07). That ruling's core stands: **the ratchet percentage is not the measure of progress**, and a number going up is not a plan. What is superseded is its *surface* half — the framing of `.ink` as "a maintained floor, not the goal", and of the residual mismatches as a compat subset the native surface had outgrown.
+- **WHAT:** `.ink` and `.brink` are peers. Both are first-class ways to author for brink, held to the same standard, and the maintainer's own initial use case is as much strict ink as native. The oracle ratchet keeps its standing as a CI-enforced regression floor — never down, unexpected movement in either direction is stop-and-report — but the open divergences behind it are now **defects in a peer surface**, each one a story an author cannot write, rather than an acceptable residue.
+- **WHY:** The 2026-08-07 framing was written when native was the only surface being actively grown, and it correctly demoted the ratchet *number*. It also, incidentally, demoted the *surface* — which no longer matches what the project is for. The two demotions are separable, and only the first was intended to last.
+- **CONSEQUENCE:** ink-surface conformance is a driving track, not opportunistic maintenance. It is driven by root cause — the `brink-gen` generator and its inkjs differential find the gaps, the corpus pins them — and not by the ratchet number, which remains a floor rather than a target.
+
+## A discovered conformance gap gets a corpus repro first
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `tests/tier4-generated/`, `scripts/promote-generated.mjs` — `CLAUDE.md` "Conformance gaps"
+- **SCOPE:** process
+- **WHAT:** When a conformance gap is discovered, **the first action is a minimal repro in the corpus** — before the root-cause analysis, before the fix, before the issue text is finished. Minimise the case, promote it with `pnpm promote:generated`, let the tier carry it. A gap not yet fixed is promoted with `--expected-mismatch` and its issue number. This applies however the gap was found: the generator's differential, a corpus sweep, a bug report, or a shape tripped over by hand.
+- **WHY:** The 8-item generator plan worked — it found real divergences at a good rate — but the fixes and the issues were the artifacts, and the *cases* lived only in the differential's transient output. A gap found and then fixed left nothing behind that would notice it coming back; a gap found and not yet fixed left nothing behind at all. The generator is a search, not a suite: what it finds only becomes durable when a case is checked in.
+- **BOTH WAYS:** the tier checks a case against its declared expectation in both directions, so an `expected_mismatch` case that starts matching is a **failure**. That is deliberate — it is how a gap closed as a side effect of unrelated work gets noticed instead of silently persisting as a stale flag. Backfilled for every gap found this session in #3543 (16 cases, `GENERATED_CASE_COUNT` 4 → 20).
+
+## inkjs is trusted as the reference; `dotnet` is not vendored
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `tools/inkjs-oracle/` — `CLAUDE.md` "Trust hierarchy"
+- **SCOPE:** moderate
+- **WHAT:** Where brink and inkjs disagree, treat **inkjs as right and brink as the defect**, and open the issue. The alternative — making the C# runtime runnable in a cloud session by vendoring `dotnet` and the reference implementation — was considered and **declined**: not worth the toolchain weight and the licensing care, given that `tools/inkjs-oracle/` already reproduces every checked-in golden with `KNOWN_DIVERGENCES` empty, which CI's `inkjs-sanction` job keeps true.
+- **WHY:** The trust hierarchy's two highest ranks are exactly the two a cloud session cannot open, which left every cloud-session semantics question either blocked on the maintainer or answered by guessing from a lower rank. The sanction measured the stand-in's fidelity rather than assuming it — 414/414 cases, no divergences — which is enough to promote "evidence for a ruling" to "the answer, absent a specific reason to doubt it".
+- **NOT an infallibility claim:** a *specific* case where inkjs looks wrong is still worth surfacing for a maintainer ruling, and the C# runtime remains the tie-breaker in principle. It is simply not something to go install.
+
+## Container path hashes stay ink-compatible on both surfaces (#3538)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** compiler — container path construction, shuffle seeding
+- **SCOPE:** moderate
+- **WHAT:** brink computes **ink-compatible container path hashes**, for native as well as ink. A shuffle's seed in ink is `sequenceHash + loopIndex + storySeed`, where `sequenceHash` is the sum of the character codes of the container's *path string*. brink already sums char codes of a path string and already carries three hand-written inklecate-compatibility rules in codegen — but they are heuristics over brink's own container tree rather than a reconstruction of inklecate's, and they diverge. Measured: for `=== k ===` holding a lone sequence and no choice, brink emits `k.0.0` (295) where instrumented inkjs seeds from `k.0` (201) — brink applies its implicit-stitch rule where inklecate emits no such container level. The fix is to compute a path string compatible with inklecate's scheme and hash it ink's way.
+- **WHAT IT IS NOT:** the compiler's *shape* is not dictated by this. brink keeps its own container model, ids and layout; what it gains is the ability to *compute* a compatible path on demand for the purposes that need one. The constraint is on a derived value, not on the structure it is derived from.
+- **MEASURED AFTER THE RULING — there are TWO causes, and the second is the expensive one.** A twelve-shape sweep (brink's emitted `path_hash` against an instrumented inkjs's real `seqPathStr`) found 8 of 12 diverging, the 4 agreements being coincidences of the character sum rather than construction. Cause 1 is the implicit-stitch rule above. Cause 2: **inklecate's path component is the index in the parent's flat runtime content array.** Holding everything else constant, 1/2/3 lines of plain text before a sequence give `k.2` / `k.4` / `k.6` — two runtime objects per source line, the string and its newline — and `two seqs in one knot` gives inklecate `k.0`, `k.2` against brink's `k.0.0`, `k.0.1`. brink numbers a sequence by its ordinal among its parent's children; inklecate numbers it by position among the parent's emitted objects. brink's containers hold bytecode, not a list of ink runtime objects, and the count inklecate *would* have emitted before a point is a property of inklecate's codegen. So "compute a compatible path on demand" means carrying a shadow model of inklecate's emission, not writing a naming function — which is a materially larger commitment than this ruling was made against. Options and the full table are on #3538; the choice between them is not yet ruled.
+- **NATIVE TOO, deliberately:** the initial instinct was to let native skip the compatibility computation, since nothing in native needs to agree with inklecate. Rejected on **respelling**: `brink-respell` re-emits ink as `.brink`, so a respelled story is expected to behave like its original — and if the two surfaces seeded shuffles differently, respelling would silently change which alternative a shuffle picks. A surface-dependent seed is a surface-dependent story.
+- **NOT the whole shuffle gap — one of two independent bugs.** This ruling was made on the reading that shuffle divergences are seeding divergences. Working it turned up a second, unrelated cause in the same feature, fixed separately the same day: the partial Fisher-Yates removed the picked index with `swap_remove` instead of order-preservingly, permuting the survivors from the second draw of each loop onward. On the very case that raised this issue (`tier2/conditional/shuffle`), the path hashes **already agreed** — brink's 636 against instrumented inkjs's `"test.0.0"`, also 636 — and the removal was the whole story there.
+- **SCALE, measured rather than assumed:** the mid-session claim that correcting the path hashing "should close most of the gap" was wrong twice over, and the correction is worth keeping. The removal fix, which is what the corpus was actually convicting, moved the ratchet by **3 episodes** (5624 → 5627). It could not have moved much more: `dream_on` is 1,000 of the 1,012 failing episodes and gains no passing episode from it, because each of those episodes also fails on divergences that have nothing to do with sequences. A per-story mismatch-entry count (dream_on's fell 10,637 → 9,664) measures the *depth* of a failure, not whether it passes — reading one as the other is what produced the wrong estimate. What remains open here is real, and its size is unmeasured until it is fixed.
+
+## Optimizer plumbing: `brink-opt` v1, and the three §9 rulings (#2336)
+- **WHEN:** 2026-09-04
+- **PROJECT:** brink
+- **SYSTEM:** `crates/brink-opt`, `brink-test-harness::opt_fence` — `docs/optimizer-spec.md` §9/§10, `docs/optimizer-framework-spec.md` §1
+- **SCOPE:** moderate
+- **WHAT:** Step 1 of `optimizer-spec.md` §8: the crate, `ArtifactStats`, and the fence, with **no optimization pass**. The three open questions are ruled: (1) `brink compile` does NOT run the optimizer — `brink opt` is a separate explicit step, so an artifact's provenance is never ambiguous; (2) the "was optimized" artifact marker is **deferred**, at no cost, because `.inkb`'s house rule exempts a new optional-omitted-when-empty section from a `VERSION` bump, so it is exactly as cheap later and can then record real pass names; (3) `--passes=` toggles are **deferred** — this departs from the spec's own proposal — because a toggle grammar with no inhabitants cannot be tested and risks being designed wrong, the same trap the framework spec is deferred to avoid. `OptConfig { passes: PassSet }` exists in the API regardless.
+- **WHY NO `brink opt` SUBCOMMAND YET:** `brink-cli` is publishable and today depends only on publishable crates — an invariant that holds across the whole workspace. `brink-opt` is `publish = false` while it does nothing, and a published crate cannot normal-depend on an unpublished one, so wiring it in would break `cargo publish -p brink-cli` **at release time** — CI's "Publishable crates exist on crates.io" step would not catch it, since it verifies that each publishable crate exists, not that its dependencies do. A CLI for an optimizer with an empty pass list is useless to an author anyway; it lands with the first real pass, when hand-publishing the crate is worth doing.
+- **THE FENCE IS THE DELIVERABLE, AND ITS DESIGN PROBLEM IS VACUITY.** With an empty pass list, trace-equality, line-identity, idempotence and stability are all green — and so would be a fence that compared nothing at all. Three things make greenness evidence: (a) every check, positive and negative, goes through ONE seam (`opt_fence::judge`), so a control going red is a statement about the same code path the fence uses; (b) four negative-control passes (`brink_opt::control`, behind `test-control`, never in `default`) each trip exactly one obligation, and the matrix has a red cell in every column; (c) three tiers of non-vacuity floor — case counts, summed-`ArtifactStats` content floors, and per-control kill floors with `mutate.rs`-style grounding.
+- **THE CONTROLS ARE SEPARABLE BECAUSE OF A FACT ABOUT THE FORMAT:** `line_identity_diff` compares only `(scope_id, index, source_hash)` and never reads `LineEntry::content`, while the runtime reads `content` and never reads `source_hash`. So `control:retext` trips the trace oracle alone and `control:rehash` the identity oracle alone. A single control tripping both would prove neither, since either oracle could be doing all the work. `control:drift` (a per-run `audio_ref`) trips neither semantic oracle and only run-to-run stability — which is what justifies keeping byte-level checks at all.
+- **A SPEC CLAIM CORRECTED:** §8.1's "an empty optimizer is provably byte-identical" reads as though the whole v1 fence is a tautology. Four obligations are; the fifth is not. The road is `read_inkb → optimize → write_inkb`, so byte-identity with no passes asserts **`write_inkb ∘ read_inkb == id`** — which nothing in the tree checked (`brink-format`'s own round-trip tests use synthetic and hand-built values). Measured: it holds over 419 real corpus artifacts. The fence reports it as its own failure line naming `brink-format`, so a format bug is never misattributed to the optimizer.
+- **THE FENCE CAUGHT A FLAW IN ITS OWN GROUNDING PREDICATE ON THE FIRST RUN,** which is the best evidence it works. `tier1/diverts/I132-comparing-diverts` survived `control:retext`: it emits `1`/`0`/`0`/`1` from pure value interpolation, producing NO line-table entries, and its only line entries belong to two knots never entered (they exist solely as divert targets to compare). "Do the runs emit any text?" grounded it; "does a line-table entry supply text the runs emit?" correctly does not. `is_line_text_grounded` is the corrected predicate, and it deliberately under-grounds (skipping `Template` entries) since that direction can only lower a kill count the floors already guard.
+- **TWO OBSERVABLES ADDED TO THE FRAMEWORK SPEC'S LIST**, both found while building this and absent from every earlier draft: `.inkl` overlays carry a `base_checksum` matching the `.inkb` header CRC and are index-aligned with `ScopeLineTable`, so **any byte change invalidates every existing overlay** and optimization must precede localization; and `source_hash` is a translation key the runtime never reads, which is load-bearing for the controls above.

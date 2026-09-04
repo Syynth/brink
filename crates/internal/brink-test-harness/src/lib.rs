@@ -13,6 +13,7 @@ pub mod fix;
 pub mod ground_truth;
 pub mod inkjs;
 pub mod mutate;
+pub mod opt_fence;
 pub mod oracle;
 pub mod runner;
 pub mod snapshot_fmt;

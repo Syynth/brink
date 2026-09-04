@@ -165,7 +165,7 @@ import { registerDebugCommands } from "./debug-commands.js";
 import { registerEditorActionCommands } from "./editor-action-commands.js";
 import { registerLocationResolvers } from "./location-resolvers.js";
 import { loadBreakpoints, saveBreakpoints } from "./breakpoint-persistence.js";
-import { executionHighlightsFor } from "./execution-highlights.js";
+import { executionHighlightsHook } from "./execution-highlights.js";
 import { subscribeDebugRefresh } from "./debug-refresh-subscription.js";
 import { provenanceFromBytes } from "./transcript-provenance.js";
 import { runtimeValueNote } from "./runtime-hover.js";
@@ -1161,8 +1161,16 @@ export async function mountStudio(
         .breakpointsMoved(path, moves.map((m) => ({ from: m.from - 1, to: m.to - 1 }))),
     // Execution highlights (W6/#3299 — "play is stepping"). Policy lives
     // in execution-highlights.ts, tested over a real store state.
-    getExecutionHighlights: (path) =>
-      executionHighlightsFor(store.getState(), path, documents.getHirProjection(path)),
+    // The hook is built by `executionHighlightsHook` rather than inlined
+    // (#3490): it passes the projection as a THUNK, because pulling it
+    // eagerly here cost a synchronous whole-document `getHirSpansDoc` on
+    // every call — and the play gutter asks once per visible line, ~38 wasm
+    // queries per keystroke on a 1.1k-line file with no session running at
+    // all. Inline, that argument was untestable; named, it is pinned.
+    getExecutionHighlights: executionHighlightsHook(
+      () => store.getState(),
+      (path) => documents.getHirProjection(path),
+    ),
     // "Reveal in Program Explorer" (W9/#3302): resolve the line to its
     // instructions, target the explorer, and surface the tool window —
     // only when a target was actually set (the honest-failure

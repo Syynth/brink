@@ -1,0 +1,35 @@
+[package]
+name = "brink-opt"
+description = "Post-compile .inkb -> .inkb story optimizer: makes a shipped artifact cheaper without changing what it does"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Unpublished while the pass list is empty. `brink-cli` is publishable and today
+# depends only on publishable crates; wiring an unpublished crate into it would
+# break `cargo publish -p brink-cli` at release time, and CI's "Publishable crates
+# exist on crates.io" step would not catch it (it checks that each publishable
+# crate exists, not that its dependencies do). Flip this — and hand-publish once,
+# since crates.io Trusted Publishing cannot create a crate — when the first real
+# pass lands and `brink opt` is worth exposing.
+publish = false
+
+[dependencies]
+brink-format = { workspace = true }
+
+[features]
+# The negative-control passes (`src/control.rs`). NEVER in `default`: they exist
+# to be caught by the fence, not to run on anyone's artifact. Enabled only by
+# `brink-test-harness` and `brink-gen` dev-dependencies.
+#
+# Note that `cargo test --workspace` unifies features, so this ends up ON for
+# every `brink-opt` in that build graph. The guard against a control reaching a
+# real artifact is therefore the runtime assertion in `PassSet::default` (no
+# default pass may be named `control:*`), NOT the feature being off.
+test-control = []
+
+[lints]
+workspace = true

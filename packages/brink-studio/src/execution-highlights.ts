@@ -18,12 +18,60 @@ import {
   type StudioState,
 } from "@brink/studio-store";
 
+/** The file's HIR overlay, or a thunk that produces it.
+ *
+ * A thunk is the road hosts should take (#3490): the projection is only
+ * consulted on the choice-point branch, and pulling it eagerly costs a
+ * synchronous `getHirSpansDoc` on every call — including the overwhelmingly
+ * common "no session at all" case, where the answer is `[]` regardless. */
+export type ProjectionSource =
+  | HirProjection
+  | null
+  | undefined
+  | (() => HirProjection | null);
+
+/** Resolve a {@link ProjectionSource} at most once. */
+function projectionOnce(source: ProjectionSource): () => HirProjection | null {
+  if (typeof source !== "function") return () => source ?? null;
+  let resolved = false;
+  let value: HirProjection | null = null;
+  return () => {
+    if (!resolved) {
+      value = source();
+      resolved = true;
+    }
+    return value;
+  };
+}
+
+/** The studio's `getExecutionHighlights` host hook, as the play gutter
+ * consumes it (#3490).
+ *
+ * The seam matters as much as the policy behind it. The gutter asks once
+ * per render, and `getHirProjection` is a synchronous whole-document
+ * `getHirSpansDoc` query — so resolving it at the call site pulls it on
+ * EVERY ask, including the overwhelmingly common "no session" one whose
+ * answer is `[]` regardless. It rides in as a thunk instead, and only the
+ * choice-point branch resolves it.
+ *
+ * Named and exported (the `location-resolvers.ts` pattern this module
+ * already follows) so the WIRING is testable and not just the policy:
+ * inlined at the mount site, an eagerly-evaluated argument here is exactly
+ * the defect #3490 measured, and nothing could have caught it. */
+export function executionHighlightsHook(
+  getState: () => StudioState,
+  getProjection: (path: string) => HirProjection | null,
+): (path: string) => ExecutionHighlight[] {
+  return (path) => executionHighlightsFor(getState(), path, () => getProjection(path));
+}
+
 /** All execution highlights for `path`, from the live session.
  *
  * `projection` (W11/#3304) is the file's HIR overlay — when the session
  * waits on a choice, presented choices light and their rejected siblings
  * dim with reasons; without it (unopened doc, projection not landed) the
- * choice point falls back to the single position band. */
+ * choice point falls back to the single position band. Pass a thunk
+ * (#3490) so the pull happens only on the branch that uses it. */
 export function executionHighlightsFor(
   st: Pick<
     StudioState,
@@ -42,9 +90,9 @@ export function executionHighlightsFor(
     | "_resolveSourceBytes"
   >,
   path: string,
-  projection?: HirProjection | null,
+  projection?: ProjectionSource,
 ): ExecutionHighlight[] {
-  const out = coreHighlights(st, path, projection);
+  const out = coreHighlights(st, path, projectionOnce(projection));
   // Bars over tints (ruled 2026-09-03): follow / hover / peek are bar-only
   // attention marks and STACK on a tinted line — a line where play is can
   // also be the one just revealed, hovered, or forecast. No dedupe.
@@ -117,7 +165,7 @@ function coreHighlights(
     | "_provider"
   >,
   path: string,
-  projection?: HirProjection | null,
+  projection: () => HirProjection | null,
 ): ExecutionHighlight[] {
   if (sessionDegraded(st.programChecksum, st.compiledChecksum)) return [];
   if (
@@ -136,9 +184,13 @@ function coreHighlights(
   // Choice-point visualization (W11/#3304, F14 RULED): presented choices
   // ARE the live frontier — each lights; authored siblings not added dim
   // with the by-elimination reason. Joins run on `def_id` (#3234).
+  // The projection is pulled ONLY here (#3490): every other road out of
+  // this function answers without it, and the pull is a synchronous
+  // whole-document wasm query.
+  const choiceProjection = st.sessionStatus === "awaiting-choice" ? projection() : null;
   const choiceBands =
-    st.sessionStatus === "awaiting-choice" && projection
-      ? choicePointHighlights(st.debugState, projection)
+    choiceProjection !== null
+      ? choicePointHighlights(st.debugState, choiceProjection)
       : [];
 
   if (line !== null && line.file === path) {

@@ -584,6 +584,8 @@ Shuffle sequences use a partial Fisher-Yates algorithm seeded deterministically.
 4. Create a fresh RNG from the seed.
 5. Partial Fisher-Yates: maintain an unpicked list `[0..numElements)`, pick `iteration_index + 1` elements using the RNG, return the last picked index.
 
+**Removal from the unpicked list is ORDER-PRESERVING** (`Vec::remove`), matching the reference's `unpickedIndices.RemoveAt(chosen)`. `swap_remove` is cheaper and wrong: it moves the last unpicked element into the hole, so every draw after the first indexes a differently-ordered list than ink's and picks a different alternative. The failure signature is distinctive and was exactly what the corpus showed (#3538) — the *first* draw of each loop still agrees, because nothing has been removed yet, and the rest come out permuted among themselves.
+
 The same `path_hash + loop_index` combination always produces the same permutation. Re-visiting the sequence with a different `loop_index` produces a different permutation.
 
 ### Container path hash (`path_hash`)

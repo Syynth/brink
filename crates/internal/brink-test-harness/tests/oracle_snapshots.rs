@@ -106,7 +106,20 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 /// No other snapshot moved; no expected-mismatch flags remain. Measured:
 /// CASES 382 pass / 8 fail / 414 total, EPISODES 5624 pass / 1010 mismatch
 /// / 2 missing.
-const RATCHET_EPISODE_COUNT: usize = 5624;
+///
+/// Raised 5624 -> 5627 on 2026-09-04: the shuffle's partial Fisher-Yates
+/// now removes the picked index order-preservingly (`Vec::remove`) like the
+/// reference, instead of `swap_remove`, which moved the last unpicked
+/// element into the hole and permuted the survivors. Two cases flip whole
+/// (`tier2/conditional/shuffle` 0/1 -> 1/1, one episode;
+/// `tier2/sequences/I107-shuffle-stack-muddying` 0/2 -> 2/2, two episodes):
+/// CASES 382 -> 384 pass, 8 -> 6 fail of 414. `tests_github/dream_on` gains
+/// no passing episode (all 1000 still fail on unrelated divergences) but its
+/// snapshot loses 973 mismatch entries, 10,637 -> 9,664 — which is why the
+/// episode count moves by only 3 while the diff is large. Measured: CASES
+/// 384 pass / 6 fail / 414 total, EPISODES 5627 pass / 1007 mismatch / 2
+/// missing.
+const RATCHET_EPISODE_COUNT: usize = 5627;
 
 #[test]
 #[expect(clippy::too_many_lines)]

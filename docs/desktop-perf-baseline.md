@@ -390,3 +390,67 @@ analysis call site; the full playwright suite (390) runs in worker mode
 by default; `?worker=0` keeps the in-process control measurable. Residual
 main-thread analysis: the one-shot family (#3110) at incremental cost,
 and small-document (<1000-line) sync rebuilds.
+
+## Gutter host reads are per-render, not per-line (2026-09-03, #3490)
+
+Measured on a real 1,125-line, 38 KB `.ink` file loaded through
+`?fixtureUrl` (typing burst, Chromium headless): `wasm.getHirSpansDoc`
+recorded **10,045 calls** across 228 keystrokes — ~38 per keystroke, one
+per visible line — with `input.keydown` p50 at 48 ms. No session was
+running; every one of those queries computed an answer that could only
+ever be `[]`.
+
+Reproduced and fixed against the in-repo scenario runner (`pnpm --filter
+@brink-lang/studio test:perf`, `typing-burst` on `?fixture=perf`, same
+machine, fix reverted vs applied — this box is slower than the box the
+`?fixtureUrl` numbers above came from, so read the ratios, not the
+absolutes):
+
+| span | before | after |
+|---|---|---|
+| `wasm.getHirSpansDoc` count | 6,964 | **0 — never called** |
+| `input.keydown` p50 / p95 | 424 / 528 ms | **32 / 32 ms** |
+| `cm.dispatch.view` p50 / p95 | 390.9 / 494.7 ms | **6.7 / 8.4 ms** |
+
+The count going to zero (not merely down) is the shape of the fix: with no
+session running there is no branch that can use the projection, so nothing
+pulls it. Note that `?fixture=perf` DOES reproduce the pathology — the
+issue's opening measurement suggested it did not.
+
+Two contracts come out of it, and both are pinned by tests:
+
+1. **A gutter's `lineMarker` runs once per visible line, so it must not
+   read a host hook.** `playFromHereExtension` caches each host read
+   (`getExecutionHighlights`, `getBreakpoints`) per `EditorState`, which is
+   exactly one read per render pass: host truth reaches the gutter only
+   through `refreshExecutionHighlight` / `refreshBreakpoints`, and both
+   dispatch a transaction, so a refreshed answer arrives with a new state
+   and the cache misses — PROVIDED every remount path re-dispatches those
+   refreshes. It does not come free: `DocumentSessions` reuses a cached
+   `EditorState` when a backgrounded tab remounts, and the whole-set
+   refreshes skip viewless slots, so `mountSlot` self-serves both (the
+   same shape as #518's overlay refresh). Read count pinned by
+   `packages/ink-editor/src/__tests__/play-gutter-host-reads.test.ts`
+   (measured pre-fix: 36 reads for a 60-line document; post-fix, 1);
+   staleness pinned by the remount cases in
+   `packages/brink-studio/src/__tests__/document-sessions.test.ts`.
+2. **`executionHighlightsFor` takes the HIR projection as a thunk.** Only
+   the choice-point branch reads it; "no session", "ended", "error",
+   "degraded" and plain "running" all answer without it, so the synchronous
+   whole-document pull happens on that branch alone. The studio's side of
+   the seam is `executionHighlightsHook(getState, getProjection)` — a named
+   export rather than an arrow inlined in `mountStudio`, because the defect
+   was never in the policy but in the *call site* evaluating its argument
+   eagerly, and inline there was nothing a test could hold. `mount.tsx` now
+   delegates to it whole. Pinned by
+   `packages/brink-studio/src/__tests__/execution-highlights.test.ts` ("the
+   HIR projection is pulled lazily" for the policy, "the studio's wiring of
+   it" for the hook — the latter goes red if the argument is made eager
+   again).
+
+Deliberately NOT changed: `DocumentHandle.hirProjection()`'s dirty-stash
+fallback still takes the synchronous main-thread road rather than serving
+the stale stash. With the two contracts above the decoration consumers no
+longer pull it per line, so the staleness trade buys nothing here — and it
+would silently change what `prose.ts` and the HIR overlay see after an
+edit, which is a separate ruling.

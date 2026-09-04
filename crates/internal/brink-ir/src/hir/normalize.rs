@@ -341,12 +341,19 @@ fn try_lift_inline(
                 });
             }
 
-            // If no else branch exists and there's prefix/suffix text that
-            // must be emitted even when all conditions are false, add an else
-            // branch with just the surrounding text. Without this, text like
-            // "A " in `A {cond:B}` would be lost when `cond` is false.
+            // If no else branch exists, the all-false path still has to carry
+            // whatever the line owes regardless of which arm ran: the
+            // surrounding text (without this, "A " in `A {cond:B}` would be
+            // lost when `cond` is false) AND the line's own end-of-line
+            // (#3530). The newline is owed even with no prefix or suffix at
+            // all: ink suppresses a line's `\n` only when the line produced
+            // no content, and a condition that *prints* is content — so
+            // `{f():a}` with a printing, false `f` still ends its line.
+            // Synthesizing an arm holding only an `EndOfLine` is safe for the
+            // silent case, because the runtime drops a newline with no
+            // content before it, leaving `{false:a}` emitting nothing.
             let has_else = branches.iter().any(|b| b.condition.is_none());
-            if !has_else && (!prefix.is_empty() || !suffix.is_empty()) {
+            if !has_else && (!prefix.is_empty() || !suffix.is_empty() || trailing_eol) {
                 branches.push(synthesized_else_branch(
                     cond,
                     &prefix,
