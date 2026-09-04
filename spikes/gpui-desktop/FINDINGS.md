@@ -1,6 +1,6 @@
 # Spike — a GPUI-native brink studio (Zed-style)
 
-**Date:** 2026-09-04 · **Status:** spike complete, no ruling requested yet ·
+**Date:** 2026-09-04 · **Status:** two rounds complete, no ruling requested yet ·
 **Base:** rebased onto `main` @ `ecfea3c9b` ·
 **Code:** `spikes/gpui-desktop/` (its own cargo workspace, untracked by the
 root one — same exclusion pattern as `packages/brink-desktop/src-tauri`)
@@ -115,6 +115,81 @@ module on the main thread.
   `brink-driver`, `brink-project-config` as **path dependencies from a
   separate workspace** — exactly the arrangement `src-tauri` already uses,
   and it worked with no changes to those crates.
+
+## Round 2 — one complex studio surface, rebuilt: the Binder
+
+The first round proved the engine reaches a native editor. It said nothing
+about what porting the studio's *own* UI feels like, so the second round
+takes the Binder — the file/symbol tree — and rebuilds it against the same
+rules the studio's version follows.
+
+**Size:** `src/binder.rs` + `src/icons.rs` = **1,286 lines of Rust**, against
+**4,208 lines** for the studio's (`Binder.tsx` 2,271, `BinderContextMenu.tsx`
+417, `slices/binder.ts` 816, `binder-order.ts` 152, `binder.css` 552). Not a
+like-for-like ratio — the native version skips the undo stack, the Library
+section, multi-select, inline create, and sidecar persistence — but the
+*shape* is the same widget.
+
+**What works, verified by driving it:**
+
+| Feature | Notes |
+|---|---|
+| Files / Structure modes (#3036) | 47 rows → 236 rows on the same project |
+| The fill rule (ruled 2026-08-23) | Icon IS the expander; filled = collapsed over content, outline = expanded/leaf; folders swap to the open silhouette |
+| Entry file mark (#3014/#3021) | The brand drop with the divert carved out — the SVG **mask** renders, so the collapsed/expanded pair is pixel-faithful |
+| Diagnostic marks (#3041) | Per-file roll-up and per-symbol counts over each symbol's `full_range` |
+| Out-of-scope dimming | With the "closure empty means nothing to contradict" rule |
+| Drag to reorder | Insertion line between rows, drop-into highlight on folders |
+| Filter | Prunes folders left empty |
+| Keyboard nav | ↑↓ move, → expand/descend, ← collapse/ascend, Enter opens |
+| Row actions | Right-click menu, plus the hover-revealed ⋯ |
+| Open → editor | Clicking a knot row opens the file and reveals the symbol |
+
+**The icon language ports verbatim.** GPUI paints an SVG as a monochrome
+mask tinted by the element's text colour, so the studio's `currentColor`
+icons transfer with their `d` attributes unchanged — including the entry
+mark's `<mask>`, the draft drop's `stroke-dasharray`, and the chevrons'
+`opacity=".45"` second stroke. `svg().data(bytes)` takes them inline, so no
+asset pipeline is involved.
+
+### The finding that matters: drag-and-drop
+
+The studio's binder drag needed **two WebKit-specific fixes**: #3351 (WebKit
+requires `preventDefault()` on both `dragenter` *and* `dragover`; the code
+wired only `dragover`, so folder reorder silently did nothing in
+Tauri/Safari while Chromium worked), and its follow-up (an unscoped
+`-webkit-user-drag: element` rule re-armed rows React had rendered
+`draggable={false}`, because in WebKit the `draggable` attribute is a
+*presentational hint* that loses to author CSS in the cascade).
+
+Neither failure mode exists here. GPUI's drag is a typed value with a real
+preview view — `on_drag(payload, …)`, `on_drag_move::<T>`, `on_drop::<T>` —
+so there is no `dataTransfer` string to encode into, no `dragenter`/
+`dragover` contract to satisfy, and no cascade that can re-arm a row the
+code declared undraggable. Reorder worked on the first attempt with no
+platform-specific handling. **That is the clearest case in either round for
+what the native surface buys: a whole category of browser-contract bug is
+absent by construction, not fixed.**
+
+### What was harder than expected
+
+- **`gpui-component` 0.6.0 has no click-triggered popup menu** — only the
+  right-click `ContextMenu`; `PopupMenuExt` does not exist in the published
+  crate. The studio's hover ⋯ affordance therefore had to be built directly
+  (`anchored` + `deferred`, ~50 lines). Fine, but it is the kind of gap that
+  a UI as large as the studio would hit repeatedly.
+- **Borrow discipline in `render`.** `cx.theme()` immutably borrows `cx`
+  while `cx.listener(…)` and child-render calls want it mutably, so colours
+  have to be copied out first and helpers must return `AnyElement` rather
+  than `impl IntoElement` (which would capture `cx`'s lifetime). Mechanical,
+  but it shapes every render function and would need to be a house pattern.
+- **One real interaction bug the port introduced:** revealing a symbol calls
+  `set_cursor_position`, which focuses the editor — killing the binder's own
+  arrow-key navigation after the first click. Fixed by re-focusing the panel
+  after an open, which is Zed's project-panel behaviour.
+
+Zed's own `crates/project_panel` (21k lines) was used as the implementation
+reference for the drag wiring and `uniform_list` usage.
 
 ## What a port would actually cost
 

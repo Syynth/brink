@@ -14,6 +14,9 @@
 //! session, multiple windows, the Player, or anything the studio shell spec
 //! rules on. It is a probe, not a product.
 
+mod binder;
+mod icons;
+
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -25,13 +28,11 @@ use anyhow::Result;
 use brink_ide::session::IdeSession;
 use brink_ir::{FileId, LineIndex, TextRange};
 use gpui::{
-    App, Application, Bounds, Context, Entity, IntoElement, Render, SharedString, Subscription,
-    Task, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Application, Bounds, Context, Entity, Focusable as _, IntoElement, Render, SharedString,
+    Subscription, Task, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Root, TitleBar,
-    button::{Button, ButtonVariants},
-    h_flex,
+    ActiveTheme, Root, TitleBar, h_flex,
     input::{
         CompletionProvider, Editor, EditorState, HoverProvider, InputEvent, InputHighlighter, Rope,
         RopeExt,
@@ -50,6 +51,22 @@ struct Project {
     root: PathBuf,
     files: Vec<String>,
     session: IdeSession,
+    /// `[project] entry` from `brink.toml`, root-relative — the file the
+    /// Binder marks with the brand icon.
+    entry: Option<String>,
+}
+
+/// One knot (with its stitches) for the Binder's Structure mode — the shape
+/// `brink_ide::document::document_symbols` produces, flattened to what the
+/// tree needs.
+#[derive(Clone, Debug)]
+struct SymbolNode {
+    name: String,
+    start: usize,
+    full_start: usize,
+    full_end: usize,
+    is_function: bool,
+    children: Vec<SymbolNode>,
 }
 
 type Shared = Rc<RefCell<Project>>;
@@ -75,9 +92,10 @@ fn collect_sources(dir: &Path, root: &Path, out: &mut Vec<String>) {
         }
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if (ext == "brink" || ext == "ink")
-            && let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
-            }
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
     }
 }
 
@@ -99,6 +117,7 @@ impl Project {
         }
 
         // brink.toml: same discovery walk the compiler/CLI use.
+        let mut entry: Option<String> = None;
         let tree = brink_driver::RealFs::new(&root);
         let mut options = brink_analyzer::AnalysisOptions::default();
         if let Ok(Some(config_key)) =
@@ -114,6 +133,7 @@ impl Project {
             for w in options.apply_project_config(&config, false, false) {
                 eprintln!("warning: [{}] {w}", config_path.display());
             }
+            entry = config.entry.clone();
             eprintln!("config: {config_key}");
         }
         session.apply_analysis_options(&options);
@@ -129,6 +149,7 @@ impl Project {
             root,
             files,
             session,
+            entry,
         })
     }
 
@@ -185,6 +206,73 @@ impl Project {
                 })
             })
             .collect()
+    }
+
+    /// Every diagnostic as `(file, start byte, is_error)` — the Binder's
+    /// mark inputs. Warnings and errors only: Info/Hint never mark.
+    fn diagnostic_points(&self) -> Vec<(String, usize, bool)> {
+        let types = self.session.type_policy();
+        let lints = self.session.lint_policy().clone();
+        let mut out = Vec::new();
+        for key in &self.files {
+            let Some(id) = self.session.file_id(key) else {
+                continue;
+            };
+            for d in self.session.db().diagnostics(id).unwrap_or(&[]) {
+                let Some(sev) = brink_analyzer::effective_severity(d.code, types, &lints) else {
+                    continue;
+                };
+                let is_error = match sev {
+                    brink_ir::Severity::Error => true,
+                    brink_ir::Severity::Warning => false,
+                    _ => continue,
+                };
+                out.push((key.clone(), usize::from(d.range.start()), is_error));
+            }
+        }
+        out
+    }
+
+    /// The compile closure, as root-relative keys. Empty before the first
+    /// analysis — which the Binder reads as "nothing to contradict" rather
+    /// than "everything is out of scope".
+    fn closure(&self) -> std::collections::HashSet<String> {
+        self.session
+            .compilation_closure_paths()
+            .into_iter()
+            .collect()
+    }
+
+    /// A file's knots and stitches for Structure mode.
+    fn symbols(&self, key: &str) -> Vec<SymbolNode> {
+        let Some(id) = self.session.file_id(key) else {
+            return Vec::new();
+        };
+        let (Some(hir), Some(manifest), Some(source)) = (
+            self.session.hir(id),
+            self.session.manifest(id),
+            self.session.source(id),
+        ) else {
+            return Vec::new();
+        };
+        brink_ide::document::document_symbols(hir, manifest, source)
+            .into_iter()
+            .map(|s| convert_symbol(&s))
+            .collect()
+    }
+}
+
+fn convert_symbol(symbol: &brink_ide::document::DocumentSymbol) -> SymbolNode {
+    SymbolNode {
+        name: symbol.name.clone(),
+        start: usize::from(symbol.range.start()),
+        full_start: usize::from(symbol.full_range.start()),
+        full_end: usize::from(symbol.full_range.end()),
+        is_function: symbol
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("function")),
+        children: symbol.children.iter().map(convert_symbol).collect(),
     }
 }
 
@@ -502,11 +590,12 @@ struct Workspace {
     project: Shared,
     active: ActiveKey,
     active_index: usize,
+    binder: Entity<binder::Binder>,
     editor: Entity<EditorState>,
     problems: Vec<(u32, String, String)>,
     last_analyze_ms: f64,
     worst_analyze_ms: f64,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -543,42 +632,94 @@ impl Workspace {
             state
         });
 
-        let subscription = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
+        let editor_sub = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.reanalyze(&editor, cx);
             }
         });
 
+        let binder = cx.new(|cx| binder::Binder::new(project.clone(), window, cx));
+        let binder_sub = cx.subscribe_in(
+            &binder,
+            window,
+            |this, binder, event: &binder::BinderEvent, window, cx| {
+                let binder::BinderEvent::Open { path, offset } = event;
+                this.open_path(path, *offset, window, cx);
+                // Revealing an offset focuses the editor (`set_cursor_position`
+                // does), which would kill the binder's own arrow-key
+                // navigation after the first click. A panel click opens the
+                // document but keeps focus in the panel — Zed's project-panel
+                // behaviour, and the studio's.
+                let handle = binder.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            },
+        );
+
         let mut this = Self {
             project,
             active,
             active_index: 0,
+            binder,
             editor,
             problems: Vec::new(),
             last_analyze_ms: 0.0,
             worst_analyze_ms: 0.0,
-            _subscription: subscription,
+            _subscriptions: vec![editor_sub, binder_sub],
         };
         this.open(0, window, cx);
         Ok(this)
     }
 
     fn open(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let (key, text) = {
+        let key = {
             let project = self.project.borrow();
-            let key = project.files[index].clone();
-            let text = project
-                .file_id(&key)
-                .and_then(|id| project.session.source(id))
-                .unwrap_or("")
-                .to_owned();
-            (key, text)
+            let Some(key) = project.files.get(index).cloned() else {
+                return;
+            };
+            key
         };
-        *self.active.borrow_mut() = key;
         self.active_index = index;
-        let editor = self.editor.clone();
-        editor.update(cx, |state, cx| state.set_value(text, window, cx));
-        self.reanalyze(&editor, cx);
+        self.open_path(&key, None, window, cx);
+    }
+
+    /// Open a file and, for a symbol row, reveal its offset — what the
+    /// Binder emits when a row is activated.
+    fn open_path(
+        &mut self,
+        key: &str,
+        offset: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // `!key.is_empty()` guards the first open: `active` starts as the
+        // first file's key so the providers have something to name before
+        // anything is loaded, and a bare equality check would take that as
+        // "already open" and never load the text.
+        let already_open = !self.editor.read(cx).value().is_empty() && *self.active.borrow() == key;
+        if !already_open {
+            let text = {
+                let project = self.project.borrow();
+                project
+                    .file_id(key)
+                    .and_then(|id| project.session.source(id))
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            *self.active.borrow_mut() = key.to_owned();
+            if let Some(i) = self.project.borrow().files.iter().position(|f| f == key) {
+                self.active_index = i;
+            }
+            let editor = self.editor.clone();
+            editor.update(cx, |state, cx| state.set_value(text, window, cx));
+            self.reanalyze(&editor, cx);
+        }
+        if let Some(offset) = offset {
+            let editor = self.editor.clone();
+            editor.update(cx, |state, cx| {
+                let position = state.text().offset_to_position(offset);
+                state.set_cursor_position(position, window, cx);
+            });
+        }
     }
 
     fn reanalyze(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
@@ -621,40 +762,9 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (files, root) = {
-            let project = self.project.borrow();
-            (project.files.clone(), project.root.display().to_string())
-        };
-        let active_index = self.active_index;
+        let files = self.project.borrow().files.clone();
 
-        let sidebar = v_flex()
-            .w(px(240.))
-            .h_full()
-            .p_2()
-            .gap_1()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .px_2()
-                    .pb_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(root),
-            )
-            .children(files.iter().enumerate().map(|(i, key)| {
-                let button = Button::new(("file", i))
-                    .label(key.clone())
-                    .compact()
-                    .w_full()
-                    .on_click(cx.listener(move |this, _, window, cx| this.open(i, window, cx)));
-                if i == active_index {
-                    button.primary()
-                } else {
-                    button.ghost()
-                }
-            }));
+        let sidebar = div().w(px(260.)).h_full().child(self.binder.clone());
 
         let problems = v_flex()
             .h(px(140.))
@@ -687,6 +797,7 @@ impl Render for Workspace {
             .border_color(theme.border)
             .text_xs()
             .text_color(theme.muted_foreground)
+            .child(self.project.borrow().root.display().to_string())
             .child(format!("{} files", files.len()))
             .child(format!("analyze {:.1} ms", self.last_analyze_ms))
             .child(format!("worst {:.1} ms", self.worst_analyze_ms))
