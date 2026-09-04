@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-syntax-native-v0.0.16...brink-syntax-native-v0.0.17) - 2026-09-04
+
+### Fixed
+
+- *(native)* `\}` is an escape — a literal `}` was unwritable in prose
+
+### Other
+
+- fmt + clippy on the `\}` escape tests
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-syntax-native-v0.0.11...brink-syntax-native-v0.0.15) - 2026-08-23
 
 ### Added

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.16...brink-lsp-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(brink-lsp)* quickfix code actions carry their diagnostic + source.fixAll.brink
+- *(brink-ide,brink-web)* auto-fix core model — Fixer registry, Fix/FileEdit currency, FixJs DTO
+- *(studio)* debug info on by default for studio compiles (W1, #3294)
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- one indent width, defaulting to 4, read by everything that indents ([#3167](https://github.com/Syynth/brink/pull/3167))
+
+### Fixed
+
+- *(brink-lsp)* honor suppression in quickfixes, abandon partial fix-all batches, skip fix-all when no Safe fixer exists
+- *(lsp,cli)* flatten hover link refs for consumers that cannot resolve them
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- *(fix-policy)* fix reviewer-flagged stale/orphaned pointers on #3447
+- *(brink-lsp)* pin the post-#3448 import placement in the fix_all workspace-edit test
+- Merge origin/main into debugger-ui/w3-resolver-registration
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.15...brink-lsp-v0.0.16) - 2026-08-25
 
 ### Added

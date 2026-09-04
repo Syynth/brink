@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.16...brink-runtime-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(debug-info)* `synthetic` flag on locals rows, hidden by the studio
+- *(player)* peek — hovering Continue or a choice forecasts what it will hit
+- *(player)* a line built from several source lines highlights them all
+- *(runtime)* Story::current_path — the knot/stitch the story is in ([#3389](https://github.com/Syynth/brink/pull/3389))
+- *(runtime)* a Choice carries its kind (sticky) and its source location ([#3435](https://github.com/Syynth/brink/pull/3435))
+- *(compiler,runtime)* E193 for undominated `~ temp` reads; resolve them to the slot (#3354, #3362)
+- break-on-write data breakpoints via the variable-row menu (W18, #3311)
+- live value editing — scalars, paused-only, via set_variable + set-temp seam (W16, #3309)
+- structural-transcript saves, one-shot fast-forward, collapsing Player toolbar
+- *(runtime,wasm,studio)* runtime save/load — idle launcher, Load/Fork, LoadReport surfaced (W14, #3307)
+- *(runtime,wasm,editor,studio)* choice-point visualization — lit presented, dimmed with reasons (W11, #3304)
+- *(studio,shell)* no auto-start, paced auto-reveal, idle launcher shell, narrow-tier player route (W7, #3300 + #2795)
+- *(runtime,wasm)* transcript provenance — every delivered line carries its source (W7, #3300)
+- *(runtime,wasm,studio)* Continue runs to the next content line and resumes play ([#3321](https://github.com/Syynth/brink/pull/3321))
+- *(runtime,wasm,editor,studio)* live execution highlight — play is stepping (W6, #3299)
+- *(runtime,wasm,studio)* unified drive loop — pause, line stepping, one delivery stream (W5, #3298)
+- *(wasm)* source→program resolvers reach the bridge (W2, #3295)
+- *(format,runtime)* TouchVisit + ShuffleIndexOf opcodes ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(cli)* `brink debug` — a terminal debugger ([#3248](https://github.com/Syynth/brink/pull/3248))
+- *(runtime)* line-granular stepping beside the instruction verb ([#3264](https://github.com/Syynth/brink/pull/3264))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(debugger)* inverse resolver — source span to program address ([#3246](https://github.com/Syynth/brink/pull/3246))
+- *(debugger)* D8 VM debug-hooks seam — breakpoints, pause/resume, step in/over/out
+- *(runtime)* expose (container_idx, offset) execution position per frame ([#3182](https://github.com/Syynth/brink/pull/3182))
+
+### Fixed
+
+- *(brink-ir, brink-runtime)* the else-arm half of #3507 — spring in branch bodies, whitespace-only line refs pass the glue scan
+- *(brink-runtime)* glue trims whitespace-only output after the newline it consumes ([#3507](https://github.com/Syynth/brink/pull/3507))
+- *(brink-ir)* lift hoists prefix interpolations ahead of the construct ([#3395](https://github.com/Syynth/brink/pull/3395))
+- *(runtime)* current_path() inside a choice body reports the offering knot
+- *(runtime)* the root frame keeps its empty path for the debugger; only the public query maps it to None ([#3389](https://github.com/Syynth/brink/pull/3389))
+- *(brink-runtime)* debug_set_temp commits through write_temp
+- *(brink-runtime)* GetTemp's uninitialized-temp check keys on written, not value
+- *(runtime)* alloc::string::ToString, not std — the no_std leg (CI)
+- *(runtime)* provenance lookup goes through scope_table_idx like text resolution (W7, #3300)
+- *(runtime)* StopOnLine is Copy — clippy needless_pass_by_value (CI)
+- *(runtime,studio)* breakpoints hit under the unified reveal — two live-found bugs (W5, #3298)
+- *(lints)* restore stolen #[expect] attributes; satisfy -D warnings ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(debugger)* D8 review fixes — resume, choice boundary, Thread step-out, breakpoints in step
+- *(debug)* document External-frame position:None, add wasm/mirror/doc coverage
+
+### Other
+
+- pin the toolchain to Rust 1.98.1 and fix its new clippy findings
+- *(brink-runtime)* satisfy clippy pedantic for the GetTemp/CallFrame fix
+- Merge origin/main into debugger-ui/w3-resolver-registration
+- Merge pull request #3239 from Syynth/auto/issue-3232
+- *(runtime)* brink-web is now a deliberate `debug-hooks` exception
+- Merge remote-tracking branch 'origin/main' into auto/issue-3185
+- populate the DebugInfo LocalsTable and expose named locals+values ([#3185](https://github.com/Syynth/brink/pull/3185))
+- Retire dormant Opcode::SourceLocation (ruled Q-R1, 2026-07-19)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.11...brink-runtime-v0.0.15) - 2026-08-23
 
 ### Added

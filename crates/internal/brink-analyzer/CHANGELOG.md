@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.16...brink-analyzer-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(debug-info)* `synthetic` flag on locals rows, hidden by the studio
+- *(compiler)* compat-deny diagnostic tier; E194 for knot temp read from stitch
+- *(compiler,runtime)* E193 for undominated `~ temp` reads; resolve them to the slot (#3354, #3362)
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+
+### Fixed
+
+- *(brink-project-config)* validate [fix] table codes, warn on unrecognized ([#3447](https://github.com/Syynth/brink/pull/3447))
+- *(brink-analyzer)* E194 must fire on plain writes, not just reads
+- *(brink-analyzer)* E193 speaks the author's own surface vocabulary
+- *(ir,analyzer)* anonymous-id counters go weave-block-local; labels anchor subtrees
+- *(ide,analyzer)* name the RNG cell `rng` instead of leaking its handle
+- *(3181)* apply adversarial review findings — span regression + wrong choice locations
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- *(fix-policy)* fix reviewer-flagged stale/orphaned pointers on #3447
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.15...brink-analyzer-v0.0.16) - 2026-08-25
 
 ### Added

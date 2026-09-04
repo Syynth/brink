@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-environment-v0.0.16...brink-environment-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+
+### Fixed
+
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- *(fix-policy)* fix reviewer-flagged stale/orphaned pointers on #3447
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-environment-v0.0.11...brink-environment-v0.0.15) - 2026-08-23
 
 ### Added

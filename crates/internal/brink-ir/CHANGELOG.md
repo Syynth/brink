@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-ir-v0.0.16...brink-ir-v0.0.17) - 2026-09-04
+
+### Added
+
+- *(debug-info)* `synthetic` flag on locals rows, hidden by the studio
+- *(compiler)* compat-deny diagnostic tier; E194 for knot temp read from stitch
+- *(compiler,runtime)* E193 for undominated `~ temp` reads; resolve them to the slot (#3354, #3362)
+- *(ir,db)* anonymous weave containers reach the overlay projection with codegen's ids ([#3234](https://github.com/Syynth/brink/pull/3234))
+- *(ir)* stage 3a — stamp container ids on pristine HIR; the lift inherits, clones derive or share ([#3275](https://github.com/Syynth/brink/pull/3275))
+- *(lir)* lower variant-claimed lines to EmitLineVariants ([#3274](https://github.com/Syynth/brink/pull/3274))
+- *(hir)* normalize skips variant-claimed lines; label carriers lift first ([#3274](https://github.com/Syynth/brink/pull/3274))
+- *(lir)* claims_variant_line predicate + E191 cap-breach code ([#3274](https://github.com/Syynth/brink/pull/3274))
+- *(ir,codegen)* EmitLineVariants — the variant-group combo switch ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(ir)* variant-line enumeration — lir::enumerate_variant_contents ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+- *(lir)* thread source provenance through Container and Stmt ([#3183](https://github.com/Syynth/brink/pull/3183))
+- *(brink-ir)* expose the diagnostic registry, and clear the doc placeholders ([#3170](https://github.com/Syynth/brink/pull/3170))
+- *(brink-ir)* give the escape's backslash its own token, and fix native ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3157](https://github.com/Syynth/brink/pull/3157))
+- *(studio,editor,brink-ir)* Manuscript + Inky themes, role token types, color design doc ([#3121](https://github.com/Syynth/brink/pull/3121))
+
+### Fixed
+
+- *(brink-ir, brink-runtime)* the else-arm half of #3507 — spring in branch bodies, whitespace-only line refs pass the glue scan
+- *(brink-ir)* lower the whitespace between an inline construct and <> to a Spring ([#3507](https://github.com/Syynth/brink/pull/3507))
+- *(brink-ir)* lift hoists prefix interpolations ahead of the construct ([#3395](https://github.com/Syynth/brink/pull/3395))
+- *(brink-ir)* true-parity fixes for E195 review findings
+- *(brink-ir)* add E110's missing diagnostic_explanations.rs entry
+- *(brink-ir)* sync diagnostic_explanations.rs with E031's new Explanation section
+- *(brink-ir)* a sequence cloned into a lift's branches shares one counter ([#3401](https://github.com/Syynth/brink/pull/3401))
+- *(ir,analyzer)* anonymous-id counters go weave-block-local; labels anchor subtrees
+- *(lints)* restore stolen #[expect] attributes; satisfy -D warnings ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(native)* `\}` is an escape — a literal `}` was unwritable in prose
+- *(lir)* restore stale ambient after Fragment recursion; fix fmt and spec drift
+- *(3184)* apply PR #3219 review findings that merged before they landed
+- *(3184)* clear the clippy failures the build could not gate
+- *(3181)* apply adversarial review findings — span regression + wrong choice locations
+- *(codegen)* thread real source_location through the EmitContent/ChoiceOutput flattening path ([#3181](https://github.com/Syynth/brink/pull/3181))
+- *(lir)* stale ambient provenance across recursive lowering (#3183 review)
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+- *(brink-ir)* never tokenize a character inside an escape ([#3142](https://github.com/Syynth/brink/pull/3142)) ([#3154](https://github.com/Syynth/brink/pull/3154))
+
+### Other
+
+- pin the toolchain to Rust 1.98.1 and fix its new clippy findings
+- Merge pull request #3473 from Syynth/auto/issue-3365
+- Merge remote-tracking branch 'origin/main' into train-fix
+- Merge pull request #3468 from Syynth/auto/issue-3426
+- Merge remote-tracking branch 'origin/main' into wt-oracle-3401
+- Merge branch 'main' into dialect/3393-package-output
+- *(brink-ir)* regenerate E194's embedded explanation to match docs
+- Merge remote-tracking branch 'origin/main' into train-fix
+- Merge branch 'main' into fix/3259-file-scoped-suppression
+- *(ir)* normalize.rs post-stage-3 role; record the #3275 rulings ([#3275](https://github.com/Syynth/brink/pull/3275))
+- *(harness)* stage-3 gates — road-parity byte-identity and the pinned mixed-line ruling ([#3275](https://github.com/Syynth/brink/pull/3275))
+- repin branch_expansion sequence test to the variant shape; changeset ([#3274](https://github.com/Syynth/brink/pull/3274))
+- populate the DebugInfo LocalsTable and expose named locals+values ([#3185](https://github.com/Syynth/brink/pull/3185))
+- *(editor)* WebKit rails-gutter layout fix + dispatch instrumentation + delimiter tokens ([#3118](https://github.com/Syynth/brink/pull/3118))
+
 ## [0.0.16](https://github.com/Syynth/brink/compare/brink-ir-v0.0.15...brink-ir-v0.0.16) - 2026-08-25
 
 ### Added
