@@ -1056,11 +1056,14 @@ mod expected_mismatch_tests {
         let _ = expected_mismatch_issue(scratch.path());
     }
 
-    /// The real migration target (issue #3402): both `#3395` lift-order
-    /// fixtures must carry the flag after migration, and their control case
-    /// (no known mismatch) must not.
+    /// The real migration target (issue #3402) was the two `#3395`
+    /// lift-order fixtures, flagged from the day they were added. The #3395
+    /// fix (2026-09-04) flipped both and removed their flags in the same
+    /// change — the life cycle the flag exists for — so all three lift-order
+    /// cases now read as unflagged, and the fixtures still parse (a flag
+    /// misplaced or mistyped would panic above, not read as `None`).
     #[test]
-    fn the_real_3395_fixtures_carry_the_flag_and_the_control_case_does_not() {
+    fn the_real_3395_fixtures_are_unflagged_after_the_fix() {
         let tests_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -1069,21 +1072,22 @@ mod expected_mismatch_tests {
             .join("tier2")
             .join("evaluation");
 
-        assert_eq!(
-            expected_mismatch_issue(&tests_root.join("lift-order-seq-fn-cond")),
-            Some("#3395".to_string()),
-            "lift-order-seq-fn-cond's metadata.toml must carry expected_mismatch = \"#3395\""
-        );
-        assert_eq!(
-            expected_mismatch_issue(&tests_root.join("lift-order-fn-then-cond")),
-            Some("#3395".to_string()),
-            "lift-order-fn-then-cond's metadata.toml must carry expected_mismatch = \"#3395\""
-        );
-        assert_eq!(
-            expected_mismatch_issue(&tests_root.join("lift-order-cond-then-fn")),
-            None,
-            "the #3395 control case must NOT be flagged — it already matches the oracle"
-        );
+        for case in [
+            "lift-order-seq-fn-cond",
+            "lift-order-fn-then-cond",
+            "lift-order-cond-then-fn",
+        ] {
+            let dir = tests_root.join(case);
+            assert!(
+                dir.join("metadata.toml").is_file(),
+                "{case}: the fixture must still exist"
+            );
+            assert_eq!(
+                expected_mismatch_issue(&dir),
+                None,
+                "{case} must NOT carry expected_mismatch — #3395 is fixed and the ratchet counts it"
+            );
+        }
     }
 
     #[test]
