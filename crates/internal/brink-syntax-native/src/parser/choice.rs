@@ -47,9 +47,23 @@ pub(crate) fn choice_point(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// One `*`/`+` choice line: bullet, optional `{if cond}` guard, optional
-/// `(label)`, the `[]` display-split anatomy (kept as-is, charter §5), and
-/// an optional braced nested-content body.
+/// One `*`/`+` choice line: bullet, optional `(label)`, optional `{if
+/// cond}` guard, the `[]` display-split anatomy (kept as-is, charter §5),
+/// and an optional braced nested-content body.
+///
+/// Label-then-guard is ink's own canonical order (#1253): the reference C#
+/// parser's `Choice()` (`InkParser_Choices.cs`) parses `BracketedName`
+/// (label) strictly before `ChoiceCondition` (guard) and never the other
+/// way around, and `brink-syntax`'s reference grammar (`choice.rs`'s own
+/// doc comment: `label? ~ … ~ choice_condition*`) agrees. This used to
+/// check guard-before-label, which rejected ink's idiomatic `(name) {if
+/// cond}` spelling — a writer copying straight from ink source got a parse
+/// error on valid-looking input. There is no reference support for the
+/// reverse order (guard-then-label); a guard immediately after the bullet
+/// still parses as a guard, but a paren that follows one is not a label —
+/// it falls through and reads as ordinary choice text, same as any other
+/// unrecognized-shape parenthetical (see `content::at_content_label`'s doc
+/// comment for the identical tradeoff on content-line labels).
 fn choice(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE);
     p.start_node(CHOICE_BULLET);
@@ -57,12 +71,12 @@ fn choice(p: &mut Parser<'_, '_>) {
     p.finish_node();
 
     p.skip_ws();
-    if p.at(L_BRACE) && p.nth(1) == KW_IF {
-        choice_guard(p);
-    }
-    p.skip_ws();
     if p.at(L_PAREN) {
         super::content::label(p);
+    }
+    p.skip_ws();
+    if p.at(L_BRACE) && p.nth(1) == KW_IF {
+        choice_guard(p);
     }
 
     choice_text(p);
