@@ -64,7 +64,24 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // its output is one fragment, and the newline inside it never becomes
     // a line boundary.
     ("#3524", function_printing_several_lines),
+    // A whole-line inline conditional with no else arm whose condition
+    // calls a function: the lift emits no end-of-line on the untaken side,
+    // and the call's output loses its newline.
+    ("#3530", else_less_conditional_calling_a_function),
 ];
+
+/// A line that is exactly one `{cond:then}` inline conditional with no `|`
+/// arm, whose condition names a generated function.
+fn else_less_conditional_calling_a_function(src: &str) -> bool {
+    src.lines().any(|line| {
+        let t = line.trim();
+        t.starts_with('{')
+            && t.ends_with('}')
+            && t.matches('{').count() == 1
+            && t.split_once(':')
+                .is_some_and(|(cond, rest)| names_a_function(cond) && !rest.contains('|'))
+    })
+}
 
 /// A content line with content (text or an earlier `{…}`) before a
 /// `{cond:…}` whose condition names a generated function (`f<n>_`).
@@ -98,39 +115,48 @@ fn names_a_function(s: &str) -> bool {
         .any(|w| w[0] == b'f' && w[1].is_ascii_digit())
 }
 
-/// A `=== function` section with two or more printing lines — content
-/// lines (anything that is not logic, a block marker, or blank) and
-/// statement calls to generated functions (`~ f<n>_…`, whose callee may
-/// print a line of its own: CI's first run found `~ f0_a()` twice).
+/// A `=== function` section that may print two or more lines: each
+/// content line (anything that is not logic, a block marker, or blank)
+/// counts one, and every reference to a generated function (`f<n>_…`,
+/// whose callee may print a line of its own) counts one more, whether it
+/// is a statement call (`~ f0_a()`, CI's first find), a call inside a
+/// logic line (`~ return f0_a()`, CI's second — the callee's line lands
+/// in the caller's), or an interpolation.
 fn function_printing_several_lines(src: &str) -> bool {
     let mut in_function = false;
-    let mut content = 0;
+    let mut may_print = 0;
     for line in src.lines() {
         let t = line.trim();
         if t.starts_with("=== function") {
             in_function = true;
-            content = 0;
+            may_print = 0;
             continue;
         }
         if t.starts_with("===") {
             in_function = false;
             continue;
         }
-        let statement_call =
-            t.starts_with("~ f") && t.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
         let is_content = !t.is_empty()
             && !t.starts_with('~')
             && !t.starts_with("{ ")
             && !t.starts_with('-')
             && !t.starts_with('}');
-        if in_function && (is_content || statement_call) {
-            content += 1;
-            if content >= 2 {
+        if in_function {
+            may_print += usize::from(is_content) + function_references(t);
+            if may_print >= 2 {
                 return true;
             }
         }
     }
     false
+}
+
+/// How many times `s` names a generated function (`f` followed by a digit).
+fn function_references(s: &str) -> usize {
+    s.as_bytes()
+        .windows(2)
+        .filter(|w| w[0] == b'f' && w[1].is_ascii_digit())
+        .count()
 }
 
 /// Recognises a known-divergent shape in a printed `.ink` source.
@@ -147,6 +173,10 @@ fn config() -> ProptestConfig {
         .unwrap_or(CASES);
     ProptestConfig {
         cases,
+        // A failing story that is expensive to check (an exhaustive
+        // exploration near the episode budget runs about a second) must not
+        // turn shrinking into a quarter-hour stall: cap the shrink phase.
+        max_shrink_time: 60_000,
         ..ProptestConfig::default()
     }
 }

@@ -49,6 +49,10 @@ fn config() -> ProptestConfig {
         .unwrap_or(CASES);
     ProptestConfig {
         cases,
+        // A failing story that is expensive to check (an exhaustive
+        // exploration near the episode budget runs about a second) must not
+        // turn shrinking into a quarter-hour stall: cap the shrink phase.
+        max_shrink_time: 60_000,
         ..ProptestConfig::default()
     }
 }
