@@ -19,7 +19,7 @@ use brink_test_harness::{Episode, ExploreConfig};
 /// Returns true if the case's metadata.toml has `mode = "compile_error"`.
 fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
     let meta_path = case_dir.join("metadata.toml");
-    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
+    std::fs::read_to_string(meta_path).is_ok_and(|s| {
         s.lines()
             .any(|line| line.trim() == r#"mode = "compile_error""#)
     })
@@ -27,9 +27,7 @@ fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
 
 fn has_empty_source(case_dir: &std::path::Path) -> bool {
     let ink_path = case_dir.join("story.ink");
-    std::fs::read_to_string(ink_path)
-        .ok()
-        .is_some_and(|s| s.trim().is_empty())
+    std::fs::read_to_string(ink_path).is_ok_and(|s| s.trim().is_empty())
 }
 
 fn tests_dir() -> PathBuf {

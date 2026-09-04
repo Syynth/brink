@@ -2158,7 +2158,8 @@ fn lower_weighted_call(
     // Classify literal weights (even positions). Non-literal weights are
     // deliberately NOT classified here — they are the computed-weight
     // residual the runtime construction fault owns.
-    for pair in args.chunks_exact(2) {
+    let (arg_pairs, _) = args.as_chunks::<2>();
+    for pair in arg_pairs {
         match &pair[0] {
             hir::Expr::Int(w) if *w >= 1 => {}
             hir::Expr::Int(w) => {
@@ -2189,8 +2190,8 @@ fn lower_weighted_call(
             _ => {}
         }
     }
-    let pairs = args
-        .chunks_exact(2)
+    let pairs = arg_pairs
+        .iter()
         .map(|pair| (lower_expr(&pair[0], ctx), lower_expr(&pair[1], ctx)))
         .collect();
     lir::ExprKind::WeightedNew { pairs }.at(ctx.current_stmt_provenance)

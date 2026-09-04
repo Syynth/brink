@@ -55,7 +55,7 @@ pub fn collect_oracle_cases(root: &Path) -> Vec<PathBuf> {
 /// one definition, so the skip rule cannot drift between the two.
 pub fn is_compile_error_case(case_dir: &Path) -> bool {
     let meta_path = case_dir.join("metadata.toml");
-    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
+    std::fs::read_to_string(meta_path).is_ok_and(|s| {
         s.lines()
             .any(|line| line.trim() == r#"mode = "compile_error""#)
     })
@@ -173,9 +173,7 @@ pub fn mismatch_flag_verdict(
 /// [`is_compile_error_case`] and by the same callers.
 pub fn has_empty_source(case_dir: &Path) -> bool {
     let ink_path = case_dir.join("story.ink");
-    std::fs::read_to_string(ink_path)
-        .ok()
-        .is_some_and(|s| s.trim().is_empty())
+    std::fs::read_to_string(ink_path).is_ok_and(|s| s.trim().is_empty())
 }
 
 /// Every immediate subdirectory of `root` (e.g. `tests/tier1-native/`),
