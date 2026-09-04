@@ -92,9 +92,20 @@ fn lower_branch_body_from_syntax(
                 acc.push_text(t, range);
             }
             BranchChild::Glue => {
-                flush_pending_ws(&mut acc, &mut pending_ws);
+                // Issue #3507: after an inline construct, the deferred
+                // whitespace becomes a `Spring` rather than `Text(" ")` —
+                // the same lowering as `lower_content_node_children`, so a
+                // lifted arm never ends up as a whitespace-only line
+                // (`emit_line " "; glue`), which the runtime's glue scan
+                // would take for content.
+                if pending_ws.is_some() && acc.last_part_is_inline_construct() {
+                    pending_ws = None;
+                    acc.push_glue_after(child.text_range(), true);
+                } else {
+                    flush_pending_ws(&mut acc, &mut pending_ws);
+                    acc.push_glue(child.text_range());
+                }
                 seen_content = true;
-                acc.push_glue(child.text_range());
             }
             BranchChild::Escape(t) => {
                 flush_pending_ws(&mut acc, &mut pending_ws);

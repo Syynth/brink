@@ -740,6 +740,14 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     // consistent with `OutputPart::is_content`.
                     | OutputPart::ValueRef(Value::OptionVal(None)) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
+                    // A whitespace-only or empty line-table line is
+                    // whitespace-only text by another name (issue #3507:
+                    // a lifted arm that rendered to `" "` before glue) —
+                    // it is not content and does not block the scan,
+                    // exactly as `is_content` already classifies it.
+                    OutputPart::LineRef { flags, .. }
+                        if flags.contains(brink_format::LineFlags::ALL_WS)
+                            || flags.contains(brink_format::LineFlags::EMPTY) => {}
                     // Content (Text, LineRef, ValueRef) blocks glue scan.
                     OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
                         break;
@@ -808,11 +816,27 @@ fn resolve_parts(
     // can be dropped rather than left as a stray blank line.
     let mut line_start = 0usize;
     let mut saw_fragment_ref = false;
+    // Issue #3507: where the current line began in `out`, counting a
+    // glue-removed `Newline` too (unlike `line_start`, which only moves on
+    // a kept one). ink's glue trims the trailing newline AND every
+    // whitespace-only string after it (`TrimNewlinesFromOutputStream`), so
+    // `a` / `{false:x} <>` / `b` prints `ab`: the spring's space after the
+    // empty construct dies with the newline. When content DID land on the
+    // line (`{0} <>`), the newline is not trailing and the space survives
+    // (`0 world`).
+    let mut since_newline = 0usize;
 
     for (i, part) in parts.iter().enumerate() {
         if remove[i] {
-            if matches!(part, OutputPart::Glue) {
-                after_glue = true;
+            match part {
+                OutputPart::Glue => {
+                    after_glue = true;
+                    if out[since_newline..].trim().is_empty() {
+                        out.truncate(since_newline);
+                    }
+                }
+                OutputPart::Newline => since_newline = out.len(),
+                _ => {}
             }
             continue;
         }
@@ -854,6 +878,7 @@ fn resolve_parts(
                     }
                     saw_fragment_ref = false;
                 }
+                since_newline = out.len();
             }
             OutputPart::Glue
             | OutputPart::Checkpoint
@@ -1037,6 +1062,10 @@ fn widen_source(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass over the output parts; each arm is a distinct part kind"
+)]
 pub(crate) fn resolve_lines_annotated(
     parts: &[OutputPart],
     seed_element: BTreeMap<String, String>,
@@ -1072,11 +1101,24 @@ pub(crate) fn resolve_lines_annotated(
     let mut current_source: Option<brink_format::SourceLocation> = None;
     let mut saw_fragment_ref = false;
     let mut after_glue = false;
+    // Issue #3507 — see `resolve_parts`'s `since_newline`: the
+    // point in `current_text` where the current source line began, counting
+    // a glue-removed newline, so glue can drop whitespace-only text that
+    // followed that newline the way ink's `TrimNewlinesFromOutputStream`
+    // does.
+    let mut since_newline = 0usize;
 
     for (i, part) in parts.iter().enumerate() {
         if remove[i] {
-            if matches!(part, OutputPart::Glue) {
-                after_glue = true;
+            match part {
+                OutputPart::Glue => {
+                    after_glue = true;
+                    if current_text[since_newline..].trim().is_empty() {
+                        current_text.truncate(since_newline);
+                    }
+                }
+                OutputPart::Newline => since_newline = current_text.len(),
+                _ => {}
             }
             continue;
         }
@@ -1142,6 +1184,7 @@ pub(crate) fn resolve_lines_annotated(
                     current_text = String::new();
                     saw_fragment_ref = false;
                 }
+                since_newline = current_text.len();
             }
             OutputPart::Tag(tag) => {
                 current_tags.push(tag.clone());
@@ -1457,7 +1500,12 @@ mod tests {
 
     /// Glue should skip past whitespace-only text to find the preceding newline.
     /// Pattern: `a\n" "<>b` — the `" "` is whitespace-only and should not block
-    /// the glue from removing the newline.
+    /// the glue from removing the newline — and (issue #3507) it goes WITH
+    /// the newline: ink's `TrimNewlinesFromOutputStream` removes the trailing
+    /// newline and every whitespace-only string after it, so `a` /
+    /// `{false:x} <>` / `b` prints `ab` (inkjs 2.4.0 via
+    /// `tools/inkjs-oracle`). This test used to pin `a b`, which was the
+    /// divergence.
     #[test]
     fn glue_skips_whitespace_only_text_to_find_newline() {
         let mut buf = OutputBuffer::new();
@@ -1466,7 +1514,31 @@ mod tests {
         buf.push_text(" ");
         buf.push_glue();
         buf.push_text("b");
-        assert_eq!(buf.flush(), "a b");
+        assert_eq!(buf.flush(), "ab");
+    }
+
+    /// Issue #3507: a `Spring` between a glue-removed newline and the glue
+    /// is whitespace after that newline and dies with it (`ab`); with
+    /// content on the line the newline is not trailing, so the spring's
+    /// space survives (`0 world`).
+    #[test]
+    fn spring_before_glue_survives_only_after_line_content() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("a");
+        buf.push_newline();
+        buf.push_spring();
+        buf.push_glue();
+        buf.push_text("b");
+        assert_eq!(buf.flush(), "ab");
+
+        let mut buf = OutputBuffer::new();
+        buf.push_text("a");
+        buf.push_newline();
+        buf.push_text("0");
+        buf.push_spring();
+        buf.push_glue();
+        buf.push_text("world");
+        assert_eq!(buf.flush(), "a\n0 world");
     }
 
     // ── flush_lines tests ────────────────────────────────────────────
