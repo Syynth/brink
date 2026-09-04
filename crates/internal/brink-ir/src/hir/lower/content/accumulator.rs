@@ -71,6 +71,14 @@ impl<B: BodyBackend> ContentAccumulator<B> {
         self.note_range(range);
     }
 
+    /// [`Self::push_glue`], preceded by a `Spring` when whitespace separated
+    /// the glue from an inline construct (issue #3507) — see
+    /// [`super::helpers::push_glue`].
+    pub fn push_glue_after(&mut self, range: TextRange, ws_before_glue: bool) {
+        super::helpers::push_glue(&mut self.parts, ws_before_glue);
+        self.note_range(range);
+    }
+
     pub fn push_escape(&mut self, text: &str, range: TextRange) {
         if text.len() > 1 {
             self.parts.push(ContentPart::Text(text[1..].to_string()));
