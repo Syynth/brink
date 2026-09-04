@@ -35,7 +35,7 @@ import {
   refreshExecutionHighlight as refreshExecutionHighlightInView,
   type ExecutionHighlight,
 } from "./execution-highlight.js";
-import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
+import { EditorState, type ChangeSet, type Extension, type StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type {
@@ -380,8 +380,17 @@ interface ViewSlot {
   view: EditorView | null;
   state: EditorState | null;
   /** Scroller pixel offset snapshotted at unmount — EditorState does not
-   *  carry scroll, so backgrounded tabs keep it here (#347). */
+   *  carry scroll, so backgrounded tabs keep it here (#347). Kept for the
+   *  cross-session road (`viewStates`), which persists JSON and cannot
+   *  hold an effect. */
   scrollTop: number;
+  /** CodeMirror's own scroll snapshot, taken at unmount (#3559). A raw
+   *  pixel offset is not a stable address into the document: heights are
+   *  ESTIMATED until a line is measured, so re-applying the number after a
+   *  remount lands somewhere else — measured drift of ~1,000 px on an 8k
+   *  line file. `view.scrollSnapshot()` records a position instead, and
+   *  re-applies it correctly once measurement settles. */
+  scrollSnapshot: StateEffect<unknown> | null;
   extensions: Extension[] | null;
 }
 
@@ -595,6 +604,7 @@ export class DocumentSessions {
         view: null,
         state: null,
         scrollTop: 0,
+        scrollSnapshot: null,
         extensions: null,
       };
       this.slots.set(id, slot);
@@ -662,11 +672,33 @@ export class DocumentSessions {
     // pending reveal/restore (docKey-wide or targeting this slot) is about to
     // position the view itself.
     if (
-      slot.scrollTop !== 0 &&
+      (slot.scrollSnapshot !== null || slot.scrollTop !== 0) &&
       !this.pendingReveals.has(docKey) &&
       !this.pendingReveals.has(slotId(docKey, slot.groupId))
     ) {
+      // BOTH, in this order. The pixel offset lands immediately and is the
+      // only thing that works where there is no layout (jsdom, and the
+      // cross-reload road where only JSON crossed the boundary). The
+      // snapshot then corrects it once heights are measured: a raw offset
+      // is not a stable address into the document — CodeMirror estimates
+      // unmeasured line heights, so re-applying the number alone drifted
+      // ~1,000 px on an 8k-line file (#3559).
       setScrollTop(view, slot.scrollTop);
+      // The snapshot corrects that offset once heights are known, but it
+      // must wait for layout twice over: at mount the container has none
+      // yet (so the correction would be computed against zero), and
+      // applying it asks CodeMirror to measure coordinates, which a
+      // zero-height host (jsdom) answers by throwing inside the selection
+      // layer rather than degrading. Next frame, and only with real
+      // layout. The e2e in `packages/brink-studio/e2e/scroll-memory.spec.ts`
+      // covers this branch; jsdom keeps the pixel offset above.
+      const snapshot = slot.scrollSnapshot;
+      if (snapshot !== null) {
+        requestAnimationFrame(() => {
+          if (slot.view !== view || view.scrollDOM.clientHeight === 0) return;
+          view.dispatch({ effects: snapshot });
+        });
+      }
     }
     this.applyPendingReveal(slot);
 
@@ -1160,6 +1192,7 @@ export class DocumentSessions {
       if (opts.snapshot) {
         slot.state = slot.view.state;
         slot.scrollTop = slot.view.scrollDOM.scrollTop;
+        slot.scrollSnapshot = slot.view.scrollSnapshot();
       }
       slot.view.destroy();
       slot.view = null;
