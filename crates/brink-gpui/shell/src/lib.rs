@@ -1,1 +1,10 @@
+//! The GPUI studio shell — tier 2 of `docs/gpui-studio-spec.md` §2.
+//!
+//! Regions, rails, docks and layout. It depends on the model and MUST NOT
+//! depend on the feature crate: features implement its contracts, and the
+//! concrete wiring happens once, at the top.
 
+pub mod rail;
+pub mod region;
+pub mod tool_window;
+pub mod workspace;

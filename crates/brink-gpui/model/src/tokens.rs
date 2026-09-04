@@ -38,8 +38,6 @@
 //! Where a native segment boundary falls is a language question, not an
 //! implementation one. See [`TokenCache::is_incremental`].
 
-use std::collections::BTreeMap;
-
 use brink_ir::semantic_tokens::RawToken;
 use brink_ir::{LineIndex, SymbolKind};
 
@@ -188,6 +186,8 @@ fn classify_native(source: &str, kinds: &Kinds) -> Vec<RawToken> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn knots(n: usize, marker: &str) -> String {
