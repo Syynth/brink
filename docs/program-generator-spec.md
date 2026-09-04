@@ -119,6 +119,44 @@ for the rank-2 reference; the C# runtime remains the tie-breaker
 seed mapping between inkjs and the harness is proven before draws
 enter the differential profile (#3379 states which).
 
+**Status (2026-09-04, #3379 landed).** `tools/inkjs-oracle` is a port
+of `tools/ink-oracle`'s crawler (same DFS, same episode JSON) onto
+`inkjs/compiler`, and the sanction is
+`crates/internal/brink-test-harness/tests/inkjs_sanction.rs`: **414 of
+414** oracle cases match — 400 byte for byte, 14 after two
+normalisations that forgive presentational artefacts of the *reference*
+(the C# tool's no-`onError` error wrapper and absolute source paths;
+double-precision float printing, `0.6666666666666666` vs `0.6666667`),
+documented and unit-tested in `brink_test_harness::inkjs`. Two facts
+that sanction measured:
+
+- **There is no RNG seed mapping; there is a replacement.** inkjs ships
+  a Park–Miller generator where the C# runtime uses `new
+  System.Random(seed)` (Knuth subtractive) for every shuffle, `RANDOM`
+  and `LIST_RANDOM`. Same seeds, different sequences, every draw
+  diverges. `tools/inkjs-oracle/dotnet-random.mjs` ports .NET's
+  generator (the same port `brink-runtime`'s `rng.rs` carries) and
+  installs it over inkjs's `engine/PRNG` export; only then do the
+  shuffle and `LIST_RANDOM` goldens match. The bundled `inkjs/full`
+  cannot be patched this way, which is why the tool imports the
+  unbundled compiler module.
+- **Warn-and-continue is the default** (§6's requirement), with
+  `--strict-warnings` reproducing the C# tool's no-handler mode; no
+  checked-in golden needed the strict mode to match.
+
+The differential itself is
+`crates/internal/brink-gen/tests/inkjs_differential.rs` over
+`Profile::PLAIN_INK`, compared by the harness's `diff_oracle` (the
+corpus ratchet's own comparison). Its first run found two brink
+divergences from ink — whitespace between an interpolation and `<>`
+dropped (#3507), and whitespace runs in choice text collapsed
+(#3508) — carried as issue-keyed `KNOWN_DIVERGENCES` there until each
+gets its C#-golden corpus case and fix. Lanes per §7: the sanction is
+per PR (`ci.yml`, `inkjs-sanction`); the differential is nightly
+(`inkjs-differential.yml`, 512 cases, advisory). Both are opt-in
+locally behind `BRINK_INKJS_ORACLE=1` after `npm ci` in
+`tools/inkjs-oracle`.
+
 ## 7. Feature order, crate, lanes
 
 - **Crate**: `crates/internal/brink-gen`, its own workspace member —

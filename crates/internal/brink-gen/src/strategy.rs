@@ -68,6 +68,16 @@ impl Profile {
         max_vars: 0,
         ..Self::DEFAULT
     };
+
+    /// The `plain_ink` differential profile (`docs/program-generator-spec.md`
+    /// §6, issue #3379): the stories `tests/inkjs_differential.rs` replays
+    /// through inkjs. Today it IS [`Self::DEFAULT`] — every construct the
+    /// generator emits is plain ink, so the whole model is admissible — but
+    /// the differential names this profile rather than the default so that a
+    /// native-only construct (a `.brink`-surface feature the reference
+    /// cannot run) lands behind a knob here, not in the differential by
+    /// accident.
+    pub const PLAIN_INK: Self = Self::DEFAULT;
 }
 
 impl Default for Profile {
