@@ -1,0 +1,204 @@
+//! Interactive queries — hover, completions, document symbols.
+//!
+//! These are request/response, which is what makes moving the session to a
+//! worker cheap rather than invasive: `gpui-base`'s provider traits already
+//! return a `Task`, so nothing on the UI side has to change shape. This is
+//! how LSP works, and how Zed reaches its own analysis.
+//!
+//! A query is answered **after** the edits queued ahead of it, in the same
+//! drain. The channel is FIFO and the editor sends its `Edit` before asking,
+//! so a query never sees text older than the keystroke that prompted it.
+//!
+//! Results are plain data in **byte offsets**, like everything else crossing
+//! the boundary. The mapping onto `lsp_types` lives with the editor that
+//! consumes it, so it exists once.
+
+use brink_ir::SymbolKind;
+
+/// What the UI wants to know.
+#[derive(Debug, Clone)]
+pub enum QueryKind {
+    Hover { path: String, offset: u32 },
+    Completions { path: String, offset: u32 },
+    DocumentSymbols { path: String },
+}
+
+/// The answer. `Unavailable` is the honest result for a path the session
+/// does not hold or a project that has not analyzed yet — distinct from an
+/// empty answer, which means "asked, and there is nothing here".
+#[derive(Debug, Clone)]
+pub enum QueryResult {
+    Hover(Option<HoverInfo>),
+    Completions(Vec<Completion>),
+    DocumentSymbols(Vec<Symbol>),
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverInfo {
+    /// Markdown, with link refs already stripped.
+    pub markdown: String,
+    pub range: Option<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub label: String,
+    pub kind: CompletionKind,
+}
+
+/// Kept as brink's own kind rather than an LSP one so the LSP mapping is
+/// written once, next to the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionKind {
+    Symbol(SymbolKind),
+    StdlibFunction,
+    /// `DONE` / `END`.
+    Builtin,
+}
+
+/// One knot or stitch, for the Binder's structure view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    pub name: String,
+    /// The name's own range — where "play from here" jumps to.
+    pub start: u32,
+    /// The whole declaration, header through body.
+    pub full_start: u32,
+    pub full_end: u32,
+    pub is_function: bool,
+    pub children: Vec<Symbol>,
+}
+
+pub(crate) fn answer(session: &brink_ide::session::IdeSession, kind: &QueryKind) -> QueryResult {
+    match kind {
+        QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
+        QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
+            Some(items) => QueryResult::Completions(items),
+            None => QueryResult::Unavailable,
+        },
+        QueryKind::DocumentSymbols { path } => match symbols(session, path) {
+            Some(found) => QueryResult::DocumentSymbols(found),
+            None => QueryResult::Unavailable,
+        },
+    }
+}
+
+fn hover(session: &brink_ide::session::IdeSession, path: &str, offset: u32) -> Option<HoverInfo> {
+    let id = session.file_id(path)?;
+    let analysis = session.analysis()?;
+    let source = session.source(id)?;
+    let info = brink_ide::hover::hover(
+        analysis,
+        session.db(),
+        id,
+        source,
+        offset.into(),
+        &session.db().file_metadata(),
+    )?;
+    Some(HoverInfo {
+        markdown: brink_ide::hover::strip_link_refs(&info.content),
+        range: info.range.map(|r| (r.start().into(), r.end().into())),
+    })
+}
+
+fn completions(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    offset: u32,
+) -> Option<Vec<Completion>> {
+    use brink_ide::{
+        CompletionContext, cursor_scope, detect_completion_context, is_visible_in_context,
+        ref_arg_root_prefix, stdlib_completions,
+    };
+
+    let id = session.file_id(path)?;
+    let analysis = session.analysis()?;
+    let source = session.source(id)?;
+    let offset = offset as usize;
+
+    let ctx = detect_completion_context(source, offset);
+    let scope = cursor_scope(source, offset);
+    let ref_root = ref_arg_root_prefix(source, offset);
+    let mut items = Vec::new();
+
+    // A dotted path is exhaustive: only that knot's members can complete,
+    // so this returns rather than falling through to the general sweep.
+    if let CompletionContext::DottedPath { ref knot } = ctx {
+        let prefix = format!("{knot}.");
+        for (name, ids) in &analysis.index.by_name {
+            let Some(suffix) = name.strip_prefix(&*prefix) else {
+                continue;
+            };
+            for def_id in ids {
+                if let Some(info) = analysis.index.symbols.get(def_id) {
+                    items.push(Completion {
+                        label: suffix.to_owned(),
+                        kind: CompletionKind::Symbol(info.kind),
+                    });
+                }
+            }
+        }
+        return Some(items);
+    }
+
+    for info in analysis.index.symbols.values() {
+        if !is_visible_in_context(&ctx, info, &scope) {
+            continue;
+        }
+        // A `ref` argument can only take a variable, so nothing else is a
+        // legal completion there however visible it is.
+        if ref_root.is_some() && info.kind != SymbolKind::Variable {
+            continue;
+        }
+        items.push(Completion {
+            label: info.name.clone(),
+            kind: CompletionKind::Symbol(info.kind),
+        });
+    }
+    for f in stdlib_completions(&ctx, session.language_dialect()) {
+        items.push(Completion {
+            label: f.name.to_owned(),
+            kind: CompletionKind::StdlibFunction,
+        });
+    }
+    if matches!(
+        ctx,
+        CompletionContext::Divert | CompletionContext::InlineExpr
+    ) {
+        for label in ["DONE", "END"] {
+            items.push(Completion {
+                label: label.to_owned(),
+                kind: CompletionKind::Builtin,
+            });
+        }
+    }
+    Some(items)
+}
+
+fn symbols(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<Symbol>> {
+    let id = session.file_id(path)?;
+    let hir = session.hir(id)?;
+    let manifest = session.manifest(id)?;
+    let source = session.source(id)?;
+    Some(
+        brink_ide::document::document_symbols(hir, manifest, source)
+            .iter()
+            .map(convert)
+            .collect(),
+    )
+}
+
+fn convert(symbol: &brink_ide::document::DocumentSymbol) -> Symbol {
+    Symbol {
+        name: symbol.name.clone(),
+        start: symbol.range.start().into(),
+        full_start: symbol.full_range.start().into(),
+        full_end: symbol.full_range.end().into(),
+        is_function: symbol
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("function")),
+        children: symbol.children.iter().map(convert).collect(),
+    }
+}

@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use brink_ide::session::IdeSession;
+
+use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
 use brink_ir::{Severity, SymbolKind};
 
@@ -51,6 +53,14 @@ pub struct Diagnostic {
 pub enum Request {
     /// Discard any current project and load the one rooted at `root`.
     Open { root: PathBuf },
+    /// Ask a question of the current analysis. Answered **after** every
+    /// edit queued ahead of it, so it never sees stale text.
+    Query {
+        kind: QueryKind,
+        /// A one-shot reply channel, so no request-id bookkeeping is needed
+        /// on either side.
+        reply: async_channel::Sender<QueryResult>,
+    },
     /// The full text of one file, as the editor now holds it.
     Edit {
         path: String,
@@ -173,8 +183,10 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 
         let mut reopened = None;
         let mut edited = false;
+        let mut queries = Vec::new();
         for request in batch {
             match request {
+                Request::Query { kind, reply } => queries.push((kind, reply)),
                 Request::Open { root } => {
                     session = session_with_stdlib();
                     let opened = open(&mut session, root);
@@ -196,27 +208,42 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
             }
         }
 
+        let mut usable = true;
+        let mut opened_ok = false;
         if let Some(opened) = reopened {
-            let ok = opened.is_ok();
+            usable = opened.is_ok();
+            opened_ok = usable;
             if responses
                 .send_blocking(Response::Opened(Box::new(opened)))
                 .is_err()
             {
                 return;
             }
-            if !ok {
-                continue;
-            }
-        } else if !edited {
-            continue;
         }
 
-        let analyzed = analyze(&mut session, revision);
-        if responses
-            .send_blocking(Response::Analyzed(Box::new(analyzed)))
-            .is_err()
-        {
-            return;
+        // Only a real change produces an `Analyzed`. A drain carrying
+        // nothing but queries must not emit one: `analyze` is memoized and
+        // so nearly free, but the UI would repaint diagnostics on every
+        // hover.
+        if usable && (edited || opened_ok) {
+            let analyzed = analyze(&mut session, revision);
+            if responses
+                .send_blocking(Response::Analyzed(Box::new(analyzed)))
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        // Queries last, so they read the analysis the same drain produced.
+        for (kind, reply) in queries {
+            let result = if usable {
+                crate::query::answer(&session, &kind)
+            } else {
+                QueryResult::Unavailable
+            };
+            // A dropped receiver just means the asker moved on.
+            let _ = reply.send_blocking(result);
         }
     }
 }
@@ -581,6 +608,96 @@ mod tests {
             analyzed.kinds.contains_key("main.ink"),
             "the resolved divert must be keyed: {:?}",
             analyzed.kinds.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Drive the real worker thread, blocking on its channels.
+    fn drive(tree: &Tree) -> Worker {
+        let worker = Worker::spawn();
+        worker.send(Request::Open {
+            root: tree.0.clone(),
+        });
+        worker
+    }
+
+    fn next(worker: &Worker) -> Response {
+        worker
+            .responses()
+            .recv_blocking()
+            .expect("the worker must answer")
+    }
+
+    #[test]
+    fn the_worker_answers_an_open_with_opened_then_analyzed() {
+        let tree = Tree::new("thread", &[("main.ink", "Hello.\n-> DONE\n")]);
+        let worker = drive(&tree);
+        match next(&worker) {
+            Response::Opened(opened) => {
+                let opened = opened.expect("the fixture must load");
+                assert_eq!(opened.files, vec!["main.ink".to_owned()]);
+            }
+            other => panic!("expected Opened first, got {other:?}"),
+        }
+        assert!(
+            matches!(next(&worker), Response::Analyzed(_)),
+            "an open must be followed by exactly one analysis"
+        );
+    }
+
+    #[test]
+    fn a_query_never_sees_text_older_than_the_edit_queued_before_it() {
+        // The ordering claim the whole query design rests on: the channel is
+        // FIFO and the worker drains a batch applying edits BEFORE answering
+        // queries, so hover can never read the pre-keystroke source.
+        let tree = Tree::new("order", &[("main.ink", "=== alpha ===\nHi.\n-> DONE\n")]);
+        let worker = drive(&tree);
+        let _ = next(&worker);
+        let _ = next(&worker);
+
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: "=== renamed ===\nHi.\n-> DONE\n".to_owned(),
+            revision: 1,
+        });
+        let (tx, rx) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::DocumentSymbols {
+                path: "main.ink".to_owned(),
+            },
+            reply: tx,
+        });
+
+        let result = rx.recv_blocking().expect("the query must be answered");
+        let QueryResult::DocumentSymbols(symbols) = result else {
+            panic!("expected symbols, got {result:?}");
+        };
+        assert_eq!(
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["renamed"],
+            "the query must see the edit that was queued ahead of it"
+        );
+    }
+
+    #[test]
+    fn a_query_alone_does_not_produce_an_analysis_response() {
+        // Otherwise every hover would repaint the diagnostics.
+        let tree = Tree::new("quiet", &[("main.ink", "Hello.\n-> DONE\n")]);
+        let worker = drive(&tree);
+        let _ = next(&worker);
+        let _ = next(&worker);
+
+        let (tx, rx) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::Hover {
+                path: "main.ink".to_owned(),
+                offset: 0,
+            },
+            reply: tx,
+        });
+        let _ = rx.recv_blocking().expect("the query must be answered");
+        assert!(
+            worker.responses().is_empty(),
+            "a drain carrying only queries must emit no Analyzed"
         );
     }
 

@@ -868,7 +868,6 @@ dependencies = [
  "brink-syntax",
  "brink-syntax-native",
  "gpui-pre",
- "lsp-types",
  "rowan",
 ]
 
