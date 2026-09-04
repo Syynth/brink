@@ -1,0 +1,30 @@
+# SPIKE: GPUI-native desktop shell feasibility (Zed-style), 2026-09-03.
+# Deliberately its own workspace (same pattern as packages/brink-desktop/src-tauri):
+# gpui's dependency graph must not join the root workspace.
+[package]
+name = "brink-gpui-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+# gpui-component tracks longbridge's `gpui-pre` publish of Zed's gpui
+# (crates.io `gpui` itself is stale at 0.2.2 / Oct 2025). The rename makes
+# `gpui::` in this crate the same crate gpui-component links against.
+gpui = { package = "gpui-pre", version = "0.3.3" }
+gpui-component = { version = "0.6.0", features = ["tree-sitter"] }
+# Must match gpui-base's lsp-types (the provider traits speak these types).
+lsp-types = "0.97"
+anyhow = "1"
+# Same rowan the root workspace pins (TextSize/TextRange).
+rowan = "0.16.1"
+
+brink-ide = { path = "../../crates/internal/brink-ide" }
+brink-db = { path = "../../crates/internal/brink-db" }
+brink-ir = { path = "../../crates/internal/brink-ir" }
+brink-analyzer = { path = "../../crates/internal/brink-analyzer" }
+brink-driver = { path = "../../crates/internal/brink-driver" }
+brink-project-config = { path = "../../crates/internal/brink-project-config" }
+gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
