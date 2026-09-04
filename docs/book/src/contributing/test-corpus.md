@@ -62,6 +62,34 @@ BRINK_INKJS_ORACLE=1 cargo test -p brink-gen --test inkjs_differential -- --noca
 
 The sanction compares the raw episode JSON after two normalisations (the C# tool's error-message wrapper and source paths; double- vs single-precision float printing — see `brink_test_harness::inkjs`'s header for the measurement behind each). `KNOWN_DIVERGENCES` in `inkjs_sanction.rs` lists any case where the two reference runtimes genuinely disagree, with a reason, checked both ways like `expected_mismatch`; it is empty. A one-off comparison of a single story is `node tools/inkjs-oracle/oracle.mjs path/to/story.ink --output-dir /tmp/out`, then `diff -r` against the case's `oracle/`.
 
+## The capture tier: `tests/tier4-generated/`
+
+Stories that came out of the generator (issue #3380, `docs/program-generator-spec.md` §5) — a shrunk proptest counterexample, or a hand-minimised probe against the reference — live in their own tier, one directory per case:
+
+| File | Description |
+|------|-------------|
+| `story.ink` | The shrunk story |
+| `oracle/*.oracle.json` | Golden episodes, same shape as the C# oracle's |
+| `case.toml` | `[provenance]`: `source` (`proptest`/`probe`), `property`, optional `seed`, `oracle-source` (`inkjs`/`csharp`), optional `issue`; plus `[source] expected_mismatch` when the case pins a known open divergence |
+
+The tier is **not** part of `RATCHET_EPISODE_COUNT` — the shared corpus walk prunes the directory, so nothing here reaches `oracle_snapshots`, the inkjs sanction, or the respell sweep. Its own must-pass target is `cargo test -p brink-test-harness --test tier4_generated`: every case matches its golden (or is flagged `expected_mismatch`, checked both ways), and `GENERATED_CASE_COUNT` there only moves through a promotion. `corpus_report` prints the tier in its own section.
+
+Promote with the script, which refuses a story brink cannot compile or the oracle cannot golden, writes the case, and bumps the count:
+
+```sh
+pnpm promote:generated -- --name glue-space-after-interpolation --story shrunk.ink \
+    --property inkjs_differential --issue "#3507"
+# from a saved failing run of a brink-gen property (the `--- source ---` block)
+pnpm promote:generated -- --name my-case --from-log run.log --property inkjs_differential --seed "cc …"
+# a hand-minimised probe pinning an open bug
+pnpm promote:generated -- --name empty-then-branch-else --story probe.ink --source probe \
+    --property "probe: #3507 shapes against inkjs" --issue "#3510" --expected-mismatch "#3510"
+# maintainer-local: re-bless an existing case with the C# oracle (dotnet) and flip oracle-source
+pnpm promote:generated -- --name my-case --rebless-csharp
+```
+
+The golden comes from `tools/inkjs-oracle` (`npm ci` there first); only the C# oracle is on the trust hierarchy, so a case blessed by inkjs is evidence at the sanction's strength, and `--rebless-csharp` is how it graduates.
+
 ## GitHub corpus
 
 The `tests_github/` directory contains real-world `.ink` files from open-source projects. These are used for parser smoke tests (zero panics on any input) and lossless roundtrip validation.

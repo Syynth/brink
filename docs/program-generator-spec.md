@@ -100,6 +100,20 @@ The tier is self-contained like `tests/tier1-native/`: **not** part of
 moves through an explicit promotion. A maintainer-local step may
 re-bless a golden with the C# oracle and flip `oracle-source`.
 
+**Status (2026-09-04, #3380 route 1 landed).** `tests/tier4-generated/`
+exists with `scripts/promote-generated.mjs` (`pnpm promote:generated`:
+`--story` or `--from-log` a failing run's `--- source ---` block; refuses
+when brink cannot compile the story or the inkjs oracle cannot golden it;
+writes `story.ink`, `oracle/`, `case.toml`; bumps `GENERATED_CASE_COUNT`;
+`--rebless-csharp` runs `tools/ink-oracle` and flips `oracle-source`).
+The must-pass target is `brink-test-harness`'s `tier4_generated.rs`, with
+`[source] expected_mismatch` carrying the corpus's two-way discipline, and
+`corpus_report` prints the tier in its own section. The shared corpus
+walk prunes the directory by name (`corpus::GENERATED_TIER_DIR`). First
+cases: the two #3507 shapes (passing), the #3508 choice-text shape and
+the #3510 empty-then-branch shape (expected mismatches). Route 2
+(coverage-novel capture) is filed separately with the proposed signal.
+
 ## 6. The reference harness — RULED: inkjs
 
 The differential `trace(brink(P)) == trace(reference(P))` for generated

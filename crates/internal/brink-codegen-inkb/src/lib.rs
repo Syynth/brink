@@ -332,6 +332,14 @@ struct ContainerEmitter<'a> {
     state_name_table: &'a mut Vec<String>,
     state_name_index: &'a mut HashMap<String, NameId>,
     in_conditional_branch: bool,
+    /// Issue #3508: set while a choice's DISPLAY text is being emitted. Line
+    /// entries added then keep their whitespace runs verbatim — ink presents
+    /// a choice's text as the evaluated string trimmed at the ends only
+    /// (`a  0` stays `a  0`), while an output line is collapsed on render
+    /// (`CleanOutputWhitespace`). brink collapses at compile time instead
+    /// ([`collapse_whitespace`] in [`Self::add_line_with_hash`]), which is
+    /// observably the same for output lines and was wrong for choice text.
+    in_choice_display: bool,
     /// Stack of open T1b `LogicWhile` loops (innermost last) — targets for
     /// `break`/`continue` jump patching. Empty outside any loop.
     loop_stack: Vec<LoopCtx>,
@@ -380,6 +388,7 @@ impl<'a> ContainerEmitter<'a> {
             state_name_table: &mut state.name_table,
             state_name_index: &mut state.name_index,
             in_conditional_branch: false,
+            in_choice_display: false,
             loop_stack: Vec::new(),
             errors: &mut state.errors,
             relocations: Vec::new(),
@@ -442,7 +451,12 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let content = LineContent::Plain(collapse_whitespace(text));
+        let text = if self.in_choice_display {
+            text.to_owned()
+        } else {
+            collapse_whitespace(text)
+        };
+        let content = LineContent::Plain(text);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
             content,
@@ -464,7 +478,11 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let parts = parts.into_iter().map(collapse_whitespace_in_part).collect();
+        let parts = if self.in_choice_display {
+            parts
+        } else {
+            parts.into_iter().map(collapse_whitespace_in_part).collect()
+        };
         let content = LineContent::Template(parts);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
