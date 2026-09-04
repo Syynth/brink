@@ -129,6 +129,21 @@ impl OutputPart {
             _ => false,
         }
     }
+
+    /// Issue #3533: does this part render as something other than
+    /// whitespace? [`Self::is_content`] mirrors ink's
+    /// `outputStreamContainsContent`, where an empty `""` string still
+    /// counts (it lets the line's own newline through); this mirrors what
+    /// ink's newline lookahead treats as *extending* a line — a blank
+    /// `ValueRef` (`""`, `" "`, an empty list) never commits the line
+    /// before it, only visible text does.
+    fn is_visible(&self) -> bool {
+        match self {
+            Self::ValueRef(Value::String(s)) => !s.trim().is_empty(),
+            Self::ValueRef(Value::List(lv)) => !lv.items.is_empty(),
+            _ => self.is_content(),
+        }
+    }
 }
 
 /// Resolve a single output part to its text representation.
@@ -508,21 +523,32 @@ impl OutputBuffer {
         let mut i = target.len();
         while i > start {
             i -= 1;
-            match &target[i] {
-                OutputPart::Glue => {}
-                OutputPart::Newline | OutputPart::Spring => {
-                    target.remove(i);
+            let trimmable = match &target[i] {
+                // Glue is transparent to the trim (issue #3522), neither
+                // removed nor a stopping point.
+                OutputPart::Glue => continue,
+                OutputPart::Newline | OutputPart::Spring => true,
+                OutputPart::Text(s) => s.trim().is_empty(),
+                OutputPart::LineRef { flags, .. } => {
+                    flags.contains(brink_format::LineFlags::ALL_WS)
                 }
-                OutputPart::Text(s) if s.trim().is_empty() => {
-                    target.remove(i);
-                }
-                OutputPart::LineRef { flags, .. }
-                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
-                {
-                    target.remove(i);
-                }
-                _ => break,
+                // Issue #3536: a value that renders as whitespace — an
+                // empty list, `""`, a `none` — is trimmed exactly like
+                // whitespace text. ink stringifies values into the output
+                // stream as they are pushed, so by the time its
+                // `TrimWhitespaceFromFunctionEnd` runs an empty
+                // interpolation is an inline-whitespace `StringValue`
+                // there; brink resolves values later (the transcript holds
+                // an unresolved `ValueRef`), so the same judgement is made
+                // here from the value itself. A value that renders visibly
+                // still stops the trim.
+                part @ OutputPart::ValueRef(_) => !part.is_visible(),
+                _ => false,
+            };
+            if !trimmable {
+                break;
             }
+            target.remove(i);
         }
     }
 

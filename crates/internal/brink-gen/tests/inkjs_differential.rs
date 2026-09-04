@@ -68,7 +68,56 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // calls a function: the lift emits no end-of-line on the untaken side,
     // and the call's output loses its newline.
     ("#3530", else_less_conditional_calling_a_function),
+    // Glue somewhere in the story and a line that can render empty (a
+    // list interpolation): ink's glue reaches across the blank line to
+    // join the lines either side of it, brink's stops at it.
+    ("#3535", glue_and_a_possibly_empty_line),
 ];
+
+/// A story that both uses glue and has a line made only of `{…}` groups
+/// while a `LIST` exists to make those groups render empty — a list value
+/// is the only thing the generator can print as nothing, and a whole line
+/// of them is a blank line the glue has to reach across.
+fn glue_and_a_possibly_empty_line(src: &str) -> bool {
+    if !src.contains("<>") || !src.lines().any(|l| l.trim_start().starts_with("LIST ")) {
+        return false;
+    }
+    src.lines().any(|line| is_all_interpolations(line.trim()))
+}
+
+/// Is `line` nothing but `{…}` groups (with an optional trailing `<>`)?
+/// Groups nest, so the scan counts braces rather than looking for the
+/// first `}` — `{false:a}{LIST_MAX(l)}` is two groups, and CI found that
+/// exact shape when the predicate only admitted one.
+fn is_all_interpolations(line: &str) -> bool {
+    let mut rest = line.strip_suffix("<>").unwrap_or(line).trim_end();
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        if !rest.starts_with('{') {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { return false };
+        rest = rest[end..].trim_start();
+    }
+    true
+}
 
 /// A line that is exactly one `{cond:then}` inline conditional with no `|`
 /// arm, whose condition names a generated function.

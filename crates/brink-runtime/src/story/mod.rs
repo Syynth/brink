@@ -1790,12 +1790,13 @@ impl<R: StoryRng> Story<R> {
         // flushed — this is how the line before a choice point is
         // delivered on the production road, and it must be here too.
         if self.default.status != StoryStatus::Active && self.default.flow.output.has_unread() {
-            for (text, tags, _element, source) in
-                self.default
-                    .flow
-                    .output
-                    .flush_lines(&self.program, &self.line_tables, resolver)
-            {
+            let delivered = self.default.flow.line_delivered_this_turn;
+            for (text, tags, _element, source) in self.default.flow.output.flush_lines_at_yield(
+                &self.program,
+                &self.line_tables,
+                resolver,
+                delivered,
+            ) {
                 out.push((text, tags, source));
             }
         }

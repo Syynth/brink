@@ -24,8 +24,8 @@
 use proptest::prelude::*;
 
 use crate::model::{
-    AssignOp, BinOp, Choice, Divert, Exit, Expr, FlowKind, FnSig, Function, Item, Knot, Literal,
-    Param, Part, Stitch, Story, Tail, Ty, VarDecl, Weave,
+    AssignOp, BinOp, Choice, Divert, Exit, Expr, FlowKind, FnSig, Function, Item, Knot, ListDecl,
+    ListFn, Literal, Param, Part, Stitch, Story, Tail, Ty, VarDecl, Weave,
 };
 
 /// Biasing knobs — **data**, so a property names the profile it wants
@@ -62,6 +62,10 @@ pub struct Profile {
     /// Thread knots per story (0 = none): entered by `<- t`, left by
     /// `-> DONE` (rule 11).
     pub max_threads: usize,
+    /// `LIST` declarations per story (0 = none, rule 12).
+    pub max_lists: usize,
+    /// Items per `LIST` (at least 1).
+    pub max_list_items: usize,
 }
 
 impl Profile {
@@ -80,6 +84,8 @@ impl Profile {
         max_params: 2,
         max_tunnels: 2,
         max_threads: 1,
+        max_lists: 1,
+        max_list_items: 4,
     };
 
     /// Structure only — no variables, so no expressions can be decoded
@@ -89,6 +95,7 @@ impl Profile {
         max_functions: 0,
         max_tunnels: 0,
         max_threads: 0,
+        max_lists: 0,
         ..Self::DEFAULT
     };
 
@@ -240,6 +247,15 @@ pub struct RawFunction {
     pub ret: Option<(RawExpr, u8)>,
 }
 
+/// A `LIST` before naming: `item_count` items (at least 1), `initial` a
+/// bitmask over them.
+#[derive(Debug, Clone)]
+pub struct RawList {
+    pub name: String,
+    pub item_count: u8,
+    pub initial: u8,
+}
+
 /// The unresolved story: independent values only.
 #[derive(Debug, Clone)]
 pub struct RawStory {
@@ -250,6 +266,7 @@ pub struct RawStory {
     pub tunnels: Vec<RawKnot>,
     /// Decoded after the tunnels, as thread knots.
     pub threads: Vec<RawKnot>,
+    pub lists: Vec<RawList>,
 }
 
 // ─── Leaf strategies ─────────────────────────────────────────────────
@@ -450,6 +467,15 @@ fn arb_raw_function(p: Profile) -> impl Strategy<Value = RawFunction> {
         })
 }
 
+fn arb_raw_list(p: Profile) -> impl Strategy<Value = RawList> {
+    let max_items = u8::try_from(p.max_list_items.max(1)).unwrap_or(u8::MAX);
+    (arb_name_base(), 1..=max_items, any::<u8>()).prop_map(|(name, item_count, initial)| RawList {
+        name,
+        item_count,
+        initial,
+    })
+}
+
 /// A raw skeleton under `profile`.
 pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
     (
@@ -458,14 +484,18 @@ pub fn arb_raw_story(profile: Profile) -> impl Strategy<Value = RawStory> {
         prop::collection::vec(arb_raw_function(profile), 0..=profile.max_functions),
         prop::collection::vec(arb_raw_knot(profile), 0..=profile.max_tunnels),
         prop::collection::vec(arb_raw_knot(profile), 0..=profile.max_threads),
+        prop::collection::vec(arb_raw_list(profile), 0..=profile.max_lists),
     )
-        .prop_map(|(vars, knots, functions, tunnels, threads)| RawStory {
-            vars,
-            knots,
-            functions,
-            tunnels,
-            threads,
-        })
+        .prop_map(
+            |(vars, knots, functions, tunnels, threads, lists)| RawStory {
+                vars,
+                knots,
+                functions,
+                tunnels,
+                threads,
+                lists,
+            },
+        )
 }
 
 // ─── Decode ──────────────────────────────────────────────────────────
@@ -506,9 +536,57 @@ struct Env {
     tunnels: Vec<Divert>,
     /// Thread flows startable from here (plain-knot weaves only).
     threads: Vec<Divert>,
+    /// The story's `LIST` declarations (rule 12), for literals and types.
+    lists: Vec<ListDecl>,
 }
 
 impl Env {
+    /// The type a byte picks: int/bool/str when the story has no lists,
+    /// otherwise one of four with the fourth a list type.
+    fn ty_of(&self, byte: u8) -> Ty {
+        if self.lists.is_empty() {
+            return ty_of(byte);
+        }
+        match byte % 4 {
+            0 => Ty::Int,
+            1 => Ty::Bool,
+            2 => Ty::Str,
+            _ => Ty::List(usize::from(byte / 4) % self.lists.len()),
+        }
+    }
+
+    /// A literal of `ty` from a byte; a list literal is a NON-EMPTY subset
+    /// (the byte as a bitmask; bit-free bytes pick the first item), so a
+    /// `VAR`/temp initializer never spells the typed-empty `()`.
+    fn literal(&self, ty: Ty, n: u8) -> Literal {
+        match ty {
+            Ty::List(list) => {
+                let decl = &self.lists[list];
+                let mut items: Vec<String> = decl
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| (n >> (i % 8)) & 1 == 1)
+                    .map(|(_, item)| item.clone())
+                    .collect();
+                if items.is_empty() {
+                    items.push(decl.items[0].clone());
+                }
+                Literal::List { list, items }
+            }
+            Ty::Int | Ty::Bool | Ty::Str => literal(ty, n),
+        }
+    }
+
+    /// The `n`-th item of list `list`, wrapping.
+    fn item(&self, list: usize, n: u8) -> Expr {
+        let decl = &self.lists[list];
+        Expr::Item {
+            list,
+            name: decl.items[usize::from(n) % decl.items.len()].clone(),
+        }
+    }
+
     /// The `n`-th entry of `list`, wrapping; `None` when empty.
     fn pick_flow(list: &[Divert], n: u8) -> Option<Divert> {
         if list.is_empty() {
@@ -567,9 +645,11 @@ fn ty_of(byte: u8) -> Ty {
     }
 }
 
+/// A plain (non-list) literal from a byte; list literals need the
+/// declarations and go through [`Env::literal`].
 fn literal(ty: Ty, n: u8) -> Literal {
     match ty {
-        Ty::Int => Literal::Int(i32::from(n % 21)),
+        Ty::Int | Ty::List(_) => Literal::Int(i32::from(n % 21)),
         Ty::Bool => Literal::Bool(n.is_multiple_of(2)),
         Ty::Str => Literal::Str(WORDS[usize::from(n) % WORDS.len()].to_owned()),
     }
@@ -608,7 +688,7 @@ fn decode_args(sig: &FnSig, raw: &[RawExpr], env: &Env) -> Option<Vec<Expr>> {
         } else {
             args.push(match raw_arg {
                 Some(r) => decode_expr(r, *ty, env),
-                None => Expr::Lit(literal(*ty, salt)),
+                None => Expr::Lit(env.literal(*ty, salt)),
             });
         }
     }
@@ -617,7 +697,7 @@ fn decode_args(sig: &FnSig, raw: &[RawExpr], env: &Env) -> Option<Vec<Expr>> {
 
 fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
     match raw {
-        RawExpr::Lit(n) => Expr::Lit(literal(want, *n)),
+        RawExpr::Lit(n) => Expr::Lit(env.literal(want, *n)),
         RawExpr::Call(f, args) => env
             .pick_fn(Some(want), *f)
             .and_then(|sig| {
@@ -628,26 +708,29 @@ fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
             })
             // No callable function of this type (or no variable for a
             // `ref` parameter): read the byte as a literal instead.
-            .unwrap_or_else(|| Expr::Lit(literal(want, *f))),
+            .unwrap_or_else(|| Expr::Lit(env.literal(want, *f))),
         RawExpr::Var(n) => env.pick(want, *n).map_or_else(
-            || Expr::Lit(literal(want, *n)),
+            || Expr::Lit(env.literal(want, *n)),
             |name| Expr::Var(name.to_owned()),
         ),
-        RawExpr::Neg(inner) => {
-            if want == Ty::Int {
-                Expr::Neg(Box::new(decode_expr(inner, Ty::Int, env)))
-            } else {
-                decode_expr(inner, want, env)
-            }
-        }
-        RawExpr::Not(inner) => {
-            if want == Ty::Bool {
-                Expr::Not(Box::new(decode_expr(inner, Ty::Bool, env)))
-            } else {
-                decode_expr(inner, want, env)
-            }
-        }
+        // Under a list type the unary shapes read as the unary list
+        // built-ins: `Neg` → `LIST_INVERT`, `Not` → `LIST_MAX`.
+        RawExpr::Neg(inner) => match want {
+            Ty::Int => Expr::Neg(Box::new(decode_expr(inner, Ty::Int, env))),
+            Ty::List(_) => Expr::ListFn(ListFn::Invert, Box::new(decode_expr(inner, want, env))),
+            Ty::Bool | Ty::Str => decode_expr(inner, want, env),
+        },
+        RawExpr::Not(inner) => match want {
+            Ty::Bool => Expr::Not(Box::new(decode_expr(inner, Ty::Bool, env))),
+            Ty::List(_) => Expr::ListFn(ListFn::Max, Box::new(decode_expr(inner, want, env))),
+            Ty::Int | Ty::Str => decode_expr(inner, want, env),
+        },
         RawExpr::Bin(l, op, r) => match want {
+            // With lists in the story, one shape in five is `LIST_COUNT`.
+            Ty::Int if !env.lists.is_empty() && op % 5 == 4 => {
+                let list = usize::from(op / 5) % env.lists.len();
+                Expr::ListFn(ListFn::Count, Box::new(decode_expr(l, Ty::List(list), env)))
+            }
             Ty::Int => match op % 4 {
                 0 => Expr::Bin(
                     Box::new(decode_expr(l, Ty::Int, env)),
@@ -670,10 +753,24 @@ fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
                     Box::new(small_positive(r, *op)),
                 ),
             },
+            // With lists in the story, two shapes in ten are `?` / `!?`.
+            Ty::Bool if !env.lists.is_empty() && op % 10 >= 8 => {
+                let list = Ty::List(usize::from(op / 10) % env.lists.len());
+                let bin = if op % 10 == 8 {
+                    BinOp::Has
+                } else {
+                    BinOp::Hasnt
+                };
+                Expr::Bin(
+                    Box::new(decode_expr(l, list, env)),
+                    bin,
+                    Box::new(decode_expr(r, list, env)),
+                )
+            }
             Ty::Bool => {
                 let (bin, operand) = match op % 8 {
-                    0 => (BinOp::Eq, ty_of(op / 8)),
-                    1 => (BinOp::Ne, ty_of(op / 8)),
+                    0 => (BinOp::Eq, env.ty_of(op / 8)),
+                    1 => (BinOp::Ne, env.ty_of(op / 8)),
                     2 => (BinOp::Lt, Ty::Int),
                     3 => (BinOp::Gt, Ty::Int),
                     4 => (BinOp::Le, Ty::Int),
@@ -689,6 +786,20 @@ fn decode_expr(raw: &RawExpr, want: Ty, env: &Env) -> Expr {
             }
             // No binary operator yields a string: read the left operand.
             Ty::Str => decode_expr(l, Ty::Str, env),
+            // Union, difference, intersection; the right operand of `+`/`-`
+            // is a single item half the time.
+            Ty::List(list) => {
+                let bin = [BinOp::Add, BinOp::Sub, BinOp::Intersect][usize::from(op % 3)];
+                let rhs = match (bin, r.as_ref()) {
+                    (BinOp::Add | BinOp::Sub, RawExpr::Lit(n) | RawExpr::Var(n))
+                        if n.is_multiple_of(2) =>
+                    {
+                        env.item(list, *n)
+                    }
+                    _ => decode_expr(r, want, env),
+                };
+                Expr::Bin(Box::new(decode_expr(l, want, env)), bin, Box::new(rhs))
+            }
         },
     }
 }
@@ -739,7 +850,7 @@ fn decode_items(
                     .iter()
                     .map(|p| match p {
                         RawPart::Text(t) => Part::Text(t.clone()),
-                        RawPart::Interp(e, ty) => Part::Interp(decode_expr(e, ty_of(*ty), env)),
+                        RawPart::Interp(e, ty) => Part::Interp(decode_expr(e, env.ty_of(*ty), env)),
                         RawPart::Cond {
                             cond,
                             then,
@@ -755,7 +866,7 @@ fn decode_items(
             }
             RawItem::Assign { target, op, value } => {
                 if let Some((name, ty)) = env.pick_any(*target) {
-                    let op = if ty == Ty::Int {
+                    let op = if matches!(ty, Ty::Int | Ty::List(_)) {
                         [AssignOp::Set, AssignOp::Add, AssignOp::Sub][usize::from(op % 3)]
                     } else {
                         AssignOp::Set
@@ -771,7 +882,7 @@ fn decode_items(
                 if in_cond {
                     continue;
                 }
-                let ty = ty_of(*ty);
+                let ty = env.ty_of(*ty);
                 let name = format!("t{temp_counter}");
                 *temp_counter += 1;
                 out.push(Item::Temp {
@@ -906,26 +1017,28 @@ fn decode_weave(
 fn decode_functions(
     raw: &[RawFunction],
     global_vars: &[(String, Ty)],
+    lists: &[ListDecl],
 ) -> (Vec<Function>, Vec<FnSig>) {
     let mut functions: Vec<Function> = Vec::with_capacity(raw.len());
     let mut sigs: Vec<FnSig> = Vec::with_capacity(raw.len());
     for (fi, f) in raw.iter().enumerate() {
+        let mut env = Env {
+            vars: global_vars.to_vec(),
+            funcs: sigs.clone(),
+            tunnels: Vec::new(),
+            threads: Vec::new(),
+            lists: lists.to_vec(),
+        };
         let params: Vec<Param> = f
             .params
             .iter()
             .enumerate()
             .map(|(pi, (ty, by_ref))| Param {
                 name: format!("p{pi}"),
-                ty: ty_of(*ty),
+                ty: env.ty_of(*ty),
                 by_ref: *by_ref,
             })
             .collect();
-        let mut env = Env {
-            vars: global_vars.to_vec(),
-            funcs: sigs.clone(),
-            tunnels: Vec::new(),
-            threads: Vec::new(),
-        };
         env.vars
             .extend(params.iter().map(|p| (p.name.clone(), p.ty)));
         let mut temps = 0;
@@ -933,7 +1046,7 @@ fn decode_functions(
         let ret = f
             .ret
             .as_ref()
-            .map(|(e, ty)| decode_expr(e, ty_of(*ty), &env));
+            .map(|(e, ty)| decode_expr(e, env.ty_of(*ty), &env));
         if body.is_empty() && ret.is_none() {
             // Rule 8: never an empty function.
             body.push(Item::Line {
@@ -950,7 +1063,7 @@ fn decode_functions(
         sigs.push(FnSig {
             name: function.name.clone(),
             params: function.params.iter().map(|p| (p.ty, p.by_ref)).collect(),
-            ret: f.ret.as_ref().map(|(_, ty)| ty_of(*ty)),
+            ret: f.ret.as_ref().map(|(_, ty)| env.ty_of(*ty)),
         });
         functions.push(function);
     }
@@ -1035,6 +1148,25 @@ impl Layout {
     }
 }
 
+/// Lists (rule 12): `l{i}_{base}` with items `li{i}_{j}` (no base, so no
+/// item can collide with its list's name); the initial
+/// items are the raw bitmask, so a list may start empty.
+fn decode_lists(raw: &[RawList]) -> Vec<ListDecl> {
+    raw.iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let count = usize::from(l.item_count.max(1));
+            ListDecl {
+                name: format!("l{i}_{}", l.name),
+                items: (0..count).map(|j| format!("li{i}_{j}")).collect(),
+                initial: (0..count)
+                    .filter(|j| (l.initial >> (j % 8)) & 1 == 1)
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 /// Turn a raw skeleton into a valid [`Story`]: names made unique, every
 /// exit resolved into the legal range for its site, every expression typed
 /// for its position against the names in scope, every rule of
@@ -1049,14 +1181,24 @@ pub fn decode(raw: &RawStory) -> Story {
             init: literal(ty_of(v.ty), v.init),
         })
         .collect();
-    let global_vars: Vec<(String, Ty)> =
-        vars.iter().map(|v| (v.name.clone(), v.init.ty())).collect();
-    let (functions, sigs) = decode_functions(&raw.functions, &global_vars);
+    let lists = decode_lists(&raw.lists);
+    let global_vars: Vec<(String, Ty)> = vars
+        .iter()
+        .map(|v| (v.name.clone(), v.init.ty()))
+        .chain(
+            lists
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.name.clone(), Ty::List(i))),
+        )
+        .collect();
+    let (functions, sigs) = decode_functions(&raw.functions, &global_vars, &lists);
     let globals = Env {
         vars: global_vars,
         funcs: sigs,
         tunnels: Vec::new(),
         threads: Vec::new(),
+        lists: lists.clone(),
     };
     let all: Vec<(&RawKnot, FlowKind)> = raw
         .knots
@@ -1118,6 +1260,7 @@ pub fn decode(raw: &RawStory) -> Story {
         vars,
         knots,
         functions,
+        lists,
     }
 }
 

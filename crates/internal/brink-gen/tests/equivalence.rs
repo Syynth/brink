@@ -110,8 +110,11 @@ const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
         // An ink VAR respells to a module-private native `var`, which the
         // host cannot read — item 3 of the trace diverges. Needs a ruling
         // (emit `pub var`?); until then every story with a global matches.
-        "#3517 ink VAR respelled as a private native var (host-readable globals)",
-        |src| src.lines().any(|l| l.starts_with("VAR ")),
+        "#3517 ink VAR/LIST respelled as a private native var (host-readable globals)",
+        |src| {
+            src.lines()
+                .any(|l| l.starts_with("VAR ") || l.starts_with("LIST "))
+        },
     ),
     (
         // A nested binary expression loses its parentheses (`0 - (0 + 1)`

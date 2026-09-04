@@ -723,3 +723,12 @@ Issues that are documented here so they are not silently rediscovered. Each shou
 ### Codegen gaps
 
 - **`StoryData.source_checksum` hardcoded to `0`.** This field exists in the output format but is never computed. It is intended to identify a specific compilation for cache invalidation or locale overlay validation.
+
+### Tag-only lines
+
+A tag-only line (`# tag` alone on a line) contributes its tags and **nothing else**: ink's parser appends a line's `"\n"` only when the line is not pure tags (`InkParser.LineOfMixedTextAndLogic`'s `lineIsPureTag`), so the tags ride the *next* line's newline. HIR lowering matches that — `Stmt::Content` with no parts and the tags, and no `Stmt::EndOfLine` — and the line is not "content" for the surrounding block's own trailing-newline bookkeeping either (issue #3534).
+
+Before this, a tag-only line lowered to a blank line carrying the tags, which the output buffer then swallowed, losing the tags outright (`tests/tests_github/bobon4uto__dream_on` has both shapes; its C# golden pins them).
+
+One shape is still divergent and belongs to #3524, not here: when a tag-only line is the last thing before a turn boundary, ink delivers the tags as their own step with empty text (`{"text": "", "tags": ["IMAGE: …"]}` in that case's golden), where brink merges everything left at a yield into one `Step::Line` and so hangs the tags on the preceding line.
+

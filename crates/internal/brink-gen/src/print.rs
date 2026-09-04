@@ -12,7 +12,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{
-    AssignOp, BinOp, Exit, Expr, Function, Item, Literal, Part, Story, Tail, Weave,
+    AssignOp, BinOp, Exit, Expr, Function, Item, ListFn, Literal, Part, Story, Tail, Weave,
 };
 
 /// Print a story as `.ink` source. Never fails; an invalid story prints
@@ -23,7 +23,22 @@ pub fn print_ink(story: &Story) -> String {
     for v in &story.vars {
         let _ = writeln!(out, "VAR {} = {}", v.name, literal(&v.init));
     }
-    if !story.vars.is_empty() {
+    for l in &story.lists {
+        let items: Vec<String> = l
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                if l.initial.contains(&i) {
+                    format!("({item})")
+                } else {
+                    item.clone()
+                }
+            })
+            .collect();
+        let _ = writeln!(out, "LIST {} = {}", l.name, items.join(", "));
+    }
+    if !story.vars.is_empty() || !story.lists.is_empty() {
         out.push('\n');
     }
     if let Some(first) = story.knots.first() {
@@ -81,7 +96,7 @@ fn call_text(name: &str, args: &[Expr]) -> String {
 pub fn expr(e: &Expr) -> String {
     match e {
         Expr::Lit(l) => literal(l),
-        Expr::Var(name) => name.clone(),
+        Expr::Var(name) | Expr::Item { name, .. } => name.clone(),
         Expr::Neg(inner) => match inner.as_ref() {
             Expr::Neg(_) => format!("-({})", expr(inner)),
             _ => format!("-{}", expr(inner)),
@@ -95,6 +110,17 @@ pub fn expr(e: &Expr) -> String {
         },
         Expr::Bin(l, op, r) => format!("({} {} {})", expr(l), binop(*op), expr(r)),
         Expr::Call { name, args } => call_text(name, args),
+        Expr::ListFn(f, arg) => format!("{}({})", list_fn(*f), expr(arg)),
+    }
+}
+
+fn list_fn(f: ListFn) -> &'static str {
+    match f {
+        ListFn::Count => "LIST_COUNT",
+        ListFn::Min => "LIST_MIN",
+        ListFn::Max => "LIST_MAX",
+        ListFn::All => "LIST_ALL",
+        ListFn::Invert => "LIST_INVERT",
     }
 }
 
@@ -103,6 +129,7 @@ fn literal(l: &Literal) -> String {
         Literal::Int(n) => n.to_string(),
         Literal::Bool(b) => b.to_string(),
         Literal::Str(s) => format!("\"{s}\""),
+        Literal::List { items, .. } => format!("({})", items.join(", ")),
     }
 }
 
@@ -120,6 +147,9 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::Has => "?",
+        BinOp::Hasnt => "!?",
+        BinOp::Intersect => "^",
     }
 }
 
@@ -286,6 +316,7 @@ mod tests {
         let story = Story {
             vars: vec![],
             functions: vec![],
+            lists: vec![],
             knots: vec![
                 Knot {
                     kind: FlowKind::Knot,
@@ -393,6 +424,7 @@ leaf
         let n = || Expr::Var("n".into());
         let story = Story {
             functions: vec![],
+            lists: vec![],
             vars: vec![
                 VarDecl {
                     name: "n".into(),

@@ -357,6 +357,12 @@ pub(crate) struct Flow {
     /// pending choices — the story passed through an empty choice set.
     /// Cleared at the start of each `continue_single` call.
     pub did_unsafe_yield: bool,
+    /// Has a `Step::Line` been handed out since this turn began (issue
+    /// #3533)? Set by `make_output_line`, cleared wherever `next_block_id`
+    /// starts a fresh run (a choice, a resume from `Done`, a host jump).
+    /// Decides whether trailing blank lines at a yield are ink's dropped
+    /// lookahead (yes) or a turn's first — and kept — `Continue` (no).
+    pub line_delivered_this_turn: bool,
     /// The call-stack-derived cause captured the moment execution hit the
     /// content-exhaustion boundary ([`crate::vm::handle_frame_exhaustion`])
     /// that produced the terminal `Done` — mirrors C#'s inline
