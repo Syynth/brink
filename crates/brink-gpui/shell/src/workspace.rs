@@ -596,12 +596,20 @@ impl Workspace {
         Some(
             deferred(
                 anchored().position(point(px(0.), px(0.))).child(
-                    div().w(viewport.width).h(viewport.height).bg(scrim).child(
-                        anchored()
-                            .position(position)
-                            .snap_to_window_with_margin(px(16.))
-                            .child(modal.clone()),
-                    ),
+                    // Occluded: a click on the modal must not also reach
+                    // what it covers (it did — a click on the scope switch
+                    // was also a click on the Binder row beneath it).
+                    div()
+                        .occlude()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(scrim)
+                        .child(
+                            anchored()
+                                .position(position)
+                                .snap_to_window_with_margin(px(16.))
+                                .child(modal.clone()),
+                        ),
                 ),
             )
             .into_any_element(),
