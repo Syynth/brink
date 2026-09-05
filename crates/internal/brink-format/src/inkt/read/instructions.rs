@@ -155,6 +155,11 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         }
         "emit_value" => Ok(Opcode::EmitValue),
         "emit_newline" => Ok(Opcode::EmitNewline),
+        "emit_line_nl" => {
+            let idx = parse_operand_u16(&operands, 0, mnemonic)?;
+            let slots = parse_operand_u8(&operands, 1, mnemonic)?;
+            Ok(Opcode::EmitLineNl(idx, slots))
+        }
         "spring" => Ok(Opcode::Spring),
         "glue" => Ok(Opcode::Glue),
         "begin_tag" => Ok(Opcode::BeginTag),

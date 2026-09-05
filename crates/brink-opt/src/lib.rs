@@ -11,17 +11,18 @@
 //! the point: it works on an artifact from an older compiler, and the compiler
 //! can be restructured beneath it.
 //!
-//! # v1 has no passes
+//! # The resident passes
 //!
-//! The pass list is deliberately empty (spec §8.1). An empty optimizer is
-//! provably byte-identical, so landing it proves the *harness* rather than the
-//! passes. What it does carry is the measurement ([`ArtifactStats`]) and the
-//! contract every future pass is written against.
+//! `OptConfig::defaults` runs, in order:
 //!
-//! The candidates are catalogued in `docs/optimizer-catalogue.md`; the fence
-//! that will hold them lives in `brink-test-harness`
-//! (`src/opt_fence.rs`, `tests/opt_corpus_fence.rs`,
-//! `tests/opt_negative_control.rs`).
+//! 1. [`EmitLineNl`] — the peephole that fuses `EmitLine` + `EmitNewline`
+//!    (`docs/optimizer-peephole.md`). The relocating rewrite engine every
+//!    peephole shares lives in `peephole`.
+//!
+//! Every pass is a pure function of the artifact, visits it in program
+//! order, and is held to the fence in `brink-test-harness` (trace equality,
+//! line identity, idempotence, run-to-run stability) plus the generator
+//! property in `brink-gen`.
 //!
 //! # Not `no_std`, deliberately
 //!
@@ -49,7 +50,11 @@ use brink_format::StoryData;
 
 #[cfg(feature = "test-control")]
 pub mod control;
+mod passes;
+mod peephole;
 mod stats;
+
+pub use passes::EmitLineNl;
 
 pub use stats::ArtifactStats;
 
@@ -179,7 +184,7 @@ impl OptConfig {
     #[must_use]
     pub fn defaults() -> Self {
         let config = Self {
-            passes: PassSet::empty(),
+            passes: PassSet::empty().with(Box::new(EmitLineNl)),
         };
         assert!(
             !config

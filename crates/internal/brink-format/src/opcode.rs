@@ -93,6 +93,11 @@ const BEGIN_FRAGMENT: u8 = 0x68;
 const END_FRAGMENT: u8 = 0x69;
 const ATTACH_ELEMENT: u8 = 0x6A;
 const END_ELEMENT_RUN: u8 = 0x6B;
+// Peephole superinstruction (`docs/optimizer-peephole.md`): the fused form of
+// `EmitLine` immediately followed by `EmitNewline`. Emitted by the optimizer
+// only; codegen never produces it, so the fence's control artifact never
+// contains it.
+const EMIT_LINE_NL: u8 = 0x6C;
 
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
@@ -1240,6 +1245,12 @@ pub enum Opcode {
     EmitLine(u16, u8),
     EmitValue,
     EmitNewline,
+    /// `EmitLine(idx, slots)` immediately followed by `EmitNewline`, as one
+    /// instruction — the optimizer's fusion of the single most common
+    /// instruction pair in real stories (`docs/optimizer-peephole.md`). Its
+    /// effect is exactly the two in sequence; the runtime shares their
+    /// bodies. Never emitted by codegen.
+    EmitLineNl(u16, u8),
     /// Word break — renders as a single space between content parts.
     Spring,
     Glue,
@@ -1973,6 +1984,11 @@ impl Opcode {
             }
             Self::EmitValue => write_u8(buf, EMIT_VALUE),
             Self::EmitNewline => write_u8(buf, EMIT_NEWLINE),
+            Self::EmitLineNl(idx, slot_count) => {
+                write_u8(buf, EMIT_LINE_NL);
+                write_u16(buf, idx);
+                write_u8(buf, slot_count);
+            }
             Self::Spring => write_u8(buf, SPRING),
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
@@ -2358,6 +2374,11 @@ impl Opcode {
             }
             EMIT_VALUE => Self::EmitValue,
             EMIT_NEWLINE => Self::EmitNewline,
+            EMIT_LINE_NL => {
+                let idx = read_u16(buf, offset)?;
+                let slot_count = read_u8(buf, offset)?;
+                Self::EmitLineNl(idx, slot_count)
+            }
             SPRING => Self::Spring,
             GLUE => Self::Glue,
             BEGIN_TAG => Self::BeginTag,
@@ -2784,6 +2805,7 @@ mod tests {
         roundtrip(&Opcode::EmitLine(999, 3));
         roundtrip(&Opcode::EmitValue);
         roundtrip(&Opcode::EmitNewline);
+        roundtrip(&Opcode::EmitLineNl(0x1234, 3));
         roundtrip(&Opcode::Spring);
         roundtrip(&Opcode::Glue);
         roundtrip(&Opcode::BeginTag);

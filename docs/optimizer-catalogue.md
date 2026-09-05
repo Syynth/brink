@@ -50,7 +50,7 @@ Every entry graduates into a document with these sections, in order:
 | Pass | Target metric | Collides with | Status |
 |---|---|---|---|
 | dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | candidate — likely first |
-| peephole | bytecode bytes | choice indices, effect rows, debug offsets | candidate |
+| peephole | bytecode bytes, **opcodes executed** | choice indices, effect rows, debug offsets | **landed** — `docs/optimizer-peephole.md` (engine + `emit-line-nl`, 2026-09-05) |
 | literal-pool / name-table compaction | pool sizes, artifact bytes | id stability, save-state keys | candidate |
 | eliminate redundant pure work | bytecode bytes | effect rows (which are also the proof) | candidate — blocked on a ruling |
 | inline containers | containers, bytecode bytes | visit counts, save keys, debug addresses, line-table anchors | candidate — probably not worth it |
@@ -96,6 +96,12 @@ merges more units but merges them across contexts — which is the
 translator-context concern again, at a larger radius.
 
 ### peephole
+
+**Graduated: `docs/optimizer-peephole.md`.** The shared rewriting engine
+(labels, relocation of jumps/addresses/debug entries) and the first
+superinstruction, `EmitLine → EmitNewline` ⇒ `EmitLineNl` (`.inkb` v7),
+landed 2026-09-05. The three collisions below are each resolved there; what
+follows is the original candidate reasoning, kept for the record.
 
 The reason the optimizer is post-compile at all: bytecode does not exist
 until codegen, so this can live nowhere else.

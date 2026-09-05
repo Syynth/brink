@@ -743,6 +743,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::EmitLine(idx, slots) => write!(w, "emit_line {idx} {slots}"),
         Opcode::EmitValue => write!(w, "emit_value"),
         Opcode::EmitNewline => write!(w, "emit_newline"),
+        Opcode::EmitLineNl(idx, slots) => write!(w, "emit_line_nl {idx} {slots}"),
         Opcode::Spring => write!(w, "spring"),
         Opcode::Glue => write!(w, "glue"),
         Opcode::BeginTag => write!(w, "begin_tag"),

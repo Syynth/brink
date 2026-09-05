@@ -71,6 +71,10 @@ static NONTRIVIAL: AtomicUsize = AtomicUsize::new(0);
 
 /// Generated stories the negative control was actually caught on.
 static CONTROL_KILLS: AtomicUsize = AtomicUsize::new(0);
+/// Cases where the resident pass list reported a change — the "metric
+/// moved" half of the spec's standard pair (`docs/optimizer-spec.md` §5.2):
+/// a pass that never fires on generated stories is not being tested.
+static FUSED: AtomicUsize = AtomicUsize::new(0);
 
 /// Every obligation must hold on a generated story.
 fn opt_preserves_everything(story: &brink_gen::Story) -> Result<(), TestCaseError> {
@@ -97,13 +101,17 @@ fn opt_preserves_everything(story: &brink_gen::Story) -> Result<(), TestCaseErro
         "two optimizer runs over P produced different bytes\n--- source ---\n{src}"
     );
     prop_assert!(
-        !v.changed && v.bytes_identical,
-        "an empty pass list must be byte-identical; this is a brink-format \
-         round-trip failure, not an optimizer one\n--- source ---\n{src}"
+        v.changed != v.bytes_identical,
+        "a pass that reports a change must move bytes, and one that reports \
+         none must be byte-identical (the latter is a brink-format round-trip \
+         failure, not an optimizer one)\n--- source ---\n{src}"
     );
 
     if v.before.line_entries > 0 {
         NONTRIVIAL.fetch_add(1, Ordering::Relaxed);
+    }
+    if v.changed {
+        FUSED.fetch_add(1, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -154,6 +162,7 @@ fn opt_preserves_trace_and_identity() {
     let cases = usize::try_from(config().cases).unwrap_or(usize::MAX);
     let mut runner = proptest::test_runner::TestRunner::new(config());
     NONTRIVIAL.store(0, Ordering::Relaxed);
+    FUSED.store(0, Ordering::Relaxed);
     runner
         .run(&arb_story_with(Profile::PLAIN_INK), |story| {
             opt_preserves_everything(&story)
@@ -164,6 +173,14 @@ fn opt_preserves_trace_and_identity() {
         nontrivial >= cases / 2,
         "only {nontrivial} of {cases} generated stories carried any line entries — \
          the property is passing on empty artifacts"
+    );
+    // The standard pair's second half: the passes must actually fire on the
+    // shapes the generator emits, or the trace-equality above is vacuous.
+    let fused = FUSED.load(Ordering::Relaxed);
+    assert!(
+        fused >= cases / 2,
+        "the resident passes changed only {fused} of {cases} generated stories — \
+         a pass that never fires is not being tested"
     );
 }
 
