@@ -119,6 +119,22 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to compile {story_path}: {e}"))
             .data
     };
+    // `--opt`: run the story optimizer over the artifact before linking, so
+    // the counters and timings below measure the optimized program.
+    let mut data = data;
+    if args.iter().any(|a| a == "--opt") {
+        let report = brink_opt::optimize(&mut data, &brink_opt::OptConfig::defaults());
+        for pass in &report.passes {
+            eprintln!(
+                "brink-loop-opt: {} changed={} {:?}",
+                pass.name, pass.changed, pass.notes
+            );
+        }
+        eprintln!(
+            "brink-loop-opt: bytecode {} -> {} bytes",
+            report.before.bytecode_bytes, report.after.bytecode_bytes
+        );
+    }
     let (program, mut line_tables) =
         brink_runtime::link(&data).unwrap_or_else(|e| panic!("failed to link: {e}"));
     let program = std::sync::Arc::new(program);

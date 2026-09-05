@@ -133,7 +133,15 @@ version = "0.0.1"
 dependencies = [
  "brink-compiler",
  "brink-format",
+ "brink-opt",
  "brink-runtime",
+]
+
+[[package]]
+name = "brink-opt"
+version = "0.0.16"
+dependencies = [
+ "brink-format",
 ]
 
 [[package]]

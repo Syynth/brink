@@ -15,19 +15,24 @@
 //! `trace_corpus_selfcheck.rs` (a second compile), `trace_mutation_study.rs`
 //! (a mutant), and this one (`opt(pre)`). Same bounds, same `Sweep` shape.
 //!
-//! # Why it is not vacuous with an empty pass list
+//! # Why it is not vacuous
 //!
-//! v1 ships no passes, so four of the five obligations hold trivially. Three
-//! things carry this file anyway:
+//! Four things carry this file:
 //!
-//! 1. **`bytes_identical` is a real claim.** The road is
-//!    `read_inkb → optimize → write_inkb`, so with no passes it asserts
-//!    `write_inkb ∘ read_inkb == id` over every corpus artifact — which nothing
-//!    else in the tree checks.
-//! 2. **The content floors.** 300 *empty* artifacts would compare clean, so the
+//! 1. **`changed` and `bytes_identical` must disagree.** The road is
+//!    `read_inkb → optimize → write_inkb`. A case no pass touched asserts
+//!    `write_inkb ∘ read_inkb == id` over a real corpus artifact — which nothing
+//!    else in the tree checks — and a case a pass claims to have changed must
+//!    actually come out as different bytes, or the pass is lying about its
+//!    outcome.
+//! 2. **The change floor.** The resident pass set (`brink_opt::EmitLineNl`)
+//!    fuses a shape most stories carry, so a sweep in which nothing changed
+//!    means the pass has silently stopped matching. `Floors::changed_cases`
+//!    requires a real fraction of the corpus to have been rewritten.
+//! 3. **The content floors.** 300 *empty* artifacts would compare clean, so the
 //!    sweep sums `ArtifactStats` and requires the corpus to have actually held
 //!    something.
-//! 3. **`opt_negative_control.rs`** drives the identical `judge()` seam with
+//! 4. **`opt_negative_control.rs`** drives the identical `judge()` seam with
 //!    deliberately-wrong passes and requires each obligation to go red. That is
 //!    what makes greenness here evidence rather than an absence of evidence.
 //!
@@ -77,6 +82,8 @@ fn config() -> TraceConfig {
 /// tier1-3 and a shared floor would be slack for one and wrong for the other.
 struct Floors {
     cases: usize,
+    /// Cases the resident pass set must have rewritten (see the module doc).
+    changed_cases: usize,
     line_entries: usize,
     containers: usize,
     bytecode_bytes: usize,
@@ -85,6 +92,7 @@ struct Floors {
 /// tier1-3. Well under the measured totals — a floor, not a ratchet.
 const INK_FLOORS: Floors = Floors {
     cases: 300,
+    changed_cases: 150,
     line_entries: 2_000,
     containers: 2_000,
     bytecode_bytes: 50_000,
@@ -93,6 +101,7 @@ const INK_FLOORS: Floors = Floors {
 /// tier1-native, which is much smaller.
 const NATIVE_FLOORS: Floors = Floors {
     cases: 25,
+    changed_cases: 10,
     line_entries: 100,
     containers: 100,
     bytecode_bytes: 2_000,
@@ -116,6 +125,7 @@ impl Totals {
 
 struct Sweep {
     compared: usize,
+    changed: usize,
     skipped: Vec<String>,
     failures: Vec<String>,
     totals: Totals,
@@ -125,6 +135,7 @@ impl Sweep {
     fn new() -> Self {
         Self {
             compared: 0,
+            changed: 0,
             skipped: Vec::new(),
             failures: Vec::new(),
             totals: Totals::default(),
@@ -170,15 +181,22 @@ impl Sweep {
                 "{label}: two optimizer runs over the same input produced different bytes"
             ));
         }
-        // Only meaningful while no pass changes anything. When the first real
-        // pass lands, this becomes conditional on `verdict.changed` — the four
-        // obligations above do not change.
+        // Both directions, per the module doc: an untouched case must round-trip
+        // byte-for-byte, and a case a pass reports as changed must differ.
         if !verdict.changed && !verdict.bytes_identical {
             self.failures.push(format!(
-                "{label}: optimizer was not byte-identical with an empty pass list. \
+                "{label}: no pass reported a change, yet the bytes differ. \
                  This is a brink-format round-trip failure (write_inkb . read_inkb != id), \
                  NOT an optimizer failure — file it against brink-format."
             ));
+        }
+        if verdict.changed && verdict.bytes_identical {
+            self.failures.push(format!(
+                "{label}: a pass reported a change but the artifact bytes are identical"
+            ));
+        }
+        if verdict.changed {
+            self.changed += 1;
         }
 
         self.totals.add(verdict.before);
@@ -187,8 +205,9 @@ impl Sweep {
 
     fn summary(&self, what: &str) -> String {
         format!(
-            "{what}: compared {} case(s), skipped {} — {} line entries, {} containers, {} bytecode bytes",
+            "{what}: compared {} case(s) ({} rewritten), skipped {} — {} line entries, {} containers, {} bytecode bytes",
             self.compared,
+            self.changed,
             self.skipped.len(),
             self.totals.line_entries,
             self.totals.containers,
@@ -210,6 +229,14 @@ impl Sweep {
             floors.cases,
             self.skipped.len(),
             self.skipped.join("\n")
+        );
+        assert!(
+            self.changed >= floors.changed_cases,
+            "{what}: the resident passes rewrote only {} of {} case(s) (floor {}) — \
+             the pass set has stopped matching the corpus",
+            self.changed,
+            self.compared,
+            floors.changed_cases
         );
         assert!(
             self.totals.line_entries >= floors.line_entries,

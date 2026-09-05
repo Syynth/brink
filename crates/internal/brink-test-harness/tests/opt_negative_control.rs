@@ -165,8 +165,9 @@ fn control_matrix_holds_on_fixtures() {
         .map_err(|e| format!("{label}: fence error: {e}"))
         .expect("the fence runs");
         assert!(
-            base.all_clean() && base.bytes_identical,
-            "{label}: the empty pass set must be clean and byte-identical, got {}",
+            base.all_clean() && (base.changed != base.bytes_identical),
+            "{label}: the resident pass set must be clean, and byte-identical \
+             exactly when it reports no change, got {}",
             describe(&base)
         );
 

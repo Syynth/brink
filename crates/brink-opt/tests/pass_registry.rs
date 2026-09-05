@@ -55,20 +55,22 @@ fn one_line_story(text: &str) -> StoryData {
 }
 
 /// The single line of `one_line_story`.
+#[cfg(feature = "test-control")]
 fn only_line(story: &StoryData) -> &LineEntry {
     &story.line_tables[0].lines[0]
 }
 
-/// v1 ships no passes (`docs/optimizer-spec.md` §8.1). This test must be
-/// edited deliberately when the first real pass lands — that is the point of
-/// it, not an obstacle.
+/// The resident pass list, in run order (`docs/optimizer-spec.md` §8.2 —
+/// the first real pass, `docs/optimizer-peephole.md`). Edited deliberately
+/// whenever a pass lands or moves — that is the point of it, not an
+/// obstacle.
 #[test]
-fn default_pass_set_is_empty() {
+fn default_pass_set_is_the_resident_list() {
     let config = OptConfig::defaults();
-    assert!(
-        config.passes.is_empty(),
-        "v1 ships an empty pass list; found {:?}",
-        config.passes.names()
+    assert_eq!(
+        config.passes.names(),
+        vec![brink_opt::EmitLineNl::NAME],
+        "the resident pass list, in run order"
     );
 }
 
@@ -91,15 +93,16 @@ fn default_pass_set_contains_no_control_pass() {
     );
 }
 
-/// An empty pass set leaves the story untouched, so `optimize` reports no
-/// change and identical before/after stats.
+/// A story with none of the passes' input shapes (here: no containers, so
+/// no `EmitLine`/`EmitNewline` pair) comes out untouched: every pass runs,
+/// none reports a change, and before/after stats are identical.
 #[test]
-fn the_empty_pass_set_changes_nothing() {
+fn the_default_passes_leave_a_story_without_their_shapes_untouched() {
     let mut story = one_line_story("hello");
     let before = story.clone();
     let report = optimize(&mut story, &OptConfig::defaults());
 
-    assert!(report.passes.is_empty(), "no pass should have run");
+    assert_eq!(report.passes.len(), 1, "the one resident pass ran");
     assert!(!report.changed(), "nothing should have changed");
     assert_eq!(report.before, report.after, "stats must not move");
     assert_eq!(story, before, "the story must be untouched");
