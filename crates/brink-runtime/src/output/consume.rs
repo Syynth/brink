@@ -15,7 +15,7 @@ use brink_format::{LineEntry, PluralResolver};
 
 use super::{
     OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_first_line_annotated,
-    resolve_lines_annotated_marked,
+    resolve_lines_marked,
 };
 use crate::program::Program;
 
@@ -128,7 +128,7 @@ impl OutputBuffer {
     /// all single-line results with empty string to produce the same
     /// output as the original `flush_lines` + `finalize_lines`.
     ///
-    /// A completed segment that [`super::resolve_lines_annotated`] marks
+    /// A completed segment that `super::drive_lines` marks
     /// suppressed (issue #2091 — an empty `content`/Fragment capture) is
     /// never handed back as a `Line::Text` of its own: the cursor still
     /// advances past it, but the loop keeps scanning for the next real
@@ -290,7 +290,7 @@ impl OutputBuffer {
         remove.clear();
         remove.resize(unread.len(), false);
         mark_glue_removals(unread, remove);
-        let annotated = resolve_lines_annotated_marked(
+        let (result, carried) = resolve_lines_marked(
             unread,
             remove,
             self.pending_element.clone(),
@@ -303,15 +303,7 @@ impl OutputBuffer {
         // `take_first_line` — otherwise an `ElementAttachEnd` consumed by this
         // flush is lost and the attach data stays live on every later line
         // (issue #2108 review finding).
-        self.pending_element = annotated
-            .last()
-            .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
-        let result: Vec<_> = annotated
-            .into_iter()
-            .filter_map(|(text, tags, suppressed, element, source)| {
-                (!suppressed).then_some((text, tags, element, source))
-            })
-            .collect();
+        self.pending_element = carried;
         self.cursor = self.transcript.len();
         self.rescan_completion();
         result
