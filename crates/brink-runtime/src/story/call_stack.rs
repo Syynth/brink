@@ -25,10 +25,6 @@ pub(crate) struct ContainerPosition {
 /// - **Function**: `f()` calls. Output is captured as a return value.
 /// - **Tunnel**: `->t->` calls. Yields for pending choices (the tunnel
 ///   needs the player's choice before it can continue).
-/// - **Thread**: boundary frame pushed by `ThreadCall`. When this frame
-///   exhausts, the thread is done — inherited frames below it are never
-///   unwound into during normal execution. `->->` (`TunnelReturn`) strips
-///   Thread frames to find the enclosing Tunnel.
 /// - **External**: pushed by `CallExternal`. Holds popped arguments in
 ///   `temps` and the external function's [`DefinitionId`] in
 ///   `external_fn_id`. The orchestration layer resolves it (binding or
@@ -38,7 +34,6 @@ pub(crate) enum CallFrameType {
     Root,
     Function,
     Tunnel,
-    Thread,
     External,
     /// Boundary frame pushed by an engine→ink call
     /// ([`FlowInstance::begin_function_eval`]). Behaves like `Function`
@@ -53,10 +48,9 @@ pub(crate) enum CallFrameType {
 /// type and whether the call stack could pop at all at that instant.
 /// Mirrors C#'s `Story.Continue()` selection (`Story.cs`): a tunnel or
 /// function frame gets its own message; a stack that can't pop at all (only
-/// the root frame remains) is the plain case; anything else (a `Thread`
-/// boundary, an in-progress `FunctionEvalFromGame` frame) is the "unknown
-/// reason" backstop — a call-stack shape well-formed compiler output should
-/// never produce. Called from [`crate::vm::handle_frame_exhaustion`] at the
+/// the root frame remains) is the plain case; anything else (an in-progress
+/// `FunctionEvalFromGame` frame, say) is the "unknown reason" backstop — a
+/// call-stack shape well-formed compiler output should never produce. Called from [`crate::vm::handle_frame_exhaustion`] at the
 /// exact moment a frame's content is discovered exhausted — the same
 /// instant C# reads `callStack.CanPop` — before this runtime's own
 /// exhaustion recovery (which, unlike C#, always pops the exhausted frame)
@@ -266,6 +260,21 @@ impl CallStack {
 #[derive(Debug, Clone)]
 pub(crate) struct Thread {
     pub call_stack: CallStack,
+    /// How many frames at the bottom of `call_stack` belong to the parent
+    /// this thread was forked from — the mark that says where *this*
+    /// thread's own execution begins. `0` for the root thread; for a
+    /// thread spawned by `<-`, the parent's depth at the fork.
+    ///
+    /// This replaces the boundary `CallFrameType::Thread` frame `<-` used
+    /// to push (issue #3561). That frame was never released: selecting a
+    /// choice raised inside a thread installs the thread's fork wholesale
+    /// (`FlowInstance::select_choice`), so the boundary rode into the main
+    /// call stack and stayed there — one retained frame per turn in the
+    /// ordinary `<- thread`-as-choice game loop, with every subsequent
+    /// fork O(depth) against a depth that rose with the turn count. The
+    /// mark belongs on the thread, which is popped whole, rather than in
+    /// the stack, which gets copied and installed elsewhere.
+    pub base_depth: usize,
 }
 
 /// How the choice display text is stored internally.
@@ -586,6 +595,11 @@ impl Flow {
     }
 
     /// Fork a new thread from the current one. Returns `(thread, snapshot_cache_hit)`.
+    ///
+    /// The fork starts with `base_depth: 0` — the root-thread value, which
+    /// is what a choice fork needs, since selecting a choice installs it as
+    /// the flow's only thread. `Opcode::ThreadCall` overwrites it with the
+    /// parent's depth for a `<-` spawn.
     pub fn fork_thread(&mut self) -> (Thread, bool) {
         let (shared, cache_hit) = self.current_thread_mut().call_stack.snapshot();
         (
@@ -596,9 +610,25 @@ impl Flow {
                     cached_snapshot: None,
                     materialization_count: 0,
                 },
+                base_depth: 0,
             },
             cache_hit,
         )
+    }
+
+    /// Is the current thread one spawned by `<-`, standing at its own base
+    /// — holding no frame above the ones it inherited from its parent?
+    ///
+    /// This is the question the boundary `CallFrameType::Thread` frame used
+    /// to answer by being on top of the stack (issue #3561, see
+    /// [`Thread::base_depth`]). Two callers need it: content exhaustion
+    /// here means the *thread* is done (pop it whole; never unwind into the
+    /// parent's frames below), and the debugger refuses step-out there —
+    /// `docs/debugger-spec.md` §4's ruled `Thread` row, "a thread is not a
+    /// frame you can return from".
+    pub fn at_thread_base(&self) -> bool {
+        let thread = self.current_thread();
+        self.can_pop_thread() && thread.call_stack.len() <= thread.base_depth
     }
 
     /// Drain materialization counts from all thread call stacks.
@@ -774,14 +804,13 @@ mod tests {
         );
     }
 
-    /// Any other frame type that can still pop (a `Thread` boundary, a
-    /// `FunctionEvalFromGame` boundary, even `Root`/`External`) falls to
-    /// the "unknown reason" backstop — mirrors C#'s final `else` arm.
+    /// Any other frame type that can still pop (a `FunctionEvalFromGame`
+    /// boundary, even `Root`/`External`) falls to the "unknown reason"
+    /// backstop — mirrors C#'s final `else` arm.
     #[test]
     fn classify_other_frame_types_with_can_pop_is_unknown() {
         for frame_type in [
             CallFrameType::Root,
-            CallFrameType::Thread,
             CallFrameType::External,
             CallFrameType::FunctionEvalFromGame,
         ] {
@@ -803,7 +832,6 @@ mod tests {
             CallFrameType::Root,
             CallFrameType::Function,
             CallFrameType::Tunnel,
-            CallFrameType::Thread,
             CallFrameType::External,
             CallFrameType::FunctionEvalFromGame,
         ] {

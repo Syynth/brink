@@ -1335,16 +1335,20 @@ impl<R: StoryRng> Story<R> {
 
         // Call stack, innermost (current) frame first.
         let depth = thread.call_stack.len();
+        let thread_base = Self::thread_base_frame(flow);
         let mut call_stack = Vec::with_capacity(depth);
         for i in (0..depth).rev() {
             if let Some(frame) = thread.call_stack.get(i) {
-                let kind = match frame.frame_type {
-                    CallFrameType::Root => "root",
-                    CallFrameType::Function => "function",
-                    CallFrameType::Tunnel => "tunnel",
-                    CallFrameType::Thread => "thread",
-                    CallFrameType::External => "external",
-                    CallFrameType::FunctionEvalFromGame => "eval",
+                let kind = if Some(i) == thread_base {
+                    "thread"
+                } else {
+                    match frame.frame_type {
+                        CallFrameType::Root => "root",
+                        CallFrameType::Function => "function",
+                        CallFrameType::Tunnel => "tunnel",
+                        CallFrameType::External => "external",
+                        CallFrameType::FunctionEvalFromGame => "eval",
+                    }
                 };
                 call_stack.push(DebugFrame {
                     kind,
@@ -1508,16 +1512,20 @@ impl<R: StoryRng> Story<R> {
         };
         let thread = flow.current_thread();
         let depth = thread.call_stack.len();
+        let thread_base = Self::thread_base_frame(flow);
         let mut call_stack = Vec::with_capacity(depth);
         for i in (0..depth).rev() {
             if let Some(frame) = thread.call_stack.get(i) {
-                let kind = match frame.frame_type {
-                    CallFrameType::Root => "root",
-                    CallFrameType::Function => "function",
-                    CallFrameType::Tunnel => "tunnel",
-                    CallFrameType::Thread => "thread",
-                    CallFrameType::External => "external",
-                    CallFrameType::FunctionEvalFromGame => "eval",
+                let kind = if Some(i) == thread_base {
+                    "thread"
+                } else {
+                    match frame.frame_type {
+                        CallFrameType::Root => "root",
+                        CallFrameType::Function => "function",
+                        CallFrameType::Tunnel => "tunnel",
+                        CallFrameType::External => "external",
+                        CallFrameType::FunctionEvalFromGame => "eval",
+                    }
                 };
                 call_stack.push(SnapshotFrame {
                     kind: kind.to_owned(),
@@ -1833,7 +1841,11 @@ impl<R: StoryRng> Story<R> {
     /// The default flow's current thread's call-stack depth — the raw
     /// count [`debug_step`](Self::debug_step)'s step-over/out logic is
     /// derived from (`docs/debugger-spec.md` §4).
-    #[cfg(feature = "debug-hooks")]
+    ///
+    /// Also available under `testing`, where it is what a bounded-growth
+    /// regression test reads to assert the call stack does not grow with
+    /// the turn count (issue #3561).
+    #[cfg(any(feature = "debug-hooks", feature = "testing"))]
     #[must_use]
     pub fn debug_call_stack_depth(&self) -> usize {
         Self::depth_of(&self.default.flow)
@@ -2652,11 +2664,7 @@ impl<R: StoryRng> Story<R> {
         if mode != StepMode::Out {
             return None;
         }
-        let innermost_is_thread = flow
-            .current_thread()
-            .call_stack
-            .last()
-            .is_some_and(|frame| frame.frame_type == CallFrameType::Thread);
+        let innermost_is_thread = flow.at_thread_base();
         (depth_before <= 1 || innermost_is_thread).then(|| crate::DebugRunOutcome {
             reason: DebugStopReason::NoStepOutTarget,
             position: Self::position_of(flow),
@@ -2715,9 +2723,26 @@ impl<R: StoryRng> Story<R> {
     }
 
     /// A flow's current thread's call-stack depth.
-    #[cfg(feature = "debug-hooks")]
+    #[cfg(any(feature = "debug-hooks", feature = "testing"))]
     fn depth_of(flow: &Flow) -> usize {
         flow.current_thread().call_stack.len()
+    }
+
+    /// Index of the call-stack frame a `<-` thread entered on, when the
+    /// flow's current thread is one — the frame the debug surfaces label
+    /// `thread` rather than by its own `frame_type`.
+    ///
+    /// `<-` pushes no call frame of its own (issue #3561): a spawned
+    /// thread re-points its copy of the parent's innermost frame at the
+    /// thread target and runs there, with [`Thread::base_depth`] marking
+    /// where the parent's frames end. So the frame at `base_depth - 1` is
+    /// the thread's entry frame, and it is what `docs/debugger-spec.md`
+    /// §4's ruled `Thread` row describes: a frame you cannot return from,
+    /// standing at the threaded knot's own container. `None` on the root
+    /// thread, which has no such frame.
+    fn thread_base_frame(flow: &Flow) -> Option<usize> {
+        flow.can_pop_thread()
+            .then(|| flow.current_thread().base_depth.saturating_sub(1))
     }
 }
 
