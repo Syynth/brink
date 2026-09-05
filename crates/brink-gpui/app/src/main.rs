@@ -12,6 +12,7 @@ mod document;
 mod icons;
 mod problems;
 mod project;
+mod search;
 mod single_view;
 
 use std::ops::Range;
@@ -32,9 +33,17 @@ use crate::code_view::CodeView;
 use crate::continuous::ContinuousView;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
+use crate::search::{SearchEvent, SearchView};
 use crate::single_view::SingleFileView;
 
-actions!(brink, [Save]);
+actions!(
+    brink,
+    [
+        Save,
+        /// `search.focus`: show the Search window and put the caret in it.
+        SearchFocus,
+    ]
+);
 
 /// The application root: it owns the model and the features, and hands the
 /// shell its panels and views.
@@ -47,6 +56,7 @@ struct Studio {
     code: Entity<CodeView>,
     /// Continuous view — the whole project as one scroller.
     manuscript: Entity<ContinuousView>,
+    search: Entity<SearchView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,6 +67,7 @@ impl Studio {
 
         let binder = cx.new(|cx| Binder::new(project.clone(), window, cx));
         let problems = cx.new(|cx| Problems::new(project.clone(), window, cx));
+        let search = cx.new(|cx| SearchView::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
@@ -68,6 +79,16 @@ impl Studio {
                     .size(px(260.))
                     .open(),
                 binder.clone(),
+                window,
+                cx,
+            );
+            // Beside the Binder in the left dock — the second tab there,
+            // which is what made the rail tab-aware.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("search", "Search", RailSlot::LEFT_UPPER)
+                    .icon(icons::SEARCH)
+                    .size(px(320.)),
+                search.clone(),
                 window,
                 cx,
             );
@@ -99,6 +120,14 @@ impl Studio {
             // The app's own commands go through the same registry as the
             // shell's, so the palette and the menu list them.
             workspace.register_command("File", "Save", Save, Some("cmd-s"), cx);
+            // Studio: "Search: Find in Files", Mod-Shift-F (VS Code precedent).
+            workspace.register_command(
+                "Search",
+                "Find in Files",
+                SearchFocus,
+                Some("cmd-shift-f"),
+                cx,
+            );
         });
 
         let on_project = cx.subscribe_in(
@@ -145,6 +174,14 @@ impl Studio {
                 this.open(&event.path, Some(event.span.clone()), window, cx);
             },
         );
+        let on_search = cx.subscribe_in(
+            &search,
+            window,
+            |this, _, event: &SearchEvent, window, cx| {
+                let SearchEvent::Reveal { path, span } = event;
+                this.open(path, Some(span.clone()), window, cx);
+            },
+        );
 
         project.update(cx, |project, _| project.open(root));
 
@@ -157,7 +194,8 @@ impl Studio {
             workspace,
             code,
             manuscript,
-            _subscriptions: vec![on_project, on_binder, on_problem],
+            search,
+            _subscriptions: vec![on_project, on_binder, on_problem, on_search],
         }
     }
 
@@ -188,6 +226,16 @@ impl Studio {
             .update(cx, |code, cx| code.open(path, span, window, cx));
     }
 
+    /// `search.focus`: show the window (open, never toggle) and focus the
+    /// query — the studio's `ensureToolWindowOpen` + `requestSearchFocus`.
+    fn search_focus(&mut self, _: &SearchFocus, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.open_tool_window("search", window, cx)
+        });
+        self.search
+            .update(cx, |search, cx| search.focus_query(window, cx));
+    }
+
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
         let root = self.project.read(cx).root().to_path_buf();
         self.code.update(cx, |code, cx| code.save_all(&root, cx));
@@ -216,6 +264,7 @@ impl Render for Studio {
         gpui::div()
             .size_full()
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::search_focus))
             .child(self.workspace.clone())
     }
 }

@@ -850,6 +850,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "lsp-types",
+ "regex",
  "rowan",
 ]
 

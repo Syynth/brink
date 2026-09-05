@@ -44,6 +44,8 @@ gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 anyhow = "1"
+# The search engine's pattern (`app/src/search.rs`); the root pins "1" too.
+regex = "1"
 # Same rowan the root workspace pins (TextSize/TextRange).
 rowan = "0.16.1"
 # The worker boundary (`docs/gpui-studio-spec.md` §3.3). Same crate

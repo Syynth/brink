@@ -117,6 +117,19 @@ switches. Deferred, in the spec: user keymap overrides, `Escape` back to
 the editor, quick-open. Do not bind `cmd-shift-<digit>` to anything — it
 cannot match on Linux.
 
+**Search** (2026-09-05, `app/src/search.rs`): the studio's engine (plain
+or regex, case, whole word, one composed pattern, 1000-match cap) over the
+mirror's current sources; per-match cards with `file:line`, containing
+knot/stitch, the match line with 1↑2↓ context and the hit highlighted; a
+frozen snapshot replaced only by a new query, an option, or `↻`; the
+summary strip with the Binder's expand/collapse-all; `search.focus` on
+`cmd-shift-f`. Verified headless. **Read-only cards** — the ruling makes
+inline editing the point, and that needs one shared buffer per file that
+every editor is a view of, which the model does not have yet (it is also
+why manuscript edits do not reach the Code view's tab). That shared buffer
+is the next model-layer piece; editable cards, replace previews and the
+`edited` badges follow it. References mode waits on a worker query.
+
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"
 + toolbar), and the manuscript's first section shows a partial row above
@@ -143,10 +156,11 @@ hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
 2. **No CI lane.** Nothing runs this workspace's tests or fmt. Adding one
    means a macOS runner (or solving the Linux question above) — worth a
    ruling on whether the GUI tier is gated at all, or only `model` + `shell`.
-3. **Rail toggling is dock-level, not tab-level.** `Workspace::toggle_tool_
-   window` opens/closes the whole dock; the toolkit exposes no way to
-   activate one panel inside a tab group from outside it. Fine while each
-   dock holds one tool window, wrong as soon as one holds two.
+3. ~~**Rail toggling is dock-level, not tab-level.**~~ **Fixed 2026-09-05**
+   with Search as the second tab in the left dock: a tool window records
+   its tab group through `TabSlot` (`shell/src/tool_window.rs`), and the
+   rail opens-and-selects, switches, or closes accordingly; a button is
+   pressed only when its window is the one on screen.
 4. **Open-project is a CLI argument only.** No file dialog, no recents.
 5. **No layout persistence.** `DockAreaState` has `dump`/`load` and
    `RailSlot::persistence_key` exists for exactly this; nothing calls them.

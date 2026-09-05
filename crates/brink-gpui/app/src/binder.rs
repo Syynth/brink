@@ -283,6 +283,8 @@ pub struct Binder {
     row_menu: Option<(SharedString, Point<Pixels>)>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
+    /// The dock tab this panel sits in, for the rail to select.
+    tab: brink_gpui_shell::tool_window::TabSlot,
     _subs: Vec<gpui::Subscription>,
 }
 
@@ -330,6 +332,7 @@ impl Binder {
             row_menu: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
+            tab: brink_gpui_shell::tool_window::TabSlot::default(),
             _subs: vec![sub, watch],
         };
         this.rebuild(cx);
@@ -1291,11 +1294,28 @@ fn symbol_marks(
 impl EventEmitter<gpui_component::dock::PanelEvent> for Binder {}
 
 /// No badge: the Binder counts nothing the rail should shout about.
-impl brink_gpui_shell::tool_window::ToolWindow for Binder {}
+impl brink_gpui_shell::tool_window::ToolWindow for Binder {
+    fn tab_slot(&self) -> Option<&brink_gpui_shell::tool_window::TabSlot> {
+        Some(&self.tab)
+    }
+}
 
 impl gpui_component::dock::BasePanel for Binder {
     fn panel_name(&self) -> &'static str {
         "Binder"
+    }
+
+    fn on_added_to(
+        &mut self,
+        group: gpui::WeakEntity<gpui_component::dock::TabGroup>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.tab.added_to(group);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.tab.removed();
     }
 }
 

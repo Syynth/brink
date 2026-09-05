@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use brink_gpui_model::worker::Diagnostic;
-use brink_gpui_shell::tool_window::ToolWindow;
+use brink_gpui_shell::tool_window::{TabSlot, ToolWindow};
 use brink_ir::{LineIndex, Severity};
 use gpui::prelude::*;
 use gpui::{
@@ -314,6 +314,7 @@ pub struct Problems {
     filter: Entity<InputState>,
     filter_text: String,
     filter_open: bool,
+    tab: TabSlot,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -351,6 +352,7 @@ impl Problems {
             filter,
             filter_text: String::new(),
             filter_open: false,
+            tab: TabSlot::default(),
             _subscriptions: vec![on_filter, on_project],
         }
     }
@@ -565,6 +567,19 @@ impl BasePanel for Problems {
     fn panel_name(&self) -> &'static str {
         "Problems"
     }
+
+    fn on_added_to(
+        &mut self,
+        group: gpui::WeakEntity<gpui_component::dock::TabGroup>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.tab.added_to(group);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.tab.removed();
+    }
 }
 
 impl Panel for Problems {
@@ -620,6 +635,10 @@ impl Panel for Problems {
 }
 
 impl ToolWindow for Problems {
+    fn tab_slot(&self) -> Option<&TabSlot> {
+        Some(&self.tab)
+    }
+
     /// The error count, hidden when clean (§5.1).
     fn badge(&self, _cx: &App) -> Option<SharedString> {
         match self.error_count() {

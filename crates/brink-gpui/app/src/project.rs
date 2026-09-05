@@ -137,7 +137,12 @@ impl Project {
 
     /// Tell the worker a file's new text. Returns immediately — the analysis
     /// arrives later as [`ProjectEvent::Analyzed`], and nothing waits for it.
+    ///
+    /// The mirror keeps the text too, so whatever reads sources here —
+    /// Search, the Problems panel's line numbers — sees what the author
+    /// typed, not what the file was loaded with.
     pub fn edit(&mut self, path: &str, text: String) {
+        self.sources.insert(path.to_owned(), text.clone());
         self.revision += 1;
         self.worker.send(Request::Edit {
             path: path.to_owned(),

@@ -13,7 +13,7 @@ use gpui::{
     Subscription, Window, anchored, deferred, div, point, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
+use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
@@ -25,16 +25,24 @@ use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteM
 use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::skin::StudioSkin;
-use crate::tool_window::{ToolWindow, ToolWindowSpec};
+use crate::tool_window::{TabSlot, ToolWindow, ToolWindowSpec, select_tab};
 
 /// Reads a tool window's badge without the shell holding the panel's type.
 type BadgeReader = Box<dyn Fn(&App) -> Option<SharedString>>;
 
-/// A registered tool window: its spec, and its badge reader. The dock owns
-/// the panel handle itself.
+/// Whether a tool window is its group's displayed tab.
+type ActiveReader = Box<dyn Fn(&App) -> bool>;
+/// Make a tool window its group's displayed tab.
+type TabSelector = Box<dyn Fn(&mut Window, &mut App)>;
+
+/// A registered tool window: its spec, and closures over the panel for what
+/// the shell needs without holding the panel's type. The dock owns the
+/// panel handle itself.
 struct Registered {
     spec: ToolWindowSpec,
     badge: BadgeReader,
+    is_active: ActiveReader,
+    select: TabSelector,
 }
 
 /// One cell of the status bar. A cell that `opens` a tool window is drawn
@@ -196,19 +204,51 @@ impl Workspace {
         let size = spec.default_size;
         let open = spec.open_by_default;
 
+        let me = PanelId::from(panel.entity_id());
         let badge = {
             let panel = panel.clone();
             Box::new(move |cx: &App| panel.read(cx).badge(cx))
+        };
+        let is_active = {
+            let panel = panel.clone();
+            Box::new(move |cx: &App| {
+                panel
+                    .read(cx)
+                    .tab_slot()
+                    .is_none_or(|slot| slot.is_active(me, cx))
+            })
+        };
+        let select = {
+            let panel = panel.clone();
+            Box::new(move |window: &mut Window, cx: &mut App| {
+                let group = panel.read(cx).tab_slot().and_then(TabSlot::group);
+                if let Some(group) = group {
+                    select_tab(&group, me, window, cx);
+                }
+            })
         };
         self.dock_area.update(cx, |area, cx| {
             // `panel_handle`, not the bare entity: base's `add_panel` stores
             // the entity alone, and the skin cannot recover a title from it —
             // the tab would read the panel's registered name instead.
             area.add_panel_view(panel_handle(panel), placement, size, window, cx);
-            if area.is_dock_open(placement) != open {
+            // `open_by_default` opens; it never closes a dock another tool
+            // window already opened.
+            if open && !area.is_dock_open(placement) {
                 area.toggle_dock(placement, window, cx);
             }
         });
+        // The dock shows the newest panel. A window that does not open by
+        // default must not take the tab from one that does.
+        if !open
+            && let Some(previous) = self
+                .tools
+                .iter()
+                .rev()
+                .find(|t| t.spec.dock_placement() == placement && t.spec.open_by_default)
+        {
+            (previous.select)(window, cx);
+        }
         // `view.toggle.<id>`, `cmd-1…9` by registration order (studio §5.2).
         let ordinal = self.tools.len() + 1;
         let keystroke = tool_window_keystroke(ordinal);
@@ -221,7 +261,12 @@ impl Workspace {
             keystroke.as_deref(),
             cx,
         );
-        self.tools.push(Registered { spec, badge });
+        self.tools.push(Registered {
+            spec,
+            badge,
+            is_active,
+            select,
+        });
     }
 
     /// Hand the shell what a view shows, and what to focus when it is
@@ -259,36 +304,42 @@ impl Workspace {
         self.editor_root.read(cx).view()
     }
 
-    /// Toggle the dock a tool window lives in.
-    ///
-    /// Dock-level, not tab-level: the toolkit exposes no way to activate one
-    /// panel inside a tab group from outside it, and with the docks the
-    /// slice fills the two are the same thing. When a dock grows a second
-    /// tab this wants to become "open the dock AND select that tab".
+    /// The rail-button gesture. Tab-level: a closed dock opens showing this
+    /// window; an open dock showing another window switches to it; an open
+    /// dock already showing it closes.
     pub fn toggle_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
         let placement = tool.spec.dock_placement();
-        self.dock_area.update(cx, |area, cx| {
-            area.toggle_dock(placement, window, cx);
-        });
+        let open = self.dock_area.read(cx).is_dock_open(placement);
+        let active = (tool.is_active)(cx);
+        if open && active {
+            self.dock_area
+                .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+        } else {
+            if !open {
+                self.dock_area
+                    .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+            }
+            (tool.select)(window, cx);
+        }
         cx.notify();
     }
 
-    /// Open the dock a tool window lives in, if it is closed. What a status
-    /// cell or a badge click wants: never a toggle, since "show me the
-    /// problems" must not close them.
+    /// Show a tool window: open its dock if closed and select its tab. What
+    /// a status cell or a command wants — never a toggle, since "show me
+    /// the problems" must not close them.
     pub fn open_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
         let placement = tool.spec.dock_placement();
-        self.dock_area.update(cx, |area, cx| {
-            if !area.is_dock_open(placement) {
-                area.toggle_dock(placement, window, cx);
-            }
-        });
+        if !self.dock_area.read(cx).is_dock_open(placement) {
+            self.dock_area
+                .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+        }
+        (tool.select)(window, cx);
         cx.notify();
     }
 
@@ -307,7 +358,9 @@ impl Workspace {
                 title: t.spec.title.clone(),
                 icon: t.spec.icon,
                 slot: t.spec.slot,
-                active: area.is_dock_open(t.spec.dock_placement()),
+                // Pressed when this window is the one on screen: its dock
+                // open AND its tab the displayed one.
+                active: area.is_dock_open(t.spec.dock_placement()) && (t.is_active)(cx),
                 badge: (t.badge)(cx),
                 keystroke: self.commands.keystroke_for(&ToggleToolWindow {
                     id: t.spec.id.clone(),

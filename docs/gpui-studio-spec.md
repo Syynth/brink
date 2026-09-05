@@ -307,7 +307,14 @@ Two defects carried from the spike are fixed here, not later:
   files).
 - Moving the editor acceptance gate down onto the shared session — required
   by the layering ruling, not by this slice.
-- Player, story graph, debugger, search cards, settings. **Where the Player
+- **One shared buffer per file.** Every editor over a file — a Code view
+  document, a manuscript section, a Search card — owns its own
+  `EditorState` today, so an edit in one does not reach the others. The
+  model needs a canonical text per file with change events that every
+  editor mirrors; it is what makes Search's cards editable (ruled
+  2026-08-24) and what the manuscript already lacks.
+- Player, story graph, debugger, settings; Search's editable cards, replace
+  previews and references mode (all on the shared buffer above). **Where the Player
   sits in each view is an open ruling** (parked 2026-09-05, see
   `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
   split, a native companion in Single File view, and absent from

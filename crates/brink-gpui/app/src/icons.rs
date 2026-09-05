@@ -99,6 +99,10 @@ pub const WARNING_MARK: &str = stroke_icon!(
 pub const SEARCH: &str =
     stroke_icon!(r##"<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>"##);
 
+/// Refresh: an arrow chasing its own tail.
+pub const REFRESH: &str =
+    stroke_icon!(r##"<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>"##);
+
 /// Group-by-file: three stacked rows under a folded corner.
 pub const GROUP_BY_FILE: &str =
     stroke_icon!(r##"<path d="M4 6h16M4 12h10M4 18h13"/><path d="M17 10l3 2-3 2"/>"##);
