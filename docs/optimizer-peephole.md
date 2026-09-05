@@ -1,12 +1,12 @@
 # Optimizer pass: peephole (superinstructions)
 
-**Status: LANDED (engine + first rewrite), 2026-09-05.** The catalogue's
+**Status: LANDED (engine + two passes), 2026-09-05.** The catalogue's
 `peephole` entry (`docs/optimizer-catalogue.md`), graduated per the per-pass
 template. This document covers the shared rewriting engine
-(`crates/brink-opt/src/peephole.rs`) and the first rewrite that rides on it,
-`emit-line-nl` (`crates/brink-opt/src/passes.rs`). Later rewrites — the
-compare/branch fusions below — are additions to §1's table, not new
-documents.
+(`crates/brink-opt/src/peephole.rs`) and the rewrites that ride on it
+(`crates/brink-opt/src/passes.rs`): `emit-line-nl` (pass 1, `.inkb` v7) and
+`binary-fusion` (pass 2, `.inkb` v8). Later rewrites are additions to §1's
+tables, not new documents.
 
 ## 0. Why superinstructions, and why here
 
@@ -38,7 +38,7 @@ artifact, once, for every rewrite:
 | Concern | What the engine does |
 |---|---|
 | **Labels** | Every byte offset anything jumps to — a relative `Jump`, `JumpIfFalse` or `SequenceBranch` target, or an `AddressDef.byte_offset` inside the container — must survive as an instruction boundary. A window may *begin* at a label; a window that would *swallow* one is refused. |
-| **Relocation** | Replacing a window shifts everything after it. Kept relative jumps are re-encoded against the new layout (`relative_of(new_end, map(old_target))`); the container's `AddressDef` offsets move with their instruction; `DebugInfo` entries follow the instruction they annotated, and an entry on a swallowed instruction lands on the window's replacement — the nearest thing a debugger can still point at. |
+| **Relocation** | Replacing a window shifts everything after it. Kept relative jumps are re-encoded against the new layout (`relative_of(new_end, map(old_target))`); the container's `AddressDef` offsets move with their instruction; `DebugInfo` entries follow the instruction they annotated, and an entry on a swallowed instruction lands on the window's replacement — the nearest thing a debugger can still point at. A replacement that itself ends in a branch (`Emit::Branch`) names its target as an absolute offset in the old code and is re-encoded the same way. |
 | **Refusal to guess** | A container whose bytecode stops decoding is left byte-for-byte as it was. The VM will report the same error it always did. |
 | **Order** | Containers and instructions are visited in program order; non-overlapping windows are planned left to right, so every decision is a pure function of the artifact. |
 
@@ -58,6 +58,33 @@ The label refusal is what keeps control flow that lands *between* the line
 and its newline correct: an `AddressDef` at the `EmitNewline`'s offset, or a
 `Jump`/`JumpIfFalse` whose target is that offset, leaves the pair unfused. The
 engine's unit tests pin both shapes.
+
+### `binary-fusion`
+
+A binary operator fused with the `PushInt` that feeds its right operand
+and/or the `JumpIfFalse` that consumes its result — the shape of every
+`if x <= 1`, `{ x == 3: }` and `x - 1` in real stories. Longest window
+first, at each position:
+
+| Window | Replacement | Opcode |
+|---|---|---|
+| `PushInt(imm); op; JumpIfFalse(rel)` | `BinaryImmJumpIfFalse(kind, imm, rel′)` | `0x6F` |
+| `PushInt(imm); op` | `BinaryImm(kind, imm)` | `0x6D` |
+| `op; JumpIfFalse(rel)` | `BinaryJumpIfFalse(kind, rel′)` | `0x6E` |
+
+`op` is any operator `BinaryKind` names (`add sub mul div mod eq ne gt ge lt
+le` — exactly the operators with a plain two-operand opcode), carried as one
+byte. The runtime arm is the constituent bodies in sequence through the
+*same* helpers the plain opcodes use: `value_ops::binary_op` with
+`Value::Int(imm)` as the right operand, and `jump_unless` — the tail of
+`JumpIfFalse`, factored so the fused branch cannot drift from the plain one.
+The only behavioural difference is that a fused branch's comparison result
+never touches the value stack, which nothing can observe.
+
+A label on the `JumpIfFalse` **shortens the window rather than blocking
+it**: the immediate still fuses and the branch stays a separate instruction,
+which is why the pass checks `Labels::blocks_window` itself instead of
+leaving the refusal to the engine. Metric: `opcodes` executed, as for pass 1.
 
 ## 2. Constraints
 
@@ -82,9 +109,15 @@ Two further observables, both from `docs/optimizer-spec.md` §10's findings:
   *any* byte change invalidates every existing overlay. This pass changes
   bytes. Optimization precedes localization; that ordering is the rule, not
   something this pass can relax.
-- **Line tables and `source_hash`** are untouched — the rewrite carries the
-  `idx` operand through verbatim, so `line_identity_diff` is clean by
-  construction and every translation still anchors.
+- **Line tables and `source_hash`** are untouched — `emit-line-nl` carries
+  the `idx` operand through verbatim and `binary-fusion` never looks at a
+  line table, so `line_identity_diff` is clean by construction and every
+  translation still anchors.
+- **Value semantics.** `BinaryImm` builds `Value::Int(imm)` and hands it to
+  the same `binary_op` the unfused pair would have reached after `PushInt`,
+  so int/float promotion, string comparison, list arithmetic and every error
+  path are the unfused ones. The fusion is over *instruction boundaries*,
+  never over the operator's semantics.
 
 And the constraint the whole design sits under:
 
@@ -94,16 +127,22 @@ And the constraint the whole design sits under:
   re-link over a patched artifact sees the same `EmitLineNl` any fresh link
   does. Nothing in the fused form is link-state.
 
-What the pass **does not** do, deliberately: fuse across a label (correctness,
-above); touch a container it cannot decode; or rewrite the compiler's
-emission. Codegen never writes `0x6C`; `brink-format`'s reader accepts it in
-any v7 artifact, so a hand-written `.inkt` may use `emit_line_nl` directly.
+What the passes **do not** do, deliberately: fuse across a label
+(correctness, above); touch a container they cannot decode; or rewrite the
+compiler's emission. Codegen never writes `0x6C`–`0x6F`; `brink-format`'s
+reader accepts them in any v8 artifact, so a hand-written `.inkt` may use
+`emit_line_nl` or `binary_imm kind=le 1` directly (the operator is spelled
+`kind=<mnemonic>`, a `kv_operand`, because a bare `add` would parse as a
+trailing operand of the previous line and swallow the next instruction's
+mnemonic — #3273's hazard).
 
 ## 3. Generator
 
-The pass's input shape is **any line of prose followed by its newline**,
-which every generated story already holds, so no new knob was needed. The
-property is the standard pair, in `brink-gen/tests/opt_equivalence.rs`:
+The input shapes — **a line of prose followed by its newline**, and **a
+comparison or arithmetic against an integer literal, usually under a
+conditional** — are things every generated story already holds, so no new
+knob was needed. The property is the standard pair, in
+`brink-gen/tests/opt_equivalence.rs`:
 
 1. traces and line identity agree between the optimized and unoptimized
    artifact, and the pass is idempotent and stable — the fence's four
@@ -115,7 +154,8 @@ property is the standard pair, in `brink-gen/tests/opt_equivalence.rs`:
 
 The corpus fence (`opt_corpus_fence.rs`) carries the same two-way check plus
 a change floor per sweep (150 of tier1–3's 390 cases; 10 of tier1-native's
-29). Measured on landing: 297 and 24 rewritten.
+29). Measured on landing: 297 and 24 rewritten with pass 1 alone; 335 and 26
+with pass 2 resident.
 
 ## 4. Measured
 
@@ -124,41 +164,55 @@ and prints each pass's report and the bytecode delta. Per-iteration Ir is
 measured by differencing two iteration counts, so the compile and the
 optimizer's own fixed cost drop out.
 
+Pass 1 alone (`emit-line-nl`):
+
 | Story | Fusions | Bytecode bytes | Opcodes executed | Ir per iteration |
 |---|---|---|---|---|
 | TheIntercept | 659 | 21 169 → 20 510 | 789 → 719 (−8.9%) | 707 737 → 697 607 (−1.4%) |
 | hanoi-10 | 15 | 1 244 → 1 229 | 2 427 871 → 2 340 369 (−3.6%) | 1 308.8M → 1 291.1M (−1.4%) |
 | crucible-8 | 55 | 3 482 → 3 427 | 466 239 → 465 862 (−0.1%) | 177.30M → 177.27M (−0.02%) |
 
-Each fused pair saves roughly 150–200 Ir — the dispatch overhead of one
-instruction, which is the whole point. Crucible is arithmetic-bound and
-barely emits prose; its pairs are the next rewrites' targets.
+Both passes resident (`emit-line-nl` + `binary-fusion`), against the
+unoptimized artifact:
 
-The optimizer's own cost is a one-off per artifact: about 6.5M Ir for
-TheIntercept's 21 KB of bytecode, linear in the artifact (addresses are
-grouped by container once, the old→new offset map is a binary search, and a
-kept instruction is copied verbatim rather than re-encoded).
+| Story | Fusions (p1 + p2) | Bytecode bytes | Opcodes executed | Ir per iteration |
+|---|---|---|---|---|
+| crucible-8 | 55 + 67 | 3 482 → 3 394 | 466 239 → 359 890 (−22.8%) | 178.57M → 149.98M (−16.0%) |
+| hanoi-10 | 15 + 16 | 1 244 → 1 215 | 2 427 871 → 2 063 151 (−15.0%) | 1 314.7M → 1 220.8M (−7.1%) |
+| TheIntercept | 659 + 55 | 21 169 → 20 482 | 789 → 697 (−11.7%) | 709 108 → 690 826 (−2.6%) |
+
+Each fused instruction saves roughly 150–270 Ir — the dispatch overhead of
+one instruction plus, for the branch forms, a push/pop pair that no longer
+happens. Crucible is arithmetic-bound: `fib`'s `n <= 1`, `n - 1` and `n - 2`
+are exactly the three windows, and its 106 349 removed dispatches per
+iteration are 3 per call.
+
+The optimizer's own cost is a one-off per artifact: about 10M Ir for
+TheIntercept's 21 KB of bytecode with both passes, linear in the artifact
+(addresses are grouped by container once, the old→new offset map is a binary
+search, and a kept instruction is copied verbatim rather than re-encoded).
 
 ## 5. Next rewrites on the same engine
 
-From the bigram histogram, in order of measured frequency on the reference
-stories:
+From the bigram histogram **after both passes**, in order of measured
+frequency on the reference stories:
 
 | Pair | Share | Fused form |
 |---|---|---|
-| `GetTemp → PushInt` | crucible 14.9% | needs a two-operand form |
-| `PushInt → {Subtract, LessOrEqual, Equal}` | crucible 7.4% each, hanoi 5.4% | compare/arith-with-immediate |
-| `{LessOrEqual, Equal} → JumpIfFalse` | crucible 7.4%, hanoi 5.4% | compare-and-branch |
-| `Call → DeclareTemp`, `EnterContainer → EmitNewline` | crucible 7.5% each | compiler-side shapes, not passes — see §6 |
+| `GetTemp → BinaryImm`, `GetTemp → BinaryImmJumpIfFalse` | crucible 9.7% each | fold the local read into the fused op: `GetTempBinaryImm(slot, kind, imm)` and its branch form — 3→1 and 4→1 on the original shapes |
+| `Duplicate → BinaryImmJumpIfFalse` | hanoi 4.9% | the switch-style conditional (`{ x: - 1: … - 2: … }`); a `Duplicate`-folding branch form |
+| `Call → DeclareTemp`, `EnterContainer → EmitNewline`, fragment wrapping | crucible 9.7% each, hanoi 5.2% + 15% | compiler-side shapes, not passes — see §6 |
 
-Each is one `Rewrite` impl plus its opcode; the label and relocation rules are
-already paid for.
+Each is one `Rewrite` impl plus its opcode; the label and relocation rules
+(including branches inside replacements) are already paid for.
 
 ## 6. Questions for the ruling
 
 1. **Opcode budget.** Each fused form spends one of the unreserved opcode
    bytes and one `VERSION` bump. RULED 2026-09-05: acceptable — new opcodes
-   may be added to the format as passes need them.
+   may be added to the format as passes need them. Pass 2 spent three (v8),
+   using a `BinaryKind` operand byte rather than one opcode per operator so
+   the format's opcode table grows by families rather than by operators.
 2. **Shapes that belong to the compiler.** `DeclareTemp` once per parameter
    on every `Call`, the six-instruction fragment wrapping around call slots,
    and a leading `EmitNewline` on every conditional-arm container are codegen
