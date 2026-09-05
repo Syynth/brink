@@ -4,9 +4,11 @@
 //! them), the editor center, and a status bar. The shell owns the frame and
 //! the placement rule; it does not know what any particular tool window is.
 
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{App, Entity, IntoElement, Render, SharedString, Window, div, px};
-use gpui_component::dock::{DockArea, DockPlacement, Panel};
+use gpui_component::dock::{DockArea, DockPlacement, DockSkin, Panel, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::rail::{RailButton, rail};
@@ -23,6 +25,12 @@ struct Registered {
 /// The studio window.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
+    /// The dock's appearance. A `DockArea` built without it is `gpui-base`'s
+    /// bare area, which docks and drags but draws no chrome at all — no tab
+    /// bar in the centre, so a second document was unreachable (HANDOFF.md
+    /// "Known broken" #1). The handle is kept because the skin's settings
+    /// are changed through it, not through the area.
+    skin: Rc<DockSkin>,
     tools: Vec<Registered>,
     /// Rendered along the bottom edge, under everything.
     status: Vec<SharedString>,
@@ -30,12 +38,23 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let dock_area = cx.new(|cx| DockArea::new("brink-studio", Some(1), window, cx));
+        let (dock_area, skin) = DockSkin::dock_area("brink-studio", Some(1), window, cx);
+        // The rails are the one affordance for opening and closing a dock
+        // (`docs/gpui-studio-spec.md` §4.1); the toolkit's own collapse
+        // buttons in every tab bar would be a second, disagreeing one.
+        skin.set_toggle_button_visible(false, cx);
         Self {
             dock_area,
+            skin,
             tools: Vec::new(),
             status: Vec::new(),
         }
+    }
+
+    /// The dock's appearance handle, for a setting the shell does not own.
+    #[must_use]
+    pub fn skin(&self) -> &Rc<DockSkin> {
+        &self.skin
     }
 
     #[must_use]
@@ -59,7 +78,10 @@ impl Workspace {
         let open = spec.open_by_default;
 
         self.dock_area.update(cx, |area, cx| {
-            area.add_panel(panel, placement, size, window, cx);
+            // `panel_handle`, not the bare entity: base's `add_panel` stores
+            // the entity alone, and the skin cannot recover a title from it —
+            // the tab would read the panel's registered name instead.
+            area.add_panel_view(panel_handle(panel), placement, size, window, cx);
             if area.is_dock_open(placement) != open {
                 area.toggle_dock(placement, window, cx);
             }
@@ -75,7 +97,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.dock_area.update(cx, |area, cx| {
-            area.add_panel(panel, DockPlacement::Center, None, window, cx);
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
     }
 
