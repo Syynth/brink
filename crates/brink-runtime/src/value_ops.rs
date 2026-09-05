@@ -1382,6 +1382,7 @@ mod tests {
 
     fn dummy_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],
@@ -2693,6 +2694,7 @@ mod tower_tests {
 
     fn dummy_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],

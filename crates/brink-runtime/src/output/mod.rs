@@ -1610,6 +1610,7 @@ fn drive_lines(
 fn test_dummy_program() -> Program {
     use std::collections::HashMap;
     Program {
+        link: crate::program::LinkTables::default(),
         containers: vec![],
         address_map: HashMap::new(),
         scope_ids: vec![],
@@ -2244,6 +2245,7 @@ mod tests {
 
         let id = DefinitionId::new(DefinitionTag::Address, 0);
         let program = Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id,
                 bytecode: vec![],
@@ -2528,6 +2530,7 @@ mod tests {
 
         let id = DefinitionId::new(DefinitionTag::Address, 0);
         let program = Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id,
                 bytecode: vec![],
