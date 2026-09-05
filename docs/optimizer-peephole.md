@@ -230,6 +230,29 @@ happens. Crucible is arithmetic-bound: `fib`'s `n <= 1`, `n - 1` and `n - 2`
 are exactly the three windows, and after pass 3 each is **one instruction**
 — 176 599 dispatches removed per iteration, five per call.
 
+**Over the whole oracle corpus** — every checked-in oracle episode replayed
+on the unoptimized and the optimized artifact, summing the VM's `opcodes`
+counter (`cargo test -p brink-test-harness --test opt_corpus_stats --
+--ignored --nocapture`):
+
+| Tier | Cases | Episodes | Opcodes executed | Bytecode bytes |
+|---|---|---|---|---|
+| tier1 | 176 | 2 357 | 898 672 → 774 848 (−13.8%) | 18 879 → 18 224 |
+| tier2 | 122 | 1 172 | 528 359 → 503 086 (−4.8%) | 20 655 → 19 854 |
+| tier3 | 88 | 2 096 | 10 224 310 → 8 322 933 (−18.6%) | 29 446 → 28 413 |
+| tests_github (oracle-backed) | 4 | 1 011 | 742 100 → 593 122 (−20.1%) | 6 288 → 6 034 |
+| **total** | 390 | 6 636 | 12 393 441 → 10 193 989 (**−17.7%**) | 75 268 → 72 525 |
+
+Fusions across the corpus: `emit-line-nl` 2 013, `binary-fusion` 610,
+`left-operand-fold` 341. The per-case distribution is wide — a third of
+cases under 10%, a fifth over 25%, a handful of arithmetic-heavy ones
+(`print-num`, `print-number-as-english`) around 45–50% — and the two large
+cases that barely move (`tier2/lists/bug-adding-element`, 500K opcodes,
+−3.9%; `tier1/choices/sticky-choice`, −0.6%) contain **no** window for
+`binary-fusion` or `left-operand-fold` at all — their loops are list
+operations and choice re-presentation, not integer compares — which is where
+an episode-driven histogram should be pointed next.
+
 Per-iteration Ir of the *same* binary drifts a few percent between runs
 (the runtime's `std::HashMap`s are SipHash-keyed per process, so probe
 sequences differ), which is why every row above is a paired run and the
