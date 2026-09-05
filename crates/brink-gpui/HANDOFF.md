@@ -100,6 +100,17 @@ hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
    17–51 µs per knot. **The boundary question is a language ruling and must
    not be decided by an agent.**
 
+## Open, parked by the maintainer (2026-09-05)
+
+- **Where the Player sits in each view.** Today it is three different
+  answers: a session *document* in a Code-view split (ruled 2026-06-10), a
+  companion split *native to* Single File view, and absent from Continuous.
+  The maintainer wants to revisit this — the leading alternative is the
+  Player as a companion of the editor root rather than of any one view (one
+  slot beside whichever view is showing) — but ruled "later, but just note
+  that". Do not build the native Player into any view until it is settled;
+  the three-view work leaves the companion slot as a placeholder.
+
 ## Deliberately not done
 
 - The **editor acceptance gate has not moved down** onto the shared session.

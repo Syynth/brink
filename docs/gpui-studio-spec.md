@@ -246,6 +246,11 @@ Two defects carried from the spike are fixed here, not later:
   files).
 - Moving the editor acceptance gate down onto the shared session — required
   by the layering ruling, not by this slice.
-- Player, story graph, debugger, search cards, settings.
+- Player, story graph, debugger, search cards, settings. **Where the Player
+  sits in each view is an open ruling** (parked 2026-09-05, see
+  `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
+  split, a native companion in Single File view, and absent from
+  Continuous; the alternative on the table is one companion slot beside the
+  editor root, whichever view is showing.
 - The `#3064` per-segment token path on the db road is the worker's
   business; the main thread uses `segment_file` directly and needs no db.
