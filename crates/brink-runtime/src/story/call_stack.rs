@@ -616,12 +616,16 @@ impl Flow {
 
     /// Pop a value from the value stack.
     pub fn pop_value(&mut self) -> Result<Value, RuntimeError> {
-        self.value_stack.pop().ok_or(RuntimeError::StackUnderflow)
+        self.value_stack
+            .pop()
+            .ok_or_else(|| RuntimeError::StackUnderflow)
     }
 
     /// Peek at the top value without popping.
     pub fn peek_value(&self) -> Result<&Value, RuntimeError> {
-        self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
+        self.value_stack
+            .last()
+            .ok_or_else(|| RuntimeError::StackUnderflow)
     }
 }
 

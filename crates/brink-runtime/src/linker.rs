@@ -21,7 +21,7 @@ fn resolve_name(data: &StoryData, name_id: NameId) -> Result<String, RuntimeErro
     data.name_table
         .get(name_id.0 as usize)
         .cloned()
-        .ok_or(RuntimeError::InvalidNameId(name_id.0))
+        .ok_or_else(|| RuntimeError::InvalidNameId(name_id.0))
 }
 
 /// Link a [`StoryData`] into an executable [`Program`].
@@ -93,7 +93,7 @@ pub fn link(
         let container_idx = container_map
             .get(&addr.container_id)
             .copied()
-            .ok_or(RuntimeError::UnresolvedDefinition(addr.container_id))?;
+            .ok_or_else(|| RuntimeError::UnresolvedDefinition(addr.container_id))?;
         address_map.insert(addr.id, (container_idx, addr.byte_offset as usize));
     }
 

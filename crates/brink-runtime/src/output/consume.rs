@@ -24,7 +24,21 @@ impl OutputBuffer {
     /// A Newline is "committed" when non-whitespace text appears after it
     /// in the buffer — at that point, no future Glue can reach past the
     /// text to eat the Newline.
-    pub(crate) fn has_completed_line(&mut self) -> bool {
+    ///
+    /// O(1): the answer is maintained incrementally as parts are pushed
+    /// (`completion.rs`). [`Self::has_completed_line_scan`] is the batch
+    /// definition it is held equal to.
+    pub(crate) fn has_completed_line(&self) -> bool {
+        !self.has_checkpoint() && self.completion.is_completed()
+    }
+
+    /// The batch definition of [`Self::has_completed_line`]: a glue-marking
+    /// pass over the unread transcript, then a walk for a committed newline.
+    /// This was the production implementation until the incremental state
+    /// replaced it; it stays as the reference the property test in
+    /// `completion.rs` checks the incremental form against.
+    #[cfg(test)]
+    pub(crate) fn has_completed_line_scan(&mut self) -> bool {
         if self.has_checkpoint() {
             return false;
         }
@@ -206,6 +220,7 @@ impl OutputBuffer {
             // suppressed line still consumed real transcript space and must
             // not be re-scanned on the next loop iteration.
             self.cursor += split_at + 1;
+            self.rescan_completion();
 
             let (mut text, tags, suppressed, element, source) = lines.swap_remove(0);
             // The trailing filler entry — now at index 0 after `swap_remove`
@@ -241,6 +256,7 @@ impl OutputBuffer {
         let program = super::test_dummy_program();
         let result = super::resolve_parts(unread, &program, &[], None, &self.fragments);
         self.cursor = self.transcript.len();
+        self.rescan_completion();
         result
     }
 
@@ -286,6 +302,7 @@ impl OutputBuffer {
             })
             .collect();
         self.cursor = self.transcript.len();
+        self.rescan_completion();
         result
     }
 
@@ -338,6 +355,7 @@ impl OutputBuffer {
     /// Reset the read cursor to the beginning for re-rendering.
     pub fn reset_cursor(&mut self) {
         self.cursor = 0;
+        self.rescan_completion();
         // At index 0 no attach run has accumulated yet — without this, a
         // locale hot-swap re-render (issue #2108 review finding) would carry
         // the previous pass's element data onto the newly re-drained leading
