@@ -214,6 +214,45 @@ impl ConfigDocument {
         Ok(table_like.remove(key).is_some())
     }
 
+    /// Set `table.key` to a boolean, creating the table if absent.
+    ///
+    /// # Errors
+    /// [`EditError::Shape`] when `table` exists as something other than a table.
+    pub fn set_bool(&mut self, table: &str, key: &str, value: bool) -> Result<(), EditError> {
+        let entry = self.table_mut(table)?;
+        Self::assign_keeping_decor(entry, key, toml_edit::value(value));
+        Ok(())
+    }
+
+    /// Read `table.key` as a boolean, or `None` when absent or not one.
+    #[must_use]
+    pub fn bool(&self, table: &str, key: &str) -> Option<bool> {
+        self.doc
+            .get(table)
+            .and_then(|t| t.get(key))
+            .and_then(Item::as_bool)
+    }
+
+    /// Read `table.key` as an integer, or `None` when absent or not one.
+    #[must_use]
+    pub fn integer(&self, table: &str, key: &str) -> Option<i64> {
+        self.doc
+            .get(table)
+            .and_then(|t| t.get(key))
+            .and_then(Item::as_integer)
+    }
+
+    /// The keys of `table`, in the order written; empty when the table is
+    /// absent or not a table.
+    #[must_use]
+    pub fn keys(&self, table: &str) -> Vec<String> {
+        self.doc
+            .get(table)
+            .and_then(Item::as_table_like)
+            .map(|t| t.iter().map(|(k, _)| k.to_owned()).collect())
+            .unwrap_or_default()
+    }
+
     /// Read `table.key` as a string, or `None` when absent or not a string.
     #[must_use]
     pub fn string(&self, table: &str, key: &str) -> Option<String> {
@@ -430,5 +469,30 @@ E063 = \"warn\"
             ),
             "a table that is not a table is reported, never clobbered"
         );
+    }
+
+    #[test]
+    fn scalar_readers_and_the_key_list_see_what_is_written() {
+        let mut doc = ConfigDocument::parse(HAND_WRITTEN).expect("valid toml");
+        assert_eq!(
+            doc.keys("project"),
+            ["entry", "dialect"],
+            "in written order"
+        );
+        assert_eq!(doc.keys("lints"), ["E063"]);
+        assert!(doc.keys("nowhere").is_empty());
+        assert_eq!(doc.bool("lints", "deny-warnings"), None);
+        assert_eq!(doc.integer("project", "indent"), None);
+        assert_eq!(doc.bool("project", "entry"), None, "a string is not a bool");
+
+        doc.set_bool("lints", "deny-warnings", true)
+            .expect("a table");
+        doc.set_integer("project", "indent", 2).expect("a table");
+        assert_eq!(doc.bool("lints", "deny-warnings"), Some(true));
+        assert_eq!(doc.integer("project", "indent"), Some(2));
+        assert_eq!(doc.keys("lints"), ["E063", "deny-warnings"]);
+        let out = doc.to_toml_string();
+        assert!(out.contains("deny-warnings = true"), "{out}");
+        assert!(out.contains("# Loud about unreachable content."));
     }
 }
