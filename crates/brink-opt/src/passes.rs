@@ -98,3 +98,57 @@ impl Rewrite for BinaryFusion {
         Some((2, vec![Emit::Branch { op, target }]))
     }
 }
+
+/// Fold the instruction that produced a fused binary operator's *left*
+/// operand into the operator (`docs/optimizer-peephole.md` §1). Runs after
+/// [`BinaryFusion`], on its output — the order in `OptConfig::defaults` is
+/// load-bearing:
+///
+/// | window | replacement |
+/// |---|---|
+/// | `GetTemp(slot); BinaryImmJumpIfFalse(kind, imm, ·)` | `GetTempBinaryImmJumpIfFalse(slot, kind, imm, ·)` |
+/// | `GetTemp(slot); BinaryImm(kind, imm)` | `GetTempBinaryImm(slot, kind, imm)` |
+/// | `Duplicate; BinaryImmJumpIfFalse(kind, imm, ·)` | `DuplicateBinaryImmJumpIfFalse(kind, imm, ·)` |
+///
+/// On the original shapes that is `n - 1` in one instruction instead of
+/// three and `if n <= 1` in one instead of four. The runtime's fused arms
+/// read the temp through the same `read_temp` as `GetTemp` and peek the
+/// stack exactly as `Duplicate` + pop would have.
+pub struct LeftOperandFold;
+
+impl LeftOperandFold {
+    pub const NAME: &'static str = "left-operand-fold";
+}
+
+impl Pass for LeftOperandFold {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn run(&self, story: &mut StoryData) -> PassOutcome {
+        let fused = rewrite_story(story, self);
+        PassOutcome::changed("left operands folded into a fused operator", fused)
+    }
+}
+
+impl Rewrite for LeftOperandFold {
+    fn try_at(&self, instrs: &[Instr], i: usize, _labels: &Labels) -> Option<(usize, Vec<Emit>)> {
+        let first = instrs.get(i)?;
+        let next = instrs.get(i + 1)?;
+        let emit = match (&first.op, &next.op) {
+            (Opcode::GetTemp(slot), Opcode::BinaryImmJumpIfFalse(kind, imm, _)) => Emit::Branch {
+                op: Opcode::GetTempBinaryImmJumpIfFalse(*slot, *kind, *imm, 0),
+                target: next.jump_target()?,
+            },
+            (Opcode::GetTemp(slot), Opcode::BinaryImm(kind, imm)) => {
+                Emit::Op(Opcode::GetTempBinaryImm(*slot, *kind, *imm))
+            }
+            (Opcode::Duplicate, Opcode::BinaryImmJumpIfFalse(kind, imm, _)) => Emit::Branch {
+                op: Opcode::DuplicateBinaryImmJumpIfFalse(*kind, *imm, 0),
+                target: next.jump_target()?,
+            },
+            _ => return None,
+        };
+        Some((2, vec![emit]))
+    }
+}

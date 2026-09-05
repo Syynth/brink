@@ -161,24 +161,43 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             Ok(Opcode::EmitLineNl(idx, slots))
         }
         "binary_imm" => {
-            let kind = parse_binary_kind(&operands, mnemonic)?;
+            let kind = parse_binary_kind(&operands, 0, mnemonic)?;
             Ok(Opcode::BinaryImm(
                 kind,
                 parse_operand_i32(&operands, 1, mnemonic)?,
             ))
         }
         "binary_jump_if_false" => {
-            let kind = parse_binary_kind(&operands, mnemonic)?;
+            let kind = parse_binary_kind(&operands, 0, mnemonic)?;
             Ok(Opcode::BinaryJumpIfFalse(
                 kind,
                 parse_operand_i32(&operands, 1, mnemonic)?,
             ))
         }
         "binary_imm_jump_if_false" => {
-            let kind = parse_binary_kind(&operands, mnemonic)?;
+            let kind = parse_binary_kind(&operands, 0, mnemonic)?;
             let imm = parse_operand_i32(&operands, 1, mnemonic)?;
             let rel = parse_operand_i32(&operands, 2, mnemonic)?;
             Ok(Opcode::BinaryImmJumpIfFalse(kind, imm, rel))
+        }
+        "get_temp_binary_imm" => {
+            let slot = parse_operand_u16(&operands, 0, mnemonic)?;
+            let kind = parse_binary_kind(&operands, 1, mnemonic)?;
+            let imm = parse_operand_i32(&operands, 2, mnemonic)?;
+            Ok(Opcode::GetTempBinaryImm(slot, kind, imm))
+        }
+        "get_temp_binary_imm_jump_if_false" => {
+            let slot = parse_operand_u16(&operands, 0, mnemonic)?;
+            let kind = parse_binary_kind(&operands, 1, mnemonic)?;
+            let imm = parse_operand_i32(&operands, 2, mnemonic)?;
+            let rel = parse_operand_i32(&operands, 3, mnemonic)?;
+            Ok(Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel))
+        }
+        "duplicate_binary_imm_jump_if_false" => {
+            let kind = parse_binary_kind(&operands, 0, mnemonic)?;
+            let imm = parse_operand_i32(&operands, 1, mnemonic)?;
+            let rel = parse_operand_i32(&operands, 2, mnemonic)?;
+            Ok(Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, rel))
         }
         "spring" => Ok(Opcode::Spring),
         "glue" => Ok(Opcode::Glue),
@@ -503,10 +522,14 @@ fn operand_str<'a>(
     }
 }
 
-/// Operand 0 of a fused binary superinstruction: `kind=<mnemonic>`, a
+/// Operand `idx` of a fused binary superinstruction: `kind=<mnemonic>`, a
 /// `kv_operand` (see the writer for why not a bare word).
-fn parse_binary_kind(operands: &[P<'_>], context: &str) -> Result<BinaryKind, InktParseError> {
-    let s = operand_str(operands, 0, context)?;
+fn parse_binary_kind(
+    operands: &[P<'_>],
+    idx: usize,
+    context: &str,
+) -> Result<BinaryKind, InktParseError> {
+    let s = operand_str(operands, idx, context)?;
     s.strip_prefix("kind=")
         .and_then(BinaryKind::from_mnemonic)
         .ok_or_else(|| InktParseError {

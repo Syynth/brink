@@ -759,6 +759,23 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
                 kind.mnemonic()
             )
         }
+        Opcode::GetTempBinaryImm(slot, kind, imm) => {
+            write!(
+                w,
+                "get_temp_binary_imm {slot} kind={} {imm}",
+                kind.mnemonic()
+            )
+        }
+        Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel) => write!(
+            w,
+            "get_temp_binary_imm_jump_if_false {slot} kind={} {imm} {rel}",
+            kind.mnemonic()
+        ),
+        Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, rel) => write!(
+            w,
+            "duplicate_binary_imm_jump_if_false kind={} {imm} {rel}",
+            kind.mnemonic()
+        ),
         Opcode::Spring => write!(w, "spring"),
         Opcode::Glue => write!(w, "glue"),
         Opcode::BeginTag => write!(w, "begin_tag"),

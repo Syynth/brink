@@ -15,12 +15,15 @@
 //!
 //! `OptConfig::defaults` runs, in order:
 //!
-//! 1. [`EmitLineNl`] — the peephole that fuses `EmitLine` + `EmitNewline`
-//!    (`docs/optimizer-peephole.md`). The relocating rewrite engine every
-//!    peephole shares lives in `peephole`.
-//! 2. [`BinaryFusion`] — a binary operator fused with the `PushInt`
-//!    immediate feeding it and/or the `JumpIfFalse` consuming it
-//!    (`BinaryImm`, `BinaryJumpIfFalse`, `BinaryImmJumpIfFalse`).
+//! 1. [`EmitLineNl`] — fuses `EmitLine` + `EmitNewline`.
+//! 2. [`BinaryFusion`] — fuses a binary operator with its `PushInt`
+//!    immediate and/or the `JumpIfFalse` consuming it.
+//! 3. [`LeftOperandFold`] — folds the `GetTemp`/`Duplicate` that produced a
+//!    fused operator's left operand into it; it runs on `BinaryFusion`'s
+//!    output, so the order here is load-bearing.
+//!
+//! All three are peepholes (`docs/optimizer-peephole.md`); the relocating
+//! rewrite engine they share lives in `peephole`.
 //!
 //! Every pass is a pure function of the artifact, visits it in program
 //! order, and is held to the fence in `brink-test-harness` (trace equality,
@@ -57,7 +60,7 @@ mod passes;
 mod peephole;
 mod stats;
 
-pub use passes::{BinaryFusion, EmitLineNl};
+pub use passes::{BinaryFusion, EmitLineNl, LeftOperandFold};
 
 pub use stats::ArtifactStats;
 
@@ -189,7 +192,8 @@ impl OptConfig {
         let config = Self {
             passes: PassSet::empty()
                 .with(Box::new(EmitLineNl))
-                .with(Box::new(BinaryFusion)),
+                .with(Box::new(BinaryFusion))
+                .with(Box::new(LeftOperandFold)),
         };
         assert!(
             !config

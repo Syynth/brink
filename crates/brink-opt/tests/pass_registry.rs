@@ -69,7 +69,11 @@ fn default_pass_set_is_the_resident_list() {
     let config = OptConfig::defaults();
     assert_eq!(
         config.passes.names(),
-        vec![brink_opt::EmitLineNl::NAME, brink_opt::BinaryFusion::NAME],
+        vec![
+            brink_opt::EmitLineNl::NAME,
+            brink_opt::BinaryFusion::NAME,
+            brink_opt::LeftOperandFold::NAME,
+        ],
         "the resident pass list, in run order"
     );
 }
@@ -102,7 +106,7 @@ fn the_default_passes_leave_a_story_without_their_shapes_untouched() {
     let before = story.clone();
     let report = optimize(&mut story, &OptConfig::defaults());
 
-    assert_eq!(report.passes.len(), 2, "both resident passes ran");
+    assert_eq!(report.passes.len(), 3, "all resident passes ran");
     assert!(!report.changed(), "nothing should have changed");
     assert_eq!(report.before, report.after, "stats must not move");
     assert_eq!(story, before, "the story must be untouched");

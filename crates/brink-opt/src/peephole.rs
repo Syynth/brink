@@ -54,7 +54,9 @@ fn jump_rel(op: &Opcode) -> Option<i32> {
         | Opcode::JumpIfFalse(rel)
         | Opcode::SequenceBranch(rel)
         | Opcode::BinaryJumpIfFalse(_, rel)
-        | Opcode::BinaryImmJumpIfFalse(_, _, rel) => Some(rel),
+        | Opcode::BinaryImmJumpIfFalse(_, _, rel)
+        | Opcode::GetTempBinaryImmJumpIfFalse(_, _, _, rel)
+        | Opcode::DuplicateBinaryImmJumpIfFalse(_, _, rel) => Some(rel),
         _ => None,
     }
 }
@@ -68,6 +70,12 @@ fn with_jump_rel(op: &Opcode, rel: i32) -> Opcode {
         Opcode::SequenceBranch(_) => Opcode::SequenceBranch(rel),
         Opcode::BinaryJumpIfFalse(kind, _) => Opcode::BinaryJumpIfFalse(kind, rel),
         Opcode::BinaryImmJumpIfFalse(kind, imm, _) => Opcode::BinaryImmJumpIfFalse(kind, imm, rel),
+        Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, _) => {
+            Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel)
+        }
+        Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, _) => {
+            Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, rel)
+        }
         _ => op.clone(),
     }
 }
@@ -367,7 +375,7 @@ mod tests {
     use brink_format::BinaryKind;
 
     use super::*;
-    use crate::passes::{BinaryFusion, EmitLineNl};
+    use crate::passes::{BinaryFusion, EmitLineNl, LeftOperandFold};
 
     fn id(n: u64) -> DefinitionId {
         DefinitionId::new(DefinitionTag::Address, n)
@@ -745,6 +753,111 @@ mod tests {
             jump_landings(&story.containers[0].bytecode),
             vec![Some(Opcode::EmitLineNl(0, 0))],
             "the fused backward branch lands on the fused start of the loop"
+        );
+    }
+
+    #[test]
+    fn folds_the_local_read_into_the_fused_compare_and_branch() {
+        // fib's test: get_temp 0; push_int 1; less_or_equal; jump_if_false -> [nop]; push_int 7; nop
+        let skipped = encode(&[Opcode::PushInt(7)]);
+        let mut story = story_with(encode(&[
+            Opcode::GetTemp(0),
+            Opcode::PushInt(1),
+            Opcode::LessOrEqual,
+            Opcode::JumpIfFalse(i32::try_from(skipped.len()).unwrap()),
+            Opcode::PushInt(7),
+            Opcode::Nop,
+        ]));
+        let before = jump_landings(&story.containers[0].bytecode);
+
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        assert_eq!(rewrite_story(&mut story, &LeftOperandFold), 1);
+        let ops = ops_of(&story.containers[0].bytecode);
+        assert!(
+            matches!(
+                ops[0],
+                Opcode::GetTempBinaryImmJumpIfFalse(0, BinaryKind::LessOrEqual, 1, _)
+            ),
+            "{ops:?}"
+        );
+        assert_eq!(&ops[1..], &[Opcode::PushInt(7), Opcode::Nop]);
+        assert_eq!(jump_landings(&story.containers[0].bytecode), before);
+
+        // Idempotent: nothing left to fold.
+        assert_eq!(rewrite_story(&mut story, &LeftOperandFold), 0);
+    }
+
+    #[test]
+    fn folds_the_local_read_into_a_fused_immediate_without_a_branch() {
+        // n - 1 as a call argument: get_temp 0; push_int 1; subtract; call
+        let mut story = story_with(encode(&[
+            Opcode::GetTemp(0),
+            Opcode::PushInt(1),
+            Opcode::Subtract,
+            Opcode::Nop,
+        ]));
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        assert_eq!(rewrite_story(&mut story, &LeftOperandFold), 1);
+        assert_eq!(
+            ops_of(&story.containers[0].bytecode),
+            vec![
+                Opcode::GetTempBinaryImm(0, BinaryKind::Subtract, 1),
+                Opcode::Nop
+            ]
+        );
+    }
+
+    #[test]
+    fn folds_a_duplicate_into_the_switch_arm_test() {
+        // { x: - 1: ... }: duplicate; push_int 1; equal; jump_if_false -> [nop]; pop; nop
+        let skipped = encode(&[Opcode::Pop]);
+        let mut story = story_with(encode(&[
+            Opcode::Duplicate,
+            Opcode::PushInt(1),
+            Opcode::Equal,
+            Opcode::JumpIfFalse(i32::try_from(skipped.len()).unwrap()),
+            Opcode::Pop,
+            Opcode::Nop,
+        ]));
+        let before = jump_landings(&story.containers[0].bytecode);
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        assert_eq!(rewrite_story(&mut story, &LeftOperandFold), 1);
+        let ops = ops_of(&story.containers[0].bytecode);
+        assert!(
+            matches!(
+                ops[0],
+                Opcode::DuplicateBinaryImmJumpIfFalse(BinaryKind::Equal, 1, _)
+            ),
+            "{ops:?}"
+        );
+        assert_eq!(jump_landings(&story.containers[0].bytecode), before);
+    }
+
+    #[test]
+    fn a_label_on_the_fused_operator_blocks_the_fold() {
+        // Something jumps to the compare itself, so the get_temp before it
+        // must stay a separate instruction.
+        let mut story = story_with(encode(&[
+            Opcode::GetTemp(0),
+            Opcode::PushInt(1),
+            Opcode::Subtract,
+            Opcode::Nop,
+        ]));
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        let get_temp_len = encode(&[Opcode::GetTemp(0)]).len();
+        story.addresses.push(AddressDef {
+            id: id(9),
+            container_id: id(1),
+            byte_offset: u32::try_from(get_temp_len).unwrap(),
+        });
+        assert_eq!(rewrite_story(&mut story, &LeftOperandFold), 0);
+        assert_eq!(
+            ops_of(&story.containers[0].bytecode),
+            vec![
+                Opcode::GetTemp(0),
+                Opcode::BinaryImm(BinaryKind::Subtract, 1),
+                Opcode::Nop
+            ]
         );
     }
 }
