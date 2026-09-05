@@ -119,6 +119,8 @@ impl FlowInstance {
             function_output_start: None,
         };
         let initial_thread = Thread {
+            // The root thread: no parent frames below it (issue #3561).
+            base_depth: 0,
             call_stack: CallStack::new(initial_frame),
         };
         let flow_instance = Self {
@@ -780,6 +782,9 @@ impl FlowInstance {
             function_output_start: None,
         };
         self.flow.threads = vec![Thread {
+            // A reset drops every spawned thread; what is left is the root
+            // thread, which has no parent frames below it (issue #3561).
+            base_depth: 0,
             call_stack: CallStack::new(root_frame),
         }];
         self.flow.pending_choices.clear();
@@ -1525,6 +1530,12 @@ fn select_choice(
     // completed — only the main thread remains.
     let current = flow.current_thread_mut();
     *current = choice.thread_fork;
+    // What is installed here IS the root thread from now on, so it has no
+    // parent frames below it. `fork_thread` already hands back `0`; this
+    // restates it at the one place a fork becomes the flow's own thread,
+    // which is exactly where the old `Thread` boundary frame used to ride
+    // in and stay forever (issue #3561).
+    current.base_depth = 0;
 
     // Set execution position to the choice target. We reset the top
     // frame's container_stack to just the target — the snapshot may

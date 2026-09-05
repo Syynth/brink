@@ -842,25 +842,37 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Fork the current thread — the fork inherits the full call
             // stack (including any enclosing Tunnel frames) so that
             // `fork_thread` at choice creation captures enough context
-            // for `->->` to return through tunnels. The Thread frame
-            // acts as a boundary: when it exhausts, the thread pops
-            // without unwinding into inherited frames below.
+            // for `->->` to return through tunnels.
+            //
+            // `<-` pushes NO call frame (issue #3561). It re-points the
+            // fork's own copy of the top frame at the thread target, so
+            // the thread runs in that frame: its params bind into that
+            // frame's temps exactly as a plain `-> target` divert's would.
+            // That is what the C# runtime does — inklecate compiles a
+            // thread divert to a bare `{"->": ...}` with no stack push,
+            // and ink holds a `<- thread`-as-choice game loop at
+            // call-stack depth 1 forever. The boundary this used to push a
+            // frame for is `Thread::base_depth`: a mark on the thread,
+            // which is popped whole, instead of a frame in the stack,
+            // which `select_choice` installs wholesale and so could never
+            // release.
             let (mut forked, cache_hit) = flow.fork_thread();
-            forked.call_stack.push(CallFrame {
-                return_address: None,
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }],
-                frame_type: CallFrameType::Thread,
-                external_fn_id: None,
-                function_output_start: None,
+            let frame = forked
+                .call_stack
+                .last_mut()
+                .ok_or(RuntimeError::CallStackUnderflow)?;
+            // A fresh container stack, not the parent's nesting: the
+            // thread is done the moment it runs off the end of its target,
+            // and must not fall back into wherever the parent happened to
+            // be.
+            frame.container_stack.clear();
+            frame.container_stack.push(ContainerPosition {
+                container_idx: idx,
+                offset: 0,
             });
+            forked.base_depth = forked.call_stack.len();
             flow.threads.push(forked);
             stats.threads_created += 1;
-            stats.frames_pushed += 1;
             if cache_hit {
                 stats.snapshot_cache_hits += 1;
             } else {
@@ -1094,19 +1106,11 @@ fn step_impl<R: crate::rng::StoryRng>(
             // return) or a DivertTarget (tunnel onwards override).
             let val = flow.pop_value()?;
 
-            // Strip Thread boundary frames — they are transparent to
-            // ->->. This happens after choice selection when the fork
-            // has [inherited..., Thread, choice-body] and ->-> needs
-            // to reach the Tunnel frame below the Thread boundary.
-            while flow
-                .current_thread()
-                .call_stack
-                .last()
-                .is_some_and(|f| f.frame_type == CallFrameType::Thread)
-            {
-                flow.current_thread_mut().call_stack.pop();
-                stats.frames_popped += 1;
-            }
+            // No Thread boundary frames to strip here any more (issue
+            // #3561): `<-` pushes none, so the enclosing Tunnel frame a
+            // `->->` inside a thread returns through is already on top.
+            // The lazy strip this used to run was also the only thing
+            // reclaiming any of those frames, and it never kept up.
 
             // If a DivertTarget, overwrite this frame's return address
             // so we divert there instead of the original caller.
@@ -2929,8 +2933,10 @@ fn resolve_select<'a>(
 /// - `Done` when the last thread/frame is exhausted.
 /// - `Continue` when a frame was popped and execution can proceed.
 ///
-/// - **Thread**: the thread boundary is done — pop the entire thread.
-///   Inherited frames below the Thread frame are never unwound into.
+/// - **At a spawned thread's base** ([`Flow::at_thread_base`]): the thread
+///   has run off the end of its own content and is done — pop the entire
+///   thread. Frames below the base were inherited from the parent and are
+///   never unwound into.
 /// - **Non-function with pending choices**: the frame is waiting for a
 ///   choice selection. Pop the thread so other threads can run.
 /// - **Otherwise**: pop the call frame normally (implicit return).
@@ -2958,17 +2964,14 @@ fn handle_frame_exhaustion(
     let can_pop = flow.current_thread().call_stack.len() > 1;
     let cause = classify_ran_out_of_content(frame_type, can_pop);
 
-    if frame_type == CallFrameType::Thread {
-        // Thread boundary exhausted — thread is done. Pop it without
-        // touching inherited frames below. ThreadCall always creates a
-        // child thread, so can_pop_thread is expected to be true.
-        if flow.can_pop_thread() {
-            flow.pop_thread();
-            stats.threads_completed += 1;
-            return Ok(Stepped::ThreadCompleted);
-        }
-        flow.ran_out_of_content_cause = cause;
-        return Ok(Stepped::Done);
+    if flow.at_thread_base() {
+        // A `<-` thread ran off the end of its own content: it is done.
+        // Pop it whole, without touching the parent's frames below the
+        // base mark (issue #3561 — this is what the `Thread` boundary
+        // frame used to say by sitting on top of the stack).
+        flow.pop_thread();
+        stats.threads_completed += 1;
+        return Ok(Stepped::ThreadCompleted);
     }
 
     if !matches!(
