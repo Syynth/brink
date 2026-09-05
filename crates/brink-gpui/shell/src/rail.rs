@@ -32,6 +32,8 @@ pub struct RailButton {
     pub slot: RailSlot,
     /// Whether this tool window's dock is currently open.
     pub active: bool,
+    /// A count bubble on the button's corner — `None` for none (§5.1).
+    pub badge: Option<SharedString>,
 }
 
 /// Render one rail. `on_click` receives the id of the button pressed.
@@ -46,6 +48,7 @@ where
     F: Fn(&SharedString, &mut Window, &mut App) + Clone + 'static,
 {
     let theme = cx.theme();
+    let badge_colours = (theme.danger, theme.danger_foreground);
     let group = |g: RailGroup| {
         v_flex().gap_1().children(
             buttons
@@ -56,6 +59,7 @@ where
                         b,
                         theme.foreground,
                         theme.muted_foreground,
+                        badge_colours,
                         on_click.clone(),
                     )
                 }),
@@ -88,7 +92,13 @@ where
 /// toolkit's hover, focus, tooltip and toggled states instead of
 /// re-deriving them here — `toggled` is what makes an open tool window read
 /// as pressed.
-fn button<F>(b: &RailButton, on: Hsla, off: Hsla, on_click: F) -> impl IntoElement
+fn button<F>(
+    b: &RailButton,
+    on: Hsla,
+    off: Hsla,
+    (badge_bg, badge_fg): (Hsla, Hsla),
+    on_click: F,
+) -> impl IntoElement
 where
     F: Fn(&SharedString, &mut Window, &mut App) + 'static,
 {
@@ -96,30 +106,54 @@ where
     // A Button's variant colours its own label; a child `svg` does not pick
     // that up through the cascade, so the tint is set here explicitly.
     let colour = if b.active { on } else { off };
-    Button::new(SharedString::from(format!("rail-{}", b.id)))
-        .ghost()
-        .compact()
-        .toggled(b.active)
-        .tooltip(b.title.clone())
-        .on_click(move |_, window, cx| on_click(&id, window, cx))
-        .child(match b.icon {
-            // A complete SVG document, painted as a monochrome mask tinted
-            // by `colour` — only the alpha the shape covers matters.
-            Some(src) => svg()
-                .size(ICON_SIZE)
-                .text_color(colour)
-                .data(src.as_bytes())
-                .into_any_element(),
-            None => div()
-                .text_xs()
-                .text_color(colour)
-                .child(
-                    b.title
-                        .chars()
-                        .next()
-                        .map(|c| c.to_uppercase().to_string())
-                        .unwrap_or_default(),
-                )
-                .into_any_element(),
-        })
+    // The badge sits over the button's top-right corner, outside the
+    // Button's own box so it neither pads nor tints it.
+    let badge = b.badge.clone().map(|text| {
+        div()
+            .absolute()
+            .top(px(-2.))
+            .right(px(-2.))
+            .min_w(px(14.))
+            .h(px(14.))
+            .px(px(3.))
+            .rounded_full()
+            .bg(badge_bg)
+            .text_color(badge_fg)
+            .text_size(px(9.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(text)
+    });
+    div()
+        .relative()
+        .child(
+            Button::new(SharedString::from(format!("rail-{}", b.id)))
+                .ghost()
+                .compact()
+                .toggled(b.active)
+                .tooltip(b.title.clone())
+                .on_click(move |_, window, cx| on_click(&id, window, cx))
+                .child(match b.icon {
+                    // A complete SVG document, painted as a monochrome mask tinted
+                    // by `colour` — only the alpha the shape covers matters.
+                    Some(src) => svg()
+                        .size(ICON_SIZE)
+                        .text_color(colour)
+                        .data(src.as_bytes())
+                        .into_any_element(),
+                    None => div()
+                        .text_xs()
+                        .text_color(colour)
+                        .child(
+                            b.title
+                                .chars()
+                                .next()
+                                .map(|c| c.to_uppercase().to_string())
+                                .unwrap_or_default(),
+                        )
+                        .into_any_element(),
+                }),
+        )
+        .children(badge)
 }

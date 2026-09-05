@@ -10,20 +10,48 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{AnyElement, AnyView, App, Entity, IntoElement, Render, SharedString, Window, div, px};
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dock::{DockArea, DockPlacement, DockSkin, Panel, panel_handle};
+use gpui_component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::rail::{RailButton, rail};
 use crate::region::RailEdge;
 use crate::skin::StudioSkin;
-use crate::tool_window::ToolWindowSpec;
+use crate::tool_window::{ToolWindow, ToolWindowSpec};
 
-/// A registered tool window. Only the spec is kept: the dock owns the panel
-/// handle, and holding a second one here purely against a future
-/// select-that-tab call would be dead state today.
+/// Reads a tool window's badge without the shell holding the panel's type.
+type BadgeReader = Box<dyn Fn(&App) -> Option<SharedString>>;
+
+/// A registered tool window: its spec, and its badge reader. The dock owns
+/// the panel handle itself.
 struct Registered {
     spec: ToolWindowSpec,
+    badge: BadgeReader,
+}
+
+/// One cell of the status bar. A cell that `opens` a tool window is drawn
+/// as a button — the spec's "N errors — click → Problems" (§4 status bar).
+#[derive(Debug, Clone)]
+pub struct StatusCell {
+    pub text: SharedString,
+    pub opens: Option<SharedString>,
+}
+
+impl StatusCell {
+    #[must_use]
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            opens: None,
+        }
+    }
+
+    /// Clicking the cell opens the tool window with this id.
+    #[must_use]
+    pub fn opens(mut self, tool_window: impl Into<SharedString>) -> Self {
+        self.opens = Some(tool_window.into());
+        self
+    }
 }
 
 /// The studio window.
@@ -34,7 +62,7 @@ pub struct Workspace {
     editor_root: Entity<EditorRoot>,
     tools: Vec<Registered>,
     /// Rendered along the bottom edge, under everything.
-    status: Vec<SharedString>,
+    status: Vec<StatusCell>,
 }
 
 impl Workspace {
@@ -88,7 +116,7 @@ impl Workspace {
     ///
     /// The shell learns nothing about `panel` beyond the `Panel` trait — the
     /// edge this crate exists to keep one-way.
-    pub fn add_tool_window<P: Panel>(
+    pub fn add_tool_window<P: ToolWindow>(
         &mut self,
         spec: ToolWindowSpec,
         panel: Entity<P>,
@@ -99,6 +127,10 @@ impl Workspace {
         let size = spec.default_size;
         let open = spec.open_by_default;
 
+        let badge = {
+            let panel = panel.clone();
+            Box::new(move |cx: &App| panel.read(cx).badge(cx))
+        };
         self.dock_area.update(cx, |area, cx| {
             // `panel_handle`, not the bare entity: base's `add_panel` stores
             // the entity alone, and the skin cannot recover a title from it —
@@ -108,7 +140,7 @@ impl Workspace {
                 area.toggle_dock(placement, window, cx);
             }
         });
-        self.tools.push(Registered { spec });
+        self.tools.push(Registered { spec, badge });
     }
 
     /// Hand the shell what a view shows. It learns nothing about the view
@@ -151,8 +183,24 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open the dock a tool window lives in, if it is closed. What a status
+    /// cell or a badge click wants: never a toggle, since "show me the
+    /// problems" must not close them.
+    pub fn open_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
+            return;
+        };
+        let placement = tool.spec.dock_placement();
+        self.dock_area.update(cx, |area, cx| {
+            if !area.is_dock_open(placement) {
+                area.toggle_dock(placement, window, cx);
+            }
+        });
+        cx.notify();
+    }
+
     /// Replace the status-bar cells, left to right.
-    pub fn set_status(&mut self, cells: Vec<SharedString>, cx: &mut Context<Self>) {
+    pub fn set_status(&mut self, cells: Vec<StatusCell>, cx: &mut Context<Self>) {
         self.status = cells;
         cx.notify();
     }
@@ -167,8 +215,48 @@ impl Workspace {
                 icon: t.spec.icon,
                 slot: t.spec.slot,
                 active: area.is_dock_open(t.spec.dock_placement()),
+                badge: (t.badge)(cx),
             })
             .collect()
+    }
+
+    fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (hover, fg) = (theme.muted.opacity(0.6), theme.foreground);
+        let cells: Vec<AnyElement> = self
+            .status
+            .iter()
+            .enumerate()
+            .map(|(ix, cell)| match &cell.opens {
+                None => div().child(cell.text.clone()).into_any_element(),
+                Some(tool) => {
+                    let tool = tool.clone();
+                    div()
+                        .id(("status-cell", ix))
+                        .px_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover).text_color(fg))
+                        .child(cell.text.clone())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_tool_window(&tool, window, cx);
+                        }))
+                        .into_any_element()
+                }
+            })
+            .collect();
+        h_flex()
+            .h(px(24.))
+            .px_3()
+            .gap_4()
+            .items_center()
+            .bg(theme.sidebar)
+            .border_t_1()
+            .border_color(theme.border)
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .children(cells)
+            .into_any_element()
     }
 
     /// The view switcher: three toggles, in the title bar. The studio has no
@@ -217,20 +305,9 @@ impl Render for Workspace {
             }
         };
         let switcher = self.view_switcher(cx);
+        let status = self.render_status(cx);
 
         let theme = cx.theme();
-        let status = h_flex()
-            .h(px(24.))
-            .px_3()
-            .gap_4()
-            .items_center()
-            .bg(theme.sidebar)
-            .border_t_1()
-            .border_color(theme.border)
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .children(self.status.iter().map(|cell| div().child(cell.clone())));
-
         v_flex()
             .size_full()
             .bg(theme.background)

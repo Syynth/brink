@@ -99,6 +99,10 @@ pub const WARNING_MARK: &str = stroke_icon!(
 pub const SEARCH: &str =
     stroke_icon!(r##"<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>"##);
 
+/// Group-by-file: three stacked rows under a folded corner.
+pub const GROUP_BY_FILE: &str =
+    stroke_icon!(r##"<path d="M4 6h16M4 12h10M4 18h13"/><path d="M17 10l3 2-3 2"/>"##);
+
 pub const DOTS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>"##;
 
 pub const EXPAND_ALL: &str =

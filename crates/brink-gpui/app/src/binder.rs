@@ -1290,6 +1290,9 @@ fn symbol_marks(
 
 impl EventEmitter<gpui_component::dock::PanelEvent> for Binder {}
 
+/// No badge: the Binder counts nothing the rail should shout about.
+impl brink_gpui_shell::tool_window::ToolWindow for Binder {}
+
 impl gpui_component::dock::BasePanel for Binder {
     fn panel_name(&self) -> &'static str {
         "Binder"

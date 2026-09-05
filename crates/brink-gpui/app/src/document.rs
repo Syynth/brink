@@ -10,6 +10,7 @@
 //! Nothing in this file touches an `IdeSession`. Paint comes from the
 //! per-segment [`TokenCache`]; everything else is a worker query.
 
+use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -135,12 +136,17 @@ impl Document {
         self.dirty
     }
 
-    /// Move the caret to a byte offset and show it — what the Binder emits
-    /// when a row is activated.
-    pub fn reveal(&self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Put the caret at a span's start, select the span, and focus the
+    /// editor — `docs/studio-shell-spec.md` §6.1's `editor.reveal`, with the
+    /// selection standing in for the studio's flash-highlight. An empty
+    /// span (what a Binder row emits) just places the caret.
+    pub fn reveal(&self, span: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, cx| {
-            let position = state.text().offset_to_position(offset);
+            let position = state.text().offset_to_position(span.start);
             state.set_cursor_position(position, window, cx);
+            if span.end > span.start {
+                state.set_selected_range(span, cx);
+            }
         });
     }
 

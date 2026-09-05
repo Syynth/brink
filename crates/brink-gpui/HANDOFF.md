@@ -63,7 +63,7 @@ The three tiers of spec §2 all exist. 23 tests, all green.
 |---|---|
 | `model/` | `worker.rs` (the `IdeSession` on its own thread), `tokens.rs` (per-segment paint cache), `query.rs` (hover/completions/symbols/inlays) |
 | `shell/` | `region.rs` (the ruled rail→dock mapping), `rail.rs`, `workspace.rs`, `tool_window.rs`, `editor_view.rs` (the three views' root), `skin.rs` |
-| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `code_view.rs` (documents, tabs, the active file), `single_view.rs`, `continuous.rs`, `binder.rs`, `problems.rs`, `main.rs` |
+| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `code_view.rs` (documents, tabs, the active file), `single_view.rs`, `continuous.rs`, `binder.rs`, `problems.rs` (the studio's Problems view, ported — see its module doc for what is and is not), `main.rs` |
 
 **Verified running** (screenshots taken against the real app, on macOS,
 before the views landed): rails with both groups, the Binder, syntax
@@ -95,6 +95,17 @@ up within ~5 s of launch in a debug build; `xdotool` drives clicks and
 keys by screen coordinate. This is how the views were verified, and it is
 the way to verify any UI change from a session with no screen — do not
 merge UI work seen only in the compiler again.
+
+**Problems** (2026-09-05) is the studio's panel ported: canonical order,
+grouped by file by default with collapsible headings, severity toggles with
+counts, text filter, click-to-reveal (opens the file, selects the span,
+focuses the editor), the rail badge with the error count, and the status
+bar's problems cell opening the dock. Verified headless against a scratch
+project with errors, info and a TODO note. Not ported: the prose bucket (no
+native prose checker), Fix buttons (the worker offers no fixes), the
+suppress context menu (#3148). The shell grew what those needed:
+`ToolWindow::badge` (`tool_window.rs`), `StatusCell` with `opens`, and
+`Workspace::open_tool_window`.
 
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"

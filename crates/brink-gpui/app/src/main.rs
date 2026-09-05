@@ -14,15 +14,16 @@ mod problems;
 mod project;
 mod single_view;
 
+use std::ops::Range;
 use std::path::PathBuf;
 
 use brink_gpui_shell::editor_view::{self, EditorView};
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::tool_window::ToolWindowSpec;
-use brink_gpui_shell::workspace::Workspace;
+use brink_gpui_shell::workspace::{StatusCell, Workspace};
 use gpui::{
     AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement, Render,
-    SharedString, Subscription, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
+    Subscription, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_component::{Root, TitleBar};
 
@@ -55,7 +56,7 @@ impl Studio {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
 
         let binder = cx.new(|cx| Binder::new(project.clone(), window, cx));
-        let problems = cx.new(|cx| Problems::new(project.clone(), cx));
+        let problems = cx.new(|cx| Problems::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
@@ -110,7 +111,7 @@ impl Studio {
             window,
             |this, binder, event: &BinderEvent, window, cx| {
                 let BinderEvent::Open { path, offset } = event;
-                this.open(path, *offset, window, cx);
+                this.open(path, offset.map(|o| o..o), window, cx);
                 // The manuscript's per-file editors do not scroll — its list
                 // does — so revealing a file there is a separate move from
                 // opening its document.
@@ -130,7 +131,7 @@ impl Studio {
             &problems,
             window,
             |this, _, event: &OpenProblem, window, cx| {
-                this.open(&event.path, Some(event.offset), window, cx);
+                this.open(&event.path, Some(event.span.clone()), window, cx);
             },
         );
 
@@ -160,16 +161,16 @@ impl Studio {
     }
 
     /// Open a file in Code view, or select it if it is already open, and
-    /// optionally reveal an offset inside it.
+    /// optionally reveal a span inside it.
     fn open(
         &mut self,
         path: &str,
-        offset: Option<usize>,
+        span: Option<Range<usize>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.code
-            .update(cx, |code, cx| code.open(path, offset, window, cx));
+            .update(cx, |code, cx| code.open(path, span, window, cx));
     }
 
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
@@ -182,11 +183,12 @@ impl Studio {
             let project = self.project.read(cx);
             let (last, worst) = project.timings();
             vec![
-                SharedString::from(project.root().display().to_string()),
-                SharedString::from(format!("{} files", project.files().len())),
-                SharedString::from(format!("{} problems", project.problem_count())),
-                SharedString::from(format!("analyze {last:.1} ms")),
-                SharedString::from(format!("worst {worst:.1} ms")),
+                StatusCell::new(project.root().display().to_string()),
+                StatusCell::new(format!("{} files", project.files().len())),
+                // "N errors — click → Problems" (spec §4 status bar).
+                StatusCell::new(format!("{} problems", project.problem_count())).opens("problems"),
+                StatusCell::new(format!("analyze {last:.1} ms")),
+                StatusCell::new(format!("worst {worst:.1} ms")),
             ]
         };
         self.workspace

@@ -13,6 +13,7 @@
 //! made the displayed tab of its group. That is the one fact the views
 //! share (ruled 2026-08-26); nothing else crosses between them.
 
+use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -63,12 +64,11 @@ impl CodeView {
     }
 
     /// Open a file, or select its tab if it is already open, and optionally
-    /// reveal an offset inside it. Either way it becomes the active
-    /// document.
+    /// reveal a span inside it. Either way it becomes the active document.
     pub fn open(
         &mut self,
         path: &str,
-        offset: Option<usize>,
+        span: Option<Range<usize>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -106,9 +106,9 @@ impl CodeView {
                 document
             }
         };
-        if let Some(offset) = offset {
+        if let Some(span) = span {
             document.update(cx, |document, cx| {
-                document.reveal(offset, window, cx);
+                document.reveal(span, window, cx);
             });
         }
         // Opening is an explicit act of making this the file you are on; the

@@ -6,9 +6,24 @@
 //! equivalent: a feature hands over a [`gpui_component::dock::Panel`] and a
 //! [`ToolWindowSpec`] saying where it lives, and that is the whole contract.
 
-use gpui::{Pixels, SharedString};
+use gpui::{App, Pixels, SharedString};
+use gpui_component::dock::Panel;
 
 use crate::region::RailSlot;
+
+/// What a tool window is, over and above a dock panel: the rail button's
+/// badge (`docs/studio-shell-spec.md` §5.1 — "icons show badges where
+/// meaningful (Problems: error count)").
+///
+/// A trait rather than a field on [`ToolWindowSpec`] because the badge is
+/// live state the panel owns; the shell reads it each frame and never
+/// learns what it counts.
+pub trait ToolWindow: Panel {
+    /// Text for the rail button's badge, or `None` for no badge.
+    fn badge(&self, _cx: &App) -> Option<SharedString> {
+        None
+    }
+}
 
 /// A tool window's registration.
 #[derive(Debug, Clone)]
