@@ -1103,6 +1103,27 @@ fn compile_intercept() -> brink_format::StoryData {
     compile_to_story_data(&intercept_source())
 }
 
+/// The scope-relative line-table index of the one `Plain` entry containing
+/// `needle`, anywhere in `data`. Line indices are whole-story ordinals that
+/// shift whenever emission changes (#1667's branch expansion, then
+/// line-table deduplication) — so tests locate a line by its text, never by
+/// a number.
+fn intercept_line_index(data: &brink_format::StoryData, needle: &str) -> u16 {
+    let hits: Vec<u16> = data
+        .line_tables
+        .iter()
+        .flat_map(|t| t.lines.iter().enumerate())
+        .filter(|(_, l)| matches!(&l.content, brink_format::LineContent::Plain(s) if s.contains(needle)))
+        .map(|(i, _)| u16::try_from(i).expect("line index fits u16"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one line containing {needle:?}, got {hits:?}"
+    );
+    hits[0]
+}
+
 #[test]
 fn runtime_intercept_step23_glue_not_dropped() {
     // The full TheIntercept compiled from story.ink diverges around the
@@ -1180,36 +1201,30 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
     // The Agree choice body should divert to the gather that contains
     // the {teacup: <>, sipping...} conditional. In the .inkt, the
     // Agree body ends with `goto $container` and that container should
-    // contain `emit_line 51` (the "sipping" text).
+    // contain the `emit_line` of the "sipping" text.
     //
     // This test compiles TheIntercept, dumps the .inkt, and verifies
     // that the goto target from the "Awkward" container leads to a
-    // container that references the "sipping" line.
-    //
-    // The line-table indices here are whole-story ordinals, not stable
-    // identifiers — issue #1667's compile-time branch-expansion fix
-    // (normalize.rs::extend_merging_text) shrank the earlier part of
-    // TheIntercept's line table by consolidating spliced inline-
-    // conditional branches from several `EmitContent` fragments into one
-    // recognized `Plain`/`Template` entry each, shifting "Awkward," from
-    // 62 to 44 and "sipping" from 69 to 51 (the 7-line gap between them
-    // is unchanged — this fix doesn't touch anything *between* those two
-    // lines, only *before* them). The oracle comparison confirms
-    // TheIntercept's actual compiled/rendered output is unaffected by the
-    // fix (`docs/decision-log.md`, PR body for #1667) — only these
-    // hardcoded ordinals needed updating.
+    // container that references the "sipping" line. Both lines are found
+    // by their text (`intercept_line_index`): the ordinals moved from
+    // 62/69 to 44/51 with #1667's branch expansion and again with
+    // line-table deduplication, and they will move again.
     let data = compile_intercept();
+    let awkward = intercept_line_index(&data, "\"Awkward,\" I reply");
+    let sipping = intercept_line_index(&data, "sipping at my tea");
     let inkt = dump_inkt(&data);
 
     let lines: Vec<&str> = inkt.lines().collect();
 
-    // Find the container with emit_line 44 ("Awkward," I reply)
-    // and extract its goto target.
+    // Find the container with the "Awkward," I reply emit_line and extract
+    // its goto target.
+    let awkward_emit = format!("emit_line {awkward} ");
+    let sipping_emit = format!("emit_line {sipping} ");
     let mut goto_target = None;
     let mut in_awkward_container = false;
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.contains("emit_line 44 ") {
+        if trimmed.contains(&awkward_emit) {
             in_awkward_container = true;
         }
         if in_awkward_container && trimmed.starts_with("goto ") {
@@ -1222,11 +1237,11 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
         }
     }
 
-    let target = goto_target.expect("Agree choice body should have a goto after emit_line 44");
+    let target = goto_target.expect("Agree choice body should have a goto after the Awkward line");
     println!("Agree choice goto target: {target}");
 
-    // Now find the target container and check it references emit_line 51
-    // (the "sipping" text) or enters a sub-container that does.
+    // Now find the target container and check it references the "sipping"
+    // emit_line or enters a sub-container that does.
     let target_header = format!("(container {target}");
     let mut in_target = false;
     let mut has_sipping_or_enters_conditional = false;
@@ -1237,7 +1252,7 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
             continue;
         }
         if in_target {
-            if trimmed.contains("emit_line 51") {
+            if trimmed.contains(&sipping_emit) {
                 has_sipping_or_enters_conditional = true;
                 break;
             }
@@ -1255,7 +1270,7 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
 
     assert!(
         has_sipping_or_enters_conditional,
-        "Agree choice goto target {target} should contain emit_line 51 (sipping) \
+        "Agree choice goto target {target} should contain emit_line {sipping} (sipping) \
          or enter_container for the teacup conditional, but it doesn't. \
          The gather target is wrong — the choice diverts to the wrong place.",
     );
@@ -1264,17 +1279,14 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
 #[test]
 fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     // Verify at the bytecode/linker level:
-    // 1. Find the container whose line table entry 44 is "Awkward," I reply
+    // 1. Find the container that emits the "Awkward," I reply line
     // 2. Decode its bytecode to find the Goto opcode
     // 3. Verify the Goto's DefinitionId resolves to a container that
-    //    contains the teacup conditional (enter_container or emit_line 51)
+    //    contains the teacup conditional (enter_container or the sipping line)
     //
-    // (Line-table ordinals 44/51, not the original 62/69 — see the sibling
-    // test's doc comment: issue #1667's branch-expansion fix shrank the
-    // earlier part of TheIntercept's line table by consolidating spliced
-    // inline-conditional branches into single recognized entries, shifting
-    // every later ordinal down by the same fixed amount.)
+    // Lines are located by text (`intercept_line_index`), not by ordinal.
     let data = compile_intercept();
+    let awkward = intercept_line_index(&data, "\"Awkward,\" I reply");
     let (program, _line_tables) = brink_runtime::link(&data).expect("link failed");
 
     // Use the .inkt to find the Agree body's DefinitionId and Goto target's
@@ -1284,7 +1296,7 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     // From the .inkt, the Agree body container ends with `goto $gather`. The
     // gather should contain enter_container for the teacup conditional.
     //
-    // Find the Agree body container by looking for the one with emit_line 44.
+    // Find the Agree body container by looking for the one emitting `awkward`.
     // Then decode its bytecode to extract the Goto DefinitionId and verify
     // it resolves to the expected gather.
 
@@ -1292,17 +1304,17 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     let mut agree_goto_id = None;
     for cdef in &data.containers {
         let mut offset = 0;
-        let mut has_emit_line_44 = false;
+        let mut has_awkward = false;
         let mut last_goto = None;
         while offset < cdef.bytecode.len() {
             match brink_format::Opcode::decode(&cdef.bytecode, &mut offset) {
-                Ok(brink_format::Opcode::EmitLine(44, _)) => has_emit_line_44 = true,
+                Ok(brink_format::Opcode::EmitLine(idx, _)) if idx == awkward => has_awkward = true,
                 Ok(brink_format::Opcode::Goto(id)) => last_goto = Some(id),
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        if has_emit_line_44 {
+        if has_awkward {
             agree_goto_id = last_goto;
             println!(
                 "Agree body: container id={:?}, goto target={last_goto:?}",
@@ -1313,7 +1325,7 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     }
 
     let goto_def_id =
-        agree_goto_id.expect("Agree choice body should have a Goto after EmitLine(44)");
+        agree_goto_id.expect("Agree choice body should have a Goto after the Awkward line");
 
     // Step 2: Verify the Goto resolves in the linked program
     let resolved = program.resolve_address(goto_def_id);

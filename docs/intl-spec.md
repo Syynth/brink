@@ -67,6 +67,47 @@ And better for the runtime because:
 - Lookup is `program.line_table(container_idx)` → scope table — O(1) with no search
 - The mapping is implicit via `LinkedContainer.scope_table_idx`, set once at link time
 
+### Line-table deduplication
+
+**RULED 2026-09-05.** A line authored more than once **within one scope** is
+**one line-table entry** — one translation unit — from the moment it is
+emitted. `brink-codegen-inkb`'s `push_line` (the shared tail of `add_line`
+and `add_template_line`) consults a per-scope index keyed by
+`(content, slot_info)` — the whitespace-collapsed content and the slot names
+a translator sees — and returns the existing index when the key is already
+present. Every `EmitLine` at every occurrence site then names the same
+entry; `regenerate-xliff` aligns units by hash, so an existing XLIFF's
+translation carries over to the merged unit and the removed duplicates
+simply drop.
+
+Why here and not in the optimizer (`docs/optimizer-catalogue.md`'s original
+entry asked exactly this): being born deduplicated is smaller and earlier,
+applies on every compile road including the studio's, and this is a
+translator quality-of-life fix at least as much as an optimization. Measured
+before the change: TheIntercept exported 1 066 units of which 71 were
+within-scope duplicates (170 story-wide), almost all short choice labels —
+`Lie` ×27, `Evade` ×26, `No` ×16, `Wait` ×15, `Yes` ×14. After: TheIntercept
+exports 995 units; across the tier1–3 corpus the line tables hold 2 440
+entries where they held 2 815 (−13.3%), and runtime output is unchanged on
+every oracle episode.
+
+The rulings on the fields the catalogue flagged:
+
+| Field | Ruling |
+|---|---|
+| **Key scope** | Within a scope (knot / stitch / root). Story-wide merging would cross translator contexts and needs a shared table or cross-scope `EmitLine` references; it is a possible second step, to be measured first. |
+| **`source_hash`** | Not part of the key. The merged entry keeps its **first occurrence's** hash. For plain lines the hash is content-derived anyway (`content_hash(text)`), so identical text already meant identical hash. |
+| **`source_location`** | The merged entry keeps its **first occurrence's** location — no format change. A provenance *list* (every site, for the debugger and explain-match) is the recorded follow-up; it is additive and can land later without changing dedup semantics. |
+| **`audio_ref`** | Codegen never sets it, so nothing conflicts at emission; a merged unit means one VO slot for all its sites, which is the default a translator wants for `Yes`/`No`/`Lie`. |
+| **Translator context** | Identical source text can need different translations at different sites (agreement, register). Merge by default; a **per-line opt-out** (an author-side marker that makes a line its own unit, also the escape hatch for a separate VO take) is the planned mechanism and is not built yet. In-app translation facilities can later offer "split this unit" on the same mechanism. |
+
+**Never merged: variant runs** (`LineVariantGroup`, #3273). The runtime finds a
+leaf at `base + combo`, so a run's entries stay consecutive and one per leaf
+even when two leaves read the same, and a later identical line does not
+point into a run — dedup is suspended while the switch is laid out and the
+run's entries are not registered as targets. Pinned by
+`brink-codegen-inkb/tests/line_table_dedup.rs`.
+
 ## Codegen contract
 
 Localization tooling operates post-compilation — it reads `.inkb` files and extracts everything it needs from `StoryData`. The compiler must put enough information into `LineEntry` during codegen for the tooling to function.

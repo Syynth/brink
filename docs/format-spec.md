@@ -533,7 +533,7 @@ Each offset table entry (8 bytes):
 | `0x04` | List items | Per entry: `DefinitionId` + origin + ordinal + name |
 | `0x05` | Externals | Per entry: `DefinitionId` + `NameId` + arg count + optional fallback |
 | `0x06` | Containers | Per container: `DefinitionId` + bytecode blob + content hash + counting flags + path hash + scope id |
-| `0x07` | Line tables | Per scope: `DefinitionId` + line entries (content + source hash + slot info + audio ref + source location each). The `DefinitionId` here is the lexical scope (knot/stitch), not a container. |
+| `0x07` | Line tables | Per scope: `DefinitionId` + line entries (content + source hash + slot info + audio ref + source location each). The `DefinitionId` here is the lexical scope (knot/stitch), not a container. Since 2026-09-05 codegen emits one entry per distinct `(content, slot info)` within a scope (`docs/intl-spec.md` §"Line-table deduplication"); only variant runs may hold repeats. The encoding is unchanged. |
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
 | `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |

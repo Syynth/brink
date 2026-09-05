@@ -62,7 +62,7 @@ pub struct ParamMeta {
 }
 
 /// Metadata for a single interpolation slot in a template line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SlotInfo {
     pub index: u8,
     pub name: String,

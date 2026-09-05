@@ -49,13 +49,23 @@ Every entry graduates into a document with these sections, in order:
 
 | Pass | Target metric | Collides with | Status |
 |---|---|---|---|
-| dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | candidate — likely first |
+| dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | **done in codegen, not as a pass** (2026-09-05) — `docs/intl-spec.md` §"Line-table deduplication" |
 | peephole | bytecode bytes, **opcodes executed** | choice indices, effect rows, debug offsets | **landed** — `docs/optimizer-peephole.md` (engine + `emit-line-nl` + `binary-fusion` + `left-operand-fold`, 2026-09-05) |
 | literal-pool / name-table compaction | pool sizes, artifact bytes | id stability, save-state keys | candidate |
 | eliminate redundant pure work | bytecode bytes | effect rows (which are also the proof) | candidate — blocked on a ruling |
 | inline containers | containers, bytecode bytes | visit counts, save keys, debug addresses, line-table anchors | candidate — probably not worth it |
 
 ### dedup line table
+
+**Resolved 2026-09-05 — in emission, not here.** The entry's own first
+question ("born deduplicated, or deduplicated after the fact?") was ruled
+for codegen: `brink-codegen-inkb` now consults a per-scope
+`(content, slot_info)` index in `push_line`, so a line authored twice in
+one scope is one translation unit from the moment it is emitted, on every
+compile road including the studio's. The rulings on the three blocking
+fields are in `docs/intl-spec.md` §"Line-table deduplication" and the
+decision log. What follows is the original candidate reasoning, kept for
+the record.
 
 Glued cues and other repeated content produce repeated line-table
 entries, so the same string reaches a translator more than once. Merging
