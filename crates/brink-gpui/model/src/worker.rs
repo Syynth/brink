@@ -25,6 +25,7 @@
 //! do dead work, not delaying live work.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -61,7 +62,9 @@ pub enum Request {
         /// on either side.
         reply: async_channel::Sender<QueryResult>,
     },
-    /// The full text of one file, as the editor now holds it.
+    /// The full text of one file, as the editor now holds it. For the
+    /// project's `brink.toml` (`Opened::config`) this re-applies the config
+    /// rather than updating a source — see [`ConfigState`].
     Edit {
         path: String,
         text: String,
@@ -92,7 +95,34 @@ pub struct Opened {
     pub entry: Option<String>,
     /// Config-file warnings, already prefixed with their source.
     pub warnings: Vec<String>,
+    /// The project's `brink.toml`, if it has one — a file the mirror holds
+    /// in the shared buffer like any other, so Settings' Project sections
+    /// and a raw editor over it are views of one text. Not in `files`: it
+    /// is not a source, and the manuscript and search must not read it as
+    /// one.
+    pub config: Option<ConfigFile>,
     pub elapsed_ms: f64,
+}
+
+/// The project's config file as loaded: its root-relative key and text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFile {
+    pub path: String,
+    pub text: String,
+}
+
+/// One `[project] drafts` glob and what it currently matches — the
+/// session's `DraftGlobReport` row, as plain data. Ruled 2026-08-29: the
+/// split between "drafts" and "matched but the story still reaches it" has
+/// one implementation, the session's, and the UI shows it rather than
+/// recomputing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftGlob {
+    pub glob: String,
+    /// Matched, and outside the compile closure — drafts.
+    pub drafts: Vec<String>,
+    /// Matched, but the entry still reaches them, so not drafts.
+    pub in_story: Vec<String>,
 }
 
 /// The result of one analysis pass.
@@ -113,7 +143,101 @@ pub struct Analyzed {
     /// the project holds but this omits is on disk and not in the story,
     /// which absent diagnostics look exactly like, so the Binder says so.
     pub closure: Vec<String>,
+    /// `[project] entry` as the config currently applied resolves it. Rides
+    /// every analysis because an edit to `brink.toml` can move it.
+    pub entry: Option<String>,
+    /// The applied config's warnings, unprefixed. Also reported as
+    /// `diagnostics` rows under the config's own path.
+    pub config_warnings: Vec<String>,
+    /// Per-glob attribution for the Drafts setting, in the author's order.
+    pub draft_globs: Vec<DraftGlob>,
+    /// Whether `draft_globs` means anything yet: false until a compile
+    /// closure exists, when every list is empty and "matches nothing" would
+    /// be the wrong reading.
+    pub drafts_known: bool,
     pub elapsed_ms: f64,
+}
+
+/// What the loaded `brink.toml` resolved to, kept on the worker across
+/// edits so the next re-application and the next analysis can report it.
+///
+/// **Edits re-apply the whole file.** `IdeSession::apply_project_config`
+/// follows the "unset means untouched" convention — a key absent from the
+/// config leaves the session's current value alone — which is right for a
+/// one-shot load and wrong for an editor, where deleting `drafts = [...]`
+/// must stop marking drafts. So a re-application first returns the session
+/// to its defaults (`clear_project_config`, the dialect, the type policy)
+/// and then applies the file as if for the first time.
+///
+/// **A malformed file keeps the last good config applied.** The author is
+/// typing; every intermediate state of a raw edit is invalid TOML, and
+/// tearing the applied config down on each of them would blank the entry,
+/// empty the closure, and mark every file "not in the story" mid-keystroke.
+/// The error is reported as an Error diagnostic on the config's own path
+/// (the studio's #3391 shape) and clears with the next parse that succeeds.
+#[derive(Debug, Default)]
+pub struct ConfigState {
+    /// Root-relative key of the config file, if the project has one.
+    path: Option<String>,
+    entry: Option<String>,
+    /// The applied config's warnings, unprefixed.
+    warnings: Vec<String>,
+    /// The current text's parse error, if it has one: its byte span in
+    /// the text (when the parser knows one) and its message.
+    error: Option<(Option<Range<usize>>, String)>,
+}
+
+impl ConfigState {
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    #[must_use]
+    pub fn entry(&self) -> Option<&str> {
+        self.entry.as_deref()
+    }
+
+    /// The error the current text parses to, if any.
+    #[must_use]
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_ref().map(|(_, message)| message.as_str())
+    }
+
+    /// The config's diagnostics for the Problems panel: the parse error as
+    /// an Error (at its span), each warning as a Warning at the file's
+    /// start. Empty when there is nothing to say.
+    fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut rows = Vec::new();
+        if let Some((span, message)) = &self.error {
+            let (start, end) = span
+                .clone()
+                .map_or((0, 0), |r| (offset_u32(r.start), offset_u32(r.end)));
+            rows.push(Diagnostic {
+                start,
+                end,
+                severity: Severity::Error,
+                code: CONFIG_CODE.to_owned(),
+                message: message.clone(),
+            });
+        }
+        rows.extend(self.warnings.iter().map(|w| Diagnostic {
+            start: 0,
+            end: 0,
+            severity: Severity::Warning,
+            code: CONFIG_CODE.to_owned(),
+            message: w.clone(),
+        }));
+        rows
+    }
+}
+
+/// The code a `brink.toml` problem carries. Not a compiler code: the
+/// config has none, and a row needs one to sort and to say what it is.
+pub const CONFIG_CODE: &str = "CONFIG";
+
+fn offset_u32(offset: usize) -> u32 {
+    u32::try_from(offset).unwrap_or(u32::MAX)
 }
 
 /// A handle on the worker thread. Dropping it closes the request channel,
@@ -175,6 +299,7 @@ fn session_with_stdlib() -> IdeSession {
 
 fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::Sender<Response>) {
     let mut session = session_with_stdlib();
+    let mut config = ConfigState::default();
     let mut revision = 0_u64;
 
     while let Ok(first) = requests.recv_blocking() {
@@ -193,11 +318,18 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                 Request::Query { kind, reply } => queries.push((kind, reply)),
                 Request::Open { root } => {
                     session = session_with_stdlib();
-                    let opened = open(&mut session, root);
-                    if opened.is_err() {
-                        // Leave the session empty rather than half-loaded.
-                        session = session_with_stdlib();
-                    }
+                    config = ConfigState::default();
+                    let opened = match open(&mut session, root) {
+                        Ok((opened, state)) => {
+                            config = state;
+                            Ok(opened)
+                        }
+                        Err(e) => {
+                            // Leave the session empty rather than half-loaded.
+                            session = session_with_stdlib();
+                            Err(e)
+                        }
+                    };
                     reopened = Some(opened);
                 }
                 Request::Edit {
@@ -205,7 +337,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     text,
                     revision: rev,
                 } => {
-                    session.update_source(&path, text);
+                    if config.path.as_deref() == Some(path.as_str()) {
+                        apply_config_text(&mut session, &mut config, &text);
+                    } else {
+                        session.update_source(&path, text);
+                    }
                     revision = revision.max(rev);
                     edited = true;
                 }
@@ -230,7 +366,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         // so nearly free, but the UI would repaint diagnostics on every
         // hover.
         if usable && (edited || opened_ok) {
-            let analyzed = analyze(&mut session, revision);
+            let analyzed = analyze(&mut session, &config, revision);
             if responses
                 .send_blocking(Response::Analyzed(Box::new(analyzed)))
                 .is_err()
@@ -253,7 +389,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 }
 
 /// Load every source file under `root`, then apply its `brink.toml`.
-fn open(session: &mut IdeSession, root: PathBuf) -> Result<Opened, String> {
+fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState), String> {
     let started = Instant::now();
 
     let mut files = Vec::new();
@@ -271,18 +407,28 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<Opened, String> {
         sources.push(text);
     }
 
-    let (entry, warnings) = apply_config(session, &root, &files);
+    let (config, state) = load_config(session, &root, &files);
     session.refresh_analysis();
-    set_compile_entry(session, entry.as_deref());
 
-    Ok(Opened {
-        root,
-        files,
-        sources,
-        entry,
-        warnings,
-        elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
-    })
+    let warnings = state
+        .error
+        .iter()
+        .map(|(_, message)| message.clone())
+        .chain(state.warnings.iter().cloned())
+        .map(|w| format!("{}: {w}", state.path.as_deref().unwrap_or("brink.toml")))
+        .collect();
+    Ok((
+        Opened {
+            root,
+            files,
+            sources,
+            entry: state.entry.clone(),
+            warnings,
+            config,
+            elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
+        },
+        state,
+    ))
 }
 
 /// Establish the compile closure by naming the entry.
@@ -309,54 +455,67 @@ fn set_compile_entry(session: &mut IdeSession, entry: Option<&str>) {
     }
 }
 
-/// Discover and apply `brink.toml`, through the session-level entry point.
+/// Discover `brink.toml`, read it, and apply it.
 ///
-/// Not the analyzer-level `AnalysisOptions::apply_project_config` the spike
-/// reached for: that one resolves `[lints]` and `[conventions]` and nothing
-/// else, so `[project] entry`, `[project] drafts`, `[prose]`, `[fix]` and
-/// `[dialogue]` were all silently dropped. The session-level call is the
-/// shared one (decision log 2026-09-04, "Both studio consumers sit on the
-/// same layer").
-fn apply_config(
+/// Discovery is the shared session-level road (decision log 2026-09-04,
+/// "Both studio consumers sit on the same layer"), not the analyzer-level
+/// `AnalysisOptions::apply_project_config` the spike reached for — that one
+/// resolves `[lints]` and `[conventions]` and nothing else, so `[project]
+/// entry`, `drafts`, `[prose]`, `[fix]` and `[dialogue]` were all silently
+/// dropped.
+fn load_config(
     session: &mut IdeSession,
     root: &Path,
     files: &[String],
-) -> (Option<String>, Vec<String>) {
+) -> (Option<ConfigFile>, ConfigState) {
+    let mut state = ConfigState::default();
     let tree = brink_driver::RealFs::new(root);
-    let Ok(Some(config_key)) = brink_project_config::discover_from_entry_in_tree(&tree, &files[0])
-    else {
-        return (None, Vec::new());
+    let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, &files[0]) else {
+        return (None, state);
     };
-    let config_path = root.join(&config_key);
-    let label = config_path.display().to_string();
-    let Ok(text) = std::fs::read_to_string(&config_path) else {
-        return (None, vec![format!("{label}: could not be read")]);
+    let Ok(text) = std::fs::read_to_string(root.join(&key)) else {
+        state.error = Some((None, "could not be read".to_owned()));
+        return (None, state);
     };
-    match brink_project_config::parse_str_at(label.clone(), &text) {
+    state.path = Some(key.clone());
+    apply_config_text(session, &mut state, &text);
+    (Some(ConfigFile { path: key, text }), state)
+}
+
+/// Apply `text` as the project's `brink.toml` — on load and on every edit
+/// to it. See [`ConfigState`] for the two rules: whole-file semantics, and
+/// a malformed text keeping the last good config.
+fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &str) {
+    let Some(path) = state.path.clone() else {
+        return;
+    };
+    match brink_project_config::parse_str_at(path.clone(), text) {
         Ok((config, parsed)) => {
-            // `parse_str_at` reports `ConfigWarning`; `apply_project_config`
-            // reports plain strings. Flatten to one list.
             let mut warnings: Vec<String> = parsed.into_iter().map(|w| w.0).collect();
-            let config_dir = config_key
-                .rsplit_once('/')
-                .map_or("", |(dir, _)| dir)
-                .to_owned();
-            warnings.extend(session.apply_project_config(&config, false, false, Some(&config_dir)));
-            let entry = config.entry.clone();
-            (
-                entry,
-                warnings
-                    .into_iter()
-                    .map(|w| format!("{label}: {w}"))
-                    .collect(),
-            )
+            let config_dir = path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+            // Back to defaults first, so a key deleted from the file stops
+            // applying. The dialect and the type policy are resolved here
+            // wholesale (`apply_project_config`'s own "explicit" tier keeps
+            // whatever the session already had, which is the one-shot
+            // convention this is not).
+            session.clear_project_config();
+            let dialect = config.dialect.unwrap_or_default();
+            session.set_language_dialect(dialect);
+            session.set_type_policy(brink_analyzer::resolve_type_policy(dialect, config.types));
+            warnings.extend(session.apply_project_config(&config, true, true, Some(&config_dir)));
+            state.entry.clone_from(&config.entry);
+            state.warnings = warnings;
+            state.error = None;
+            set_compile_entry(session, state.entry.as_deref());
         }
-        Err(e) => (None, vec![format!("{label}: {e}")]),
+        Err(e) => {
+            state.error = Some((e.span(), e.to_string()));
+        }
     }
 }
 
 /// Re-establish analysis and project everything the UI mirrors.
-fn analyze(session: &mut IdeSession, revision: u64) -> Analyzed {
+fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Analyzed {
     let started = Instant::now();
     session.refresh_analysis();
 
@@ -416,12 +575,36 @@ fn analyze(session: &mut IdeSession, revision: u64) -> Analyzed {
         }
     }
 
+    // The config's own problems, on the config's own path: the Problems
+    // panel lists them beside the sources', and a click opens Settings.
+    if let Some(path) = &config.path {
+        let rows = config.diagnostics();
+        if rows.is_empty() {
+            diagnostics.remove(path);
+        } else {
+            diagnostics.insert(path.clone(), rows);
+        }
+    }
+
+    let report = session.draft_glob_report();
     Analyzed {
         revision,
         diagnostics,
         kinds,
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
+        entry: config.entry.clone(),
+        config_warnings: config.warnings.clone(),
+        draft_globs: report
+            .globs
+            .into_iter()
+            .map(|g| DraftGlob {
+                glob: g.glob,
+                drafts: g.drafts,
+                in_story: g.in_story,
+            })
+            .collect(),
+        drafts_known: report.compiled,
         elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
     }
 }
@@ -488,9 +671,15 @@ mod tests {
     /// Open synchronously, without the worker thread — the load path is what
     /// these assert, and a channel adds only flakiness.
     fn open_tree(tree: &Tree) -> (IdeSession, Opened) {
-        let mut session = session_with_stdlib();
-        let opened = open(&mut session, tree.0.clone()).expect("the fixture project must load");
+        let (session, opened, _) = open_tree_with_config(tree);
         (session, opened)
+    }
+
+    fn open_tree_with_config(tree: &Tree) -> (IdeSession, Opened, ConfigState) {
+        let mut session = session_with_stdlib();
+        let (opened, state) =
+            open(&mut session, tree.0.clone()).expect("the fixture project must load");
+        (session, opened, state)
     }
 
     #[test]
@@ -551,7 +740,7 @@ mod tests {
     fn analysis_reports_diagnostics_by_path_in_bytes() {
         let tree = Tree::new("diags", &[("main.ink", "Hello.\n-> nowhere\n")]);
         let (mut session, _) = open_tree(&tree);
-        let analyzed = analyze(&mut session, 7);
+        let analyzed = analyze(&mut session, &ConfigState::default(), 7);
 
         assert_eq!(analyzed.revision, 7, "the revision must round-trip");
         let found = analyzed
@@ -576,13 +765,13 @@ mod tests {
         let tree = Tree::new("edit", &[("main.ink", "Hello.\n-> nowhere\n")]);
         let (mut session, _) = open_tree(&tree);
         assert!(
-            analyze(&mut session, 1)
+            analyze(&mut session, &ConfigState::default(), 1)
                 .diagnostics
                 .contains_key("main.ink")
         );
 
         session.update_source("main.ink", "Hello.\n-> DONE\n".to_owned());
-        let after = analyze(&mut session, 2);
+        let after = analyze(&mut session, &ConfigState::default(), 2);
         assert!(
             !after.diagnostics.contains_key("main.ink"),
             "fixing the divert must clear it; got {:?}",
@@ -602,7 +791,7 @@ mod tests {
         );
         let (mut session, opened) = open_tree(&tree);
         assert_eq!(opened.files.len(), 2);
-        let analyzed = analyze(&mut session, 1);
+        let analyzed = analyze(&mut session, &ConfigState::default(), 1);
         assert!(
             analyzed.kinds.keys().all(|k| opened.files.contains(k)),
             "kinds must be keyed by the author's own root-relative paths, \
@@ -712,5 +901,150 @@ mod tests {
         let mut session = session_with_stdlib();
         let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
+    }
+
+    #[test]
+    fn editing_brink_toml_reapplies_the_whole_file() {
+        let tree = Tree::new(
+            "reapply",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\ndrafts = [\"notes/**\"]\n",
+                ),
+                ("start.ink", "Hello.\n-> DONE\n"),
+                ("other.ink", "Other.\n-> DONE\n"),
+                (
+                    "notes/scratch.ink",
+                    "=== scratch ===\nUnreached.\n-> DONE\n",
+                ),
+            ],
+        );
+        let (mut session, opened, mut state) = open_tree_with_config(&tree);
+        assert_eq!(
+            opened.config.as_ref().map(|c| c.path.as_str()),
+            Some("brink.toml")
+        );
+        assert!(
+            !opened.files.iter().any(|f| f == "brink.toml"),
+            "the config is not a source"
+        );
+        assert_eq!(state.entry(), Some("start.ink"));
+        assert!(
+            session
+                .compilation_closure_paths()
+                .contains(&"start.ink".to_owned())
+        );
+
+        // Repoint the entry and drop `drafts`: the closure moves, and the
+        // draft mark goes — "unset means untouched" would have kept it.
+        apply_config_text(
+            &mut session,
+            &mut state,
+            "[project]\nentry = \"other.ink\"\n",
+        );
+        assert_eq!(state.entry(), Some("other.ink"));
+        let closure = session.compilation_closure_paths();
+        assert!(closure.contains(&"other.ink".to_owned()), "{closure:?}");
+        assert!(!closure.contains(&"start.ink".to_owned()), "{closure:?}");
+        assert!(
+            session.draft_globs().is_empty(),
+            "a key deleted from the file stops applying"
+        );
+        assert!(session.draft_paths().is_empty());
+        let analyzed = analyze(&mut session, &state, 3);
+        assert_eq!(analyzed.entry.as_deref(), Some("other.ink"));
+        assert!(
+            !analyzed.diagnostics.contains_key("brink.toml"),
+            "{:?}",
+            analyzed.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_malformed_brink_toml_keeps_the_last_config_and_reports_it() {
+        let tree = Tree::new(
+            "malformed",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", "Hello.\n-> DONE\n"),
+            ],
+        );
+        let (mut session, _, mut state) = open_tree_with_config(&tree);
+        apply_config_text(&mut session, &mut state, "[project]\nentry = \"start.ink\n");
+        assert!(state.error().is_some());
+        assert_eq!(
+            state.entry(),
+            Some("start.ink"),
+            "the last good config stays applied while the text is broken"
+        );
+        assert!(
+            session
+                .compilation_closure_paths()
+                .contains(&"start.ink".to_owned())
+        );
+        let analyzed = analyze(&mut session, &state, 4);
+        let rows = analyzed
+            .diagnostics
+            .get("brink.toml")
+            .expect("the parse error is a Problems row on the config's path");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].severity, Severity::Error);
+        assert_eq!(rows[0].code, CONFIG_CODE);
+
+        // And it clears with the next parse that succeeds.
+        apply_config_text(
+            &mut session,
+            &mut state,
+            "[project]\nentry = \"start.ink\"\n",
+        );
+        assert!(state.error().is_none());
+        assert!(
+            !analyze(&mut session, &state, 5)
+                .diagnostics
+                .contains_key("brink.toml")
+        );
+    }
+
+    #[test]
+    fn the_draft_report_rides_the_analysis() {
+        let tree = Tree::new(
+            "report",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\ndrafts = [\"notes/**\", \"start.ink\", \"nothing/**\"]\n",
+                ),
+                ("start.ink", "Hello.\n-> DONE\n"),
+                (
+                    "notes/scratch.ink",
+                    "=== scratch ===\nUnreached.\n-> DONE\n",
+                ),
+            ],
+        );
+        let (mut session, _, state) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &state, 1);
+        assert!(analyzed.drafts_known);
+        assert_eq!(
+            analyzed.draft_globs,
+            vec![
+                DraftGlob {
+                    glob: "notes/**".to_owned(),
+                    drafts: vec!["notes/scratch.ink".to_owned()],
+                    in_story: vec![],
+                },
+                DraftGlob {
+                    glob: "start.ink".to_owned(),
+                    drafts: vec![],
+                    in_story: vec!["start.ink".to_owned()],
+                },
+                DraftGlob {
+                    glob: "nothing/**".to_owned(),
+                    drafts: vec![],
+                    in_story: vec![],
+                },
+            ],
+            "three states, in the author's order: drafts, reached, nothing"
+        );
     }
 }

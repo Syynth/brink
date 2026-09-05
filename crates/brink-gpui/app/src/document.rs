@@ -71,7 +71,8 @@ pub struct Document {
     project: Entity<Project>,
     /// The highlighter's factory, kept so a theme change can reinstall it:
     /// the highlighter snapshots the TODO band's colours when it updates.
-    factory: InputHighlighterFactory,
+    /// `None` for `brink.toml`, which the kit's own TOML highlighter paints.
+    factory: Option<InputHighlighterFactory>,
     /// The tab group holding this document, from the dock's `on_added_to`.
     /// What [`Document::activate`] selects the tab through.
     group: Option<WeakEntity<TabGroup>>,
@@ -89,29 +90,38 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> Self {
         let path = path.into();
-        let factory = highlighter_factory(project.downgrade(), path.clone());
+        // `brink.toml` is a document like any other (the maintainer's call
+        // for the native studio, 2026-09-05 — unlike the web studio, which
+        // routes it to Settings): the same tab, the same shared buffer, the
+        // worker re-applying the config on each edit. What differs is the
+        // language: it is TOML, so the kit's own highlighter paints it and
+        // brink's hover, completion and inlays stay out of it.
+        let config = project.read(cx).is_config(&path);
+        let factory = (!config).then(|| highlighter_factory(project.downgrade(), path.clone()));
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
-                .language("brink");
+                .language(if config { "toml" } else { "brink" });
 
-            // Installed BEFORE gpui-component's Input render, whose
-            // `ensure_highlighter_factory` only fills an empty slot — so
-            // this wins and the tree-sitter path is never consulted.
-            state.set_highlighter_factory(factory.clone(), cx);
+            if let Some(factory) = &factory {
+                // Installed BEFORE gpui-component's Input render, whose
+                // `ensure_highlighter_factory` only fills an empty slot — so
+                // this wins and the tree-sitter path is never consulted.
+                state.set_highlighter_factory(factory.clone(), cx);
 
-            let origin = cx.entity().entity_id();
-            let lsp = state.lsp_mut();
-            lsp.hover_provider = Some(Rc::new(BrinkHover {
-                project: project.downgrade(),
-                path: path.clone(),
-                origin,
-            }));
-            lsp.completion_provider = Some(Rc::new(BrinkCompletion {
-                project: project.downgrade(),
-                path: path.clone(),
-                origin,
-            }));
+                let origin = cx.entity().entity_id();
+                let lsp = state.lsp_mut();
+                lsp.hover_provider = Some(Rc::new(BrinkHover {
+                    project: project.downgrade(),
+                    path: path.clone(),
+                    origin,
+                }));
+                lsp.completion_provider = Some(Rc::new(BrinkCompletion {
+                    project: project.downgrade(),
+                    path: path.clone(),
+                    origin,
+                }));
+            }
             state.set_value(text, window, cx);
             state
         });
@@ -157,7 +167,9 @@ impl Document {
         // updates, so a theme switch reinstalls it (one reparse of the file,
         // on a switch — nothing per keystroke).
         let on_theme = cx.observe_global::<gpui_component::Theme>(|this, cx| {
-            let factory = this.factory.clone();
+            let Some(factory) = this.factory.clone() else {
+                return;
+            };
             this.editor.update(cx, |state, cx| {
                 state.set_highlighter_factory(factory, cx);
             });
@@ -279,8 +291,11 @@ impl Document {
 
         // Inlays are a query rather than part of the analysis broadcast:
         // computing them for every file on every keystroke would be
-        // O(project) for the sake of files nobody has open.
-        if !brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints {
+        // O(project) for the sake of files nobody has open. The config has
+        // none to ask for.
+        if self.factory.is_none()
+            || !brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints
+        {
             self.editor
                 .update(cx, |state, cx| state.set_inlays(Vec::new(), cx));
             return;

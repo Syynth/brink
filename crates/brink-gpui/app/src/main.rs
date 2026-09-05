@@ -13,6 +13,7 @@ mod icons;
 mod problems;
 mod project;
 mod search;
+mod settings_general;
 mod single_view;
 mod todos;
 
@@ -21,6 +22,7 @@ use std::path::PathBuf;
 
 use brink_gpui_shell::editor_view::EditorView;
 use brink_gpui_shell::region::RailSlot;
+use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
 use brink_gpui_shell::workspace::{StatusCell, Workspace};
 use gpui::{
@@ -35,6 +37,7 @@ use crate::continuous::ContinuousView;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
+use crate::settings_general::{GeneralSection, OpenConfig};
 use crate::single_view::SingleFileView;
 use crate::todos::{OpenTodo, Todos};
 
@@ -74,8 +77,28 @@ impl Studio {
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
+        let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
+            // The Project scope's first section: the shell owns the App
+            // ones, and this crate owns `brink.toml`.
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "general",
+                    Scope::Project,
+                    "General",
+                    &[
+                        "brink.toml",
+                        "entry",
+                        "conventions",
+                        "dialect",
+                        "types",
+                        "drafts",
+                        "config",
+                    ],
+                ),
+                general.clone(),
+            ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)
                     .icon(icons::FOLDER)
@@ -198,6 +221,17 @@ impl Studio {
                 this.open(path, Some(span.clone()), window, cx);
             },
         );
+        // "Open brink.toml" in the General section: the text is a
+        // document, so the section hands over to Code view.
+        let on_general = cx.subscribe_in(
+            &general,
+            window,
+            |this, _, event: &OpenConfig, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.close_settings(window, cx));
+                this.open(&event.0, None, window, cx);
+            },
+        );
 
         project.update(cx, |project, _| project.open(root));
 
@@ -211,7 +245,9 @@ impl Studio {
             code,
             manuscript,
             search,
-            _subscriptions: vec![on_project, on_binder, on_problem, on_todo, on_search],
+            _subscriptions: vec![
+                on_project, on_binder, on_problem, on_todo, on_search, on_general,
+            ],
         }
     }
 
@@ -230,7 +266,10 @@ impl Studio {
     }
 
     /// Open a file in Code view, or select it if it is already open, and
-    /// optionally reveal a span inside it.
+    /// optionally reveal a span inside it. `brink.toml` included: it is a
+    /// document like any other here (unlike the web studio, which routes
+    /// it to Settings — the maintainer's call for the native one,
+    /// 2026-09-05); its form lives in Settings ▸ General.
     fn open(
         &mut self,
         path: &str,

@@ -318,12 +318,53 @@ The studio's modal (ruled 2026-08-27): a searchable section rail with the
 App / Project scope switch, one section at a time. Sections are registered
 entries, so the window cannot drift behind what is configurable; the shell
 registers the App sections it owns (Appearance, Keymap —
-`shell/src/settings_*.rs`), and a Project section is the feature crate's to
-register once a `brink.toml` edit seam exists through the shared buffer.
+`shell/src/settings_*.rs`), and the feature crate registers the Project
+ones (General — `app/src/settings_general.rs`).
 Keymap overrides follow the rebinding ruling (2026-08-30): a recorded chord
 displaces its previous owner, and the override layer is bound over the
 registry's defaults (gpui's keymap only grows, so a taken-away default is
 shadowed by `Unbound` rather than removed).
+
+**`brink.toml` is a file in the shared buffer** (§6), which is the seam
+every Project section writes through. The worker discovers it on open and
+returns it beside the sources (`Opened::config`), the mirror holds its text
+like any file's (edited through `Project::edit`, dirty per file, written by
+`save_all`) but keeps it out of `files` — it is not a source, and the
+manuscript and search read `files` — and an edit to it is routed to
+`apply_config_text` rather than `update_source`. Two rules there
+(`worker::ConfigState`): **an edit re-applies the whole file** — the
+session goes back to its defaults first, because `apply_project_config`'s
+"unset means untouched" convention is right for a one-shot load and wrong
+for an editor, where deleting `drafts = [...]` must stop marking drafts —
+and **a malformed text keeps the last good config applied**, since every
+intermediate state of a raw edit is invalid TOML and tearing the config
+down mid-keystroke would blank the entry and mark every file out of the
+story; the error is an Error diagnostic on the config's own path instead
+(the studio's #3391 shape), and clears with the next parse that succeeds.
+The analysis carries what the applied config resolved to (`entry`, the
+warnings, and the per-glob drafts report from `draft_glob_report`), so a
+config edit moves the Binder's entry mark and the closure like a hand edit
+would.
+
+**`brink.toml` opens in Code view, and Settings holds only the form** —
+the maintainer's call for the native studio (2026-09-05), where the web
+studio routes the file to a Settings takeover carrying form and text
+together (ruled 2026-08-27; it had no editor tab to give the file in
+Continuous view). Here the file is a `Document` like any other — listed
+in the Binder beside the sources, opened from there or from a Problems
+row at the row's span, edited in the same shared buffer with the same
+`cmd-s` — differing only in language: TOML, painted by the kit's own
+highlighter, with brink's hover, completion and inlays kept out of it.
+The General section (`app/src/settings_general.rs`) is the studio's form
+alone: `entry` / `conventions` / `dialect` / `types` as selects over the
+project's real files (a configured value the project lacks kept and
+flagged "(missing)"), the drafts list in the dictionary's shape with each
+glob's three-state report (ruled 2026-08-29), and an "Open brink.toml"
+door to the editor for every key the form does not model. Structured
+edits go through `brink-project-config`'s `ConfigDocument` (`toml_edit`),
+so a select changes one key and leaves the author's comments, key order
+and quoting alone; the form re-reads the file on every `SourceChanged`
+to it, so it and an open tab can never disagree.
 
 ## 5. First slice
 
@@ -356,9 +397,10 @@ Two defects carried from the spike are fixed here, not later:
   which is what stops the echo. Dirty and save are per file, in the
   project — an edit in the manuscript is as unsaved as one in a tab, and
   one `cmd-s` writes both. Verified headless both directions.
-- Player, story graph, debugger; Settings' Project scope (needs the
-  `brink.toml` edit seam); Search's replace previews, context knob and
-  references mode. (Search's cards **are editors** over
+- Player, story graph, debugger; Settings' remaining Project sections
+  (Diagnostics, Formatting, Conventions, Prose — the `brink.toml` seam and
+  General landed 2026-09-05, §4.8); Search's replace previews, context
+  knob and references mode. (Search's cards **are editors** over
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
   windows edit-mapped through every change, `edited` badges, lazy
   per-card `EditorState`s.) **Where the Player

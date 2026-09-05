@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use brink_gpui_model::query::{QueryKind, QueryResult};
-use brink_gpui_model::worker::{Diagnostic, Kinds, Request, Response, Worker};
+use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
 use gpui::{App, AppContext as _, Context, EntityId, EventEmitter, Task};
 
 /// What the UI learns from the worker.
@@ -90,6 +90,11 @@ pub struct Project {
     worker: Worker,
     root: PathBuf,
     files: Vec<String>,
+    /// The project's `brink.toml`, root-relative, if it has one. Held in
+    /// `sources`/`saved` like any file — edited through [`Project::edit`],
+    /// dirty per file, written by `save_all` — but never in `files`: it is
+    /// not a source, and the manuscript and search read `files`.
+    config: Option<String>,
     /// The canonical text of every file — what each editor over the file
     /// mirrors, and what is analysed, searched and saved. An editor pushes
     /// its text through [`Project::edit`]; the others hear the delta.
@@ -100,6 +105,9 @@ pub struct Project {
     saved: BTreeMap<String, String>,
     entry: Option<String>,
     drafts: BTreeSet<String>,
+    /// Per-glob attribution for `[project] drafts`, from the last analysis.
+    draft_globs: Vec<DraftGlob>,
+    drafts_known: bool,
     closure: BTreeSet<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
@@ -141,10 +149,13 @@ impl Project {
             worker,
             root: PathBuf::new(),
             files: Vec::new(),
+            config: None,
             sources: BTreeMap::new(),
             saved: BTreeMap::new(),
             entry: None,
             drafts: BTreeSet::new(),
+            draft_globs: Vec::new(),
+            drafts_known: false,
             closure: BTreeSet::new(),
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -164,6 +175,10 @@ impl Project {
                 Ok(opened) => {
                     self.root = opened.root;
                     self.sources = opened.files.iter().cloned().zip(opened.sources).collect();
+                    self.config = opened.config.as_ref().map(|c| c.path.clone());
+                    if let Some(config) = opened.config {
+                        self.sources.insert(config.path, config.text);
+                    }
                     self.saved = self.sources.clone();
                     self.files = opened.files;
                     self.entry = opened.entry;
@@ -172,6 +187,8 @@ impl Project {
                     self.diagnostics.clear();
                     self.kinds.clear();
                     self.drafts.clear();
+                    self.draft_globs.clear();
+                    self.drafts_known = false;
                     self.closure.clear();
                     self.analyzed = false;
                     cx.emit(ProjectEvent::Opened {
@@ -184,7 +201,12 @@ impl Project {
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;
                 self.drafts = analyzed.drafts.into_iter().collect();
+                self.draft_globs = analyzed.draft_globs;
+                self.drafts_known = analyzed.drafts_known;
                 self.closure = analyzed.closure.into_iter().collect();
+                // The config can move the entry between analyses.
+                self.entry = analyzed.entry;
+                self.warnings = analyzed.config_warnings;
                 self.analyzed = true;
                 self.last_analyze_ms = analyzed.elapsed_ms;
                 self.worst_analyze_ms = self.worst_analyze_ms.max(analyzed.elapsed_ms);
@@ -296,6 +318,27 @@ impl Project {
     #[must_use]
     pub fn entry(&self) -> Option<&str> {
         self.entry.as_deref()
+    }
+
+    /// The project's `brink.toml`, root-relative, if it has one. Its text
+    /// is [`Project::loaded_source`]; edits go through [`Project::edit`].
+    #[must_use]
+    pub fn config_path(&self) -> Option<&str> {
+        self.config.as_deref()
+    }
+
+    /// Whether `path` is the project's config file.
+    #[must_use]
+    pub fn is_config(&self, path: &str) -> bool {
+        self.config.as_deref() == Some(path)
+    }
+
+    /// `[project] drafts`, glob by glob, with what each currently matches
+    /// — and whether that is known yet (false before a compile closure
+    /// exists, when every list is empty and means nothing).
+    #[must_use]
+    pub fn draft_globs(&self) -> (&[DraftGlob], bool) {
+        (&self.draft_globs, self.drafts_known)
     }
 
     #[must_use]

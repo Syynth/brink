@@ -161,8 +161,37 @@ editors observe: gutters and inlay hints apply live; the editor size
 re-applies the theme; the app size scales the window's rem. Verified
 headless: the modal, tiles, a font step, the scope switch, the keymap
 table, a recording that displaced a default and fired after closing, the
-file. **Not here yet**: the Project scope — every Project section needs a
-`brink.toml` edit seam through the shared buffer first.
+file.
+
+**Project scope: General** (2026-09-05, `app/src/settings_general.rs`,
+ruled 2026-08-27 and 2026-08-29 for the form; the maintainer's call
+2026-09-05 for where the text lives): **`brink.toml` opens in Code view
+like any file** — unlike the web studio, which routes it to a Settings
+takeover — and Settings holds only the form: `entry` / `conventions` /
+`dialect` / `types` as selects over the project's real files (a configured
+file the project lacks kept and marked "(missing)"), the drafts list with
+each glob's report (drafts / "matches nothing" / "also matches N files the
+story reaches"), and an "Open brink.toml" button for everything else.
+**The seam is the shared buffer**: `brink.toml` is a file the mirror holds
+(`Project::config_path`, text through `loaded_source`, edits through
+`Project::edit`, saved by `cmd-s` with everything else) but not one of
+`files()`; `Document::new` gives it the `toml` language and none of
+brink's providers; the worker routes an edit to it into
+`apply_config_text` (`model/src/worker.rs`, see `ConfigState`'s doc for
+the two rules: whole-file re-application, and a malformed text keeping the
+last good config while its parse error sits in Problems as a `CONFIG` row
+that opens the tab at the span). Every analysis carries the resolved
+`entry`, the config warnings and the per-glob drafts report, so the
+Binder's entry mark and the closure follow a select. Structured edits go
+through `brink_project_config::edit::ConfigDocument` — `remove_key` and
+`string` were added to it for this — so comments survive. Verified
+headless: the tab (TOML paint, a parse error squiggled and in Problems),
+the section, a select repointing the entry with the tab and the Binder
+following, a draft added and its row's report, save. **Not here yet**:
+Diagnostics (`[lints]`, `[fix]`), Formatting (`indent`), Conventions,
+Prose — each is a section over the same seam; and creating a `brink.toml`
+for a project that has none (the section says so and stops; the worker
+would need to adopt a new config path).
 
 **Search** (2026-09-05, `app/src/search.rs`): the studio's engine (plain
 or regex, case, whole word, one composed pattern, 1000-match cap) over the

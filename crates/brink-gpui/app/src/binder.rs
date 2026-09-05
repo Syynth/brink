@@ -346,10 +346,11 @@ impl Binder {
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (files, entry, closure, diagnostics, drafts) = {
+        let (sources, config, entry, closure, diagnostics, drafts) = {
             let project = self.project.read(cx);
             (
                 project.files().to_vec(),
+                project.config_path().map(str::to_owned),
                 project.entry().map(str::to_owned),
                 project
                     .files()
@@ -367,9 +368,18 @@ impl Binder {
             )
         };
         if self.mode == Mode::Structure {
-            self.request_symbols(&files, cx);
+            self.request_symbols(&sources, cx);
         }
         let symbols = self.symbols.clone();
+
+        // `brink.toml` is listed beside the sources (its click opens
+        // Settings — ruled 2026-08-27, "brink.toml opens in the Settings
+        // takeover, in every view"), but it is not a source: it has no
+        // symbols to ask for and is never "outside the story".
+        let mut files = sources;
+        if let Some(config) = &config {
+            files.push(config.clone());
+        }
 
         let mut file_marks: HashMap<&str, Marks> = HashMap::new();
         for (path, _, is_error) in &diagnostics {
@@ -403,6 +413,12 @@ impl Binder {
             &matches,
             &mut rows,
         );
+
+        for row in &mut rows {
+            if config.as_deref() == Some(row.path.as_str()) {
+                row.dimmed = false;
+            }
+        }
 
         // A filter hides folders that ended up with nothing under them.
         if !filter.is_empty() {

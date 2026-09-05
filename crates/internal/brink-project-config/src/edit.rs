@@ -193,6 +193,37 @@ impl ConfigDocument {
         Ok(array.len() != before)
     }
 
+    /// Remove `table.key`, leaving the table (and everything else) alone.
+    /// Returns whether the document changed — a key that was never there
+    /// is a no-op, not an error, so a form can "unset" without first
+    /// reading.
+    ///
+    /// # Errors
+    /// [`EditError::Shape`] when `table` exists as something other than a table.
+    pub fn remove_key(&mut self, table: &str, key: &str) -> Result<bool, EditError> {
+        let Some(existing) = self.doc.get_mut(table) else {
+            return Ok(false);
+        };
+        let Some(table_like) = existing.as_table_like_mut() else {
+            return Err(EditError::Shape {
+                path: table.to_owned(),
+                found: "a non-table",
+                expected: "a table",
+            });
+        };
+        Ok(table_like.remove(key).is_some())
+    }
+
+    /// Read `table.key` as a string, or `None` when absent or not a string.
+    #[must_use]
+    pub fn string(&self, table: &str, key: &str) -> Option<String> {
+        self.doc
+            .get(table)
+            .and_then(|t| t.get(key))
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+    }
+
     /// Assign `item` to `key`, keeping the existing value's decoration.
     ///
     /// `toml_edit` attaches a trailing comment to the VALUE, so a plain
@@ -363,5 +394,41 @@ E063 = \"warn\"
             ConfigDocument::parse("[project"),
             Err(EditError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn remove_key_takes_one_key_and_nothing_else() {
+        let mut doc = ConfigDocument::parse(HAND_WRITTEN).expect("valid toml");
+        assert_eq!(
+            doc.string("project", "dialect").as_deref(),
+            Some("screenplay")
+        );
+        assert!(doc.remove_key("project", "dialect").expect("a table"));
+        let out = doc.to_toml_string();
+        assert!(!out.contains("dialect"), "the key is gone: {out}");
+        assert!(
+            out.contains("entry = 'main.ink'   # kept deliberately in single quotes"),
+            "its neighbour is untouched, comment and quotes included: {out}"
+        );
+        assert!(out.contains("# Loud about unreachable content."));
+        assert_eq!(doc.string("project", "dialect"), None);
+
+        assert!(
+            !doc.remove_key("project", "dialect").expect("a table"),
+            "removing an absent key is a no-op"
+        );
+        assert!(
+            !doc.remove_key("nowhere", "entry")
+                .expect("an absent table is fine"),
+            "an absent table is a no-op too"
+        );
+        let mut scalar = ConfigDocument::parse("project = 1\n").expect("valid toml");
+        assert!(
+            matches!(
+                scalar.remove_key("project", "entry"),
+                Err(EditError::Shape { .. })
+            ),
+            "a table that is not a table is reported, never clobbered"
+        );
     }
 }
