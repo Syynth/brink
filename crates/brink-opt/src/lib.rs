@@ -18,6 +18,9 @@
 //! 1. [`EmitLineNl`] — the peephole that fuses `EmitLine` + `EmitNewline`
 //!    (`docs/optimizer-peephole.md`). The relocating rewrite engine every
 //!    peephole shares lives in `peephole`.
+//! 2. [`BinaryFusion`] — a binary operator fused with the `PushInt`
+//!    immediate feeding it and/or the `JumpIfFalse` consuming it
+//!    (`BinaryImm`, `BinaryJumpIfFalse`, `BinaryImmJumpIfFalse`).
 //!
 //! Every pass is a pure function of the artifact, visits it in program
 //! order, and is held to the fence in `brink-test-harness` (trace equality,
@@ -54,7 +57,7 @@ mod passes;
 mod peephole;
 mod stats;
 
-pub use passes::EmitLineNl;
+pub use passes::{BinaryFusion, EmitLineNl};
 
 pub use stats::ArtifactStats;
 
@@ -184,7 +187,9 @@ impl OptConfig {
     #[must_use]
     pub fn defaults() -> Self {
         let config = Self {
-            passes: PassSet::empty().with(Box::new(EmitLineNl)),
+            passes: PassSet::empty()
+                .with(Box::new(EmitLineNl))
+                .with(Box::new(BinaryFusion)),
         };
         assert!(
             !config

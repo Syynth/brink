@@ -40,12 +40,35 @@ impl Instr {
     }
 
     /// The absolute target of a relative jump, if this is one.
-    fn jump_target(&self) -> Option<usize> {
-        let (Opcode::Jump(rel) | Opcode::JumpIfFalse(rel) | Opcode::SequenceBranch(rel)) = self.op
-        else {
-            return None;
-        };
-        Some(relative_target(self.end(), rel))
+    pub(crate) fn jump_target(&self) -> Option<usize> {
+        jump_rel(&self.op).map(|rel| relative_target(self.end(), rel))
+    }
+}
+
+/// The relative operand of every jump-bearing opcode — the plain jumps and
+/// the fused superinstructions that end in one. Every relative offset is
+/// taken from the end of the instruction that carries it.
+fn jump_rel(op: &Opcode) -> Option<i32> {
+    match *op {
+        Opcode::Jump(rel)
+        | Opcode::JumpIfFalse(rel)
+        | Opcode::SequenceBranch(rel)
+        | Opcode::BinaryJumpIfFalse(_, rel)
+        | Opcode::BinaryImmJumpIfFalse(_, _, rel) => Some(rel),
+        _ => None,
+    }
+}
+
+/// `op` with its relative operand replaced. Callers pass an `op` for which
+/// [`jump_rel`] is `Some`; anything else comes back unchanged.
+fn with_jump_rel(op: &Opcode, rel: i32) -> Opcode {
+    match *op {
+        Opcode::Jump(_) => Opcode::Jump(rel),
+        Opcode::JumpIfFalse(_) => Opcode::JumpIfFalse(rel),
+        Opcode::SequenceBranch(_) => Opcode::SequenceBranch(rel),
+        Opcode::BinaryJumpIfFalse(kind, _) => Opcode::BinaryJumpIfFalse(kind, rel),
+        Opcode::BinaryImmJumpIfFalse(kind, imm, _) => Opcode::BinaryImmJumpIfFalse(kind, imm, rel),
+        _ => op.clone(),
     }
 }
 
@@ -83,16 +106,42 @@ impl Labels {
     pub(crate) fn contains(&self, offset: usize) -> bool {
         self.0.contains(&offset)
     }
+
+    /// Whether a window of `consumed` instructions starting at `instrs[i]`
+    /// would swallow a label — a window may *begin* at one, never erase one.
+    pub(crate) fn blocks_window(&self, instrs: &[Instr], i: usize, consumed: usize) -> bool {
+        instrs[i + 1..i + consumed]
+            .iter()
+            .any(|instr| self.contains(instr.offset))
+    }
+}
+
+/// One instruction of a replacement. A replacement that ends in a branch
+/// names its target as an **absolute offset in the old code**; the engine
+/// re-encodes it against the new layout, exactly as it does for the jumps
+/// it kept.
+pub(crate) enum Emit {
+    Op(Opcode),
+    Branch { op: Opcode, target: usize },
+}
+
+impl Emit {
+    fn op(&self) -> &Opcode {
+        match self {
+            Self::Op(op) | Self::Branch { op, .. } => op,
+        }
+    }
 }
 
 /// A local rewrite. `try_at` looks at `instrs[i..]` and either returns the
 /// number of instructions to replace together with their replacement, or
-/// `None` to leave `instrs[i]` alone. The replacement may not contain
-/// relative jumps (the engine relocates only jumps it decoded from the
-/// original), and the window may not swallow a label — `labels` is there
-/// so the rewrite can check the boundaries it would erase.
+/// `None` to leave `instrs[i]` alone. A window may not swallow a label —
+/// the engine refuses one that would, so a rewrite that has a shorter legal
+/// window to fall back to should check `labels.blocks_window` itself and
+/// offer that instead. An `Emit::Op` may not carry a relative jump; a
+/// branch in a replacement is an `Emit::Branch` with its absolute target.
 pub(crate) trait Rewrite {
-    fn try_at(&self, instrs: &[Instr], i: usize, labels: &Labels) -> Option<(usize, Vec<Opcode>)>;
+    fn try_at(&self, instrs: &[Instr], i: usize, labels: &Labels) -> Option<(usize, Vec<Emit>)>;
 }
 
 /// Apply `rewrite` to every container of `story`, relocating as described
@@ -153,22 +202,21 @@ fn plan_windows(instrs: &[Instr], labels: &Labels, rewrite: &dyn Rewrite) -> (Ve
     let mut i = 0;
     while i < instrs.len() {
         match rewrite.try_at(instrs, i, labels) {
-            Some((consumed, ops)) if consumed > 0 => {
+            Some((consumed, emits))
+                if consumed > 0
+                    && i + consumed <= instrs.len()
+                    && !labels.blocks_window(instrs, i, consumed) =>
+            {
                 debug_assert!(
-                    ops.iter().all(|op| !matches!(
-                        op,
-                        Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::SequenceBranch(_)
-                    )),
-                    "a replacement may not introduce relative jumps"
-                );
-                debug_assert!(
-                    (1..consumed).all(|k| !labels.contains(instrs[i + k].offset)),
-                    "a rewrite swallowed a label"
+                    emits
+                        .iter()
+                        .all(|e| !matches!(e, Emit::Op(op) if jump_rel(op).is_some())),
+                    "a replacement branch must be an Emit::Branch with its target"
                 );
                 plan.push(Window {
                     first: i,
                     consumed,
-                    body: Body::Replace(ops),
+                    body: Body::Replace(emits),
                 });
                 replaced += 1;
                 i += consumed;
@@ -241,19 +289,21 @@ fn emit(bytecode: &[u8], instrs: &[Instr], plan: &[Window], layout: &Layout) -> 
                     Some(target_old) => {
                         let new_end = code.len() + original.len;
                         let rel = relative_of(new_end, layout.map(target_old));
-                        let op = match original.op {
-                            Opcode::Jump(_) => Opcode::Jump(rel),
-                            Opcode::JumpIfFalse(_) => Opcode::JumpIfFalse(rel),
-                            _ => Opcode::SequenceBranch(rel),
-                        };
-                        op.encode(&mut code);
+                        with_jump_rel(&original.op, rel).encode(&mut code);
                     }
                     None => code.extend_from_slice(&bytecode[original.offset..original.end()]),
                 }
             }
-            Body::Replace(ops) => {
-                for op in ops {
-                    op.encode(&mut code);
+            Body::Replace(emits) => {
+                for emit in emits {
+                    match emit {
+                        Emit::Op(op) => op.encode(&mut code),
+                        Emit::Branch { op, target } => {
+                            let new_end = code.len() + encoded_len(op);
+                            let rel = relative_of(new_end, layout.map(*target));
+                            with_jump_rel(op, rel).encode(&mut code);
+                        }
+                    }
                 }
             }
         }
@@ -272,14 +322,14 @@ struct Window {
 /// replacement sequence.
 enum Body {
     Keep,
-    Replace(Vec<Opcode>),
+    Replace(Vec<Emit>),
 }
 
 impl Window {
     fn new_len(&self, instrs: &[Instr]) -> usize {
         match &self.body {
             Body::Keep => instrs[self.first].len,
-            Body::Replace(ops) => ops.iter().map(encoded_len).sum(),
+            Body::Replace(emits) => emits.iter().map(|e| encoded_len(e.op())).sum(),
         }
     }
 }
@@ -314,8 +364,10 @@ mod tests {
         DefinitionId, DefinitionTag,
     };
 
+    use brink_format::BinaryKind;
+
     use super::*;
-    use crate::passes::EmitLineNl;
+    use crate::passes::{BinaryFusion, EmitLineNl};
 
     fn id(n: u64) -> DefinitionId {
         DefinitionId::new(DefinitionTag::Address, n)
@@ -567,5 +619,132 @@ mod tests {
         let mut story = story_with(code.clone());
         assert_eq!(rewrite_story(&mut story, &EmitLineNl), 0);
         assert_eq!(story.containers[0].bytecode, code);
+    }
+
+    #[test]
+    fn fuses_compare_immediate_and_branch_into_one_relocated_instruction() {
+        // get_temp 0; push_int 1; less_or_equal; jump_if_false -> [nop]; push_int 7; nop
+        let skipped = encode(&[Opcode::PushInt(7)]);
+        let mut story = story_with(encode(&[
+            Opcode::GetTemp(0),
+            Opcode::PushInt(1),
+            Opcode::LessOrEqual,
+            Opcode::JumpIfFalse(i32::try_from(skipped.len()).unwrap()),
+            Opcode::PushInt(7),
+            Opcode::Nop,
+        ]));
+        let before = jump_landings(&story.containers[0].bytecode);
+        assert_eq!(before, vec![Some(Opcode::Nop)]);
+
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        let ops = ops_of(&story.containers[0].bytecode);
+        assert_eq!(ops[0], Opcode::GetTemp(0));
+        assert!(
+            matches!(
+                ops[1],
+                Opcode::BinaryImmJumpIfFalse(BinaryKind::LessOrEqual, 1, _)
+            ),
+            "{ops:?}"
+        );
+        assert_eq!(&ops[2..], &[Opcode::PushInt(7), Opcode::Nop]);
+        assert_eq!(
+            jump_landings(&story.containers[0].bytecode),
+            before,
+            "the fused branch lands where the plain one did"
+        );
+
+        let again = story.clone();
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 0);
+        assert_eq!(story, again);
+    }
+
+    #[test]
+    fn a_label_on_the_branch_shortens_the_window_to_the_immediate() {
+        // push_int 3; equal; jump_if_false -> [end]      with an address on the jump
+        let prefix = encode(&[Opcode::PushInt(3), Opcode::Equal]);
+        let mut story = story_with(encode(&[
+            Opcode::PushInt(3),
+            Opcode::Equal,
+            Opcode::JumpIfFalse(0),
+        ]));
+        story.addresses.push(AddressDef {
+            id: id(9),
+            container_id: id(1),
+            byte_offset: offset_u32(prefix.len()),
+        });
+
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        assert_eq!(
+            ops_of(&story.containers[0].bytecode),
+            vec![
+                Opcode::BinaryImm(BinaryKind::Equal, 3),
+                Opcode::JumpIfFalse(0),
+            ]
+        );
+        let fused = encode(&[Opcode::BinaryImm(BinaryKind::Equal, 3)]);
+        assert_eq!(
+            story.addresses[0].byte_offset as usize,
+            fused.len(),
+            "the address still names the (kept) jump"
+        );
+    }
+
+    #[test]
+    fn a_compare_without_an_immediate_fuses_with_its_branch_alone() {
+        // get_temp 0; get_temp 1; equal; jump_if_false -> [nop]; pop; nop  — backward-free
+        let skipped = encode(&[Opcode::Pop]);
+        let mut story = story_with(encode(&[
+            Opcode::GetTemp(0),
+            Opcode::GetTemp(1),
+            Opcode::Equal,
+            Opcode::JumpIfFalse(i32::try_from(skipped.len()).unwrap()),
+            Opcode::Pop,
+            Opcode::Nop,
+        ]));
+        let before = jump_landings(&story.containers[0].bytecode);
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        let ops = ops_of(&story.containers[0].bytecode);
+        assert!(
+            matches!(ops[2], Opcode::BinaryJumpIfFalse(BinaryKind::Equal, _)),
+            "{ops:?}"
+        );
+        assert_eq!(jump_landings(&story.containers[0].bytecode), before);
+    }
+
+    #[test]
+    fn a_fused_branch_jumping_backward_over_a_shrunk_region_is_relocated() {
+        // [L] emit_line; emit_newline; push_int 0; not_equal; jump_if_false -> L
+        let body = encode(&[
+            Opcode::EmitLine(0, 0),
+            Opcode::EmitNewline,
+            Opcode::PushInt(0),
+            Opcode::NotEqual,
+        ]);
+        let jump = encode(&[Opcode::JumpIfFalse(0)]);
+        let rel = -i32::try_from(body.len() + jump.len()).unwrap();
+        let mut story = story_with(encode(&[
+            Opcode::EmitLine(0, 0),
+            Opcode::EmitNewline,
+            Opcode::PushInt(0),
+            Opcode::NotEqual,
+            Opcode::JumpIfFalse(rel),
+        ]));
+        assert_eq!(
+            jump_landings(&story.containers[0].bytecode),
+            vec![Some(Opcode::EmitLine(0, 0))]
+        );
+        // Both passes, as the default set runs them: the region before the
+        // branch shrinks and the branch itself is fused.
+        assert_eq!(rewrite_story(&mut story, &EmitLineNl), 1);
+        assert_eq!(rewrite_story(&mut story, &BinaryFusion), 1);
+        assert_eq!(
+            ops_of(&story.containers[0].bytecode)[0],
+            Opcode::EmitLineNl(0, 0)
+        );
+        assert_eq!(
+            jump_landings(&story.containers[0].bytecode),
+            vec![Some(Opcode::EmitLineNl(0, 0))],
+            "the fused backward branch lands on the fused start of the loop"
+        );
     }
 }
