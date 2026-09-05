@@ -124,6 +124,7 @@ pub fn emit_with_options(
         definition_id_first_seen: HashMap::new(),
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
+        scope_line_index: HashMap::new(),
         line_variant_groups: Vec::new(),
         list_literals: Vec::new(),
         literal_pool: Vec::new(),
@@ -269,6 +270,12 @@ struct EmitState {
     address_paths: Vec<AddressPath>,
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
     scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>>,
+    /// Per-scope dedup index over [`scope_line_tables`](Self::scope_line_tables):
+    /// the entry already holding a given `(content, slot_info)`, so a line
+    /// authored twice in one scope is one translation unit
+    /// (`docs/intl-spec.md` §"Line-table deduplication"). Lookup only —
+    /// never iterated, so the hash order cannot leak into the artifact.
+    scope_line_index: HashMap<DefinitionId, HashMap<LineKey, u16>>,
     /// #3273: variant-group records accumulated as `EmitLineVariants`
     /// statements register their line-table runs. Sorted before assembly
     /// for deterministic output.
@@ -319,9 +326,27 @@ fn intern_into(
 
 // ─── Container emitter ──────────────────────────────────────────────
 
+/// What makes two line-table entries the same translation unit: the
+/// (whitespace-collapsed) content and the slot names a translator sees.
+/// `source_hash` is deliberately not part of it — a merged entry keeps its
+/// first occurrence's hash and location — and neither is anything the
+/// runtime reads, since the runtime treats equal content identically.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LineKey {
+    content: LineContent,
+    slot_info: Vec<brink_format::SlotInfo>,
+}
+
 struct ContainerEmitter<'a> {
     bytecode: Vec<u8>,
     scope_line_table: &'a mut Vec<LineEntry>,
+    /// See [`EmitState::scope_line_index`].
+    scope_line_index: &'a mut HashMap<LineKey, u16>,
+    /// While a variant run (#3273) is being laid out, entries must stay
+    /// consecutive and one-per-leaf — `base + combo` is how the runtime
+    /// finds them — so dedup is off, and the run's entries are never
+    /// registered as dedup targets either.
+    dedup_suspended: bool,
     /// The scope whose line table this emitter appends to — the
     /// `scope_id` a variant-group record (#3273) is keyed by.
     scope_id: DefinitionId,
@@ -378,9 +403,12 @@ struct LoopCtx {
 impl<'a> ContainerEmitter<'a> {
     fn new(state: &'a mut EmitState, scope_id: DefinitionId) -> Self {
         let scope_line_table = state.scope_line_tables.entry(scope_id).or_default();
+        let scope_line_index = state.scope_line_index.entry(scope_id).or_default();
         Self {
             bytecode: Vec::new(),
             scope_line_table,
+            scope_line_index,
+            dedup_suspended: false,
             scope_id,
             line_variant_groups: &mut state.line_variant_groups,
             list_literals: &mut state.list_literals,
@@ -442,7 +470,6 @@ impl<'a> ContainerEmitter<'a> {
         )
     }
 
-    #[expect(clippy::cast_possible_truncation)]
     fn add_line_with_hash(
         &mut self,
         text: &str,
@@ -450,26 +477,19 @@ impl<'a> ContainerEmitter<'a> {
         slot_info: Vec<brink_format::SlotInfo>,
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
-        let idx = self.scope_line_table.len() as u16;
         let text = if self.in_choice_display {
             text.to_owned()
         } else {
             collapse_whitespace(text)
         };
-        let content = LineContent::Plain(text);
-        let flags = brink_format::LineFlags::from_content(&content);
-        self.scope_line_table.push(LineEntry {
-            content,
-            flags,
+        self.push_line(
+            LineContent::Plain(text),
             source_hash,
-            audio_ref: None,
             slot_info,
             source_location,
-        });
-        idx
+        )
     }
 
-    #[expect(clippy::cast_possible_truncation)]
     fn add_template_line(
         &mut self,
         parts: brink_format::LineTemplate,
@@ -477,22 +497,50 @@ impl<'a> ContainerEmitter<'a> {
         slot_info: Vec<brink_format::SlotInfo>,
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
-        let idx = self.scope_line_table.len() as u16;
         let parts = if self.in_choice_display {
             parts
         } else {
             parts.into_iter().map(collapse_whitespace_in_part).collect()
         };
-        let content = LineContent::Template(parts);
-        let flags = brink_format::LineFlags::from_content(&content);
+        self.push_line(
+            LineContent::Template(parts),
+            source_hash,
+            slot_info,
+            source_location,
+        )
+    }
+
+    /// Append a line-table entry — or, when this scope already holds an
+    /// entry with the same [`LineKey`], return that entry's index instead
+    /// (`docs/intl-spec.md` §"Line-table deduplication"). The first
+    /// occurrence supplies the entry's `source_hash` and `source_location`.
+    #[expect(clippy::cast_possible_truncation)]
+    fn push_line(
+        &mut self,
+        content: LineContent,
+        source_hash: u64,
+        slot_info: Vec<brink_format::SlotInfo>,
+        source_location: Option<brink_format::SourceLocation>,
+    ) -> u16 {
+        let key = LineKey { content, slot_info };
+        if !self.dedup_suspended
+            && let Some(&idx) = self.scope_line_index.get(&key)
+        {
+            return idx;
+        }
+        let idx = self.scope_line_table.len() as u16;
+        let flags = brink_format::LineFlags::from_content(&key.content);
         self.scope_line_table.push(LineEntry {
-            content,
+            content: key.content.clone(),
             flags,
             source_hash,
             audio_ref: None,
-            slot_info,
+            slot_info: key.slot_info.clone(),
             source_location,
         });
+        if !self.dedup_suspended {
+            self.scope_line_index.insert(key, idx);
+        }
         idx
     }
 

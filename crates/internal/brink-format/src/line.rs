@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 /// The content of a single output line — either a plain string or a template
 /// with interpolation slots and plural selects.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LineContent {
     Plain(String),
     Template(LineTemplate),
@@ -80,7 +80,7 @@ impl LineFlags {
 pub type LineTemplate = Vec<LinePart>;
 
 /// One segment of a [`LineTemplate`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LinePart {
     /// A literal string fragment.
     Literal(String),
@@ -115,7 +115,7 @@ pub enum LinePart {
 }
 
 /// The key for matching a branch in a [`LinePart::Select`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SelectKey {
     Cardinal(PluralCategory),
     Ordinal(PluralCategory),

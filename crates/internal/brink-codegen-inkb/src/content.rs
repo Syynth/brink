@@ -342,6 +342,10 @@ impl ContainerEmitter<'_> {
         // fold can only produce in-range values, so falling through to it
         // is correct, not lenient).
         let mut end_jumps = Vec::with_capacity(v.variants.len().saturating_sub(1));
+        // The run's entries must land at `base + combo`, one per leaf, so
+        // line-table dedup is off for the whole switch (see
+        // `ContainerEmitter::dedup_suspended`).
+        self.dedup_suspended = true;
         for (combo, emission) in v.variants.iter().enumerate() {
             let is_last = combo + 1 == v.variants.len();
             let next_jump = if is_last {
@@ -363,6 +367,7 @@ impl ContainerEmitter<'_> {
                 self.patch_jump(site);
             }
         }
+        self.dedup_suspended = false;
         for site in end_jumps {
             self.patch_jump(site);
         }
