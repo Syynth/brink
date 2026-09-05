@@ -2,17 +2,18 @@
 //! types (call frames, threads, pending choices).
 
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use brink_format::{ChoiceFlags, DefinitionId, Value};
+
+use core::ops::Range;
 
 use crate::error::{RanOutOfContentCause, RuntimeError};
 use crate::output::{OutputBuffer, OutputMark};
 
 // ── Internal types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContainerPosition {
     pub container_idx: u32,
     pub offset: usize,
@@ -69,25 +70,12 @@ pub(crate) fn classify_ran_out_of_content(
     }
 }
 
-#[derive(Debug, Clone)]
+/// One activation on a [`CallStack`]: the frame *header*. Its temp slots and
+/// container positions live in the stack's shared, contiguous storage,
+/// addressed by the two base offsets here (see [`CallStack`]).
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct CallFrame {
     pub return_address: Option<ContainerPosition>,
-    pub temps: Vec<Value>,
-    /// Parallel to `temps`: `temps_written[i]` is `true` once slot `i` has
-    /// been the target of a real write (`DeclareTemp`, `SetTemp`, the
-    /// `TempPointer` write-through target, or the `as`-binding store) —
-    /// never set merely because `temps` grew to cover the index.
-    ///
-    /// Issue #3354's `GetTemp` fallback (see `vm.rs`) needs this because
-    /// `Value::Null` is not a reliable "never written" marker: it is also
-    /// the padding `temps.push(Value::Null)` uses when growing the vector
-    /// to a new highest index, AND it is the value a real, completed
-    /// `DeclareTemp` legitimately stores when its initializer itself
-    /// evaluates to `Null` (a void-returning function assigned into a
-    /// temp). Keying the fallback on the *value* conflated those two
-    /// cases; keying on this bitmap does not.
-    pub temps_written: Vec<bool>,
-    pub container_stack: Vec<ContainerPosition>,
     pub frame_type: CallFrameType,
     /// For `External` frames: the `DefinitionId` of the external function,
     /// used to look up the fallback container if no binding is registered.
@@ -99,64 +87,149 @@ pub(crate) struct CallFrame {
     /// produced no content past it, a newline it emits is dropped
     /// (`functionStartInOutputStream`, issue #3519).
     pub function_output_start: Option<OutputMark>,
+    /// Start of this frame's temp slots in [`CallStack::temps`] (and, in
+    /// parallel, [`CallStack::temps_written`]). Set by `CallStack::push`;
+    /// the segment ends where the next frame's begins, or at the end of the
+    /// storage for the top frame.
+    temps_base: usize,
+    /// Start of this frame's container positions in
+    /// [`CallStack::containers`]; same segment rule as `temps_base`.
+    containers_base: usize,
 }
 
 impl CallFrame {
-    /// Write `val` into temp slot `idx`, growing both `temps` and
-    /// `temps_written` as needed, and marking the slot written. The single
-    /// path every real temp-slot store in the VM funnels through, so
-    /// `GetTemp`'s "was this ever written" check (issue #3354) stays
-    /// accurate without every call site having to remember the bitmap.
-    pub fn write_temp(&mut self, idx: usize, val: Value) {
-        while self.temps.len() <= idx {
-            self.temps.push(Value::Null);
+    /// A frame header. The storage bases are assigned when the frame is
+    /// pushed, so a header is inert until then.
+    pub fn new(
+        frame_type: CallFrameType,
+        return_address: Option<ContainerPosition>,
+        function_output_start: Option<OutputMark>,
+    ) -> Self {
+        Self {
+            return_address,
+            frame_type,
+            external_fn_id: None,
+            function_output_start,
+            temps_base: 0,
+            containers_base: 0,
         }
-        while self.temps_written.len() <= idx {
-            self.temps_written.push(false);
-        }
-        self.temps[idx] = val;
-        self.temps_written[idx] = true;
     }
 
-    /// Whether temp slot `idx` has ever been the target of [`Self::write_temp`].
-    /// An index past the end of `temps_written` was never written.
-    #[must_use]
-    pub fn is_temp_written(&self, idx: usize) -> bool {
-        self.temps_written.get(idx).copied().unwrap_or(false)
+    /// An `External` frame header, parked on `fn_id` until the host
+    /// resolves the call.
+    pub fn external(fn_id: DefinitionId, return_address: Option<ContainerPosition>) -> Self {
+        Self {
+            external_fn_id: Some(fn_id),
+            ..Self::new(CallFrameType::External, return_address, None)
+        }
     }
 }
 
-/// A thread's call stack: a plain `Vec` of frames.
+/// Initial reservation for a thread's temp-slot storage, in slots.
+const TEMPS_RESERVE: usize = 64;
+/// Initial reservation for a thread's container-position storage.
+const CONTAINERS_RESERVE: usize = 16;
+/// Initial reservation for a thread's frame headers.
+const FRAMES_RESERVE: usize = 8;
+
+/// A thread's call stack, laid out as one contiguous stack per kind of
+/// per-frame data.
 ///
-/// This used to be a two-part structure — an `Arc<[CallFrame]>` prefix
-/// inherited from the parent thread plus an owned `Vec` above it, with a
-/// cached snapshot so sibling forks could share one allocation. Measured
-/// on `crucible-8` and `hanoi-10` (#3565, #3554), neither part ever paid:
-/// the cache never hit (the instruction pointer lives inside the frame
-/// being snapshotted, so consecutive forks are never equal, and every
-/// opcode advance invalidated it anyway), and the O(1) `Arc::clone` fork
-/// path fired zero times (it needs the parent to have pushed nothing since
-/// it was itself forked). Every fork deep-cloned every frame regardless —
-/// and then the *selected* fork paid a second deep clone to `materialize`
-/// before it could mutate. A `Vec` pays the first copy and not the second.
+/// Every frame's temp slots sit end to end in `temps` (with `temps_written`
+/// in parallel), and every frame's container positions sit end to end in
+/// `containers`; a [`CallFrame`] records only where its segments begin.
+/// Pushing a frame records the current lengths as its bases and allocates
+/// nothing; popping truncates back to them. Each thread reserves its
+/// storage once at creation, so a function call at steady state is three
+/// integer stores and no allocator traffic at all.
+///
+/// This replaced a `Vec<CallFrame>` whose every frame owned three
+/// separately heap-allocated `Vec`s — a `container_stack` of one element,
+/// `temps`, and `temps_written` — which made every function call three
+/// `malloc`s and three `free`s: 83% of all heap blocks on `crucible-8`
+/// and 13.7% of its instructions in the allocator (DHAT and callgrind,
+/// measured after #3569). The per-step instruction-pointer advance also
+/// loses a pointer chase: the top container is the last element of one
+/// `Vec` instead of the last element of a `Vec` inside the last element of
+/// another.
+///
+/// Frame segments are sized lazily, as temps are declared by slot index
+/// (the format carries no per-container slot count). The top frame grows
+/// by pushing; a lower frame — reachable only through a `ref` parameter's
+/// [`Value::TempPointer`] — grows by inserting at its segment's end and
+/// shifting the bases of every frame above it. That path is essentially
+/// never taken (a `ref` names a slot its owner has already declared) and
+/// is O(stack) when it is; it exists so the shared layout is exact in every
+/// case, not just the common one.
+///
+/// A thread fork clones this whole structure: four `Vec` clones per fork,
+/// where the old layout paid one per frame per `Vec`.
 #[derive(Debug, Clone)]
 pub(crate) struct CallStack {
     frames: Vec<CallFrame>,
+    /// Every frame's temp slots, end to end.
+    temps: Vec<Value>,
+    /// Parallel to `temps`: `temps_written[i]` is `true` once slot `i` has
+    /// been the target of a real write (`DeclareTemp`, `SetTemp`, the
+    /// `TempPointer` write-through target, or the `as`-binding store) —
+    /// never set merely because a segment grew to cover the index.
+    ///
+    /// Issue #3354's `GetTemp` fallback (see `vm.rs`) needs this because
+    /// `Value::Null` is not a reliable "never written" marker: it is also
+    /// the padding a segment grows with to reach a new highest index, AND
+    /// it is the value a real, completed `DeclareTemp` legitimately stores
+    /// when its initializer itself evaluates to `Null` (a void-returning
+    /// function assigned into a temp). Keying the fallback on the *value*
+    /// conflated those two cases; keying on this bitmap does not.
+    temps_written: Vec<bool>,
+    /// Every frame's container positions, end to end.
+    containers: Vec<ContainerPosition>,
 }
 
 impl CallStack {
-    pub fn new(frame: CallFrame) -> Self {
-        Self {
-            frames: vec![frame],
+    /// A stack holding `root` as its only frame, executing at `entry` (or
+    /// nowhere, for a reset stack that is done).
+    pub fn new(root: CallFrame, entry: Option<ContainerPosition>) -> Self {
+        let mut stack = Self {
+            frames: Vec::with_capacity(FRAMES_RESERVE),
+            temps: Vec::with_capacity(TEMPS_RESERVE),
+            temps_written: Vec::with_capacity(TEMPS_RESERVE),
+            containers: Vec::with_capacity(CONTAINERS_RESERVE),
+        };
+        stack.push(root, entry);
+        stack
+    }
+
+    // ── Frames ─────────────────────────────────────────────────────────
+
+    /// Push `frame`, executing at `entry` if given. Its segments begin at
+    /// the current end of the shared storage.
+    pub fn push(&mut self, mut frame: CallFrame, entry: Option<ContainerPosition>) {
+        frame.temps_base = self.temps.len();
+        frame.containers_base = self.containers.len();
+        self.frames.push(frame);
+        if let Some(pos) = entry {
+            self.containers.push(pos);
         }
     }
 
-    pub fn push(&mut self, frame: CallFrame) {
-        self.frames.push(frame);
+    /// Push an `External` frame holding `args` as its temp slots, every one
+    /// of them written by construction (they are supplied values, not
+    /// padding). It executes nowhere until resolved.
+    pub fn push_with_args(&mut self, frame: CallFrame, args: Vec<Value>) {
+        self.push(frame, None);
+        self.temps_written
+            .resize(self.temps.len() + args.len(), true);
+        self.temps.extend(args);
     }
 
+    /// Pop the top frame, releasing its segments.
     pub fn pop(&mut self) -> Option<CallFrame> {
-        self.frames.pop()
+        let frame = self.frames.pop()?;
+        self.temps.truncate(frame.temps_base);
+        self.temps_written.truncate(frame.temps_base);
+        self.containers.truncate(frame.containers_base);
+        Some(frame)
     }
 
     pub fn last(&self) -> Option<&CallFrame> {
@@ -175,14 +248,205 @@ impl CallStack {
         self.frames.is_empty()
     }
 
-    /// Get a frame by absolute index (0 = bottom of stack).
-    pub fn get(&self, index: usize) -> Option<&CallFrame> {
-        self.frames.get(index)
+    /// Depth index of the top frame, if any.
+    pub fn top_depth(&self) -> Option<usize> {
+        self.frames.len().checked_sub(1)
     }
 
-    /// Get a mutable reference to a frame by absolute index.
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
-        self.frames.get_mut(index)
+    pub fn get(&self, depth: usize) -> Option<&CallFrame> {
+        self.frames.get(depth)
+    }
+
+    // ── Temp slots ─────────────────────────────────────────────────────
+
+    /// The storage range of frame `depth`'s temp segment.
+    fn temp_range(&self, depth: usize) -> Option<Range<usize>> {
+        let start = self.frames.get(depth)?.temps_base;
+        let end = self
+            .frames
+            .get(depth + 1)
+            .map_or(self.temps.len(), |next| next.temps_base);
+        Some(start..end)
+    }
+
+    /// Frame `depth`'s temp slots; empty for a frame that does not exist.
+    pub fn temps(&self, depth: usize) -> &[Value] {
+        self.temp_range(depth)
+            .and_then(|r| self.temps.get(r))
+            .unwrap_or(&[])
+    }
+
+    /// Temp slot `slot` of frame `depth`, if the segment covers it.
+    pub fn temp(&self, depth: usize, slot: usize) -> Option<&Value> {
+        self.temps(depth).get(slot)
+    }
+
+    /// Whether temp `slot` of frame `depth` has ever been the target of
+    /// [`Self::write_temp`]. A slot past the segment's end was never written.
+    #[must_use]
+    pub fn is_temp_written(&self, depth: usize, slot: usize) -> bool {
+        self.temp_range(depth)
+            .and_then(|r| self.temps_written.get(r))
+            .and_then(|written| written.get(slot))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Grow frame `depth`'s segment so that `slot` is covered, padding with
+    /// `Value::Null` (unwritten). Returns the storage index of `slot`, or
+    /// `None` if the frame does not exist.
+    fn ensure_temp(&mut self, depth: usize, slot: usize) -> Option<usize> {
+        let range = self.temp_range(depth)?;
+        if slot < range.len() {
+            return Some(range.start + slot);
+        }
+        let grow = slot + 1 - range.len();
+        if depth + 1 == self.frames.len() {
+            // The top frame: its segment ends at the end of the storage.
+            self.temps.resize(range.end + grow, Value::Null);
+            self.temps_written.resize(range.end + grow, false);
+        } else {
+            // A lower frame, reached through a `ref` parameter: open a gap
+            // at its segment's end and shift everything above it. See the
+            // type doc — exact, and effectively never taken.
+            self.temps.splice(
+                range.end..range.end,
+                core::iter::repeat_n(Value::Null, grow),
+            );
+            self.temps_written
+                .splice(range.end..range.end, core::iter::repeat_n(false, grow));
+            for frame in &mut self.frames[depth + 1..] {
+                frame.temps_base += grow;
+            }
+        }
+        Some(range.start + slot)
+    }
+
+    /// Write `val` into temp `slot` of frame `depth`, growing the segment
+    /// as needed, and mark the slot written. The single path every real
+    /// temp-slot store in the VM funnels through, so `GetTemp`'s "was this
+    /// ever written" check (issue #3354) stays accurate without every call
+    /// site having to remember the bitmap. A write to a frame that does
+    /// not exist is dropped.
+    pub fn write_temp(&mut self, depth: usize, slot: usize, val: Value) {
+        if let Some(i) = self.ensure_temp(depth, slot) {
+            self.temps[i] = val;
+            self.temps_written[i] = true;
+        }
+    }
+
+    /// Move temp `slot` of frame `depth` out, leaving `Value::Null` behind
+    /// (the written bit is untouched — `TakeTemp` leaves `Null` by design).
+    /// The segment grows to cover the slot exactly as a write would; a
+    /// slot that never existed yields `Null`.
+    pub fn take_temp(&mut self, depth: usize, slot: usize) -> Value {
+        match self.ensure_temp(depth, slot) {
+            Some(i) => core::mem::replace(&mut self.temps[i], Value::Null),
+            None => Value::Null,
+        }
+    }
+
+    /// Move the top frame's whole temp segment out, leaving it empty.
+    pub fn take_top_temps(&mut self) -> Vec<Value> {
+        let Some(base) = self.frames.last().map(|f| f.temps_base) else {
+            return Vec::new();
+        };
+        self.temps_written.truncate(base);
+        self.temps.drain(base..).collect()
+    }
+
+    /// Test seam: clear the written bit of one slot, to stage the
+    /// "declared but never written" state a real program reaches only
+    /// through `DeclareTemp`'s padding.
+    #[cfg(test)]
+    pub fn clear_temp_written(&mut self, depth: usize, slot: usize) {
+        if let Some(r) = self.temp_range(depth)
+            && let Some(bit) = self.temps_written.get_mut(r.start + slot)
+        {
+            *bit = false;
+        }
+    }
+
+    // ── Container positions ────────────────────────────────────────────
+
+    /// The storage range of frame `depth`'s container segment.
+    fn container_range(&self, depth: usize) -> Option<Range<usize>> {
+        let start = self.frames.get(depth)?.containers_base;
+        let end = self
+            .frames
+            .get(depth + 1)
+            .map_or(self.containers.len(), |next| next.containers_base);
+        Some(start..end)
+    }
+
+    /// Frame `depth`'s container positions, outermost first; empty for a
+    /// frame that does not exist.
+    pub fn containers(&self, depth: usize) -> &[ContainerPosition] {
+        self.container_range(depth)
+            .and_then(|r| self.containers.get(r))
+            .unwrap_or(&[])
+    }
+
+    /// Where the top frame is executing: the innermost position of its
+    /// container segment. `None` when the stack is empty or the top frame's
+    /// segment is (the frame is exhausted).
+    pub fn top_container(&self) -> Option<ContainerPosition> {
+        let base = self.frames.last()?.containers_base;
+        (self.containers.len() > base).then(|| self.containers[self.containers.len() - 1])
+    }
+
+    /// Mutable form of [`Self::top_container`].
+    pub fn top_container_mut(&mut self) -> Option<&mut ContainerPosition> {
+        let base = self.frames.last()?.containers_base;
+        (self.containers.len() > base).then(|| {
+            let last = self.containers.len() - 1;
+            &mut self.containers[last]
+        })
+    }
+
+    /// The top frame's container positions, outermost first.
+    pub fn top_containers(&self) -> &[ContainerPosition] {
+        self.frames
+            .last()
+            .and_then(|f| self.containers.get(f.containers_base..))
+            .unwrap_or(&[])
+    }
+
+    /// Enter a nested container in the top frame.
+    pub fn push_container(&mut self, pos: ContainerPosition) {
+        if !self.frames.is_empty() {
+            self.containers.push(pos);
+        }
+    }
+
+    /// Leave the top frame's innermost container. A no-op when the frame's
+    /// segment is already empty — never reaches into the frame below.
+    pub fn pop_container(&mut self) -> Option<ContainerPosition> {
+        let base = self.frames.last()?.containers_base;
+        (self.containers.len() > base)
+            .then(|| self.containers.pop())
+            .flatten()
+    }
+
+    /// Replace the top frame's whole container segment with `pos`: a jump
+    /// out of whatever nesting it was in.
+    pub fn reset_top_containers(&mut self, pos: ContainerPosition) {
+        if let Some(base) = self.frames.last().map(|f| f.containers_base) {
+            self.containers.truncate(base);
+            self.containers.push(pos);
+        }
+    }
+
+    /// Unwind the top frame's container segment to its first `keep`
+    /// positions, then set the innermost remaining position's offset — a
+    /// break divert back into an enclosing container.
+    pub fn unwind_top_containers(&mut self, keep: usize, offset: usize) {
+        if let Some(base) = self.frames.last().map(|f| f.containers_base) {
+            self.containers.truncate(base + keep);
+            if let Some(top) = self.containers.get_mut(base..).and_then(<[_]>::last_mut) {
+                top.offset = offset;
+            }
+        }
     }
 }
 
@@ -554,9 +818,9 @@ impl Flow {
 
     /// Read the arguments from the top External frame.
     pub fn external_args(&self) -> &[Value] {
-        let frame = self.current_thread().call_stack.last();
-        match frame {
-            Some(f) if f.frame_type == CallFrameType::External => &f.temps,
+        let stack = &self.current_thread().call_stack;
+        match stack.last() {
+            Some(f) if f.frame_type == CallFrameType::External => stack.temps(stack.len() - 1),
             _ => &[],
         }
     }
@@ -583,8 +847,7 @@ impl Flow {
             self.value_stack.push(value);
             // Restore position from return address (if any).
             if let Some(pos) = ret_addr
-                && let Some(f) = self.current_thread_mut().call_stack.last_mut()
-                && let Some(top) = f.container_stack.last_mut()
+                && let Some(top) = self.current_thread_mut().call_stack.top_container_mut()
             {
                 *top = pos;
             }
@@ -596,18 +859,24 @@ impl Flow {
     /// the fallback body's `temp=` opcodes can pop them.
     pub fn invoke_fallback(&mut self, container_idx: u32) {
         let output_start = self.output.mark();
-        let thread = self.current_thread_mut();
-        if let Some(frame) = thread.call_stack.last_mut()
-            && frame.frame_type == CallFrameType::External
+        let Some(thread) = self.threads.last_mut() else {
+            return;
+        };
+        let stack = &mut thread.call_stack;
+        if stack
+            .last()
+            .is_some_and(|frame| frame.frame_type == CallFrameType::External)
         {
-            let args = core::mem::take(&mut frame.temps);
-            frame.frame_type = CallFrameType::Function;
-            frame.container_stack = vec![ContainerPosition {
+            let args = stack.take_top_temps();
+            if let Some(frame) = stack.last_mut() {
+                frame.frame_type = CallFrameType::Function;
+                frame.external_fn_id = None;
+                frame.function_output_start = Some(output_start);
+            }
+            stack.reset_top_containers(ContainerPosition {
                 container_idx,
                 offset: 0,
-            }];
-            frame.external_fn_id = None;
-            frame.function_output_start = Some(output_start);
+            });
             // Push args back onto the value stack — the fallback body
             // starts with `temp=` instructions that pop them.
             self.value_stack.extend(args);
@@ -633,6 +902,196 @@ impl Flow {
 mod tests {
     use super::*;
     use crate::story::Step;
+
+    // ── CallStack: the contiguous layout ─────────────────────────────────
+    //
+    // Every frame's temps and container positions live in one shared
+    // `Vec` per kind (see `CallStack`'s doc). These pin the segment
+    // arithmetic: a frame sees exactly its own slots, popping releases
+    // exactly its own storage, and the one slow path — growing a frame
+    // that is not on top — shifts the frames above it correctly.
+
+    fn pos(container_idx: u32, offset: usize) -> ContainerPosition {
+        ContainerPosition {
+            container_idx,
+            offset,
+        }
+    }
+
+    fn function_frame() -> CallFrame {
+        CallFrame::new(CallFrameType::Function, Some(pos(0, 7)), None)
+    }
+
+    #[test]
+    fn frames_see_only_their_own_temp_segments() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.write_temp(0, 1, Value::Int(10));
+        stack.push(function_frame(), Some(pos(1, 0)));
+        stack.write_temp(1, 0, Value::Int(20));
+
+        assert_eq!(stack.temps(0), &[Value::Null, Value::Int(10)]);
+        assert_eq!(stack.temps(1), &[Value::Int(20)]);
+        assert!(!stack.is_temp_written(0, 0), "padding is not a write");
+        assert!(stack.is_temp_written(0, 1));
+        assert!(stack.is_temp_written(1, 0));
+        assert!(
+            !stack.is_temp_written(1, 1),
+            "past the segment's end is unwritten"
+        );
+        assert_eq!(stack.temp(1, 1), None);
+        assert_eq!(
+            stack.temps(2),
+            &[],
+            "a frame that does not exist has no slots"
+        );
+    }
+
+    #[test]
+    fn pop_releases_exactly_the_top_frame_storage() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.write_temp(0, 0, Value::Int(1));
+        stack.push(function_frame(), Some(pos(1, 0)));
+        stack.write_temp(1, 3, Value::Int(2));
+        stack.push_container(pos(2, 5));
+
+        let popped = stack.pop().expect("a frame to pop");
+        assert_eq!(popped.frame_type, CallFrameType::Function);
+        assert_eq!(popped.return_address, Some(pos(0, 7)));
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack.temps(0), &[Value::Int(1)]);
+        assert_eq!(stack.top_containers(), &[pos(0, 0)]);
+        assert_eq!(stack.top_container(), Some(pos(0, 0)));
+    }
+
+    /// The slow path: a `ref` parameter writing a slot its owning frame
+    /// never declared, while a callee frame sits above it. The lower
+    /// segment grows in place and the callee's slots move with it, intact.
+    #[test]
+    fn growing_a_lower_frame_shifts_the_frames_above_it() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.write_temp(0, 0, Value::Int(1));
+        stack.push(function_frame(), Some(pos(1, 0)));
+        stack.write_temp(1, 0, Value::Int(100));
+        stack.write_temp(1, 1, Value::Int(101));
+        stack.push(function_frame(), Some(pos(2, 0)));
+        stack.write_temp(2, 0, Value::Int(200));
+
+        stack.write_temp(0, 3, Value::Int(4));
+
+        assert_eq!(
+            stack.temps(0),
+            &[Value::Int(1), Value::Null, Value::Null, Value::Int(4)]
+        );
+        assert_eq!(stack.temps(1), &[Value::Int(100), Value::Int(101)]);
+        assert_eq!(stack.temps(2), &[Value::Int(200)]);
+        assert!(stack.is_temp_written(0, 3));
+        assert!(!stack.is_temp_written(0, 2));
+        assert!(stack.is_temp_written(1, 1));
+        assert!(stack.is_temp_written(2, 0));
+
+        // And the same through `take_temp`, which grows identically.
+        assert_eq!(stack.take_temp(1, 4), Value::Null);
+        assert_eq!(stack.temps(1).len(), 5);
+        assert_eq!(stack.temps(2), &[Value::Int(200)]);
+        assert_eq!(stack.take_temp(2, 0), Value::Int(200));
+        assert_eq!(stack.temps(2), &[Value::Null]);
+        assert!(
+            stack.is_temp_written(2, 0),
+            "a take leaves the written bit alone"
+        );
+    }
+
+    #[test]
+    fn external_frame_args_are_written_by_construction_and_movable() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.write_temp(0, 0, Value::Int(1));
+        stack.push_with_args(
+            CallFrame::external(
+                DefinitionId::new(brink_format::DefinitionTag::Address, 9),
+                Some(pos(0, 3)),
+            ),
+            vec![Value::Int(7), Value::Bool(true)],
+        );
+        assert_eq!(stack.temps(1), &[Value::Int(7), Value::Bool(true)]);
+        assert!(stack.is_temp_written(1, 1));
+        assert_eq!(
+            stack.top_container(),
+            None,
+            "an external frame executes nowhere"
+        );
+
+        let args = stack.take_top_temps();
+        assert_eq!(args, vec![Value::Int(7), Value::Bool(true)]);
+        assert_eq!(stack.temps(1), &[]);
+        assert_eq!(
+            stack.temps(0),
+            &[Value::Int(1)],
+            "the caller's slots are untouched"
+        );
+    }
+
+    #[test]
+    fn container_operations_never_reach_the_frame_below() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.push_container(pos(1, 0));
+        stack.push(function_frame(), None);
+
+        assert_eq!(stack.top_container(), None);
+        assert_eq!(
+            stack.pop_container(),
+            None,
+            "nothing to pop in an empty segment"
+        );
+        assert_eq!(stack.containers(0), &[pos(0, 0), pos(1, 0)]);
+
+        stack.push_container(pos(5, 0));
+        stack.push_container(pos(6, 2));
+        assert_eq!(stack.top_containers(), &[pos(5, 0), pos(6, 2)]);
+        stack.unwind_top_containers(1, 9);
+        assert_eq!(stack.top_containers(), &[pos(5, 9)]);
+        stack.reset_top_containers(pos(8, 1));
+        assert_eq!(stack.top_containers(), &[pos(8, 1)]);
+        if let Some(top) = stack.top_container_mut() {
+            top.offset = 4;
+        }
+        assert_eq!(stack.top_container(), Some(pos(8, 4)));
+        assert_eq!(stack.containers(0), &[pos(0, 0), pos(1, 0)]);
+
+        stack.pop();
+        assert_eq!(stack.top_container(), Some(pos(1, 0)));
+    }
+
+    #[test]
+    fn a_fork_is_an_independent_copy() {
+        let mut stack = CallStack::new(
+            CallFrame::new(CallFrameType::Root, None, None),
+            Some(pos(0, 0)),
+        );
+        stack.push(function_frame(), Some(pos(1, 0)));
+        stack.write_temp(1, 0, Value::Int(1));
+        let mut fork = stack.clone();
+        fork.write_temp(1, 0, Value::Int(2));
+        fork.push(function_frame(), Some(pos(2, 0)));
+        assert_eq!(stack.temps(1), &[Value::Int(1)]);
+        assert_eq!(stack.len(), 2);
+        assert_eq!(fork.temps(1), &[Value::Int(2)]);
+        assert_eq!(fork.len(), 3);
+    }
 
     // ── PendingTerminal ───────────────────────────────────────────────────
     //

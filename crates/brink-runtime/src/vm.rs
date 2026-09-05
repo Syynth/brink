@@ -85,7 +85,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 ) -> Result<Stepped, RuntimeError> {
     // ── Preamble: resolve current position ──────────────────────────────
     let thread = flow.current_thread_mut();
-    let Some(frame) = thread.call_stack.last_mut() else {
+    let Some(frame) = thread.call_stack.last().copied() else {
         // Current thread's call stack is empty.
         if flow.can_pop_thread() {
             flow.pop_thread();
@@ -103,23 +103,25 @@ fn step_impl<R: crate::rng::StoryRng>(
         return Err(RuntimeError::CallStackUnderflow);
     }
 
-    let Some(pos) = frame.container_stack.last().copied() else {
+    let Some(pos) = thread.call_stack.top_container() else {
         // Container stack empty — the frame has no more containers to execute.
-        let frame_type = frame.frame_type;
-        return handle_frame_exhaustion(flow, program, line_tables, resolver, stats, frame_type);
+        return handle_frame_exhaustion(
+            flow,
+            program,
+            line_tables,
+            resolver,
+            stats,
+            frame.frame_type,
+        );
     };
 
     let container = program.container(pos.container_idx);
 
     // Check if we've reached end of bytecode.
     if pos.offset >= container.bytecode.len() {
-        let thread = flow.current_thread_mut();
-        let frame = thread
-            .call_stack
-            .last_mut()
-            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-        frame.container_stack.pop();
-        if frame.container_stack.is_empty() {
+        let stack = &mut flow.current_thread_mut().call_stack;
+        stack.pop_container();
+        if stack.top_containers().is_empty() {
             let frame_type = frame.frame_type;
             return handle_frame_exhaustion(
                 flow,
@@ -140,14 +142,10 @@ fn step_impl<R: crate::rng::StoryRng>(
 
     // Advance the offset in the position.
     {
-        let thread = flow.current_thread_mut();
-        let frame = thread
+        let top = flow
+            .current_thread_mut()
             .call_stack
-            .last_mut()
-            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-        let top = frame
-            .container_stack
-            .last_mut()
+            .top_container_mut()
             .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
         top.offset = offset;
     }
@@ -288,23 +286,15 @@ fn step_impl<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            let thread = flow.current_thread_mut();
-            let frame = thread
+            flow.current_thread_mut()
                 .call_stack
-                .last_mut()
-                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            frame.container_stack.push(ContainerPosition {
-                container_idx: idx,
-                offset: 0,
-            });
+                .push_container(ContainerPosition {
+                    container_idx: idx,
+                    offset: 0,
+                });
         }
         Opcode::ExitContainer => {
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last_mut()
-                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            frame.container_stack.pop();
+            flow.current_thread_mut().call_stack.pop_container();
         }
 
         // ── Control flow ────────────────────────────────────────────
@@ -445,25 +435,22 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::DeclareTemp(slot) => {
             // New declaration stores as-is, including pointers.
             let val = flow.pop_value()?;
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last_mut()
+            let stack = &mut flow.current_thread_mut().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let idx = slot as usize;
-            frame.write_temp(idx, val);
+            stack.write_temp(top, slot as usize, val);
         }
         Opcode::SetTemp(slot) => {
             // Write-through: if the temp holds a pointer, write the new
             // value to the pointed-to location instead.
             let mut val = flow.pop_value()?;
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last()
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
-            let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
+            let current = stack.temp(top, idx).cloned().unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
                     guard_comparator_write(flow, "assigned a global through a `ref` parameter")?;
@@ -481,15 +468,15 @@ fn step_impl<R: crate::rng::StoryRng>(
                     slot: target_slot,
                     frame_depth,
                 } => {
-                    let thread = flow.current_thread_mut();
-                    let target = thread
-                        .call_stack
-                        .get_mut(frame_depth as usize)
-                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let depth = frame_depth as usize;
+                    if stack.get(depth).is_none() {
+                        return Err(RuntimeError::CallStackUnderflow);
+                    }
                     let ti = target_slot as usize;
-                    let old = target.temps.get(ti).cloned().unwrap_or(Value::Null);
+                    let old = stack.temp(depth, ti).cloned().unwrap_or(Value::Null);
                     list_ops::retain_origins_on_assign(program, &old, &mut val);
-                    target.write_temp(ti, val);
+                    stack.write_temp(depth, ti, val);
                 }
                 // T1e (docs/t1e-spec.md §3): a projection-bound `ref`
                 // parameter's write-through — root-cell RMW via the same
@@ -504,26 +491,23 @@ fn step_impl<R: crate::rng::StoryRng>(
                 }
                 _ => {
                     list_ops::retain_origins_on_assign(program, &current, &mut val);
-                    let thread = flow.current_thread_mut();
-                    let frame = thread
-                        .call_stack
-                        .last_mut()
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let top = stack
+                        .top_depth()
                         .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-                    frame.write_temp(idx, val);
+                    stack.write_temp(top, idx, val);
                 }
             }
         }
         Opcode::GetTemp(slot) => {
             // Auto-dereference: if temp holds a pointer, push the
             // pointed-to value instead.
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let val = frame
-                .temps
-                .get(slot as usize)
+            let val = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             // Issue #3354 (RULED 2026-09-01 option C): a slot that the
@@ -538,7 +522,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // is the author-facing half at runtime; `E193` is the one that
             // fires at compile time, before they ever play.
             //
-            // The check is on `CallFrame::is_temp_written`, NOT on the
+            // The check is on `CallStack::is_temp_written`, NOT on the
             // stored value being `Value::Null` — a `~ temp x = f()` whose
             // `f` falls off its end without `~ return` legitimately stores
             // `Value::Null` into an already-written slot (a void return),
@@ -548,7 +532,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Deliberately only on this opcode: `GetTempRaw` exists to see
             // a slot exactly as it is (pointers included), and `TakeTemp`
             // leaves `Null` behind by design, so neither may substitute.
-            if frame.is_temp_written(slot as usize) {
+            if stack.is_temp_written(top, slot as usize) {
                 match val {
                     Value::VariablePointer(target_id) => {
                         let global_idx = program
@@ -561,14 +545,13 @@ fn step_impl<R: crate::rng::StoryRng>(
                         slot: target_slot,
                         frame_depth,
                     } => {
-                        let thread = flow.current_thread();
-                        let target = thread
-                            .call_stack
-                            .get(frame_depth as usize)
-                            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-                        let target_val = target
-                            .temps
-                            .get(target_slot as usize)
+                        let stack = &flow.current_thread().call_stack;
+                        let depth = frame_depth as usize;
+                        if stack.get(depth).is_none() {
+                            return Err(RuntimeError::CallStackUnderflow);
+                        }
+                        let target_val = stack
+                            .temp(depth, target_slot as usize)
                             .cloned()
                             .unwrap_or(Value::Null);
                         flow.value_stack.push(target_val);
@@ -591,14 +574,12 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::GetTempRaw(slot) => {
             // Raw read: push the temp's value as-is (including pointers).
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let val = frame
-                .temps
-                .get(slot as usize)
+            let val = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             flow.value_stack.push(val);
@@ -621,14 +602,12 @@ fn step_impl<R: crate::rng::StoryRng>(
             // `Null` — the pointer itself stays in this slot untouched (a
             // `ref` param must keep pointing at its target for the rest of
             // the call, exactly like `GetTemp`/`SetTemp`'s write-through).
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let current = frame
-                .temps
-                .get(slot as usize)
+            let current = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             match current {
@@ -643,17 +622,12 @@ fn step_impl<R: crate::rng::StoryRng>(
                     slot: target_slot,
                     frame_depth,
                 } => {
-                    let thread = flow.current_thread_mut();
-                    let target = thread
-                        .call_stack
-                        .get_mut(frame_depth as usize)
-                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-                    let ti = target_slot as usize;
-                    while target.temps.len() <= ti {
-                        target.temps.push(Value::Null);
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let depth = frame_depth as usize;
+                    if stack.get(depth).is_none() {
+                        return Err(RuntimeError::CallStackUnderflow);
                     }
-                    #[expect(clippy::indexing_slicing, reason = "padded to ti + 1 above")]
-                    let taken = mem::replace(&mut target.temps[ti], Value::Null);
+                    let taken = stack.take_temp(depth, target_slot as usize);
                     flow.value_stack.push(taken);
                 }
                 // T1e: a projection-bound `ref` parameter's take — same
@@ -663,17 +637,10 @@ fn step_impl<R: crate::rng::StoryRng>(
                     flow.value_stack.push(taken);
                 }
                 _ => {
-                    let thread = flow.current_thread_mut();
-                    let frame = thread
+                    let taken = flow
+                        .current_thread_mut()
                         .call_stack
-                        .last_mut()
-                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-                    let idx = slot as usize;
-                    while frame.temps.len() <= idx {
-                        frame.temps.push(Value::Null);
-                    }
-                    #[expect(clippy::indexing_slicing, reason = "padded to idx + 1 above")]
-                    let taken = mem::replace(&mut frame.temps[idx], Value::Null);
+                        .take_temp(top, slot as usize);
                     flow.value_stack.push(taken);
                 }
             }
@@ -683,14 +650,12 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Push a pointer to a temp variable. If the temp already holds
             // a pointer (VariablePointer or TempPointer), flatten through
             // to prevent double-indirection.
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
                 .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let current = frame
-                .temps
-                .get(slot as usize)
+            let current = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             match current {
@@ -786,18 +751,17 @@ fn step_impl<R: crate::rng::StoryRng>(
             let output_start = flow.output.mark();
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
+            thread.call_stack.push(
+                CallFrame::new(
+                    CallFrameType::Function,
+                    Some(current_pos),
+                    Some(output_start),
+                ),
+                Some(ContainerPosition {
                     container_idx: idx,
                     offset: 0,
-                }],
-                frame_type: CallFrameType::Function,
-                external_fn_id: None,
-                function_output_start: Some(output_start),
-            });
+                }),
+            );
             stats.frames_pushed += 1;
         }
         Opcode::Return => {
@@ -819,18 +783,13 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
+            thread.call_stack.push(
+                CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
+                Some(ContainerPosition {
                     container_idx: idx,
                     offset: 0,
-                }],
-                frame_type: CallFrameType::Tunnel,
-                external_fn_id: None,
-                function_output_start: None,
-            });
+                }),
+            );
             stats.frames_pushed += 1;
         }
         Opcode::ThreadCall(id) => {
@@ -857,16 +816,14 @@ fn step_impl<R: crate::rng::StoryRng>(
             // which `select_choice` installs wholesale and so could never
             // release.
             let mut forked = flow.fork_thread();
-            let frame = forked
-                .call_stack
-                .last_mut()
-                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            if forked.call_stack.is_empty() {
+                return Err(RuntimeError::CallStackUnderflow);
+            }
             // A fresh container stack, not the parent's nesting: the
             // thread is done the moment it runs off the end of its target,
             // and must not fall back into wherever the parent happened to
             // be.
-            frame.container_stack.clear();
-            frame.container_stack.push(ContainerPosition {
+            forked.call_stack.reset_top_containers(ContainerPosition {
                 container_idx: idx,
                 offset: 0,
             });
@@ -894,18 +851,13 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
+            thread.call_stack.push(
+                CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
+                Some(ContainerPosition {
                     container_idx: idx,
                     offset: 0,
-                }],
-                frame_type: CallFrameType::Tunnel,
-                external_fn_id: None,
-                function_output_start: None,
-            });
+                }),
+            );
             stats.frames_pushed += 1;
         }
         Opcode::CallVariable(argc) => {
@@ -930,18 +882,17 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
-                    thread.call_stack.push(CallFrame {
-                        return_address: Some(current_pos),
-                        temps: Vec::new(),
-                        temps_written: Vec::new(),
-                        container_stack: vec![ContainerPosition {
+                    thread.call_stack.push(
+                        CallFrame::new(
+                            CallFrameType::Function,
+                            Some(current_pos),
+                            Some(output_start),
+                        ),
+                        Some(ContainerPosition {
                             container_idx: idx,
                             offset: 0,
-                        }],
-                        frame_type: CallFrameType::Function,
-                        external_fn_id: None,
-                        function_output_start: Some(output_start),
-                    });
+                        }),
+                    );
                     stats.frames_pushed += 1;
                 }
                 // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
@@ -1019,18 +970,17 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
-                    thread.call_stack.push(CallFrame {
-                        return_address: Some(current_pos),
-                        temps: Vec::new(),
-                        temps_written: Vec::new(),
-                        container_stack: vec![ContainerPosition {
+                    thread.call_stack.push(
+                        CallFrame::new(
+                            CallFrameType::Function,
+                            Some(current_pos),
+                            Some(output_start),
+                        ),
+                        Some(ContainerPosition {
                             container_idx: idx,
                             offset: 0,
-                        }],
-                        frame_type: CallFrameType::Function,
-                        external_fn_id: None,
-                        function_output_start: Some(output_start),
-                    });
+                        }),
+                    );
                     stats.frames_pushed += 1;
                 }
                 other => {
@@ -1428,13 +1378,11 @@ fn step_impl<R: crate::rng::StoryRng>(
             };
             let matched = bound.is_some();
             if let Some(value) = bound {
-                let thread = flow.current_thread_mut();
-                let frame = thread
-                    .call_stack
-                    .last_mut()
+                let stack = &mut flow.current_thread_mut().call_stack;
+                let top = stack
+                    .top_depth()
                     .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-                let idx = slot as usize;
-                frame.write_temp(idx, value);
+                stack.write_temp(top, slot as usize, value);
             }
             flow.value_stack.push(Value::Bool(matched));
         }
@@ -1552,18 +1500,9 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            let args_len = args.len();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: args,
-                // Already-supplied argument values, not padding — every
-                // slot here is written by construction.
-                temps_written: vec![true; args_len],
-                container_stack: Vec::new(),
-                frame_type: CallFrameType::External,
-                external_fn_id: Some(fn_id),
-                function_output_start: None,
-            });
+            thread
+                .call_stack
+                .push_with_args(CallFrame::external(fn_id, Some(current_pos)), args);
             stats.frames_pushed += 1;
             return Ok(Stepped::ExternalCall);
         }
@@ -1942,18 +1881,17 @@ fn enter_fn_value(
     let output_start = flow.output.mark();
     let current_pos = current_position(flow)?;
     let thread = flow.current_thread_mut();
-    thread.call_stack.push(CallFrame {
-        return_address: Some(current_pos),
-        temps: Vec::new(),
-        temps_written: Vec::new(),
-        container_stack: vec![ContainerPosition {
+    thread.call_stack.push(
+        CallFrame::new(
+            CallFrameType::Function,
+            Some(current_pos),
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
             container_idx: idx,
             offset: 0,
-        }],
-        frame_type: CallFrameType::Function,
-        external_fn_id: None,
-        function_output_start: Some(output_start),
-    });
+        }),
+    );
     stats.frames_pushed += 1;
     Ok(())
 }
@@ -2622,12 +2560,6 @@ fn call_effectful_callback<R: crate::rng::StoryRng>(
     reason = "the VM environment (the step signature) plus the verb, callee, argument row and \
               the output-capture switch"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "issue #3354's temps_written bitmap added one field to the CallFrame literal this \
-              function pushes, crossing the threshold; the body is one linear call sequence, \
-              not a candidate for splitting"
-)]
 fn call_callback<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
@@ -2663,18 +2595,17 @@ fn call_callback<R: crate::rng::StoryRng>(
     }
 
     let depth_floor = flow.current_thread().call_stack.len();
-    flow.current_thread_mut().call_stack.push(CallFrame {
-        return_address: None,
-        temps: Vec::new(),
-        temps_written: Vec::new(),
-        container_stack: vec![ContainerPosition {
+    flow.current_thread_mut().call_stack.push(
+        CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
             container_idx,
             offset: 0,
-        }],
-        frame_type: CallFrameType::FunctionEvalFromGame,
-        external_fn_id: None,
-        function_output_start: Some(output_start),
-    });
+        }),
+    );
     stats.frames_pushed += 1;
     for v in full_args {
         flow.value_stack.push(v);
@@ -3055,10 +2986,7 @@ fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), Runtim
 
 /// Resume execution at a return address.
 fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
-    let thread = flow.current_thread_mut();
-    if let Some(frame) = thread.call_stack.last_mut()
-        && let Some(top) = frame.container_stack.last_mut()
-    {
+    if let Some(top) = flow.current_thread_mut().call_stack.top_container_mut() {
         *top = pos;
     }
 }
@@ -3078,11 +3006,10 @@ pub(crate) fn goto_target(
         .resolve_target(id)
         .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
-    let thread = flow.current_thread_mut();
-    let frame = thread
-        .call_stack
-        .last_mut()
-        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+    let stack = &mut flow.current_thread_mut().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
 
     // Goto semantics: transfer control within the current call frame.
     //
@@ -3092,21 +3019,19 @@ pub(crate) fn goto_target(
     //
     // If the target is NOT on the stack, clear the stack and push it —
     // this handles cross-knot gotos like `-> another_knot`.
-    let already_on_stack = frame
-        .container_stack
+    let already_on_stack = stack
+        .top_containers()
         .iter()
         .any(|p| p.container_idx == container_idx);
 
-    if let Some(pos) = frame
-        .container_stack
+    if let Some(pos) = stack
+        .top_containers()
         .iter()
         .rposition(|p| p.container_idx == container_idx)
     {
-        frame.container_stack.truncate(pos + 1);
-        frame.container_stack[pos].offset = byte_offset;
+        stack.unwind_top_containers(pos + 1, byte_offset);
     } else {
-        frame.container_stack.clear();
-        frame.container_stack.push(ContainerPosition {
+        stack.reset_top_containers(ContainerPosition {
             container_idx,
             offset: byte_offset,
         });
@@ -3134,14 +3059,12 @@ pub(crate) fn goto_target(
 }
 
 fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
-    let thread = flow.current_thread_mut();
-    let frame = thread
-        .call_stack
-        .last_mut()
-        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-    let top = frame
-        .container_stack
-        .last_mut()
+    let stack = &mut flow.current_thread_mut().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    let top = stack
+        .top_container_mut()
         .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
 
     // The offset was already advanced past the jump instruction.
@@ -3157,17 +3080,13 @@ fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
 }
 
 fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
-    let thread = flow.current_thread();
-    let frame = thread
-        .call_stack
-        .last()
-        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-    let pos = frame
-        .container_stack
-        .last()
-        .copied()
-        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
-    Ok(pos)
+    let stack = &flow.current_thread().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    stack
+        .top_container()
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)
 }
 
 fn handle_begin_choice(

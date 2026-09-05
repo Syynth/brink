@@ -28,7 +28,7 @@ mod types;
 
 pub use call_stack::ExecMode;
 pub(crate) use call_stack::{
-    CallFrame, CallFrameType, ChoiceDisplay, ContainerPosition, Flow, PendingChoice,
+    CallFrame, CallFrameType, CallStack, ChoiceDisplay, ContainerPosition, Flow, PendingChoice,
     PureCallbackState, classify_ran_out_of_content,
 };
 // Only test fixtures across the op-table modules construct a bare `Flow`
@@ -192,9 +192,9 @@ enum StopOnLine {
 /// The innermost named container a frame is executing in — the shared
 /// derivation behind [`Story::current_path`] and the debug snapshot's
 /// `current_location`.
-pub(crate) fn frame_path(program: &Program, frame: &CallFrame) -> Option<String> {
-    frame
-        .container_stack
+pub(crate) fn frame_path(program: &Program, stack: &CallStack, depth: usize) -> Option<String> {
+    stack
+        .containers(depth)
         .iter()
         .rev()
         .find_map(|cp| program.scope_path(cp.container_idx))
@@ -1182,7 +1182,7 @@ impl<R: StoryRng> Story<R> {
         let call_stack = &self.default.flow.current_thread().call_stack;
         let depth = call_stack.len();
         let stack_idx = depth.checked_sub(1)?.checked_sub(frame_idx)?;
-        call_stack.get(stack_idx)?.temps.get(slot as usize)
+        call_stack.temp(stack_idx, slot as usize)
     }
 
     /// Set one temp slot in a call frame of the default flow — the
@@ -1201,14 +1201,12 @@ impl<R: StoryRng> Story<R> {
         let Some(stack_idx) = depth.checked_sub(1).and_then(|d| d.checked_sub(frame_idx)) else {
             return false;
         };
-        let Some(frame) = call_stack.get_mut(stack_idx) else {
-            return false;
-        };
         // The slot must already exist (editing never allocates) — checked
-        // against `temps` directly rather than `is_temp_written`, since an
-        // edit is legal even on a slot that only exists as `write_temp`'s
-        // own zero-padding for a not-yet-declared name.
-        if frame.temps.get(slot as usize).is_none() {
+        // against the segment directly rather than `is_temp_written`, since
+        // an edit is legal even on a slot that only exists as `write_temp`'s
+        // own zero-padding for a not-yet-declared name. A missing frame
+        // reads as a missing slot.
+        if call_stack.temp(stack_idx, slot as usize).is_none() {
             return false;
         }
         // Commit through `write_temp` — the single path every real
@@ -1217,7 +1215,7 @@ impl<R: StoryRng> Story<R> {
         // Bypassing it (a raw write through `temps.get_mut`) left the bit
         // stale, so `Opcode::GetTemp`'s issue #3354 uninitialized-slot gate
         // would silently discard this edit on the next read.
-        frame.write_temp(slot as usize, value);
+        call_stack.write_temp(stack_idx, slot as usize, value);
         true
     }
 
@@ -1269,21 +1267,22 @@ impl<R: StoryRng> Story<R> {
 
         // Nearest named container the cursor is currently in (innermost-first)
         // — the same derivation as the public `current_path` query.
-        let resolve_frame_location = |frame: &CallFrame| frame_path(&self.program, frame);
+        let stack = &thread.call_stack;
+        let resolve_frame_location = |depth: usize| frame_path(&self.program, stack, depth);
         // Precise `(container_idx, offset)` for a frame: the top of its
         // container stack — the next instruction that frame will execute
         // (`vm::step` always advances/reads this exact slot; see
-        // `vm.rs`'s `frame.container_stack.last()`). `None` for a frame
+        // `vm.rs`'s `CallStack::top_container`). `None` for a frame
         // whose container stack is already empty.
-        let frame_position = |frame: &CallFrame| {
-            frame.container_stack.last().map(|cp| DebugPosition {
+        let frame_position = |depth: usize| {
+            stack.containers(depth).last().map(|cp| DebugPosition {
                 container_idx: cp.container_idx,
                 offset: cp.offset,
             })
         };
 
-        let current_location = thread.call_stack.last().and_then(resolve_frame_location);
-        let position = thread.call_stack.last().and_then(frame_position);
+        let current_location = stack.top_depth().and_then(resolve_frame_location);
+        let position = stack.top_depth().and_then(frame_position);
 
         // D7 (`docs/debugger-spec.md` §3, #3185): this frame's named
         // locals, resolved via `Program::scope_debug_locals` against the
@@ -1300,12 +1299,12 @@ impl<R: StoryRng> Story<R> {
         // when this program carries no `DebugInfo` at all (release-
         // exported, or pre-D6) or the frame's container stack is empty
         // (nothing left to run in it — no leaf to resolve a scope from).
-        let resolve_frame_locals = |frame: &CallFrame| -> Option<Vec<DebugLocal>> {
+        let resolve_frame_locals = |depth: usize| -> Option<Vec<DebugLocal>> {
             self.program.debug_info.as_ref()?;
-            let leaf = frame.container_stack.last()?;
+            let leaf = stack.containers(depth).last()?;
             let mut by_slot: BTreeMap<u16, DebugLocal> = BTreeMap::new();
             for local in self.program.scope_debug_locals(leaf.container_idx) {
-                if let Some(value) = frame.temps.get(local.slot as usize) {
+                if let Some(value) = stack.temp(depth, local.slot as usize) {
                     by_slot.insert(
                         local.slot,
                         DebugLocal {
@@ -1352,10 +1351,10 @@ impl<R: StoryRng> Story<R> {
                 };
                 call_stack.push(DebugFrame {
                     kind,
-                    location: resolve_frame_location(frame),
-                    position: frame_position(frame),
-                    temps: frame.temps.len(),
-                    locals: resolve_frame_locals(frame),
+                    location: resolve_frame_location(i),
+                    position: frame_position(i),
+                    temps: stack.temps(i).len(),
+                    locals: resolve_frame_locals(i),
                 });
             }
         }
@@ -1502,15 +1501,16 @@ impl<R: StoryRng> Story<R> {
         }
 
         // Callstack summary, innermost frame first.
-        let resolve_frame_location = |frame: &CallFrame| {
-            frame
-                .container_stack
+        let thread = flow.current_thread();
+        let stack = &thread.call_stack;
+        let resolve_frame_location = |depth: usize| {
+            stack
+                .containers(depth)
                 .iter()
                 .rev()
                 .find_map(|cp| resolver.container_path(cp.container_idx))
                 .map(str::to_owned)
         };
-        let thread = flow.current_thread();
         let depth = thread.call_stack.len();
         let thread_base = Self::thread_base_frame(flow);
         let mut call_stack = Vec::with_capacity(depth);
@@ -1529,8 +1529,8 @@ impl<R: StoryRng> Story<R> {
                 };
                 call_stack.push(SnapshotFrame {
                     kind: kind.to_owned(),
-                    location: resolve_frame_location(frame),
-                    temps: frame.temps.len(),
+                    location: resolve_frame_location(i),
+                    temps: stack.temps(i).len(),
                 });
             }
         }
@@ -1564,9 +1564,7 @@ impl<R: StoryRng> Story<R> {
 
         // Current position
         let thread = flow.current_thread();
-        if let Some(frame) = thread.call_stack.last()
-            && let Some(cp) = frame.container_stack.last()
-        {
+        if let Some(cp) = thread.call_stack.top_container() {
             let id = self.program.container(cp.container_idx).id;
             let _ = writeln!(
                 out,
@@ -1588,10 +1586,10 @@ impl<R: StoryRng> Story<R> {
                     "  [{i}] {:?} ret={} temps={} containers={}",
                     frame.frame_type,
                     ret.as_deref().unwrap_or("none"),
-                    frame.temps.len(),
-                    frame.container_stack.len(),
+                    thread.call_stack.temps(i).len(),
+                    thread.call_stack.containers(i).len(),
                 );
-                for (j, cp) in frame.container_stack.iter().enumerate() {
+                for (j, cp) in thread.call_stack.containers(i).iter().enumerate() {
                     let id = self.program.container(cp.container_idx).id;
                     let _ = writeln!(
                         out,
@@ -1726,8 +1724,8 @@ impl<R: StoryRng> Story<R> {
         let thread = flow.current_thread();
 
         // Capture position before step
-        let pre_info = thread.call_stack.last().and_then(|frame| {
-            frame.container_stack.last().map(|pos| {
+        let pre_info = thread.call_stack.top_container().and_then(|pos| {
+            Some(pos).map(|pos| {
                 let container = self.program.container(pos.container_idx);
                 if pos.offset < container.bytecode.len() {
                     let mut off = pos.offset;
@@ -2714,8 +2712,7 @@ impl<R: StoryRng> Story<R> {
     fn position_of(flow: &Flow) -> Option<crate::DebugPosition> {
         flow.current_thread()
             .call_stack
-            .last()
-            .and_then(|frame| frame.container_stack.last())
+            .top_container()
             .map(|cp| crate::DebugPosition {
                 container_idx: cp.container_idx,
                 offset: cp.offset,
@@ -3069,13 +3066,13 @@ mod tests {
         );
 
         // The tunnel frame (last frame) should have temp x = Int(1).
-        let tunnel_frame = call_stack.last().unwrap();
+        let tunnel_temps = call_stack.temps(call_stack.len() - 1);
         assert!(
-            !tunnel_frame.temps.is_empty(),
+            !tunnel_temps.is_empty(),
             "tunnel frame should have temp variables"
         );
         assert_eq!(
-            tunnel_frame.temps[0],
+            tunnel_temps[0],
             Value::Int(1),
             "tunnel frame temps[0] should be Int(1) (the parameter x)"
         );
@@ -3110,19 +3107,14 @@ mod tests {
         }
 
         {
-            let frame = story
-                .default
-                .flow
-                .current_thread_mut()
-                .call_stack
-                .last_mut()
-                .expect("root frame");
+            let call_stack = &mut story.default.flow.current_thread_mut().call_stack;
+            let top = call_stack.top_depth().expect("root frame");
             assert!(
-                !frame.temps.is_empty(),
-                "DeclareTemp must have run by now: {frame:?}"
+                !call_stack.temps(top).is_empty(),
+                "DeclareTemp must have run by now: {call_stack:?}"
             );
-            frame.temps[0] = Value::Null;
-            frame.temps_written[0] = false;
+            call_stack.write_temp(top, 0, Value::Null);
+            call_stack.clear_temp_written(top, 0);
         }
 
         assert!(
@@ -3130,21 +3122,16 @@ mod tests {
             "the slot already exists, so the edit must be accepted"
         );
 
-        let frame = story
-            .default
-            .flow
-            .current_thread()
-            .call_stack
-            .last()
-            .expect("root frame");
+        let call_stack = &story.default.flow.current_thread().call_stack;
+        let top = call_stack.top_depth().expect("root frame");
         assert_eq!(
-            frame.temps[0],
-            Value::Int(42),
+            call_stack.temp(top, 0),
+            Some(&Value::Int(42)),
             "the edited value must land in the slot"
         );
         assert!(
-            frame.is_temp_written(0),
-            "debug_set_temp must mark the slot written via CallFrame::write_temp"
+            call_stack.is_temp_written(top, 0),
+            "debug_set_temp must mark the slot written via CallStack::write_temp"
         );
     }
 

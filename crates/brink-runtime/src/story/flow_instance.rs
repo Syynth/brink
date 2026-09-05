@@ -106,22 +106,17 @@ impl FlowInstance {
     /// reuse an existing one.
     pub fn new_at(program: &Program, container_idx: u32) -> (Self, World) {
         let globals = program.global_defaults();
-        let initial_frame = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
-                container_idx,
-                offset: 0,
-            }],
-            frame_type: CallFrameType::Root,
-            external_fn_id: None,
-            function_output_start: None,
-        };
+        let initial_frame = CallFrame::new(CallFrameType::Root, None, None);
         let initial_thread = Thread {
             // The root thread: no parent frames below it (issue #3561).
             base_depth: 0,
-            call_stack: CallStack::new(initial_frame),
+            call_stack: CallStack::new(
+                initial_frame,
+                Some(ContainerPosition {
+                    container_idx,
+                    offset: 0,
+                }),
+            ),
         };
         let flow_instance = Self {
             flow: Flow {
@@ -771,20 +766,12 @@ impl FlowInstance {
         // didSafeExit = true. The output buffer and value stack are
         // deliberately left untouched — C# `ForceEnd` does not clear the
         // output stream or the evaluation stack.
-        let root_frame = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: Vec::new(),
-            frame_type: CallFrameType::Root,
-            external_fn_id: None,
-            function_output_start: None,
-        };
+        let root_frame = CallFrame::new(CallFrameType::Root, None, None);
         self.flow.threads = vec![Thread {
             // A reset drops every spawned thread; what is left is the root
             // thread, which has no parent frames below it (issue #3561).
             base_depth: 0,
-            call_stack: CallStack::new(root_frame),
+            call_stack: CallStack::new(root_frame, None),
         }];
         self.flow.pending_choices.clear();
         // No explicit pending-terminal clear needed here: `next_block_id`'s
@@ -853,11 +840,10 @@ impl FlowInstance {
     /// drive instances directly (`bevy-brink`) pass the program they run.
     #[must_use]
     pub fn current_path(&self, program: &Program) -> Option<String> {
-        self.flow
-            .current_thread()
-            .call_stack
-            .last()
-            .and_then(|frame| super::frame_path(program, frame))
+        let stack = &self.flow.current_thread().call_stack;
+        stack
+            .top_depth()
+            .and_then(|depth| super::frame_path(program, stack, depth))
             // The root scope's empty path is "no named container".
             .filter(|path| !path.is_empty())
     }
@@ -1084,19 +1070,18 @@ impl FlowInstance {
         self.flow.output.begin_capture();
 
         let output_start = self.flow.output.mark();
-        let boundary = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
+        let boundary = CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        );
+        self.flow.current_thread_mut().call_stack.push(
+            boundary,
+            Some(ContainerPosition {
                 container_idx,
                 offset: 0,
-            }],
-            frame_type: CallFrameType::FunctionEvalFromGame,
-            external_fn_id: None,
-            function_output_start: Some(output_start),
-        };
-        self.flow.current_thread_mut().call_stack.push(boundary);
+            }),
+        );
         self.stats.frames_pushed += 1;
 
         // Pass arguments onto the value stack in declaration order — the
@@ -1219,19 +1204,18 @@ impl FlowInstance {
 
         self.flow.output.begin_capture();
         let output_start = self.flow.output.mark();
-        let boundary = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
+        let boundary = CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        );
+        self.flow.current_thread_mut().call_stack.push(
+            boundary,
+            Some(ContainerPosition {
                 container_idx,
                 offset: 0,
-            }],
-            frame_type: CallFrameType::FunctionEvalFromGame,
-            external_fn_id: None,
-            function_output_start: Some(output_start),
-        };
-        self.flow.current_thread_mut().call_stack.push(boundary);
+            }),
+        );
         self.stats.frames_pushed += 1;
 
         // Pass the full arg row (bound prefix then supplied) onto the value
@@ -1538,13 +1522,10 @@ fn select_choice(
     // Set execution position to the choice target. We reset the top
     // frame's container_stack to just the target — the snapshot may
     // have captured stale nesting from inside the choice eval block.
-    let frame = current
-        .call_stack
-        .last_mut()
-        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-
-    frame.container_stack.clear();
-    frame.container_stack.push(ContainerPosition {
+    if current.call_stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    current.call_stack.reset_top_containers(ContainerPosition {
         container_idx: choice.target_idx,
         offset: choice.target_offset,
     });
