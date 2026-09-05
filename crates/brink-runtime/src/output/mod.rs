@@ -73,7 +73,7 @@ pub enum OutputPart {
     /// mutated `Flow` field at drain time would misattribute a LATER run's
     /// data to an EARLIER, still-buffered line — embedding the merge as its
     /// own transcript entry, at the exact point it actually happened,
-    /// avoids that entirely: [`resolve_lines_annotated`] rebuilds the
+    /// avoids that entirely: `resolve_lines_annotated` rebuilds the
     /// correct per-line snapshot by walking the stream in order, the same
     /// way it already does for `Tag`.
     ///
@@ -154,7 +154,7 @@ impl OutputPart {
 /// Resolve a single output part to its text representation.
 ///
 /// Thin owning wrapper over [`resolve_part_into`]; the production paths
-/// ([`resolve_parts`], [`resolve_lines_annotated`]) append straight into
+/// ([`resolve_parts`], `resolve_lines_annotated`) append straight into
 /// the line they are building instead, so a part's text is written once.
 fn resolve_part(
     part: &OutputPart,
@@ -1023,7 +1023,7 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
 
 /// Resolve glue in a slice of output parts and return the flattened string.
 ///
-/// Mirrors [`resolve_lines_annotated`]'s per-line suppression (issue #2091,
+/// Mirrors `resolve_lines_annotated`'s per-line suppression (issue #2091,
 /// extended to this path by issue #2147 — the string-capture path #2091's
 /// PR #2140 did not touch): if a line within the captured text resolves
 /// fully empty and at least one of its parts interpolated a `content`-typed
@@ -1211,7 +1211,7 @@ pub(crate) type ResolvedLine = (
 );
 
 /// [`ResolvedLine`] plus the issue #2091 suppression flag —
-/// [`resolve_lines_annotated`]'s own unfiltered form.
+/// `resolve_lines_annotated`'s own unfiltered form.
 pub(crate) type AnnotatedResolvedLine = (
     String,
     Vec<String>,
@@ -1224,7 +1224,7 @@ pub(crate) type AnnotatedResolvedLine = (
 /// Tags reset every line; element-attachment data (issue #2108) persists
 /// across lines until an `ElementAttachEnd` closes the run — see
 /// [`OutputPart::ElementAttach`]'s own doc. Lines that
-/// [`resolve_lines_annotated`] marks suppressed (issue #2091 — an empty
+/// `resolve_lines_annotated` marks suppressed (issue #2091 — an empty
 /// `content`/Fragment capture) are dropped entirely; nothing else changes.
 pub(crate) fn resolve_lines(
     parts: &[OutputPart],
@@ -1233,77 +1233,64 @@ pub(crate) fn resolve_lines(
     resolver: Option<&dyn PluralResolver>,
     fragments: &Fragments,
 ) -> Vec<ResolvedLine> {
-    resolve_lines_annotated(
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let mut remove = vec![false; parts.len()];
+    mark_glue_removals(parts, &mut remove);
+    resolve_lines_marked(
         parts,
+        &remove,
         BTreeMap::new(),
         program,
         line_tables,
         resolver,
         fragments,
     )
-    .into_iter()
-    .filter_map(|(text, tags, suppressed, element, source)| {
-        (!suppressed).then_some((text, tags, element, source))
-    })
-    .collect()
+    .0
 }
 
-/// Like [`resolve_lines`], but reports — per resolved line, as the trailing
-/// `bool` — whether it should be **suppressed** from reader-visible output:
-/// its fully-resolved text came out empty, it carries no tags, and at least
-/// one of its parts interpolated a `content`-typed value that itself
-/// rendered empty (issue #2091). Two distinct call sites produce that
-/// `Value::FragmentRef`, and this check treats them identically:
-///
-/// - issue #1839's `block`-capture receiver — e.g. a capture that
-///   terminated immediately because the next line was itself
-///   element-level (`hir::lower_native::element::capture_block`); and
-/// - the ordinary **display-position call-composition** pattern
-///   `brink-codegen-inkb::content::emit_slot_expr` emits
-///   (`BeginFragment`…`EndFragment`) for *every* template slot whose expr
-///   is a function call (`lir::Expr::is_function_call()`, both dialects) —
-///   e.g. a line whose only content is `{ f() }`, where `f` emits no
-///   side-effect text and returns an empty value.
-///
-/// See [`part_involves_fragment_ref`]'s own doc for why "the fragment
-/// rendered empty" is the invariant relied on here, not "the fragment
-/// captured nothing" — the two mechanisms above are exactly why the
-/// stronger claim does not hold.
-///
-/// This is a **read-time rendering decision only**: the line-table entry a
-/// suppressed line's `LineRef` points at is never touched, omitted, or
-/// renumbered — it stays present-but-empty, exactly as compiled, so
-/// locale hot-swap (which re-renders the *same* transcript against a
-/// swapped-in line vector, matched by index) keeps working unchanged. Only
-/// the rendered *output line* disappears; the underlying compiled data does
-/// not move.
-///
-/// A line that resolves empty for any OTHER reason — a literal blank line,
-/// or a self-closing inline markup span (`<pause/>`) with no children — is
-/// **not** suppressed: that is pre-existing, deliberate output (see the
-/// `inline-markup-point-marker` fixture, issue #1716), unrelated to this
-/// issue's scope of `content`/Fragment-driven emptiness.
-///
-/// [`OutputBuffer::take_first_line`] needs this unfiltered, index-aligned
-/// form — its single-newline slice always resolves to exactly two entries
-/// (the found line, then an always-empty trailing filler) — so it can tell
-/// "this line should be skipped, keep scanning for the next one" apart from
-/// "there is no completed line at all" without losing that index alignment
-/// (naively dropping the suppressed entry from the `Vec` would shift the
-/// filler into its place and return the very blank line being suppressed).
-///
-/// `seed_element` (issue #2108) is the element-attachment state already
-/// accumulated BEFORE `parts` starts — `take_first_line` passes its own
-/// carried-forward [`OutputBuffer::pending_element`] here (a multi-line
-/// attach run spans more than one `take_first_line` call, each resolving
-/// only its own line's slice); every other caller passes an empty map,
-/// since they resolve from a cold start. The trailing filler entry's own
-/// element field is always the state at the END of `parts` — callers that
-/// need to carry it forward (again, only `take_first_line`) read it from
-/// there.
-/// Fold one more `LineRef`'s source into the line's: the first sets it,
-/// a later one in the same file widens it to cover both, one from another
-/// file is ignored.
+/// The batch resolver as its consumers want it: suppressed entries already
+/// dropped, plus the element-attachment state at the end of the slice for
+/// the caller to carry forward. One pass, one `Vec` — the annotated
+/// intermediate that `resolve_lines_annotated_marked` materializes only
+/// to be filtered again is not built.
+pub(crate) fn resolve_lines_marked(
+    parts: &[OutputPart],
+    remove: &[bool],
+    seed_element: BTreeMap<String, String>,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &Fragments,
+) -> (Vec<ResolvedLine>, BTreeMap<String, String>) {
+    if parts.is_empty() {
+        return (Vec::new(), seed_element);
+    }
+    let mut lines: Vec<ResolvedLine> = Vec::new();
+    let (text, tags, suppressed, element, source) = drive_lines(
+        parts,
+        remove,
+        seed_element,
+        program,
+        line_tables,
+        resolver,
+        fragments,
+        |(text, tags, suppressed, element, source)| {
+            if !suppressed {
+                lines.push((text, tags, element, source));
+            }
+        },
+    );
+    if suppressed {
+        (lines, element)
+    } else {
+        let carried = element.clone();
+        lines.push((text, tags, element, source));
+        (lines, carried)
+    }
+}
+
 fn widen_source(
     current: &mut Option<brink_format::SourceLocation>,
     entry: Option<&brink_format::SourceLocation>,
@@ -1318,43 +1305,17 @@ fn widen_source(
     }
 }
 
-/// Resolve `parts` into annotated lines, computing the glue marks itself.
+/// The batch walk over precomputed glue marks (`remove[i]` is whether
+/// `parts[i]` is a glue-removed part, as [`mark_glue_removals`] fills them
+/// in for exactly this slice), keeping every entry with its `suppressed`
+/// flag. The result always carries one final entry for the text after the
+/// last `Newline` (possibly empty) — its element field is the attachment
+/// state the caller carries forward.
 ///
-/// The general entry point (`resolve_lines`, the transcript replayers).
-/// The streaming consumers in `consume.rs` already hold the marks for the
-/// slice they resolve and go through [`resolve_lines_annotated_marked`] /
-/// [`resolve_first_line_annotated`] instead of recomputing them.
-pub(crate) fn resolve_lines_annotated(
-    parts: &[OutputPart],
-    seed_element: BTreeMap<String, String>,
-    program: &Program,
-    line_tables: &[Vec<LineEntry>],
-    resolver: Option<&dyn PluralResolver>,
-    fragments: &Fragments,
-) -> Vec<AnnotatedResolvedLine> {
-    if parts.is_empty() {
-        return Vec::new();
-    }
-    let mut remove = vec![false; parts.len()];
-    mark_glue_removals(parts, &mut remove);
-    resolve_lines_annotated_marked(
-        parts,
-        &remove,
-        seed_element,
-        program,
-        line_tables,
-        resolver,
-        fragments,
-    )
-}
-
-/// [`resolve_lines_annotated`] over precomputed glue marks (`remove[i]` is
-/// whether `parts[i]` is a glue-removed part, as [`mark_glue_removals`]
-/// fills them in for exactly this slice).
-///
-/// The result always carries one final entry for the text after the last
-/// `Newline` (possibly empty) — its element field is the attachment state
-/// the caller carries forward.
+/// Production consumers use [`resolve_lines_marked`] (filtered) or
+/// [`resolve_first_line_annotated`] (streaming); this is the reference
+/// shape the streaming resolver is tested against.
+#[cfg(test)]
 pub(crate) fn resolve_lines_annotated_marked(
     parts: &[OutputPart],
     remove: &[bool],
@@ -1382,7 +1343,7 @@ pub(crate) fn resolve_lines_annotated_marked(
     lines
 }
 
-/// The streaming shape of [`resolve_lines_annotated_marked`]: resolve a
+/// The streaming shape of the batch walk (`resolve_lines_annotated_marked`): resolve a
 /// slice that [`OutputBuffer::take_first_line`] has cut to end exactly on
 /// the first completed line's `Newline`, returning that line and the
 /// element-attachment state to carry into the next call — without
@@ -1431,9 +1392,15 @@ pub(crate) fn resolve_first_line_annotated(
 /// capacity, which is what lets `take_first_line`'s terminating `'\n'`
 /// land without a `realloc` on the common line.
 fn trim_in_place(s: &mut String) {
-    let end = s.trim_end().len();
+    trim_in_place_matches(s, char::is_whitespace);
+}
+
+/// [`trim_in_place`] for an arbitrary character predicate — the in-place
+/// form of `s.trim_matches(pred).to_string()`.
+pub(crate) fn trim_in_place_matches(s: &mut String, pred: impl Fn(char) -> bool + Copy) {
+    let end = s.trim_end_matches(pred).len();
     s.truncate(end);
-    let lead = s.len() - s.trim_start().len();
+    let lead = s.len() - s.trim_start_matches(pred).len();
     if lead > 0 {
         s.replace_range(..lead, "");
     }

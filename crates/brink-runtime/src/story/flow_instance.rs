@@ -1628,20 +1628,20 @@ fn flush_remaining(
         resolver,
         flow.line_delivered_this_turn,
     );
-    let mut text = String::new();
-    let mut tags = Vec::new();
-    let mut element = BTreeMap::new();
-    let mut source: Option<brink_format::SourceLocation> = None;
-    for (i, (line_text, line_tags, line_element, line_source)) in lines.iter().enumerate() {
-        if i > 0 {
-            text.push('\n');
-        }
-        text.push_str(line_text);
-        tags.extend_from_slice(line_tags);
-        element.extend(line_element.iter().map(|(k, v)| (k.clone(), v.clone())));
-        // First line's provenance wins — the flushed run "is" where it starts.
+    // The first line's buffers are taken over rather than copied — at a
+    // choice point there is usually exactly one — and any further lines are
+    // joined onto them.
+    let mut lines = lines.into_iter();
+    let Some((mut text, mut tags, mut element, mut source)) = lines.next() else {
+        return (String::new(), Vec::new(), BTreeMap::new(), None);
+    };
+    for (line_text, line_tags, line_element, line_source) in lines {
+        text.push('\n');
+        text.push_str(&line_text);
+        tags.extend(line_tags);
+        element.extend(line_element);
         if source.is_none() {
-            source.clone_from(line_source);
+            source = line_source;
         }
     }
     (text, tags, element, source)
@@ -1705,16 +1705,17 @@ fn collect_choices(
         .filter(|pc| !pc.flags.is_invisible_default)
         .enumerate()
         .map(|(i, pc)| {
+            let is_blank = |c: char| c == ' ' || c == '\t';
             let display_text = match &pc.display {
-                ChoiceDisplay::Text(s) => s.clone(),
+                ChoiceDisplay::Text(s) => s.trim_matches(is_blank).to_string(),
                 ChoiceDisplay::Fragment(idx) => {
-                    flow.output
-                        .resolve_fragment(*idx, program, line_tables, resolver)
+                    let mut text =
+                        flow.output
+                            .resolve_fragment(*idx, program, line_tables, resolver);
+                    crate::output::trim_in_place_matches(&mut text, is_blank);
+                    text
                 }
             };
-            let display_text = display_text
-                .trim_matches(|c: char| c == ' ' || c == '\t')
-                .to_string();
             let source = match &pc.display {
                 ChoiceDisplay::Fragment(idx) => {
                     flow.output.fragment_source(*idx, program, line_tables)
