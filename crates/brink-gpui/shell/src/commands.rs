@@ -8,7 +8,7 @@
 //! this module only remembers what to call it and where it starts bound.
 //!
 //! Enablement is gpui's own: an action is available when something in the
-//! focus path (or a global listener) handles it — `Window::available_actions`
+//! focus path (or a global listener) handles it — `Window::is_action_available`
 //! — which is the `when` of the studio's contract without a closure per
 //! command.
 //!
@@ -120,14 +120,6 @@ impl CommandRegistry {
             .find(|c| c.action.partial_eq(action))
             .and_then(|c| c.keystroke.clone())
     }
-}
-
-/// Whether `action` has a handler where focus currently is — gpui's
-/// enablement, asked through the window.
-#[must_use]
-pub fn is_available(action: &dyn Action, available: &[Box<dyn Action>]) -> bool {
-    let wanted = action.as_any().type_id();
-    available.iter().any(|a| a.as_any().type_id() == wanted)
 }
 
 /// A command's index in the registry with its rank for `query`, lowest
@@ -278,21 +270,5 @@ mod tests {
         assert_eq!(tool_window_keystroke(9).as_deref(), Some("cmd-9"));
         assert_eq!(tool_window_keystroke(10), None);
         assert_eq!(tool_window_keystroke(0), None);
-    }
-
-    #[test]
-    fn availability_is_by_action_type_not_value() {
-        let available: Vec<Box<dyn Action>> = vec![Box::new(ToggleToolWindow {
-            id: "binder".into(),
-        })];
-        // A different id is the same command with different data; the
-        // window offers the type, so every id is available.
-        assert!(is_available(
-            &ToggleToolWindow {
-                id: "problems".into()
-            },
-            &available
-        ));
-        assert!(!is_available(&ViewCode, &available));
     }
 }

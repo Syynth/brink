@@ -17,7 +17,7 @@ use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_han
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
-    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow, is_available,
+    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow,
     tool_window_keystroke,
 };
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
@@ -384,14 +384,17 @@ impl Workspace {
             }
         }
         // Enablement is asked of the window NOW, against the focus the
-        // author has — before the overlay takes it.
-        let available = window.available_actions(cx);
+        // author has — before the overlay takes it. Per action, not from
+        // `available_actions()`: that list is built by constructing each
+        // listener's action type from nothing, which a data-carrying
+        // `no_json` action (`ToggleToolWindow`) cannot do,
+        // so it never appears there and read as disabled.
         let items: Vec<PaletteItem> = self
             .commands
             .commands()
             .iter()
             .map(|c| PaletteItem {
-                enabled: is_available(c.action.as_ref(), &available),
+                enabled: window.is_action_available(c.action.as_ref(), cx),
                 command: c.clone(),
             })
             .collect();
