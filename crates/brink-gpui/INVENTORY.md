@@ -25,6 +25,27 @@ expose it (a `QueryKind` plus the UI); **engine gap** = the shared layer
 lacks the concept, so the port needs engine work first (and by the layering
 ruling, that work goes below `IdeSession`, never into `app/`).
 
+## 0. Priority — `.ink` first
+
+The maintainer's standing priority (2026-09-05): **the `.ink`-specific gaps
+matter most; the `.brink`-specific ones less.** The native studio's first
+job is to be the place the maintainer writes strict ink. So when picking a
+slice from this list: an item tagged **`.brink` only** is lower priority
+than anything untagged; every untagged item applies to an `.ink` author
+(most of the editor and the tool windows are surface-neutral — conventions
+included, since a `[dialogue]` dialect runs over `.ink` sources too).
+
+In `.ink`-author order, the gaps that bite first:
+
+1. **The editor's navigation** — go-to-definition, references, rename,
+   folding (`brink-ide` has each; the worker exposes none).
+2. **The Player** and everything session-bound behind it — blocked on the
+   placement ruling, and on a compile + runtime session in the worker.
+3. **Fixes** — code actions in the editor, Fix buttons in Problems.
+4. **Find/replace inside a document**, and Search's Replace.
+5. **Quick-open** and `Escape` back to the editor.
+6. **Layout persistence** and an open-project dialog.
+
 ## 1. Surfaces built, and what each leaves out
 
 ### The frame — rails, docks, status bar (`shell/src/workspace.rs`, `rail.rs`, `region.rs`, `tool_window.rs`)
@@ -95,7 +116,7 @@ else. Everything below is listed against that directory.
 | Execution highlight, play-from-here | not started | session-bound; waits on the Player. |
 | Conflict view, breakage/boundary editing, element-type transitions | parity gap | `conflict-view.ts`, `breakage.ts`, `boundary.ts`, `element-type.ts`, `keybindings.ts`'s modal editing keys. |
 | Prose checker diagnostics in the editor | not wired | `crates/brink-prose` is Rust, but the worker does not link or run it; see Problems and Settings ▸ Prose. |
-| `.brink` incremental paint | **open ruling** (#3562) | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
+| `.brink` incremental paint | **open ruling** (#3562), **`.brink` only** | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
 | Hover verified by hand | verification | typing, completions and save were driven headless; hover was not. |
 
 ### Binder (`app/src/binder.rs`)
@@ -230,6 +251,6 @@ Against studio-shell-spec §4's inventory:
 ## 4. Open rulings this inventory waits on
 
 1. Player placement per view (HANDOFF "Open, parked").
-2. `#3562` — the `.brink` segmentation boundary.
+2. `#3562` — the `.brink` segmentation boundary (`.brink` only; lower priority).
 3. Tabs vs spaces in Formatting.
 4. Which tiers of `crates/brink-gpui` CI gates.
