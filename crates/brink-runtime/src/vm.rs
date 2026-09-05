@@ -856,7 +856,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // which is popped whole, instead of a frame in the stack,
             // which `select_choice` installs wholesale and so could never
             // release.
-            let (mut forked, cache_hit) = flow.fork_thread();
+            let mut forked = flow.fork_thread();
             let frame = forked
                 .call_stack
                 .last_mut()
@@ -873,11 +873,6 @@ fn step_impl<R: crate::rng::StoryRng>(
             forked.base_depth = forked.call_stack.len();
             flow.threads.push(forked);
             stats.threads_created += 1;
-            if cache_hit {
-                stats.snapshot_cache_hits += 1;
-            } else {
-                stats.snapshot_cache_misses += 1;
-            }
         }
         Opcode::TunnelCallVariable => {
             let val = flow.pop_value()?;
@@ -3245,13 +3240,8 @@ fn handle_begin_choice(
         .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
 
     let idx = flow.pending_choices.len();
-    let (thread_fork, cache_hit) = flow.fork_thread();
+    let thread_fork = flow.fork_thread();
     stats.threads_created += 1;
-    if cache_hit {
-        stats.snapshot_cache_hits += 1;
-    } else {
-        stats.snapshot_cache_misses += 1;
-    }
     let tags = mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
         display,

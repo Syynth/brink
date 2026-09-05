@@ -2,7 +2,6 @@
 //! types (call frames, threads, pending choices).
 
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -127,132 +126,63 @@ impl CallFrame {
     }
 }
 
-/// Two-part call stack: shared read-only prefix + owned mutable frames.
+/// A thread's call stack: a plain `Vec` of frames.
 ///
-/// `fork_thread` snapshots the parent's frames into a cached `Arc<[CallFrame]>`
-/// (one clone, amortized across all children). Children get `Arc::clone` — O(1).
-/// The parent keeps its `own` vec unchanged and continues mutating freely.
+/// This used to be a two-part structure — an `Arc<[CallFrame]>` prefix
+/// inherited from the parent thread plus an owned `Vec` above it, with a
+/// cached snapshot so sibling forks could share one allocation. Measured
+/// on `crucible-8` and `hanoi-10` (#3565, #3554), neither part ever paid:
+/// the cache never hit (the instruction pointer lives inside the frame
+/// being snapshotted, so consecutive forks are never equal, and every
+/// opcode advance invalidated it anyway), and the O(1) `Arc::clone` fork
+/// path fired zero times (it needs the parent to have pushed nothing since
+/// it was itself forked). Every fork deep-cloned every frame regardless —
+/// and then the *selected* fork paid a second deep clone to `materialize`
+/// before it could mutate. A `Vec` pays the first copy and not the second.
 #[derive(Debug, Clone)]
 pub(crate) struct CallStack {
-    /// Shared read-only prefix inherited from the parent thread.
-    inherited: Option<Arc<[CallFrame]>>,
-    /// Frames owned by this thread (above the fork point).
-    own: Vec<CallFrame>,
-    /// Cached snapshot so multiple forks from the same parent share one allocation.
-    cached_snapshot: Option<Arc<[CallFrame]>>,
-    /// Count of materializations (flattening inherited prefix into own).
-    pub(crate) materialization_count: u64,
+    frames: Vec<CallFrame>,
 }
 
 impl CallStack {
     pub fn new(frame: CallFrame) -> Self {
         Self {
-            inherited: None,
-            own: vec![frame],
-            cached_snapshot: None,
-            materialization_count: 0,
+            frames: vec![frame],
         }
     }
 
     pub fn push(&mut self, frame: CallFrame) {
-        self.cached_snapshot = None;
-        self.own.push(frame);
+        self.frames.push(frame);
     }
 
     pub fn pop(&mut self) -> Option<CallFrame> {
-        self.cached_snapshot = None;
-        if let Some(f) = self.own.pop() {
-            return Some(f);
-        }
-        self.materialize();
-        self.own.pop()
+        self.frames.pop()
     }
 
     pub fn last(&self) -> Option<&CallFrame> {
-        self.own
-            .last()
-            .or_else(|| self.inherited.as_ref().and_then(|h| h.last()))
+        self.frames.last()
     }
 
     pub fn last_mut(&mut self) -> Option<&mut CallFrame> {
-        // A mutable frame is about to change: a snapshot taken before
-        // this write no longer describes the stack (issue #3528 — a temp
-        // written after `<- thread` forked the stack was missing from the
-        // next choice's fork, served from the stale cache).
-        self.cached_snapshot = None;
-        if !self.own.is_empty() {
-            return self.own.last_mut();
-        }
-        self.materialize();
-        self.own.last_mut()
+        self.frames.last_mut()
     }
 
     pub fn len(&self) -> usize {
-        self.inherited.as_ref().map_or(0, |h| h.len()) + self.own.len()
+        self.frames.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.own.is_empty() && self.inherited.as_ref().is_none_or(|h| h.is_empty())
+        self.frames.is_empty()
     }
 
     /// Get a frame by absolute index (0 = bottom of stack).
     pub fn get(&self, index: usize) -> Option<&CallFrame> {
-        let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
-        if index < inherited_len {
-            self.inherited.as_ref().and_then(|h| h.get(index))
-        } else {
-            self.own.get(index - inherited_len)
-        }
+        self.frames.get(index)
     }
 
     /// Get a mutable reference to a frame by absolute index.
-    /// Materializes the inherited prefix if the target is in it.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
-        // See `last_mut`: any mutable access stales the cached snapshot.
-        self.cached_snapshot = None;
-        let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
-        if index < inherited_len {
-            self.materialize();
-            self.own.get_mut(index)
-        } else {
-            self.own.get_mut(index - inherited_len)
-        }
-    }
-
-    /// Build an `Arc<[CallFrame]>` snapshot of the full stack (inherited + own).
-    /// The result is cached so multiple forks from the same parent share one
-    /// allocation. Returns `(snapshot, cache_hit)`.
-    pub fn snapshot(&mut self) -> (Arc<[CallFrame]>, bool) {
-        if let Some(ref cached) = self.cached_snapshot {
-            return (Arc::clone(cached), true);
-        }
-        let rc = match &self.inherited {
-            None => Arc::from(self.own.as_slice()),
-            Some(prefix) if self.own.is_empty() => Arc::clone(prefix),
-            Some(prefix) => {
-                let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
-                combined.extend_from_slice(prefix);
-                combined.extend_from_slice(&self.own);
-                Arc::from(combined)
-            }
-        };
-        self.cached_snapshot = Some(Arc::clone(&rc));
-        (rc, false)
-    }
-
-    /// Flatten inherited prefix into `own`. Returns `true` if work was done.
-    fn materialize(&mut self) -> bool {
-        self.cached_snapshot = None;
-        if let Some(prefix) = self.inherited.take() {
-            let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
-            combined.extend_from_slice(&prefix);
-            combined.append(&mut self.own);
-            self.own = combined;
-            self.materialization_count += 1;
-            true
-        } else {
-            false
-        }
+        self.frames.get_mut(index)
     }
 }
 
@@ -600,20 +530,11 @@ impl Flow {
     /// is what a choice fork needs, since selecting a choice installs it as
     /// the flow's only thread. `Opcode::ThreadCall` overwrites it with the
     /// parent's depth for a `<-` spawn.
-    pub fn fork_thread(&mut self) -> (Thread, bool) {
-        let (shared, cache_hit) = self.current_thread_mut().call_stack.snapshot();
-        (
-            Thread {
-                call_stack: CallStack {
-                    inherited: Some(shared),
-                    own: Vec::new(),
-                    cached_snapshot: None,
-                    materialization_count: 0,
-                },
-                base_depth: 0,
-            },
-            cache_hit,
-        )
+    pub fn fork_thread(&mut self) -> Thread {
+        Thread {
+            call_stack: self.current_thread().call_stack.clone(),
+            base_depth: 0,
+        }
     }
 
     /// Is the current thread one spawned by `<-`, standing at its own base
@@ -629,16 +550,6 @@ impl Flow {
     pub fn at_thread_base(&self) -> bool {
         let thread = self.current_thread();
         self.can_pop_thread() && thread.call_stack.len() <= thread.base_depth
-    }
-
-    /// Drain materialization counts from all thread call stacks.
-    pub fn drain_materializations(&mut self) -> u64 {
-        let mut total = 0;
-        for thread in &mut self.threads {
-            total += thread.call_stack.materialization_count;
-            thread.call_stack.materialization_count = 0;
-        }
-        total
     }
 
     /// Read the arguments from the top External frame.
