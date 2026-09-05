@@ -69,10 +69,38 @@ The three tiers of spec §2 all exist. 23 tests, all green.
 before the views landed): rails with both groups, the Binder, syntax
 highlighting from brink's own CST with no tree-sitter grammar, dock
 toggling, the status bar, and project load in ~10 ms. **The tab bar, the
-three views and the switcher have NOT been seen running** — they were
-built in a cloud session with no display; they compile, format, pass
-clippy and the unit tests. First thing on a machine with a screen: open a
-project, confirm tabs appear for two documents, and cycle the three views.
+three views and the switcher were verified running headless on Linux**
+(2026-09-05, screenshots on PR #3568): two tabs after a Binder click,
+Single File showing the active document with no strip, Continuous showing
+both files with headings, and Code view's tabs intact on the way back.
+
+## Running it headless (a cloud session CAN see the app)
+
+No display is needed. On the ubuntu container, after the two xkbcommon
+packages below:
+
+```sh
+apt-get install -y xvfb mesa-vulkan-drivers libgl1-mesa-dri x11-apps imagemagick xdotool
+cargo build --manifest-path crates/brink-gpui/Cargo.toml -p brink-gpui
+Xvfb :99 -screen 0 1280x840x24 &
+DISPLAY=:99 target/debug/brink-gpui tests/tier1-native/conventions-cross-file &
+sleep 10
+DISPLAY=:99 xdotool mousemove 107 133 click 1        # click the Binder's second row
+DISPLAY=:99 import -window root shot.png             # screenshot the whole display
+```
+
+gpui's Linux backend goes through wgpu (`Backends::VULKAN | GL`), and
+mesa's lavapipe (`lvp_icd.json`) satisfies it in software. First frame is
+up within ~5 s of launch in a debug build; `xdotool` drives clicks and
+keys by screen coordinate. This is how the views were verified, and it is
+the way to verify any UI change from a session with no screen — do not
+merge UI work seen only in the compiler again.
+
+Two things noticed in those screenshots and NOT yet fixed: the Binder
+draws both the dock's title strip ("Binder") and its own header ("BINDER"
++ toolbar), and the manuscript's first section shows a partial row above
+the next heading (the measured-line-height issue `continuous.rs` already
+describes).
 
 **Linux builds** (verified 2026-09-05, contrary to the earlier worry): the
 whole workspace, app included, builds and links on an ubuntu container with
