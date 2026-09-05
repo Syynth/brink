@@ -194,11 +194,7 @@ fn print_histogram(data: &brink_format::StoryData, stats: &brink_runtime::Stats)
                     // The variant name alone: `Debug` prints `Goto(...)` /
                     // `MakeClosure { .. }` / `Nop`.
                     let dbg = format!("{op:?}");
-                    let variant = dbg
-                        .split(['(', '{', ' '])
-                        .next()
-                        .unwrap_or("?")
-                        .to_owned();
+                    let variant = dbg.split(['(', '{', ' ']).next().unwrap_or("?").to_owned();
                     names.entry(disc).or_insert(variant);
                 }
                 Err(_) => break,
@@ -216,7 +212,10 @@ fn print_histogram(data: &brink_format::StoryData, stats: &brink_runtime::Stats)
         .map(|(d, &c)| (c, d as u8))
         .collect();
     ops.sort_by(|a, b| b.cmp(a));
-    eprintln!("brink-loop-histogram: {total} opcodes, {} distinct", ops.len());
+    eprintln!(
+        "brink-loop-histogram: {total} opcodes, {} distinct",
+        ops.len()
+    );
     let mut cum = 0u64;
     for (c, d) in ops.iter().take(30) {
         cum += c;
