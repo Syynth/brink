@@ -134,7 +134,9 @@ pub(crate) struct LinkedTarget {
 /// and writes the target's ordinal over the operand bytes in its own copy
 /// of the code (`code[i]` is `containers[i].bytecode` with those operands
 /// rewritten — same length, same offsets). The VM indexes `targets` by
-/// that ordinal; nothing hashes.
+/// that ordinal; nothing hashes. A global's operand (`GetGlobal`,
+/// `SetGlobal`, `TakeGlobal`) is rewritten the same way to its slot index in
+/// `globals`, which is already dense, so it needs no table of its own.
 ///
 /// The symbolic `bytecode` stays untouched on each `LinkedContainer` for
 /// every other decoder (the debugger, `container_bytecode`, tests):
@@ -150,9 +152,10 @@ pub(crate) struct LinkTables {
     pub targets: Vec<LinkedTarget>,
 }
 
-/// The operand at a static-target site of *linked* code: `Some(ordinal)`
-/// into [`LinkTables::targets`] when the linker resolved it, `None` when the
-/// bytes still hold a symbolic `DefinitionId`.
+/// The operand at a static site of *linked* code: `Some(n)` — a target's
+/// ordinal into [`LinkTables::targets`], or a global's slot index — when the
+/// linker resolved it, `None` when the bytes still hold a symbolic
+/// `DefinitionId`.
 ///
 /// The two are distinguishable by the last byte: an id's top byte is its
 /// `DefinitionTag`, never zero (`brink_format::DefinitionTag` starts at

@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 use core::mem;
 
 use brink_format::{
-    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
-    PluralCategory, PluralResolver, SelectKey, TargetKind, Value,
+    ChoiceFlags, CountingFlags, DefinitionId, GlobalKind, LineContent, LineEntry, LinePart, Opcode,
+    PluralCategory, PluralResolver, SelectKey, StaticKind, TargetKind, Value,
 };
 
 use crate::collection_ops;
@@ -136,41 +136,38 @@ fn step_impl<R: crate::rng::StoryRng>(
     }
 
     // ── Decode ──────────────────────────────────────────────────────────
-    // A static-target instruction whose operand the linker resolved needs
-    // no decoding at all: its operand is an ordinal into the linked target
-    // table (`LinkTables`), read here and dispatched without touching
-    // `address_map`. Everything else — and a target the linker left
-    // symbolic — goes through `Opcode::decode` as before.
-    let mut offset = pos.offset;
-    let fetched = match Opcode::peek_target(code, offset).and_then(|site| {
-        let ordinal = linked_ordinal(&code[site.operand..site.end])?;
-        Some((site, *program.target(ordinal)?))
-    }) {
-        Some((site, target)) => {
-            offset = site.end;
-            Fetched::Target(site.kind, target)
-        }
-        None => Fetched::Op(Opcode::decode(code, &mut offset)?),
-    };
-    stats.opcodes += 1;
-
-    // Advance the offset in the position.
+    // A static-operand instruction the linker resolved needs no decoding
+    // at all: its operand is an ordinal into the linked target table
+    // (`LinkTables`) or a global's slot, read here and dispatched without
+    // touching `address_map` / `global_map` — and without building an
+    // `Opcode`. Everything else, and an operand the linker left symbolic,
+    // goes through `Opcode::decode` as before.
+    if let Some(site) = Opcode::peek_static(code, pos.offset)
+        && let Some(linked) = linked_ordinal(&code[site.operand..site.end])
     {
-        let top = flow
-            .current_thread_mut()
-            .call_stack
-            .top_container_mut()
-            .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
-        top.offset = offset;
-    }
-
-    // ── Dispatch ────────────────────────────────────────────────────────
-    let op = match fetched {
-        Fetched::Target(kind, target) => {
-            return step_target(flow, program, context, stats, kind, &target);
+        match site.kind {
+            StaticKind::Target(kind) => {
+                if let Some(target) = program.target(linked) {
+                    let target = *target;
+                    stats.opcodes += 1;
+                    advance_to(flow, site.end)?;
+                    return step_target(flow, program, context, stats, kind, &target);
+                }
+            }
+            StaticKind::Global(kind) => {
+                if let Some(id) = program.global_id(linked as usize) {
+                    stats.opcodes += 1;
+                    advance_to(flow, site.end)?;
+                    step_global(flow, program, context, kind, linked, id)?;
+                    return Ok(Stepped::Continue);
+                }
+            }
         }
-        Fetched::Op(op) => op,
-    };
+    }
+    let mut offset = pos.offset;
+    let op = Opcode::decode(code, &mut offset)?;
+    stats.opcodes += 1;
+    advance_to(flow, offset)?;
 
     match op {
         // ── Output ──────────────────────────────────────────────────
@@ -416,23 +413,16 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Global vars ─────────────────────────────────────────────
         Opcode::GetGlobal(id) => {
-            let idx = program
+            let slot = program
                 .resolve_global(id)
-                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
-            let val = context.global(idx).clone();
-            note_value_share(&val);
-            note_effect_read(flow, program, id);
-            flow.value_stack.push(val);
+                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+            step_global(flow, program, context, GlobalKind::Get, slot, id)?;
         }
         Opcode::SetGlobal(id) => {
-            guard_comparator_write(flow, "assigned a global variable")?;
-            let idx = program
+            let slot = program
                 .resolve_global(id)
-                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
-            let mut val = flow.pop_value()?;
-            list_ops::retain_origins_on_assign(program, context.global(idx), &mut val);
-            note_effect_write(flow, program, id);
-            context.set_global(idx, val);
+                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+            step_global(flow, program, context, GlobalKind::Set, slot, id)?;
         }
 
         // ── Temp vars ───────────────────────────────────────────────
@@ -590,15 +580,10 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         // ── Sharing discipline (T1b-4, docs/value-model-spec.md §5) ────
         Opcode::TakeGlobal(id) => {
-            // No auto-dereference — mirrors `GetGlobal`/`SetGlobal`: a
-            // ref-param pointer lives in a *temp*, never in a global slot
-            // itself.
-            let idx = program
+            let slot = program
                 .resolve_global(id)
-                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
-            let val = context.take_global(idx);
-            note_effect_read(flow, program, id);
-            flow.value_stack.push(val);
+                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+            step_global(flow, program, context, GlobalKind::Take, slot, id)?;
         }
         Opcode::TakeTemp(slot) => {
             // Auto-dereference, mirroring `GetTemp`: if the temp holds a
@@ -2918,11 +2903,53 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
     }
 }
 
-/// What one fetch produced: a linked static target (no decode needed) or
-/// a decoded instruction.
-enum Fetched {
-    Target(TargetKind, LinkedTarget),
-    Op(Opcode),
+/// Record `offset` as the current frame's next instruction.
+#[inline]
+fn advance_to(flow: &mut Flow, offset: usize) -> Result<(), RuntimeError> {
+    let top = flow
+        .current_thread_mut()
+        .call_stack
+        .top_container_mut()
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
+    top.offset = offset;
+    Ok(())
+}
+
+/// Execute a global read/write/take against `slot` — the one body behind
+/// `GetGlobal`/`SetGlobal`/`TakeGlobal`, reached from the linked fast path
+/// with the slot already known and from the symbolic arms after
+/// `Program::resolve_global`.
+fn step_global(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    kind: GlobalKind,
+    slot: u32,
+    id: DefinitionId,
+) -> Result<(), RuntimeError> {
+    match kind {
+        GlobalKind::Get => {
+            let val = context.global(slot).clone();
+            note_value_share(&val);
+            note_effect_read(flow, program, id);
+            flow.value_stack.push(val);
+        }
+        GlobalKind::Set => {
+            guard_comparator_write(flow, "assigned a global variable")?;
+            let mut val = flow.pop_value()?;
+            list_ops::retain_origins_on_assign(program, context.global(slot), &mut val);
+            note_effect_write(flow, program, id);
+            context.set_global(slot, val);
+        }
+        // No auto-dereference — mirrors `Get`/`Set`: a ref-param pointer
+        // lives in a *temp*, never in a global slot itself.
+        GlobalKind::Take => {
+            let val = context.take_global(slot);
+            note_effect_read(flow, program, id);
+            flow.value_stack.push(val);
+        }
+    }
+    Ok(())
 }
 
 /// Execute a static-target instruction whose target the linker resolved —
