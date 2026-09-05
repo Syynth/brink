@@ -323,9 +323,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::JumpIfFalse(rel) => {
             let val = flow.pop_value()?;
-            if !value_ops::is_truthy(&val)? {
-                apply_jump(flow, rel)?;
-            }
+            jump_unless(flow, &val, rel)?;
         }
 
         // ── Stack & literals ─────────────────────────────────────────
@@ -371,6 +369,28 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Multiply => binary(flow, program, BinaryOp::Multiply)?,
         Opcode::Divide => binary(flow, program, BinaryOp::Divide)?,
         Opcode::Modulo => binary(flow, program, BinaryOp::Modulo)?,
+
+        // ── Fused binary superinstructions (optimizer-only) ─────────
+        // Each is exactly its constituent instructions run in sequence,
+        // sharing their helpers: `PushInt` supplies the right operand as an
+        // immediate, `JumpIfFalse` consumes the result without it touching
+        // the stack.
+        Opcode::BinaryImm(kind, imm) => {
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            flow.value_stack.push(result);
+        }
+        Opcode::BinaryJumpIfFalse(kind, rel) => {
+            let right = flow.pop_value()?;
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &right, program)?;
+            jump_unless(flow, &result, rel)?;
+        }
+        Opcode::BinaryImmJumpIfFalse(kind, imm, rel) => {
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            jump_unless(flow, &result, rel)?;
+        }
         Opcode::Negate => {
             let val = flow.pop_value()?;
             let result = match val {
@@ -2891,6 +2911,16 @@ fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), Runtim
     let left = flow.pop_value()?;
     let result = value_ops::binary_op(op, &left, &right, program)?;
     flow.value_stack.push(result);
+    Ok(())
+}
+
+/// The tail of `Opcode::JumpIfFalse`: jump by `relative` unless `val` is
+/// truthy. Shared with the fused binary superinstructions so their branch
+/// cannot drift from the plain one.
+fn jump_unless(flow: &mut Flow, val: &Value, relative: i32) -> Result<(), RuntimeError> {
+    if !value_ops::is_truthy(val)? {
+        apply_jump(flow, relative)?;
+    }
     Ok(())
 }
 

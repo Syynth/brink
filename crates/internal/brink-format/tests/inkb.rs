@@ -90,7 +90,7 @@ fn visibility_section_omitted_when_empty() {
             .iter()
             .any(|s| s.kind == SectionKind::Visibility)
     );
-    assert_eq!(index.version, 7);
+    assert_eq!(index.version, 8);
 }
 
 // ── v4 collection value encoding (#526) ─────────────────────────────────────
@@ -771,18 +771,18 @@ fn decode_value_rejects_beyond_max_depth_map_nesting() {
 // The strict reader rejects any version but 6 — a future v7 artifact is not
 // silently accepted (the version check runs ahead of the content checksum).
 #[test]
-fn strict_reader_rejects_non_v7_version() {
+fn strict_reader_rejects_non_v8_version() {
     let data = i001_data();
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
-    assert!(read_inkb(&buf).is_ok(), "v7 buffer reads cleanly");
+    assert!(read_inkb(&buf).is_ok(), "v8 buffer reads cleanly");
 
-    // Bump the on-wire version field (bytes 4..6, LE) to 8.
-    buf[4] = 8;
+    // Bump the on-wire version field (bytes 4..6, LE) to 9.
+    buf[4] = 9;
     buf[5] = 0;
     assert!(
-        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(8))),
-        "a v8 artifact must be rejected as UnsupportedVersion(8)"
+        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(9))),
+        "a v9 artifact must be rejected as UnsupportedVersion(9)"
     );
 }
 
@@ -913,7 +913,7 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 7);
+    assert_eq!(index.version, 8);
     assert_eq!(index.file_size as usize, buf.len());
     assert_eq!(index.sections.len(), 14);
 

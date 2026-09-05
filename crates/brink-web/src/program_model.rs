@@ -667,6 +667,16 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::EmitValue => "emit_value".to_owned(),
         Opcode::EmitNewline => "emit_newline".to_owned(),
         Opcode::EmitLineNl(idx, slots) => format!("emit_line_nl #{idx} {slots}"),
+        Opcode::BinaryImm(kind, imm) => format!("binary_imm kind={} {imm}", kind.mnemonic()),
+        Opcode::BinaryJumpIfFalse(kind, rel) => {
+            format!("binary_jump_if_false kind={} {rel}", kind.mnemonic())
+        }
+        Opcode::BinaryImmJumpIfFalse(kind, imm, rel) => {
+            format!(
+                "binary_imm_jump_if_false kind={} {imm} {rel}",
+                kind.mnemonic()
+            )
+        }
         Opcode::Spring => "spring".to_owned(),
         Opcode::Glue => "glue".to_owned(),
         Opcode::BeginTag => "begin_tag".to_owned(),

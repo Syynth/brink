@@ -90,7 +90,11 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// the reserved ones, so — like `PART_SPAN` — its own one-bump event. The
 /// optimizer is the only producer; codegen output is unchanged, and the
 /// reader still hard-rejects the previous version rather than translating.
-pub(crate) const VERSION: u16 = 7;
+/// v8 added the second superinstruction family — `BinaryImm` (`0x6D`),
+/// `BinaryJumpIfFalse` (`0x6E`), `BinaryImmJumpIfFalse` (`0x6F`), each with a
+/// `BinaryKind` operator byte — under the same one-bump-per-new-opcode-event
+/// rule and the same optimizer-only provenance.
+pub(crate) const VERSION: u16 = 8;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

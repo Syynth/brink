@@ -66,8 +66,8 @@ pub use line::{
     LineContent, LineFlags, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey,
 };
 pub use opcode::{
-    ChoiceFlags, CollectOp, DecodeError, GlobalKind, Opcode, SeqVerbOp, SequenceKind, StaticKind,
-    StaticSite, TargetKind, TargetSite, TowerOp,
+    BinaryKind, ChoiceFlags, CollectOp, DecodeError, GlobalKind, Opcode, SeqVerbOp, SequenceKind,
+    StaticKind, StaticSite, TargetKind, TargetSite, TowerOp,
 };
 pub use save::{
     LoadReport, SAVE_FORMAT_VERSION, SUSPENDED_FLOW_SECTION_VERSION, SaveState, SuspendedFlow,
