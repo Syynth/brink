@@ -7,45 +7,68 @@
 //!   text or regex, case and whole-word options composed into one regex,
 //!   matches capped at [`RESULT_CAP`] as the unbounded-growth guard.
 //! - **Per-match cards**: a header row (`file:line`, the containing
-//!   knot/stitch, reveal `↗`, a collapse chevron) over the match line with
-//!   its context window — 1 line above, 2 below, the ruled default.
+//!   knot/stitch, an `edited` badge, reveal `↗`, a collapse chevron) over
+//!   an **editable buffer** holding the match line with its context window
+//!   — 1 line above, 2 below, the ruled default — syntax-coloured by the
+//!   same highlighter every other editor uses, the hit marked.
+//! - **Write-through**: a card is one more editor over the shared buffer
+//!   (spec §6). An edit in a card is spliced into the file's canonical text
+//!   through `Project::edit`, so Code view's tab and the manuscript follow
+//!   it; an edit anywhere else reaches the card the same way. Ruled: inline
+//!   editing is the point of the surface.
 //! - **The frozen snapshot**: once a search has run, edits never remove or
 //!   re-filter cards; only typing a new query, changing an option, or the
-//!   summary strip's `↻` replaces the set.
+//!   summary strip's `↻` replaces the set. Every card's window and hit are
+//!   **edit-mapped** through each change, so write-through stays aimed at
+//!   the right bytes and a card whose text has moved away from what the
+//!   search saw is badged `edited` and stays.
 //! - **The summary strip**: "N results · M files" and, reusing the
 //!   Binder's controls (ruled), expand-all / collapse-all, plus `↻`.
 //! - `search.focus` (`cmd-shift-f`): open the window and focus the query.
 //!
-//! ## Held back, and why
+//! ## How a card follows the file
 //!
-//! The cards are **read-only** here. The ruling makes inline editing the
-//! point of the surface, but an editable card needs one buffer per file
-//! that every editor over that file — Code view's document, a manuscript
-//! section, a card — is a view of, and the native app has no such thing
-//! yet: each surface owns its own `EditorState`. That shared buffer is a
-//! model-layer piece (it is also why an edit in the manuscript does not
-//! reach the Code view's tab today); cards become editable when it lands,
-//! and replace previews with it. References mode waits on a worker query.
-//! The context knob, `edited` badges and syntax colouring in cards are
-//! deferred with the same buffer.
+//! A card's window is a line-aligned byte range of its file. When the file
+//! changes ([`ProjectEvent::SourceChanged`]), [`Match::map_edit`] moves the
+//! window through the delta: a change wholly before it shifts it, one
+//! wholly inside it becomes a local delta applied in place (caret and undo
+//! kept), one straddling a boundary re-snaps the window to whole lines and
+//! resets the card's text. The card that *made* the change is synced from
+//! its own buffer instead of mapped, because a diff cannot tell an
+//! insertion at the end of a window from one just past its newline.
+//!
+//! Only cards that have been scrolled into view own an `EditorState`; the
+//! rest are data until they are, which bounds the cost of a thousand-match
+//! search to the cards actually looked at.
+//!
+//! ## Held back
+//!
+//! Replace previews and references mode (a worker query), and the context
+//! knob — the window is the ruled default and not yet tunable.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
+use std::rc::Rc;
 
 use brink_gpui_shell::tool_window::{TabSlot, ToolWindow};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, Render, SharedString, Subscription, WeakEntity, Window, div, px, uniform_list,
+    HighlightStyle, IntoElement, ListAlignment, ListState, Render, SharedString, Subscription,
+    WeakEntity, Window, div, list, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{
+    Editor, EditorState, Input, InputEvent, InputHighlighter, InputState, TextDecoration,
+    TextDecorationCollection,
+};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use regex::{Regex, RegexBuilder};
 
+use crate::document::{BrinkHighlighter, apply_delta};
 use crate::icons;
-use crate::project::Project;
+use crate::project::{Project, ProjectEvent, SourceDelta};
 
 /// Hard cap on matches per search — the unbounded-growth guard.
 pub const RESULT_CAP: usize = 1000;
@@ -90,22 +113,188 @@ pub fn build_pattern(query: &str, options: SearchOptions) -> Result<Regex, Strin
         .map_err(|e| format!("Invalid regex: {e}"))
 }
 
-/// One match, with what its card shows: the match line and its context,
-/// captured at search time so the card is stable under later edits.
+/// One match and its card: a line-aligned window of the file, kept
+/// pointed at the same lines as the file changes underneath it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub path: String,
-    pub span: Range<usize>,
-    /// 1-based line of the match's start.
+    /// 1-based line of the hit's start, kept current.
     pub line: u32,
-    /// The knot or stitch the match sits in, when one precedes it.
+    /// The knot or stitch the match sat in when the search ran.
     pub container: Option<String>,
-    /// 1-based line number of `lines[0]`.
+    /// 1-based line number of the window's first line, kept current.
     pub first_line: u32,
-    pub lines: Vec<String>,
-    /// Index into `lines` of the match line, and the hit's range within it.
-    pub hit_line: usize,
+    /// The context window: a byte range of the file, starting at a line
+    /// start and ending at a line end (no trailing newline).
+    pub window: Range<usize>,
+    /// The hit, in file bytes. Empty once an edit has run through it.
     pub hit: Range<usize>,
+    /// The window's text as the search saw it.
+    pub frozen: String,
+    /// The window's text no longer reads as `frozen` — the `edited` badge.
+    pub edited: bool,
+}
+
+/// What [`Match::map_edit`] asks the card's editor to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mapped {
+    /// The card's text is unchanged; only its position may have moved.
+    Untouched,
+    /// The change fell inside the window: apply this window-relative delta.
+    Inside(SourceDelta),
+    /// The window was re-snapped; reload the card's text from the file.
+    Reset,
+}
+
+impl Match {
+    /// The window's current text.
+    #[must_use]
+    pub fn text<'a>(&self, source: &'a str) -> &'a str {
+        source.get(self.window.clone()).unwrap_or_default()
+    }
+
+    /// The hit relative to the window, when it still lies inside it.
+    #[must_use]
+    pub fn hit_local(&self) -> Option<Range<usize>> {
+        let w = &self.window;
+        (!self.hit.is_empty() && self.hit.start >= w.start && self.hit.end <= w.end)
+            .then(|| self.hit.start - w.start..self.hit.end - w.start)
+    }
+
+    /// The current text of the line holding the hit, for a collapsed
+    /// card's inline preview.
+    #[must_use]
+    pub fn preview(&self, source: &str) -> String {
+        let text = self.text(source);
+        let at = self.hit_local().map_or(0, |h| h.start).min(text.len());
+        let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+        text[start..end].trim().to_owned()
+    }
+
+    /// Rows the card's editor draws — `split`, not `lines`, because the
+    /// editor renders the empty row a trailing newline creates.
+    #[must_use]
+    pub fn rows(&self, source: &str) -> usize {
+        self.text(source).split('\n').count().max(1)
+    }
+
+    /// Move the card through a change to its file. `source` is the text
+    /// AFTER the change.
+    pub fn map_edit(&mut self, delta: &SourceDelta, source: &str) -> Mapped {
+        let r = delta.range.clone();
+        let (ws, we) = (self.window.start, self.window.end);
+        let (ins, rem) = (delta.inserted.len(), delta.removed.len());
+        let shift = |offset: usize| offset + ins - rem;
+        let pure_insertion = r.is_empty();
+
+        let mapped = if r.end < ws || (r.end == ws && !pure_insertion) {
+            // Wholly before: the window slides. A deletion that ends
+            // exactly at the window's start took the newline before it,
+            // which joins the previous line onto the window's first — the
+            // snap below catches that and asks for a reset.
+            let slid = shift(ws)..shift(we);
+            let snapped = snap_to_lines(source, slid.clone());
+            self.hit = map_range(&self.hit, delta);
+            if snapped == slid {
+                self.first_line = (i64::from(self.first_line) + newlines(&delta.inserted)
+                    - newlines(&delta.removed))
+                .max(1) as u32;
+                self.window = slid;
+                Mapped::Untouched
+            } else {
+                self.window = snapped;
+                self.first_line = line_number_at(source, self.window.start);
+                Mapped::Reset
+            }
+        } else if r.start > we || (r.start == we && !pure_insertion) {
+            if r.start == we {
+                // A deletion starting at the window's end took the newline
+                // after it: the next line joined the window's last.
+                self.window = snap_to_lines(source, ws..we);
+                Mapped::Reset
+            } else {
+                Mapped::Untouched
+            }
+        } else if ws <= r.start && r.end <= we {
+            // Inside — including an insertion at either edge.
+            self.window = ws..shift(we);
+            self.hit = map_range(&self.hit, delta);
+            Mapped::Inside(SourceDelta {
+                range: r.start - ws..r.end - ws,
+                removed: delta.removed.clone(),
+                inserted: delta.inserted.clone(),
+            })
+        } else {
+            // Straddling a boundary: cover both sides, then whole lines.
+            let start = ws.min(r.start);
+            let end = if r.end >= we {
+                r.start + ins
+            } else {
+                shift(we)
+            };
+            self.window = snap_to_lines(source, start..end);
+            self.first_line = line_number_at(source, self.window.start);
+            self.hit = map_range(&self.hit, delta);
+            Mapped::Reset
+        };
+        self.refresh_derived(source);
+        mapped
+    }
+
+    /// The card that made a change already holds the new text: take the
+    /// window from its buffer rather than from the delta, whose position is
+    /// ambiguous at the window's end (see the module doc).
+    pub fn sync_to_own_edit(&mut self, text_len: usize, delta: &SourceDelta, source: &str) {
+        self.window = self.window.start..self.window.start + text_len;
+        self.hit = map_range(&self.hit, delta);
+        self.refresh_derived(source);
+    }
+
+    fn refresh_derived(&mut self, source: &str) {
+        let text = self.text(source);
+        self.edited = text != self.frozen;
+        if let Some(hit) = self.hit_local() {
+            self.line = self.first_line + newlines(&text[..hit.start]) as u32;
+        }
+    }
+}
+
+/// Where `range` ends up after `delta`: shifted when the change is before
+/// it, unchanged when after, collapsed to empty when the two overlap.
+fn map_range(range: &Range<usize>, delta: &SourceDelta) -> Range<usize> {
+    let r = &delta.range;
+    let shift = delta.inserted.len() as i64 - delta.removed.len() as i64;
+    if r.end <= range.start {
+        let start = (range.start as i64 + shift).max(0) as usize;
+        let end = (range.end as i64 + shift).max(0) as usize;
+        start..end
+    } else if r.start >= range.end {
+        range.clone()
+    } else {
+        let at = range.start.min(r.start);
+        at..at
+    }
+}
+
+/// Widen a range to the start of the line it begins in and the end of the
+/// line it ends in.
+fn snap_to_lines(source: &str, range: Range<usize>) -> Range<usize> {
+    let len = source.len();
+    let start = range.start.min(len);
+    let end = range.end.clamp(start, len);
+    let start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    let end = source[end..].find('\n').map_or(len, |i| end + i);
+    start..end
+}
+
+fn newlines(text: &str) -> i64 {
+    text.matches('\n').count() as i64
+}
+
+/// 1-based line number of the line containing `offset`.
+fn line_number_at(source: &str, offset: usize) -> u32 {
+    newlines(&source[..offset.min(source.len())]) as u32 + 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -148,20 +337,17 @@ pub fn search<'a>(
             let line_ix = line_index_at(&starts, found.start());
             let first = line_ix.saturating_sub(context.0);
             let last = (line_ix + context.1).min(last_line).max(line_ix);
-            let lines: Vec<String> = (first..=last)
-                .map(|ix| line_text(source, &starts, ix))
-                .collect();
-            let line_start = starts[line_ix];
-            let hit_end = found.end().min(line_end(source, &starts, line_ix));
+            let window = starts[first]..line_end(source, &starts, last);
+            let hit = found.start()..found.end().min(window.end);
             snapshot.matches.push(Match {
                 path: path.to_owned(),
-                span: found.range(),
                 line: line_ix as u32 + 1,
                 container: container_at(source, found.start()),
                 first_line: first as u32 + 1,
-                lines,
-                hit_line: line_ix - first,
-                hit: (found.start() - line_start)..(hit_end - line_start),
+                frozen: source[window.clone()].to_owned(),
+                window,
+                hit,
+                edited: false,
             });
         }
         if any {
@@ -193,11 +379,6 @@ fn line_index_at(starts: &[usize], offset: usize) -> usize {
 fn line_end(source: &str, starts: &[usize], ix: usize) -> usize {
     let end = starts.get(ix + 1).map_or(source.len(), |next| next - 1);
     end.max(starts[ix])
-}
-
-fn line_text(source: &str, starts: &[usize], ix: usize) -> String {
-    let text = &source[starts[ix]..line_end(source, starts, ix)];
-    text.strip_suffix('\r').unwrap_or(text).to_owned()
 }
 
 /// The knot or stitch whose header most recently precedes `offset` —
@@ -244,22 +425,13 @@ fn ident_after(rest: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// What the list draws: a card's header, or one of its lines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Row {
-    Header(usize),
-    Line { card: usize, line: usize },
-}
-
-fn layout(snapshot: &Snapshot, collapsed: &BTreeSet<usize>) -> Vec<Row> {
-    let mut rows = Vec::new();
-    for (card, m) in snapshot.matches.iter().enumerate() {
-        rows.push(Row::Header(card));
-        if !collapsed.contains(&card) {
-            rows.extend((0..m.lines.len()).map(|line| Row::Line { card, line }));
-        }
-    }
-    rows
+/// A card's editor, built the first time the card is on screen.
+#[derive(Clone)]
+struct CardEditor {
+    state: Entity<EditorState>,
+    /// The hit's highlight. The editor moves it through its own edits;
+    /// only a wholesale reset needs it re-laid.
+    hit: TextDecorationCollection,
 }
 
 pub struct SearchView {
@@ -271,7 +443,13 @@ pub struct SearchView {
     /// A regex the author has not finished typing, shown under the input.
     error: Option<String>,
     collapsed: BTreeSet<usize>,
-    rows: Vec<Row>,
+    /// Editors for the cards that have been on screen, by card index.
+    editors: HashMap<usize, CardEditor>,
+    card_subs: Vec<Subscription>,
+    list: ListState,
+    /// The editor's real row height once one card has laid out — see
+    /// `continuous.rs` for why the theme's number is only a first guess.
+    measured_line_height: Option<f32>,
     tab: TabSlot,
     _subscriptions: Vec<Subscription>,
 }
@@ -280,6 +458,12 @@ impl EventEmitter<SearchEvent> for SearchView {}
 impl EventEmitter<PanelEvent> for SearchView {}
 
 const ROW_HEIGHT: f32 = 22.0;
+/// See `continuous.rs`: gpui-component lays the editor out at 1.5× the
+/// monospace size.
+const LINE_HEIGHT_FACTOR: f32 = 1.5;
+/// Zero vertical padding, so a card is exactly its rows.
+const CARD_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
+const GUTTER_WIDTH: f32 = 36.0;
 
 impl SearchView {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -292,6 +476,21 @@ impl SearchView {
                 this.run(cx);
             }
         });
+        // The snapshot never re-runs on a change; it follows it.
+        let on_project = cx.subscribe_in(
+            &project,
+            window,
+            |this, _, event: &ProjectEvent, window, cx| {
+                if let ProjectEvent::SourceChanged {
+                    path,
+                    origin,
+                    delta,
+                } = event
+                {
+                    this.on_source_changed(path, *origin, delta, window, cx);
+                }
+            },
+        );
         Self {
             project,
             query,
@@ -299,9 +498,12 @@ impl SearchView {
             snapshot: None,
             error: None,
             collapsed: BTreeSet::new(),
-            rows: Vec::new(),
+            editors: HashMap::new(),
+            card_subs: Vec::new(),
+            list: ListState::new(0, ListAlignment::Top, px(300.)),
+            measured_line_height: None,
             tab: TabSlot::default(),
-            _subscriptions: vec![on_query],
+            _subscriptions: vec![on_query, on_project],
         }
     }
 
@@ -315,6 +517,8 @@ impl SearchView {
     fn run(&mut self, cx: &mut Context<Self>) {
         let query = self.query.read(cx).value().to_string();
         self.collapsed.clear();
+        self.editors.clear();
+        self.card_subs.clear();
         if query.is_empty() {
             self.snapshot = None;
             self.error = None;
@@ -335,15 +539,8 @@ impl SearchView {
                 }
             }
         }
-        self.relayout(cx);
-    }
-
-    fn relayout(&mut self, cx: &mut Context<Self>) {
-        self.rows = self
-            .snapshot
-            .as_ref()
-            .map(|s| layout(s, &self.collapsed))
-            .unwrap_or_default();
+        let count = self.snapshot.as_ref().map_or(0, |s| s.matches.len());
+        self.list = ListState::new(count, ListAlignment::Top, px(300.));
         cx.notify();
     }
 
@@ -353,28 +550,201 @@ impl SearchView {
     }
 
     fn set_all_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        let count = self.snapshot.as_ref().map_or(0, |s| s.matches.len());
         self.collapsed = if collapsed {
-            (0..self.snapshot.as_ref().map_or(0, |s| s.matches.len())).collect()
+            (0..count).collect()
         } else {
             BTreeSet::new()
         };
-        self.relayout(cx);
+        self.list.splice(0..count, count);
+        cx.notify();
     }
 
     fn toggle_collapsed(&mut self, card: usize, cx: &mut Context<Self>) {
         if !self.collapsed.remove(&card) {
             self.collapsed.insert(card);
         }
-        self.relayout(cx);
+        self.list.splice(card..card + 1, 1);
+        cx.notify();
     }
 
     fn reveal(&self, card: usize, cx: &mut Context<Self>) {
         if let Some(m) = self.snapshot.as_ref().and_then(|s| s.matches.get(card)) {
+            let span = if m.hit.is_empty() {
+                m.window.start..m.window.start
+            } else {
+                m.hit.clone()
+            };
             cx.emit(SearchEvent::Reveal {
                 path: m.path.clone(),
-                span: m.span.clone(),
+                span,
             });
         }
+    }
+
+    fn line_height(&self, cx: &App) -> f32 {
+        self.measured_line_height
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR)
+    }
+
+    /// Adopt the real row height as soon as any card has laid out, and
+    /// re-measure every card against it. Runs once per snapshot.
+    fn adopt_measured_line_height(&mut self, cx: &mut Context<Self>) {
+        if self.measured_line_height.is_some() {
+            return;
+        }
+        let Some(real) = self
+            .editors
+            .values()
+            .find_map(|editor| editor.state.read(cx).line_height())
+            .map(f32::from)
+        else {
+            return;
+        };
+        self.measured_line_height = Some(real);
+        self.list.remeasure();
+        cx.notify();
+    }
+
+    /// The file changed — in a card, in a tab, in the manuscript. Move
+    /// every card of that file, and update the buffers of the ones that
+    /// have them.
+    fn on_source_changed(
+        &mut self,
+        path: &str,
+        origin: Option<gpui::EntityId>,
+        delta: &SourceDelta,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        let source = self
+            .project
+            .read(cx)
+            .loaded_source(path)
+            .unwrap_or_default()
+            .to_owned();
+        let hit_style = hit_style(cx);
+        let mut touched = Vec::new();
+        for (ix, m) in snapshot.matches.iter_mut().enumerate() {
+            if m.path != path {
+                continue;
+            }
+            let editor = self.editors.get(&ix).cloned();
+            let is_origin = editor
+                .as_ref()
+                .is_some_and(|e| Some(e.state.entity_id()) == origin);
+            if is_origin {
+                let len = editor
+                    .as_ref()
+                    .map_or(0, |e| e.state.read(cx).value().len());
+                m.sync_to_own_edit(len, delta, &source);
+            } else {
+                match (m.map_edit(delta, &source), editor) {
+                    (Mapped::Untouched, _) | (_, None) => {}
+                    (Mapped::Inside(local), Some(editor)) => {
+                        let fallback = m.text(&source).to_owned();
+                        editor.state.update(cx, |state, cx| {
+                            apply_delta(state, &local, &fallback, window, cx);
+                        });
+                    }
+                    (Mapped::Reset, Some(editor)) => {
+                        let text = m.text(&source).to_owned();
+                        editor.state.update(cx, |state, cx| {
+                            state.set_value(text, window, cx);
+                        });
+                        editor.hit.set(hit_decorations(m, hit_style), cx);
+                    }
+                }
+            }
+            touched.push(ix);
+        }
+        for ix in touched {
+            self.list.splice(ix..ix + 1, 1);
+        }
+        cx.notify();
+    }
+
+    /// A card's buffer changed under the author's hands: splice its window
+    /// into the file. The broadcast that follows brings the window's end
+    /// back in line with the buffer.
+    fn on_card_edited(
+        &mut self,
+        card: usize,
+        editor: &Entity<EditorState>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(m) = self.snapshot.as_ref().and_then(|s| s.matches.get(card)) else {
+            return;
+        };
+        let new = editor.read(cx).value().to_string();
+        let (path, window) = (m.path.clone(), m.window.clone());
+        let full = {
+            let project = self.project.read(cx);
+            let source = project.loaded_source(&path).unwrap_or_default();
+            if source.get(window.clone()) == Some(new.as_str()) {
+                return;
+            }
+            let (Some(head), Some(tail)) = (source.get(..window.start), source.get(window.end..))
+            else {
+                return;
+            };
+            format!("{head}{new}{tail}")
+        };
+        let origin = editor.entity_id();
+        self.project.update(cx, |project, cx| {
+            project.edit(&path, full, Some(origin), cx);
+        });
+    }
+
+    fn build_editor(
+        &mut self,
+        card: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<CardEditor> {
+        let m = self.snapshot.as_ref()?.matches.get(card)?.clone();
+        let text = self
+            .project
+            .read(cx)
+            .loaded_source(&m.path)
+            .map(|s| m.text(s).to_owned())
+            .unwrap_or_default();
+        let key: SharedString = m.path.clone().into();
+        let weak: WeakEntity<Project> = self.project.downgrade();
+        let decorations = hit_decorations(&m, hit_style(cx));
+        let mut hit = None;
+        let state = cx.new(|cx| {
+            let mut state = EditorState::new(window, cx)
+                .line_number(false)
+                .language("brink")
+                .soft_wrap(false)
+                .scroll_beyond_last_line(Some(0));
+            let (hw, hk) = (weak.clone(), key.clone());
+            state.set_highlighter_factory(
+                Rc::new(move |language| {
+                    (language == "brink").then(|| {
+                        Box::new(BrinkHighlighter::new(hw.clone(), hk.clone()))
+                            as Box<dyn InputHighlighter>
+                    })
+                }),
+                cx,
+            );
+            state.set_value(text, window, cx);
+            hit = Some(state.create_decorations_collection(decorations, cx));
+            state
+        });
+        let hit = hit?;
+        self.card_subs.push(
+            cx.subscribe(&state, move |this, state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.on_card_edited(card, &state, cx);
+                }
+            }),
+        );
+        Some(CardEditor { state, hit })
     }
 
     /// An option toggle in the title strip: a two-letter glyph, pressed
@@ -470,131 +840,173 @@ impl SearchView {
         )
     }
 
-    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(
+        &self,
+        card: usize,
+        m: &Match,
+        source: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
-        let (fg, muted, accent, hover, hit_bg) = (
-            theme.foreground,
+        let (muted, accent, hover, warning) = (
             theme.muted_foreground,
             theme.primary,
             theme.muted.opacity(0.5),
-            theme.warning.opacity(0.35),
+            theme.warning,
         );
-        let Some(snapshot) = self.snapshot.as_ref() else {
+        let collapsed = self.collapsed.contains(&card);
+        let location = format!("{}:{}", m.path, m.line);
+        let preview = collapsed.then(|| m.preview(source));
+        h_flex()
+            .id(("search-card", card))
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .text_xs()
+            .child(
+                div()
+                    .id(("search-chevron", card))
+                    .w(px(12.))
+                    .text_color(muted)
+                    .cursor_pointer()
+                    .child(if collapsed { "\u{25B8}" } else { "\u{25BE}" })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_collapsed(card, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .font_family(theme.mono_font_family.clone())
+                    .text_color(accent)
+                    .child(location),
+            )
+            .children(
+                m.container
+                    .clone()
+                    .map(|c| div().text_color(muted).child(c)),
+            )
+            .when(m.edited, |el| {
+                el.child(
+                    div()
+                        .px_1()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(warning.opacity(0.6))
+                        .text_color(warning)
+                        .child("edited"),
+                )
+            })
+            .children(preview.map(|p| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(muted)
+                    .child(p)
+            }))
+            .child(div().flex_1())
+            .child(div().text_color(muted).child("\u{2197}"))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.reveal(card, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_card(
+        &mut self,
+        card: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(m) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.matches.get(card))
+            .cloned()
+        else {
             return div().into_any_element();
         };
-        match self.rows[ix] {
-            Row::Header(card) => {
-                let m = &snapshot.matches[card];
-                let collapsed = self.collapsed.contains(&card);
-                let location = format!("{}:{}", m.path, m.line);
-                let preview = collapsed.then(|| m.lines[m.hit_line].trim().to_owned());
-                h_flex()
-                    .id(("search-card", card))
-                    .w_full()
-                    .h(px(ROW_HEIGHT))
-                    .px_2()
-                    .gap_2()
-                    .items_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .text_xs()
-                    .child(
-                        div()
-                            .id(("search-chevron", card))
-                            .w(px(12.))
-                            .text_color(muted)
-                            .cursor_pointer()
-                            .child(if collapsed { "\u{25B8}" } else { "\u{25BE}" })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_collapsed(card, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme.mono_font_family.clone())
-                            .text_color(accent)
-                            .child(location),
-                    )
-                    .children(
-                        m.container
-                            .clone()
-                            .map(|c| div().text_color(muted).child(c)),
-                    )
-                    .children(preview.map(|p| {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_color(muted)
-                            .child(p)
-                    }))
-                    .child(div().flex_1())
-                    .child(div().text_color(muted).child("\u{2197}"))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.reveal(card, cx);
-                    }))
-                    .into_any_element()
-            }
-            Row::Line { card, line } => {
-                let m = &snapshot.matches[card];
-                let text = &m.lines[line];
-                let number = m.first_line as usize + line;
-                let is_hit = line == m.hit_line;
-                let mono = theme.mono_font_family.clone();
-                let mut content = h_flex()
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .font_family(mono.clone());
-                if is_hit {
-                    let hit = m.hit.start.min(text.len())..m.hit.end.min(text.len());
-                    content = content
-                        .child(text[..hit.start].to_owned())
-                        .child(
-                            div()
-                                .bg(hit_bg)
-                                .rounded_sm()
-                                .child(text[hit.clone()].to_owned()),
-                        )
-                        .child(text[hit.end..].to_owned());
-                } else {
-                    content = content.child(text.clone());
-                }
-                // The whole card reveals, not just its header: a line is
-                // where the eye lands, and a click there should go to it.
-                h_flex()
-                    .id(("search-line", ix))
-                    .w_full()
-                    .h(px(ROW_HEIGHT))
-                    .pl_6()
-                    .pr_2()
-                    .gap_2()
-                    .items_center()
-                    .overflow_hidden()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.reveal(card, cx);
-                    }))
-                    .text_xs()
-                    .text_color(if is_hit { fg } else { muted })
-                    .child(
-                        div()
-                            .w(px(32.))
-                            .flex_shrink_0()
-                            .text_right()
-                            .font_family(mono)
-                            .text_color(muted)
-                            .child(number.to_string()),
-                    )
-                    .child(content)
-                    .into_any_element()
-            }
+        let source = self
+            .project
+            .read(cx)
+            .loaded_source(&m.path)
+            .unwrap_or_default()
+            .to_owned();
+        let header = self.render_header(card, &m, &source, cx);
+        if self.collapsed.contains(&card) {
+            return v_flex().w_full().child(header).into_any_element();
         }
+        let editor = match self.editors.get(&card) {
+            Some(editor) => Some(editor.clone()),
+            None => {
+                let built = self.build_editor(card, window, cx);
+                if let Some(built) = &built {
+                    self.editors.insert(card, built.clone());
+                }
+                built
+            }
+        };
+        let Some(editor) = editor else {
+            return v_flex().w_full().child(header).into_any_element();
+        };
+        let theme = cx.theme();
+        let line_height = self.line_height(cx);
+        let rows = m.rows(&source);
+        let height = rows as f32 * line_height;
+        let gutter = v_flex()
+            .w(px(GUTTER_WIDTH))
+            .flex_shrink_0()
+            .pr_2()
+            .items_end()
+            .font_family(theme.mono_font_family.clone())
+            .text_size(theme.mono_font_size)
+            .text_color(theme.muted_foreground)
+            .children((0..rows).map(|row| {
+                div()
+                    .h(px(line_height))
+                    .flex()
+                    .items_center()
+                    .child((m.first_line as usize + row).to_string())
+            }));
+        v_flex()
+            .w_full()
+            .pb_1()
+            .child(header)
+            .child(
+                h_flex().w_full().pl_4().items_start().child(gutter).child(
+                    Editor::new(&editor.state)
+                        .bordered(false)
+                        .appearance(false)
+                        .with_size(CARD_SIZE)
+                        .h(px(height))
+                        .flex_1()
+                        .min_w_0(),
+                ),
+            )
+            .into_any_element()
     }
+}
+
+fn hit_style(cx: &App) -> HighlightStyle {
+    HighlightStyle {
+        background_color: Some(cx.theme().warning.opacity(0.35)),
+        ..Default::default()
+    }
+}
+
+fn hit_decorations(m: &Match, style: HighlightStyle) -> Vec<TextDecoration> {
+    m.hit_local()
+        .map(|hit| TextDecoration::new(hit, style))
+        .into_iter()
+        .collect()
 }
 
 impl Focusable for SearchView {
@@ -677,10 +1089,11 @@ impl ToolWindow for SearchView {
 
 impl Render for SearchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.adopt_measured_line_height(cx);
         let theme = cx.theme();
         let (muted, danger) = (theme.muted_foreground, theme.danger);
         let summary = self.render_summary(cx);
-        let count = self.rows.len();
+        let count = self.snapshot.as_ref().map_or(0, |s| s.matches.len());
         let empty: Option<SharedString> = match (&self.error, &self.snapshot) {
             (Some(error), _) => Some(error.clone().into()),
             (None, None) => Some("Type to search the project.".into()),
@@ -704,11 +1117,10 @@ impl Render for SearchView {
             })
             .when(count > 0, |el| {
                 el.child(
-                    uniform_list(
-                        "search-rows",
-                        count,
-                        cx.processor(|this, range: Range<usize>, _window, cx| {
-                            range.map(|ix| this.render_row(ix, cx)).collect::<Vec<_>>()
+                    list(
+                        self.list.clone(),
+                        cx.processor(|this, card: usize, window, cx| {
+                            this.render_card(card, window, cx)
                         }),
                     )
                     .py_1()
@@ -730,6 +1142,33 @@ mod tests {
             whole_word: word,
             regex,
         }
+    }
+
+    fn delta(range: Range<usize>, removed: &str, inserted: &str) -> SourceDelta {
+        SourceDelta {
+            range,
+            removed: removed.to_owned(),
+            inserted: inserted.to_owned(),
+        }
+    }
+
+    /// Apply `delta` to `source` the way the project does, returning the
+    /// new text.
+    fn apply(source: &str, delta: &SourceDelta) -> String {
+        assert_eq!(&source[delta.range.clone()], delta.removed);
+        format!(
+            "{}{}{}",
+            &source[..delta.range.start],
+            delta.inserted,
+            &source[delta.range.end..]
+        )
+    }
+
+    fn one(query: &str, source: &str) -> Match {
+        let p = build_pattern(query, opts(false, false, false)).unwrap();
+        let s = search([("story.ink", source)], &p, CONTEXT, RESULT_CAP);
+        assert_eq!(s.matches.len(), 1, "{query:?} should match once");
+        s.matches.into_iter().next().unwrap()
     }
 
     #[test]
@@ -763,19 +1202,19 @@ mod tests {
     }
 
     #[test]
-    fn a_match_carries_its_line_context_and_container() {
-        let p = build_pattern("went", opts(false, false, false)).unwrap();
-        let s = search([("story.ink", INK)], &p, CONTEXT, RESULT_CAP);
-        assert_eq!(s.files, 1);
-        assert_eq!(s.matches.len(), 1);
-        let m = &s.matches[0];
+    fn a_match_carries_its_window_and_container() {
+        let m = one("went", INK);
         assert_eq!(m.line, 8);
         assert_eq!(m.container.as_deref(), Some("left"));
         // One line above, two below — clamped to the file's end.
         assert_eq!(m.first_line, 7);
-        assert_eq!(m.lines, ["=== left ===", "You went left.", "hello again"]);
-        assert_eq!(m.hit_line, 1);
-        assert_eq!(&m.lines[m.hit_line][m.hit.clone()], "went");
+        assert_eq!(m.text(INK), "=== left ===\nYou went left.\nhello again");
+        assert_eq!(m.frozen, m.text(INK));
+        assert_eq!(&INK[m.hit.clone()], "went");
+        assert_eq!(m.hit_local(), Some(17..21));
+        assert_eq!(m.preview(INK), "You went left.");
+        assert_eq!(m.rows(INK), 3);
+        assert!(!m.edited);
     }
 
     #[test]
@@ -809,14 +1248,121 @@ mod tests {
     }
 
     #[test]
-    fn collapsing_folds_a_card_to_its_header() {
-        let p = build_pattern("hello", opts(false, false, false)).unwrap();
-        let s = search([("story.ink", INK)], &p, CONTEXT, RESULT_CAP);
-        let open = layout(&s, &BTreeSet::new());
-        let headers = open.iter().filter(|r| matches!(r, Row::Header(_))).count();
-        assert_eq!(headers, 2);
-        assert!(open.len() > 2);
-        let folded = layout(&s, &BTreeSet::from([0, 1]));
-        assert_eq!(folded, [Row::Header(0), Row::Header(1)]);
+    fn an_edit_before_the_window_slides_it() {
+        let mut m = one("went", INK);
+        let before = m.clone();
+        // Two lines added at the top of the file.
+        let d = delta(0..0, "", "// intro\n// more\n");
+        let after = apply(INK, &d);
+        assert_eq!(m.map_edit(&d, &after), Mapped::Untouched);
+        assert_eq!(m.text(&after), before.text(INK));
+        assert_eq!(m.first_line, before.first_line + 2);
+        assert_eq!(m.line, before.line + 2);
+        assert_eq!(&after[m.hit.clone()], "went");
+        assert!(!m.edited);
+        // And back again.
+        let d = delta(0..17, "// intro\n// more\n", "");
+        let back = apply(&after, &d);
+        assert_eq!(m.map_edit(&d, &back), Mapped::Untouched);
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn an_edit_inside_the_window_is_a_local_delta() {
+        let mut m = one("went", INK);
+        let ws = m.window.start;
+        // Type " really" after "You" on the hit line, from another editor.
+        let at = INK.find("You").unwrap() + 3;
+        let d = delta(at..at, "", " really");
+        let after = apply(INK, &d);
+        assert_eq!(
+            m.map_edit(&d, &after),
+            Mapped::Inside(delta(at - ws..at - ws, "", " really"))
+        );
+        assert_eq!(
+            m.text(&after),
+            "=== left ===\nYou really went left.\nhello again"
+        );
+        assert_eq!(&after[m.hit.clone()], "went");
+        assert_eq!(m.line, 8);
+        assert!(m.edited, "the window no longer reads as it did");
+        assert_eq!(m.preview(&after), "You really went left.");
+        // An insertion at the very end of the window grows it.
+        let end = m.window.end;
+        let d = delta(end..end, "", "\nand again");
+        let after2 = apply(&after, &d);
+        assert!(matches!(m.map_edit(&d, &after2), Mapped::Inside(_)));
+        assert_eq!(m.rows(&after2), 4);
+        assert!(m.text(&after2).ends_with("hello again\nand again"));
+    }
+
+    #[test]
+    fn an_edit_through_the_hit_empties_it() {
+        let mut m = one("went", INK);
+        let at = INK.find("went").unwrap();
+        let d = delta(at..at + 4, "went", "turned");
+        let after = apply(INK, &d);
+        assert!(matches!(m.map_edit(&d, &after), Mapped::Inside(_)));
+        assert!(m.hit.is_empty());
+        assert_eq!(m.hit_local(), None);
+        assert!(m.edited);
+        assert_eq!(m.preview(&after), "=== left ===", "no hit: the first line");
+    }
+
+    #[test]
+    fn an_edit_across_the_boundary_resnaps_to_lines() {
+        let mut m = one("went", INK);
+        // Delete from inside the previous line into the window's first line:
+        // "\n\n=== left ===" -> "\n== left ===" (the blank line and the
+        // knot header's first `=` go).
+        let start = INK.find("\n\n=== left").unwrap() + 1;
+        let d = delta(start..start + 2, "\n=", "");
+        let after = apply(INK, &d);
+        assert_eq!(m.map_edit(&d, &after), Mapped::Reset);
+        assert_eq!(m.text(&after), "== left ===\nYou went left.\nhello again");
+        assert_eq!(m.first_line, 6);
+        assert_eq!(&after[m.hit.clone()], "went");
+        assert_eq!(m.line, 7);
+        assert!(m.edited);
+        // Deleting the newline that closes the window joins the next line
+        // onto it, which is a reset too.
+        let mut m = one("Hello there", INK);
+        assert_eq!(
+            m.text(INK),
+            "=== start ===\nHello there.\n* [Go left] -> left\n= inner"
+        );
+        let end = m.window.end;
+        let d = delta(end..end + 1, "\n", "");
+        let after = apply(INK, &d);
+        assert_eq!(m.map_edit(&d, &after), Mapped::Reset);
+        assert!(m.text(&after).ends_with("= innerstill here"));
+    }
+
+    #[test]
+    fn an_edit_after_the_window_is_nothing_to_it() {
+        let mut m = one("Hello there", INK);
+        let before = m.clone();
+        let at = INK.find("hello again").unwrap();
+        let d = delta(at..at + 5, "hello", "HELLO");
+        let after = apply(INK, &d);
+        assert_eq!(m.map_edit(&d, &after), Mapped::Untouched);
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn the_editing_card_takes_its_window_from_its_own_buffer() {
+        // The author adds a newline at the end of the card. The diff cannot
+        // tell that from a newline after the window's own newline, and
+        // places the change one byte past the window.
+        let mut m = one("Hello there", INK);
+        let end = m.window.end;
+        let new_text = format!("{}\n", m.text(INK));
+        let full = format!("{}{}{}", &INK[..end], "\n", &INK[end..]);
+        let d = crate::project::diff(INK, &full).unwrap();
+        assert!(d.range.start > end, "the ambiguity this test is about");
+        m.sync_to_own_edit(new_text.len(), &d, &full);
+        assert_eq!(m.text(&full), new_text);
+        assert!(m.edited);
+        assert_eq!(&full[m.hit.clone()], "Hello there");
     }
 }

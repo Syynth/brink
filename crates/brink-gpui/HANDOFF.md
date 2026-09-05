@@ -123,18 +123,27 @@ mirror's current sources; per-match cards with `file:line`, containing
 knot/stitch, the match line with 1↑2↓ context and the hit highlighted; a
 frozen snapshot replaced only by a new query, an option, or `↻`; the
 summary strip with the Binder's expand/collapse-all; `search.focus` on
-`cmd-shift-f`. Verified headless. **Read-only cards** — the ruling makes
-inline editing the point; the shared buffer that needs is now in (below),
-so editable cards, replace previews and the `edited` badges are the next
-Search slice. References mode waits on a worker query.
+`cmd-shift-f`. **Cards are editors** (same day, on the shared buffer
+below): each card is an `EditorState` over a line-aligned window of its
+file, built the first time it scrolls into view, with the file's line
+numbers in a gutter of its own (gpui-base has no line-number offset) and
+the hit as a `TextDecoration` the editor carries through its own edits.
+An edit in a card is spliced into the file through `Project::edit`; every
+change to the file — from a tab, the manuscript, or another card — is
+**edit-mapped** through every card of that file (`Match::map_edit`: slide,
+apply in place, or re-snap to whole lines and reset), and a card whose
+window no longer reads as the search saw it wears an `edited` badge and
+stays. Verified headless: card→tab, tab→cards (two cards sharing lines),
+an inserted line above shifting every gutter, reveal at the mapped hit,
+one `cmd-s` writing all of it. Still held back: replace previews, the
+context knob, references mode (a worker query).
 
 **The shared buffer** (2026-09-05, spec §6): the mirror is the canonical
 text per file and every `EditorState` follows it through `SourceDelta`
 broadcasts (`app/src/project.rs`, `Document::apply_delta`); dirty and save
 are per file in the project. Verified: an edit in Code view appears in the
 manuscript, an edit in the manuscript appears in Code view, one `cmd-s`
-writes both. Search cards stay read-only until they become editors over
-this buffer, which is now a UI change, not a model one.
+writes both. Search cards are editors over this buffer (above).
 
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"
@@ -194,7 +203,7 @@ unverified by hand.
 - The **editor acceptance gate has not moved down** onto the shared session.
   The layering ruling (2026-09-04, "Both studio consumers sit on the same
   layer") requires it; this slice did not do it.
-- Player, story graph, debugger, search cards, settings — all out of the
+- Player, story graph, debugger, settings — all out of the
   ruled first slice.
 
 ## Things that will bite you
