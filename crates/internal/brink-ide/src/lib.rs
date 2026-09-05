@@ -7,6 +7,8 @@ mod completion;
 pub mod creation_site_fix;
 pub mod diagnostic_registry;
 pub mod dialect_config;
+pub mod dialect_infer;
+pub mod dialogue_section;
 pub mod dir_rename;
 pub mod document;
 pub mod drafts;

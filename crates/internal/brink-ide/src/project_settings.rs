@@ -70,6 +70,30 @@ impl IdeSession {
         types_explicit: bool,
         config_dir: Option<&str>,
     ) -> Vec<String> {
+        self.apply_project_config_with_reader(
+            config,
+            dialect_explicit,
+            types_explicit,
+            config_dir,
+            &|_| None,
+        )
+    }
+
+    /// [`Self::apply_project_config`] with a second place to find the
+    /// `[dialogue]` artifact file: `read_file` is asked, by the path as
+    /// written (and prefixed with `config_dir`), for a file the session's
+    /// own document tree does not hold. A host whose session holds only
+    /// story sources — the native studio's analysis worker — serves
+    /// `dialect.json` from the project directory through it; the web
+    /// studio's session holds every file and passes nothing.
+    pub fn apply_project_config_with_reader(
+        &mut self,
+        config: &ProjectConfig,
+        dialect_explicit: bool,
+        types_explicit: bool,
+        config_dir: Option<&str>,
+        read_file: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<String> {
         // `apply_project_config` replaces `.lints` wholesale from `config`
         // (issue #1397), so a throwaway `AnalysisOptions::default()` is
         // enough here — `dialect`/`types` are resolved separately below, so
@@ -121,7 +145,7 @@ impl IdeSession {
             .clone_from(&config.prose_dictionary);
 
         let mut warnings: Vec<String> = Vec::new();
-        self.apply_dialogue_config(config, config_dir, &mut warnings);
+        self.apply_dialogue_config(config, config_dir, read_file, &mut warnings);
         warnings.extend(lint_warnings.into_iter().map(|w| w.0));
         warnings
     }
@@ -133,6 +157,7 @@ impl IdeSession {
         &mut self,
         config: &ProjectConfig,
         config_dir: Option<&str>,
+        extra: &dyn Fn(&str) -> Option<String>,
         warnings: &mut Vec<String>,
     ) {
         let Some(dialogue) = config.dialogue.as_ref() else {
@@ -148,11 +173,14 @@ impl IdeSession {
                 Some("") | None => vec![path.to_owned()],
                 Some(dir) => vec![format!("{dir}/{path}"), path.to_owned()],
             };
-            candidates.iter().find_map(|key| {
-                db.file_ids().find_map(|id| {
-                    (db.file_path(id)? == key).then(|| db.source(id).map(str::to_owned))?
+            candidates
+                .iter()
+                .find_map(|key| {
+                    db.file_ids().find_map(|id| {
+                        (db.file_path(id)? == key).then(|| db.source(id).map(str::to_owned))?
+                    })
                 })
-            })
+                .or_else(|| candidates.iter().find_map(|key| extra(key)))
         };
         match crate::dialect_config::resolve_dialogue_config(dialogue, &read_file) {
             Ok(dialect) => {
