@@ -14,8 +14,11 @@ use brink_format::{
 use crate::program::Program;
 use crate::value_ops;
 
+mod completion;
 mod consume;
 mod fragment;
+
+use completion::LineCompletion;
 
 pub use fragment::Fragment;
 
@@ -403,15 +406,16 @@ const _: () = {
 ///   and function return value capture. Drained by `end_capture`.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputBuffer {
-    /// Reusable scan buffer for [`Self::has_completed_line`]'s glue pass.
+    /// Reusable scan buffer for [`Self::take_first_line`]'s glue pass.
     ///
     /// Not state: it carries nothing between calls and every call refills it
-    /// from scratch. It exists purely so the scan stops allocating.
-    /// `has_completed_line` runs once per VM step and used to build a fresh
-    /// `vec![false; unread.len()]` each time — measured at 467,587 `calloc`
-    /// calls against 466,851 steps on `crucible-8` (#3565), i.e. one zeroed
-    /// heap allocation per step, in a runtime whose profile is ~30%
-    /// allocator traffic.
+    /// from scratch. It exists purely so the scan stops allocating: it was
+    /// introduced when `has_completed_line` still ran this scan once per VM
+    /// step and built a fresh `vec![false; unread.len()]` each time —
+    /// measured at 467,587 `calloc` calls against 466,851 steps on
+    /// `crucible-8` (#3565). `has_completed_line` no longer scans at all
+    /// (`completion.rs`); `take_first_line` still does, once per delivered
+    /// line.
     ///
     /// A plain field with a `&mut self` receiver, deliberately: `RefCell`
     /// and `Cell` are both `!Sync`, and one here makes `OutputBuffer` —
@@ -419,6 +423,12 @@ pub(crate) struct OutputBuffer {
     /// which Bevy requires. That failure surfaces far from its cause, as
     /// dozens of `QueryData`/`IterQueryData` bound errors in `bevy-brink`.
     line_scan: Vec<bool>,
+    /// Incremental state behind [`Self::has_completed_line`]: the answer the
+    /// glue-and-walk scan would give over `transcript[cursor..]`, kept
+    /// current by [`Self::push_part`] and rebuilt by
+    /// [`Self::rescan_completion`] after a cursor move or a removal. See
+    /// `completion.rs` for why this is exact.
+    completion: LineCompletion,
     /// Append-only output log. Parts are never removed.
     pub(crate) transcript: Vec<OutputPart>,
     /// Read cursor into transcript. Advances on take/flush.
@@ -454,6 +464,7 @@ impl OutputBuffer {
     pub fn new() -> Self {
         Self {
             line_scan: Vec::new(),
+            completion: LineCompletion::default(),
             transcript: Vec::new(),
             cursor: 0,
             capture: Vec::new(),
@@ -475,6 +486,17 @@ impl OutputBuffer {
             &mut self.fragment_capture
         } else {
             &mut self.transcript
+        }
+    }
+
+    /// Append `part` to the active target. The one place a part enters the
+    /// transcript, so the line-completion state can follow it there.
+    fn push_part(&mut self, part: OutputPart) {
+        if self.capture_depth == 0 && self.fragment_depth == 0 {
+            self.completion.feed(&part);
+            self.transcript.push(part);
+        } else {
+            self.target().push(part);
         }
     }
 
@@ -576,7 +598,9 @@ impl OutputBuffer {
         } else {
             start
         };
+        let on_transcript = self.capture_depth == 0 && self.fragment_depth == 0;
         let target = self.target();
+        let mut removed = false;
         let mut i = target.len();
         while i > floor {
             i -= 1;
@@ -606,6 +630,10 @@ impl OutputBuffer {
                 break;
             }
             target.remove(i);
+            removed = true;
+        }
+        if removed && on_transcript {
+            self.rescan_completion();
         }
     }
 
@@ -630,7 +658,7 @@ impl OutputBuffer {
             text
         };
         if !text.is_empty() {
-            self.target().push(OutputPart::Text(text.to_owned()));
+            self.push_part(OutputPart::Text(text.to_owned()));
         }
     }
 
@@ -652,7 +680,7 @@ impl OutputBuffer {
         if !has_content || self.ends_in_newline() {
             return;
         }
-        self.target().push(OutputPart::Newline);
+        self.push_part(OutputPart::Newline);
     }
 
     /// Returns true if the active target contains any text content.
@@ -740,14 +768,13 @@ impl OutputBuffer {
     }
 
     pub fn push_glue(&mut self) {
-        self.target().push(OutputPart::Glue);
+        self.push_part(OutputPart::Glue);
     }
 
     /// Push a word break. Deduplicated: no consecutive Springs.
     pub fn push_spring(&mut self) {
-        let target = self.target();
-        if !matches!(target.last(), Some(OutputPart::Spring)) {
-            target.push(OutputPart::Spring);
+        if !matches!(self.target_ref().last(), Some(OutputPart::Spring)) {
+            self.push_part(OutputPart::Spring);
         }
     }
 
@@ -767,7 +794,7 @@ impl OutputBuffer {
         {
             return;
         }
-        self.target().push(OutputPart::LineRef {
+        self.push_part(OutputPart::LineRef {
             container_idx,
             line_idx,
             slots,
@@ -788,12 +815,12 @@ impl OutputBuffer {
         {
             return;
         }
-        self.target().push(OutputPart::ValueRef(value));
+        self.push_part(OutputPart::ValueRef(value));
     }
 
     /// Push a tag associated with the current output line.
     pub fn push_tag(&mut self, tag: String) {
-        self.target().push(OutputPart::Tag(tag));
+        self.push_part(OutputPart::Tag(tag));
     }
 
     /// Merge one field of an `attach = StructName` handler's return value
@@ -801,14 +828,14 @@ impl OutputBuffer {
     /// handler). See [`OutputPart::ElementAttach`]'s doc for why this is a
     /// transcript entry rather than a `Flow`-level mutation.
     pub(crate) fn push_element_attach(&mut self, key: String, value: String) {
-        self.target().push(OutputPart::ElementAttach(key, value));
+        self.push_part(OutputPart::ElementAttach(key, value));
     }
 
     /// Close the run the most recent [`Self::push_element_attach`] calls
     /// opened (`Opcode::EndElementRun`'s handler). See
     /// [`OutputPart::ElementAttachEnd`]'s doc.
     pub(crate) fn push_element_attach_end(&mut self) {
-        self.target().push(OutputPart::ElementAttachEnd);
+        self.push_part(OutputPart::ElementAttachEnd);
     }
 
     /// Returns true if a capture is currently active.
@@ -1758,7 +1785,7 @@ mod tests {
 
     #[test]
     fn has_completed_line_empty() {
-        let mut buf = OutputBuffer::new();
+        let buf = OutputBuffer::new();
         assert!(!buf.has_completed_line());
     }
 
