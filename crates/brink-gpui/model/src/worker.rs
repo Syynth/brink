@@ -509,7 +509,16 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
             set_compile_entry(session, state.entry.as_deref());
         }
         Err(e) => {
-            state.error = Some((e.span(), e.to_string()));
+            // One line: `toml`'s `Display` renders a caret-annotated
+            // excerpt, which a Problems row has no room for and the
+            // editor already shows.
+            let message = match &e {
+                brink_project_config::ConfigError::Toml { source, .. } => {
+                    source.message().to_owned()
+                }
+                other => other.to_string(),
+            };
+            state.error = Some((e.span(), message));
         }
     }
 }

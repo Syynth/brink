@@ -551,6 +551,7 @@ impl Render for GeneralSection {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .text_xs()
                             .text_color(muted)
                             .child(SharedString::from(format!(
