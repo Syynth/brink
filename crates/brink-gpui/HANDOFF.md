@@ -124,11 +124,17 @@ knot/stitch, the match line with 1↑2↓ context and the hit highlighted; a
 frozen snapshot replaced only by a new query, an option, or `↻`; the
 summary strip with the Binder's expand/collapse-all; `search.focus` on
 `cmd-shift-f`. Verified headless. **Read-only cards** — the ruling makes
-inline editing the point, and that needs one shared buffer per file that
-every editor is a view of, which the model does not have yet (it is also
-why manuscript edits do not reach the Code view's tab). That shared buffer
-is the next model-layer piece; editable cards, replace previews and the
-`edited` badges follow it. References mode waits on a worker query.
+inline editing the point; the shared buffer that needs is now in (below),
+so editable cards, replace previews and the `edited` badges are the next
+Search slice. References mode waits on a worker query.
+
+**The shared buffer** (2026-09-05, spec §6): the mirror is the canonical
+text per file and every `EditorState` follows it through `SourceDelta`
+broadcasts (`app/src/project.rs`, `Document::apply_delta`); dirty and save
+are per file in the project. Verified: an edit in Code view appears in the
+manuscript, an edit in the manuscript appears in Code view, one `cmd-s`
+writes both. Search cards stay read-only until they become editors over
+this buffer, which is now a UI change, not a model one.
 
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"
@@ -141,10 +147,10 @@ whole workspace, app included, builds and links on an ubuntu container with
 `libxkbcommon-dev` and `libxkbcommon-x11-dev` installed; `xcb`,
 `fontconfig` and `freetype` were already present.
 
-**Not verified by hand**, because GPUI's text area no-ops the macOS
-accessibility text-insert path so keystrokes could not be injected: typing,
-hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
-*is* covered by `model/src/worker.rs`'s tests; the UI half of it is not.
+**Typing, completions and `cmd-s` were verified headless on Linux**
+(2026-09-05, with `xdotool type`): keystrokes reach the editor, the
+completion popup opens, the tab goes dirty and saves. Hover is still
+unverified by hand.
 
 ## Known broken / unfinished, most blocking first
 

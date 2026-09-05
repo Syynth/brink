@@ -133,13 +133,21 @@ pub struct ContinuousView {
 }
 
 impl ContinuousView {
-    pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+    pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let files = project.read(cx).files().to_vec();
-        let watch = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
-            if matches!(event, ProjectEvent::Opened { .. }) {
-                this.reload(cx);
-            }
-        });
+        let watch = cx.subscribe_in(
+            &project,
+            window,
+            |this, _, event: &ProjectEvent, window, cx| match event {
+                ProjectEvent::Opened { .. } => this.reload(cx),
+                ProjectEvent::SourceChanged {
+                    path,
+                    origin,
+                    delta,
+                } => this.on_source_changed(path, *origin, delta, window, cx),
+                _ => {}
+            },
+        );
         Self {
             list: ListState::new(files.len(), ListAlignment::Top, px(600.)),
             project,
@@ -161,6 +169,53 @@ impl ContinuousView {
         self.section_subs.borrow_mut().clear();
         self.measured_line_height = None;
         self.list = ListState::new(self.files.len(), ListAlignment::Top, px(600.));
+        cx.notify();
+    }
+
+    /// A file's text moved — in another editor, or in this section itself.
+    /// Either way the section's height follows the new line count; only a
+    /// change from elsewhere is applied to the section's buffer.
+    fn on_source_changed(
+        &mut self,
+        path: &str,
+        origin: Option<gpui::EntityId>,
+        delta: &crate::project::SourceDelta,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((editor, _)) = self.editors.borrow().get(path).cloned() else {
+            return;
+        };
+        if origin != Some(editor.entity_id()) {
+            let fallback = self
+                .project
+                .read(cx)
+                .loaded_source(path)
+                .unwrap_or_default()
+                .to_owned();
+            editor.update(cx, |state, cx| {
+                crate::document::apply_delta(state, delta, &fallback, window, cx);
+            });
+        }
+        let Some(index) = self.files.iter().position(|f| f == path) else {
+            return;
+        };
+        let line_height = self
+            .measured_line_height
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
+        let trailing = if index + 1 == self.files.len() {
+            TRAILING_ROWS
+        } else {
+            0
+        };
+        let text = editor.read(cx).value();
+        let height = section_height(&text, line_height) + trailing as f32 * line_height;
+        if let Some(section) = self.editors.borrow_mut().get_mut(path) {
+            section.1 = height;
+        }
+        // Drop the list's cached height for this one item; the scroll
+        // position survives, which `reset` would not give.
+        self.list.splice(index..index + 1, 1);
         cx.notify();
     }
 
@@ -229,7 +284,10 @@ impl ContinuousView {
             move |state, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     let text = state.read(cx).value().to_string();
-                    edited_project.update(cx, |project, _| project.edit(&edited_path, text));
+                    let origin = state.entity_id();
+                    edited_project.update(cx, |project, cx| {
+                        project.edit(&edited_path, text, Some(origin), cx);
+                    });
                 }
             },
         ));

@@ -14,7 +14,6 @@
 //! share (ruled 2026-08-26); nothing else crosses between them.
 
 use std::ops::Range;
-use std::path::Path;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -123,19 +122,6 @@ impl CodeView {
         self.active.as_ref()
     }
 
-    /// Save every dirty document, reporting each failure and carrying on.
-    pub fn save_all(&mut self, root: &Path, cx: &mut Context<Self>) {
-        for document in &self.documents {
-            document.update(cx, |document, cx| {
-                if document.is_dirty()
-                    && let Err(err) = document.save(root, cx)
-                {
-                    eprintln!("failed to save {}: {err:#}", document.path());
-                }
-            });
-        }
-    }
-
     fn set_active(&mut self, document: Option<Entity<Document>>, cx: &mut Context<Self>) {
         if self.active != document {
             self.active = document;
@@ -163,7 +149,6 @@ impl CodeView {
                     self.set_active(next, cx);
                 }
             }
-            DocumentEvent::DirtyChanged => {}
         }
     }
 }

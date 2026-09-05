@@ -11,13 +11,13 @@
 //! per-segment [`TokenCache`]; everything else is a worker query.
 
 use std::ops::Range;
-use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::Result;
 use brink_gpui_model::query::{Completion, CompletionKind, QueryKind, QueryResult};
 use brink_gpui_model::tokens::TokenCache;
 use brink_ir::LineIndex;
+use gpui::EntityInputHandler as _;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, EventEmitter, SharedString, Subscription, Task, WeakEntity, Window,
@@ -30,12 +30,34 @@ use gpui_component::input::{
 };
 use lsp_types as lsp;
 
-use crate::project::{Project, ProjectEvent};
+use crate::project::{Project, ProjectEvent, SourceDelta};
+
+/// Apply another editor's change to this `EditorState` in place, keeping
+/// its caret, scroll and undo history — the view following the buffer.
+///
+/// The delta is checked against what this editor holds; an editor that has
+/// somehow fallen out of step is resynced wholesale from `fallback` (the
+/// caret is lost, the text never is). Offsets are converted to UTF-16 for
+/// the input handler, which speaks that unit.
+pub(crate) fn apply_delta(
+    state: &mut EditorState,
+    delta: &SourceDelta,
+    fallback: &str,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) {
+    let current = state.value();
+    if current.get(delta.range.clone()) == Some(delta.removed.as_str()) {
+        let start16 = current[..delta.range.start].encode_utf16().count();
+        let end16 = start16 + delta.removed.encode_utf16().count();
+        state.replace_text_in_range(Some(start16..end16), &delta.inserted, window, cx);
+    } else {
+        state.set_value(fallback.to_owned(), window, cx);
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum DocumentEvent {
-    /// The saved-ness changed, so a tab can redraw.
-    DirtyChanged,
     /// The dock made this the displayed tab of its group — what Code view
     /// takes as "the active document" (`code_view.rs`).
     Activated,
@@ -47,7 +69,6 @@ pub struct Document {
     path: SharedString,
     editor: Entity<EditorState>,
     project: Entity<Project>,
-    dirty: bool,
     /// The tab group holding this document, from the dock's `on_added_to`.
     /// What [`Document::activate`] selects the tab through.
     group: Option<WeakEntity<TabGroup>>,
@@ -102,27 +123,53 @@ impl Document {
                 this.on_edited(&editor, cx);
             }
         });
-        // Diagnostics and inlays are analysis products, so they arrive with
-        // the analysis rather than being pulled on a timer.
-        let on_analyzed = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
-            if matches!(event, ProjectEvent::Analyzed) {
-                this.refresh(cx);
-            }
-        });
+        let on_project = cx.subscribe_in(
+            &project,
+            window,
+            |this, _, event: &ProjectEvent, window, cx| match event {
+                // Diagnostics and inlays are analysis products, so they
+                // arrive with the analysis rather than being pulled on a
+                // timer.
+                ProjectEvent::Analyzed => this.refresh(cx),
+                // Another editor over this file moved the text; follow it.
+                ProjectEvent::SourceChanged {
+                    path,
+                    origin,
+                    delta,
+                } if path.as_str() == this.path.as_ref()
+                    && *origin != Some(this.editor.entity_id()) =>
+                {
+                    let fallback = this
+                        .project
+                        .read(cx)
+                        .loaded_source(path)
+                        .unwrap_or_default()
+                        .to_owned();
+                    this.editor.update(cx, |state, cx| {
+                        apply_delta(state, delta, &fallback, window, cx);
+                    });
+                }
+                // The tab's unsaved marker reads the project.
+                ProjectEvent::Saved => cx.notify(),
+                _ => {}
+            },
+        );
 
         let this = Self {
             path,
             editor,
             project,
-            dirty: false,
             group: None,
-            _subscriptions: vec![on_change, on_analyzed],
+            _subscriptions: vec![on_change, on_project],
         };
-        // Seed the worker with this file's text as the editor now holds it.
+        // The editor may normalise what it was given (line endings); if it
+        // did, that is an edit like any other.
         let seed = this.editor.read(cx).value().to_string();
         let path = this.path.clone();
-        this.project
-            .update(cx, |project, _| project.edit(&path, seed));
+        let origin = this.editor.entity_id();
+        this.project.update(cx, |project, cx| {
+            project.edit(&path, seed, Some(origin), cx);
+        });
         this
     }
 
@@ -131,9 +178,11 @@ impl Document {
         &self.path
     }
 
+    /// Whether the file differs from disk — a fact about the file, read from
+    /// the project, so every editor over it agrees.
     #[must_use]
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        self.project.read(cx).is_dirty(&self.path)
     }
 
     /// Put the caret at a span's start, select the span, and focus the
@@ -168,32 +217,15 @@ impl Document {
         });
     }
 
-    /// Write the buffer to disk, relative to the project root.
-    ///
-    /// # Errors
-    /// Propagates the write, including a missing parent directory.
-    pub fn save(&mut self, root: &Path, cx: &mut Context<Self>) -> Result<()> {
-        let text = self.editor.read(cx).value().to_string();
-        std::fs::write(root.join(self.path.as_ref()), text)?;
-        self.set_dirty(false, cx);
-        Ok(())
-    }
-
-    fn set_dirty(&mut self, dirty: bool, cx: &mut Context<Self>) {
-        if self.dirty != dirty {
-            self.dirty = dirty;
-            cx.emit(DocumentEvent::DirtyChanged);
-            cx.notify();
-        }
-    }
-
     fn on_edited(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
         let text = editor.read(cx).value().to_string();
         let path = self.path.clone();
-        self.project.update(cx, |project, _| {
-            project.edit(&path, text);
+        let origin = editor.entity_id();
+        self.project.update(cx, |project, cx| {
+            project.edit(&path, text, Some(origin), cx);
         });
-        self.set_dirty(true, cx);
+        // Dirty is the project's to say; the tab reads it when it draws.
+        cx.notify();
     }
 
     /// Fold the analysis the worker just published into the editor.
@@ -568,7 +600,7 @@ impl gpui_component::dock::BasePanel for Document {
 }
 
 impl gpui_component::dock::Panel for Document {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let name = self
             .path
             .rsplit('/')
@@ -577,7 +609,7 @@ impl gpui_component::dock::Panel for Document {
             .to_owned();
         // The unsaved marker is the tab's own affordance; a separate dot
         // elsewhere would be a second place to keep in step.
-        SharedString::from(if self.dirty {
+        SharedString::from(if self.is_dirty(cx) {
             format!("{name} •")
         } else {
             name

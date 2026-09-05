@@ -307,14 +307,20 @@ Two defects carried from the spike are fixed here, not later:
   files).
 - Moving the editor acceptance gate down onto the shared session — required
   by the layering ruling, not by this slice.
-- **One shared buffer per file.** Every editor over a file — a Code view
-  document, a manuscript section, a Search card — owns its own
-  `EditorState` today, so an edit in one does not reach the others. The
-  model needs a canonical text per file with change events that every
-  editor mirrors; it is what makes Search's cards editable (ruled
-  2026-08-24) and what the manuscript already lacks.
+- ~~One shared buffer per file.~~ **Built 2026-09-05.** The mirror
+  (`app/src/project.rs`) holds the canonical text of every file; each
+  `EditorState` is a view of it. An editor pushes its text through
+  `Project::edit`, which reduces the change to one `SourceDelta` (common
+  head and tail trimmed, widened to char boundaries) and broadcasts
+  `ProjectEvent::SourceChanged`; every other editor over the file applies
+  the delta in place, keeping its caret and undo history, and resyncs
+  wholesale only if it has fallen out of step. Identical text is a no-op,
+  which is what stops the echo. Dirty and save are per file, in the
+  project — an edit in the manuscript is as unsaved as one in a tab, and
+  one `cmd-s` writes both. Verified headless both directions.
 - Player, story graph, debugger, settings; Search's editable cards, replace
-  previews and references mode (all on the shared buffer above). **Where the Player
+  previews and references mode (the shared buffer is in; the cards now
+  need to become editors over it). **Where the Player
   sits in each view is an open ruling** (parked 2026-09-05, see
   `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
   split, a native companion in Single File view, and absent from

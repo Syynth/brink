@@ -70,7 +70,7 @@ impl Studio {
         let search = cx.new(|cx| SearchView::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
-        let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
+        let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
             workspace.add_tool_window(
@@ -144,6 +144,7 @@ impl Studio {
                 }
                 ProjectEvent::OpenFailed(message) => eprintln!("failed to open: {message}"),
                 ProjectEvent::Analyzed => this.refresh_status(cx),
+                ProjectEvent::SourceChanged { .. } | ProjectEvent::Saved => {}
             },
         );
         let on_binder = cx.subscribe_in(
@@ -236,9 +237,13 @@ impl Studio {
             .update(cx, |search, cx| search.focus_query(window, cx));
     }
 
+    /// Save every dirty file — whichever editor it was changed in.
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.project.read(cx).root().to_path_buf();
-        self.code.update(cx, |code, cx| code.save_all(&root, cx));
+        self.project.update(cx, |project, cx| {
+            for (path, err) in project.save_all(cx) {
+                eprintln!("failed to save {path}: {err:#}");
+            }
+        });
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {

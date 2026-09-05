@@ -10,12 +10,13 @@
 //! data (`docs/gpui-studio-spec.md` §3.3).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, Kinds, Request, Response, Worker};
-use gpui::{App, AppContext as _, Context, EventEmitter, Task};
+use gpui::{App, AppContext as _, Context, EntityId, EventEmitter, Task};
 
 /// What the UI learns from the worker.
 #[derive(Debug, Clone)]
@@ -27,6 +28,61 @@ pub enum ProjectEvent {
     OpenFailed(String),
     /// Fresh analysis landed — diagnostics, kinds and drafts all moved.
     Analyzed,
+    /// A file's text changed. Every editor over `path` other than `origin`
+    /// applies `delta` to its own buffer, so all of them show one text —
+    /// the shared buffer `docs/gpui-studio-spec.md` §6 asks for, with the
+    /// mirror as the canonical copy and each `EditorState` a view of it.
+    SourceChanged {
+        path: String,
+        /// The editor the change came from, which already holds it.
+        origin: Option<EntityId>,
+        delta: SourceDelta,
+    },
+    /// Dirty files were written to disk.
+    Saved,
+}
+
+/// One contiguous replacement in a file's text — what a keystroke is, and
+/// what any edit reduces to between its unchanged head and tail. `range`
+/// and `removed` describe the OLD text; `inserted` is what replaced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceDelta {
+    pub range: Range<usize>,
+    pub removed: String,
+    pub inserted: String,
+}
+
+/// The smallest single replacement turning `old` into `new`, or `None`
+/// when they are equal. Common head and tail are trimmed bytewise and then
+/// widened to char boundaries, so a change inside a multi-byte character
+/// never splits it.
+#[must_use]
+pub fn diff(old: &str, new: &str) -> Option<SourceDelta> {
+    if old == new {
+        return None;
+    }
+    let (ob, nb) = (old.as_bytes(), new.as_bytes());
+    let mut start = ob.iter().zip(nb).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(start) {
+        start -= 1;
+    }
+    let limit = old.len().min(new.len()) - start;
+    let mut tail = ob[start..]
+        .iter()
+        .rev()
+        .zip(nb[start..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(limit);
+    while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
+        tail -= 1;
+    }
+    let range = start..old.len() - tail;
+    Some(SourceDelta {
+        removed: old[range.clone()].to_owned(),
+        inserted: new[start..new.len() - tail].to_owned(),
+        range,
+    })
 }
 
 /// The mirror.
@@ -34,9 +90,14 @@ pub struct Project {
     worker: Worker,
     root: PathBuf,
     files: Vec<String>,
-    /// Text as loaded. A `Document` takes its initial value from here; once
-    /// open, the editor's rope is the truth and this is not kept in step.
+    /// The canonical text of every file — what each editor over the file
+    /// mirrors, and what is analysed, searched and saved. An editor pushes
+    /// its text through [`Project::edit`]; the others hear the delta.
     sources: BTreeMap<String, String>,
+    /// The text on disk, as of load or the last save. Dirty is the
+    /// difference — a per-file fact, not a per-editor one, so an edit made
+    /// in the manuscript is as unsaved as one made in a Code view tab.
+    saved: BTreeMap<String, String>,
     entry: Option<String>,
     drafts: BTreeSet<String>,
     closure: BTreeSet<String>,
@@ -81,6 +142,7 @@ impl Project {
             root: PathBuf::new(),
             files: Vec::new(),
             sources: BTreeMap::new(),
+            saved: BTreeMap::new(),
             entry: None,
             drafts: BTreeSet::new(),
             closure: BTreeSet::new(),
@@ -102,6 +164,7 @@ impl Project {
                 Ok(opened) => {
                     self.root = opened.root;
                     self.sources = opened.files.iter().cloned().zip(opened.sources).collect();
+                    self.saved = self.sources.clone();
                     self.files = opened.files;
                     self.entry = opened.entry;
                     self.warnings = opened.warnings;
@@ -135,13 +198,29 @@ impl Project {
         self.worker.send(Request::Open { root });
     }
 
-    /// Tell the worker a file's new text. Returns immediately — the analysis
-    /// arrives later as [`ProjectEvent::Analyzed`], and nothing waits for it.
+    /// An editor's new text for a file. Returns whether anything changed.
     ///
-    /// The mirror keeps the text too, so whatever reads sources here —
-    /// Search, the Problems panel's line numbers — sees what the author
-    /// typed, not what the file was loaded with.
-    pub fn edit(&mut self, path: &str, text: String) {
+    /// The mirror takes the text as canonical, tells the worker (the
+    /// analysis arrives later as [`ProjectEvent::Analyzed`]; nothing waits
+    /// for it), and broadcasts the delta so every other editor over the
+    /// file follows. Identical text is a no-op — which is what makes the
+    /// broadcast safe: an editor applying a delta re-reports the same text,
+    /// and that echo stops here.
+    pub fn edit(
+        &mut self,
+        path: &str,
+        text: String,
+        origin: Option<EntityId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let old = self
+            .sources
+            .get(path)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let Some(delta) = diff(old, &text) else {
+            return false;
+        };
         self.sources.insert(path.to_owned(), text.clone());
         self.revision += 1;
         self.worker.send(Request::Edit {
@@ -149,6 +228,43 @@ impl Project {
             text,
             revision: self.revision,
         });
+        cx.emit(ProjectEvent::SourceChanged {
+            path: path.to_owned(),
+            origin,
+            delta,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Whether a file's text differs from what is on disk.
+    #[must_use]
+    pub fn is_dirty(&self, path: &str) -> bool {
+        self.sources.get(path) != self.saved.get(path)
+    }
+
+    /// Write every dirty file, relative to the root. Each failure is
+    /// returned with its path; the others are still written.
+    pub fn save_all(&mut self, cx: &mut Context<Self>) -> Vec<(String, std::io::Error)> {
+        let mut failures = Vec::new();
+        let mut wrote = false;
+        for (path, text) in &self.sources {
+            if self.saved.get(path) == Some(text) {
+                continue;
+            }
+            match std::fs::write(self.root.join(path), text) {
+                Ok(()) => {
+                    self.saved.insert(path.clone(), text.clone());
+                    wrote = true;
+                }
+                Err(err) => failures.push((path.clone(), err)),
+            }
+        }
+        if wrote {
+            cx.emit(ProjectEvent::Saved);
+            cx.notify();
+        }
+        failures
     }
 
     /// Ask the worker a question. The returned task resolves when the worker
@@ -170,8 +286,8 @@ impl Project {
         &self.files
     }
 
-    /// The text a file was loaded with. `None` once the project is replaced,
-    /// or for a path it never held.
+    /// A file's canonical text, as the editors currently hold it. `None`
+    /// for a path the project never held.
     #[must_use]
     pub fn loaded_source(&self, path: &str) -> Option<&str> {
         self.sources.get(path).map(String::as_str)
@@ -250,5 +366,84 @@ impl Project {
     #[must_use]
     pub fn timings(&self) -> (f64, f64) {
         (self.last_analyze_ms, self.worst_analyze_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta(old: &str, new: &str) -> SourceDelta {
+        diff(old, new).expect("texts differ")
+    }
+
+    #[test]
+    fn a_keystroke_is_one_insertion() {
+        let d = delta("hello world", "hello, world");
+        assert_eq!(d.range, 5..5);
+        assert_eq!(d.removed, "");
+        assert_eq!(d.inserted, ",");
+    }
+
+    #[test]
+    fn deletions_and_replacements_keep_the_unchanged_head_and_tail() {
+        // The head and tail are trimmed BYTEWISE, so a delta need not fall
+        // on word boundaries: "one two three" -> "one three" shares "one t"
+        // and "hree", leaving "wo t" removed. Any such delta is correct as
+        // long as applying it reproduces the new text.
+        let d = delta("one two three", "one three");
+        assert_eq!(d.removed.len(), 4);
+        assert_eq!(d.inserted, "");
+        let d = delta("one two three", "one 2 three");
+        assert_eq!(
+            (d.range.clone(), d.removed.as_str(), d.inserted.as_str()),
+            (4..7, "two", "2")
+        );
+        // Two far-apart edits collapse to the one span covering both:
+        // coarser than two deltas, never wrong.
+        let d = delta("aXbYc", "a1bYc2");
+        assert_eq!(&"aXbYc"[d.range.clone()], "XbYc");
+        assert_eq!(d.inserted, "1bYc2");
+    }
+
+    #[test]
+    fn identical_text_is_no_delta_and_overlap_is_handled() {
+        assert_eq!(diff("same", "same"), None);
+        // Head and tail would overlap on "aa" vs "aaa"; the delta is the one
+        // extra character.
+        let d = delta("aa", "aaa");
+        assert_eq!(d.removed, "");
+        assert_eq!(d.inserted, "a");
+        let d = delta("", "new");
+        assert_eq!((d.range.clone(), d.inserted.as_str()), (0..0, "new"));
+        let d = delta("gone", "");
+        assert_eq!((d.range.clone(), d.removed.as_str()), (0..4, "gone"));
+    }
+
+    #[test]
+    fn a_change_inside_a_multibyte_character_never_splits_it() {
+        // "é" is C3 A9, "è" is C3 A8: the bytes share a prefix.
+        let d = delta("café", "cafè");
+        assert_eq!(d.removed, "é");
+        assert_eq!(d.inserted, "è");
+        assert!("café".is_char_boundary(d.range.start));
+        assert!("café".is_char_boundary(d.range.end));
+    }
+
+    #[test]
+    fn applying_the_delta_reproduces_the_new_text() {
+        for (old, new) in [
+            ("abc", "abXc"),
+            ("héllo wörld", "héllo, wörld!"),
+            ("line1\nline2\n", "line1\nLINE2\n"),
+            ("", "x"),
+            ("x", ""),
+        ] {
+            let d = delta(old, new);
+            let mut applied = old.to_owned();
+            applied.replace_range(d.range.clone(), &d.inserted);
+            assert_eq!(applied, new, "{old:?} -> {new:?}");
+            assert_eq!(&old[d.range.clone()], d.removed);
+        }
     }
 }

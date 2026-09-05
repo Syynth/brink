@@ -313,7 +313,11 @@ impl Binder {
                     this.symbols.clear();
                     this.rebuild(cx);
                 }
-                ProjectEvent::OpenFailed(_) => {}
+                // Text moving inside a file changes no row; a save changes
+                // no row either.
+                ProjectEvent::OpenFailed(_)
+                | ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::Saved => {}
             }
         });
         let mut this = Self {
