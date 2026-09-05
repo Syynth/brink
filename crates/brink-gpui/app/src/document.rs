@@ -235,11 +235,18 @@ impl Document {
 
     /// Make this the displayed tab of its group — opening a file that is
     /// already open. A no-op until the dock has placed it.
-    pub fn activate(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(group) = self.group.as_ref() else {
+    ///
+    /// Not a method run inside the document's own `update`: selecting the
+    /// tab makes the dock read the panel back (`PanelView::visible`, on
+    /// the way to focusing it), and a read during the entity's own update
+    /// is a panic. It went unnoticed while every reveal landed on the tab
+    /// already showing — `select_tab` returns early then — and surfaced
+    /// the first time a Binder click reached a tab behind another.
+    pub fn activate(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let Some(group) = this.read(cx).group.clone() else {
             return;
         };
-        let me = PanelId::from(cx.entity().entity_id());
+        let me = PanelId::from(this.entity_id());
         _ = group.update(cx, |group, cx| {
             let ix = group
                 .panels()

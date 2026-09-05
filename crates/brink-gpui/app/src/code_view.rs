@@ -78,7 +78,7 @@ impl CodeView {
             .cloned();
         let document = match existing {
             Some(document) => {
-                document.update(cx, |document, cx| document.activate(window, cx));
+                Document::activate(&document, window, cx);
                 document
             }
             None => {
@@ -98,7 +98,7 @@ impl CodeView {
                         cx,
                     );
                 });
-                document.update(cx, |document, cx| document.activate(window, cx));
+                Document::activate(&document, window, cx);
                 let subscription = cx.subscribe(&document, Self::on_document_event);
                 self.subscriptions.push((document.clone(), subscription));
                 self.documents.push(document.clone());
