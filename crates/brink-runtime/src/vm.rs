@@ -136,6 +136,10 @@ fn step_impl<R: crate::rng::StoryRng>(
     }
 
     // ── Decode ──────────────────────────────────────────────────────────
+    if let Some(&disc) = code.get(pos.offset) {
+        note_opcode(stats, disc);
+    }
+
     // A static-operand instruction the linker resolved needs no decoding
     // at all: its operand is an ordinal into the linked target table
     // (`LinkTables`) or a global's slot, read here and dispatched without
@@ -2902,6 +2906,32 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
         *top = pos;
     }
 }
+
+/// Count an executed instruction (and the pair it completes) in the
+/// bench histogram. No-op unless the `bench-counters` feature is enabled.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_opcode(stats: &mut Stats, disc: u8) {
+    if stats.opcode_hist.is_empty() {
+        stats.opcode_hist = alloc::vec![0; 256];
+        stats.bigram_hist = alloc::vec![0; 65_536];
+    }
+    if let Some(count) = stats.opcode_hist.get_mut(usize::from(disc)) {
+        *count += 1;
+    }
+    if let Some(prev) = stats.last_disc
+        && let Some(count) = stats
+            .bigram_hist
+            .get_mut(usize::from(prev) << 8 | usize::from(disc))
+    {
+        *count += 1;
+    }
+    stats.last_disc = Some(disc);
+}
+
+#[cfg(not(feature = "bench-counters"))]
+#[inline]
+fn note_opcode(_stats: &mut Stats, _disc: u8) {}
 
 /// Record `offset` as the current frame's next instruction.
 #[inline]
