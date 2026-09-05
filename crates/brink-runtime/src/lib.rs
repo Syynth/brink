@@ -105,7 +105,7 @@ pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, Polic
 pub use iter::ValueIter;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
-pub use output::{Fragment, OutputPart};
+pub use output::{Fragment, FragmentRef, Fragments, OutputPart};
 pub use program::{ListMember, Program};
 pub use replay::{
     RECORDING_CAP, RecordedExternal, RecordingHandler, ReplayHandler, ReplayMode, ReplayRecorder,

@@ -418,7 +418,7 @@ impl<R: StoryRng> Story<R> {
     }
 
     /// Read-only access to the fragment store (for transcript serialization).
-    pub fn fragments(&self) -> &[crate::output::Fragment] {
+    pub fn fragments(&self) -> &crate::output::Fragments {
         self.default.flow.output.fragments()
     }
 

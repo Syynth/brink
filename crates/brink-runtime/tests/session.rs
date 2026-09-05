@@ -349,7 +349,7 @@ fn external_collection_survives_transcript_round_trip() {
     // array lands as a `ValueRef` inside a captured fragment (not a top-level
     // part). Scan both surfaces for it.
     let expected = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
-    let find_array = |ps: &[OutputPart], fs: &[brink_runtime::Fragment]| -> Option<Value> {
+    let find_array = |ps: &[OutputPart], fs: &brink_runtime::Fragments| -> Option<Value> {
         ps.iter()
             .chain(fs.iter().flat_map(|f| f.parts.iter()))
             .find_map(|p| match p {

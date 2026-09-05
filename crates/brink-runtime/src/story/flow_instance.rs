@@ -892,7 +892,7 @@ impl FlowInstance {
     /// The fragments captured during execution (for re-rendering choice
     /// display text and computed substrings in a different locale).
     #[must_use]
-    pub fn fragments(&self) -> &[crate::output::Fragment] {
+    pub fn fragments(&self) -> &crate::output::Fragments {
         self.flow.output.fragments()
     }
 

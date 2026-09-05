@@ -22,7 +22,7 @@ mod fragment;
 
 use completion::LineCompletion;
 
-pub use fragment::Fragment;
+pub use fragment::{Fragment, FragmentRef, Fragments};
 
 /// A part of accumulated output.
 ///
@@ -109,7 +109,7 @@ impl OutputPart {
         line_tables: &[Vec<LineEntry>],
         resolver: Option<&dyn PluralResolver>,
     ) -> String {
-        resolve_part(self, program, line_tables, resolver, &[])
+        resolve_part(self, program, line_tables, resolver, &Fragments::default())
     }
 
     /// Returns true if this part represents non-whitespace text content.
@@ -161,7 +161,7 @@ fn resolve_part(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> String {
     let mut out = String::new();
     resolve_part_into(part, &mut out, program, line_tables, resolver, fragments);
@@ -186,7 +186,7 @@ fn resolve_part_into(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) {
     match part {
         OutputPart::Text(s) => {
@@ -210,9 +210,8 @@ fn resolve_part_into(
         ),
         OutputPart::ValueRef(Value::FragmentRef(idx)) => {
             // Resolve the fragment's parts against current line tables.
-            let idx = *idx as usize;
-            if let Some(frag) = fragments.get(idx) {
-                let s = resolve_parts(&frag.parts, program, line_tables, resolver, fragments);
+            if let Some(parts) = fragments.parts(*idx) {
+                let s = resolve_parts(parts, program, line_tables, resolver, fragments);
                 out.push_str(&s);
             }
         }
@@ -260,7 +259,7 @@ fn resolve_line_ref(
     line_idx: u16,
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> String {
     let mut out = String::new();
     resolve_line_ref_into(
@@ -289,7 +288,7 @@ fn resolve_line_ref_into(
     line_idx: u16,
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) {
     let scope_idx = program.scope_table_idx(container_idx) as usize;
     let lines = &line_tables[scope_idx];
@@ -335,7 +334,7 @@ fn resolve_line_parts_into(
     line_tables: &[Vec<LineEntry>],
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) {
     let base = out.len();
     for part in parts {
@@ -344,9 +343,8 @@ fn resolve_line_parts_into(
             LinePart::Literal(s) => out.push_str(s),
             LinePart::Slot(n) => match slots.get(*n as usize) {
                 Some(Value::FragmentRef(idx)) => {
-                    if let Some(frag) = fragments.get(*idx as usize) {
-                        let s =
-                            resolve_parts(&frag.parts, program, line_tables, resolver, fragments);
+                    if let Some(parts) = fragments.parts(*idx) {
+                        let s = resolve_parts(parts, program, line_tables, resolver, fragments);
                         out.push_str(&s);
                     }
                 }
@@ -523,7 +521,7 @@ pub(crate) struct OutputBuffer {
     /// Nesting depth of active captures. When > 0, pushes route to `capture`.
     capture_depth: usize,
     /// Finalized fragments — structural output parts for locale re-rendering.
-    fragments: Vec<Fragment>,
+    fragments: Fragments,
     /// Current fragment being captured.
     fragment_capture: Vec<OutputPart>,
     /// Fragment capture nesting depth. When > 0, pushes route to `fragment_capture`.
@@ -554,7 +552,7 @@ impl OutputBuffer {
             cursor: 0,
             capture: Vec::new(),
             capture_depth: 0,
-            fragments: Vec::new(),
+            fragments: Fragments::default(),
             fragment_capture: Vec::new(),
             fragment_depth: 0,
             fragment_pending_tags: Vec::new(),
@@ -1066,7 +1064,7 @@ fn resolve_parts(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> String {
     // First pass: mark newlines that should be removed by glue.
     let mut remove = vec![false; parts.len()];
@@ -1233,7 +1231,7 @@ pub(crate) fn resolve_lines(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> Vec<ResolvedLine> {
     resolve_lines_annotated(
         parts,
@@ -1332,7 +1330,7 @@ pub(crate) fn resolve_lines_annotated(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> Vec<AnnotatedResolvedLine> {
     if parts.is_empty() {
         return Vec::new();
@@ -1364,7 +1362,7 @@ pub(crate) fn resolve_lines_annotated_marked(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> Vec<AnnotatedResolvedLine> {
     if parts.is_empty() {
         return Vec::new();
@@ -1402,7 +1400,7 @@ pub(crate) fn resolve_first_line_annotated(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
 ) -> (AnnotatedResolvedLine, BTreeMap<String, String>) {
     let mut first: Option<AnnotatedResolvedLine> = None;
     let mut next_element: Option<BTreeMap<String, String>> = None;
@@ -1455,7 +1453,7 @@ fn drive_lines(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Fragment],
+    fragments: &Fragments,
     mut emit: impl FnMut(AnnotatedResolvedLine),
 ) -> AnnotatedResolvedLine {
     debug_assert_eq!(remove.len(), parts.len(), "one glue mark per part");
@@ -1716,10 +1714,17 @@ mod tests {
                 &program,
                 &[],
                 None,
-                &[],
+                &Fragments::default(),
             );
-            let (line, next_element) =
-                resolve_first_line_annotated(slice, marks, seed_element, &program, &[], None, &[]);
+            let (line, next_element) = resolve_first_line_annotated(
+                slice,
+                marks,
+                seed_element,
+                &program,
+                &[],
+                None,
+                &Fragments::default(),
+            );
             assert_eq!(
                 batch.len(),
                 2,
@@ -2285,7 +2290,15 @@ mod tests {
             source_location: None,
         }]];
 
-        resolve_line_ref(&program, &line_tables, 0, 0, slots, None, &[])
+        resolve_line_ref(
+            &program,
+            &line_tables,
+            0,
+            0,
+            slots,
+            None,
+            &Fragments::default(),
+        )
     }
 
     #[test]
@@ -2608,10 +2621,10 @@ mod tests {
         // The captured block was empty: a real, present `Fragment` with no
         // parts — not an omitted line-table entry (issue #2091's own "what
         // happens to the line-table entry" question: present-but-empty).
-        let fragments = vec![Fragment {
+        let fragments = Fragments::from(vec![Fragment {
             parts: vec![],
             tags: vec![],
-        }];
+        }]);
 
         let parts = vec![
             line_ref(0, vec![], brink_format::LineFlags::from_plain("VENDOR")),
@@ -2667,10 +2680,10 @@ mod tests {
         // where `f` produced no side-effect output and its return value
         // stringified to empty — a real, present `Fragment` with no parts,
         // exactly as a `block` capture's empty fragment looks structurally.
-        let fragments = vec![Fragment {
+        let fragments = Fragments::from(vec![Fragment {
             parts: vec![],
             tags: vec![],
-        }];
+        }]);
 
         let parts = vec![
             line_ref(0, vec![], brink_format::LineFlags::from_plain("Before.")),
@@ -2717,7 +2730,7 @@ mod tests {
             one_slot_template_entry(),
             plain_entry("(hushed)"),
         ]);
-        let fragments: Vec<Fragment> = vec![];
+        let fragments = Fragments::default();
 
         let parts = vec![
             line_ref(0, vec![], brink_format::LineFlags::from_plain("VENDOR")),

@@ -17,7 +17,7 @@
 //! — and are skipped on export / absent from the schema on import.
 
 use brink_format::{LineFlags, Value};
-use brink_runtime::{Fragment, OutputPart};
+use brink_runtime::{Fragment, Fragments, OutputPart};
 use serde::{Deserialize, Serialize};
 
 /// The JSON envelope a save slot (or a reload hand-off) stores.
@@ -121,7 +121,7 @@ fn part_from_json(part: PartJson) -> OutputPart {
 /// Build the JSON envelope from a live story's transcript + fragments.
 pub(crate) fn export_transcript_json(
     parts: &[OutputPart],
-    fragments: &[Fragment],
+    fragments: &Fragments,
     checksum: u32,
 ) -> TranscriptJson {
     TranscriptJson {
@@ -132,7 +132,7 @@ pub(crate) fn export_transcript_json(
             .iter()
             .map(|f| FragmentJson {
                 parts: f.parts.iter().filter_map(part_to_json).collect(),
-                tags: f.tags.clone(),
+                tags: f.tags.to_vec(),
             })
             .collect(),
     }
@@ -149,7 +149,7 @@ pub(crate) fn export_transcript_json(
 pub(crate) fn decode_transcript_json(
     t: TranscriptJson,
     container_count: u32,
-) -> (Vec<OutputPart>, Vec<Fragment>) {
+) -> (Vec<OutputPart>, Fragments) {
     let keep = |p: &OutputPart| match p {
         OutputPart::LineRef { container_idx, .. } => *container_idx < container_count,
         _ => true,
@@ -173,5 +173,5 @@ pub(crate) fn decode_transcript_json(
             tags: f.tags,
         })
         .collect();
-    (parts, fragments)
+    (parts, Fragments::from(fragments))
 }

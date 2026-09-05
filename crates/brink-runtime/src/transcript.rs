@@ -207,7 +207,7 @@ pub enum TranscriptError {
 pub fn write_transcript(
     parts: &[OutputPart],
     source_checksum: u32,
-    fragments: &[crate::output::Fragment],
+    fragments: &crate::output::Fragments,
 ) -> Vec<u8> {
     let mut body = Vec::new();
 
@@ -221,10 +221,10 @@ pub fn write_transcript(
 
     // Serialize fragments
     write_u32(&mut body, fragments.len() as u32);
-    for fragment in fragments {
+    for fragment in fragments.iter() {
         let filtered_count = fragment.parts.iter().filter(|p| is_persisted(p)).count() as u32;
         write_u32(&mut body, filtered_count);
-        for part in &fragment.parts {
+        for part in fragment.parts {
             encode_part(part, &mut body);
         }
     }
@@ -238,9 +238,9 @@ pub fn write_transcript(
     // later fragment's part bytes as an earlier fragment's tag bytes (which
     // an inline per-fragment layout could not distinguish after the fact).
     // Fixes #953: `Fragment::tags` was silently dropped by this codec.
-    for fragment in fragments {
+    for fragment in fragments.iter() {
         write_u32(&mut body, fragment.tags.len() as u32);
-        for tag in &fragment.tags {
+        for tag in fragment.tags {
             write_str(&mut body, tag);
         }
     }
@@ -270,7 +270,7 @@ pub fn write_transcript(
 pub struct TranscriptData {
     pub parts: Vec<OutputPart>,
     pub source_checksum: u32,
-    pub fragments: Vec<crate::output::Fragment>,
+    pub fragments: crate::output::Fragments,
 }
 
 /// Deserialize a transcript from the `.brkt` binary format.
@@ -347,7 +347,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
     Ok(TranscriptData {
         parts,
         source_checksum,
-        fragments,
+        fragments: crate::output::Fragments::from(fragments),
     })
 }
 
@@ -362,7 +362,7 @@ pub fn render_transcript(
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-    fragments: &[crate::output::Fragment],
+    fragments: &crate::output::Fragments,
 ) -> Vec<(String, Vec<String>)> {
     // Element-attachment data (issue #2108) is dropped here — moot in
     // practice, since `OutputPart::ElementAttach`/`ElementAttachEnd` are not
@@ -385,7 +385,7 @@ pub fn render_transcript_with_source(
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-    fragments: &[crate::output::Fragment],
+    fragments: &crate::output::Fragments,
 ) -> Vec<(String, Vec<String>, Option<brink_format::SourceLocation>)> {
     resolve_lines(parts, program, line_tables, resolver, fragments)
         .into_iter()
@@ -1098,7 +1098,7 @@ mod tests {
             OutputPart::Tag("tag1".to_string()),
             OutputPart::Glue,
         ];
-        let bytes = write_transcript(&parts, 0xDEAD_BEEF, &[]);
+        let bytes = write_transcript(&parts, 0xDEAD_BEEF, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
         assert_eq!(data.source_checksum, 0xDEAD_BEEF);
         assert_eq!(data.parts.len(), 5);
@@ -1178,7 +1178,7 @@ mod tests {
         }
 
         // Top-level loop: header, then a u32 part count, then the parts.
-        let top_level_bytes = write_transcript(&parts, 0, &[]);
+        let top_level_bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
         let top_level_part_bytes =
             &top_level_bytes[HEADER_SIZE + 4..HEADER_SIZE + 4 + expected.len()];
         assert_eq!(
@@ -1193,7 +1193,8 @@ mod tests {
             parts: parts.clone(),
             tags: Vec::new(),
         };
-        let fragment_bytes = write_transcript(&[], 0, &[fragment]);
+        let fragment_bytes =
+            write_transcript(&[], 0, &crate::output::Fragments::from(vec![fragment]));
         let frag_start = HEADER_SIZE + 4 + 4 + 4;
         let fragment_part_bytes = &fragment_bytes[frag_start..frag_start + expected.len()];
         assert_eq!(
@@ -1207,8 +1208,9 @@ mod tests {
         let fragment_data = read_transcript(&fragment_bytes).unwrap();
         assert_eq!(top_level_data.parts.len(), 7); // Checkpoint filtered
         assert_eq!(fragment_data.fragments.len(), 1);
-        assert_eq!(fragment_data.fragments[0].parts.len(), 7);
-        assert_eq!(top_level_data.parts, fragment_data.fragments[0].parts);
+        let fragment_parts = fragment_data.fragments.parts(0).unwrap();
+        assert_eq!(fragment_parts.len(), 7);
+        assert_eq!(top_level_data.parts, fragment_parts);
     }
 
     /// NS-A8 (`docs/tower-mini-spec.md` T5): a tower value in an
@@ -1225,7 +1227,7 @@ mod tests {
             ]))),
             OutputPart::ValueRef(Value::Vec2(glam::Vec2::new(f32::NAN, 7.0))),
         ];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
         assert_eq!(data.parts.len(), 4);
         assert!(
@@ -1274,7 +1276,7 @@ mod tests {
             OutputPart::ValueRef(array.clone()),
             OutputPart::ValueRef(Value::map(map.clone())),
         ];
-        let bytes = write_transcript(&parts, 42, &[]);
+        let bytes = write_transcript(&parts, 42, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
 
         assert_eq!(data.parts.len(), 2);
@@ -1319,7 +1321,7 @@ mod tests {
             OutputPart::ValueRef(fn_ref.clone()),
             OutputPart::ValueRef(closure.clone()),
         ];
-        let bytes = write_transcript(&parts, 7, &[]);
+        let bytes = write_transcript(&parts, 7, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
 
         assert_eq!(data.parts.len(), 2);
@@ -1352,7 +1354,7 @@ mod tests {
             OutputPart::ValueRef(handle.clone()),
             OutputPart::ValueRef(nested.clone()),
         ];
-        let bytes = write_transcript(&parts, 13, &[]);
+        let bytes = write_transcript(&parts, 13, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
 
         assert_eq!(data.parts.len(), 2);
@@ -1389,7 +1391,7 @@ mod tests {
             OutputPart::ValueRef(proj.clone()),
             OutputPart::ValueRef(nested.clone()),
         ];
-        let bytes = write_transcript(&parts, 13, &[]);
+        let bytes = write_transcript(&parts, 13, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
 
         assert_eq!(data.parts.len(), 2);
@@ -1411,7 +1413,7 @@ mod tests {
             slots: vec![Value::Int(123), Value::String(Arc::from("hello"))],
             flags: LineFlags::ALL_WS | LineFlags::EMPTY,
         }];
-        let bytes = write_transcript(&parts, 1234, &[]);
+        let bytes = write_transcript(&parts, 1234, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
         assert_eq!(data.parts.len(), 1);
         match &data.parts[0] {
@@ -1439,7 +1441,7 @@ mod tests {
             OutputPart::Checkpoint,
             OutputPart::Newline,
         ];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
         assert_eq!(data.parts.len(), 2); // Checkpoint filtered
         assert!(matches!(&data.parts[0], OutputPart::Text(_)));
@@ -1465,16 +1467,16 @@ mod tests {
                 tags: Vec::new(),
             },
         ];
-        let bytes = write_transcript(&[], 0, &fragments);
+        let bytes = write_transcript(&[], 0, &crate::output::Fragments::from(fragments.clone()));
         let data = read_transcript(&bytes).unwrap();
 
         assert_eq!(data.fragments.len(), 2);
         assert_eq!(
-            data.fragments[0].tags,
+            data.fragments.tags(0).unwrap(),
             vec!["a_tag".to_string(), "b_tag".to_string()]
         );
-        assert_eq!(data.fragments[0].parts, fragments[0].parts);
-        assert!(data.fragments[1].tags.is_empty());
+        assert_eq!(data.fragments.parts(0).unwrap(), fragments[0].parts);
+        assert!(data.fragments.tags(1).unwrap().is_empty());
     }
 
     // Every `.brkt` file written before this fix has the fragment section
@@ -1505,8 +1507,10 @@ mod tests {
 
         let data = read_transcript(&bytes).expect("legacy transcript must still decode");
         assert_eq!(data.fragments.len(), 1);
-        assert!(matches!(&data.fragments[0].parts[0], OutputPart::Text(s) if s == "legacy"));
-        assert!(data.fragments[0].tags.is_empty());
+        assert!(
+            matches!(&data.fragments.parts(0).unwrap()[0], OutputPart::Text(s) if s == "legacy")
+        );
+        assert!(data.fragments.tags(0).unwrap().is_empty());
     }
 
     // The *other* backward-compat boundary this module's doc claims but only
@@ -1552,7 +1556,7 @@ mod tests {
 
     #[test]
     fn invalid_magic_errors() {
-        let mut bytes = write_transcript(&[], 0, &[]);
+        let mut bytes = write_transcript(&[], 0, &crate::output::Fragments::default());
         bytes[0] = b'X';
         assert!(matches!(
             read_transcript(&bytes),
@@ -1562,7 +1566,11 @@ mod tests {
 
     #[test]
     fn integrity_check_errors() {
-        let mut bytes = write_transcript(&[OutputPart::Newline], 0, &[]);
+        let mut bytes = write_transcript(
+            &[OutputPart::Newline],
+            0,
+            &crate::output::Fragments::default(),
+        );
         // Corrupt a body byte
         if let Some(last) = bytes.last_mut() {
             *last ^= 0xFF;
@@ -1617,7 +1625,7 @@ mod tests {
         // cleanly — the cap must not clip legitimate (if unusual) data.
         let value = nested_array(MAX_DECODE_DEPTH);
         let parts = vec![OutputPart::ValueRef(value.clone())];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
 
         let data = read_transcript(&bytes).expect("depth exactly at cap must decode");
         match &data.parts[0] {
@@ -1632,7 +1640,7 @@ mod tests {
         // error, not a stack overflow.
         let value = nested_array(MAX_DECODE_DEPTH + 1);
         let parts = vec![OutputPart::ValueRef(value)];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
 
         assert!(matches!(
             read_transcript(&bytes),
@@ -1651,7 +1659,7 @@ mod tests {
         // recursing hundreds of frames deep.
         let value = nested_array(8 * MAX_DECODE_DEPTH);
         let parts = vec![OutputPart::ValueRef(value)];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
 
         assert!(matches!(
             read_transcript(&bytes),
@@ -1667,7 +1675,7 @@ mod tests {
         // cleanly — the cap must not clip legitimate (if unusual) data.
         let value = nested_map(MAX_DECODE_DEPTH);
         let parts = vec![OutputPart::ValueRef(value.clone())];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
 
         let data = read_transcript(&bytes).expect("map depth exactly at cap must decode");
         match &data.parts[0] {
@@ -1682,7 +1690,7 @@ mod tests {
         // error, not a stack overflow.
         let value = nested_map(MAX_DECODE_DEPTH + 1);
         let parts = vec![OutputPart::ValueRef(value)];
-        let bytes = write_transcript(&parts, 0, &[]);
+        let bytes = write_transcript(&parts, 0, &crate::output::Fragments::default());
 
         assert!(matches!(
             read_transcript(&bytes),
