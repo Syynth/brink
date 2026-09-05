@@ -351,7 +351,7 @@
    which IS the text's offset — so an unreserved column slides the prose
    sideways the moment the rails land.
 
-   ONE lane (7px), matching `RAIL_LANE_WIDTH_PX`. The spacer RailMarker
+   ONE lane (5px), matching `RAIL_LANE_WIDTH_PX`. The spacer RailMarker
    renders is now a constant of that width rather than `5n + 2` for an
    n-deep stack, so the column no longer varies with the open file's nesting
    depth and this reservation is exact rather than a bet on the deepest
@@ -360,9 +360,12 @@
    layer, so they are not laid out by this width — and that gutter is empty
    except on the hovered line. Three lanes were reserved here at first,
    which cost 17px of permanently blank column on every file; the maintainer
-   called it too big, and it was. */
+   called it too big, and it was. Shrank again from 7px (RULED 2026-09-03,
+   decision-log "Structural rails"): the bar layer's `gap` dropped to `0`
+   and its side `padding` to `1px`, so the one-lane reservation is
+   `1 + 3 + 1`. */
 .brink-studio .brink-hir-rail-gutter {
-  min-width: 7px;
+  min-width: 5px;
 }
 /* The bar layer intentionally overflows the one-lane column for a deep
    stack; nothing between here and the scroller may clip it. */
@@ -380,9 +383,14 @@
   position: absolute;
   inset: 0 auto 0 0;
   display: flex;
-  gap: 2px;
+  /* No gap between bars (RULED 2026-09-03, decision-log "Structural
+     rails"): the per-bar hover became one hover for the whole stack, so
+     gaps were spending width on nothing rather than separating hover
+     targets. The side padding shrank to match (2px -> 1px), keeping the
+     one-lane reservation (`RAIL_LANE_WIDTH_PX`, #3131) exact. */
+  gap: 0;
   align-items: stretch;
-  padding: 0 2px;
+  padding: 0 1px;
 }
 .brink-studio .brink-hir-rail {
   width: 3px;
@@ -410,7 +418,12 @@
 
 /* Rail hover tooltip (a real floating tooltip, not a title attr). The
    position rides the fixed-position custom-property carrier pattern the
-   other popups use (#414 — no inline left/top styles). */
+   other popups use (#414 — no inline left/top styles).
+
+   ONE tooltip per line hover (RULED 2026-09-03, decision-log "Structural
+   rails: rightmost gutter, one compact hover for the whole stack"): the
+   list holds one `.brink-rail-tooltip-entry` per container in the line's
+   stack, outermost first — not a tooltip per bar. */
 .brink-studio .brink-rail-tooltip {
   position: fixed;
   left: var(--brink-popup-left, 0px);
@@ -425,6 +438,11 @@
   font-size: var(--bs-font-body);
   color: var(--bs-fg);
   pointer-events: none;
+}
+.brink-studio .brink-rail-tooltip-entry + .brink-rail-tooltip-entry {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--bs-border);
 }
 .brink-studio .brink-rail-tooltip-label {
   display: flex;

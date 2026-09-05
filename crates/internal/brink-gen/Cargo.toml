@@ -22,6 +22,11 @@ brink-test-harness = { workspace = true }
 # are the transformations under test.
 brink-fmt = { workspace = true }
 brink-respell = { workspace = true }
+# The optimizer equivalence property (`tests/opt_equivalence.rs`). The
+# `test-control` feature carries the negative-control passes the non-vacuity
+# half drives — see `brink_opt::control` for why the guard against one reaching
+# a real artifact is a runtime assertion rather than this feature being off.
+brink-opt = { workspace = true, features = ["test-control"] }
 
 [lints]
 workspace = true

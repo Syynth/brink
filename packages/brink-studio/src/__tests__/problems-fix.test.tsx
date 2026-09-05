@@ -181,6 +181,10 @@ function harness(
       refreshExternal: vi.fn(),
       triggerCompile: vi.fn(),
       invalidateFile: vi.fn(),
+      // #3496: `applyMoveResult` calls this instead of `invalidateFile` for
+      // a touched path it has a precise edit list for (a single Fix's own
+      // `edits`, as here).
+      applyEditsToViews: vi.fn(),
     } as never,
   });
   return { store, applied, written, selects };

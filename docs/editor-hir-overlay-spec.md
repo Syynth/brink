@@ -93,6 +93,16 @@ rails-only detail.
   conditional/sequence branches, threads/tunnels). The per-line container *stack*
   (outermost→innermost, each with kind + handle + depth) is derived on the frontend from the
   container spans; no separate per-line payload is emitted.
+- **R7a — Rail gutter position and hover (RULED 2026-09-03, decision-log "Structural rails:
+  rightmost gutter, one compact hover for the whole stack", issue #3501).** The rails gutter
+  is the RIGHTMOST `.cm-gutter`, directly adjacent to `.cm-content` — after line numbers and
+  the play/breakpoint and host gutters — achieved via CodeMirror's own gutter precedence
+  (`Prec.lowest`), never CSS reordering, so `detachedGutters`' width measurement stays
+  correct. Hovering the column at a line shows ONE tooltip listing every container in that
+  line's stack, outermost first (colour swatch + label + line range) — not a tooltip per bar.
+  The bars pack with no gap between them (`gap: 0`); the reserved one-lane width
+  (`RAIL_LANE_WIDTH_PX`, §"Nesting" R3 / #3131) stays a depth-independent constant, shrunk
+  alongside the tighter padding.
 
 ## 4. Architecture (mirrors the existing token pipeline)
 

@@ -18,6 +18,7 @@ import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
 import { proseExtension, proseRangesOf, withoutCueLines, type ProseLint } from "../prose.js";
+import { perfReport, perfReset, setPerfEnabled } from "../perf/probe.js";
 import { elementTypeField } from "../element-type.js";
 import { diagnosticSources, publishDiagnostics, diagnosticsFrom } from "../diagnostic-sources.js";
 
@@ -354,5 +355,79 @@ describe("onLints", () => {
     await settle();
     expect(seen.at(-1)).toEqual([]);
     view.destroy();
+  });
+});
+
+/**
+ * The check is measured (#3491).
+ *
+ * The 651 ms freeze this span exists to expose was invisible for four days
+ * because prose checking landed after the perf baseline was taken and had no
+ * span of its own — its cost showed up only as an unattributed
+ * `browser.longtask`. The span is production code, not a probe left behind,
+ * so it is pinned like one.
+ */
+describe("prose.check span", () => {
+  const wholeDoc = (length: number) =>
+    ({
+      spans: [span("content", 0, 0, 0, length)],
+      lines: [],
+    }) as unknown as HirProjection;
+
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  function mount(checker: unknown) {
+    const doc = "Griswold waits.";
+    return new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          proseExtension({
+            getChecker: () => checker as never,
+            getHirProjection: () => wholeDoc(doc.length),
+            debounceMs: 0,
+          }),
+        ],
+      }),
+    });
+  }
+
+  it("records one `prose.check` span per check, annotated with the doc length", async () => {
+    setPerfEnabled(true);
+    perfReset();
+    try {
+      const view = mount({ check: async () => [] });
+      await settle();
+      const agg = perfReport().aggregates.find((a) => a.name === "prose.check");
+      expect(agg, "no prose.check span — the cost would be unattributed again").toBeDefined();
+      expect(agg?.count).toBe(1);
+      expect(agg?.meanMeta).toBe("Griswold waits.".length);
+      view.destroy();
+    } finally {
+      setPerfEnabled(false);
+      perfReset();
+    }
+  });
+
+  it("closes the span when the check throws, rather than leaking it", async () => {
+    // An open span is never recorded, so a checker that rejects would erase
+    // the very failure mode worth measuring — a checker that is slow AND
+    // failing would look free.
+    setPerfEnabled(true);
+    perfReset();
+    try {
+      const view = mount({
+        check: async () => {
+          throw new Error("checker unavailable");
+        },
+      });
+      await settle();
+      const agg = perfReport().aggregates.find((a) => a.name === "prose.check");
+      expect(agg?.count).toBe(1);
+      view.destroy();
+    } finally {
+      setPerfEnabled(false);
+      perfReset();
+    }
   });
 });

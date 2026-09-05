@@ -2285,6 +2285,7 @@ version = "0.0.16"
 dependencies = [
  "brink-compiler",
  "brink-fmt",
+ "brink-opt",
  "brink-respell",
  "brink-runtime",
  "brink-test-harness",
@@ -2374,6 +2375,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-opt"
+version = "0.0.16"
+dependencies = [
+ "brink-format",
+]
+
+[[package]]
 name = "brink-project-config"
 version = "0.0.16"
 dependencies = [
@@ -2459,6 +2467,7 @@ dependencies = [
  "brink-ide",
  "brink-intl",
  "brink-ir",
+ "brink-opt",
  "brink-project-config",
  "brink-runtime",
  "brink-source-tree",

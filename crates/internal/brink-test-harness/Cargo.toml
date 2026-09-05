@@ -71,6 +71,12 @@ brink-project-config = { workspace = true }
 # `StoryData`, so the oracle cannot drift from what translations actually key
 # on.
 brink-intl = { workspace = true }
+# `opt_fence` (the optimizer fence, `docs/optimizer-spec.md` §5): the
+# optimizer itself, so the fence can drive `optimize()` rather than
+# reimplementing it. A NORMAL dependency because `src/opt_fence.rs` needs it
+# unconditionally; the `test-control` feature is added on the dev-dependency
+# below so the control passes exist only for this crate's own test build.
+brink-opt = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -81,6 +87,12 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+# The negative-control passes (`tests/opt_negative_control.rs`). Enabled here
+# rather than in `[dependencies]` so nothing outside this crate's test build
+# can reach them. Note `cargo test --workspace` unifies features, so the real
+# guard against a control running on a real artifact is the runtime assertion
+# in `brink_opt::OptConfig::defaults`, not this line.
+brink-opt = { workspace = true, features = ["test-control"] }
 insta = { workspace = true }
 proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }

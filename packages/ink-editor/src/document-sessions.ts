@@ -35,7 +35,7 @@ import {
   refreshExecutionHighlight as refreshExecutionHighlightInView,
   type ExecutionHighlight,
 } from "./execution-highlight.js";
-import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
+import { EditorState, type ChangeSet, type Extension, type StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type {
@@ -105,6 +105,71 @@ export interface ViewStateSnapshot {
   anchor: number;
   head: number;
   scrollTop: number;
+}
+
+/**
+ * One minimal text edit against a file's *previous* content, in UTF-16
+ * FILE-ABSOLUTE offsets — the same convention `FixEdit`/`FileEdit` use at the
+ * wasm boundary (#3496). The unit {@link DocumentSessions.applyEditsToViews}
+ * takes: a single `Fix`'s own `edits` are exactly this shape (`new_text`
+ * renamed to `text` so this module doesn't couple its public surface to the
+ * wire type's field names).
+ */
+export interface FileEditRange {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * The smallest single-range change that turns `oldText` into `newText`:
+ * strip the common prefix and suffix, leaving only the span that actually
+ * changed (#3496). Every position outside `[from, to)` keeps its exact
+ * offset when this is dispatched as a CM6 change — unlike a blind
+ * `{ from: 0, to: oldText.length, insert: newText }` replace, which maps
+ * every existing selection into the deleted range and collapses it to the
+ * insertion point, and forces the whole viewport to re-lay out. Surrogate
+ * pair safe: never splits a UTF-16 code unit pair between the kept
+ * prefix/suffix and the replaced middle.
+ */
+function minimalDiff(oldText: string, newText: string): { from: number; to: number; insert: string } {
+  const maxCommon = Math.min(oldText.length, newText.length);
+  let prefix = 0;
+  while (prefix < maxCommon && oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)) {
+    prefix++;
+  }
+  if (
+    prefix > 0 &&
+    prefix < maxCommon &&
+    oldText.charCodeAt(prefix - 1) >= 0xd800 &&
+    oldText.charCodeAt(prefix - 1) <= 0xdbff
+  ) {
+    // `prefix` split a surrogate pair (a lone high surrogate just before it) —
+    // back off one unit so the pair stays together.
+    prefix--;
+  }
+  const maxSuffix = maxCommon - prefix;
+  let suffix = 0;
+  while (
+    suffix < maxSuffix &&
+    oldText.charCodeAt(oldText.length - 1 - suffix) ===
+      newText.charCodeAt(newText.length - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  if (
+    suffix > 0 &&
+    suffix < maxSuffix &&
+    oldText.charCodeAt(oldText.length - suffix) >= 0xdc00 &&
+    oldText.charCodeAt(oldText.length - suffix) <= 0xdfff
+  ) {
+    suffix--;
+  }
+  return {
+    from: prefix,
+    to: oldText.length - suffix,
+    insert: newText.slice(prefix, newText.length - suffix),
+  };
 }
 
 export interface DocumentSessionsOptions {
@@ -315,10 +380,25 @@ interface ViewSlot {
   view: EditorView | null;
   state: EditorState | null;
   /** Scroller pixel offset snapshotted at unmount — EditorState does not
-   *  carry scroll, so backgrounded tabs keep it here (#347). */
+   *  carry scroll, so backgrounded tabs keep it here (#347). Kept for the
+   *  cross-session road (`viewStates`), which persists JSON and cannot
+   *  hold an effect. */
   scrollTop: number;
+  /** CodeMirror's own scroll snapshot, taken at unmount (#3559). A raw
+   *  pixel offset is not a stable address into the document: heights are
+   *  ESTIMATED until a line is measured, so re-applying the number after a
+   *  remount lands somewhere else — measured drift of ~1,000 px on an 8k
+   *  line file. `view.scrollSnapshot()` records a position instead, and
+   *  re-applies it correctly once measurement settles. */
+  scrollSnapshot: StateEffect<unknown> | null;
   extensions: Extension[] | null;
 }
+
+/** Documents whose last scroll offset is remembered after their tab closes.
+ *  A number per document: generous enough that reopening anything from a
+ *  session's working set lands correctly, small enough to stay a rounding
+ *  error against one cached `EditorState`. */
+const SCROLL_MEMORY_LIMIT = 200;
 
 function slotId(docKey: string, groupId: string): string {
   return `${groupId}\u0000${docKey}`;
@@ -375,6 +455,13 @@ export class DocumentSessions {
   private readonly symbolHints = new Map<string, { start: number; end: number }>();
   private focusedSlotId: string | null = null;
   private readonly pendingReveals = new Map<string, PendingReveal>();
+  /** Where a document was last scrolled to, by docKey — kept when its slot
+   *  is dropped so CLOSING and reopening a tab lands where you left, not at
+   *  the top (#3559). Deliberately not the slot: dropping a slot is the
+   *  unbounded-growth guard for cached `EditorState`s (the heavy part), and
+   *  this is one number per document. Bounded by `SCROLL_MEMORY_LIMIT`,
+   *  oldest-touched first. */
+  private readonly scrollMemory = new Map<string, number>();
   private lastCompileDelivered: CompileResult | null = null;
   /** Inline form-glyph mode — applied to new views and switched live (Settings). */
   private formGlyph: FormGlyphMode = DEFAULT_FORM_GLYPH_MODE;
@@ -529,7 +616,10 @@ export class DocumentSessions {
         handle: null,
         view: null,
         state: null,
-        scrollTop: 0,
+        // A tab reopened after being closed has no slot left (retainSlots
+        // dropped it), but the document's last offset survives here.
+        scrollTop: this.scrollMemory.get(docKey) ?? 0,
+        scrollSnapshot: null,
         extensions: null,
       };
       this.slots.set(id, slot);
@@ -597,11 +687,33 @@ export class DocumentSessions {
     // pending reveal/restore (docKey-wide or targeting this slot) is about to
     // position the view itself.
     if (
-      slot.scrollTop !== 0 &&
+      (slot.scrollSnapshot !== null || slot.scrollTop !== 0) &&
       !this.pendingReveals.has(docKey) &&
       !this.pendingReveals.has(slotId(docKey, slot.groupId))
     ) {
+      // BOTH, in this order. The pixel offset lands immediately and is the
+      // only thing that works where there is no layout (jsdom, and the
+      // cross-reload road where only JSON crossed the boundary). The
+      // snapshot then corrects it once heights are measured: a raw offset
+      // is not a stable address into the document — CodeMirror estimates
+      // unmeasured line heights, so re-applying the number alone drifted
+      // ~1,000 px on an 8k-line file (#3559).
       setScrollTop(view, slot.scrollTop);
+      // The snapshot corrects that offset once heights are known, but it
+      // must wait for layout twice over: at mount the container has none
+      // yet (so the correction would be computed against zero), and
+      // applying it asks CodeMirror to measure coordinates, which a
+      // zero-height host (jsdom) answers by throwing inside the selection
+      // layer rather than degrading. Next frame, and only with real
+      // layout. The e2e in `packages/brink-studio/e2e/scroll-memory.spec.ts`
+      // covers this branch; jsdom keeps the pixel offset above.
+      const snapshot = slot.scrollSnapshot;
+      if (snapshot !== null) {
+        requestAnimationFrame(() => {
+          if (slot.view !== view || view.scrollDOM.clientHeight === 0) return;
+          view.dispatch({ effects: snapshot });
+        });
+      }
     }
     this.applyPendingReveal(slot);
 
@@ -618,6 +730,22 @@ export class DocumentSessions {
     if (this.lastCompileDelivered !== null) {
       this.refreshOverlayPrepared(slot);
     }
+
+    // #3490 (same shape as #518 above, for the two GUTTER host seams). The
+    // gutters read `getExecutionHighlights`/`getBreakpoints` once per render
+    // and cache the answer per `EditorState`; `refreshExecutionHighlight()` /
+    // `refreshBreakpoints()` above skip viewless slots, so a session that
+    // paused — or a breakpoint toggled from the Breakpoints panel, or a
+    // persisted set loading — while this tab was backgrounded left no
+    // transaction behind. Remounting reuses the CACHED state (see the
+    // `slot.state` reuse in `refreshSlotFromFile`'s sibling path), so the
+    // cache would hit and serve the pre-unmount answer: no paused arrow, no
+    // dot, until some later transaction happened to recompute the gutter.
+    // Self-serve both refreshes here, which is what makes the per-state cache
+    // safe rather than merely fast ("suppressed, never stale",
+    // `docs/live-inspector-spec.md` §5).
+    refreshExecutionHighlightInView(view);
+    refreshBreakpointsInView(view);
 
     return () => {
       this.unmountSlot(slot, { snapshot: true });
@@ -649,6 +777,19 @@ export class DocumentSessions {
         const alive = key.includes("\u0000") ? live.has(key) : liveDocKeys.has(key);
         if (!alive) this.pendingReveals.delete(key);
       }
+    }
+  }
+
+  /** Record a document's last scroll offset, evicting the oldest entry
+   *  once the memory is full (insertion order = touch order, since a
+   *  re-record deletes first). */
+  private rememberScroll(docKey: string, scrollTop: number): void {
+    this.scrollMemory.delete(docKey);
+    this.scrollMemory.set(docKey, scrollTop);
+    while (this.scrollMemory.size > SCROLL_MEMORY_LIMIT) {
+      const oldest = this.scrollMemory.keys().next();
+      if (oldest.done === true) break;
+      this.scrollMemory.delete(oldest.value);
     }
   }
 
@@ -1079,6 +1220,8 @@ export class DocumentSessions {
       if (opts.snapshot) {
         slot.state = slot.view.state;
         slot.scrollTop = slot.view.scrollDOM.scrollTop;
+        slot.scrollSnapshot = slot.view.scrollSnapshot();
+        this.rememberScroll(slot.docKey, slot.scrollTop);
       }
       slot.view.destroy();
       slot.view = null;
@@ -1728,6 +1871,13 @@ export class DocumentSessions {
    * Reload a mounted view's content from the session: re-resolve symbol
    * ranges by name (full file when the symbol vanished), reopen the handle,
    * and replace the view's doc when the text differs.
+   *
+   * The replace is a minimal common-prefix/suffix diff (#3496), not a blind
+   * `[0, len)` swap — the caller here has no precise edit list (an external
+   * change, a structural op's whole-file `new_source`, undo, a symbol
+   * degrading/re-resolving), so this is the fallback every one of those
+   * paths gets for free. A precise edit list goes through
+   * {@link applyEditsToViews} instead.
    */
   private refreshSlotFromFile(slot: ViewSlot, opts?: { allowHint?: boolean }): void {
     if (slot.view === null) return;
@@ -1739,12 +1889,89 @@ export class DocumentSessions {
       this.symbolHints.delete(slot.docKey);
     }
     const content = slot.handle?.viewSource() ?? this.fileContent(slot.path);
-    if (slot.view.state.doc.toString() !== content) {
+    const current = slot.view.state.doc.toString();
+    if (current !== content) {
       slot.view.dispatch({
-        changes: { from: 0, to: slot.view.state.doc.length, insert: content },
+        changes: minimalDiff(current, content),
         annotations: syncAnnotation.of(true),
       });
     }
+  }
+
+  /**
+   * Apply already-known edits to every mounted view of `path` instead of
+   * reloading it wholesale (#3496): `edits` are UTF-16 file-absolute offsets
+   * against `path`'s content *before* this call (a single `Fix`'s own
+   * `edits` are exactly this — see `applyOfferedFix` in
+   * `@brink/studio-ui`'s `fixActions.ts`). Dispatched as one sorted
+   * `changes` set in a single transaction (one undo step); `selection` is
+   * left unspecified so CM6 maps it through the change set by default, and
+   * no `scrollIntoView` effect is added — so a mounted view's caret and
+   * scroll position survive an edit elsewhere in the file.
+   *
+   * Only full-file views take the precise path; a symbol (fragment) view
+   * reloads via {@link refreshSlotFromFile}'s diff fallback instead of
+   * translating file-absolute offsets through a fragment boundary that may
+   * itself have shifted. Before committing, the edits are simulated against
+   * the view's own current text and checked against the session's actual
+   * post-edit source (`this.fileContent`) — a caller-supplied edit list that
+   * does not reconstruct the real file (stale offsets, a view that had
+   * already drifted) must never desync the view from the session, so a
+   * mismatch falls back to the same diff-based reload rather than
+   * committing a wrong document. A cached-only (unmounted) slot rebuilds on
+   * next mount, same contract as `invalidateFile`.
+   */
+  applyEditsToViews(path: string, edits: readonly FileEditRange[]): void {
+    if (edits.length === 0) {
+      this.invalidateFile(path);
+      return;
+    }
+    const sorted = [...edits].sort((a, b) => a.start - b.start);
+    const expected = this.fileContent(path);
+    for (const slot of this.slots.values()) {
+      if (slot.path !== path) continue;
+      if (slot.view === null) {
+        slot.state = null;
+        continue;
+      }
+      if (slot.symbol !== null || !this.tryDispatchFileEdits(slot, sorted, expected)) {
+        this.refreshSlotFromFile(slot);
+      }
+    }
+  }
+
+  /**
+   * Try dispatching `edits` verbatim onto a full-file view. Returns `false`
+   * (dispatching nothing) when any edit falls outside the view's current
+   * document, or when replaying the edits against the view's own text does
+   * not reproduce `expected` byte-for-byte — the caller falls back to a
+   * diff-based reload in that case.
+   */
+  private tryDispatchFileEdits(
+    slot: ViewSlot,
+    edits: readonly FileEditRange[],
+    expected: string,
+  ): boolean {
+    const view = slot.view;
+    if (view === null) return false;
+    const current = view.state.doc.toString();
+    let simulated = current;
+    // Splice from the end so earlier edits' offsets stay valid against the
+    // still-unmodified head of `simulated`.
+    for (const e of [...edits].sort((a, b) => b.start - a.start)) {
+      if (e.start < 0 || e.start > e.end || e.end > simulated.length) return false;
+      simulated = simulated.slice(0, e.start) + e.text + simulated.slice(e.end);
+    }
+    if (simulated !== expected) return false;
+    const docLen = view.state.doc.length;
+    for (const e of edits) {
+      if (e.start < 0 || e.start > e.end || e.end > docLen) return false;
+    }
+    view.dispatch({
+      changes: edits.map((e) => ({ from: e.start, to: e.end, insert: e.text })),
+      annotations: syncAnnotation.of(true),
+    });
+    return true;
   }
 
   // ── Private: focus / reveal / compile plumbing ───────────────────

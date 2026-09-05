@@ -317,4 +317,123 @@ test.describe("auto-fix surfaces", () => {
     });
     await expect(row(page, ROWS.e014).locator(".problems-fix")).toHaveCount(1);
   });
+
+  // #3496: applying a fix used to reload the whole document (`{ from: 0, to:
+  // doc.length, insert: content }`), which maps every existing position to
+  // the start of the insertion — the caret and the scroller both jumped to
+  // the top of the file regardless of where the diagnostic actually was.
+  test("applying a Fix from the Problems row does not scroll the editor away from the edit", async ({
+    page,
+  }) => {
+    await gotoFixable(page);
+
+    // Reveal the diagnostic: opens/focuses prologue.ink and selects+scrolls
+    // to the diagnostic's own location (`__brinkView` tracks the focused
+    // view — see `mount.tsx`'s `onFocusedViewChange`).
+    await row(page, ROWS.e014).click();
+
+    // The fixture's prologue.ink is only 12 lines — short enough to fit
+    // entirely in the pane, which would make any scroll assertion trivially
+    // pass even under the old whole-document-replace bug. Pad it well past
+    // one screenful with blank lines AFTER the diagnostic's own line (so its
+    // offset never moves) — a real edit through the mounted view, so it
+    // reaches the wasm session and re-compiles like any keystroke would.
+    await page.evaluate(() => {
+      type View = { state: { doc: { length: number } }; dispatch(t: unknown): void };
+      const view = (window as unknown as { __brinkView?: View }).__brinkView;
+      if (!view) throw new Error("prologue.ink is not the focused view");
+      view.dispatch({ changes: { from: view.state.doc.length, insert: "\n".repeat(300) } });
+    });
+    // The padding is inert (blank lines) — the fixture's closed diagnostic
+    // set must be exactly as before.
+    await expect(page.locator(".problems-item")).toHaveCount(TOTAL_ROWS);
+
+    const readScrollHeight = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __brinkView?: { scrollDOM: { scrollHeight: number } } })
+            .__brinkView?.scrollDOM.scrollHeight ?? null,
+      );
+    const readClientHeight = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __brinkView?: { scrollDOM: { clientHeight: number } } })
+            .__brinkView?.scrollDOM.clientHeight ?? null,
+      );
+    // CM6 lays out the 300 padding lines asynchronously (virtualized
+    // measurement, requestAnimationFrame) — wait for the scroller to
+    // actually have overflow before trying to scroll it, rather than
+    // racing the layout with a synchronous scrollTop assignment.
+    await expect
+      .poll(async () => ((await readScrollHeight()) ?? 0) - ((await readClientHeight()) ?? 0), {
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(0);
+
+    const readScrollTop = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __brinkView?: { scrollDOM: { scrollTop: number } } })
+            .__brinkView?.scrollDOM.scrollTop ?? null,
+      );
+
+    /**
+     * CM6's scroller settles asynchronously after anything that touches
+     * layout (a `scrollIntoView` effect, a doc change, a whole-doc
+     * decoration refresh): the DOM's `scrollTop` can read a transient
+     * mid-remeasure value for a frame or two before landing on its real
+     * one. Poll until two consecutive samples agree instead of asserting
+     * on whichever value the very next tick happens to report.
+     */
+    async function settledScrollTop(): Promise<number | null> {
+      let prev = await readScrollTop();
+      for (let i = 0; i < 40; i++) {
+        // eslint-disable-next-line playwright/no-wait-for-timeout -- settling
+        // a real layout remeasure, not standing in for a specific event.
+        await page.waitForTimeout(50);
+        const sample = await readScrollTop();
+        if (sample === prev) return sample;
+        prev = sample;
+      }
+      return prev;
+    }
+
+    // Re-reveal now that the file actually scrolls, then scroll further
+    // still — standing in for "the author scrolled elsewhere to re-read
+    // something" before coming back to press Fix. The reveal itself
+    // scrolls to the diagnostic (a `scrollIntoView` effect) — let that
+    // settle before overwriting it, or our own assignment races it.
+    await row(page, ROWS.e014).click();
+    await settledScrollTop();
+    await page.evaluate(() => {
+      type View = { scrollDOM: { scrollTop: number; scrollHeight: number } };
+      const view = (window as unknown as { __brinkView?: View }).__brinkView;
+      if (!view) throw new Error("prologue.ink is not the focused view");
+      view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+    });
+
+    const before = await settledScrollTop();
+    const lineHeight = await page.evaluate(
+      () =>
+        (window as unknown as { __brinkView?: { defaultLineHeight: number } }).__brinkView
+          ?.defaultLineHeight ?? null,
+    );
+    expect(before, "the padded file must actually be scrolled").not.toBe(0);
+    expect(lineHeight).not.toBeNull();
+
+    await row(page, ROWS.e014).locator(".problems-fix").click();
+
+    await expect
+      .poll(() => fileSource(page, "prologue.ink"), { timeout: 10_000 })
+      .not.toContain("\n~\n~ gold");
+    await expect(row(page, ROWS.e014)).toHaveCount(0);
+
+    // The fix's diagnostics/prose refresh dispatches a CM6 effect covering
+    // the whole doc (`deliverCompile`), which can cost the scroller a
+    // transient remeasure frame — settle on a stable reading rather than
+    // asserting against whatever the very next tick happens to show.
+    const after = await settledScrollTop();
+    expect(after).not.toBeNull();
+    expect(Math.abs((after as number) - (before as number))).toBeLessThan(lineHeight as number);
+  });
 });
