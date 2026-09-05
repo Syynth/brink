@@ -630,6 +630,18 @@ pub fn current_id(cx: &App) -> SharedString {
         .map_or_else(|| SharedString::from(DEFAULT_ID), |c| c.id.clone())
 }
 
+/// The theme on screen.
+#[must_use]
+pub fn current(cx: &App) -> StudioTheme {
+    find(&current_id(cx)).unwrap_or_else(mocha)
+}
+
+/// A `0xRRGGBB` token as a gpui colour.
+#[must_use]
+pub fn hsla(hex: u32) -> gpui::Hsla {
+    gpui::rgb(hex).into()
+}
+
 /// Paint the app in `theme`: install it as the kit's light or dark theme
 /// and switch to that mode. Every window repaints.
 pub fn apply(theme: &StudioTheme, window: Option<&mut Window>, cx: &mut App) -> anyhow::Result<()> {

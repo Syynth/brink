@@ -107,6 +107,27 @@ suppress context menu (#3148). The shell grew what those needed:
 `ToolWindow::badge` (`tool_window.rs`), `StatusCell` with `opens`, and
 `Workspace::open_tool_window`.
 
+**TODOs** (2026-09-05, `app/src/todos.rs`; ruled 2026-08-23): the
+studio's TODOs window over ink's `TODO:` author notes, read from the
+`E189` diagnostics the mirror already holds — grouped by file → containing
+knot/stitch (flat a toggle away), a text filter with `TODO(tag):` chips,
+click-to-navigate, an amber rail badge (`BadgeTone::Advisory` — the shell's
+`Badge` now carries a tone), and a removed note lingering struck through
+for 1.4 s, keyed by location. **The editor band** is the highlighter's:
+`TokenCache` returns the `AUTHOR_WARNING` ranges from the same parse that
+paints (`todo_ranges`), and `BrinkHighlighter` lays the theme's `todo_band`
+/`todo_ink` over every run on those lines with the keyword bold
+(`overlay_todo`) — same frame, no analysis in the loop, and it wins on every
+word, which decorations could not guarantee (the editor composes decoration
+and syntax colours through an unordered set). The `E189` squiggle is
+suppressed in the editor, as the studio does: the band is the note's
+presentation there. The band colours are snapshotted when the highlighter
+updates, so a theme switch reinstalls the highlighter (`Document`'s
+`observe_global::<Theme>`); a manuscript section or a Search card keeps its
+old band colours until its next edit. Verified headless: bands in Mocha and
+Inky Dark, the panel grouped, a row click opening the file at the note, a
+deleted note leaving.
+
 **Commands** (2026-09-05, spec §4.5): every shortcut, the palette
 (`cmd-shift-p`), the hamburger menu and the `cmd-1…9` tool-window toggles
 go through one registry (`shell/src/commands.rs`); the app registers its
@@ -160,10 +181,10 @@ per theme ("Theme: Manuscript"); the choice persists in the platform
 config dir (`$BRINK_STUDIO_CONFIG_DIR` overrides — the headless runs use
 a scratch dir). Verified headless: all five on screen, a switch through
 the palette, the choice surviving a relaunch. **Not yet ported** from
-`editor.css`: the per-LINE styles — cue lines in `--bs-cue` at
-`--bs-cue-weight`, the TODO band, dimmed comment/include lines — need the
-worker's `LineContext` per file; the editor today underlines a TODO as
-the E189 info diagnostic instead of banding it.
+`editor.css`: the per-LINE styles other than the TODO band (which the
+highlighter lays, see TODOs above) — cue lines in `--bs-cue` at
+`--bs-cue-weight`, dimmed comment/include lines — need the worker's
+`LineContext` per file.
 
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"

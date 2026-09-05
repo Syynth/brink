@@ -39,11 +39,11 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Sizable as _, h_flex,
-    input::{Editor, EditorState, InputEvent, InputHighlighter},
+    input::{Editor, EditorState, InputEvent},
     v_flex,
 };
 
-use crate::document::BrinkHighlighter;
+use crate::document::highlighter_factory;
 use crate::icons;
 use crate::project::{Project, ProjectEvent};
 
@@ -259,16 +259,7 @@ impl ContinuousView {
                 .soft_wrap(false)
                 // See `TRAILING_ROWS`.
                 .scroll_beyond_last_line(Some(trailing));
-            let (hw, hk) = (weak.clone(), key.clone());
-            state.set_highlighter_factory(
-                Rc::new(move |language| {
-                    (language == "brink").then(|| {
-                        Box::new(BrinkHighlighter::new(hw.clone(), hk.clone()))
-                            as Box<dyn InputHighlighter>
-                    })
-                }),
-                cx,
-            );
+            state.set_highlighter_factory(highlighter_factory(weak.clone(), key.clone()), cx);
             state.set_value(source, window, cx);
             state
         });

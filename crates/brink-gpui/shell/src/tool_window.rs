@@ -64,6 +64,41 @@ pub fn select_tab(group: &WeakEntity<TabGroup>, me: PanelId, window: &mut Window
     });
 }
 
+/// What a badge means, which is what colours it: an error count is the
+/// danger colour; an advisory count (TODO notes) the theme's TODO amber —
+/// the studio's `.shell-strip-badge.is-todo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeTone {
+    Danger,
+    Advisory,
+}
+
+/// A count bubble on a rail button's corner (`docs/studio-shell-spec.md`
+/// §5.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Badge {
+    pub text: SharedString,
+    pub tone: BadgeTone,
+}
+
+impl Badge {
+    /// A count, hidden at zero and capped at "99+".
+    #[must_use]
+    pub fn count(n: usize, tone: BadgeTone) -> Option<Self> {
+        match n {
+            0 => None,
+            n if n > 99 => Some(Self {
+                text: "99+".into(),
+                tone,
+            }),
+            n => Some(Self {
+                text: n.to_string().into(),
+                tone,
+            }),
+        }
+    }
+}
+
 /// What a tool window is, over and above a dock panel: the rail button's
 /// badge (`docs/studio-shell-spec.md` §5.1 — "icons show badges where
 /// meaningful (Problems: error count)").
@@ -72,8 +107,8 @@ pub fn select_tab(group: &WeakEntity<TabGroup>, me: PanelId, window: &mut Window
 /// live state the panel owns; the shell reads it each frame and never
 /// learns what it counts.
 pub trait ToolWindow: Panel {
-    /// Text for the rail button's badge, or `None` for no badge.
-    fn badge(&self, _cx: &App) -> Option<SharedString> {
+    /// The rail button's badge, or `None` for no badge.
+    fn badge(&self, _cx: &App) -> Option<Badge> {
         None
     }
 

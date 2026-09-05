@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use brink_gpui_model::worker::Diagnostic;
-use brink_gpui_shell::tool_window::{TabSlot, ToolWindow};
+use brink_gpui_shell::tool_window::{Badge, BadgeTone, TabSlot, ToolWindow};
 use brink_ir::{LineIndex, Severity};
 use gpui::prelude::*;
 use gpui::{
@@ -640,12 +640,8 @@ impl ToolWindow for Problems {
     }
 
     /// The error count, hidden when clean (§5.1).
-    fn badge(&self, _cx: &App) -> Option<SharedString> {
-        match self.error_count() {
-            0 => None,
-            n if n > 99 => Some("99+".into()),
-            n => Some(n.to_string().into()),
-        }
+    fn badge(&self, _cx: &App) -> Option<Badge> {
+        Badge::count(self.error_count(), BadgeTone::Danger)
     }
 }
 

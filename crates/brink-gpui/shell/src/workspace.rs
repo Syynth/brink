@@ -25,10 +25,10 @@ use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::skin::StudioSkin;
 use crate::theme::{self, SelectTheme};
-use crate::tool_window::{TabSlot, ToolWindow, ToolWindowSpec, select_tab};
+use crate::tool_window::{Badge, TabSlot, ToolWindow, ToolWindowSpec, select_tab};
 
 /// Reads a tool window's badge without the shell holding the panel's type.
-type BadgeReader = Box<dyn Fn(&App) -> Option<SharedString>>;
+type BadgeReader = Box<dyn Fn(&App) -> Option<Badge>>;
 
 /// Whether a tool window is its group's displayed tab.
 type ActiveReader = Box<dyn Fn(&App) -> bool>;

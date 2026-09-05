@@ -38,6 +38,8 @@
 //! Where a native segment boundary falls is a language question, not an
 //! implementation one. See [`TokenCache::is_incremental`].
 
+use std::ops::Range;
+
 use brink_ir::semantic_tokens::RawToken;
 use brink_ir::{LineIndex, SymbolKind};
 
@@ -49,6 +51,13 @@ struct Entry {
     text: String,
     kinds: Vec<((u32, u32), SymbolKind)>,
     tokens: Vec<RawToken>,
+    /// Where this segment began in the source of the last `update`, so the
+    /// segment-relative `todos` can be given back in file offsets.
+    start: u32,
+    /// `TODO:` author notes (`AUTHOR_WARNING` nodes) in this segment, as
+    /// segment-relative byte ranges. The editor's band is painted from
+    /// these — same parse, same frame, no analysis in the loop.
+    todos: Vec<(u32, u32)>,
 }
 
 /// Whether a document's paint path is incremental, and why not if it isn't.
@@ -132,8 +141,8 @@ impl TokenCache {
                 .map(|((s, e), k)| ((s - start, e - start), *k))
                 .collect();
 
-            let tokens = match self.take_reusable(text, &slice) {
-                Some(tokens) => tokens,
+            let (tokens, todos) = match self.take_reusable(text, &slice) {
+                Some(cached) => cached,
                 None => {
                     recomputed += 1;
                     let rebased: Kinds = slice.iter().copied().collect();
@@ -150,6 +159,8 @@ impl TokenCache {
                 text: text.to_owned(),
                 kinds: slice,
                 tokens,
+                start,
+                todos,
             });
         }
 
@@ -165,18 +176,50 @@ impl TokenCache {
         &mut self,
         text: &str,
         kinds: &[((u32, u32), SymbolKind)],
-    ) -> Option<Vec<RawToken>> {
+    ) -> Option<Classified> {
         let at = self
             .entries
             .iter()
             .position(|e| e.text == text && e.kinds == kinds)?;
-        Some(self.entries.swap_remove(at).tokens)
+        let entry = self.entries.swap_remove(at);
+        Some((entry.tokens, entry.todos))
+    }
+
+    /// The `TODO:` author notes the last [`update`](Self::update) saw, as
+    /// byte ranges of that source, in file order. Empty for a native file:
+    /// the native surface has no `AUTHOR_WARNING`.
+    #[must_use]
+    pub fn todo_ranges(&self) -> Vec<Range<usize>> {
+        let mut out: Vec<Range<usize>> = self
+            .entries
+            .iter()
+            .flat_map(|e| {
+                e.todos
+                    .iter()
+                    .map(move |(s, end)| (e.start + s) as usize..(e.start + end) as usize)
+            })
+            .collect();
+        out.sort_by_key(|r| r.start);
+        out
     }
 }
 
-fn classify_ink(source: &str, kinds: &Kinds) -> Vec<RawToken> {
+/// A segment's tokens, and its `TODO:` notes as segment-relative ranges.
+type Classified = (Vec<RawToken>, Vec<(u32, u32)>);
+
+fn classify_ink(source: &str, kinds: &Kinds) -> Classified {
     let parsed = brink_syntax::parse(source);
-    brink_ir::semantic_tokens::tokens_with_kinds(source, &parsed.syntax(), kinds)
+    let root = parsed.syntax();
+    let tokens = brink_ir::semantic_tokens::tokens_with_kinds(source, &root, kinds);
+    let todos = root
+        .descendants()
+        .filter(|n| n.kind() == brink_syntax::SyntaxKind::AUTHOR_WARNING)
+        .map(|n| {
+            let r = n.text_range();
+            (u32::from(r.start()), u32::from(r.end()))
+        })
+        .collect();
+    (tokens, todos)
 }
 
 fn classify_native(source: &str, kinds: &Kinds) -> Vec<RawToken> {
@@ -202,6 +245,25 @@ mod tests {
 
     fn empty() -> Kinds {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn todo_notes_come_out_of_the_same_parse_in_file_offsets() {
+        let mut cache = TokenCache::new("a.ink");
+        let source = "TODO: at the top\n=== k ===\nHello.\nTODO(art): sketch\n-> DONE\n";
+        cache.update(source, &empty());
+        let ranges = cache.todo_ranges();
+        assert_eq!(ranges.len(), 2, "{ranges:?}");
+        assert!(source[ranges[0].clone()].starts_with("TODO: at the top"));
+        assert!(source[ranges[1].clone()].starts_with("TODO(art): sketch"));
+        // A reused segment keeps its notes.
+        cache.update(source, &empty());
+        assert_eq!(cache.last_work().0, 0);
+        assert_eq!(cache.todo_ranges(), ranges);
+        // Native files have none.
+        let mut native = TokenCache::new("a.brink");
+        native.update("flow main() {\n  TODO: x\n}\n", &empty());
+        assert!(native.todo_ranges().is_empty());
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod problems;
 mod project;
 mod search;
 mod single_view;
+mod todos;
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -35,6 +36,7 @@ use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
 use crate::single_view::SingleFileView;
+use crate::todos::{OpenTodo, Todos};
 
 actions!(
     brink,
@@ -67,6 +69,7 @@ impl Studio {
 
         let binder = cx.new(|cx| Binder::new(project.clone(), window, cx));
         let problems = cx.new(|cx| Problems::new(project.clone(), window, cx));
+        let todos = cx.new(|cx| Todos::new(project.clone(), window, cx));
         let search = cx.new(|cx| SearchView::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
@@ -100,6 +103,15 @@ impl Studio {
                     .size(px(160.))
                     .open(),
                 problems.clone(),
+                window,
+                cx,
+            );
+            // Beside Problems in the lower-left dock: the second tab there.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("todos", "TODOs", RailSlot::LEFT_LOWER)
+                    .icon(icons::TODO)
+                    .size(px(160.)),
+                todos.clone(),
                 window,
                 cx,
             );
@@ -175,6 +187,9 @@ impl Studio {
                 this.open(&event.path, Some(event.span.clone()), window, cx);
             },
         );
+        let on_todo = cx.subscribe_in(&todos, window, |this, _, event: &OpenTodo, window, cx| {
+            this.open(&event.path, Some(event.span.clone()), window, cx);
+        });
         let on_search = cx.subscribe_in(
             &search,
             window,
@@ -196,7 +211,7 @@ impl Studio {
             code,
             manuscript,
             search,
-            _subscriptions: vec![on_project, on_binder, on_problem, on_search],
+            _subscriptions: vec![on_project, on_binder, on_problem, on_todo, on_search],
         }
     }
 

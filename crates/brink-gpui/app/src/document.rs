@@ -25,8 +25,8 @@ use gpui::{
 use gpui_component::ActiveTheme as _;
 use gpui_component::dock::{PanelId, TabGroup};
 use gpui_component::input::{
-    CompletionProvider, EditorState, HoverProvider, Inlay, InputEvent, InputHighlighter, Rope,
-    RopeExt as _,
+    CompletionProvider, EditorState, HoverProvider, Inlay, InputEvent, InputHighlighter,
+    InputHighlighterFactory, Rope, RopeExt as _,
 };
 use lsp_types as lsp;
 
@@ -69,6 +69,9 @@ pub struct Document {
     path: SharedString,
     editor: Entity<EditorState>,
     project: Entity<Project>,
+    /// The highlighter's factory, kept so a theme change can reinstall it:
+    /// the highlighter snapshots the TODO band's colours when it updates.
+    factory: InputHighlighterFactory,
     /// The tab group holding this document, from the dock's `on_added_to`.
     /// What [`Document::activate`] selects the tab through.
     group: Option<WeakEntity<TabGroup>>,
@@ -86,6 +89,7 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> Self {
         let path = path.into();
+        let factory = highlighter_factory(project.downgrade(), path.clone());
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(true)
@@ -94,16 +98,7 @@ impl Document {
             // Installed BEFORE gpui-component's Input render, whose
             // `ensure_highlighter_factory` only fills an empty slot — so
             // this wins and the tree-sitter path is never consulted.
-            let (weak, key) = (project.downgrade(), path.clone());
-            state.set_highlighter_factory(
-                Rc::new(move |language| {
-                    (language == "brink").then(|| {
-                        Box::new(BrinkHighlighter::new(weak.clone(), key.clone()))
-                            as Box<dyn InputHighlighter>
-                    })
-                }),
-                cx,
-            );
+            state.set_highlighter_factory(factory.clone(), cx);
 
             let origin = cx.entity().entity_id();
             let lsp = state.lsp_mut();
@@ -158,12 +153,23 @@ impl Document {
             },
         );
 
+        // The highlighter snapshots the theme's TODO-band colours when it
+        // updates, so a theme switch reinstalls it (one reparse of the file,
+        // on a switch — nothing per keystroke).
+        let on_theme = cx.observe_global::<gpui_component::Theme>(|this, cx| {
+            let factory = this.factory.clone();
+            this.editor.update(cx, |state, cx| {
+                state.set_highlighter_factory(factory, cx);
+            });
+        });
+
         let this = Self {
             path,
             editor,
             project,
+            factory,
             group: None,
-            _subscriptions: vec![on_change, on_project],
+            _subscriptions: vec![on_change, on_project, on_theme],
         };
         // The editor may normalise what it was given (line endings); if it
         // did, that is an edit like any other.
@@ -243,6 +249,10 @@ impl Document {
             .read(cx)
             .diagnostics_for(&self.path)
             .iter()
+            // A TODO note's band IS its presentation in the editor; a
+            // squiggle under it would double-mark it (the studio does the
+            // same). It still reaches Problems and TODOs.
+            .filter(|d| d.code != crate::todos::TODO_CODE)
             .map(|d| to_lsp_diagnostic(d, &index))
             .collect();
 
@@ -332,6 +342,114 @@ pub struct BrinkHighlighter {
     cache: TokenCache,
     /// Absolute byte ranges + theme token-type names, sorted, disjoint.
     runs: Vec<(std::ops::Range<usize>, SharedString)>,
+    /// Every `TODO:` line — the studio's `.brink-todo` band (ruled
+    /// 2026-08-23, "Inky-grade visibility"): the whole line in the theme's
+    /// `todo_band` with `todo_ink` text, its keyword bold. Laid here, over
+    /// the token colours, because the two would otherwise race: the
+    /// editor composes decoration and syntax colours through an unordered
+    /// set, and the band must win on every word.
+    todo_lines: Vec<TodoLine>,
+    band: (gpui::Hsla, gpui::Hsla),
+}
+
+/// One `TODO:` line: its full extent and its `TODO:` keyword.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TodoLine {
+    pub line: Range<usize>,
+    pub keyword: Range<usize>,
+}
+
+/// The highlighter every editor over a file installs — Code view's tab,
+/// a manuscript section, a Search card. One place, so a change to what a
+/// highlighter needs (today: the theme's band colours) reaches all three.
+pub(crate) fn highlighter_factory(
+    project: WeakEntity<Project>,
+    path: SharedString,
+) -> InputHighlighterFactory {
+    Rc::new(move |language| {
+        (language == "brink").then(|| {
+            Box::new(BrinkHighlighter::new(project.clone(), path.clone()))
+                as Box<dyn InputHighlighter>
+        })
+    })
+}
+
+/// The lines holding `TODO:` notes, from the notes' byte ranges: each
+/// widened to its whole line, with the `TODO` keyword (and the colon that
+/// follows it) located for the bold.
+pub(crate) fn todo_lines(source: &str, notes: &[Range<usize>]) -> Vec<TodoLine> {
+    let mut out: Vec<TodoLine> = Vec::new();
+    for note in notes {
+        let start = note.start.min(source.len());
+        let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = source[start..]
+            .find('\n')
+            .map_or(source.len(), |i| start + i);
+        if line_start >= line_end || out.last().is_some_and(|l| l.line.start == line_start) {
+            continue;
+        }
+        let line = &source[line_start..line_end];
+        let keyword = match line.find("TODO") {
+            Some(at) => {
+                let word = line_start + at;
+                let mut end = word + 4;
+                let trimmed = source[end..line_end].trim_start();
+                if trimmed.starts_with(':') {
+                    end = line_end - trimmed.len() + 1;
+                }
+                word..end
+            }
+            None => line_start..line_start,
+        };
+        out.push(TodoLine {
+            line: line_start..line_end,
+            keyword,
+        });
+    }
+    out
+}
+
+/// Lay the band over already-styled runs: inside a TODO line every run
+/// takes the ink colour on the band background, and the keyword goes bold.
+/// Runs are split at the band's and the keyword's edges; nothing outside
+/// a TODO line is touched.
+pub(crate) fn overlay_todo(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    todos: &[TodoLine],
+    (band_bg, ink): (gpui::Hsla, gpui::Hsla),
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if todos.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    for (range, style) in runs {
+        let mut cuts: Vec<usize> = vec![range.start, range.end];
+        for t in todos {
+            for at in [t.line.start, t.line.end, t.keyword.start, t.keyword.end] {
+                if at > range.start && at < range.end {
+                    cuts.push(at);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let piece = pair[0]..pair[1];
+            let on = todos
+                .iter()
+                .find(|t| t.line.start <= piece.start && piece.end <= t.line.end);
+            let mut style = style;
+            if let Some(t) = on {
+                style.color = Some(ink);
+                style.background_color = Some(band_bg);
+                if t.keyword.start <= piece.start && piece.end <= t.keyword.end {
+                    style.font_weight = Some(gpui::FontWeight::BOLD);
+                }
+            }
+            out.push((piece, style));
+        }
+    }
+    out
 }
 
 impl BrinkHighlighter {
@@ -346,6 +464,8 @@ impl BrinkHighlighter {
             path,
             cache,
             runs: Vec::new(),
+            todo_lines: Vec::new(),
+            band: (gpui::Hsla::default(), gpui::Hsla::default()),
         }
     }
 }
@@ -377,6 +497,12 @@ impl InputHighlighter for BrinkHighlighter {
             let project = project.read(cx);
             self.cache.update(&source, project.kinds_for(&self.path))
         };
+        self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        self.band = (
+            brink_gpui_shell::theme::hsla(tokens.todo_band),
+            brink_gpui_shell::theme::hsla(tokens.todo_ink),
+        );
 
         let names = brink_ir::semantic_tokens::token_type_names();
         let index = LineIndex::new(&source);
@@ -436,7 +562,7 @@ impl InputHighlighter for BrinkHighlighter {
         if cursor < range.end {
             out.push((cursor..range.end, gpui::HighlightStyle::default()));
         }
-        out
+        overlay_todo(out, &self.todo_lines, self.band)
     }
 
     fn fold_ranges(&self, _text: &Rope) -> Vec<gpui_component::input::FoldRange> {
@@ -667,5 +793,87 @@ impl gpui::Render for Document {
                 .flex_1()
                 .bordered(false),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INK: &str = "TODO: at the top\n=== k ===\nHello.\n  TODO (art) sketch\nTODO\n-> DONE\n";
+
+    fn notes() -> Vec<Range<usize>> {
+        ["TODO: at the top", "TODO (art) sketch", "TODO\n"]
+            .iter()
+            .map(|s| {
+                let at = INK.find(s).unwrap();
+                at..at + s.trim_end().len()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_note_widens_to_its_line_and_finds_its_keyword() {
+        let lines = todo_lines(INK, &notes());
+        assert_eq!(lines.len(), 3);
+        assert_eq!(&INK[lines[0].line.clone()], "TODO: at the top");
+        assert_eq!(
+            &INK[lines[0].keyword.clone()],
+            "TODO:",
+            "the colon rides along"
+        );
+        assert_eq!(&INK[lines[1].line.clone()], "  TODO (art) sketch");
+        assert_eq!(
+            &INK[lines[1].keyword.clone()],
+            "TODO",
+            "no colon, none taken"
+        );
+        assert_eq!(&INK[lines[2].line.clone()], "TODO");
+        // Two notes on one line collapse to one band.
+        let twice = [notes()[0].clone(), notes()[0].clone()];
+        assert_eq!(todo_lines(INK, &twice).len(), 1);
+    }
+
+    #[test]
+    fn the_band_overrides_every_colour_inside_and_nothing_outside() {
+        let lines = todo_lines(INK, &notes());
+        let peach = gpui::Hsla {
+            h: 0.1,
+            s: 0.9,
+            l: 0.7,
+            a: 1.,
+        };
+        let band = (gpui::Hsla::default(), gpui::Hsla::default());
+        let runs = vec![
+            (
+                0..5,
+                gpui::HighlightStyle {
+                    color: Some(peach),
+                    ..Default::default()
+                },
+            ),
+            (5..INK.len(), gpui::HighlightStyle::default()),
+        ];
+        let out = overlay_todo(runs, &lines, band);
+        // Pieces inside the first line: "TODO:" bold, " at the top" plain ink.
+        let keyword = out.iter().find(|(r, _)| *r == (0..5)).unwrap();
+        assert_eq!(keyword.1.font_weight, Some(gpui::FontWeight::BOLD));
+        assert_eq!(keyword.1.color, Some(band.1));
+        assert_eq!(keyword.1.background_color, Some(band.0));
+        let rest = out.iter().find(|(r, _)| r.start == 5).unwrap();
+        assert_eq!(rest.0.end, 16, "cut at the line's end");
+        assert_eq!(rest.1.font_weight, None);
+        assert_eq!(rest.1.color, Some(band.1));
+        // The knot header after it is untouched.
+        let header = out.iter().find(|(r, _)| r.start == 16).unwrap();
+        assert_eq!(header.1.background_color, None);
+        assert_eq!(header.1.color, None);
+        // Every byte is covered exactly once, in order.
+        let mut at = 0;
+        for (r, _) in &out {
+            assert_eq!(r.start, at);
+            at = r.end;
+        }
+        assert_eq!(at, INK.len());
     }
 }

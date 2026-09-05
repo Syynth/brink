@@ -19,6 +19,7 @@ use gpui_component::{
 
 use crate::commands::display_keystroke;
 use crate::region::{RailEdge, RailGroup, RailSlot};
+use crate::tool_window::{Badge, BadgeTone};
 
 /// Rail width. Narrow enough to read as chrome, wide enough for a 16px icon
 /// with breathing room.
@@ -34,7 +35,7 @@ pub struct RailButton {
     /// Whether this tool window's dock is currently open.
     pub active: bool,
     /// A count bubble on the button's corner — `None` for none (§5.1).
-    pub badge: Option<SharedString>,
+    pub badge: Option<Badge>,
     /// The toggle's keystroke, shown in the tooltip (studio §5.2).
     pub keystroke: Option<SharedString>,
 }
@@ -54,7 +55,14 @@ where
     F: Fn(&SharedString, &mut Window, &mut App) + Clone + 'static,
 {
     let theme = cx.theme();
-    let badge_colours = (theme.danger, theme.danger_foreground);
+    let studio = crate::theme::current(cx).tokens;
+    let badge_colours = BadgeColours {
+        danger: (theme.danger, theme.danger_foreground),
+        advisory: (
+            crate::theme::hsla(studio.todo),
+            crate::theme::hsla(studio.editor_bg),
+        ),
+    };
     let group = |g: RailGroup| {
         v_flex().gap_1().children(
             buttons
@@ -104,11 +112,18 @@ where
 /// toolkit's hover, focus, tooltip and toggled states instead of
 /// re-deriving them here — `toggled` is what makes an open tool window read
 /// as pressed.
+/// Badge fill and text per tone.
+#[derive(Clone, Copy)]
+struct BadgeColours {
+    danger: (Hsla, Hsla),
+    advisory: (Hsla, Hsla),
+}
+
 fn button<F>(
     b: &RailButton,
     on: Hsla,
     off: Hsla,
-    (badge_bg, badge_fg): (Hsla, Hsla),
+    badge_colours: BadgeColours,
     on_click: F,
 ) -> impl IntoElement
 where
@@ -120,7 +135,11 @@ where
     let colour = if b.active { on } else { off };
     // The badge sits over the button's top-right corner, outside the
     // Button's own box so it neither pads nor tints it.
-    let badge = b.badge.clone().map(|text| {
+    let badge = b.badge.clone().map(|badge| {
+        let (badge_bg, badge_fg) = match badge.tone {
+            BadgeTone::Danger => badge_colours.danger,
+            BadgeTone::Advisory => badge_colours.advisory,
+        };
         div()
             .absolute()
             .top(px(-2.))
@@ -135,7 +154,7 @@ where
             .flex()
             .items_center()
             .justify_center()
-            .child(text)
+            .child(badge.text)
     });
     div()
         .relative()

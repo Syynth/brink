@@ -303,9 +303,11 @@ Brink's token types reach the editor through the kit's highlight table
 under Zed's names (`theme::syntax_key` is the only mapping), which keeps
 the highlighter's resolver the kit's own rather than a second seam. One
 command per theme; the choice persists in the platform config directory.
-The per-line styles of the studio's editor (cue lines, the TODO band,
-dimmed comment/include lines) wait on `LineContext` reaching the app from
-the worker.
+The TODO band (ruled 2026-08-23) is laid by the highlighter itself from
+the `AUTHOR_WARNING` ranges the paint parse already produces — same frame,
+no analysis in the loop. The other per-line styles of the studio's editor
+(cue lines, dimmed comment/include lines) wait on `LineContext` reaching
+the app from the worker.
 
 ## 5. First slice
 

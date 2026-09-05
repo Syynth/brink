@@ -48,7 +48,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
-use std::rc::Rc;
 
 use brink_gpui_shell::tool_window::{TabSlot, ToolWindow};
 use gpui::prelude::*;
@@ -60,13 +59,12 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
 use gpui_component::input::{
-    Editor, EditorState, Input, InputEvent, InputHighlighter, InputState, TextDecoration,
-    TextDecorationCollection,
+    Editor, EditorState, Input, InputEvent, InputState, TextDecoration, TextDecorationCollection,
 };
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use regex::{Regex, RegexBuilder};
 
-use crate::document::{BrinkHighlighter, apply_delta};
+use crate::document::{apply_delta, highlighter_factory};
 use crate::icons;
 use crate::project::{Project, ProjectEvent, SourceDelta};
 
@@ -722,16 +720,7 @@ impl SearchView {
                 .language("brink")
                 .soft_wrap(false)
                 .scroll_beyond_last_line(Some(0));
-            let (hw, hk) = (weak.clone(), key.clone());
-            state.set_highlighter_factory(
-                Rc::new(move |language| {
-                    (language == "brink").then(|| {
-                        Box::new(BrinkHighlighter::new(hw.clone(), hk.clone()))
-                            as Box<dyn InputHighlighter>
-                    })
-                }),
-                cx,
-            );
+            state.set_highlighter_factory(highlighter_factory(weak.clone(), key.clone()), cx);
             state.set_value(text, window, cx);
             hit = Some(state.create_decorations_collection(decorations, cx));
             state
