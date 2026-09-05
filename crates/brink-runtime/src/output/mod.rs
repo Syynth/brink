@@ -518,10 +518,36 @@ impl OutputBuffer {
     /// `continue`s past every non-text object): the glue stays, and the
     /// whitespace beneath it goes — so `{x} <>` at the end of a function
     /// leaves `x` glued to whatever follows, not `x ` (issue #3522).
+    ///
+    /// **The walk stops at the read cursor.** A function whose body spans a
+    /// yield point — it printed a line, the consumer took it, and only then
+    /// did the function return — has a `start` recorded before parts that
+    /// have since been delivered, and trimming those is both meaningless and
+    /// destructive. C# has no such case to handle because its output stream
+    /// really is emptied at each yield (`ResetOutput`), leaving nothing
+    /// behind the equivalent point; brink keeps the whole transcript with a
+    /// cursor over it, so the cursor is where C#'s reset happened and is the
+    /// floor the walk owes (issue #3539).
+    ///
+    /// Without the floor the transcript can end up shorter than the cursor,
+    /// and every reader of `transcript[cursor..]` panics on the next step —
+    /// which is how this surfaced. Silently worse: a locale hot-swap
+    /// re-renders from `reset_cursor`, so parts trimmed from behind the
+    /// cursor would vanish from a re-render of output the consumer had
+    /// already been shown.
     pub(crate) fn trim_function_end(&mut self, start: usize) {
+        // The cursor indexes the transcript alone, so it is a floor only
+        // when the transcript is the active target — inside a string
+        // capture or a fragment, `start` names a position in *that* buffer
+        // and the cursor says nothing about it.
+        let floor = if self.capture_depth == 0 && self.fragment_depth == 0 {
+            start.max(self.cursor)
+        } else {
+            start
+        };
         let target = self.target();
         let mut i = target.len();
-        while i > start {
+        while i > floor {
             i -= 1;
             let trimmable = match &target[i] {
                 // Glue is transparent to the trim (issue #3522), neither
@@ -2712,5 +2738,59 @@ mod tests {
              must not inherit the previous pass's speaker: \
              {element_after_reset:?}"
         );
+    }
+
+    /// Issue #3556: `trim_function_end` must not walk behind the read
+    /// cursor.
+    ///
+    /// A function whose body spans a yield point — it printed a line, the
+    /// consumer took it, and only then did the function return — has a
+    /// `start` recorded before parts that have since been delivered. C# has
+    /// no such case because its output stream really is emptied at each
+    /// yield (`ResetOutput`); brink keeps the whole transcript with a cursor
+    /// over it, so the cursor is where that reset happened.
+    ///
+    /// Without the floor the transcript ends up shorter than the cursor and
+    /// the next reader of `transcript[cursor..]` panics — which is how this
+    /// surfaced, out of `brink-gen`'s `both_roads_agree`.
+    #[test]
+    fn trim_function_end_stops_at_the_read_cursor() {
+        let mut buf = OutputBuffer::new();
+        // The function's output, all of it after `start = 0`.
+        let start = buf.target_len();
+        buf.push_text("1");
+        buf.push_newline();
+        // An empty list renders as whitespace, so #3536 makes it trimmable
+        // — and it is content, so it commits the newline behind it.
+        buf.push_value_ref(Value::List(alloc::sync::Arc::new(
+            brink_format::ListValue {
+                items: Vec::new(),
+                origins: Vec::new(),
+            },
+        )));
+        buf.push_newline();
+
+        // The consumer takes the completed line; the cursor advances past
+        // the two parts that produced it.
+        assert_eq!(
+            buf.test_take_first_line().map(|(t, _)| t),
+            Some("1\n".to_owned())
+        );
+        let cursor = buf.cursor;
+        assert_eq!(cursor, 2, "the delivered line is the first two parts");
+
+        buf.trim_function_end(start);
+
+        assert!(
+            buf.transcript.len() >= cursor,
+            "the trim walked behind the cursor: transcript is {} parts, \
+             cursor is at {cursor}",
+            buf.transcript.len()
+        );
+        // What it *should* have trimmed: everything the consumer has not
+        // seen, since all of it renders as whitespace.
+        assert_eq!(buf.transcript.len(), cursor, "the unread tail is trimmed");
+        // And the invariant every reader depends on now holds.
+        assert!(buf.test_take_first_line().is_none());
     }
 }
