@@ -93,6 +93,20 @@ const BEGIN_FRAGMENT: u8 = 0x68;
 const END_FRAGMENT: u8 = 0x69;
 const ATTACH_ELEMENT: u8 = 0x6A;
 const END_ELEMENT_RUN: u8 = 0x6B;
+// Peephole superinstruction (`docs/optimizer-peephole.md`): the fused form of
+// `EmitLine` immediately followed by `EmitNewline`. Emitted by the optimizer
+// only; codegen never produces it, so the fence's control artifact never
+// contains it.
+const EMIT_LINE_NL: u8 = 0x6C;
+
+// Peephole superinstructions, second family (`docs/optimizer-peephole.md`
+// §1): a binary operator fused with the `PushInt` immediate that feeds its
+// right operand and/or the `JumpIfFalse` that consumes its result. Each
+// carries a [`BinaryKind`] byte naming the operator. Optimizer-only, like
+// `EMIT_LINE_NL`.
+const BINARY_IMM: u8 = 0x6D;
+const BINARY_JUMP_IF_FALSE: u8 = 0x6E;
+const BINARY_IMM_JUMP_IF_FALSE: u8 = 0x6F;
 
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
@@ -902,6 +916,109 @@ impl SequenceKind {
     }
 }
 
+/// The binary operator a fused superinstruction applies
+/// (`docs/optimizer-peephole.md` §1). One byte on the wire; the mnemonic is
+/// what `.inkt` prints. Exactly the operators that have a plain two-operand
+/// opcode of their own — a fused form is always spelled out as that opcode
+/// preceded by `PushInt` and/or followed by `JumpIfFalse`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryKind {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+}
+
+impl BinaryKind {
+    /// Every kind, in wire-byte order.
+    pub const ALL: [Self; 11] = [
+        Self::Add,
+        Self::Subtract,
+        Self::Multiply,
+        Self::Divide,
+        Self::Modulo,
+        Self::Equal,
+        Self::NotEqual,
+        Self::Greater,
+        Self::GreaterOrEqual,
+        Self::Less,
+        Self::LessOrEqual,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Add => 0,
+            Self::Subtract => 1,
+            Self::Multiply => 2,
+            Self::Divide => 3,
+            Self::Modulo => 4,
+            Self::Equal => 5,
+            Self::NotEqual => 6,
+            Self::Greater => 7,
+            Self::GreaterOrEqual => 8,
+            Self::Less => 9,
+            Self::LessOrEqual => 10,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        Self::ALL
+            .get(b as usize)
+            .copied()
+            .ok_or(DecodeError::InvalidBinaryKind(b))
+    }
+
+    /// The `.inkt` spelling of the operator.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Subtract => "sub",
+            Self::Multiply => "mul",
+            Self::Divide => "div",
+            Self::Modulo => "mod",
+            Self::Equal => "eq",
+            Self::NotEqual => "ne",
+            Self::Greater => "gt",
+            Self::GreaterOrEqual => "ge",
+            Self::Less => "lt",
+            Self::LessOrEqual => "le",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic).
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.mnemonic() == s)
+    }
+
+    /// The plain two-operand opcode this kind fuses, if `op` is one.
+    #[must_use]
+    pub fn of_opcode(op: &Opcode) -> Option<Self> {
+        Some(match op {
+            Opcode::Add => Self::Add,
+            Opcode::Subtract => Self::Subtract,
+            Opcode::Multiply => Self::Multiply,
+            Opcode::Divide => Self::Divide,
+            Opcode::Modulo => Self::Modulo,
+            Opcode::Equal => Self::Equal,
+            Opcode::NotEqual => Self::NotEqual,
+            Opcode::Greater => Self::Greater,
+            Opcode::GreaterOrEqual => Self::GreaterOrEqual,
+            Opcode::Less => Self::Less,
+            Opcode::LessOrEqual => Self::LessOrEqual,
+            _ => return None,
+        })
+    }
+}
+
 /// Flags packed into a `BeginChoice` instruction.
 ///
 /// Under the single-pop protocol, `BeginChoice` pops at most **one** display
@@ -965,6 +1082,8 @@ pub enum DecodeError {
     InvalidDefinitionId(u64),
     /// Invalid sequence kind byte.
     InvalidSequenceKind(u8),
+    /// Invalid binary-operator kind byte on a fused superinstruction.
+    InvalidBinaryKind(u8),
     /// Invalid tower op kind byte (NS-A8 `Tower` opcode immediate).
     InvalidTowerOp(u8),
     /// Invalid collections+ op kind byte (NS-A7 `Collect` opcode immediate).
@@ -1075,6 +1194,7 @@ impl fmt::Display for DecodeError {
                 write!(f, "invalid definition id: {raw:#018x}")
             }
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
+            Self::InvalidBinaryKind(b) => write!(f, "invalid binary kind: {b}"),
             Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
             Self::InvalidCollectOp(b) => write!(f, "invalid collections+ op kind: {b:#04x}"),
             Self::InvalidSeqVerbOp(b) => write!(f, "invalid fn-value verb kind: {b:#04x}"),
@@ -1240,6 +1360,26 @@ pub enum Opcode {
     EmitLine(u16, u8),
     EmitValue,
     EmitNewline,
+    /// `EmitLine(idx, slots)` immediately followed by `EmitNewline`, as one
+    /// instruction — the optimizer's fusion of the single most common
+    /// instruction pair in real stories (`docs/optimizer-peephole.md`). Its
+    /// effect is exactly the two in sequence; the runtime shares their
+    /// bodies. Never emitted by codegen.
+    EmitLineNl(u16, u8),
+    /// `PushInt(imm)` followed by the binary operator `kind`, as one
+    /// instruction: pops the left operand, applies `kind` with `imm` as the
+    /// right operand, pushes the result. Optimizer-only
+    /// (`docs/optimizer-peephole.md` §1); never emitted by codegen.
+    BinaryImm(BinaryKind, i32),
+    /// The binary operator `kind` followed by `JumpIfFalse(rel)`, as one
+    /// instruction: pops both operands, and jumps by `rel` (relative to the
+    /// end of this instruction, as every relative jump is) when the result is
+    /// not truthy. The result is not left on the stack. Optimizer-only.
+    BinaryJumpIfFalse(BinaryKind, i32),
+    /// `PushInt(imm)`, the binary operator `kind`, then `JumpIfFalse(rel)`,
+    /// as one instruction — the shape of every `if x <= 1` and `{ x == 3: }`
+    /// in real stories. Operands are `(kind, imm, rel)`. Optimizer-only.
+    BinaryImmJumpIfFalse(BinaryKind, i32, i32),
     /// Word break — renders as a single space between content parts.
     Spring,
     Glue,
@@ -1736,6 +1876,91 @@ pub enum Opcode {
 
 // ── Opcode encode / decode ──────────────────────────────────────────────────
 
+// `Opcode::peek_static`'s classification table: discriminant byte → one of
+// the `CLASS_*` codes below, `0` for every instruction that carries no
+// static operand. Built once, at compile time, from the same constants the
+// encoder uses, so it cannot drift from them.
+const CLASS_GOTO: u8 = 1;
+const CLASS_GOTO_IF: u8 = 2;
+const CLASS_ENTER_CONTAINER: u8 = 3;
+const CLASS_CALL: u8 = 4;
+const CLASS_TUNNEL_CALL: u8 = 5;
+const CLASS_THREAD_CALL: u8 = 6;
+const CLASS_BEGIN_CHOICE: u8 = 7;
+const CLASS_GET_GLOBAL: u8 = 8;
+const CLASS_SET_GLOBAL: u8 = 9;
+const CLASS_TAKE_GLOBAL: u8 = 10;
+
+const STATIC_CLASS: [u8; 256] = {
+    let mut table = [0u8; 256];
+    table[GOTO as usize] = CLASS_GOTO;
+    table[GOTO_IF as usize] = CLASS_GOTO_IF;
+    table[ENTER_CONTAINER as usize] = CLASS_ENTER_CONTAINER;
+    table[CALL as usize] = CLASS_CALL;
+    table[TUNNEL_CALL as usize] = CLASS_TUNNEL_CALL;
+    table[THREAD_CALL as usize] = CLASS_THREAD_CALL;
+    table[BEGIN_CHOICE as usize] = CLASS_BEGIN_CHOICE;
+    table[GET_GLOBAL as usize] = CLASS_GET_GLOBAL;
+    table[SET_GLOBAL as usize] = CLASS_SET_GLOBAL;
+    table[TAKE_GLOBAL as usize] = CLASS_TAKE_GLOBAL;
+    table
+};
+
+/// The static-target instructions: each carries exactly one `DefinitionId`
+/// operand, and that operand names the address the instruction jumps to or
+/// calls. See [`Opcode::peek_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    Goto,
+    GotoIf,
+    EnterContainer,
+    Call,
+    TunnelCall,
+    ThreadCall,
+    /// The choice's flags byte precedes its target operand.
+    BeginChoice(ChoiceFlags),
+}
+
+/// Where a static-target instruction's operand sits: `buf[operand..end]`
+/// holds the `DefinitionId` (or the linked layer's replacement for it), and
+/// `end` is the offset of the next instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetSite {
+    pub kind: TargetKind,
+    pub operand: usize,
+    pub end: usize,
+}
+
+/// The static-global instructions: each carries exactly one `DefinitionId`
+/// operand naming the global variable it reads or writes. `PushVarPointer`
+/// is deliberately not one — its operand becomes a `Value::VariablePointer`
+/// the story can hold and pass around, so it must stay an id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalKind {
+    Get,
+    Set,
+    Take,
+}
+
+/// Every instruction whose sole `DefinitionId` operand is static — a jump
+/// or call address, or a global variable — as [`Opcode::peek_static`]
+/// classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticKind {
+    Target(TargetKind),
+    Global(GlobalKind),
+}
+
+/// Where a static-operand instruction's operand sits: `buf[operand..end]`
+/// holds the `DefinitionId` (or the linked layer's replacement for it), and
+/// `end` is the offset of the next instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticSite {
+    pub kind: StaticKind,
+    pub operand: usize,
+    pub end: usize,
+}
+
 impl Opcode {
     /// Encode this instruction into the byte buffer.
     #[expect(clippy::too_many_lines)]
@@ -1888,6 +2113,27 @@ impl Opcode {
             }
             Self::EmitValue => write_u8(buf, EMIT_VALUE),
             Self::EmitNewline => write_u8(buf, EMIT_NEWLINE),
+            Self::EmitLineNl(idx, slot_count) => {
+                write_u8(buf, EMIT_LINE_NL);
+                write_u16(buf, idx);
+                write_u8(buf, slot_count);
+            }
+            Self::BinaryImm(kind, imm) => {
+                write_u8(buf, BINARY_IMM);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, imm);
+            }
+            Self::BinaryJumpIfFalse(kind, rel) => {
+                write_u8(buf, BINARY_JUMP_IF_FALSE);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, rel);
+            }
+            Self::BinaryImmJumpIfFalse(kind, imm, rel) => {
+                write_u8(buf, BINARY_IMM_JUMP_IF_FALSE);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, imm);
+                write_i32(buf, rel);
+            }
             Self::Spring => write_u8(buf, SPRING),
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
@@ -2125,6 +2371,68 @@ impl Opcode {
         }
     }
 
+    /// The width of a static-target operand: one `DefinitionId`.
+    pub const TARGET_OPERAND_LEN: usize = 8;
+
+    /// Classify the instruction at `buf[offset]` as one whose only
+    /// `DefinitionId` operand is static — a jump/call address or a global
+    /// variable — and locate that operand, **without decoding it**.
+    ///
+    /// This is an encoding fact about the instruction stream, offered to the
+    /// runtime's linker: it resolves each such operand once and, in its own
+    /// linked copy of the code, replaces the id bytes with a resolved form
+    /// of its choosing. `Opcode::decode` is not defined over that copy (a
+    /// replaced operand is no longer a valid `DefinitionId`), which is why
+    /// the runtime keeps the symbolic bytecode for every decoder besides its
+    /// own dispatch. Returns `None` for any other instruction, and for a
+    /// truncated buffer.
+    #[must_use]
+    #[inline]
+    pub fn peek_static(buf: &[u8], offset: usize) -> Option<StaticSite> {
+        // One table load decides the common case (not a static-operand
+        // instruction) — this runs on every VM fetch, so a sparse `match`
+        // over the discriminants is too expensive here.
+        let class = STATIC_CLASS[*buf.get(offset)? as usize];
+        if class == 0 {
+            return None;
+        }
+        let (kind, operand) = match class {
+            CLASS_GOTO => (StaticKind::Target(TargetKind::Goto), offset + 1),
+            CLASS_GOTO_IF => (StaticKind::Target(TargetKind::GotoIf), offset + 1),
+            CLASS_ENTER_CONTAINER => (StaticKind::Target(TargetKind::EnterContainer), offset + 1),
+            CLASS_CALL => (StaticKind::Target(TargetKind::Call), offset + 1),
+            CLASS_TUNNEL_CALL => (StaticKind::Target(TargetKind::TunnelCall), offset + 1),
+            CLASS_THREAD_CALL => (StaticKind::Target(TargetKind::ThreadCall), offset + 1),
+            CLASS_BEGIN_CHOICE => {
+                let flags = ChoiceFlags::from_byte(*buf.get(offset + 1)?);
+                (
+                    StaticKind::Target(TargetKind::BeginChoice(flags)),
+                    offset + 2,
+                )
+            }
+            CLASS_GET_GLOBAL => (StaticKind::Global(GlobalKind::Get), offset + 1),
+            CLASS_SET_GLOBAL => (StaticKind::Global(GlobalKind::Set), offset + 1),
+            CLASS_TAKE_GLOBAL => (StaticKind::Global(GlobalKind::Take), offset + 1),
+            _ => return None,
+        };
+        let end = operand + Self::TARGET_OPERAND_LEN;
+        (end <= buf.len()).then_some(StaticSite { kind, operand, end })
+    }
+
+    /// [`Self::peek_static`] restricted to the jump/call targets.
+    #[must_use]
+    pub fn peek_target(buf: &[u8], offset: usize) -> Option<TargetSite> {
+        let site = Self::peek_static(buf, offset)?;
+        match site.kind {
+            StaticKind::Target(kind) => Some(TargetSite {
+                kind,
+                operand: site.operand,
+                end: site.end,
+            }),
+            StaticKind::Global(_) => None,
+        }
+    }
+
     /// Decode a single instruction from `buf` starting at `*offset`.
     ///
     /// On success, `*offset` is advanced past the consumed bytes.
@@ -2211,6 +2519,24 @@ impl Opcode {
             }
             EMIT_VALUE => Self::EmitValue,
             EMIT_NEWLINE => Self::EmitNewline,
+            EMIT_LINE_NL => {
+                let idx = read_u16(buf, offset)?;
+                let slot_count = read_u8(buf, offset)?;
+                Self::EmitLineNl(idx, slot_count)
+            }
+            BINARY_IMM => {
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                Self::BinaryImm(kind, read_i32(buf, offset)?)
+            }
+            BINARY_JUMP_IF_FALSE => {
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                Self::BinaryJumpIfFalse(kind, read_i32(buf, offset)?)
+            }
+            BINARY_IMM_JUMP_IF_FALSE => {
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                let imm = read_i32(buf, offset)?;
+                Self::BinaryImmJumpIfFalse(kind, imm, read_i32(buf, offset)?)
+            }
             SPRING => Self::Spring,
             GLUE => Self::Glue,
             BEGIN_TAG => Self::BeginTag,
@@ -2409,6 +2735,110 @@ mod tests {
         DefinitionId::new(DefinitionTag::Address, 0xBEEF)
     }
 
+    /// `peek_target` finds exactly the static-target instructions, places
+    /// their operand where `encode` wrote the id, and declines everything
+    /// else — including a buffer that ends inside the operand.
+    #[test]
+    fn peek_target_locates_static_target_operands() {
+        let flags = ChoiceFlags {
+            has_condition: true,
+            has_start_content: false,
+            has_choice_only_content: true,
+            once_only: false,
+            is_invisible_default: false,
+        };
+        let ops = [
+            Opcode::PushInt(7),
+            Opcode::Goto(test_id()),
+            Opcode::BeginChoice(flags, test_id()),
+            Opcode::Call(test_id()),
+            Opcode::Nop,
+        ];
+        let mut buf = Vec::new();
+        let mut starts = Vec::new();
+        for op in &ops {
+            starts.push(buf.len());
+            op.encode(&mut buf);
+        }
+        let ends: Vec<usize> = starts.iter().skip(1).copied().chain([buf.len()]).collect();
+
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[0]),
+            None,
+            "PushInt is not a target op"
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[1]),
+            Some(TargetSite {
+                kind: TargetKind::Goto,
+                operand: starts[1] + 1,
+                end: ends[1],
+            })
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[2]),
+            Some(TargetSite {
+                kind: TargetKind::BeginChoice(flags),
+                operand: starts[2] + 2,
+                end: ends[2],
+            }),
+            "the choice flags byte precedes the operand"
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[3]).map(|s| s.kind),
+            Some(TargetKind::Call)
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[4]),
+            None,
+            "Nop is not a target op"
+        );
+
+        // Globals classify under `peek_static` only; a variable pointer is
+        // not static at all.
+        let mut gbuf = Vec::new();
+        Opcode::GetGlobal(test_id()).encode(&mut gbuf);
+        let set_at = gbuf.len();
+        Opcode::SetGlobal(test_id()).encode(&mut gbuf);
+        let take_at = gbuf.len();
+        Opcode::TakeGlobal(test_id()).encode(&mut gbuf);
+        let ptr_at = gbuf.len();
+        Opcode::PushVarPointer(test_id()).encode(&mut gbuf);
+        assert_eq!(
+            Opcode::peek_static(&gbuf, 0).map(|s| (s.kind, s.operand, s.end)),
+            Some((StaticKind::Global(GlobalKind::Get), 1, set_at))
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, set_at).map(|s| s.kind),
+            Some(StaticKind::Global(GlobalKind::Set))
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, take_at).map(|s| s.kind),
+            Some(StaticKind::Global(GlobalKind::Take))
+        );
+        assert_eq!(
+            Opcode::peek_target(&gbuf, 0),
+            None,
+            "a global is not a target"
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, ptr_at),
+            None,
+            "PushVarPointer stays symbolic"
+        );
+        assert_eq!(Opcode::peek_target(&buf, buf.len()), None, "past the end");
+        assert_eq!(
+            Opcode::peek_target(&buf[..ends[1] - 1], starts[1]),
+            None,
+            "a buffer that ends inside the operand is not a site"
+        );
+
+        // The operand bytes are the encoded id, byte for byte.
+        let site = Opcode::peek_target(&buf, starts[1]).expect("site");
+        let raw = u64::from_le_bytes(buf[site.operand..site.end].try_into().expect("8 bytes"));
+        assert_eq!(DefinitionId::from_raw(raw), Some(test_id()));
+    }
+
     fn global_id() -> DefinitionId {
         DefinitionId::new(DefinitionTag::GlobalVar, 42)
     }
@@ -2533,6 +2963,17 @@ mod tests {
         roundtrip(&Opcode::EmitLine(999, 3));
         roundtrip(&Opcode::EmitValue);
         roundtrip(&Opcode::EmitNewline);
+        roundtrip(&Opcode::EmitLineNl(0x1234, 3));
+        for kind in BinaryKind::ALL {
+            roundtrip(&Opcode::BinaryImm(kind, -7));
+            roundtrip(&Opcode::BinaryJumpIfFalse(kind, 300));
+            roundtrip(&Opcode::BinaryImmJumpIfFalse(kind, i32::MIN, -12));
+            assert_eq!(BinaryKind::from_mnemonic(kind.mnemonic()), Some(kind));
+        }
+        assert_eq!(
+            Opcode::decode(&[BINARY_IMM, 11, 0, 0, 0, 0], &mut 0),
+            Err(DecodeError::InvalidBinaryKind(11))
+        );
         roundtrip(&Opcode::Spring);
         roundtrip(&Opcode::Glue);
         roundtrip(&Opcode::BeginTag);

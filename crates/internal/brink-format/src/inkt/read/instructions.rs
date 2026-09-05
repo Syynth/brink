@@ -8,7 +8,7 @@
 use super::primitives::parse_def_id;
 use super::{InktParseError, P, Rule};
 use crate::id::DefinitionId;
-use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
+use crate::opcode::{BinaryKind, ChoiceFlags, Opcode, SequenceKind};
 
 // ── Code field ──────────────────────────────────────────────────────────────
 
@@ -155,6 +155,31 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         }
         "emit_value" => Ok(Opcode::EmitValue),
         "emit_newline" => Ok(Opcode::EmitNewline),
+        "emit_line_nl" => {
+            let idx = parse_operand_u16(&operands, 0, mnemonic)?;
+            let slots = parse_operand_u8(&operands, 1, mnemonic)?;
+            Ok(Opcode::EmitLineNl(idx, slots))
+        }
+        "binary_imm" => {
+            let kind = parse_binary_kind(&operands, mnemonic)?;
+            Ok(Opcode::BinaryImm(
+                kind,
+                parse_operand_i32(&operands, 1, mnemonic)?,
+            ))
+        }
+        "binary_jump_if_false" => {
+            let kind = parse_binary_kind(&operands, mnemonic)?;
+            Ok(Opcode::BinaryJumpIfFalse(
+                kind,
+                parse_operand_i32(&operands, 1, mnemonic)?,
+            ))
+        }
+        "binary_imm_jump_if_false" => {
+            let kind = parse_binary_kind(&operands, mnemonic)?;
+            let imm = parse_operand_i32(&operands, 1, mnemonic)?;
+            let rel = parse_operand_i32(&operands, 2, mnemonic)?;
+            Ok(Opcode::BinaryImmJumpIfFalse(kind, imm, rel))
+        }
         "spring" => Ok(Opcode::Spring),
         "glue" => Ok(Opcode::Glue),
         "begin_tag" => Ok(Opcode::BeginTag),
@@ -476,6 +501,19 @@ fn operand_str<'a>(
         Some(p) => Ok(p.as_str()),
         None => Ok(op.as_str()),
     }
+}
+
+/// Operand 0 of a fused binary superinstruction: `kind=<mnemonic>`, a
+/// `kv_operand` (see the writer for why not a bare word).
+fn parse_binary_kind(operands: &[P<'_>], context: &str) -> Result<BinaryKind, InktParseError> {
+    let s = operand_str(operands, 0, context)?;
+    s.strip_prefix("kind=")
+        .and_then(BinaryKind::from_mnemonic)
+        .ok_or_else(|| InktParseError {
+            message: format!("expected kind=<add|sub|mul|div|mod|eq|ne|gt|ge|lt|le>, got {s}"),
+            line: 0,
+            col: 0,
+        })
 }
 
 fn parse_operand_i32(operands: &[P<'_>], idx: usize, context: &str) -> Result<i32, InktParseError> {

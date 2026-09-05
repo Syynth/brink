@@ -9,12 +9,14 @@
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use brink_format::{LineEntry, PluralResolver};
 
-use super::{OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_lines_annotated};
+use super::{
+    OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_first_line_annotated,
+    resolve_lines_marked,
+};
 use crate::program::Program;
 
 impl OutputBuffer {
@@ -25,7 +27,21 @@ impl OutputBuffer {
     /// A Newline is "committed" when non-whitespace text appears after it
     /// in the buffer — at that point, no future Glue can reach past the
     /// text to eat the Newline.
+    ///
+    /// O(1): the answer is maintained incrementally as parts are pushed
+    /// (`completion.rs`). [`Self::has_completed_line_scan`] is the batch
+    /// definition it is held equal to.
     pub(crate) fn has_completed_line(&self) -> bool {
+        !self.has_checkpoint() && self.completion.is_completed()
+    }
+
+    /// The batch definition of [`Self::has_completed_line`]: a glue-marking
+    /// pass over the unread transcript, then a walk for a committed newline.
+    /// This was the production implementation until the incremental state
+    /// replaced it; it stays as the reference the property test in
+    /// `completion.rs` checks the incremental form against.
+    #[cfg(test)]
+    pub(crate) fn has_completed_line_scan(&mut self) -> bool {
         if self.has_checkpoint() {
             return false;
         }
@@ -40,8 +56,13 @@ impl OutputBuffer {
         }
 
         // Run glue marking pass to determine which newlines survive.
-        let mut remove = vec![false; unread.len()];
-        mark_glue_removals(unread, &mut remove);
+        // The buffer is reused across calls (see `OutputBuffer::line_scan`):
+        // this runs once per VM step, and allocating it here was one zeroed
+        // allocation per step (#3565).
+        let remove = &mut self.line_scan;
+        remove.clear();
+        remove.resize(unread.len(), false);
+        mark_glue_removals(unread, remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
         // not in after_glue state) followed by content — VISIBLE content
@@ -107,7 +128,7 @@ impl OutputBuffer {
     /// all single-line results with empty string to produce the same
     /// output as the original `flush_lines` + `finalize_lines`.
     ///
-    /// A completed segment that [`super::resolve_lines_annotated`] marks
+    /// A completed segment that `super::drive_lines` marks
     /// suppressed (issue #2091 — an empty `content`/Fragment capture) is
     /// never handed back as a `Line::Text` of its own: the cursor still
     /// advances past it, but the loop keeps scanning for the next real
@@ -130,8 +151,12 @@ impl OutputBuffer {
                 return None;
             }
 
-            let mut remove = vec![false; unread.len()];
-            mark_glue_removals(unread, &mut remove);
+            // Same reused buffer as `has_completed_line` (#3565) — this is
+            // the identical glue scan, one line further along.
+            let remove = &mut self.line_scan;
+            remove.clear();
+            remove.resize(unread.len(), false);
+            mark_glue_removals(unread, remove);
 
             // Find the split point: the first surviving Newline (not removed,
             // not in after_glue state) that has content after it — the same
@@ -181,34 +206,38 @@ impl OutputBuffer {
             // multi-line attach run's second-and-later lines still see it
             // even though the `ElementAttach` part(s) that produced it live
             // before `self.cursor` now (consumed by an earlier call).
+            // The slice is a prefix of `unread`, and the marks `line_scan`
+            // holds for that prefix are exactly the marks a fresh scan of the
+            // slice alone would produce: a glue marks only backwards, and a
+            // glue *after* `split_at` could reach into the prefix only by
+            // passing over the newline at `split_at` — which it would have
+            // marked, and the scan above chose `split_at` precisely because
+            // it is unmarked. So the marks are reused rather than recomputed
+            // (and re-allocated) per delivered line.
             let slice = &self.transcript[self.cursor..=self.cursor + split_at];
-            let mut lines = resolve_lines_annotated(
-                slice,
-                self.pending_element.clone(),
-                program,
-                line_tables,
-                resolver,
-                &self.fragments,
-            );
-            if lines.is_empty() {
-                return None;
-            }
+            let ((mut text, tags, suppressed, element, source), next_element) =
+                resolve_first_line_annotated(
+                    slice,
+                    &self.line_scan[..=split_at],
+                    self.pending_element.clone(),
+                    program,
+                    line_tables,
+                    resolver,
+                    &self.fragments,
+                );
 
             // Advance cursor past the consumed newline — unconditionally: a
             // suppressed line still consumed real transcript space and must
             // not be re-scanned on the next loop iteration.
             self.cursor += split_at + 1;
+            self.rescan_completion();
 
-            let (mut text, tags, suppressed, element, source) = lines.swap_remove(0);
-            // The trailing filler entry — now at index 0 after `swap_remove`
-            // — carries the element-attachment state as of the END of this
-            // slice (past this line's own `Newline`, so it reflects any
-            // `ElementAttachEnd` that immediately followed it too). Carry
-            // that forward for whatever line the next call resolves,
-            // whether or not this one is suppressed.
-            self.pending_element = lines
-                .first()
-                .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
+            // The trailing filler entry carries the element-attachment state
+            // as of the END of this slice (past this line's own `Newline`, so
+            // it reflects any `ElementAttachEnd` that immediately followed it
+            // too). Carry that forward for whatever line the next call
+            // resolves, whether or not this one is suppressed.
+            self.pending_element = next_element;
             if suppressed {
                 continue;
             }
@@ -233,6 +262,7 @@ impl OutputBuffer {
         let program = super::test_dummy_program();
         let result = super::resolve_parts(unread, &program, &[], None, &self.fragments);
         self.cursor = self.transcript.len();
+        self.rescan_completion();
         result
     }
 
@@ -256,8 +286,13 @@ impl OutputBuffer {
             "flush_lines() called with active checkpoints"
         );
         let unread = &self.transcript[self.cursor..];
-        let annotated = resolve_lines_annotated(
+        let remove = &mut self.line_scan;
+        remove.clear();
+        remove.resize(unread.len(), false);
+        mark_glue_removals(unread, remove);
+        let (result, carried) = resolve_lines_marked(
             unread,
+            remove,
             self.pending_element.clone(),
             program,
             line_tables,
@@ -268,16 +303,9 @@ impl OutputBuffer {
         // `take_first_line` — otherwise an `ElementAttachEnd` consumed by this
         // flush is lost and the attach data stays live on every later line
         // (issue #2108 review finding).
-        self.pending_element = annotated
-            .last()
-            .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
-        let result: Vec<_> = annotated
-            .into_iter()
-            .filter_map(|(text, tags, suppressed, element, source)| {
-                (!suppressed).then_some((text, tags, element, source))
-            })
-            .collect();
+        self.pending_element = carried;
         self.cursor = self.transcript.len();
+        self.rescan_completion();
         result
     }
 
@@ -330,6 +358,7 @@ impl OutputBuffer {
     /// Reset the read cursor to the beginning for re-rendering.
     pub fn reset_cursor(&mut self) {
         self.cursor = 0;
+        self.rescan_completion();
         // At index 0 no attach run has accumulated yet — without this, a
         // locale hot-swap re-render (issue #2108 review finding) would carry
         // the previous pass's element data onto the newly re-drained leading

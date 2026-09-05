@@ -180,8 +180,12 @@ document's catalogue, and the mechanism they will want is 08-06's.
 1. Land `brink-opt` with an empty pass list, `ArtifactStats` reported,
    and the fence green. An empty optimizer is provably byte-identical, so
    this proves the harness rather than the passes.
-2. Land the first pass (`docs/optimizer-catalogue.md` — line-table dedup
-   is the obvious candidate: the biggest win, the clearest metric).
+2. Land the first pass. **Done 2026-09-05** — not line-table dedup as
+   proposed here, but the peephole engine and its first superinstruction
+   (`docs/optimizer-peephole.md`), because the runtime measurement that
+   arrived in between (#3575's opcode histogram) made *instructions
+   executed* the metric with the most headroom, and dedup's collisions
+   (VO slots, translator context) are still unruled.
 3. Revisit `optimizer-framework-spec.md` once a second pass exists.
 
 ## 9. Questions for the ruling — RULED 2026-09-04
@@ -227,3 +231,24 @@ its five obligations are. The fifth is not: the road is
 `read_inkb → optimize → write_inkb`, so with no passes byte-identity asserts
 **`write_inkb ∘ read_inkb == id`**, which nothing else in the tree checked.
 It now holds over 419 real corpus artifacts, measured.
+
+## 11. The first pass (2026-09-05)
+
+`OptConfig::defaults()` is no longer empty: it holds `EmitLineNl`
+(`emit-line-nl`) and, since the same day, `BinaryFusion` (`binary-fusion`) —
+superinstructions on the shared peephole engine, `docs/optimizer-peephole.md`.
+Consequences for the fence:
+
+- `bytes_identical` is now asserted **against** `changed`, both ways: an
+  untouched case must round-trip byte-for-byte (the §10 `brink-format`
+  claim, still live), and a case a pass reports as changed must differ.
+- Every sweep and the generator property carry a **change floor**, so the
+  pass set silently ceasing to match is a failure, not a quiet green.
+- `.inkb` moved to **v7** for the new opcode (`0x6C`) and to **v8** for the
+  binary-fusion family (`0x6D`–`0x6F`); fuzz seeds were regenerated each
+  time. Codegen never emits a fused form.
+
+Still deferred: the `brink opt` subcommand (the crate is still
+`publish = false`; the reasoning in §10 stands until it is hand-published)
+and `--passes=` toggles — there is now one inhabitant, which is enough to
+test a grammar against but not enough to know its shape.

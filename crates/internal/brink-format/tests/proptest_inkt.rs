@@ -2,14 +2,18 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
-    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
-    MapKey, NameId, Opcode, OrderedMap, PluralCategory, ProjSegment, ScopeLineTable, SelectKey,
-    ShapeId, SlotInfo, SourceLocation, StoryData, StructShapeDef, Value,
+    AddressPath, BinaryKind, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId,
+    DefinitionTag, ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef,
+    ListItemDef, ListValue, MapKey, NameId, Opcode, OrderedMap, PluralCategory, ProjSegment,
+    ScopeLineTable, SelectKey, ShapeId, SlotInfo, SourceLocation, StoryData, StructShapeDef, Value,
 };
 use proptest::prelude::*;
 
 // ── Strategies ──────────────────────────────────────────────────────────────
+
+fn binary_kind() -> impl Strategy<Value = BinaryKind> {
+    prop::sample::select(BinaryKind::ALL.to_vec())
+}
 
 fn arb_tag() -> impl Strategy<Value = DefinitionTag> {
     prop_oneof![
@@ -376,6 +380,11 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EvalLine(idx, slots)),
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
+        (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EmitLineNl(idx, slots)),
+        (binary_kind(), any::<i32>()).prop_map(|(k, imm)| Opcode::BinaryImm(k, imm)),
+        (binary_kind(), any::<i32>()).prop_map(|(k, rel)| Opcode::BinaryJumpIfFalse(k, rel)),
+        (binary_kind(), any::<i32>(), any::<i32>())
+            .prop_map(|(k, imm, rel)| Opcode::BinaryImmJumpIfFalse(k, imm, rel)),
         Just(Opcode::Glue),
         Just(Opcode::AttachElement),
         Just(Opcode::EndElementRun),
@@ -513,6 +522,10 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::ThreadStart
         | Opcode::ThreadDone
         | Opcode::EmitLine(_, _)
+        | Opcode::EmitLineNl(_, _)
+        | Opcode::BinaryImm(_, _)
+        | Opcode::BinaryJumpIfFalse(_, _)
+        | Opcode::BinaryImmJumpIfFalse(_, _, _)
         | Opcode::EmitValue
         | Opcode::EmitNewline
         | Opcode::Spring

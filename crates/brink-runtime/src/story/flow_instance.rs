@@ -106,20 +106,17 @@ impl FlowInstance {
     /// reuse an existing one.
     pub fn new_at(program: &Program, container_idx: u32) -> (Self, World) {
         let globals = program.global_defaults();
-        let initial_frame = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
-                container_idx,
-                offset: 0,
-            }],
-            frame_type: CallFrameType::Root,
-            external_fn_id: None,
-            function_output_start: None,
-        };
+        let initial_frame = CallFrame::new(CallFrameType::Root, None, None);
         let initial_thread = Thread {
-            call_stack: CallStack::new(initial_frame),
+            // The root thread: no parent frames below it (issue #3561).
+            base_depth: 0,
+            call_stack: CallStack::new(
+                initial_frame,
+                Some(ContainerPosition {
+                    container_idx,
+                    offset: 0,
+                }),
+            ),
         };
         let flow_instance = Self {
             flow: Flow {
@@ -227,7 +224,7 @@ impl FlowInstance {
                 let id = self
                     .flow
                     .external_fn_id()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                 Err(RuntimeError::UnresolvedExternalCall(id))
             }
         }
@@ -492,7 +489,6 @@ impl FlowInstance {
             }
 
             let stepped = vm::step::<R>(flow, program, line_tables, context, stats, resolver)?;
-            stats.materializations += flow.drain_materializations();
 
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
@@ -770,17 +766,12 @@ impl FlowInstance {
         // didSafeExit = true. The output buffer and value stack are
         // deliberately left untouched — C# `ForceEnd` does not clear the
         // output stream or the evaluation stack.
-        let root_frame = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: Vec::new(),
-            frame_type: CallFrameType::Root,
-            external_fn_id: None,
-            function_output_start: None,
-        };
+        let root_frame = CallFrame::new(CallFrameType::Root, None, None);
         self.flow.threads = vec![Thread {
-            call_stack: CallStack::new(root_frame),
+            // A reset drops every spawned thread; what is left is the root
+            // thread, which has no parent frames below it (issue #3561).
+            base_depth: 0,
+            call_stack: CallStack::new(root_frame, None),
         }];
         self.flow.pending_choices.clear();
         // No explicit pending-terminal clear needed here: `next_block_id`'s
@@ -849,11 +840,10 @@ impl FlowInstance {
     /// drive instances directly (`bevy-brink`) pass the program they run.
     #[must_use]
     pub fn current_path(&self, program: &Program) -> Option<String> {
-        self.flow
-            .current_thread()
-            .call_stack
-            .last()
-            .and_then(|frame| super::frame_path(program, frame))
+        let stack = &self.flow.current_thread().call_stack;
+        stack
+            .top_depth()
+            .and_then(|depth| super::frame_path(program, stack, depth))
             // The root scope's empty path is "no named container".
             .filter(|path| !path.is_empty())
     }
@@ -902,7 +892,7 @@ impl FlowInstance {
     /// The fragments captured during execution (for re-rendering choice
     /// display text and computed substrings in a different locale).
     #[must_use]
-    pub fn fragments(&self) -> &[crate::output::Fragment] {
+    pub fn fragments(&self) -> &crate::output::Fragments {
         self.flow.output.fragments()
     }
 
@@ -1080,19 +1070,18 @@ impl FlowInstance {
         self.flow.output.begin_capture();
 
         let output_start = self.flow.output.mark();
-        let boundary = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
+        let boundary = CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        );
+        self.flow.current_thread_mut().call_stack.push(
+            boundary,
+            Some(ContainerPosition {
                 container_idx,
                 offset: 0,
-            }],
-            frame_type: CallFrameType::FunctionEvalFromGame,
-            external_fn_id: None,
-            function_output_start: Some(output_start),
-        };
-        self.flow.current_thread_mut().call_stack.push(boundary);
+            }),
+        );
         self.stats.frames_pushed += 1;
 
         // Pass arguments onto the value stack in declaration order — the
@@ -1215,19 +1204,18 @@ impl FlowInstance {
 
         self.flow.output.begin_capture();
         let output_start = self.flow.output.mark();
-        let boundary = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            temps_written: Vec::new(),
-            container_stack: vec![ContainerPosition {
+        let boundary = CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        );
+        self.flow.current_thread_mut().call_stack.push(
+            boundary,
+            Some(ContainerPosition {
                 container_idx,
                 offset: 0,
-            }],
-            frame_type: CallFrameType::FunctionEvalFromGame,
-            external_fn_id: None,
-            function_output_start: Some(output_start),
-        };
-        self.flow.current_thread_mut().call_stack.push(boundary);
+            }),
+        );
         self.stats.frames_pushed += 1;
 
         // Pass the full arg row (bound prefix then supplied) onto the value
@@ -1336,7 +1324,6 @@ impl FlowInstance {
                 &mut self.stats,
                 resolver,
             )?;
-            self.stats.materializations += self.flow.drain_materializations();
 
             match stepped {
                 vm::Stepped::Done | vm::Stepped::Ended => {
@@ -1395,7 +1382,7 @@ impl FlowInstance {
         let fn_id = self
             .flow
             .external_fn_id()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
         let entry = program.external_fn(fn_id);
         let fn_name = entry.map_or("?", |e| program.name(e.name));
         match handler.call(fn_name, self.flow.external_args()) {
@@ -1408,7 +1395,7 @@ impl FlowInstance {
                     let container_idx = program
                         .resolve_target(fb_id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
                     self.flow.invoke_fallback(container_idx);
                     Ok(None)
                 } else {
@@ -1525,17 +1512,20 @@ fn select_choice(
     // completed — only the main thread remains.
     let current = flow.current_thread_mut();
     *current = choice.thread_fork;
+    // What is installed here IS the root thread from now on, so it has no
+    // parent frames below it. `fork_thread` already hands back `0`; this
+    // restates it at the one place a fork becomes the flow's own thread,
+    // which is exactly where the old `Thread` boundary frame used to ride
+    // in and stay forever (issue #3561).
+    current.base_depth = 0;
 
     // Set execution position to the choice target. We reset the top
     // frame's container_stack to just the target — the snapshot may
     // have captured stale nesting from inside the choice eval block.
-    let frame = current
-        .call_stack
-        .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
-
-    frame.container_stack.clear();
-    frame.container_stack.push(ContainerPosition {
+    if current.call_stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    current.call_stack.reset_top_containers(ContainerPosition {
         container_idx: choice.target_idx,
         offset: choice.target_offset,
     });
@@ -1574,7 +1564,7 @@ pub(super) fn resolve_external_call(
 ) -> Result<bool, RuntimeError> {
     let fn_id = flow
         .external_fn_id()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
 
     let entry = program.external_fn(fn_id);
     let fn_name = entry.map_or("?", |e| program.name(e.name));
@@ -1591,7 +1581,7 @@ pub(super) fn resolve_external_call(
                 let container_idx = program
                     .resolve_target(fb_id)
                     .map(|(idx, _)| idx)
-                    .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+                    .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
 
                 flow.invoke_fallback(container_idx);
                 Ok(true)
@@ -1638,20 +1628,20 @@ fn flush_remaining(
         resolver,
         flow.line_delivered_this_turn,
     );
-    let mut text = String::new();
-    let mut tags = Vec::new();
-    let mut element = BTreeMap::new();
-    let mut source: Option<brink_format::SourceLocation> = None;
-    for (i, (line_text, line_tags, line_element, line_source)) in lines.iter().enumerate() {
-        if i > 0 {
-            text.push('\n');
-        }
-        text.push_str(line_text);
-        tags.extend_from_slice(line_tags);
-        element.extend(line_element.iter().map(|(k, v)| (k.clone(), v.clone())));
-        // First line's provenance wins — the flushed run "is" where it starts.
+    // The first line's buffers are taken over rather than copied — at a
+    // choice point there is usually exactly one — and any further lines are
+    // joined onto them.
+    let mut lines = lines.into_iter();
+    let Some((mut text, mut tags, mut element, mut source)) = lines.next() else {
+        return (String::new(), Vec::new(), BTreeMap::new(), None);
+    };
+    for (line_text, line_tags, line_element, line_source) in lines {
+        text.push('\n');
+        text.push_str(&line_text);
+        tags.extend(line_tags);
+        element.extend(line_element);
         if source.is_none() {
-            source.clone_from(line_source);
+            source = line_source;
         }
     }
     (text, tags, element, source)
@@ -1715,16 +1705,17 @@ fn collect_choices(
         .filter(|pc| !pc.flags.is_invisible_default)
         .enumerate()
         .map(|(i, pc)| {
+            let is_blank = |c: char| c == ' ' || c == '\t';
             let display_text = match &pc.display {
-                ChoiceDisplay::Text(s) => s.clone(),
+                ChoiceDisplay::Text(s) => s.trim_matches(is_blank).to_string(),
                 ChoiceDisplay::Fragment(idx) => {
-                    flow.output
-                        .resolve_fragment(*idx, program, line_tables, resolver)
+                    let mut text =
+                        flow.output
+                            .resolve_fragment(*idx, program, line_tables, resolver);
+                    crate::output::trim_in_place_matches(&mut text, is_blank);
+                    text
                 }
             };
-            let display_text = display_text
-                .trim_matches(|c: char| c == ' ' || c == '\t')
-                .to_string();
             let source = match &pc.display {
                 ChoiceDisplay::Fragment(idx) => {
                     flow.output.fragment_source(*idx, program, line_tables)

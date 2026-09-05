@@ -1092,6 +1092,28 @@ pub(crate) enum BinaryOp {
     Pow,
 }
 
+/// The operator a fused superinstruction names (`brink_format::BinaryKind`)
+/// is exactly one of the plain binary operators — the same table the
+/// unfused opcode dispatches through.
+impl From<brink_format::BinaryKind> for BinaryOp {
+    fn from(kind: brink_format::BinaryKind) -> Self {
+        use brink_format::BinaryKind as K;
+        match kind {
+            K::Add => Self::Add,
+            K::Subtract => Self::Subtract,
+            K::Multiply => Self::Multiply,
+            K::Divide => Self::Divide,
+            K::Modulo => Self::Modulo,
+            K::Equal => Self::Equal,
+            K::NotEqual => Self::NotEqual,
+            K::Greater => Self::Greater,
+            K::GreaterOrEqual => Self::GreaterOrEqual,
+            K::Less => Self::Less,
+            K::LessOrEqual => Self::LessOrEqual,
+        }
+    }
+}
+
 fn int_op(op: BinaryOp, a: i32, b: i32) -> Result<Value, RuntimeError> {
     Ok(match op {
         BinaryOp::Add => Value::Int(a.wrapping_add(b)),
@@ -1382,6 +1404,7 @@ mod tests {
 
     fn dummy_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],
@@ -2693,6 +2716,7 @@ mod tower_tests {
 
     fn dummy_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],

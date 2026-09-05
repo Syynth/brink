@@ -56,7 +56,7 @@ use brink_format::{
     ProjSegment, ShapeId, Value,
 };
 use brink_runtime::transcript::{read_transcript, write_transcript};
-use brink_runtime::{Fragment, OutputPart};
+use brink_runtime::{Fragment, Fragments, OutputPart};
 use proptest::prelude::*;
 
 // ── Strategies ───────────────────────────────────────────────────────────
@@ -263,15 +263,15 @@ proptest! {
         fragments in prop::collection::vec(arb_fragment(), 0..4),
         source_checksum in any::<u32>(),
     ) {
-        let bytes = write_transcript(&parts, source_checksum, &fragments);
+        let bytes = write_transcript(&parts, source_checksum, &Fragments::from(fragments.clone()));
         let data = read_transcript(&bytes).expect("a freshly-written transcript must decode");
 
         prop_assert_eq!(data.source_checksum, source_checksum);
         prop_assert_eq!(&data.parts, &parts);
         prop_assert_eq!(data.fragments.len(), fragments.len());
         for (decoded, original) in data.fragments.iter().zip(fragments.iter()) {
-            prop_assert_eq!(&decoded.parts, &original.parts);
-            prop_assert_eq!(&decoded.tags, &original.tags);
+            prop_assert_eq!(decoded.parts, original.parts.as_slice());
+            prop_assert_eq!(decoded.tags, original.tags.as_slice());
         }
     }
 }
@@ -286,13 +286,18 @@ fn fragment_tags_round_trip_through_transcript_codec() {
         parts: vec![OutputPart::Text("hello".to_string())],
         tags: vec!["a_tag".to_string()],
     };
-    let bytes = write_transcript(&[], 0, std::slice::from_ref(&fragment));
+    let bytes = write_transcript(&[], 0, &Fragments::from(vec![fragment.clone()]));
     let data = read_transcript(&bytes).expect("well-formed transcript must decode");
 
     assert_eq!(data.fragments.len(), 1);
-    assert_eq!(data.fragments[0].parts, fragment.parts, "parts round-trip");
     assert_eq!(
-        data.fragments[0].tags, fragment.tags,
+        data.fragments.parts(0).unwrap(),
+        fragment.parts,
+        "parts round-trip"
+    );
+    assert_eq!(
+        data.fragments.tags(0).unwrap(),
+        fragment.tags,
         "tags round-trip (fixed by #953)"
     );
 }

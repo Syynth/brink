@@ -265,4 +265,17 @@ pub struct Stats {
     pub snapshot_cache_misses: u64,
     /// `CallStack::materialize` calls (flattened inherited prefix).
     pub materializations: u64,
+    /// Executed-instruction histogram by discriminant byte (256 entries,
+    /// sized on first use). Bench instrumentation only: the optimizer's
+    /// peephole work needs to know which instructions — and which pairs —
+    /// actually run, not which exist in the artifact.
+    #[cfg(feature = "bench-counters")]
+    pub opcode_hist: Vec<u64>,
+    /// Executed instruction-pair histogram, indexed `prev << 8 | next`
+    /// (65 536 entries, sized on first use).
+    #[cfg(feature = "bench-counters")]
+    pub bigram_hist: Vec<u64>,
+    /// The previously executed discriminant, for `bigram_hist`.
+    #[cfg(feature = "bench-counters")]
+    pub last_disc: Option<u8>,
 }

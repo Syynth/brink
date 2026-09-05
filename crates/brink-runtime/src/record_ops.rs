@@ -38,7 +38,7 @@ pub(crate) fn record_new(
     let shape = ShapeId(shape_id);
     let entry = program
         .struct_shape(shape)
-        .ok_or(RuntimeError::InvalidShapeId(shape_id))?;
+        .ok_or_else(|| RuntimeError::InvalidShapeId(shape_id))?;
     let field_count = entry.fields.len();
     let mut fields = Vec::with_capacity(field_count);
     for _ in 0..field_count {
@@ -66,7 +66,7 @@ pub(crate) fn record_get_dyn(
     if crate::value_ops::is_tower(&record) {
         let name = program
             .name_checked(NameId(name_id))
-            .ok_or(RuntimeError::InvalidNameId(name_id))?;
+            .ok_or_else(|| RuntimeError::InvalidNameId(name_id))?;
         let Some(component) = crate::tower_ops::tower_component(&record, name) else {
             return Err(RuntimeError::TypeError(alloc::format!(
                 "`{}` has no component `{name}`",
@@ -229,7 +229,7 @@ fn field_index(program: &Program, record: &Value, name: NameId) -> Result<usize,
     };
     let entry = program
         .struct_shape(shape)
-        .ok_or(RuntimeError::InvalidShapeId(shape.0))?;
+        .ok_or_else(|| RuntimeError::InvalidShapeId(shape.0))?;
     entry.fields.iter().position(|&f| f == name).ok_or_else(|| {
         // `name` is a caller-provided `NameId` operand — safe-guard the
         // lookup rather than calling `Program::name` (which indexes
@@ -299,6 +299,7 @@ mod tests {
     /// declared struct shape `Point { x, y }` at `ShapeId(0)`.
     fn point_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],

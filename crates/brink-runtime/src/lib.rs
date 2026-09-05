@@ -30,6 +30,21 @@
 //! `no_std` + `alloc`: this crate builds without the standard library when
 //! the default `std` feature is disabled (see `docs/no-std-portability.md`).
 #![cfg_attr(not(feature = "std"), no_std)]
+// `Option::ok_or(RuntimeError::…)` builds the error eagerly and, on the
+// `Some` path, drops it — and `RuntimeError`'s drop glue is an out-of-line
+// call (the enum carries `String` payloads), paid even for a unit variant.
+// The VM's per-step path does this two to three times per step: measured
+// at 6.5% of all instructions on `crucible-8` (callgrind,
+// `drop_glue::<RuntimeError>` called 2.3M times over 933K steps). Every
+// such site uses `ok_or_else` so that no error value exists unless the
+// `None` arm is taken. Clippy's heuristic that an enum constructor is free
+// to build is wrong for this type, hence the crate-wide expectation; it
+// goes stale (and CI says so) if the last `ok_or_else(|| RuntimeError::…)`
+// disappears.
+#![expect(
+    clippy::unnecessary_lazy_evaluations,
+    reason = "RuntimeError's drop glue is a real out-of-line cost on the Some path; see the note above"
+)]
 
 extern crate alloc;
 
@@ -90,7 +105,7 @@ pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, Polic
 pub use iter::ValueIter;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
-pub use output::{Fragment, OutputPart};
+pub use output::{Fragment, FragmentRef, Fragments, OutputPart};
 pub use program::{ListMember, Program};
 pub use replay::{
     RECORDING_CAP, RecordedExternal, RecordingHandler, ReplayHandler, ReplayMode, ReplayRecorder,

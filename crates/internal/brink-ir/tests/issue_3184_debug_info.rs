@@ -142,12 +142,14 @@ fn golden_hash(bytes: &[u8]) -> u64 {
 /// default (debug-info-off) codegen path's output must fail this constant,
 /// not just fail to disagree with itself. Regenerate deliberately (never to
 /// silence a failure without understanding why the bytes changed) by
-/// printing `golden_hash(&buf_a)` and pasting the new value here.
-const EXPECTED_INK_HASH: u64 = 0xe648_04d2_a4b5_87f1;
+/// printing `golden_hash(&buf_a)` and pasting the new value here. Last
+/// regenerated for the `.inkb` v8 header (the optimizer-only superinstruction
+/// opcodes, which codegen never emits — only the version byte moved).
+const EXPECTED_INK_HASH: u64 = 0xef2e_5270_9533_8423;
 
 /// Sibling of [`EXPECTED_INK_HASH`] for the native-surface fixture in
 /// `byte_identical_when_debug_info_off_native`.
-const EXPECTED_NATIVE_HASH: u64 = 0xd9d4_3c4a_3e60_81a3;
+const EXPECTED_NATIVE_HASH: u64 = 0x8dac_2c75_7ffd_6bfd;
 
 #[test]
 fn byte_identical_when_debug_info_off_ink() {

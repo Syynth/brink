@@ -743,6 +743,22 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::EmitLine(idx, slots) => write!(w, "emit_line {idx} {slots}"),
         Opcode::EmitValue => write!(w, "emit_value"),
         Opcode::EmitNewline => write!(w, "emit_newline"),
+        Opcode::EmitLineNl(idx, slots) => write!(w, "emit_line_nl {idx} {slots}"),
+        // `kind=` rather than a bare word: a bare `add` would parse as a trailing
+        // operand of the previous instruction and swallow the `add` mnemonic on
+        // the next line (#3273's hazard); `kv_operand` is the grammar's safe
+        // form for word-valued operands.
+        Opcode::BinaryImm(kind, imm) => write!(w, "binary_imm kind={} {imm}", kind.mnemonic()),
+        Opcode::BinaryJumpIfFalse(kind, rel) => {
+            write!(w, "binary_jump_if_false kind={} {rel}", kind.mnemonic())
+        }
+        Opcode::BinaryImmJumpIfFalse(kind, imm, rel) => {
+            write!(
+                w,
+                "binary_imm_jump_if_false kind={} {imm} {rel}",
+                kind.mnemonic()
+            )
+        }
         Opcode::Spring => write!(w, "spring"),
         Opcode::Glue => write!(w, "glue"),
         Opcode::BeginTag => write!(w, "begin_tag"),

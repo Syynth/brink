@@ -9,15 +9,15 @@ use alloc::vec::Vec;
 use core::mem;
 
 use brink_format::{
-    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
-    PluralCategory, PluralResolver, SelectKey, Value,
+    ChoiceFlags, CountingFlags, DefinitionId, GlobalKind, LineContent, LineEntry, LinePart, Opcode,
+    PluralCategory, PluralResolver, SelectKey, StaticKind, TargetKind, Value,
 };
 
 use crate::collection_ops;
 use crate::conversion_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
-use crate::program::Program;
+use crate::program::{LinkedTarget, Program, linked_ordinal};
 use crate::proj_ops;
 use crate::rand_ops;
 use crate::range_ops;
@@ -85,7 +85,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 ) -> Result<Stepped, RuntimeError> {
     // ── Preamble: resolve current position ──────────────────────────────
     let thread = flow.current_thread_mut();
-    let Some(frame) = thread.call_stack.last_mut() else {
+    let Some(frame) = thread.call_stack.last().copied() else {
         // Current thread's call stack is empty.
         if flow.can_pop_thread() {
             flow.pop_thread();
@@ -103,23 +103,25 @@ fn step_impl<R: crate::rng::StoryRng>(
         return Err(RuntimeError::CallStackUnderflow);
     }
 
-    let Some(pos) = frame.container_stack.last().copied() else {
+    let Some(pos) = thread.call_stack.top_container() else {
         // Container stack empty — the frame has no more containers to execute.
-        let frame_type = frame.frame_type;
-        return handle_frame_exhaustion(flow, program, line_tables, resolver, stats, frame_type);
+        return handle_frame_exhaustion(
+            flow,
+            program,
+            line_tables,
+            resolver,
+            stats,
+            frame.frame_type,
+        );
     };
 
-    let container = program.container(pos.container_idx);
+    let code = program.code(pos.container_idx);
 
     // Check if we've reached end of bytecode.
-    if pos.offset >= container.bytecode.len() {
-        let thread = flow.current_thread_mut();
-        let frame = thread
-            .call_stack
-            .last_mut()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
-        frame.container_stack.pop();
-        if frame.container_stack.is_empty() {
+    if pos.offset >= code.len() {
+        let stack = &mut flow.current_thread_mut().call_stack;
+        stack.pop_container();
+        if stack.top_containers().is_empty() {
             let frame_type = frame.frame_type;
             return handle_frame_exhaustion(
                 flow,
@@ -134,43 +136,67 @@ fn step_impl<R: crate::rng::StoryRng>(
     }
 
     // ── Decode ──────────────────────────────────────────────────────────
-    let mut offset = pos.offset;
-    let op = Opcode::decode(&container.bytecode, &mut offset)?;
-    stats.opcodes += 1;
-
-    // Advance the offset in the position.
-    {
-        let thread = flow.current_thread_mut();
-        let frame = thread
-            .call_stack
-            .last_mut()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
-        let top = frame
-            .container_stack
-            .last_mut()
-            .ok_or(RuntimeError::ContainerStackUnderflow)?;
-        top.offset = offset;
+    if let Some(&disc) = code.get(pos.offset) {
+        note_opcode(stats, disc);
     }
 
-    // ── Dispatch ────────────────────────────────────────────────────────
+    // A static-operand instruction the linker resolved needs no decoding
+    // at all: its operand is an ordinal into the linked target table
+    // (`LinkTables`) or a global's slot, read here and dispatched without
+    // touching `address_map` / `global_map` — and without building an
+    // `Opcode`. Everything else, and an operand the linker left symbolic,
+    // goes through `Opcode::decode` as before.
+    if let Some(site) = Opcode::peek_static(code, pos.offset)
+        && let Some(linked) = linked_ordinal(&code[site.operand..site.end])
+    {
+        match site.kind {
+            StaticKind::Target(kind) => {
+                if let Some(target) = program.target(linked) {
+                    let target = *target;
+                    stats.opcodes += 1;
+                    advance_to(flow, site.end)?;
+                    return step_target(flow, program, context, stats, kind, &target);
+                }
+            }
+            StaticKind::Global(kind) => {
+                if let Some(id) = program.global_id(linked as usize) {
+                    stats.opcodes += 1;
+                    advance_to(flow, site.end)?;
+                    step_global(flow, program, context, kind, linked, id)?;
+                    return Ok(Stepped::Continue);
+                }
+            }
+        }
+    }
+    let mut offset = pos.offset;
+    let op = Opcode::decode(code, &mut offset)?;
+    stats.opcodes += 1;
+    advance_to(flow, offset)?;
+
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            // Capture slot values from the stack, push a deferred LineRef.
-            let mut slots = Vec::with_capacity(slot_count as usize);
-            for _ in 0..slot_count {
-                slots.push(flow.pop_value()?);
-            }
-            slots.reverse();
-            // Look up precomputed flags for filtering.
-            let scope_idx = program.scope_table_idx(pos.container_idx) as usize;
-            let flags = line_tables
-                .get(scope_idx)
-                .and_then(|lines| lines.get(idx as usize))
-                .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
-            note_effect_emit(flow, program);
-            flow.output
-                .push_line_ref(pos.container_idx, idx, slots, flags);
+            emit_line(
+                flow,
+                program,
+                line_tables,
+                pos.container_idx,
+                idx,
+                slot_count,
+            )?;
+        }
+        // The optimizer's fusion of `EmitLine` + `EmitNewline`: exactly the
+        // two bodies, in order (`docs/optimizer-peephole.md`).
+        Opcode::EmitLineNl(idx, slot_count) => {
+            emit_line(
+                flow,
+                program,
+                line_tables,
+                pos.container_idx,
+                idx,
+                slot_count,
+            )?;
+            emit_newline(flow);
         }
         Opcode::EvalLine(idx, slot_count) => {
             // EvalLine resolves eagerly — result goes on the value stack.
@@ -182,19 +208,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             note_effect_emit(flow, program);
             flow.output.push_value_ref(val);
         }
-        Opcode::EmitNewline => {
-            // C# consults the TOP call-stack element only: a tunnel or
-            // thread entered from a function is its own boundary.
-            let function = flow.current_thread().call_stack.last().and_then(|frame| {
-                matches!(
-                    frame.frame_type,
-                    CallFrameType::Function | CallFrameType::FunctionEvalFromGame
-                )
-                .then_some(frame.function_output_start)
-                .flatten()
-            });
-            flow.output.push_newline_in_function(function);
-        }
+        Opcode::EmitNewline => emit_newline(flow),
         Opcode::Spring => {
             note_effect_emit(flow, program);
             flow.output.push_spring();
@@ -276,47 +290,22 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Container flow ──────────────────────────────────────────
         Opcode::EnterContainer(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
-
-            // Increment visit count if flags set.
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            frame.container_stack.push(ContainerPosition {
-                container_idx: idx,
-                offset: 0,
-            });
+            enter_container(flow, program, context, &program.resolve(id)?);
         }
         Opcode::ExitContainer => {
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            frame.container_stack.pop();
+            flow.current_thread_mut().call_stack.pop_container();
         }
 
         // ── Control flow ────────────────────────────────────────────
         Opcode::Goto(id) => {
             if !flow.skipping_choice {
-                goto_target(flow, program, context, id)?;
+                goto_resolved(flow, program, context, &program.resolve(id)?)?;
             }
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
             if value_ops::is_truthy(&val)? {
-                goto_target(flow, program, context, id)?;
+                goto_resolved(flow, program, context, &program.resolve(id)?)?;
             }
         }
         Opcode::GotoVariable => {
@@ -334,9 +323,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::JumpIfFalse(rel) => {
             let val = flow.pop_value()?;
-            if !value_ops::is_truthy(&val)? {
-                apply_jump(flow, rel)?;
-            }
+            jump_unless(flow, &val, rel)?;
         }
 
         // ── Stack & literals ─────────────────────────────────────────
@@ -382,6 +369,28 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Multiply => binary(flow, program, BinaryOp::Multiply)?,
         Opcode::Divide => binary(flow, program, BinaryOp::Divide)?,
         Opcode::Modulo => binary(flow, program, BinaryOp::Modulo)?,
+
+        // ── Fused binary superinstructions (optimizer-only) ─────────
+        // Each is exactly its constituent instructions run in sequence,
+        // sharing their helpers: `PushInt` supplies the right operand as an
+        // immediate, `JumpIfFalse` consumes the result without it touching
+        // the stack.
+        Opcode::BinaryImm(kind, imm) => {
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            flow.value_stack.push(result);
+        }
+        Opcode::BinaryJumpIfFalse(kind, rel) => {
+            let right = flow.pop_value()?;
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &right, program)?;
+            jump_unless(flow, &result, rel)?;
+        }
+        Opcode::BinaryImmJumpIfFalse(kind, imm, rel) => {
+            let left = flow.pop_value()?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            jump_unless(flow, &result, rel)?;
+        }
         Opcode::Negate => {
             let val = flow.pop_value()?;
             let result = match val {
@@ -422,54 +431,44 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Global vars ─────────────────────────────────────────────
         Opcode::GetGlobal(id) => {
-            let idx = program
+            let slot = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let val = context.global(idx).clone();
-            note_value_share(&val);
-            note_effect_read(flow, program, id);
-            flow.value_stack.push(val);
+            step_global(flow, program, context, GlobalKind::Get, slot, id)?;
         }
         Opcode::SetGlobal(id) => {
-            guard_comparator_write(flow, "assigned a global variable")?;
-            let idx = program
+            let slot = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let mut val = flow.pop_value()?;
-            list_ops::retain_origins_on_assign(program, context.global(idx), &mut val);
-            note_effect_write(flow, program, id);
-            context.set_global(idx, val);
+            step_global(flow, program, context, GlobalKind::Set, slot, id)?;
         }
 
         // ── Temp vars ───────────────────────────────────────────────
         Opcode::DeclareTemp(slot) => {
             // New declaration stores as-is, including pointers.
             let val = flow.pop_value()?;
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            let idx = slot as usize;
-            frame.write_temp(idx, val);
+            let stack = &mut flow.current_thread_mut().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            stack.write_temp(top, slot as usize, val);
         }
         Opcode::SetTemp(slot) => {
             // Write-through: if the temp holds a pointer, write the new
             // value to the pointed-to location instead.
             let mut val = flow.pop_value()?;
-            let thread = flow.current_thread_mut();
-            let frame = thread
-                .call_stack
-                .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
-            let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
+            let current = stack.temp(top, idx).cloned().unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
                     guard_comparator_write(flow, "assigned a global through a `ref` parameter")?;
                     let global_idx = program
                         .resolve_global(target_id)
-                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                     list_ops::retain_origins_on_assign(
                         program,
                         context.global(global_idx),
@@ -481,15 +480,15 @@ fn step_impl<R: crate::rng::StoryRng>(
                     slot: target_slot,
                     frame_depth,
                 } => {
-                    let thread = flow.current_thread_mut();
-                    let target = thread
-                        .call_stack
-                        .get_mut(frame_depth as usize)
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let depth = frame_depth as usize;
+                    if stack.get(depth).is_none() {
+                        return Err(RuntimeError::CallStackUnderflow);
+                    }
                     let ti = target_slot as usize;
-                    let old = target.temps.get(ti).cloned().unwrap_or(Value::Null);
+                    let old = stack.temp(depth, ti).cloned().unwrap_or(Value::Null);
                     list_ops::retain_origins_on_assign(program, &old, &mut val);
-                    target.write_temp(ti, val);
+                    stack.write_temp(depth, ti, val);
                 }
                 // T1e (docs/t1e-spec.md §3): a projection-bound `ref`
                 // parameter's write-through — root-cell RMW via the same
@@ -504,26 +503,23 @@ fn step_impl<R: crate::rng::StoryRng>(
                 }
                 _ => {
                     list_ops::retain_origins_on_assign(program, &current, &mut val);
-                    let thread = flow.current_thread_mut();
-                    let frame = thread
-                        .call_stack
-                        .last_mut()
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
-                    frame.write_temp(idx, val);
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let top = stack
+                        .top_depth()
+                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+                    stack.write_temp(top, idx, val);
                 }
             }
         }
         Opcode::GetTemp(slot) => {
             // Auto-dereference: if temp holds a pointer, push the
             // pointed-to value instead.
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            let val = frame
-                .temps
-                .get(slot as usize)
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            let val = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             // Issue #3354 (RULED 2026-09-01 option C): a slot that the
@@ -538,7 +534,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // is the author-facing half at runtime; `E193` is the one that
             // fires at compile time, before they ever play.
             //
-            // The check is on `CallFrame::is_temp_written`, NOT on the
+            // The check is on `CallStack::is_temp_written`, NOT on the
             // stored value being `Value::Null` — a `~ temp x = f()` whose
             // `f` falls off its end without `~ return` legitimately stores
             // `Value::Null` into an already-written slot (a void return),
@@ -548,12 +544,12 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Deliberately only on this opcode: `GetTempRaw` exists to see
             // a slot exactly as it is (pointers included), and `TakeTemp`
             // leaves `Null` behind by design, so neither may substitute.
-            if frame.is_temp_written(slot as usize) {
+            if stack.is_temp_written(top, slot as usize) {
                 match val {
                     Value::VariablePointer(target_id) => {
                         let global_idx = program
                             .resolve_global(target_id)
-                            .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                            .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                         let global_val = context.global(global_idx).clone();
                         flow.value_stack.push(global_val);
                     }
@@ -561,14 +557,13 @@ fn step_impl<R: crate::rng::StoryRng>(
                         slot: target_slot,
                         frame_depth,
                     } => {
-                        let thread = flow.current_thread();
-                        let target = thread
-                            .call_stack
-                            .get(frame_depth as usize)
-                            .ok_or(RuntimeError::CallStackUnderflow)?;
-                        let target_val = target
-                            .temps
-                            .get(target_slot as usize)
+                        let stack = &flow.current_thread().call_stack;
+                        let depth = frame_depth as usize;
+                        if stack.get(depth).is_none() {
+                            return Err(RuntimeError::CallStackUnderflow);
+                        }
+                        let target_val = stack
+                            .temp(depth, target_slot as usize)
                             .cloned()
                             .unwrap_or(Value::Null);
                         flow.value_stack.push(target_val);
@@ -591,29 +586,22 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::GetTempRaw(slot) => {
             // Raw read: push the temp's value as-is (including pointers).
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            let val = frame
-                .temps
-                .get(slot as usize)
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            let val = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             flow.value_stack.push(val);
         }
         // ── Sharing discipline (T1b-4, docs/value-model-spec.md §5) ────
         Opcode::TakeGlobal(id) => {
-            // No auto-dereference — mirrors `GetGlobal`/`SetGlobal`: a
-            // ref-param pointer lives in a *temp*, never in a global slot
-            // itself.
-            let idx = program
+            let slot = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let val = context.take_global(idx);
-            note_effect_read(flow, program, id);
-            flow.value_stack.push(val);
+            step_global(flow, program, context, GlobalKind::Take, slot, id)?;
         }
         Opcode::TakeTemp(slot) => {
             // Auto-dereference, mirroring `GetTemp`: if the temp holds a
@@ -621,21 +609,19 @@ fn step_impl<R: crate::rng::StoryRng>(
             // `Null` — the pointer itself stays in this slot untouched (a
             // `ref` param must keep pointing at its target for the rest of
             // the call, exactly like `GetTemp`/`SetTemp`'s write-through).
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            let current = frame
-                .temps
-                .get(slot as usize)
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            let current = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
                     let global_idx = program
                         .resolve_global(target_id)
-                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                     let taken = context.take_global(global_idx);
                     flow.value_stack.push(taken);
                 }
@@ -643,17 +629,12 @@ fn step_impl<R: crate::rng::StoryRng>(
                     slot: target_slot,
                     frame_depth,
                 } => {
-                    let thread = flow.current_thread_mut();
-                    let target = thread
-                        .call_stack
-                        .get_mut(frame_depth as usize)
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
-                    let ti = target_slot as usize;
-                    while target.temps.len() <= ti {
-                        target.temps.push(Value::Null);
+                    let stack = &mut flow.current_thread_mut().call_stack;
+                    let depth = frame_depth as usize;
+                    if stack.get(depth).is_none() {
+                        return Err(RuntimeError::CallStackUnderflow);
                     }
-                    #[expect(clippy::indexing_slicing, reason = "padded to ti + 1 above")]
-                    let taken = mem::replace(&mut target.temps[ti], Value::Null);
+                    let taken = stack.take_temp(depth, target_slot as usize);
                     flow.value_stack.push(taken);
                 }
                 // T1e: a projection-bound `ref` parameter's take — same
@@ -663,17 +644,10 @@ fn step_impl<R: crate::rng::StoryRng>(
                     flow.value_stack.push(taken);
                 }
                 _ => {
-                    let thread = flow.current_thread_mut();
-                    let frame = thread
+                    let taken = flow
+                        .current_thread_mut()
                         .call_stack
-                        .last_mut()
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
-                    let idx = slot as usize;
-                    while frame.temps.len() <= idx {
-                        frame.temps.push(Value::Null);
-                    }
-                    #[expect(clippy::indexing_slicing, reason = "padded to idx + 1 above")]
-                    let taken = mem::replace(&mut frame.temps[idx], Value::Null);
+                        .take_temp(top, slot as usize);
                     flow.value_stack.push(taken);
                 }
             }
@@ -683,14 +657,12 @@ fn step_impl<R: crate::rng::StoryRng>(
             // Push a pointer to a temp variable. If the temp already holds
             // a pointer (VariablePointer or TempPointer), flatten through
             // to prevent double-indirection.
-            let thread = flow.current_thread();
-            let frame = thread
-                .call_stack
-                .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            let current = frame
-                .temps
-                .get(slot as usize)
+            let stack = &flow.current_thread().call_stack;
+            let top = stack
+                .top_depth()
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+            let current = stack
+                .temp(top, slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
             match current {
@@ -769,36 +741,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Functions ───────────────────────────────────────────────
         Opcode::Call(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
-
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            // Function output goes directly to the active output target.
-            // Record the target length so trailing whitespace can be
-            // trimmed on return (matching C#'s TrimWhitespaceFromFunctionEnd).
-            let output_start = flow.output.mark();
-            let current_pos = current_position(flow)?;
-            let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }],
-                frame_type: CallFrameType::Function,
-                external_fn_id: None,
-                function_output_start: Some(output_start),
-            });
-            stats.frames_pushed += 1;
+            call_function(flow, program, context, stats, &program.resolve(id)?)?;
         }
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
@@ -806,66 +749,10 @@ fn step_impl<R: crate::rng::StoryRng>(
             pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
-
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            let current_pos = current_position(flow)?;
-            let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }],
-                frame_type: CallFrameType::Tunnel,
-                external_fn_id: None,
-                function_output_start: None,
-            });
-            stats.frames_pushed += 1;
+            tunnel_call(flow, program, context, stats, &program.resolve(id)?)?;
         }
         Opcode::ThreadCall(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
-
-            // Fork the current thread — the fork inherits the full call
-            // stack (including any enclosing Tunnel frames) so that
-            // `fork_thread` at choice creation captures enough context
-            // for `->->` to return through tunnels. The Thread frame
-            // acts as a boundary: when it exhausts, the thread pops
-            // without unwinding into inherited frames below.
-            let (mut forked, cache_hit) = flow.fork_thread();
-            forked.call_stack.push(CallFrame {
-                return_address: None,
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }],
-                frame_type: CallFrameType::Thread,
-                external_fn_id: None,
-                function_output_start: None,
-            });
-            flow.threads.push(forked);
-            stats.threads_created += 1;
-            stats.frames_pushed += 1;
-            if cache_hit {
-                stats.snapshot_cache_hits += 1;
-            } else {
-                stats.snapshot_cache_misses += 1;
-            }
+            thread_call(flow, stats, &program.resolve(id)?)?;
         }
         Opcode::TunnelCallVariable => {
             let val = flow.pop_value()?;
@@ -877,7 +764,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
@@ -887,18 +774,13 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                temps_written: Vec::new(),
-                container_stack: vec![ContainerPosition {
+            thread.call_stack.push(
+                CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
+                Some(ContainerPosition {
                     container_idx: idx,
                     offset: 0,
-                }],
-                frame_type: CallFrameType::Tunnel,
-                external_fn_id: None,
-                function_output_start: None,
-            });
+                }),
+            );
             stats.frames_pushed += 1;
         }
         Opcode::CallVariable(argc) => {
@@ -912,7 +794,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let idx = program
                         .resolve_target(id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
                     let counting_flags = program.container(idx).counting_flags;
                     if counting_flags.contains(CountingFlags::VISITS) {
@@ -923,18 +805,17 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
-                    thread.call_stack.push(CallFrame {
-                        return_address: Some(current_pos),
-                        temps: Vec::new(),
-                        temps_written: Vec::new(),
-                        container_stack: vec![ContainerPosition {
+                    thread.call_stack.push(
+                        CallFrame::new(
+                            CallFrameType::Function,
+                            Some(current_pos),
+                            Some(output_start),
+                        ),
+                        Some(ContainerPosition {
                             container_idx: idx,
                             offset: 0,
-                        }],
-                        frame_type: CallFrameType::Function,
-                        external_fn_id: None,
-                        function_output_start: Some(output_start),
-                    });
+                        }),
+                    );
                     stats.frames_pushed += 1;
                 }
                 // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
@@ -969,7 +850,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         } => {
             let (idx, _) = program
                 .resolve_target(target)
-                .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(target))?;
             let params = program.container_params(idx);
             let n = bound_count as usize;
             // Pop the bound args (pushed in declared order; top is the last).
@@ -1003,7 +884,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let idx = program
                         .resolve_target(id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
                     let counting_flags = program.container(idx).counting_flags;
                     if counting_flags.contains(CountingFlags::VISITS) {
                         context.increment_visit(id);
@@ -1012,18 +893,17 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let output_start = flow.output.mark();
                     let current_pos = current_position(flow)?;
                     let thread = flow.current_thread_mut();
-                    thread.call_stack.push(CallFrame {
-                        return_address: Some(current_pos),
-                        temps: Vec::new(),
-                        temps_written: Vec::new(),
-                        container_stack: vec![ContainerPosition {
+                    thread.call_stack.push(
+                        CallFrame::new(
+                            CallFrameType::Function,
+                            Some(current_pos),
+                            Some(output_start),
+                        ),
+                        Some(ContainerPosition {
                             container_idx: idx,
                             offset: 0,
-                        }],
-                        frame_type: CallFrameType::Function,
-                        external_fn_id: None,
-                        function_output_start: Some(output_start),
-                    });
+                        }),
+                    );
                     stats.frames_pushed += 1;
                 }
                 other => {
@@ -1094,31 +974,23 @@ fn step_impl<R: crate::rng::StoryRng>(
             // return) or a DivertTarget (tunnel onwards override).
             let val = flow.pop_value()?;
 
-            // Strip Thread boundary frames — they are transparent to
-            // ->->. This happens after choice selection when the fork
-            // has [inherited..., Thread, choice-body] and ->-> needs
-            // to reach the Tunnel frame below the Thread boundary.
-            while flow
-                .current_thread()
-                .call_stack
-                .last()
-                .is_some_and(|f| f.frame_type == CallFrameType::Thread)
-            {
-                flow.current_thread_mut().call_stack.pop();
-                stats.frames_popped += 1;
-            }
+            // No Thread boundary frames to strip here any more (issue
+            // #3561): `<-` pushes none, so the enclosing Tunnel frame a
+            // `->->` inside a thread returns through is already on top.
+            // The lazy strip this used to run was also the only thing
+            // reclaiming any of those frames, and it never kept up.
 
             // If a DivertTarget, overwrite this frame's return address
             // so we divert there instead of the original caller.
             if let Value::DivertTarget(id) = val {
                 let (idx, offset) = program
                     .resolve_target(id)
-                    .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                    .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
                 let thread = flow.current_thread_mut();
                 let frame = thread
                     .call_stack
                     .last_mut()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                 frame.return_address = Some(ContainerPosition {
                     container_idx: idx,
                     offset,
@@ -1135,7 +1007,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let text = flow
                 .output
                 .end_capture(program, line_tables, resolver)
-                .ok_or(RuntimeError::CaptureUnderflow)?;
+                .ok_or_else(|| RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::BeginFragment => {
@@ -1145,11 +1017,18 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = flow
                 .output
                 .end_fragment()
-                .ok_or(RuntimeError::CaptureUnderflow)?;
+                .ok_or_else(|| RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::FragmentRef(idx));
         }
         Opcode::BeginChoice(flags, target_id) => {
-            handle_begin_choice(flow, program, context, stats, flags, target_id)?;
+            handle_begin_choice(
+                flow,
+                program,
+                context,
+                stats,
+                flags,
+                &program.resolve(target_id)?,
+            )?;
         }
 
         // ── Intrinsics ──────────────────────────────────────────────
@@ -1429,13 +1308,11 @@ fn step_impl<R: crate::rng::StoryRng>(
             };
             let matched = bound.is_some();
             if let Some(value) = bound {
-                let thread = flow.current_thread_mut();
-                let frame = thread
-                    .call_stack
-                    .last_mut()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
-                let idx = slot as usize;
-                frame.write_temp(idx, value);
+                let stack = &mut flow.current_thread_mut().call_stack;
+                let top = stack
+                    .top_depth()
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+                stack.write_temp(top, slot as usize, value);
             }
             flow.value_stack.push(Value::Bool(matched));
         }
@@ -1553,18 +1430,9 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
-            let args_len = args.len();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: args,
-                // Already-supplied argument values, not padding — every
-                // slot here is written by construction.
-                temps_written: vec![true; args_len],
-                container_stack: Vec::new(),
-                frame_type: CallFrameType::External,
-                external_fn_id: Some(fn_id),
-                function_output_start: None,
-            });
+            thread
+                .call_stack
+                .push_with_args(CallFrame::external(fn_id, Some(current_pos)), args);
             stats.frames_pushed += 1;
             return Ok(Stepped::ExternalCall);
         }
@@ -1762,7 +1630,7 @@ fn fn_value_target_idx(v: &Value, program: &Program) -> Result<(u32, DefinitionI
         .ok_or_else(|| RuntimeError::NotCallable(value_type_name(v)))?;
     let (idx, _) = program
         .resolve_target(target)
-        .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+        .ok_or_else(|| RuntimeError::UnresolvedDefinition(target))?;
     Ok((idx, target))
 }
 
@@ -1943,18 +1811,17 @@ fn enter_fn_value(
     let output_start = flow.output.mark();
     let current_pos = current_position(flow)?;
     let thread = flow.current_thread_mut();
-    thread.call_stack.push(CallFrame {
-        return_address: Some(current_pos),
-        temps: Vec::new(),
-        temps_written: Vec::new(),
-        container_stack: vec![ContainerPosition {
+    thread.call_stack.push(
+        CallFrame::new(
+            CallFrameType::Function,
+            Some(current_pos),
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
             container_idx: idx,
             offset: 0,
-        }],
-        frame_type: CallFrameType::Function,
-        external_fn_id: None,
-        function_output_start: Some(output_start),
-    });
+        }),
+    );
     stats.frames_pushed += 1;
     Ok(())
 }
@@ -2623,12 +2490,6 @@ fn call_effectful_callback<R: crate::rng::StoryRng>(
     reason = "the VM environment (the step signature) plus the verb, callee, argument row and \
               the output-capture switch"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "issue #3354's temps_written bitmap added one field to the CallFrame literal this \
-              function pushes, crossing the threshold; the body is one linear call sequence, \
-              not a candidate for splitting"
-)]
 fn call_callback<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
@@ -2664,18 +2525,17 @@ fn call_callback<R: crate::rng::StoryRng>(
     }
 
     let depth_floor = flow.current_thread().call_stack.len();
-    flow.current_thread_mut().call_stack.push(CallFrame {
-        return_address: None,
-        temps: Vec::new(),
-        temps_written: Vec::new(),
-        container_stack: vec![ContainerPosition {
+    flow.current_thread_mut().call_stack.push(
+        CallFrame::new(
+            CallFrameType::FunctionEvalFromGame,
+            None,
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
             container_idx,
             offset: 0,
-        }],
-        frame_type: CallFrameType::FunctionEvalFromGame,
-        external_fn_id: None,
-        function_output_start: Some(output_start),
-    });
+        }),
+    );
     stats.frames_pushed += 1;
     for v in full_args {
         flow.value_stack.push(v);
@@ -2929,8 +2789,10 @@ fn resolve_select<'a>(
 /// - `Done` when the last thread/frame is exhausted.
 /// - `Continue` when a frame was popped and execution can proceed.
 ///
-/// - **Thread**: the thread boundary is done — pop the entire thread.
-///   Inherited frames below the Thread frame are never unwound into.
+/// - **At a spawned thread's base** ([`Flow::at_thread_base`]): the thread
+///   has run off the end of its own content and is done — pop the entire
+///   thread. Frames below the base were inherited from the parent and are
+///   never unwound into.
 /// - **Non-function with pending choices**: the frame is waiting for a
 ///   choice selection. Pop the thread so other threads can run.
 /// - **Otherwise**: pop the call frame normally (implicit return).
@@ -2958,17 +2820,14 @@ fn handle_frame_exhaustion(
     let can_pop = flow.current_thread().call_stack.len() > 1;
     let cause = classify_ran_out_of_content(frame_type, can_pop);
 
-    if frame_type == CallFrameType::Thread {
-        // Thread boundary exhausted — thread is done. Pop it without
-        // touching inherited frames below. ThreadCall always creates a
-        // child thread, so can_pop_thread is expected to be true.
-        if flow.can_pop_thread() {
-            flow.pop_thread();
-            stats.threads_completed += 1;
-            return Ok(Stepped::ThreadCompleted);
-        }
-        flow.ran_out_of_content_cause = cause;
-        return Ok(Stepped::Done);
+    if flow.at_thread_base() {
+        // A `<-` thread ran off the end of its own content: it is done.
+        // Pop it whole, without touching the parent's frames below the
+        // base mark (issue #3561 — this is what the `Thread` boundary
+        // frame used to say by sitting on top of the stack).
+        flow.pop_thread();
+        stats.threads_completed += 1;
+        return Ok(Stepped::ThreadCompleted);
     }
 
     if !matches!(
@@ -3022,7 +2881,7 @@ fn pop_call_frame(
     let popped = thread
         .call_stack
         .pop()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
     stats.frames_popped += 1;
 
     if matches!(
@@ -3055,14 +2914,270 @@ fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), Runtim
     Ok(())
 }
 
+/// The tail of `Opcode::JumpIfFalse`: jump by `relative` unless `val` is
+/// truthy. Shared with the fused binary superinstructions so their branch
+/// cannot drift from the plain one.
+fn jump_unless(flow: &mut Flow, val: &Value, relative: i32) -> Result<(), RuntimeError> {
+    if !value_ops::is_truthy(val)? {
+        apply_jump(flow, relative)?;
+    }
+    Ok(())
+}
+
 /// Resume execution at a return address.
 fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
-    let thread = flow.current_thread_mut();
-    if let Some(frame) = thread.call_stack.last_mut()
-        && let Some(top) = frame.container_stack.last_mut()
-    {
+    if let Some(top) = flow.current_thread_mut().call_stack.top_container_mut() {
         *top = pos;
     }
+}
+
+/// `Opcode::EmitLine`: capture the template slot values from the stack and
+/// push a deferred line reference for line `idx` of the current
+/// container's scope table, with the precomputed flags for filtering.
+fn emit_line(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    container_idx: u32,
+    idx: u16,
+    slot_count: u8,
+) -> Result<(), RuntimeError> {
+    let mut slots = Vec::with_capacity(slot_count as usize);
+    for _ in 0..slot_count {
+        slots.push(flow.pop_value()?);
+    }
+    slots.reverse();
+    let scope_idx = program.scope_table_idx(container_idx) as usize;
+    let flags = line_tables
+        .get(scope_idx)
+        .and_then(|lines| lines.get(idx as usize))
+        .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
+    note_effect_emit(flow, program);
+    flow.output.push_line_ref(container_idx, idx, slots, flags);
+    Ok(())
+}
+
+/// `Opcode::EmitNewline`. C# consults the TOP call-stack element only: a
+/// tunnel or thread entered from a function is its own boundary, so the
+/// function-context trimming applies exactly when the top frame is one.
+fn emit_newline(flow: &mut Flow) {
+    let function = flow.current_thread().call_stack.last().and_then(|frame| {
+        matches!(
+            frame.frame_type,
+            CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+        )
+        .then_some(frame.function_output_start)
+        .flatten()
+    });
+    flow.output.push_newline_in_function(function);
+}
+
+/// Count an executed instruction (and the pair it completes) in the
+/// bench histogram. No-op unless the `bench-counters` feature is enabled.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_opcode(stats: &mut Stats, disc: u8) {
+    if stats.opcode_hist.is_empty() {
+        stats.opcode_hist = alloc::vec![0; 256];
+        stats.bigram_hist = alloc::vec![0; 65_536];
+    }
+    if let Some(count) = stats.opcode_hist.get_mut(usize::from(disc)) {
+        *count += 1;
+    }
+    if let Some(prev) = stats.last_disc
+        && let Some(count) = stats
+            .bigram_hist
+            .get_mut(usize::from(prev) << 8 | usize::from(disc))
+    {
+        *count += 1;
+    }
+    stats.last_disc = Some(disc);
+}
+
+#[cfg(not(feature = "bench-counters"))]
+#[inline]
+fn note_opcode(_stats: &mut Stats, _disc: u8) {}
+
+/// Record `offset` as the current frame's next instruction.
+#[inline]
+fn advance_to(flow: &mut Flow, offset: usize) -> Result<(), RuntimeError> {
+    let top = flow
+        .current_thread_mut()
+        .call_stack
+        .top_container_mut()
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
+    top.offset = offset;
+    Ok(())
+}
+
+/// Execute a global read/write/take against `slot` — the one body behind
+/// `GetGlobal`/`SetGlobal`/`TakeGlobal`, reached from the linked fast path
+/// with the slot already known and from the symbolic arms after
+/// `Program::resolve_global`.
+fn step_global(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    kind: GlobalKind,
+    slot: u32,
+    id: DefinitionId,
+) -> Result<(), RuntimeError> {
+    match kind {
+        GlobalKind::Get => {
+            let val = context.global(slot).clone();
+            note_value_share(&val);
+            note_effect_read(flow, program, id);
+            flow.value_stack.push(val);
+        }
+        GlobalKind::Set => {
+            guard_comparator_write(flow, "assigned a global variable")?;
+            let mut val = flow.pop_value()?;
+            list_ops::retain_origins_on_assign(program, context.global(slot), &mut val);
+            note_effect_write(flow, program, id);
+            context.set_global(slot, val);
+        }
+        // No auto-dereference — mirrors `Get`/`Set`: a ref-param pointer
+        // lives in a *temp*, never in a global slot itself.
+        GlobalKind::Take => {
+            let val = context.take_global(slot);
+            note_effect_read(flow, program, id);
+            flow.value_stack.push(val);
+        }
+    }
+    Ok(())
+}
+
+/// Execute a static-target instruction whose target the linker resolved —
+/// the same handlers the symbolic arms of `step_impl` reach after
+/// `Program::resolve`.
+fn step_target(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    kind: TargetKind,
+    target: &LinkedTarget,
+) -> Result<Stepped, RuntimeError> {
+    match kind {
+        TargetKind::Goto => {
+            if !flow.skipping_choice {
+                goto_resolved(flow, program, context, target)?;
+            }
+        }
+        TargetKind::GotoIf => {
+            let val = flow.pop_value()?;
+            if value_ops::is_truthy(&val)? {
+                goto_resolved(flow, program, context, target)?;
+            }
+        }
+        TargetKind::EnterContainer => enter_container(flow, program, context, target),
+        TargetKind::Call => call_function(flow, program, context, stats, target)?,
+        TargetKind::TunnelCall => tunnel_call(flow, program, context, stats, target)?,
+        TargetKind::ThreadCall => thread_call(flow, stats, target)?,
+        TargetKind::BeginChoice(flags) => {
+            handle_begin_choice(flow, program, context, stats, flags, target)?;
+        }
+    }
+    Ok(Stepped::Continue)
+}
+
+/// Count a visit to `target`'s container if it counts visits.
+fn count_visit(
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) {
+    let counting_flags = program.container(target.container_idx).counting_flags;
+    if counting_flags.contains(CountingFlags::VISITS) {
+        context.increment_visit(target.id);
+        context.set_turn_count(target.id, context.turn_index());
+    }
+}
+
+/// `Opcode::EnterContainer`: push the target container onto the current
+/// frame's container stack, counting the visit.
+fn enter_container(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) {
+    count_visit(program, context, target);
+    flow.current_thread_mut()
+        .call_stack
+        .push_container(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        });
+}
+
+/// `Opcode::Call`: push a function frame for the target container.
+fn call_function(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    count_visit(program, context, target);
+    let output_start = flow.output.mark();
+    let current_pos = current_position(flow)?;
+    let thread = flow.current_thread_mut();
+    thread.call_stack.push(
+        CallFrame::new(
+            CallFrameType::Function,
+            Some(current_pos),
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        }),
+    );
+    stats.frames_pushed += 1;
+    Ok(())
+}
+
+/// `Opcode::TunnelCall`: push a tunnel frame for the target container.
+fn tunnel_call(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    count_visit(program, context, target);
+    let current_pos = current_position(flow)?;
+    let thread = flow.current_thread_mut();
+    thread.call_stack.push(
+        CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
+        Some(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        }),
+    );
+    stats.frames_pushed += 1;
+    Ok(())
+}
+
+/// `Opcode::ThreadCall`: fork the current thread into the target container.
+fn thread_call(
+    flow: &mut Flow,
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    let mut forked = flow.fork_thread();
+    if forked.call_stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    forked.call_stack.reset_top_containers(ContainerPosition {
+        container_idx: target.container_idx,
+        offset: 0,
+    });
+    forked.base_depth = forked.call_stack.len();
+    flow.threads.push(forked);
+    stats.threads_created += 1;
+    Ok(())
 }
 
 /// Transfer control to a divert target within the current call frame,
@@ -3076,15 +3191,27 @@ pub(crate) fn goto_target(
     context: &mut (impl ContextAccess + ?Sized),
     id: DefinitionId,
 ) -> Result<(), RuntimeError> {
-    let (container_idx, byte_offset) = program
-        .resolve_target(id)
-        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+    goto_resolved(flow, program, context, &program.resolve(id)?)
+}
 
-    let thread = flow.current_thread_mut();
-    let frame = thread
-        .call_stack
-        .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+/// [`goto_target`] for a target the linker (or `Program::resolve`) already
+/// placed.
+fn goto_resolved(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    let LinkedTarget {
+        container_idx,
+        offset: byte_offset,
+        id,
+    } = *target;
+
+    let stack = &mut flow.current_thread_mut().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
 
     // Goto semantics: transfer control within the current call frame.
     //
@@ -3094,21 +3221,19 @@ pub(crate) fn goto_target(
     //
     // If the target is NOT on the stack, clear the stack and push it —
     // this handles cross-knot gotos like `-> another_knot`.
-    let already_on_stack = frame
-        .container_stack
+    let already_on_stack = stack
+        .top_containers()
         .iter()
         .any(|p| p.container_idx == container_idx);
 
-    if let Some(pos) = frame
-        .container_stack
+    if let Some(pos) = stack
+        .top_containers()
         .iter()
         .rposition(|p| p.container_idx == container_idx)
     {
-        frame.container_stack.truncate(pos + 1);
-        frame.container_stack[pos].offset = byte_offset;
+        stack.unwind_top_containers(pos + 1, byte_offset);
     } else {
-        frame.container_stack.clear();
-        frame.container_stack.push(ContainerPosition {
+        stack.reset_top_containers(ContainerPosition {
             container_idx,
             offset: byte_offset,
         });
@@ -3136,15 +3261,13 @@ pub(crate) fn goto_target(
 }
 
 fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
-    let thread = flow.current_thread_mut();
-    let frame = thread
-        .call_stack
-        .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
-    let top = frame
-        .container_stack
-        .last_mut()
-        .ok_or(RuntimeError::ContainerStackUnderflow)?;
+    let stack = &mut flow.current_thread_mut().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    let top = stack
+        .top_container_mut()
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
 
     // The offset was already advanced past the jump instruction.
     // The relative offset is from the current position.
@@ -3159,17 +3282,13 @@ fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
 }
 
 fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
-    let thread = flow.current_thread();
-    let frame = thread
-        .call_stack
-        .last()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
-    let pos = frame
-        .container_stack
-        .last()
-        .copied()
-        .ok_or(RuntimeError::ContainerStackUnderflow)?;
-    Ok(pos)
+    let stack = &flow.current_thread().call_stack;
+    if stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    stack
+        .top_container()
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)
 }
 
 fn handle_begin_choice(
@@ -3178,7 +3297,7 @@ fn handle_begin_choice(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     flags: ChoiceFlags,
-    target_id: DefinitionId,
+    target: &LinkedTarget,
 ) -> Result<(), RuntimeError> {
     // Single-pop protocol: stack contains [display_string?], [condition?]
     // with condition on top (evaluated last). Either content flag means
@@ -3199,7 +3318,7 @@ fn handle_begin_choice(
 
     // 1b. Once-only check: skip if the target container was already visited.
     if flags.once_only {
-        let visit_count = context.visit_count(target_id);
+        let visit_count = context.visit_count(target.id);
         if visit_count > 0 {
             if has_display {
                 let _ = flow.value_stack.pop();
@@ -3237,24 +3356,15 @@ fn handle_begin_choice(
         crate::story::ChoiceDisplay::Text(String::new())
     };
 
-    let (target_idx, target_offset) = program
-        .resolve_target(target_id)
-        .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
-
     let idx = flow.pending_choices.len();
-    let (thread_fork, cache_hit) = flow.fork_thread();
+    let thread_fork = flow.fork_thread();
     stats.threads_created += 1;
-    if cache_hit {
-        stats.snapshot_cache_hits += 1;
-    } else {
-        stats.snapshot_cache_misses += 1;
-    }
     let tags = mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
         display,
-        target_id,
-        target_idx,
-        target_offset,
+        target_id: target.id,
+        target_idx: target.container_idx,
+        target_offset: target.offset,
         flags,
         original_index: idx,
         tags,
