@@ -343,6 +343,34 @@ fn sweep(name: &str, grounding: Grounding, caught: fn(&Obligations) -> bool) -> 
     tally
 }
 
+/// Grounding is decided by whole-run containment, not substring containment.
+///
+/// A generated story whose only rendered text was `beta` carried a one-letter
+/// choice label `[a]` on a stitch its runs never reached; `"beta".contains("a")`
+/// grounded it, the retext control could not be observed, and
+/// `the_generator_produces_stories_the_oracle_can_distinguish` failed one run in
+/// six. The predicate must say "ungrounded" here *before* the verdict — never
+/// because the verdict came back clean.
+#[test]
+fn a_one_letter_label_does_not_ground_the_retext_control_by_substring() {
+    let src = "-> k\n\n=== k ===\n{\"beta\"}\n-> END\n\n= s\n+ [a]\n    -> END\n";
+    let (data, pre) =
+        compile_source_to_inkb("grounding-substring", "story.ink", src).expect("compiles");
+    assert!(has_line_entries(&data), "the label is a line-table entry");
+    assert!(
+        !is_line_text_grounded(&data, &pre, &config()).expect("explores"),
+        "`a` inside `beta` is not the label being rendered"
+    );
+    // And the control does survive here — which is exactly why the predicate
+    // must not have counted the story as grounded.
+    let v = judge(&data, &pre, &control::config("control:retext"), &config()).expect("judge");
+    assert!(
+        v.trace_clean,
+        "the runs never reach the label, so retext is unobservable: {}",
+        describe(&v)
+    );
+}
+
 #[test]
 fn retext_control_is_caught_by_the_trace_and_not_by_line_identity() {
     let tally = sweep("control:retext", Grounding::Text, |v| {
