@@ -13,5 +13,10 @@ brink-runtime = { path = "../../../crates/brink-runtime" }
 # on purpose — it's a benchmark driver, not a production consumer.
 brink-compiler = { path = "../../../crates/brink-compiler", features = ["test-util"] }
 
+[features]
+# `--histogram`: per-opcode and per-opcode-pair execution counts, from the
+# runtime's `bench-counters` instrumentation.
+histogram = ["brink-runtime/bench-counters"]
+
 [profile.release]
 debug = true
