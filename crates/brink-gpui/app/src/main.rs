@@ -17,7 +17,7 @@ mod single_view;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use brink_gpui_shell::editor_view::{self, EditorView};
+use brink_gpui_shell::editor_view::EditorView;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::tool_window::ToolWindowSpec;
 use brink_gpui_shell::workspace::{StatusCell, Workspace};
@@ -85,9 +85,20 @@ impl Studio {
             // The three views (decision log 2026-08-26). Registered before
             // the project opens so the manuscript is subscribed when the
             // files land.
-            workspace.set_view_occupant(EditorView::Code, code.clone().into(), cx);
-            workspace.set_view_occupant(EditorView::Single, single.into(), cx);
-            workspace.set_view_occupant(EditorView::Continuous, manuscript.clone().into(), cx);
+            let code_focus = code.read(cx).focus_handle(cx);
+            let single_focus = single.read(cx).focus_handle(cx);
+            let manuscript_focus = manuscript.read(cx).focus_handle(cx);
+            workspace.set_view_occupant(EditorView::Code, code.clone().into(), code_focus, cx);
+            workspace.set_view_occupant(EditorView::Single, single.into(), single_focus, cx);
+            workspace.set_view_occupant(
+                EditorView::Continuous,
+                manuscript.clone().into(),
+                manuscript_focus,
+                cx,
+            );
+            // The app's own commands go through the same registry as the
+            // shell's, so the palette and the menu list them.
+            workspace.register_command("File", "Save", Save, Some("cmd-s"), cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -136,6 +147,10 @@ impl Studio {
         );
 
         project.update(cx, |project, _| project.open(root));
+
+        // Keys have somewhere to land from the first frame.
+        let workspace_focus = workspace.read(cx).focus_handle(cx);
+        window.focus(&workspace_focus, cx);
 
         Self {
             project,
@@ -216,9 +231,6 @@ fn main() {
     // Windows/Linux implementations live in `gpui-pre-platform`.
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
         gpui_component::init(cx);
-        cx.bind_keys([gpui::KeyBinding::new("cmd-s", Save, None)]);
-        // The shell owns the view keystrokes; the app installs them.
-        cx.bind_keys(editor_view::key_bindings());
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

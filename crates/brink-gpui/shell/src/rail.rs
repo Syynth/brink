@@ -10,13 +10,14 @@
 //! the region model.
 
 use gpui::prelude::*;
-use gpui::{App, Hsla, Pixels, SharedString, Window, div, px, svg};
+use gpui::{AnyElement, App, Hsla, Pixels, SharedString, Window, div, px, svg};
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants as _},
     v_flex,
 };
 
+use crate::commands::display_keystroke;
 use crate::region::{RailEdge, RailGroup, RailSlot};
 
 /// Rail width. Narrow enough to read as chrome, wide enough for a 16px icon
@@ -34,12 +35,17 @@ pub struct RailButton {
     pub active: bool,
     /// A count bubble on the button's corner — `None` for none (§5.1).
     pub badge: Option<SharedString>,
+    /// The toggle's keystroke, shown in the tooltip (studio §5.2).
+    pub keystroke: Option<SharedString>,
 }
 
-/// Render one rail. `on_click` receives the id of the button pressed.
+/// Render one rail. `on_click` receives the id of the button pressed;
+/// `leading` sits above the upper group — the hamburger, on the left rail
+/// (studio §6: "a single icon at the top of the left strip").
 pub fn rail<F>(
     edge: RailEdge,
     buttons: &[RailButton],
+    leading: Option<AnyElement>,
     on_click: F,
     _window: &mut Window,
     cx: &mut App,
@@ -66,7 +72,7 @@ where
         )
     };
 
-    let occupied = buttons.iter().any(|b| b.slot.edge == edge);
+    let occupied = buttons.iter().any(|b| b.slot.edge == edge) || leading.is_some();
     v_flex()
         .when(occupied, |s| s.w(RAIL_WIDTH))
         .h_full()
@@ -84,7 +90,13 @@ where
         // Upper group flows from the top; the lower group is pinned to the
         // bottom by `justify_between`, which is the whole visual point of
         // dropping the bottom rail.
-        .child(group(RailGroup::Upper))
+        .child(
+            v_flex()
+                .gap_1()
+                .items_center()
+                .children(leading)
+                .child(group(RailGroup::Upper)),
+        )
         .child(group(RailGroup::Lower))
 }
 
@@ -132,7 +144,12 @@ where
                 .ghost()
                 .compact()
                 .toggled(b.active)
-                .tooltip(b.title.clone())
+                .tooltip(match &b.keystroke {
+                    Some(keys) => {
+                        SharedString::from(format!("{} ({})", b.title, display_keystroke(keys)))
+                    }
+                    None => b.title.clone(),
+                })
                 .on_click(move |_, window, cx| on_click(&id, window, cx))
                 .child(match b.icon {
                     // A complete SVG document, painted as a monochrome mask tinted

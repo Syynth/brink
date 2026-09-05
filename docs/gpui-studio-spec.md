@@ -222,7 +222,8 @@ the three views — **Code** (tabs, groups, splits), **Single File** (one
 file, no tab strip), **Continuous** (the manuscript) — are what it can hold.
 The shell owns the choice (`EditorView`), the switcher in the title bar,
 the actions (`ViewCode`/`ViewSingle`/`ViewContinuous`, default
-`cmd-shift-1/2/3`) and the panel that hosts them (`EditorRoot`); the
+`cmd-alt-1/2/3` — not the shifted digits, which Linux delivers as symbols)
+and the panel that hosts them (`EditorRoot`); the
 feature crate hands over each view as an `AnyView` and the shell never
 learns what it is.
 
@@ -254,6 +255,32 @@ companion split is deliberately absent until it is ruled.
 GPUI `actions!` plus key contexts. Keybindings, palette entries, menu items
 and buttons all dispatch the same action, which satisfies
 `studio-shell-spec`'s command contract with no bespoke layer.
+
+**Built 2026-09-05** (`shell/src/commands.rs`, `shell/src/palette.rs`). A
+command is an action plus a title and a group; `Workspace::register_command`
+records it and installs its default binding, and that is the only place a
+key is bound. The shell registers the view actions and the palette toggle;
+every tool window gets `view.toggle.<id>` on `cmd-1…9` by registration
+order (studio §5.2), shown in its rail tooltip; the app registers its own
+(`File: Save`). Enablement is gpui's `Window::available_actions` — no
+`when` closures. The **palette** (`cmd-shift-p`) ranks the registry by the
+studio's quick-pick rule (title first, then the group-qualified title,
+tighter subsequence wins) and shows keystrokes; the **hamburger** at the
+top of the left rail opens the same overlay grouped, generated from the
+registry (studio §6). A chosen command runs only after the overlay has
+closed and focus is back where it was.
+
+Two facts the build turned up. The workspace holds a fallback focus and
+every view hands the shell a focus handle: a key pressed while nothing is
+focused, or while focus sits in a view that is no longer rendered, reaches
+no action at all. And `cmd-shift-<digit>` cannot be a default binding —
+Linux delivers a shifted digit as its symbol — so the views sit on
+`cmd-alt-1/2/3`.
+
+Not yet: the user keymap override (studio §6 "Keymap layer"; the registry
+is the single table it merges over, and `KeyBinding::load` is the way in),
+`Escape` returning focus to the editor from a tool window (§5.2), and
+quick-open (`cmd-p`).
 
 ### 4.6 Persistence
 

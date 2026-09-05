@@ -8,13 +8,21 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, AnyView, App, Entity, IntoElement, Render, SharedString, Window, div, px};
+use gpui::{
+    Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
+    Subscription, Window, anchored, deferred, div, point, px,
+};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
+use crate::commands::{
+    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow, is_available,
+    tool_window_keystroke,
+};
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
-use crate::rail::{RailButton, rail};
+use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
+use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::skin::StudioSkin;
 use crate::tool_window::{ToolWindow, ToolWindowSpec};
@@ -63,6 +71,16 @@ pub struct Workspace {
     tools: Vec<Registered>,
     /// Rendered along the bottom edge, under everything.
     status: Vec<StatusCell>,
+    /// Every command, in registration order (`crate::commands`).
+    commands: CommandRegistry,
+    /// The palette or the menu while open, with what had focus before it —
+    /// restored before the chosen command runs, so it runs where the
+    /// author was.
+    overlay: Option<(Entity<Palette>, Option<FocusHandle>, Subscription)>,
+    /// The window's fallback focus: where keys land before anything has
+    /// been clicked, and where they return when the focused surface goes
+    /// off screen. Without it a fresh window hears no shortcut at all.
+    focus: FocusHandle,
 }
 
 impl Workspace {
@@ -98,12 +116,63 @@ impl Workspace {
             );
         });
 
-        Self {
+        let mut this = Self {
             dock_area,
             editor_root,
             tools: Vec::new(),
             status: Vec::new(),
+            commands: CommandRegistry::default(),
+            overlay: None,
+            focus: cx.focus_handle(),
+        };
+        // The shell's own commands. Features add theirs through
+        // `register_command`; tool windows get a toggle each on registration.
+        let (code, single, continuous) =
+            (EditorView::Code, EditorView::Single, EditorView::Continuous);
+        this.register_command("View", code.title(), ViewCode, Some(code.keystroke()), cx);
+        this.register_command(
+            "View",
+            single.title(),
+            ViewSingle,
+            Some(single.keystroke()),
+            cx,
+        );
+        this.register_command(
+            "View",
+            continuous.title(),
+            ViewContinuous,
+            Some(continuous.keystroke()),
+            cx,
+        );
+        this.register_command(
+            "View",
+            "Command Palette",
+            TogglePalette,
+            Some("cmd-shift-p"),
+            cx,
+        );
+        this
+    }
+
+    /// Register a command and install its default binding. Studio §6: a
+    /// button, a key and a palette entry are one action, never three
+    /// functions.
+    pub fn register_command(
+        &mut self,
+        group: impl Into<SharedString>,
+        title: impl Into<SharedString>,
+        action: impl Action,
+        keystroke: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(binding) = self.commands.register(group, title, action, keystroke) {
+            cx.bind_keys([binding]);
         }
+    }
+
+    #[must_use]
+    pub fn commands(&self) -> &CommandRegistry {
+        &self.commands
     }
 
     /// The centre's panel. Subscribe to it for `EditorRootEvent`.
@@ -140,24 +209,48 @@ impl Workspace {
                 area.toggle_dock(placement, window, cx);
             }
         });
+        // `view.toggle.<id>`, `cmd-1…9` by registration order (studio §5.2).
+        let ordinal = self.tools.len() + 1;
+        let keystroke = tool_window_keystroke(ordinal);
+        self.register_command(
+            "View",
+            format!("Toggle {}", spec.title),
+            ToggleToolWindow {
+                id: spec.id.clone(),
+            },
+            keystroke.as_deref(),
+            cx,
+        );
         self.tools.push(Registered { spec, badge });
     }
 
-    /// Hand the shell what a view shows. It learns nothing about the view
-    /// beyond that it renders.
+    /// Hand the shell what a view shows, and what to focus when it is
+    /// shown. It learns nothing about the view beyond that it renders.
     pub fn set_view_occupant(
         &mut self,
         view: EditorView,
         occupant: AnyView,
+        focus: FocusHandle,
         cx: &mut Context<Self>,
     ) {
         self.editor_root
-            .update(cx, |root, cx| root.set_occupant(view, occupant, cx));
+            .update(cx, |root, cx| root.set_occupant(view, occupant, focus, cx));
     }
 
-    pub fn set_editor_view(&mut self, view: EditorView, cx: &mut Context<Self>) {
-        self.editor_root
-            .update(cx, |root, cx| root.set_view(view, cx));
+    /// Switch views, and move focus into the one now showing: the view that
+    /// just left the screen cannot keep it, or every shortcut goes dead
+    /// until the next click.
+    pub fn set_editor_view(
+        &mut self,
+        view: EditorView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = self.editor_root.update(cx, |root, cx| {
+            root.set_view(view, cx);
+            root.occupant_focus()
+        });
+        window.focus(&focus.unwrap_or_else(|| self.focus.clone()), cx);
         cx.notify();
     }
 
@@ -216,8 +309,86 @@ impl Workspace {
                 slot: t.spec.slot,
                 active: area.is_dock_open(t.spec.dock_placement()),
                 badge: (t.badge)(cx),
+                keystroke: self.commands.keystroke_for(&ToggleToolWindow {
+                    id: t.spec.id.clone(),
+                }),
             })
             .collect()
+    }
+
+    /// Open the palette or the menu, or close it if that one is already up.
+    pub fn toggle_overlay(
+        &mut self,
+        mode: PaletteMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((palette, _, _)) = &self.overlay {
+            let same = palette.read(cx).mode() == mode;
+            self.close_overlay(window, cx);
+            if same {
+                return;
+            }
+        }
+        // Enablement is asked of the window NOW, against the focus the
+        // author has — before the overlay takes it.
+        let available = window.available_actions(cx);
+        let items: Vec<PaletteItem> = self
+            .commands
+            .commands()
+            .iter()
+            .map(|c| PaletteItem {
+                enabled: is_available(c.action.as_ref(), &available),
+                command: c.clone(),
+            })
+            .collect();
+        let previous = window.focused(cx);
+        let palette = cx.new(|cx| Palette::new(mode, items, window, cx));
+        let subscription = cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, event: &PaletteEvent, window, cx| match event {
+                PaletteEvent::Run(action) => {
+                    let action = action.boxed_clone();
+                    this.close_overlay(window, cx);
+                    window.dispatch_action(action, cx);
+                }
+                PaletteEvent::Dismiss => this.close_overlay(window, cx),
+            },
+        );
+        palette.update(cx, |palette, cx| palette.focus(window, cx));
+        self.overlay = Some((palette, previous, subscription));
+        cx.notify();
+    }
+
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, previous, _)) = self.overlay.take() {
+            if let Some(handle) = previous {
+                window.focus(&handle, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn render_overlay(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        let (palette, _, _) = self.overlay.as_ref()?;
+        // The palette floats top-centre; the menu hangs off the hamburger.
+        let position = match palette.read(cx).mode() {
+            PaletteMode::Palette => {
+                let width = window.viewport_size().width;
+                point((width - px(PALETTE_WIDTH)) / 2., px(64.))
+            }
+            PaletteMode::Menu => point(RAIL_WIDTH + px(4.), px(40.)),
+        };
+        Some(
+            deferred(
+                anchored()
+                    .position(position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(palette.clone()),
+            )
+            .into_any_element(),
+        )
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -276,8 +447,8 @@ impl Workspace {
                 .compact()
                 .toggled(view == current)
                 .tooltip(format!("{} ({})", view.title(), view.keystroke()))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.set_editor_view(view, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_editor_view(view, window, cx);
                 }))
                 .child(view.title())
             }))
@@ -288,6 +459,12 @@ impl Workspace {
 impl ToolWindowSpec {
     fn dock_placement(&self) -> DockPlacement {
         self.slot.dock()
+    }
+}
+
+impl gpui::Focusable for Workspace {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -306,22 +483,45 @@ impl Render for Workspace {
         };
         let switcher = self.view_switcher(cx);
         let status = self.render_status(cx);
+        let overlay = self.render_overlay(window, cx);
+        // Studio §6: the hamburger at the top of the left strip, opening the
+        // registry-generated menu.
+        let hamburger = Button::new("hamburger")
+            .ghost()
+            .compact()
+            .tooltip("Menu")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_overlay(PaletteMode::Menu, window, cx);
+            }))
+            .child("\u{2630}")
+            .into_any_element();
 
         let theme = cx.theme();
         v_flex()
+            .id("workspace")
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            // The view actions dispatch from wherever focus is; this is an
-            // ancestor of everything in the window, so it hears them all.
-            .on_action(cx.listener(|this, _: &ViewCode, _, cx| {
-                this.set_editor_view(EditorView::Code, cx);
+            // The shell's actions dispatch from wherever focus is; this is
+            // an ancestor of everything in the window, so it hears them all.
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &ViewCode, window, cx| {
+                this.set_editor_view(EditorView::Code, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ViewSingle, _, cx| {
-                this.set_editor_view(EditorView::Single, cx);
+            .on_action(cx.listener(|this, _: &ViewSingle, window, cx| {
+                this.set_editor_view(EditorView::Single, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ViewContinuous, _, cx| {
-                this.set_editor_view(EditorView::Continuous, cx);
+            .on_action(cx.listener(|this, _: &ViewContinuous, window, cx| {
+                this.set_editor_view(EditorView::Continuous, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
+                this.toggle_overlay(PaletteMode::Palette, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMenu, window, cx| {
+                this.toggle_overlay(PaletteMode::Menu, window, cx);
+            }))
+            .on_action(cx.listener(|this, action: &ToggleToolWindow, window, cx| {
+                this.toggle_tool_window(&action.id, window, cx);
             }))
             .child(
                 TitleBar::new().child(
@@ -337,7 +537,14 @@ impl Render for Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(rail(RailEdge::Left, &buttons, click.clone(), window, cx))
+                    .child(rail(
+                        RailEdge::Left,
+                        &buttons,
+                        Some(hamburger),
+                        click.clone(),
+                        window,
+                        cx,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -345,9 +552,10 @@ impl Render for Workspace {
                             .h_full()
                             .child(self.dock_area.clone()),
                     )
-                    .child(rail(RailEdge::Right, &buttons, click, window, cx)),
+                    .child(rail(RailEdge::Right, &buttons, None, click, window, cx)),
             )
             .child(status)
+            .children(overlay)
     }
 }
 

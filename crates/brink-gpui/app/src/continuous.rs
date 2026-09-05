@@ -33,9 +33,9 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ListAlignment, ListState,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, list,
-    prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ListAlignment,
+    ListState, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    list, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Sizable as _, h_flex,
@@ -296,6 +296,11 @@ impl Render for ContinuousView {
             .cloned();
 
         v_flex()
+            .id("continuous")
+            // The view's focus handle must be in the tree: the shell moves
+            // focus here on a switch, and a handle nothing tracks is a dead
+            // end for every shortcut.
+            .track_focus(&self.focus)
             .size_full()
             .bg(surface)
             .relative()

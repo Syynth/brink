@@ -49,15 +49,23 @@ impl Focusable for SingleFileView {
 impl Render for SingleFileView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        match self.code.read(cx).active_document().cloned() {
-            Some(document) => div().size_full().child(document),
+        let content = match self.code.read(cx).active_document().cloned() {
+            Some(document) => div().size_full().child(document).into_any_element(),
             None => div()
                 .size_full()
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_color(muted)
-                .child("Open a file from the Binder"),
-        }
+                .child("Open a file from the Binder")
+                .into_any_element(),
+        };
+        // Tracked so a switch into an empty view still has a focus target
+        // that is in the tree.
+        div()
+            .id("single-file")
+            .track_focus(&self.focus)
+            .size_full()
+            .child(content)
     }
 }

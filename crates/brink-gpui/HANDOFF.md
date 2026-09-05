@@ -107,6 +107,16 @@ suppress context menu (#3148). The shell grew what those needed:
 `ToolWindow::badge` (`tool_window.rs`), `StatusCell` with `opens`, and
 `Workspace::open_tool_window`.
 
+**Commands** (2026-09-05, spec §4.5): every shortcut, the palette
+(`cmd-shift-p`), the hamburger menu and the `cmd-1…9` tool-window toggles
+go through one registry (`shell/src/commands.rs`); the app registers its
+commands with `Workspace::register_command`. Verified headless: palette
+filter + Enter switches views; the menu lists View/File groups with keys;
+`cmd-1`/`cmd-2` toggle Binder/Problems from a fresh launch and after view
+switches. Deferred, in the spec: user keymap overrides, `Escape` back to
+the editor, quick-open. Do not bind `cmd-shift-<digit>` to anything — it
+cannot match on Linux.
+
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"
 + toolbar), and the manuscript's first section shows a partial row above
@@ -129,7 +139,7 @@ hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
    area had no `DockSkin`, so it wore gpui-base's bare renderer. The three
    views (spec §4.4) then landed on top: the centre holds one `EditorRoot`
    panel that renders Code (an inner `DockArea` of documents, with tabs),
-   Single File, or Continuous; switcher in the title bar, `cmd-shift-1/2/3`.
+   Single File, or Continuous; switcher in the title bar, `cmd-alt-1/2/3`.
 2. **No CI lane.** Nothing runs this workspace's tests or fmt. Adding one
    means a macOS runner (or solving the Linux question above) — worth a
    ruling on whether the GUI tier is gated at all, or only `model` + `shell`.

@@ -28,8 +28,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyView, App, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, Render,
-    SharedString, Window, actions, div,
+    AnyView, App, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
+    actions, div,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
@@ -72,13 +72,17 @@ impl EditorView {
     }
 
     /// The default keystroke. `cmd-1…9` is what the studio gives tool
-    /// windows, so the views take the shifted row.
+    /// windows, so the views take the alt row. NOT `cmd-shift-<digit>`:
+    /// on Linux a shifted digit arrives as its symbol (`shift-2` is `@`,
+    /// verified in gpui's own x11 tests), so such a binding never matches
+    /// there. Registered as commands by the workspace, which is where the
+    /// binding is installed.
     #[must_use]
     pub const fn keystroke(self) -> &'static str {
         match self {
-            Self::Code => "cmd-shift-1",
-            Self::Single => "cmd-shift-2",
-            Self::Continuous => "cmd-shift-3",
+            Self::Code => "cmd-alt-1",
+            Self::Single => "cmd-alt-2",
+            Self::Continuous => "cmd-alt-3",
         }
     }
 
@@ -89,16 +93,6 @@ impl EditorView {
             Self::Continuous => 2,
         }
     }
-}
-
-/// The default bindings for the three view actions, for the app to install.
-#[must_use]
-pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new(EditorView::Code.keystroke(), ViewCode, None),
-        KeyBinding::new(EditorView::Single.keystroke(), ViewSingle, None),
-        KeyBinding::new(EditorView::Continuous.keystroke(), ViewContinuous, None),
-    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +106,10 @@ pub(crate) const EDITOR_ROOT_PANEL_NAME: &str = "EditorRoot";
 
 /// The centre's one panel.
 pub struct EditorRoot {
-    occupants: [Option<AnyView>; 3],
+    /// Each view, with where focus goes when it is shown — a view that is
+    /// not rendered cannot hold focus, and a key pressed while focus sits
+    /// in a hidden view reaches nothing.
+    occupants: [Option<(AnyView, FocusHandle)>; 3],
     current: EditorView,
     focus: FocusHandle,
 }
@@ -126,11 +123,25 @@ impl EditorRoot {
         }
     }
 
-    /// What a view shows. The shell holds it as an `AnyView` and never asks
-    /// what it is.
-    pub fn set_occupant(&mut self, view: EditorView, occupant: AnyView, cx: &mut Context<Self>) {
-        self.occupants[view.slot()] = Some(occupant);
+    /// What a view shows, and what to focus when it is shown. The shell
+    /// holds the view as an `AnyView` and never asks what it is.
+    pub fn set_occupant(
+        &mut self,
+        view: EditorView,
+        occupant: AnyView,
+        focus: FocusHandle,
+        cx: &mut Context<Self>,
+    ) {
+        self.occupants[view.slot()] = Some((occupant, focus));
         cx.notify();
+    }
+
+    /// Where focus belongs while the current view is showing.
+    #[must_use]
+    pub fn occupant_focus(&self) -> Option<FocusHandle> {
+        self.occupants[self.current.slot()]
+            .as_ref()
+            .map(|(_, focus)| focus.clone())
     }
 
     pub fn set_view(&mut self, view: EditorView, cx: &mut Context<Self>) {
@@ -148,7 +159,9 @@ impl EditorRoot {
     }
 
     fn occupant(&self) -> Option<&AnyView> {
-        self.occupants[self.current.slot()].as_ref()
+        self.occupants[self.current.slot()]
+            .as_ref()
+            .map(|(view, _)| view)
     }
 }
 
