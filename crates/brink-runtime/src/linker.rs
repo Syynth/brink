@@ -8,8 +8,8 @@ use brink_format::{DefinitionId, NameId, StoryData};
 use crate::collections::{Map as HashMap, map_with_capacity};
 use crate::error::RuntimeError;
 use crate::program::{
-    ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, PathTarget, Program,
-    StructShapeEntry,
+    ExternalFnEntry, GlobalSlot, LinkTables, LinkedContainer, LinkedTarget, ListDefEntry,
+    ListItemEntry, PathTarget, Program, StructShapeEntry, linked_operand,
 };
 
 /// Look up a `NameId` in `StoryData::name_table`, failing cleanly on an
@@ -101,6 +101,8 @@ pub fn link(
     if data.containers.is_empty() {
         return Err(RuntimeError::NoRootContainer);
     }
+    let link = link_static_targets(&containers, &address_map);
+
     let root_idx = 0;
 
     let name_table = data.name_table.clone();
@@ -252,6 +254,7 @@ pub fn link(
 
     let program = Program {
         containers,
+        link,
         address_map,
         scope_ids,
         source_checksum: data.source_checksum,
@@ -276,9 +279,238 @@ pub fn link(
     Ok((program, line_tables))
 }
 
+/// Resolve every static jump/call operand once and write its ordinal into a
+/// linked copy of each container's code — see `LinkTables` for the layout
+/// and the rulings it serves.
+///
+/// Ordinals are assigned in walk order (container by container, instruction
+/// by instruction), so two links of the same data produce the same table.
+/// A target `address_map` cannot resolve stays symbolic, and a container
+/// whose bytecode stops decoding is left symbolic from that point on: in
+/// both cases the VM meets exactly the error it would have met before.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a target ordinal indexes a Vec built here; it cannot exceed u32"
+)]
+fn link_static_targets(
+    containers: &[LinkedContainer],
+    address_map: &HashMap<DefinitionId, (u32, usize)>,
+) -> LinkTables {
+    use brink_format::Opcode;
+
+    let mut targets: Vec<LinkedTarget> = Vec::new();
+    let mut ordinals: HashMap<DefinitionId, u32> = HashMap::new();
+    let mut code = Vec::with_capacity(containers.len());
+    for container in containers {
+        let symbolic = &container.bytecode;
+        let mut linked = symbolic.clone();
+        let mut offset = 0;
+        while offset < symbolic.len() {
+            let site = Opcode::peek_target(symbolic, offset);
+            let Ok(op) = Opcode::decode(symbolic, &mut offset) else {
+                break;
+            };
+            let Some(site) = site else {
+                continue;
+            };
+            let (Opcode::Goto(id)
+            | Opcode::GotoIf(id)
+            | Opcode::EnterContainer(id)
+            | Opcode::Call(id)
+            | Opcode::TunnelCall(id)
+            | Opcode::ThreadCall(id)
+            | Opcode::BeginChoice(_, id)) = op
+            else {
+                continue;
+            };
+            let Some(&(container_idx, target_offset)) = address_map.get(&id) else {
+                continue;
+            };
+            let ordinal = *ordinals.entry(id).or_insert_with(|| {
+                targets.push(LinkedTarget {
+                    container_idx,
+                    offset: target_offset,
+                    id,
+                });
+                (targets.len() - 1) as u32
+            });
+            linked[site.operand..site.end].copy_from_slice(&linked_operand(ordinal));
+        }
+        code.push(linked);
+    }
+    LinkTables { code, targets }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use brink_format::Opcode;
+
+    use crate::program::linked_ordinal;
+
+    /// Every kind of static target in one story: a divert to a knot, a
+    /// gather label inside a weave, a function call, a tunnel, a thread and
+    /// a choice.
+    const STORY: &str = r"
+VAR x = 0
+-> top
+=== top ===
+~ x = f(1)
+-> tunnel ->
+<- side
+* [A] -> gather_here
+* [B]
+- (gather_here) Gathered.
+{ x > 0: -> top | -> END }
+=== function f(n) ===
+~ return n + 1
+=== tunnel ===
+In the tunnel.
+->->
+=== side ===
+Side thread.
+-> DONE
+";
+
+    fn compiled() -> StoryData {
+        brink_compiler::compile("main.ink", |_p| Ok(STORY.to_owned()))
+            .unwrap()
+            .data
+    }
+
+    /// Walk a container's symbolic bytecode, yielding each static-target
+    /// site with the id its operand carries.
+    fn target_sites(bytecode: &[u8]) -> Vec<(brink_format::TargetSite, DefinitionId)> {
+        let mut out = Vec::new();
+        let mut off = 0;
+        while off < bytecode.len() {
+            let site = Opcode::peek_target(bytecode, off);
+            let op = Opcode::decode(bytecode, &mut off).expect("symbolic bytecode decodes");
+            let Some(site) = site else { continue };
+            // `peek_target`'s classification is pinned by brink-format's own
+            // test; here only the extent agreement matters.
+            let (Opcode::Goto(id)
+            | Opcode::GotoIf(id)
+            | Opcode::EnterContainer(id)
+            | Opcode::Call(id)
+            | Opcode::TunnelCall(id)
+            | Opcode::ThreadCall(id)
+            | Opcode::BeginChoice(_, id)) = op
+            else {
+                continue;
+            };
+            assert_eq!(
+                site.end, off,
+                "peek and decode agree on the instruction's extent"
+            );
+            out.push((site, id));
+        }
+        out
+    }
+
+    /// Each resolvable static target's operand is rewritten to an ordinal
+    /// whose table entry is exactly what `address_map` says for the id the
+    /// symbolic bytecode still carries; nothing else in the code changes,
+    /// and the symbolic bytecode is untouched.
+    #[test]
+    fn linked_code_holds_ordinals_for_every_resolvable_static_target() {
+        let data = compiled();
+        let (program, _) = link(&data).expect("links");
+        assert_eq!(program.link.code.len(), program.containers.len());
+
+        let mut sites_seen = 0;
+        let mut kinds = alloc::collections::BTreeSet::new();
+        for (i, container) in program.containers.iter().enumerate() {
+            let symbolic = &container.bytecode;
+            let linked = &program.link.code[i];
+            assert_eq!(
+                symbolic, &data.containers[i].bytecode,
+                "symbolic copy untouched"
+            );
+            assert_eq!(symbolic.len(), linked.len(), "same length, same offsets");
+
+            let mut rewritten = alloc::vec![false; symbolic.len()];
+            for (site, id) in target_sites(symbolic) {
+                sites_seen += 1;
+                kinds.insert(
+                    format!("{:?}", site.kind)
+                        .split('(')
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                );
+                let expected = program.address_map.get(&id).copied();
+                let ordinal = linked_ordinal(&linked[site.operand..site.end]);
+                assert_eq!(
+                    expected.is_some(),
+                    ordinal.is_some(),
+                    "site {site:?} for {id}: address_map {expected:?}, linked {ordinal:?}"
+                );
+                if let (Some((cidx, coff)), Some(ord)) = (expected, ordinal) {
+                    let t = program.target(ord).expect("ordinal in table");
+                    assert_eq!((t.container_idx, t.offset, t.id), (cidx, coff, id));
+                    rewritten[site.operand..site.end].fill(true);
+                }
+            }
+            for (k, (a, b)) in symbolic.iter().zip(linked).enumerate() {
+                if !rewritten[k] {
+                    assert_eq!(
+                        a, b,
+                        "byte {k} of container {i} outside any operand changed"
+                    );
+                }
+            }
+        }
+        assert!(
+            sites_seen >= 6,
+            "the story exercises several targets: {sites_seen}"
+        );
+        for kind in ["Goto", "Call", "TunnelCall", "ThreadCall", "BeginChoice"] {
+            assert!(kinds.contains(kind), "story exercises {kind}: {kinds:?}");
+        }
+        // Ordinals are dense and deterministic: linking twice gives the same table.
+        let (again, _) = link(&data).expect("links");
+        assert_eq!(program.link.targets, again.link.targets);
+        assert_eq!(program.link.code, again.link.code);
+    }
+
+    /// An operand naming an address the program does not have stays
+    /// symbolic in the linked code, so the VM meets the same
+    /// `UnresolvedDefinition` it did before — and everything after it in the
+    /// container is still rewritten.
+    #[test]
+    fn unresolvable_target_stays_symbolic() {
+        let mut data = compiled();
+        // Find a Goto site and point it at an id nothing defines.
+        let bogus = DefinitionId::new(brink_format::DefinitionTag::Address, 0x00DE_AD00_BEEF);
+        let mut patched: Option<(usize, brink_format::TargetSite)> = None;
+        'outer: for (i, c) in data.containers.iter().enumerate() {
+            for (site, _) in target_sites(&c.bytecode) {
+                if site.kind == brink_format::TargetKind::Goto {
+                    patched = Some((i, site));
+                    break 'outer;
+                }
+            }
+        }
+        let (ci, site) = patched.expect("the story has a Goto");
+        data.containers[ci].bytecode[site.operand..site.end]
+            .copy_from_slice(&bogus.to_raw().to_le_bytes());
+
+        let (program, _) =
+            link(&data).expect("an unresolvable divert is a run-time error, not a link error");
+        let linked = &program.link.code[ci];
+        assert_eq!(linked_ordinal(&linked[site.operand..site.end]), None);
+        assert_eq!(
+            &linked[site.operand..site.end],
+            &bogus.to_raw().to_le_bytes()
+        );
+        assert!(
+            !program.link.targets.iter().any(|t| t.id == bogus),
+            "nothing interned for the bogus id"
+        );
+        assert!(program.resolve(bogus).is_err());
+    }
 
     /// Regression for a fuzzer-discovered panic (`vm_no_panic`, PR #672
     /// workstream C): a `NameId` outside `StoryData::name_table`'s range —

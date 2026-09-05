@@ -179,6 +179,7 @@ mod tests {
 
     fn empty_program() -> Program {
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],

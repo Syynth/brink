@@ -9,6 +9,7 @@ use brink_format::{
 };
 
 use crate::collections::Map as HashMap;
+use crate::error::RuntimeError;
 
 /// A linked, ready-to-execute program.
 ///
@@ -16,6 +17,8 @@ use crate::collections::Map as HashMap;
 /// Immutable after creation — mutable per-instance state lives in [`Story`](crate::Story).
 pub struct Program {
     pub(crate) containers: Vec<LinkedContainer>,
+    /// What the linker derived from the symbolic bytecode: see [`LinkTables`].
+    pub(crate) link: LinkTables,
     /// Unified address map: `id → (container_idx, byte_offset)`.
     /// Contains both container IDs (offset 0) and intra-container addresses.
     pub(crate) address_map: HashMap<DefinitionId, (u32, usize)>,
@@ -104,6 +107,66 @@ pub(crate) struct StructShapeEntry {
     /// Declared field names, in shape order — the same order
     /// [`brink_format::Value::Record`]'s flat field vector follows.
     pub fields: Vec<NameId>,
+}
+
+/// A static jump/call target, resolved once by the linker.
+///
+/// `id` is kept alongside the position because the VM still needs the
+/// address identity at run time — visit and turn counts are keyed by it —
+/// and the two rulings behind hot-reload (decision log 2026-03-01) make the
+/// id the stable identity across relinks while `container_idx` is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkedTarget {
+    pub container_idx: u32,
+    pub offset: usize,
+    pub id: DefinitionId,
+}
+
+/// The linker's derived layer over the symbolic bytecode.
+///
+/// `.inkb` stores `DefinitionId`s in every jump and call, with no
+/// compile-time indices (decision log 2026-03-01, "`.inkb` stores
+/// `ContainerId`s … resolved to fast internal indices at load time"). Until
+/// this table existed, "at load time" meant a hash lookup on every
+/// `Goto`/`Call`/`BeginChoice` the VM executed — 1.7% of `TheIntercept`'s
+/// instructions in `Program::resolve_target`. Now the linker walks each
+/// container once, interns every resolvable static target into `targets`,
+/// and writes the target's ordinal over the operand bytes in its own copy
+/// of the code (`code[i]` is `containers[i].bytecode` with those operands
+/// rewritten — same length, same offsets). The VM indexes `targets` by
+/// that ordinal; nothing hashes.
+///
+/// The symbolic `bytecode` stays untouched on each `LinkedContainer` for
+/// every other decoder (the debugger, `container_bytecode`, tests):
+/// `Opcode::decode` is not defined over the rewritten copy. An operand the
+/// linker cannot resolve is left symbolic in `code` too, so an unresolved
+/// divert still fails exactly where and how it did before — when reached.
+///
+/// Rebuilt on every link, so a hot patch that renumbers containers simply
+/// produces a new table; nothing here is persisted.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LinkTables {
+    pub code: Vec<Vec<u8>>,
+    pub targets: Vec<LinkedTarget>,
+}
+
+/// The operand at a static-target site of *linked* code: `Some(ordinal)`
+/// into [`LinkTables::targets`] when the linker resolved it, `None` when the
+/// bytes still hold a symbolic `DefinitionId`.
+///
+/// The two are distinguishable by the last byte: an id's top byte is its
+/// `DefinitionTag`, never zero (`brink_format::DefinitionTag` starts at
+/// `0x01`), while an ordinal is written as a little-endian `u64` whose top
+/// four bytes are zero.
+pub(crate) fn linked_ordinal(operand: &[u8]) -> Option<u32> {
+    let raw = u64::from_le_bytes(operand.try_into().ok()?);
+    #[expect(clippy::cast_possible_truncation, reason = "top 32 bits checked zero")]
+    (raw >> 32 == 0).then_some(raw as u32)
+}
+
+/// The linked form of a target ordinal — the inverse of [`linked_ordinal`].
+pub(crate) fn linked_operand(ordinal: u32) -> [u8; 8] {
+    u64::from(ordinal).to_le_bytes()
 }
 
 pub(crate) struct LinkedContainer {
@@ -691,6 +754,37 @@ impl Program {
         &self.containers[idx as usize]
     }
 
+    /// The code the VM executes for container `idx`: the linker's rewritten
+    /// copy when it produced one (`LinkTables::code`), else the symbolic
+    /// bytecode — same bytes at every offset except static-target operands.
+    #[inline]
+    pub(crate) fn code(&self, idx: u32) -> &[u8] {
+        self.link.code.get(idx as usize).map_or_else(
+            || self.containers[idx as usize].bytecode.as_slice(),
+            Vec::as_slice,
+        )
+    }
+
+    /// Static target `ordinal` of the linked table.
+    #[inline]
+    pub(crate) fn target(&self, ordinal: u32) -> Option<&LinkedTarget> {
+        self.link.targets.get(ordinal as usize)
+    }
+
+    /// Resolve a symbolic address id to a [`LinkedTarget`] — the slow path
+    /// the VM takes for operands the linker left symbolic and for targets
+    /// that arrive as values (`Value::DivertTarget`).
+    pub(crate) fn resolve(&self, id: DefinitionId) -> Result<LinkedTarget, RuntimeError> {
+        let (container_idx, offset) = self
+            .resolve_target(id)
+            .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+        Ok(LinkedTarget {
+            container_idx,
+            offset,
+            id,
+        })
+    }
+
     /// Get a container's bytecode by index.
     #[cfg(feature = "testing")]
     pub fn container_bytecode(&self, idx: u32) -> &[u8] {
@@ -1179,6 +1273,7 @@ mod find_address_tests {
             );
         }
         Program {
+            link: crate::program::LinkTables::default(),
             containers: Vec::new(),
             address_map: HashMap::new(),
             scope_ids: Vec::new(),

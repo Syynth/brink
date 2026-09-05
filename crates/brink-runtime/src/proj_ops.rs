@@ -375,6 +375,7 @@ mod tests {
         global_map.insert(npc_id, 0);
         global_map.insert(gold_id, 1);
         Program {
+            link: crate::program::LinkTables::default(),
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],

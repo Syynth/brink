@@ -10,14 +10,14 @@ use core::mem;
 
 use brink_format::{
     ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
-    PluralCategory, PluralResolver, SelectKey, Value,
+    PluralCategory, PluralResolver, SelectKey, TargetKind, Value,
 };
 
 use crate::collection_ops;
 use crate::conversion_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
-use crate::program::Program;
+use crate::program::{LinkedTarget, Program, linked_ordinal};
 use crate::proj_ops;
 use crate::rand_ops;
 use crate::range_ops;
@@ -115,10 +115,10 @@ fn step_impl<R: crate::rng::StoryRng>(
         );
     };
 
-    let container = program.container(pos.container_idx);
+    let code = program.code(pos.container_idx);
 
     // Check if we've reached end of bytecode.
-    if pos.offset >= container.bytecode.len() {
+    if pos.offset >= code.len() {
         let stack = &mut flow.current_thread_mut().call_stack;
         stack.pop_container();
         if stack.top_containers().is_empty() {
@@ -136,8 +136,22 @@ fn step_impl<R: crate::rng::StoryRng>(
     }
 
     // ── Decode ──────────────────────────────────────────────────────────
+    // A static-target instruction whose operand the linker resolved needs
+    // no decoding at all: its operand is an ordinal into the linked target
+    // table (`LinkTables`), read here and dispatched without touching
+    // `address_map`. Everything else — and a target the linker left
+    // symbolic — goes through `Opcode::decode` as before.
     let mut offset = pos.offset;
-    let op = Opcode::decode(&container.bytecode, &mut offset)?;
+    let fetched = match Opcode::peek_target(code, offset).and_then(|site| {
+        let ordinal = linked_ordinal(&code[site.operand..site.end])?;
+        Some((site, *program.target(ordinal)?))
+    }) {
+        Some((site, target)) => {
+            offset = site.end;
+            Fetched::Target(site.kind, target)
+        }
+        None => Fetched::Op(Opcode::decode(code, &mut offset)?),
+    };
     stats.opcodes += 1;
 
     // Advance the offset in the position.
@@ -151,6 +165,13 @@ fn step_impl<R: crate::rng::StoryRng>(
     }
 
     // ── Dispatch ────────────────────────────────────────────────────────
+    let op = match fetched {
+        Fetched::Target(kind, target) => {
+            return step_target(flow, program, context, stats, kind, &target);
+        }
+        Fetched::Op(op) => op,
+    };
+
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
@@ -274,24 +295,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Container flow ──────────────────────────────────────────
         Opcode::EnterContainer(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
-
-            // Increment visit count if flags set.
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            flow.current_thread_mut()
-                .call_stack
-                .push_container(ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                });
+            enter_container(flow, program, context, &program.resolve(id)?);
         }
         Opcode::ExitContainer => {
             flow.current_thread_mut().call_stack.pop_container();
@@ -300,13 +304,13 @@ fn step_impl<R: crate::rng::StoryRng>(
         // ── Control flow ────────────────────────────────────────────
         Opcode::Goto(id) => {
             if !flow.skipping_choice {
-                goto_target(flow, program, context, id)?;
+                goto_resolved(flow, program, context, &program.resolve(id)?)?;
             }
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
             if value_ops::is_truthy(&val)? {
-                goto_target(flow, program, context, id)?;
+                goto_resolved(flow, program, context, &program.resolve(id)?)?;
             }
         }
         Opcode::GotoVariable => {
@@ -734,35 +738,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Functions ───────────────────────────────────────────────
         Opcode::Call(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
-
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            // Function output goes directly to the active output target.
-            // Record the target length so trailing whitespace can be
-            // trimmed on return (matching C#'s TrimWhitespaceFromFunctionEnd).
-            let output_start = flow.output.mark();
-            let current_pos = current_position(flow)?;
-            let thread = flow.current_thread_mut();
-            thread.call_stack.push(
-                CallFrame::new(
-                    CallFrameType::Function,
-                    Some(current_pos),
-                    Some(output_start),
-                ),
-                Some(ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }),
-            );
-            stats.frames_pushed += 1;
+            call_function(flow, program, context, stats, &program.resolve(id)?)?;
         }
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
@@ -770,66 +746,10 @@ fn step_impl<R: crate::rng::StoryRng>(
             pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
-
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
-            }
-
-            let current_pos = current_position(flow)?;
-            let thread = flow.current_thread_mut();
-            thread.call_stack.push(
-                CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
-                Some(ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }),
-            );
-            stats.frames_pushed += 1;
+            tunnel_call(flow, program, context, stats, &program.resolve(id)?)?;
         }
         Opcode::ThreadCall(id) => {
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
-
-            // Fork the current thread — the fork inherits the full call
-            // stack (including any enclosing Tunnel frames) so that
-            // `fork_thread` at choice creation captures enough context
-            // for `->->` to return through tunnels.
-            //
-            // `<-` pushes NO call frame (issue #3561). It re-points the
-            // fork's own copy of the top frame at the thread target, so
-            // the thread runs in that frame: its params bind into that
-            // frame's temps exactly as a plain `-> target` divert's would.
-            // That is what the C# runtime does — inklecate compiles a
-            // thread divert to a bare `{"->": ...}` with no stack push,
-            // and ink holds a `<- thread`-as-choice game loop at
-            // call-stack depth 1 forever. The boundary this used to push a
-            // frame for is `Thread::base_depth`: a mark on the thread,
-            // which is popped whole, instead of a frame in the stack,
-            // which `select_choice` installs wholesale and so could never
-            // release.
-            let mut forked = flow.fork_thread();
-            if forked.call_stack.is_empty() {
-                return Err(RuntimeError::CallStackUnderflow);
-            }
-            // A fresh container stack, not the parent's nesting: the
-            // thread is done the moment it runs off the end of its target,
-            // and must not fall back into wherever the parent happened to
-            // be.
-            forked.call_stack.reset_top_containers(ContainerPosition {
-                container_idx: idx,
-                offset: 0,
-            });
-            forked.base_depth = forked.call_stack.len();
-            flow.threads.push(forked);
-            stats.threads_created += 1;
+            thread_call(flow, stats, &program.resolve(id)?)?;
         }
         Opcode::TunnelCallVariable => {
             let val = flow.pop_value()?;
@@ -1098,7 +1018,14 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(Value::FragmentRef(idx));
         }
         Opcode::BeginChoice(flags, target_id) => {
-            handle_begin_choice(flow, program, context, stats, flags, target_id)?;
+            handle_begin_choice(
+                flow,
+                program,
+                context,
+                stats,
+                flags,
+                &program.resolve(target_id)?,
+            )?;
         }
 
         // ── Intrinsics ──────────────────────────────────────────────
@@ -2991,6 +2918,146 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
     }
 }
 
+/// What one fetch produced: a linked static target (no decode needed) or
+/// a decoded instruction.
+enum Fetched {
+    Target(TargetKind, LinkedTarget),
+    Op(Opcode),
+}
+
+/// Execute a static-target instruction whose target the linker resolved —
+/// the same handlers the symbolic arms of `step_impl` reach after
+/// `Program::resolve`.
+fn step_target(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    kind: TargetKind,
+    target: &LinkedTarget,
+) -> Result<Stepped, RuntimeError> {
+    match kind {
+        TargetKind::Goto => {
+            if !flow.skipping_choice {
+                goto_resolved(flow, program, context, target)?;
+            }
+        }
+        TargetKind::GotoIf => {
+            let val = flow.pop_value()?;
+            if value_ops::is_truthy(&val)? {
+                goto_resolved(flow, program, context, target)?;
+            }
+        }
+        TargetKind::EnterContainer => enter_container(flow, program, context, target),
+        TargetKind::Call => call_function(flow, program, context, stats, target)?,
+        TargetKind::TunnelCall => tunnel_call(flow, program, context, stats, target)?,
+        TargetKind::ThreadCall => thread_call(flow, stats, target)?,
+        TargetKind::BeginChoice(flags) => {
+            handle_begin_choice(flow, program, context, stats, flags, target)?;
+        }
+    }
+    Ok(Stepped::Continue)
+}
+
+/// Count a visit to `target`'s container if it counts visits.
+fn count_visit(
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) {
+    let counting_flags = program.container(target.container_idx).counting_flags;
+    if counting_flags.contains(CountingFlags::VISITS) {
+        context.increment_visit(target.id);
+        context.set_turn_count(target.id, context.turn_index());
+    }
+}
+
+/// `Opcode::EnterContainer`: push the target container onto the current
+/// frame's container stack, counting the visit.
+fn enter_container(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) {
+    count_visit(program, context, target);
+    flow.current_thread_mut()
+        .call_stack
+        .push_container(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        });
+}
+
+/// `Opcode::Call`: push a function frame for the target container.
+fn call_function(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    count_visit(program, context, target);
+    let output_start = flow.output.mark();
+    let current_pos = current_position(flow)?;
+    let thread = flow.current_thread_mut();
+    thread.call_stack.push(
+        CallFrame::new(
+            CallFrameType::Function,
+            Some(current_pos),
+            Some(output_start),
+        ),
+        Some(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        }),
+    );
+    stats.frames_pushed += 1;
+    Ok(())
+}
+
+/// `Opcode::TunnelCall`: push a tunnel frame for the target container.
+fn tunnel_call(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    count_visit(program, context, target);
+    let current_pos = current_position(flow)?;
+    let thread = flow.current_thread_mut();
+    thread.call_stack.push(
+        CallFrame::new(CallFrameType::Tunnel, Some(current_pos), None),
+        Some(ContainerPosition {
+            container_idx: target.container_idx,
+            offset: 0,
+        }),
+    );
+    stats.frames_pushed += 1;
+    Ok(())
+}
+
+/// `Opcode::ThreadCall`: fork the current thread into the target container.
+fn thread_call(
+    flow: &mut Flow,
+    stats: &mut Stats,
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    let mut forked = flow.fork_thread();
+    if forked.call_stack.is_empty() {
+        return Err(RuntimeError::CallStackUnderflow);
+    }
+    forked.call_stack.reset_top_containers(ContainerPosition {
+        container_idx: target.container_idx,
+        offset: 0,
+    });
+    forked.base_depth = forked.call_stack.len();
+    flow.threads.push(forked);
+    stats.threads_created += 1;
+    Ok(())
+}
+
 /// Transfer control to a divert target within the current call frame,
 /// incrementing visit/turn counts per the target container's counting flags.
 /// Used by the `Goto`/`GotoIf`/`GotoVariable` opcodes, and by
@@ -3002,9 +3069,22 @@ pub(crate) fn goto_target(
     context: &mut (impl ContextAccess + ?Sized),
     id: DefinitionId,
 ) -> Result<(), RuntimeError> {
-    let (container_idx, byte_offset) = program
-        .resolve_target(id)
-        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
+    goto_resolved(flow, program, context, &program.resolve(id)?)
+}
+
+/// [`goto_target`] for a target the linker (or `Program::resolve`) already
+/// placed.
+fn goto_resolved(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    target: &LinkedTarget,
+) -> Result<(), RuntimeError> {
+    let LinkedTarget {
+        container_idx,
+        offset: byte_offset,
+        id,
+    } = *target;
 
     let stack = &mut flow.current_thread_mut().call_stack;
     if stack.is_empty() {
@@ -3095,7 +3175,7 @@ fn handle_begin_choice(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     flags: ChoiceFlags,
-    target_id: DefinitionId,
+    target: &LinkedTarget,
 ) -> Result<(), RuntimeError> {
     // Single-pop protocol: stack contains [display_string?], [condition?]
     // with condition on top (evaluated last). Either content flag means
@@ -3116,7 +3196,7 @@ fn handle_begin_choice(
 
     // 1b. Once-only check: skip if the target container was already visited.
     if flags.once_only {
-        let visit_count = context.visit_count(target_id);
+        let visit_count = context.visit_count(target.id);
         if visit_count > 0 {
             if has_display {
                 let _ = flow.value_stack.pop();
@@ -3154,19 +3234,15 @@ fn handle_begin_choice(
         crate::story::ChoiceDisplay::Text(String::new())
     };
 
-    let (target_idx, target_offset) = program
-        .resolve_target(target_id)
-        .ok_or_else(|| RuntimeError::UnresolvedDefinition(target_id))?;
-
     let idx = flow.pending_choices.len();
     let thread_fork = flow.fork_thread();
     stats.threads_created += 1;
     let tags = mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
         display,
-        target_id,
-        target_idx,
-        target_offset,
+        target_id: target.id,
+        target_idx: target.container_idx,
+        target_offset: target.offset,
         flags,
         original_index: idx,
         tags,

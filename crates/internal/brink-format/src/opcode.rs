@@ -1736,6 +1736,31 @@ pub enum Opcode {
 
 // ── Opcode encode / decode ──────────────────────────────────────────────────
 
+/// The static-target instructions: each carries exactly one `DefinitionId`
+/// operand, and that operand names the address the instruction jumps to or
+/// calls. See [`Opcode::peek_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    Goto,
+    GotoIf,
+    EnterContainer,
+    Call,
+    TunnelCall,
+    ThreadCall,
+    /// The choice's flags byte precedes its target operand.
+    BeginChoice(ChoiceFlags),
+}
+
+/// Where a static-target instruction's operand sits: `buf[operand..end]`
+/// holds the `DefinitionId` (or the linked layer's replacement for it), and
+/// `end` is the offset of the next instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetSite {
+    pub kind: TargetKind,
+    pub operand: usize,
+    pub end: usize,
+}
+
 impl Opcode {
     /// Encode this instruction into the byte buffer.
     #[expect(clippy::too_many_lines)]
@@ -2125,6 +2150,41 @@ impl Opcode {
         }
     }
 
+    /// The width of a static-target operand: one `DefinitionId`.
+    pub const TARGET_OPERAND_LEN: usize = 8;
+
+    /// Classify the instruction at `buf[offset]` as a static-target
+    /// instruction — one whose only `DefinitionId` operand names a jump or
+    /// call address — and locate that operand, **without decoding it**.
+    ///
+    /// This is an encoding fact about the instruction stream, offered to the
+    /// runtime's linker: it resolves each such operand once and, in its own
+    /// linked copy of the code, replaces the id bytes with a resolved form
+    /// of its choosing. `Opcode::decode` is not defined over that copy (a
+    /// replaced operand is no longer a valid `DefinitionId`), which is why
+    /// the runtime keeps the symbolic bytecode for every decoder besides its
+    /// own dispatch. Returns `None` for any other instruction, and for a
+    /// truncated buffer.
+    #[must_use]
+    pub fn peek_target(buf: &[u8], offset: usize) -> Option<TargetSite> {
+        let disc = *buf.get(offset)?;
+        let (kind, operand) = match disc {
+            GOTO => (TargetKind::Goto, offset + 1),
+            GOTO_IF => (TargetKind::GotoIf, offset + 1),
+            ENTER_CONTAINER => (TargetKind::EnterContainer, offset + 1),
+            CALL => (TargetKind::Call, offset + 1),
+            TUNNEL_CALL => (TargetKind::TunnelCall, offset + 1),
+            THREAD_CALL => (TargetKind::ThreadCall, offset + 1),
+            BEGIN_CHOICE => {
+                let flags = ChoiceFlags::from_byte(*buf.get(offset + 1)?);
+                (TargetKind::BeginChoice(flags), offset + 2)
+            }
+            _ => return None,
+        };
+        let end = operand + Self::TARGET_OPERAND_LEN;
+        (end <= buf.len()).then_some(TargetSite { kind, operand, end })
+    }
+
     /// Decode a single instruction from `buf` starting at `*offset`.
     ///
     /// On success, `*offset` is advanced past the consumed bytes.
@@ -2407,6 +2467,77 @@ mod tests {
 
     fn test_id() -> DefinitionId {
         DefinitionId::new(DefinitionTag::Address, 0xBEEF)
+    }
+
+    /// `peek_target` finds exactly the static-target instructions, places
+    /// their operand where `encode` wrote the id, and declines everything
+    /// else — including a buffer that ends inside the operand.
+    #[test]
+    fn peek_target_locates_static_target_operands() {
+        let flags = ChoiceFlags {
+            has_condition: true,
+            has_start_content: false,
+            has_choice_only_content: true,
+            once_only: false,
+            is_invisible_default: false,
+        };
+        let ops = [
+            Opcode::PushInt(7),
+            Opcode::Goto(test_id()),
+            Opcode::BeginChoice(flags, test_id()),
+            Opcode::Call(test_id()),
+            Opcode::Nop,
+        ];
+        let mut buf = Vec::new();
+        let mut starts = Vec::new();
+        for op in &ops {
+            starts.push(buf.len());
+            op.encode(&mut buf);
+        }
+        let ends: Vec<usize> = starts.iter().skip(1).copied().chain([buf.len()]).collect();
+
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[0]),
+            None,
+            "PushInt is not a target op"
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[1]),
+            Some(TargetSite {
+                kind: TargetKind::Goto,
+                operand: starts[1] + 1,
+                end: ends[1],
+            })
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[2]),
+            Some(TargetSite {
+                kind: TargetKind::BeginChoice(flags),
+                operand: starts[2] + 2,
+                end: ends[2],
+            }),
+            "the choice flags byte precedes the operand"
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[3]).map(|s| s.kind),
+            Some(TargetKind::Call)
+        );
+        assert_eq!(
+            Opcode::peek_target(&buf, starts[4]),
+            None,
+            "Nop is not a target op"
+        );
+        assert_eq!(Opcode::peek_target(&buf, buf.len()), None, "past the end");
+        assert_eq!(
+            Opcode::peek_target(&buf[..ends[1] - 1], starts[1]),
+            None,
+            "a buffer that ends inside the operand is not a site"
+        );
+
+        // The operand bytes are the encoded id, byte for byte.
+        let site = Opcode::peek_target(&buf, starts[1]).expect("site");
+        let raw = u64::from_le_bytes(buf[site.operand..site.end].try_into().expect("8 bytes"));
+        assert_eq!(DefinitionId::from_raw(raw), Some(test_id()));
     }
 
     fn global_id() -> DefinitionId {
