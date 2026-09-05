@@ -494,7 +494,6 @@ impl FlowInstance {
             }
 
             let stepped = vm::step::<R>(flow, program, line_tables, context, stats, resolver)?;
-            stats.materializations += flow.drain_materializations();
 
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
@@ -1341,7 +1340,6 @@ impl FlowInstance {
                 &mut self.stats,
                 resolver,
             )?;
-            self.stats.materializations += self.flow.drain_materializations();
 
             match stepped {
                 vm::Stepped::Done | vm::Stepped::Ended => {
