@@ -17,12 +17,19 @@ use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_han
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
-    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow, tool_window_keystroke,
+    CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow, Unbound,
+    bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
 };
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
 use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
+use crate::settings::{self, AppSettings};
+use crate::settings_appearance::AppearanceSection;
+use crate::settings_keymap::KeymapSection;
+use crate::settings_modal::{
+    MODAL_HEIGHT, MODAL_WIDTH, Scope, Section, SectionMeta, SettingsEvent, SettingsModal,
+};
 use crate::skin::StudioSkin;
 use crate::theme::{self, SelectTheme};
 use crate::tool_window::{Badge, TabSlot, ToolWindow, ToolWindowSpec, select_tab};
@@ -85,6 +92,10 @@ pub struct Workspace {
     /// restored before the chosen command runs, so it runs where the
     /// author was.
     overlay: Option<(Entity<Palette>, Option<FocusHandle>, Subscription)>,
+    /// The Settings window while open, with the focus to restore.
+    settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
+    /// The registered settings sections (`crate::settings_modal`).
+    sections: Vec<Section>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -131,8 +142,14 @@ impl Workspace {
             status: Vec::new(),
             commands: CommandRegistry::default(),
             overlay: None,
+            settings: None,
+            sections: Vec::new(),
             focus: cx.focus_handle(),
         };
+        // A default keystroke an override took away is bound to `Unbound`
+        // (`crate::commands`); swallowed here so it falls through to
+        // nothing rather than to the default it shadows.
+        App::on_action(cx, |_: &Unbound, _| {});
         // The shell's own commands. Features add theirs through
         // `register_command`; tool windows get a toggle each on registration.
         let (code, single, continuous) =
@@ -159,6 +176,7 @@ impl Workspace {
             Some("cmd-shift-p"),
             cx,
         );
+        this.register_command("App", "Settings\u{2026}", OpenSettings, Some("cmd-,"), cx);
         // One command per theme — the studio's `theme.select.<id>`.
         for theme in theme::builtin() {
             this.register_command(
@@ -171,7 +189,108 @@ impl Workspace {
                 cx,
             );
         }
+        // The App sections the shell owns. A Project section is the feature
+        // crate's to add (`add_settings_section`).
+        let me = cx.entity().downgrade();
+        let appearance = cx.new(AppearanceSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "appearance",
+                Scope::App,
+                "Appearance",
+                &[
+                    "theme", "colour", "color", "font", "size", "gutter", "inlay",
+                ],
+            ),
+            appearance,
+        ));
+        let keymap = cx.new(|cx| KeymapSection::new(me, window, cx));
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "keymap",
+                Scope::App,
+                "Keymap",
+                &["keys", "shortcut", "binding", "rebind"],
+            ),
+            keymap,
+        ));
         this
+    }
+
+    /// Register a settings section; the window lists it under its scope.
+    pub fn add_settings_section(&mut self, section: Section) {
+        self.sections.push(section);
+    }
+
+    /// Open the Settings window on `section` (an id), or its first section.
+    pub fn open_settings(
+        &mut self,
+        section: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.is_some() {
+            return;
+        }
+        self.close_overlay(window, cx);
+        let previous = window.focused(cx);
+        let sections = self.sections.clone();
+        let modal = cx.new(|cx| SettingsModal::new(sections, section, window, cx));
+        let subscription = cx.subscribe_in(
+            &modal,
+            window,
+            |this, _, event: &SettingsEvent, window, cx| match event {
+                SettingsEvent::Close => this.close_settings(window, cx),
+            },
+        );
+        modal.update(cx, |modal, cx| modal.focus(window, cx));
+        self.settings = Some((modal, previous, subscription));
+        cx.notify();
+    }
+
+    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, previous, _)) = self.settings.take() {
+            if let Some(handle) = previous {
+                window.focus(&handle, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Install every binding the overrides call for (`keymap_bindings`),
+    /// after a change to them. gpui's keymap only grows, and later
+    /// bindings win, which is what makes re-installing the whole set the
+    /// right move.
+    fn apply_keymap(&self, cx: &mut Context<Self>) {
+        let overrides = AppSettings::get(cx).keymap;
+        cx.bind_keys(keymap_bindings(self.commands.commands(), &overrides));
+    }
+
+    /// Give a chord to the command at `index`, displacing whoever held
+    /// it; returns the displaced command's title. Persists and rebinds.
+    pub fn rebind(&mut self, index: usize, chord: &str, cx: &mut Context<Self>) -> Option<String> {
+        let commands = self.commands.commands().to_vec();
+        let mut displaced = None;
+        settings::update(cx, |s| {
+            displaced = bind_chord(&commands, &mut s.keymap, index, chord);
+        });
+        self.apply_keymap(cx);
+        cx.notify();
+        displaced
+    }
+
+    pub fn unbind_command(&mut self, index: usize, cx: &mut Context<Self>) {
+        let commands = self.commands.commands().to_vec();
+        settings::update(cx, |s| unbind(&commands, &mut s.keymap, index));
+        self.apply_keymap(cx);
+        cx.notify();
+    }
+
+    pub fn reset_command(&mut self, index: usize, cx: &mut Context<Self>) {
+        let commands = self.commands.commands().to_vec();
+        settings::update(cx, |s| reset(&commands, &mut s.keymap, index));
+        self.apply_keymap(cx);
+        cx.notify();
     }
 
     /// Register a command and install its default binding. Studio §6: a
@@ -181,13 +300,16 @@ impl Workspace {
         &mut self,
         group: impl Into<SharedString>,
         title: impl Into<SharedString>,
-        action: impl Action,
+        action: impl Action + Clone,
         keystroke: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(binding) = self.commands.register(group, title, action, keystroke) {
-            cx.bind_keys([binding]);
-        }
+        let ix = self.commands.register(group, title, action, keystroke);
+        // Bound through the overrides, so a persisted rebinding holds from
+        // the first frame.
+        let overrides = AppSettings::get(cx).keymap;
+        let bindings = keymap_bindings(&self.commands.commands()[ix..=ix], &overrides);
+        cx.bind_keys(bindings);
     }
 
     #[must_use]
@@ -459,6 +581,33 @@ impl Workspace {
         )
     }
 
+    /// The Settings window: a scrim over the whole window, the modal
+    /// centred on it.
+    fn render_settings(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        let (modal, _, _) = self.settings.as_ref()?;
+        let viewport = window.viewport_size();
+        let width = px(MODAL_WIDTH).min(viewport.width - px(64.));
+        let height = px(MODAL_HEIGHT).min(viewport.height - px(80.));
+        let position = point(
+            (viewport.width - width) / 2.,
+            (viewport.height - height) / 2.,
+        );
+        let scrim = cx.theme().background.opacity(0.55);
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div().w(viewport.width).h(viewport.height).bg(scrim).child(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(px(16.))
+                            .child(modal.clone()),
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (hover, fg) = (theme.muted.opacity(0.6), theme.foreground);
@@ -552,6 +701,7 @@ impl Render for Workspace {
         let switcher = self.view_switcher(cx);
         let status = self.render_status(cx);
         let overlay = self.render_overlay(window, cx);
+        let settings_window = self.render_settings(window, cx);
         // Studio §6: the hamburger at the top of the left strip, opening the
         // registry-generated menu.
         let hamburger = Button::new("hamburger")
@@ -595,6 +745,9 @@ impl Render for Workspace {
                 theme::select(&action.id, Some(window), cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.open_settings(None, window, cx);
+            }))
             .child(
                 TitleBar::new().child(
                     h_flex()
@@ -628,6 +781,7 @@ impl Render for Workspace {
             )
             .child(status)
             .children(overlay)
+            .children(settings_window)
     }
 }
 

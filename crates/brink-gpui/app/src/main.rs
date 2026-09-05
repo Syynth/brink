@@ -300,7 +300,8 @@ fn main() {
     // Windows/Linux implementations live in `gpui-pre-platform`.
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
         gpui_component::init(cx);
-        // The persisted studio theme, before the first paint.
+        // The persisted settings and their theme, before the first paint.
+        brink_gpui_shell::settings::init(cx);
         brink_gpui_shell::theme::init(cx);
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let options = WindowOptions {
@@ -309,6 +310,9 @@ fn main() {
         };
         let root = root.clone();
         let opened = cx.open_window(options, move |window, cx| {
+            // The app font size scales the window's rem.
+            let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
+            window.set_rem_size(px(rem));
             let view = cx.new(|cx| Studio::new(root, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         });

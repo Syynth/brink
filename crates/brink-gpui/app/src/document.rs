@@ -92,7 +92,7 @@ impl Document {
         let factory = highlighter_factory(project.downgrade(), path.clone());
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
-                .line_number(true)
+                .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
                 .language("brink");
 
             // Installed BEFORE gpui-component's Input render, whose
@@ -163,13 +163,26 @@ impl Document {
             });
         });
 
+        // The gutter and inlay toggles are settings; every open editor
+        // follows them live.
+        let on_settings = cx.observe_global_in::<brink_gpui_shell::settings::AppSettings>(
+            window,
+            |this, window, cx| {
+                let show = brink_gpui_shell::settings::AppSettings::get(cx).show_gutters;
+                this.editor.update(cx, |state, cx| {
+                    state.set_line_number(show, window, cx);
+                });
+                this.refresh(cx);
+            },
+        );
+
         let this = Self {
             path,
             editor,
             project,
             factory,
             group: None,
-            _subscriptions: vec![on_change, on_project, on_theme],
+            _subscriptions: vec![on_change, on_project, on_theme, on_settings],
         };
         // The editor may normalise what it was given (line endings); if it
         // did, that is an edit like any other.
@@ -267,6 +280,11 @@ impl Document {
         // Inlays are a query rather than part of the analysis broadcast:
         // computing them for every file on every keystroke would be
         // O(project) for the sake of files nobody has open.
+        if !brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints {
+            self.editor
+                .update(cx, |state, cx| state.set_inlays(Vec::new(), cx));
+            return;
+        }
         let query = self.project.read(cx).query(
             QueryKind::InlayHints {
                 path: self.path.to_string(),

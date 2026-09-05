@@ -134,9 +134,35 @@ go through one registry (`shell/src/commands.rs`); the app registers its
 commands with `Workspace::register_command`. Verified headless: palette
 filter + Enter switches views; the menu lists View/File groups with keys;
 `cmd-1`/`cmd-2` toggle Binder/Problems from a fresh launch and after view
-switches. Deferred, in the spec: user keymap overrides, `Escape` back to
-the editor, quick-open. Do not bind `cmd-shift-<digit>` to anything — it
-cannot match on Linux.
+switches. Deferred, in the spec: `Escape` back to the editor, quick-open.
+Do not bind `cmd-shift-<digit>` to anything — it cannot match on Linux.
+Keymap overrides landed with Settings (below).
+
+**Settings** (2026-09-05, `shell/src/settings*.rs`; ruled 2026-08-27): the
+studio's modal — a searchable section rail with the App / Project scope
+switch on the left, one section on the right — on `cmd-,` and as "App:
+Settings…" in the palette. Sections are registered entries
+(`Workspace::add_settings_section`); the shell registers the two App
+sections it owns. **Appearance**: the theme picker as live tiles (each
+painted from its own `theme::Tokens`), gutters, inlay hints, editor and app
+font sizes. **Keymap**: every command with its keystroke and source; Record
+takes the next chord through `App::intercept_keystrokes` — it runs BEFORE
+the keymap, which an element key listener does not (the first version
+switched views instead of recording); a chord taken from another command
+displaces it and the row says so (ruled 2026-08-30). Overrides live in the
+settings, keyed by the command's full title, and are installed by binding
+LATER (gpui's keymap only grows; later bindings win) with a taken-away
+default shadowed by the `Unbound` action the workspace swallows. Chords are
+canonicalised (`commands::canonical_chord`) so "cmd-alt-3" and gpui's own
+"alt-cmd-3" spelling compare equal. **App settings are one JSON file**
+(`settings.json` in `$BRINK_STUDIO_CONFIG_DIR` or the platform config dir;
+the old `theme` file is read once) behind the `AppSettings` global that
+editors observe: gutters and inlay hints apply live; the editor size
+re-applies the theme; the app size scales the window's rem. Verified
+headless: the modal, tiles, a font step, the scope switch, the keymap
+table, a recording that displaced a default and fired after closing, the
+file. **Not here yet**: the Project scope — every Project section needs a
+`brink.toml` edit seam through the shared buffer first.
 
 **Search** (2026-09-05, `app/src/search.rs`): the studio's engine (plain
 or regex, case, whole word, one composed pattern, 1000-match cap) over the
@@ -220,6 +246,8 @@ unverified by hand.
 4. **Open-project is a CLI argument only.** No file dialog, no recents.
 5. **No layout persistence.** `DockAreaState` has `dump`/`load` and
    `RailSlot::persistence_key` exists for exactly this; nothing calls them.
+   (App settings do persist — `shell/src/settings.rs` — but the layout is
+   not among them.)
 6. **`#3562` — `.brink` files have no incremental paint path.** Native
    segmentation does not exist, so a native file pays a whole-file parse per
    keystroke (2.1 ms at 700 lines, 12.4 ms at 8,400) where `.ink` pays

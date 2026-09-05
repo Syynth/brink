@@ -38,7 +38,6 @@
 //! studio's `theme.select.<id>`), and the choice is persisted in the
 //! platform's config directory so the next launch opens in it.
 
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{Action, App, SharedString, Window};
@@ -488,7 +487,7 @@ impl StudioTheme {
     /// background, `surface-bg` the docks/bars/tabs, `panel-bg` the
     /// popovers), the `highlight` block is what the editor paints from.
     #[must_use]
-    pub fn config_value(&self) -> Value {
+    pub fn config_value(&self, editor_font_size: f32) -> Value {
         let t = &self.tokens;
         let transparent = "#00000000".to_owned();
         // Built as a list, not one `json!` literal: a literal this size
@@ -602,16 +601,16 @@ impl StudioTheme {
         json!({
             "name": self.label,
             "mode": if self.dark { "dark" } else { "light" },
-            // The studio's editor size (`DEFAULT_EDITOR_FONT_SIZE`).
-            "mono_font.size": 14,
+            // The editor's text size is a setting, not the theme's.
+            "mono_font.size": editor_font_size,
             "colors": Value::Object(colors),
             "highlight": highlight,
         })
     }
 
     /// The parsed config — what `Theme` installs.
-    pub fn config(&self) -> anyhow::Result<ThemeConfig> {
-        Ok(serde_json::from_value(self.config_value())?)
+    pub fn config(&self, editor_font_size: f32) -> anyhow::Result<ThemeConfig> {
+        Ok(serde_json::from_value(self.config_value(editor_font_size))?)
     }
 }
 
@@ -645,7 +644,8 @@ pub fn hsla(hex: u32) -> gpui::Hsla {
 /// Paint the app in `theme`: install it as the kit's light or dark theme
 /// and switch to that mode. Every window repaints.
 pub fn apply(theme: &StudioTheme, window: Option<&mut Window>, cx: &mut App) -> anyhow::Result<()> {
-    let config = Rc::new(theme.config()?);
+    let editor_font_size = crate::settings::AppSettings::get(cx).editor_font_size;
+    let config = Rc::new(theme.config(editor_font_size)?);
     let mode = if theme.dark {
         ThemeMode::Dark
     } else {
@@ -678,61 +678,18 @@ pub fn select(id: &str, window: Option<&mut Window>, cx: &mut App) -> bool {
         eprintln!("theme {id}: {err:#}");
         return false;
     }
-    if let Some(dir) = settings_dir()
-        && let Err(err) = persist_to(&dir, id)
-    {
-        eprintln!("theme {id}: could not persist: {err}");
-    }
+    crate::settings::update(cx, |s| s.theme = id.to_owned());
     true
 }
 
-/// At startup: the persisted theme, or the default. Call after
-/// `gpui_component::init`, before the first window.
+/// At startup: the settings' theme, or the default. Call after
+/// `gpui_component::init` and `settings::init`, before the first window.
 pub fn init(cx: &mut App) {
-    let persisted = settings_dir().and_then(|dir| load_from(&dir));
-    let theme = persisted
-        .as_deref()
-        .and_then(find)
-        .unwrap_or_else(|| find(DEFAULT_ID).unwrap_or_else(mocha));
+    let id = crate::settings::AppSettings::get(cx).theme;
+    let theme = find(&id).unwrap_or_else(mocha);
     if let Err(err) = apply(&theme, None, cx) {
         eprintln!("theme {}: {err:#}", theme.id);
     }
-}
-
-// ── Persistence ──────────────────────────────────────────────────────
-
-const THEME_FILE: &str = "theme";
-
-/// Where the app keeps its settings: `$BRINK_STUDIO_CONFIG_DIR` if set,
-/// otherwise the platform's config directory plus `brink-studio`.
-#[must_use]
-pub fn settings_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("BRINK_STUDIO_CONFIG_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let base = if cfg!(target_os = "macos") {
-        home.map(|h| h.join("Library/Application Support"))
-    } else if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home.map(|h| h.join(".config")))
-    };
-    base.map(|b| b.join("brink-studio"))
-}
-
-pub fn persist_to(dir: &Path, id: &str) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join(THEME_FILE), id)
-}
-
-#[must_use]
-pub fn load_from(dir: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(dir.join(THEME_FILE)).ok()?;
-    let id = raw.trim();
-    (!id.is_empty()).then(|| id.to_owned())
 }
 
 #[cfg(test)]
@@ -742,7 +699,7 @@ mod tests {
     #[test]
     fn every_builtin_parses_as_a_kit_theme() {
         for theme in builtin() {
-            let config = theme.config().expect("valid theme config");
+            let config = theme.config(14.).expect("valid theme config");
             assert_eq!(config.name.as_ref(), theme.label);
             assert_eq!(config.mode.is_dark(), theme.dark, "{}", theme.id);
             let highlight = config.highlight.expect("highlight block");
@@ -797,7 +754,7 @@ mod tests {
 
     #[test]
     fn the_highlight_table_carries_the_studio_dressing() {
-        let config = mocha().config().unwrap();
+        let config = mocha().config(14.).unwrap();
         let syntax = config.highlight.unwrap().syntax;
         let keyword = syntax.style("keyword").unwrap();
         assert_eq!(keyword.font_weight, Some(gpui::FontWeight::SEMIBOLD));
@@ -818,22 +775,5 @@ mod tests {
         assert_eq!(sorted.len(), ids.len());
         assert!(find(DEFAULT_ID).is_some());
         assert!(find("nope").is_none());
-    }
-
-    #[test]
-    fn the_choice_round_trips_through_the_settings_dir() {
-        let dir = std::env::temp_dir().join(format!(
-            "brink-gpui-theme-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        assert_eq!(load_from(&dir), None);
-        persist_to(&dir, "inky-dark").unwrap();
-        assert_eq!(load_from(&dir).as_deref(), Some("inky-dark"));
-        persist_to(&dir, "").unwrap();
-        assert_eq!(load_from(&dir), None, "an empty file is no choice");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

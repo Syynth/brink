@@ -474,6 +474,10 @@ impl SearchView {
                 this.run(cx);
             }
         });
+        // A theme or font-size change re-sizes every card and recolours
+        // the band; the cards are rebuilt lazily, the snapshot kept.
+        cx.observe_global::<gpui_component::Theme>(|this, cx| this.restyle(cx))
+            .detach();
         // The snapshot never re-runs on a change; it follows it.
         let on_project = cx.subscribe_in(
             &project,
@@ -503,6 +507,17 @@ impl SearchView {
             tab: TabSlot::default(),
             _subscriptions: vec![on_query, on_project],
         }
+    }
+
+    /// Drop every card's editor so the next paint rebuilds it against the
+    /// current theme; the snapshot and the collapse state stay.
+    fn restyle(&mut self, cx: &mut Context<Self>) {
+        self.editors.clear();
+        self.card_subs.clear();
+        self.measured_line_height = None;
+        let count = self.snapshot.as_ref().map_or(0, |s| s.matches.len());
+        self.list.splice(0..count, count);
+        cx.notify();
     }
 
     /// Put the caret in the query box — what `search.focus` wants.

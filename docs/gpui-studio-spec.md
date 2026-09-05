@@ -286,6 +286,9 @@ quick-open (`cmd-p`).
 
 `DockAreaState` keyed on `(edge, group)`, plus the current `EditorView`,
 recents and settings. Stable under everything except deliberate re-homing.
+App settings (`shell/src/settings.rs`) are one JSON file in the platform
+config directory behind an `AppSettings` global; the layout is not among
+them yet.
 
 ### 4.7 Themes and paint
 
@@ -308,6 +311,19 @@ the `AUTHOR_WARNING` ranges the paint parse already produces — same frame,
 no analysis in the loop. The other per-line styles of the studio's editor
 (cue lines, dimmed comment/include lines) wait on `LineContext` reaching
 the app from the worker.
+
+### 4.8 Settings
+
+The studio's modal (ruled 2026-08-27): a searchable section rail with the
+App / Project scope switch, one section at a time. Sections are registered
+entries, so the window cannot drift behind what is configurable; the shell
+registers the App sections it owns (Appearance, Keymap —
+`shell/src/settings_*.rs`), and a Project section is the feature crate's to
+register once a `brink.toml` edit seam exists through the shared buffer.
+Keymap overrides follow the rebinding ruling (2026-08-30): a recorded chord
+displaces its previous owner, and the override layer is bound over the
+registry's defaults (gpui's keymap only grows, so a taken-away default is
+shadowed by `Unbound` rather than removed).
 
 ## 5. First slice
 
@@ -340,8 +356,9 @@ Two defects carried from the spike are fixed here, not later:
   which is what stops the echo. Dirty and save are per file, in the
   project — an edit in the manuscript is as unsaved as one in a tab, and
   one `cmd-s` writes both. Verified headless both directions.
-- Player, story graph, debugger, settings; Search's replace previews,
-  context knob and references mode. (Search's cards **are editors** over
+- Player, story graph, debugger; Settings' Project scope (needs the
+  `brink.toml` edit seam); Search's replace previews, context knob and
+  references mode. (Search's cards **are editors** over
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
   windows edit-mapped through every change, `edited` badges, lazy
   per-card `EditorState`s.) **Where the Player

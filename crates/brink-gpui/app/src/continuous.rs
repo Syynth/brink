@@ -148,6 +148,10 @@ impl ContinuousView {
                 _ => {}
             },
         );
+        // A theme or font-size change re-sizes every row and recolours the
+        // band, so the sections are rebuilt.
+        cx.observe_global::<gpui_component::Theme>(|this, cx| this.reload(cx))
+            .detach();
         Self {
             list: ListState::new(files.len(), ListAlignment::Top, px(600.)),
             project,
