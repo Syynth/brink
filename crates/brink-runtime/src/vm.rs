@@ -172,21 +172,27 @@ fn step_impl<R: crate::rng::StoryRng>(
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            // Capture slot values from the stack, push a deferred LineRef.
-            let mut slots = Vec::with_capacity(slot_count as usize);
-            for _ in 0..slot_count {
-                slots.push(flow.pop_value()?);
-            }
-            slots.reverse();
-            // Look up precomputed flags for filtering.
-            let scope_idx = program.scope_table_idx(pos.container_idx) as usize;
-            let flags = line_tables
-                .get(scope_idx)
-                .and_then(|lines| lines.get(idx as usize))
-                .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
-            note_effect_emit(flow, program);
-            flow.output
-                .push_line_ref(pos.container_idx, idx, slots, flags);
+            emit_line(
+                flow,
+                program,
+                line_tables,
+                pos.container_idx,
+                idx,
+                slot_count,
+            )?;
+        }
+        // The optimizer's fusion of `EmitLine` + `EmitNewline`: exactly the
+        // two bodies, in order (`docs/optimizer-peephole.md`).
+        Opcode::EmitLineNl(idx, slot_count) => {
+            emit_line(
+                flow,
+                program,
+                line_tables,
+                pos.container_idx,
+                idx,
+                slot_count,
+            )?;
+            emit_newline(flow);
         }
         Opcode::EvalLine(idx, slot_count) => {
             // EvalLine resolves eagerly — result goes on the value stack.
@@ -198,19 +204,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             note_effect_emit(flow, program);
             flow.output.push_value_ref(val);
         }
-        Opcode::EmitNewline => {
-            // C# consults the TOP call-stack element only: a tunnel or
-            // thread entered from a function is its own boundary.
-            let function = flow.current_thread().call_stack.last().and_then(|frame| {
-                matches!(
-                    frame.frame_type,
-                    CallFrameType::Function | CallFrameType::FunctionEvalFromGame
-                )
-                .then_some(frame.function_output_start)
-                .flatten()
-            });
-            flow.output.push_newline_in_function(function);
-        }
+        Opcode::EmitNewline => emit_newline(flow),
         Opcode::Spring => {
             note_effect_emit(flow, program);
             flow.output.push_spring();
@@ -2901,6 +2895,47 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
     if let Some(top) = flow.current_thread_mut().call_stack.top_container_mut() {
         *top = pos;
     }
+}
+
+/// `Opcode::EmitLine`: capture the template slot values from the stack and
+/// push a deferred line reference for line `idx` of the current
+/// container's scope table, with the precomputed flags for filtering.
+fn emit_line(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    container_idx: u32,
+    idx: u16,
+    slot_count: u8,
+) -> Result<(), RuntimeError> {
+    let mut slots = Vec::with_capacity(slot_count as usize);
+    for _ in 0..slot_count {
+        slots.push(flow.pop_value()?);
+    }
+    slots.reverse();
+    let scope_idx = program.scope_table_idx(container_idx) as usize;
+    let flags = line_tables
+        .get(scope_idx)
+        .and_then(|lines| lines.get(idx as usize))
+        .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
+    note_effect_emit(flow, program);
+    flow.output.push_line_ref(container_idx, idx, slots, flags);
+    Ok(())
+}
+
+/// `Opcode::EmitNewline`. C# consults the TOP call-stack element only: a
+/// tunnel or thread entered from a function is its own boundary, so the
+/// function-context trimming applies exactly when the top frame is one.
+fn emit_newline(flow: &mut Flow) {
+    let function = flow.current_thread().call_stack.last().and_then(|frame| {
+        matches!(
+            frame.frame_type,
+            CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+        )
+        .then_some(frame.function_output_start)
+        .flatten()
+    });
+    flow.output.push_newline_in_function(function);
 }
 
 /// Record `offset` as the current frame's next instruction.

@@ -666,6 +666,7 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::EmitLine(idx, slots) => format!("emit_line #{idx} {slots}"),
         Opcode::EmitValue => "emit_value".to_owned(),
         Opcode::EmitNewline => "emit_newline".to_owned(),
+        Opcode::EmitLineNl(idx, slots) => format!("emit_line_nl #{idx} {slots}"),
         Opcode::Spring => "spring".to_owned(),
         Opcode::Glue => "glue".to_owned(),
         Opcode::BeginTag => "begin_tag".to_owned(),

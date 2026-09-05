@@ -85,7 +85,12 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// (element kind/data, universal block id, choice captured environment)
 /// without a further bump, the same way v4 absorbed its later Tier-1
 /// milestones — a single bump event, not a bump per payload.
-pub(crate) const VERSION: u16 = 6;
+/// v7 added the first peephole superinstruction, `EmitLineNl` (`0x6C`,
+/// `docs/optimizer-peephole.md`): a brand-new opcode discriminant, not one of
+/// the reserved ones, so — like `PART_SPAN` — its own one-bump event. The
+/// optimizer is the only producer; codegen output is unchanged, and the
+/// reader still hard-rejects the previous version rather than translating.
+pub(crate) const VERSION: u16 = 7;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

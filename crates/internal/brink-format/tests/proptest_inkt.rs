@@ -376,6 +376,7 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EvalLine(idx, slots)),
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
+        (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EmitLineNl(idx, slots)),
         Just(Opcode::Glue),
         Just(Opcode::AttachElement),
         Just(Opcode::EndElementRun),
@@ -513,6 +514,7 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::ThreadStart
         | Opcode::ThreadDone
         | Opcode::EmitLine(_, _)
+        | Opcode::EmitLineNl(_, _)
         | Opcode::EmitValue
         | Opcode::EmitNewline
         | Opcode::Spring
