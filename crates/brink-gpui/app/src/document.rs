@@ -105,14 +105,17 @@ impl Document {
                 cx,
             );
 
+            let origin = cx.entity().entity_id();
             let lsp = state.lsp_mut();
             lsp.hover_provider = Some(Rc::new(BrinkHover {
                 project: project.downgrade(),
                 path: path.clone(),
+                origin,
             }));
             lsp.completion_provider = Some(Rc::new(BrinkCompletion {
                 project: project.downgrade(),
                 path: path.clone(),
+                origin,
             }));
             state.set_value(text, window, cx);
             state
@@ -438,9 +441,36 @@ impl InputHighlighter for BrinkHighlighter {
 
 // ── Providers ────────────────────────────────────────────────────────
 
+/// Put the editor's text in front of the query it is about to send.
+///
+/// `query.rs` relies on the channel's order: an `Edit` ahead of a query
+/// means the query never sees text older than the keystroke that prompted
+/// it. But the editor asks its providers **synchronously, inside the
+/// keystroke**, while `Document::on_edited` runs from the `Change` event,
+/// which gpui delivers after the current update — so without this the
+/// query overtook the edit and reached the worker with an offset past the
+/// text it held (a completion at the end of the file panicked the analysis
+/// thread with `end byte index 199 is out of bounds for string of length
+/// 198`). An identical text is a no-op in `Project::edit`, so the seed
+/// costs nothing when the document is already current.
+fn seed_edit(
+    project: &Entity<Project>,
+    path: &SharedString,
+    text: &Rope,
+    origin: gpui::EntityId,
+    cx: &mut App,
+) {
+    let text = text.to_string();
+    project.update(cx, |project, cx| {
+        project.edit(path, text, Some(origin), cx);
+    });
+}
+
 struct BrinkHover {
     project: WeakEntity<Project>,
     path: SharedString,
+    /// The editor this provider belongs to — the origin of the seed edit.
+    origin: gpui::EntityId,
 }
 
 impl HoverProvider for BrinkHover {
@@ -454,6 +484,7 @@ impl HoverProvider for BrinkHover {
         let Some(project) = self.project.upgrade() else {
             return Task::ready(Ok(None));
         };
+        seed_edit(&project, &self.path, text, self.origin, cx);
         let source = text.to_string();
         let query = project.read(cx).query(
             QueryKind::Hover {
@@ -484,12 +515,13 @@ impl HoverProvider for BrinkHover {
 struct BrinkCompletion {
     project: WeakEntity<Project>,
     path: SharedString,
+    origin: gpui::EntityId,
 }
 
 impl CompletionProvider for BrinkCompletion {
     fn completions(
         &self,
-        _text: &Rope,
+        text: &Rope,
         offset: usize,
         _trigger: lsp::CompletionContext,
         _window: &mut Window,
@@ -498,6 +530,7 @@ impl CompletionProvider for BrinkCompletion {
         let Some(project) = self.project.upgrade() else {
             return Task::ready(Ok(lsp::CompletionResponse::Array(Vec::new())));
         };
+        seed_edit(&project, &self.path, text, self.origin, cx);
         let query = project.read(cx).query(
             QueryKind::Completions {
                 path: self.path.to_string(),

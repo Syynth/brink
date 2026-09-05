@@ -6,8 +6,11 @@
 //! how LSP works, and how Zed reaches its own analysis.
 //!
 //! A query is answered **after** the edits queued ahead of it, in the same
-//! drain. The channel is FIFO and the editor sends its `Edit` before asking,
-//! so a query never sees text older than the keystroke that prompted it.
+//! drain. The channel is FIFO and the editor sends its `Edit` before asking
+//! (`document.rs`, `seed_edit`), so a query never sees text older than the
+//! keystroke that prompted it. [`clamp_offset`] is the guard behind that
+//! promise: an offset past the text is pulled back to its end rather than
+//! allowed to panic the analysis thread.
 //!
 //! Results are plain data in **byte offsets**, like everything else crossing
 //! the boundary. The mapping onto `lsp_types` lives with the editor that
@@ -133,10 +136,23 @@ fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<V
     )
 }
 
+/// `offset` pulled inside `source`: at most its length, and never inside a
+/// multi-byte character.
+pub(crate) fn clamp_offset(source: &str, offset: u32) -> u32 {
+    let mut at = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(source.len());
+    while at > 0 && !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    u32::try_from(at).unwrap_or(u32::MAX)
+}
+
 fn hover(session: &brink_ide::session::IdeSession, path: &str, offset: u32) -> Option<HoverInfo> {
     let id = session.file_id(path)?;
     let analysis = session.analysis()?;
     let source = session.source(id)?;
+    let offset = clamp_offset(source, offset);
     let info = brink_ide::hover::hover(
         analysis,
         session.db(),
@@ -164,7 +180,7 @@ fn completions(
     let id = session.file_id(path)?;
     let analysis = session.analysis()?;
     let source = session.source(id)?;
-    let offset = offset as usize;
+    let offset = clamp_offset(source, offset) as usize;
 
     let ctx = detect_completion_context(source, offset);
     let scope = cursor_scope(source, offset);
@@ -249,5 +265,20 @@ fn convert(symbol: &brink_ide::document::DocumentSymbol) -> Symbol {
             .as_deref()
             .is_some_and(|d| d.contains("function")),
         children: symbol.children.iter().map(convert).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_offset;
+
+    #[test]
+    fn an_offset_past_the_text_lands_on_its_end_at_a_char_boundary() {
+        assert_eq!(clamp_offset("hello", 3), 3);
+        assert_eq!(clamp_offset("hello", 5), 5);
+        assert_eq!(clamp_offset("hello", 199), 5);
+        // "é" is two bytes; an offset inside it steps back to its start.
+        assert_eq!(clamp_offset("caf\u{e9}", 4), 3);
+        assert_eq!(clamp_offset("", 7), 0);
     }
 }
