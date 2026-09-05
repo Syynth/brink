@@ -1,18 +1,22 @@
 //! The window — `docs/gpui-studio-spec.md` §4.
 //!
 //! Five surfaces: two rails, three docks (the rails' four slots address
-//! them), the editor center, and a status bar. The shell owns the frame and
-//! the placement rule; it does not know what any particular tool window is.
+//! them), the editor centre, and a status bar. The shell owns the frame and
+//! the placement rule; it does not know what any particular tool window or
+//! editor view is.
 
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, Entity, IntoElement, Render, SharedString, Window, div, px};
+use gpui::{AnyElement, AnyView, App, Entity, IntoElement, Render, SharedString, Window, div, px};
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, Panel, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
+use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::rail::{RailButton, rail};
 use crate::region::RailEdge;
+use crate::skin::StudioSkin;
 use crate::tool_window::ToolWindowSpec;
 
 /// A registered tool window. Only the spec is kept: the dock owns the panel
@@ -25,12 +29,9 @@ struct Registered {
 /// The studio window.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
-    /// The dock's appearance. A `DockArea` built without it is `gpui-base`'s
-    /// bare area, which docks and drags but draws no chrome at all — no tab
-    /// bar in the centre, so a second document was unreachable (HANDOFF.md
-    /// "Known broken" #1). The handle is kept because the skin's settings
-    /// are changed through it, not through the area.
-    skin: Rc<DockSkin>,
+    /// The centre's one panel, holding the three views
+    /// (`crate::editor_view`).
+    editor_root: Entity<EditorRoot>,
     tools: Vec<Registered>,
     /// Rendered along the bottom edge, under everything.
     status: Vec<SharedString>,
@@ -38,28 +39,49 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (dock_area, skin) = DockSkin::dock_area("brink-studio", Some(1), window, cx);
-        // The rails are the one affordance for opening and closing a dock
-        // (`docs/gpui-studio-spec.md` §4.1); the toolkit's own collapse
-        // buttons in every tab bar would be a second, disagreeing one.
-        skin.set_toggle_button_visible(false, cx);
+        // A `DockArea` built without a skin is gpui-base's bare area, which
+        // docks and drags but draws no chrome at all — no tab bar anywhere
+        // (HANDOFF.md "Known broken" #1, fixed). The toolkit's skin goes on
+        // wrapped (`skin.rs`), so the editor root's group draws no title
+        // strip. `DockSkin::new` needs the area's own context, hence the
+        // capture — the toolkit's `DockSkin::dock_area` does the same dance.
+        let mut skin = None;
+        let dock_area = cx.new(|cx| {
+            let inner = DockSkin::new(cx);
+            skin = Some(inner.clone());
+            DockArea::new("brink-studio", Some(1), window, cx)
+                .with_renderer(Rc::new(StudioSkin::new(inner)))
+        });
+        if let Some(skin) = skin {
+            // The rails are the one affordance for opening and closing a dock
+            // (`docs/gpui-studio-spec.md` §4.1); the toolkit's own collapse
+            // buttons in every title strip would be a second, disagreeing one.
+            skin.set_toggle_button_visible(false, cx);
+        }
+
+        let editor_root = cx.new(EditorRoot::new);
+        dock_area.update(cx, |area, cx| {
+            area.add_panel_view(
+                panel_handle(editor_root.clone()),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+        });
+
         Self {
             dock_area,
-            skin,
+            editor_root,
             tools: Vec::new(),
             status: Vec::new(),
         }
     }
 
-    /// The dock's appearance handle, for a setting the shell does not own.
+    /// The centre's panel. Subscribe to it for `EditorRootEvent`.
     #[must_use]
-    pub fn skin(&self) -> &Rc<DockSkin> {
-        &self.skin
-    }
-
-    #[must_use]
-    pub fn dock_area(&self) -> &Entity<DockArea> {
-        &self.dock_area
+    pub fn editor_root(&self) -> &Entity<EditorRoot> {
+        &self.editor_root
     }
 
     /// Register a tool window and place it in the dock its rail slot names.
@@ -89,16 +111,27 @@ impl Workspace {
         self.tools.push(Registered { spec });
     }
 
-    /// Put a panel in the editor center.
-    pub fn set_center<P: Panel>(
+    /// Hand the shell what a view shows. It learns nothing about the view
+    /// beyond that it renders.
+    pub fn set_view_occupant(
         &mut self,
-        panel: Entity<P>,
-        window: &mut Window,
+        view: EditorView,
+        occupant: AnyView,
         cx: &mut Context<Self>,
     ) {
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
-        });
+        self.editor_root
+            .update(cx, |root, cx| root.set_occupant(view, occupant, cx));
+    }
+
+    pub fn set_editor_view(&mut self, view: EditorView, cx: &mut Context<Self>) {
+        self.editor_root
+            .update(cx, |root, cx| root.set_view(view, cx));
+        cx.notify();
+    }
+
+    #[must_use]
+    pub fn editor_view(&self, cx: &App) -> EditorView {
+        self.editor_root.read(cx).view()
     }
 
     /// Toggle the dock a tool window lives in.
@@ -137,6 +170,31 @@ impl Workspace {
             })
             .collect()
     }
+
+    /// The view switcher: three toggles, in the title bar. The studio has no
+    /// dedicated widget for this (its views are palette commands); the native
+    /// app gives them a permanent home, since which view you are in changes
+    /// what the whole centre means.
+    fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.editor_view(cx);
+        h_flex()
+            .gap_0p5()
+            .children(EditorView::ALL.iter().map(|&view| {
+                Button::new(SharedString::from(format!(
+                    "view-{}",
+                    view.persistence_key()
+                )))
+                .ghost()
+                .compact()
+                .toggled(view == current)
+                .tooltip(format!("{} ({})", view.title(), view.keystroke()))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.set_editor_view(view, cx);
+                }))
+                .child(view.title())
+            }))
+            .into_any_element()
+    }
 }
 
 impl ToolWindowSpec {
@@ -158,6 +216,7 @@ impl Render for Workspace {
                 });
             }
         };
+        let switcher = self.view_switcher(cx);
 
         let theme = cx.theme();
         let status = h_flex()
@@ -176,7 +235,27 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(TitleBar::new().child(gpui_component::label::Label::new("brink")))
+            // The view actions dispatch from wherever focus is; this is an
+            // ancestor of everything in the window, so it hears them all.
+            .on_action(cx.listener(|this, _: &ViewCode, _, cx| {
+                this.set_editor_view(EditorView::Code, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewSingle, _, cx| {
+                this.set_editor_view(EditorView::Single, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewContinuous, _, cx| {
+                this.set_editor_view(EditorView::Continuous, cx);
+            }))
+            .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_between()
+                        .child(gpui_component::label::Label::new("brink"))
+                        .child(switcher),
+                ),
+            )
             .child(
                 h_flex()
                     .flex_1()

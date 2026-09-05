@@ -215,16 +215,50 @@ flag — and providers are constructed against their document. This replaces
 the spike's `ActiveKey` (`Rc<RefCell<String>>`) indirection, after which
 tabs work by construction rather than by coordination.
 
-### 4.4 Commands
+### 4.4 The editor root and its three views
+
+**Built 2026-09-05.** The centre has one occupant (ruled 2026-08-26), and
+the three views — **Code** (tabs, groups, splits), **Single File** (one
+file, no tab strip), **Continuous** (the manuscript) — are what it can hold.
+The shell owns the choice (`EditorView`), the switcher in the title bar,
+the actions (`ViewCode`/`ViewSingle`/`ViewContinuous`, default
+`cmd-shift-1/2/3`) and the panel that hosts them (`EditorRoot`); the
+feature crate hands over each view as an `AnyView` and the shell never
+learns what it is.
+
+The centre panel hosts the views rather than the centre layout being
+replaced per view, because `DockArea` folds the centre and the docks into
+one tree: `set_center` on every switch would tear the centre down
+(`on_removed` on every panel) and need Code view's splits and tab order
+dumped and restored around every glance at the manuscript. So Code view is
+an **inner, centre-only `DockArea`** of `Document` panels — Zed's
+terminal-panel shape (a pane tree inside a panel), at the centre. While
+another view is showing it is simply not rendered; nothing in it moves.
+
+**The views share one fact**: the active document. Code view owns the open
+documents and reports the one most recently opened or made the displayed
+tab of its group; Single File view renders that same `Document` entity
+directly. The manuscript revises what §4.3 said of it: it is no longer "a
+centre panel like any document" but the Continuous view's occupant.
+
+**Reversible.** Nothing in `app/` depends on the nesting. Adopting Zed's
+own arrangement later — the shell owning the centre directly, docks
+rendered beside it — changes `shell/src/workspace.rs`,
+`shell/src/editor_view.rs` and the layout persistence, and no view.
+
+**The Player's place in each view is open** (§6); the Single File view's
+companion split is deliberately absent until it is ruled.
+
+### 4.5 Commands
 
 GPUI `actions!` plus key contexts. Keybindings, palette entries, menu items
 and buttons all dispatch the same action, which satisfies
 `studio-shell-spec`'s command contract with no bespoke layer.
 
-### 4.5 Persistence
+### 4.6 Persistence
 
-`DockAreaState` keyed on `(edge, group)`, plus recents and settings. Stable
-under everything except deliberate re-homing.
+`DockAreaState` keyed on `(edge, group)`, plus the current `EditorView`,
+recents and settings. Stable under everything except deliberate re-homing.
 
 ## 5. First slice
 

@@ -33,7 +33,7 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ListAlignment, ListState,
+    App, AppContext as _, Context, Entity, IntoElement, ListAlignment, ListState,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, list,
     prelude::FluentBuilder as _, px,
 };
@@ -272,20 +272,6 @@ impl ContinuousView {
 impl gpui::Focusable for ContinuousView {
     fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {
         self.focus.clone()
-    }
-}
-
-impl EventEmitter<gpui_component::dock::PanelEvent> for ContinuousView {}
-
-impl gpui_component::dock::BasePanel for ContinuousView {
-    fn panel_name(&self) -> &'static str {
-        "Manuscript"
-    }
-}
-
-impl gpui_component::dock::Panel for ContinuousView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Manuscript")
     }
 }
 

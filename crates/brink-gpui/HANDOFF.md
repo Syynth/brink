@@ -19,9 +19,8 @@ only what a fresh session needs on top of it.
 **`crates/brink-gpui` has never been built anywhere but this maintainer's
 macOS machine.** Two independent risks, neither verified:
 
-- **gpui on Linux.** `gpui-pre` + `gpui-pre-platform` need real windowing
-  system development headers (x11/wayland, fontconfig, and friends). A cloud
-  container almost certainly lacks them.
+- **gpui on Linux.** ~~A cloud container almost certainly lacks the
+  headers.~~ Settled: see "Linux builds" below — two apt packages.
 - **The fork dependency.** `gpui-component` comes from
   `https://github.com/Syynth/gpui-kit` at rev `c3f5bcac` (branch `brink`,
   three commits on top of upstream `v0.6.0`). The repo is **public**, so no
@@ -63,13 +62,22 @@ The three tiers of spec §2 all exist. 23 tests, all green.
 | crate | what it holds |
 |---|---|
 | `model/` | `worker.rs` (the `IdeSession` on its own thread), `tokens.rs` (per-segment paint cache), `query.rs` (hover/completions/symbols/inlays) |
-| `shell/` | `region.rs` (the ruled rail→dock mapping), `rail.rs`, `workspace.rs`, `tool_window.rs` |
-| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `binder.rs`, `problems.rs`, `continuous.rs`, `main.rs` |
+| `shell/` | `region.rs` (the ruled rail→dock mapping), `rail.rs`, `workspace.rs`, `tool_window.rs`, `editor_view.rs` (the three views' root), `skin.rs` |
+| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `code_view.rs` (documents, tabs, the active file), `single_view.rs`, `continuous.rs`, `binder.rs`, `problems.rs`, `main.rs` |
 
-**Verified running** (screenshots taken against the real app): rails with
-both groups, the Binder, syntax highlighting from brink's own CST with no
-tree-sitter grammar, dock toggling, the status bar, and project load in
-~10 ms.
+**Verified running** (screenshots taken against the real app, on macOS,
+before the views landed): rails with both groups, the Binder, syntax
+highlighting from brink's own CST with no tree-sitter grammar, dock
+toggling, the status bar, and project load in ~10 ms. **The tab bar, the
+three views and the switcher have NOT been seen running** — they were
+built in a cloud session with no display; they compile, format, pass
+clippy and the unit tests. First thing on a machine with a screen: open a
+project, confirm tabs appear for two documents, and cycle the three views.
+
+**Linux builds** (verified 2026-09-05, contrary to the earlier worry): the
+whole workspace, app included, builds and links on an ubuntu container with
+`libxkbcommon-dev` and `libxkbcommon-x11-dev` installed; `xcb`,
+`fontconfig` and `freetype` were already present.
 
 **Not verified by hand**, because GPUI's text area no-ops the macOS
 accessibility text-insert path so keystrokes could not be injected: typing,
@@ -78,12 +86,11 @@ hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
 
 ## Known broken / unfinished, most blocking first
 
-1. **The centre dock draws no tab bar.** Both the manuscript and any open
-   document are added to `DockPlacement::Center`, but only one is reachable
-   because no tabs render. Until this is fixed the Continuous view is
-   effectively unreachable. Start here — it is small and it blocks two
-   features. Look at whether `Workspace::set_center` should be building a
-   `TabPanel` explicitly rather than relying on `add_panel(Center)`.
+1. ~~**The centre dock draws no tab bar.**~~ **Fixed 2026-09-05**: the
+   area had no `DockSkin`, so it wore gpui-base's bare renderer. The three
+   views (spec §4.4) then landed on top: the centre holds one `EditorRoot`
+   panel that renders Code (an inner `DockArea` of documents, with tabs),
+   Single File, or Continuous; switcher in the title bar, `cmd-shift-1/2/3`.
 2. **No CI lane.** Nothing runs this workspace's tests or fmt. Adding one
    means a macOS runner (or solving the Linux question above) — worth a
    ruling on whether the GUI tier is gated at all, or only `model` + `shell`.

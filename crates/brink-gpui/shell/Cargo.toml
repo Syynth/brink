@@ -13,6 +13,7 @@ publish.workspace = true
 [dependencies]
 gpui.workspace = true
 gpui-component.workspace = true
+gpui-base.workspace = true
 anyhow.workspace = true
 
 brink-gpui-model.workspace = true

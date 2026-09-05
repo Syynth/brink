@@ -1,18 +1,22 @@
 //! The GPUI-native brink studio — `docs/gpui-studio-spec.md`.
 //!
 //! Tier 3: the features, and the wiring. This file is the one place that
-//! knows a Binder is a thing that goes in the left rail and a Document is a
-//! thing that goes in the centre — the shell does not, and must not.
+//! knows a Binder is a thing that goes in the left rail and that the three
+//! editor views are Code, Single File and the manuscript — the shell does
+//! not, and must not.
 
 mod binder;
+mod code_view;
 mod continuous;
 mod document;
 mod icons;
 mod problems;
 mod project;
+mod single_view;
 
 use std::path::PathBuf;
 
+use brink_gpui_shell::editor_view::{self, EditorView};
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::tool_window::ToolWindowSpec;
 use brink_gpui_shell::workspace::Workspace;
@@ -23,26 +27,25 @@ use gpui::{
 use gpui_component::{Root, TitleBar};
 
 use crate::binder::{Binder, BinderEvent};
+use crate::code_view::CodeView;
 use crate::continuous::ContinuousView;
-use crate::document::Document;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
+use crate::single_view::SingleFileView;
 
 actions!(brink, [Save]);
 
 /// The application root: it owns the model and the features, and hands the
-/// shell its panels.
+/// shell its panels and views.
 struct Studio {
     project: Entity<Project>,
     workspace: Entity<Workspace>,
-    /// The manuscript — the whole project as one scroller. A centre panel
-    /// like any document, so the dock's own tab bar switches to it; it is
-    /// not a mode the editor is put into.
+    /// Code view — and with it the open documents. Opening a file always
+    /// lands here, whichever view is showing: Single File shows this view's
+    /// active document, and the manuscript reveals the file in place.
+    code: Entity<CodeView>,
+    /// Continuous view — the whole project as one scroller.
     manuscript: Entity<ContinuousView>,
-    /// Open documents, newest last. A `Document` is itself a dock panel, so
-    /// the centre's `TabGroup` provides the tabs — this list exists to find
-    /// an already-open file and to know what to save.
-    documents: Vec<Entity<Document>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -52,8 +55,10 @@ impl Studio {
         let workspace = cx.new(|cx| Workspace::new(window, cx));
 
         let binder = cx.new(|cx| Binder::new(project.clone(), window, cx));
-        let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
         let problems = cx.new(|cx| Problems::new(project.clone(), cx));
+        let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
+        let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
+        let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), cx));
 
         workspace.update(cx, |workspace, cx| {
             workspace.add_tool_window(
@@ -76,6 +81,12 @@ impl Studio {
                 window,
                 cx,
             );
+            // The three views (decision log 2026-08-26). Registered before
+            // the project opens so the manuscript is subscribed when the
+            // files land.
+            workspace.set_view_occupant(EditorView::Code, code.clone().into(), cx);
+            workspace.set_view_occupant(EditorView::Single, single.into(), cx);
+            workspace.set_view_occupant(EditorView::Continuous, manuscript.clone().into(), cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -123,19 +134,13 @@ impl Studio {
             },
         );
 
-        // Added before any document so it is the leftmost centre tab, and
-        // before the project opens so it is subscribed when the files land.
-        workspace.update(cx, |workspace, cx| {
-            workspace.set_center(manuscript.clone(), window, cx);
-        });
-
         project.update(cx, |project, _| project.open(root));
 
         Self {
             project,
             workspace,
+            code,
             manuscript,
-            documents: Vec::new(),
             _subscriptions: vec![on_project, on_binder, on_problem],
         }
     }
@@ -154,8 +159,8 @@ impl Studio {
         }
     }
 
-    /// Open a file, or focus it if it is already open, and optionally reveal
-    /// an offset inside it.
+    /// Open a file in Code view, or select it if it is already open, and
+    /// optionally reveal an offset inside it.
     fn open(
         &mut self,
         path: &str,
@@ -163,46 +168,13 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let existing = self
-            .documents
-            .iter()
-            .find(|d| d.read(cx).path().as_ref() == path)
-            .cloned();
-        let document = match existing {
-            Some(document) => document,
-            None => {
-                let Some(text) = self.project.read(cx).loaded_source(path).map(str::to_owned)
-                else {
-                    return;
-                };
-                let project = self.project.clone();
-                let key = SharedString::from(path.to_owned());
-                let document = cx.new(|cx| Document::new(project, key, text, window, cx));
-                self.workspace.update(cx, |workspace, cx| {
-                    workspace.set_center(document.clone(), window, cx);
-                });
-                self.documents.push(document.clone());
-                document
-            }
-        };
-        if let Some(offset) = offset {
-            document.update(cx, |document, cx| {
-                document.reveal(offset, window, cx);
-            });
-        }
+        self.code
+            .update(cx, |code, cx| code.open(path, offset, window, cx));
     }
 
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
         let root = self.project.read(cx).root().to_path_buf();
-        for document in &self.documents {
-            document.update(cx, |document, cx| {
-                if document.is_dirty()
-                    && let Err(err) = document.save(&root, cx)
-                {
-                    eprintln!("failed to save {}: {err:#}", document.path());
-                }
-            });
-        }
+        self.code.update(cx, |code, cx| code.save_all(&root, cx));
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
@@ -243,6 +215,8 @@ fn main() {
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
         gpui_component::init(cx);
         cx.bind_keys([gpui::KeyBinding::new("cmd-s", Save, None)]);
+        // The shell owns the view keystrokes; the app installs them.
+        cx.bind_keys(editor_view::key_bindings());
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

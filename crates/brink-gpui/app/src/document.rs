@@ -22,6 +22,7 @@ use gpui::{
     App, Context, Entity, EventEmitter, SharedString, Subscription, Task, WeakEntity, Window,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::dock::{PanelId, TabGroup};
 use gpui_component::input::{
     CompletionProvider, EditorState, HoverProvider, Inlay, InputEvent, InputHighlighter, Rope,
     RopeExt as _,
@@ -30,10 +31,15 @@ use lsp_types as lsp;
 
 use crate::project::{Project, ProjectEvent};
 
-/// Emitted when the document's saved-ness changes, so a tab can redraw.
 #[derive(Debug, Clone, Copy)]
 pub enum DocumentEvent {
+    /// The saved-ness changed, so a tab can redraw.
     DirtyChanged,
+    /// The dock made this the displayed tab of its group — what Code view
+    /// takes as "the active document" (`code_view.rs`).
+    Activated,
+    /// The tab was closed; the document has left the dock for good.
+    Closed,
 }
 
 pub struct Document {
@@ -41,6 +47,9 @@ pub struct Document {
     editor: Entity<EditorState>,
     project: Entity<Project>,
     dirty: bool,
+    /// The tab group holding this document, from the dock's `on_added_to`.
+    /// What [`Document::activate`] selects the tab through.
+    group: Option<WeakEntity<TabGroup>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -105,6 +114,7 @@ impl Document {
             editor,
             project,
             dirty: false,
+            group: None,
             _subscriptions: vec![on_change, on_analyzed],
         };
         // Seed the worker with this file's text as the editor now holds it.
@@ -131,6 +141,24 @@ impl Document {
         self.editor.update(cx, |state, cx| {
             let position = state.text().offset_to_position(offset);
             state.set_cursor_position(position, window, cx);
+        });
+    }
+
+    /// Make this the displayed tab of its group — opening a file that is
+    /// already open. A no-op until the dock has placed it.
+    pub fn activate(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.group.as_ref() else {
+            return;
+        };
+        let me = PanelId::from(cx.entity().entity_id());
+        _ = group.update(cx, |group, cx| {
+            let ix = group
+                .panels()
+                .iter()
+                .position(|panel| panel.panel_id(cx) == me);
+            if let Some(ix) = ix {
+                group.select_tab(ix, window, cx);
+            }
         });
     }
 
@@ -511,6 +539,26 @@ impl gpui_component::dock::BasePanel for Document {
     fn panel_name(&self) -> &'static str {
         "Document"
     }
+
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if active {
+            cx.emit(DocumentEvent::Activated);
+        }
+    }
+
+    fn on_added_to(
+        &mut self,
+        group: WeakEntity<TabGroup>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.group = Some(group);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.group = None;
+        cx.emit(DocumentEvent::Closed);
+    }
 }
 
 impl gpui_component::dock::Panel for Document {
@@ -528,6 +576,11 @@ impl gpui_component::dock::Panel for Document {
         } else {
             name
         })
+    }
+
+    /// The editor runs edge to edge under its tab, as an editor does.
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 }
 

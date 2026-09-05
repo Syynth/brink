@@ -878,6 +878,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "brink-gpui-model",
+ "gpui-base",
  "gpui-component",
  "gpui-pre",
 ]

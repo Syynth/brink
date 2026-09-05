@@ -36,6 +36,10 @@ publish = false
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
 gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7", features = ["tree-sitter"] }
+# The foundation under the kit, for the one renderer-trait type the kit does
+# not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
+# is the same crate the kit is built against.
+gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7" }
 gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
