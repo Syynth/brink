@@ -6,6 +6,11 @@
 CLAUDE.md.bak
 .DS_Store
 crates/brink-web/www/pkg/
+# Matches a node_modules DIRECTORY *and* a symlink named node_modules: the
+# trailing-slash form matches directories only, so a symlink (mode 120000)
+# slipped past `git add -A` into two branches and broke CI's pnpm install
+# with `ENOENT: mkdir packages/<pkg>/node_modules` (2026-09-04).
+node_modules
 node_modules/
 packages/brink-studio/dist/
 packages/brink-studio/dist-embed/
