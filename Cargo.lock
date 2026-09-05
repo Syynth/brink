@@ -2308,6 +2308,7 @@ dependencies = [
  "brink-syntax",
  "brink-syntax-native",
  "insta",
+ "regex",
  "rowan",
  "serde",
  "serde_json",

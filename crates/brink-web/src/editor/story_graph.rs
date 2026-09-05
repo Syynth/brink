@@ -58,7 +58,7 @@ impl EditorSession {
             .nodes
             .into_iter()
             .map(|n| {
-                let mounted = n.file.is_some_and(|f| self.mounted_std_ids.contains(&f));
+                let mounted = n.file.is_some_and(|f| self.session.is_mounted_std(f));
                 let (file, start, end) = match (n.file, n.range) {
                     (Some(f), Some(r)) => {
                         let (start, end) = indexes.get(&f).map_or((0, 0), |ix| {

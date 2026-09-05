@@ -1,0 +1,8 @@
+fn tint(color: string, label: string) {
+  return label;
+}
+
+flow main() {
+  Banner: {tint("#4c9a2a", "GO")}
+  -> END
+}

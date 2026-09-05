@@ -1,4 +1,11 @@
-//! Structured model of the compiled program for the studio Program Explorer.
+//! Structured model of the compiled program for the Program Explorer.
+//!
+//! Lives here, not in the wasm wrapper, because a compiled-program model is
+//! not a wasm concern: the web studio reads it through `brink-web` and a
+//! native host reads it directly (decision log 2026-09-04, "Both studio
+//! consumers sit on the same layer"). It has no wasm dependency and never
+//! did — only `brink-format`.
+//!
 //!
 //! Built from [`StoryData`] (no runtime needed): globals / lists / externals
 //! tables plus a knot/stitch tree with per-knot, name-resolved bytecode
@@ -15,7 +22,7 @@ use brink_format::{
 use serde::Serialize;
 
 #[derive(Serialize)]
-pub struct ProgramModelJs {
+pub struct ProgramModel {
     checksum: String,
     /// Whether this compile carried a `DebugInfo` section — the difference
     /// between "no provenance on these rows" and "provenance is off".
@@ -366,7 +373,7 @@ impl<'a> Resolver<'a> {
 }
 
 /// Build the structured program model from decoded story data.
-pub fn build(data: &StoryData) -> ProgramModelJs {
+pub fn build(data: &StoryData) -> ProgramModel {
     let r = Resolver::new(data);
 
     let globals = data
@@ -406,7 +413,7 @@ pub fn build(data: &StoryData) -> ProgramModelJs {
         })
         .collect();
 
-    ProgramModelJs {
+    ProgramModel {
         debug_info: data.debug_info.is_some(),
         checksum: format!("0x{:08x}", data.source_checksum),
         globals,

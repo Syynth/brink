@@ -103,32 +103,13 @@ impl EditorSession {
 }
 
 impl EditorSession {
-    /// The draft path set behind [`EditorSession::draft_paths`] — see that
-    /// method for the ruling this implements. Sorted, so the JSON the host
-    /// reads is stable across calls that didn't change anything (an
-    /// unstable order would churn every React memo keyed on it).
+    /// The draft path set behind [`EditorSession::draft_paths`].
+    ///
+    /// The rule itself lives at the session layer
+    /// (`brink_ide::drafts`) so both studio surfaces get the same answer —
+    /// see the decision log, "Both studio consumers sit on the same layer".
     pub(crate) fn draft_path_list(&self) -> Vec<String> {
-        if self.draft_globs.is_empty() {
-            return Vec::new();
-        }
-        let closure = self.session.compilation_closure_paths();
-        if closure.is_empty() {
-            // Before the first compile nothing is known to be unreachable.
-            return Vec::new();
-        }
-        let mut drafts: Vec<String> = self
-            .session
-            .db()
-            .file_ids()
-            // A mounted stdlib file is never the author's draft, however the
-            // globs happen to be spelled — it isn't their file.
-            .filter(|id| !self.mounted_std_ids.contains(id))
-            .filter_map(|id| self.session.db().file_path(id).map(str::to_owned))
-            .filter(|path| !closure.contains(path))
-            .filter(|path| brink_project_config::globs::matches_any(path, &self.draft_globs))
-            .collect();
-        drafts.sort();
-        drafts
+        self.session.draft_paths()
     }
 
     /// JSON behind [`EditorSession::draft_glob_report`] —
@@ -162,54 +143,20 @@ impl EditorSession {
     }
 
     fn draft_glob_report_inner(&self) -> DraftGlobReportJs {
-        let closure_paths = self.session.compilation_closure_paths();
-        let compiled = !closure_paths.is_empty();
-        // A set, not the `Vec` as returned: every glob tests every file
-        // against it, so a linear scan here would be cubic in the project.
-        let closure: std::collections::HashSet<&str> =
-            closure_paths.iter().map(String::as_str).collect();
-
-        // The author's own files, in one pass — every glob is tested against
-        // the same set. A mounted stdlib file is never the author's draft
-        // however the globs are spelled, matching `draft_path_list`.
-        let paths: Vec<&str> = if compiled {
-            self.session
-                .db()
-                .file_ids()
-                .filter(|id| !self.mounted_std_ids.contains(id))
-                .filter_map(|id| self.session.db().file_path(id))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let globs = self
-            .draft_globs
-            .iter()
-            .map(|glob| {
-                let mut drafts = Vec::new();
-                let mut in_story = Vec::new();
-                for path in &paths {
-                    if !brink_project_config::globs::matches(path, glob) {
-                        continue;
-                    }
-                    if closure.contains(path) {
-                        in_story.push((*path).to_owned());
-                    } else {
-                        drafts.push((*path).to_owned());
-                    }
-                }
-                drafts.sort();
-                in_story.sort();
-                DraftGlobJs {
-                    glob: glob.clone(),
-                    drafts,
-                    in_story,
-                }
-            })
-            .collect();
-
-        DraftGlobReportJs { compiled, globs }
+        // Marshalling only: the attribution is computed at the session layer.
+        let report = self.session.draft_glob_report();
+        DraftGlobReportJs {
+            compiled: report.compiled,
+            globs: report
+                .globs
+                .into_iter()
+                .map(|glob| DraftGlobJs {
+                    glob: glob.glob,
+                    drafts: glob.drafts,
+                    in_story: glob.in_story,
+                })
+                .collect(),
+        }
     }
 
     fn project_outline_inner(&self) -> String {
@@ -217,7 +164,7 @@ impl EditorSession {
         let mut outline: Vec<FileOutlineJs> = Vec::new();
 
         for id in db.file_ids() {
-            let mounted = self.mounted_std_ids.contains(&id);
+            let mounted = self.session.is_mounted_std(id);
             let Some(path) = db.file_path(id) else {
                 continue;
             };

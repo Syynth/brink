@@ -62,7 +62,7 @@ impl EditorSession {
         let db = self.session.db();
         for file_id in db.file_ids() {
             // A mounted stdlib file is not the author's project.
-            if self.mounted_std_ids.contains(&file_id) {
+            if self.session.is_mounted_std(file_id) {
                 continue;
             }
 

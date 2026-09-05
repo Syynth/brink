@@ -136,7 +136,7 @@ fn all_diagnostics(s: &EditorSession) -> Vec<String> {
             .iter()
             .map(|p| s.session.file_id(p).expect("fixture file loaded"))
             .collect();
-    files.extend(s.mounted_std_ids.iter().copied());
+    files.extend(s.session.mounted_std_ids());
     for id in files {
         let path = s.session.file_path(id).unwrap_or("?").to_owned();
         for d in s.session.db().diagnostics(id).into_iter().flatten() {

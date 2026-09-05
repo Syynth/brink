@@ -1,0 +1,454 @@
+# The GPUI-native studio — architecture
+
+**Status:** ruled 2026-09-04, unimplemented ·
+**Code:** `crates/brink-gpui/` ·
+**Supersedes for the native surface:** `docs/studio-shell-spec.md`'s region
+model (the web studio keeps it unchanged) ·
+**Rests on:** decision log 2026-09-04 — "The GPUI-native app is the
+destination", "Both studio consumers sit on the same layer", "The native
+studio's region model drops the bottom rail", "No debounce".
+
+Every number in this document was measured on this hardware in a release
+build, not estimated. The benches are named where they appear.
+
+## 1. What this is
+
+The native studio replaces the Tauri/webview studio. This document settles
+its internal structure: how the code is layered, where analysis runs, what
+the window is made of, and what the first slice builds.
+
+It does **not** re-open language or authoring semantics. Those are ruled
+elsewhere and the native app implements them unchanged.
+
+## 2. Layering
+
+Three tiers, following Zed's own split (surveyed 2026-09-04 at `c91e24a`).
+
+The instructive part of Zed's layout is *where the seam is not*: `gpui` is
+not the UI layer. It is the **application** layer — entity graph,
+subscriptions, executors, `Task` — and 157 of Zed's 244 crates depend on it,
+including `text` (the rope/CRDT) and `project` (82k lines, ~40 event
+variants, 150 background spawns, renders nothing). The seam is `ui`/`theme`:
+
+| Zed crate | loc | gpui | ui |
+|---|---|---|---|
+| `text` | 6.6k | yes | no |
+| `language` | 26k | yes | no |
+| `project` | 82k | yes | no |
+| `workspace` | 53k | yes | yes |
+| `editor` | 171k | yes | yes |
+
+The second half is the inversion: `workspace` defines `Item` (a thing in a
+tab) and `Panel` (a thing in a dock) as **traits**, and depends on `project`
+but **not on `editor`**. Features implement the traits; the shell never
+learns what they are; the top-level `zed` crate does the concrete wiring.
+
+Brink mirrors this with three crates:
+
+| crate | contains | may depend on |
+|---|---|---|
+| `brink-gpui-model` | `Project`, `Document`, `StorySession` entities over `IdeSession`; the analysis worker; events | gpui, brink-* |
+| `brink-gpui-shell` | regions, rails, docks, tabs, commands, layout persistence; the `Item`/`Panel` traits | model, gpui-component |
+| `brink-gpui` | Binder, Editor, Problems, Player, Program Explorer; `main` | shell, model |
+
+The shell must not depend on the feature crate. That edge is the one this
+split exists to prevent, and it is the expensive one to retrofit.
+
+Within a tier, one crate until it hurts.
+
+## 3. Threading
+
+### 3.1 The ruling
+
+**No debounce.** Every keystroke starts its work immediately. Debounce buys
+latency headroom by making the user wait a fixed interval for their own
+edits to be reflected, and it lets per-keystroke work stay O(file) or
+O(project) indefinitely because the cost is merely paid less often.
+Removing it forces each keystroke's main-thread work to be **O(edit)**,
+which is the structurally correct shape.
+
+### 3.2 The two costs
+
+They scale on different axes and are solved differently.
+
+**Project analysis — scales with project size.** Measured with a synthetic
+project of cross-file-diverting `.ink` files (`scale` bench):
+
+| project | lines | words | cold analyze | keystroke (median / max) |
+|---|---|---|---|---|
+| studio-scale | 14k | 101k | 61 ms | 0.90 / 1.5 ms |
+| Disco Elysium scale | 113k | 807k | 473 ms | 7.8 / 11.6 ms |
+| 3x | 338k | 2.4M | 1.43 s | 23 / 37 ms |
+| 6x | 676k | 4.8M | 3.0 s | 53 / 102 ms |
+
+Linear in words out to 4.8M — there is no cliff. But 7.8 ms at the scale of
+a large commercial script is 8x Zed's own synchronous budget, so this does
+not belong on the main thread.
+
+**Paint tokens — scales with file size.** Whole-file parse + classify is
+already over 1 ms at 282 lines, and 21.6 ms at 16.8k lines (`paint` bench).
+It cannot run per keystroke either.
+
+### 3.3 The design
+
+Split by *does the next frame need it*, not by *is it slow*.
+
+**Main thread — the open document's syntax.** Per keystroke:
+
+1. `brink_syntax::segment_file(source)` — lex-only, splits into one segment
+   per top-level knot/stitch (#3084, `docs/per-knot-incremental-lowering-spec.md`).
+2. Reparse and classify **only the edited segment**, via
+   `brink_ir::semantic_tokens::tokens_with_kinds(source, &root, &kinds)`.
+3. Paint.
+
+Measured (`incr` bench):
+
+| file | whole-file | segment (lex) | one knot | incremental total | speedup |
+|---|---|---|---|---|---|
+| 282 lines | 0.97 ms | 0.09 | 0.051 | **0.15 ms** | 7x |
+| 1,402 | 2.96 ms | 0.22 | 0.023 | **0.24 ms** | 12x |
+| 5,602 | 7.17 ms | 0.65 | 0.018 | **0.67 ms** | 11x |
+| 16,802 | 21.6 ms | 2.22 | 0.017 | **2.24 ms** | 10x |
+| 56,002 | 77.4 ms | 7.46 | 0.017 | **7.48 ms** | 10x |
+
+Reparsing one knot is **17–51 microseconds and flat** — independent of file
+size. The residual O(file) term is the lex-only segmentation pass, ~10x
+cheaper than parsing; it stays under 1 ms through ~6k-line files and is
+itself incrementalizable later if a real project needs it.
+
+**Native files are not incremental yet.** `segment_file` is ink-only — so
+is `brink-db`'s own `semantic_tokens_query`, which takes a whole-file walk
+for `.brink` — and a native file therefore pays 2.1 ms at 700 lines and
+12.4 ms at 8,400. The primary surface is the one without the fast path.
+`TokenCache::is_incremental` reports this rather than hiding it, and
+**#3562** carries the fix; where a native segment boundary falls is a
+language question and wants a ruling before implementation.
+
+**Worker thread — the project.** It owns the single `IdeSession` outright.
+`IdeSession` is already `Send` (`brink-lsp` runs it as
+`Arc<Mutex<NativeProjects>>` under a multi-threaded server), so it *moves*
+rather than being shared. It receives edits and returns **plain data**:
+diagnostics, the refined `kinds` map, resolved symbol information.
+
+### 3.4 Why no database snapshots
+
+An earlier draft proposed `ProjectDb: Clone` plus salsa snapshot handles
+(rust-analyzer's model). That is **rejected as unnecessary**, not as
+unworkable.
+
+The clone itself is cheap — `salsa::Storage::clone` is two `Arc` bumps and a
+counter; memo tables live in `Arc<Zalsa>` and are shared, not copied. The
+real cost is cancellation: writing an input requires `zalsa_mut`, whose
+`cancel_others` "sets cancellation flag and blocks until all other workers
+with access to this storage have completed". Cancellation is cooperative, so
+a keystroke's latency becomes *how long until the background query reaches
+its next checkpoint* — an unbounded quantity we would then have to bound.
+
+Moving the session wholesale to a worker avoids the question. **`brink-db`
+requires no changes.**
+
+### 3.5 Staleness
+
+Only the `kinds` map can lag, and lag degrades **semantic refinement**
+alone — an identifier not yet known to name a knot. Structure (keywords,
+strings, comments, diverts, choices, tags) is decidable from syntax and is
+always current. Nothing ever renders from a stale *structure*, which is a
+stronger guarantee than Zed's interpolated-syntax-tree fallback offers.
+
+Diagnostics carry the revision they were computed at, and are shifted past
+subsequent edits rather than hidden or re-rendered at wrong offsets.
+
+## 4. The window
+
+### 4.1 Region model
+
+Simplified from `docs/studio-shell-spec.md` (ruled 2026-09-04): **the bottom
+rail is removed**, following what JetBrains actually does rather than what
+the earlier spec assumed. Four rail slots address three docks:
+
+| rail slot | dock | position |
+|---|---|---|
+| left, upper | left dock | — |
+| right, upper | right dock | — |
+| left, **lower** | **bottom dock** | left |
+| right, **lower** | **bottom dock** | right |
+
+Plus the editor center and a status bar. **Five surfaces, one placement
+rule**: a tool window's rail slot is the only place its home is declared,
+and re-homing is one operation.
+
+The bottom dock is a horizontal `Split` of two `Tabs`. Degenerate cases need
+no special handling — `gpui-kit`'s `normalize.rs` rule 2 replaces a
+one-child `Split` with that child, which keeps its `NodeId`, so a
+single-sided bottom dock takes the full width without tearing down the
+panel entity, and re-splits when the other side opens.
+
+Free-form docking (`Tiles`) is available in the toolkit and deliberately
+unused, per `studio-shell-spec`.
+
+### 4.2 Toolkit
+
+`gpui-component`'s `DockArea` is adopted. It is not a compromise: its dock
+layout is a full pane tree —
+
+```rust
+enum NodeKind {
+    Split { axis: Axis, children: Vec<PaneNode>, sizes: Vec<Option<Pixels>> },
+    Tabs  { panels: Vec<PanelId>, active_ix: usize },
+    Tiles { panels: Vec<TilePanel> },
+}
+```
+
+— so every dock splits and tabs natively, and `DockAreaState` serializes it.
+Zed's own `Dock` is weaker here: it holds `active_panel_index:
+Option<usize>`, one visible panel per edge, and splitting is a `PaneGroup` a
+panel must opt into individually (its terminal panel does exactly that).
+
+### 4.3 State
+
+Entities and observation, never `Rc<RefCell<_>>`. The spike's shared cell
+has no change notification, which is why it calls `rebuild()` by hand;
+panels observe `Project` and re-render themselves.
+
+`Document` owns its own identity — path, `FileId`, editor entity, dirty
+flag — and providers are constructed against their document. This replaces
+the spike's `ActiveKey` (`Rc<RefCell<String>>`) indirection, after which
+tabs work by construction rather than by coordination.
+
+### 4.4 The editor root and its three views
+
+**Built 2026-09-05.** The centre has one occupant (ruled 2026-08-26), and
+the three views — **Code** (tabs, groups, splits), **Single File** (one
+file, no tab strip), **Continuous** (the manuscript) — are what it can hold.
+The shell owns the choice (`EditorView`), the switcher in the title bar,
+the actions (`ViewCode`/`ViewSingle`/`ViewContinuous`, default
+`cmd-alt-1/2/3` — not the shifted digits, which Linux delivers as symbols)
+and the panel that hosts them (`EditorRoot`); the
+feature crate hands over each view as an `AnyView` and the shell never
+learns what it is.
+
+The centre panel hosts the views rather than the centre layout being
+replaced per view, because `DockArea` folds the centre and the docks into
+one tree: `set_center` on every switch would tear the centre down
+(`on_removed` on every panel) and need Code view's splits and tab order
+dumped and restored around every glance at the manuscript. So Code view is
+an **inner, centre-only `DockArea`** of `Document` panels — Zed's
+terminal-panel shape (a pane tree inside a panel), at the centre. While
+another view is showing it is simply not rendered; nothing in it moves.
+
+**The views share one fact**: the active document. Code view owns the open
+documents and reports the one most recently opened or made the displayed
+tab of its group; Single File view renders that same `Document` entity
+directly. The manuscript revises what §4.3 said of it: it is no longer "a
+centre panel like any document" but the Continuous view's occupant.
+
+**Reversible.** Nothing in `app/` depends on the nesting. Adopting Zed's
+own arrangement later — the shell owning the centre directly, docks
+rendered beside it — changes `shell/src/workspace.rs`,
+`shell/src/editor_view.rs` and the layout persistence, and no view.
+
+**The Player's place in each view is open** (§6); the Single File view's
+companion split is deliberately absent until it is ruled.
+
+### 4.5 Commands
+
+GPUI `actions!` plus key contexts. Keybindings, palette entries, menu items
+and buttons all dispatch the same action, which satisfies
+`studio-shell-spec`'s command contract with no bespoke layer.
+
+**Built 2026-09-05** (`shell/src/commands.rs`, `shell/src/palette.rs`). A
+command is an action plus a title and a group; `Workspace::register_command`
+records it and installs its default binding, and that is the only place a
+key is bound. The shell registers the view actions and the palette toggle;
+every tool window gets `view.toggle.<id>` on `cmd-1…9` by registration
+order (studio §5.2), shown in its rail tooltip; the app registers its own
+(`File: Save`). Enablement is gpui's `Window::available_actions` — no
+`when` closures. The **palette** (`cmd-shift-p`) ranks the registry by the
+studio's quick-pick rule (title first, then the group-qualified title,
+tighter subsequence wins) and shows keystrokes; the **hamburger** at the
+top of the left rail opens the same overlay grouped, generated from the
+registry (studio §6). A chosen command runs only after the overlay has
+closed and focus is back where it was.
+
+Two facts the build turned up. The workspace holds a fallback focus and
+every view hands the shell a focus handle: a key pressed while nothing is
+focused, or while focus sits in a view that is no longer rendered, reaches
+no action at all. And `cmd-shift-<digit>` cannot be a default binding —
+Linux delivers a shifted digit as its symbol — so the views sit on
+`cmd-alt-1/2/3`.
+
+Not yet: the user keymap override (studio §6 "Keymap layer"; the registry
+is the single table it merges over, and `KeyBinding::load` is the way in),
+`Escape` returning focus to the editor from a tool window (§5.2), and
+quick-open (`cmd-p`).
+
+### 4.6 Persistence
+
+`DockAreaState` keyed on `(edge, group)`, plus the current `EditorView`,
+recents and settings. Stable under everything except deliberate re-homing.
+App settings (`shell/src/settings.rs`) are one JSON file in the platform
+config directory behind an `AppSettings` global; the layout is not among
+them yet.
+
+### 4.7 Themes and paint
+
+The studio's five themes (`docs/studio-shell-spec.md` §7.4; theme ruling
+2026-08-25) are the native app's themes, with the same token values the
+CSS sheets hold — `shell/src/theme.rs` carries them, and its tests pin the
+derivations (override sheets inherit from Mocha; the `marker`/`divert`/
+`halt` fallbacks follow `editor.css`). A theme is applied by building
+gpui-component's own `ThemeConfig` and installing it with `Theme::change`,
+so the kit's chrome, every editor (which the kit projects from the global
+theme on each render) and the Search cards repaint from one place; there
+is no private palette to keep in step.
+
+Brink's token types reach the editor through the kit's highlight table
+under Zed's names (`theme::syntax_key` is the only mapping), which keeps
+the highlighter's resolver the kit's own rather than a second seam. One
+command per theme; the choice persists in the platform config directory.
+The TODO band (ruled 2026-08-23) is laid by the highlighter itself from
+the `AUTHOR_WARNING` ranges the paint parse already produces — same frame,
+no analysis in the loop. The other per-line styles of the studio's editor
+(cue lines, dimmed comment/include lines) wait on `LineContext` reaching
+the app from the worker.
+
+### 4.8 Settings
+
+The studio's modal (ruled 2026-08-27): a searchable section rail with the
+App / Project scope switch, one section at a time. Sections are registered
+entries, so the window cannot drift behind what is configurable; the shell
+registers the App sections it owns (Appearance, Keymap —
+`shell/src/settings_*.rs`), and the feature crate registers the Project
+ones (General — `app/src/settings_general.rs`).
+Keymap overrides follow the rebinding ruling (2026-08-30): a recorded chord
+displaces its previous owner, and the override layer is bound over the
+registry's defaults (gpui's keymap only grows, so a taken-away default is
+shadowed by `Unbound` rather than removed).
+
+**`brink.toml` is a file in the shared buffer** (§6), which is the seam
+every Project section writes through. The worker discovers it on open and
+returns it beside the sources (`Opened::config`), the mirror holds its text
+like any file's (edited through `Project::edit`, dirty per file, written by
+`save_all`) but keeps it out of `files` — it is not a source, and the
+manuscript and search read `files` — and an edit to it is routed to
+`apply_config_text` rather than `update_source`. Two rules there
+(`worker::ConfigState`): **an edit re-applies the whole file** — the
+session goes back to its defaults first, because `apply_project_config`'s
+"unset means untouched" convention is right for a one-shot load and wrong
+for an editor, where deleting `drafts = [...]` must stop marking drafts —
+and **a malformed text keeps the last good config applied**, since every
+intermediate state of a raw edit is invalid TOML and tearing the config
+down mid-keystroke would blank the entry and mark every file out of the
+story; the error is an Error diagnostic on the config's own path instead
+(the studio's #3391 shape), and clears with the next parse that succeeds.
+The analysis carries what the applied config resolved to (`entry`, the
+warnings, and the per-glob drafts report from `draft_glob_report`), so a
+config edit moves the Binder's entry mark and the closure like a hand edit
+would.
+
+**`brink.toml` opens in Code view, and Settings holds only the form** —
+the maintainer's call for the native studio (2026-09-05), where the web
+studio routes the file to a Settings takeover carrying form and text
+together (ruled 2026-08-27; it had no editor tab to give the file in
+Continuous view). Here the file is a `Document` like any other — listed
+in the Binder beside the sources, opened from there or from a Problems
+row at the row's span, edited in the same shared buffer with the same
+`cmd-s` — differing only in language: TOML, painted by the kit's own
+highlighter, with brink's hover, completion and inlays kept out of it.
+The General section (`app/src/settings_general.rs`) is the studio's form
+alone: `entry` / `conventions` / `dialect` / `types` as selects over the
+project's real files (a configured value the project lacks kept and
+flagged "(missing)"), the drafts list in the dictionary's shape with each
+glob's three-state report (ruled 2026-08-29), and an "Open brink.toml"
+door to the editor for every key the form does not model. Structured
+edits go through `brink-project-config`'s `ConfigDocument` (`toml_edit`),
+so a select changes one key and leaves the author's comments, key order
+and quoting alone; the form re-reads the file on every `SourceChanged`
+to it, so it and an open tab can never disagree.
+
+The other three Project sections sit on the same seam
+(`app/src/settings_config.rs` is what they share: read the config out of
+the mirror, edit one key through `ConfigDocument`, write back through
+`Project::edit`; a project without a `brink.toml` gets a notice and a
+file that does not parse gets the reason). **Diagnostics**
+(`settings_diagnostics.rs`) is the studio's `[lints]`/`[fix]` table
+(#3148, #3419): two lists, and which list a code is in IS whether it is
+in the file — Configure writes the key at the code's current default so
+the first click changes nothing about the build, the down arrow removes
+it; a Fix column (`off | ask | auto`, the lit one clears) on every row;
+deny-warnings; explanations unfolded inline as markdown; codes the file
+names that this compiler lacks kept under their own heading rather than
+dropped. The code list and its author-facing grouping come from
+`brink_ide::diagnostic_registry`, the table moved out of `brink-web` so
+both studios list the same rows (a hand copy would drift the day a code
+is added). **Formatting** (`settings_formatting.rs`) is `[project]
+indent` as a stepper with a Reset that removes the key — not the same as
+writing 4, since only an absent key follows a later change to the
+default — and the tabs-vs-spaces row shown disabled as "not ruled".
+**Prose** (`settings_prose.rs`) is `[prose] enable`, the dialect select
+(read from the `[prose]` table by name, never `[project] dialect`), and
+the dictionary in the list shape. **Conventions**
+(`settings_conventions.rs`) is the teach-by-example editor (ruled
+2026-09-02): the knot/stitch picker (the worker's `PassageIndex` and
+`Passage` queries over `brink_ide::passage`; typing narrows, focus lists
+all), five marks per line with choice text hidden by default, what was
+learned with its support counts, the Player preview folding runs under
+speaker headers, and "Use these rules" writing the `[dialogue]` section —
+asking first when the file's section was written or edited by hand. **Its
+engine is Rust** (the maintainer's call, 2026-09-05):
+`brink_ide::dialect_infer` holds the inference, the source and emitted
+parsers and the run rule, `brink_ide::dialogue_section` the stamped
+section writer; `@brink-lang/dialect`'s TypeScript is their mirror, held
+to one golden corpus duplicated in both suites, and the section hash is
+computed identically so a section either studio writes reads as its own
+in the other. The file form (`dialect.json`) is a project file the mirror
+holds like any other; the worker routes an edit to a non-source file into
+the config's artifact reader (`apply_project_config_with_reader`), so the
+artifact resolves before it is saved.
+
+## 5. First slice
+
+**Shell + Binder + Editor + save/open.** No Player.
+
+It makes the app usable for writing, and it exercises every decision above —
+the tier split, the worker boundary, incremental paint, the region model,
+documents, commands, persistence — before anything else depends on them.
+
+Two defects carried from the spike are fixed here, not later:
+
+- it never mounts the stdlib, so no stdlib reference resolves;
+- it hand-rolls `brink.toml` resolution instead of calling
+  `IdeSession::apply_project_config`, which now exists at the shared layer.
+
+## 6. Deliberately deferred
+
+- Incrementalizing the segmentation pass itself (only needed past ~6k-line
+  files).
+- Moving the editor acceptance gate down onto the shared session — required
+  by the layering ruling, not by this slice.
+- ~~One shared buffer per file.~~ **Built 2026-09-05.** The mirror
+  (`app/src/project.rs`) holds the canonical text of every file; each
+  `EditorState` is a view of it. An editor pushes its text through
+  `Project::edit`, which reduces the change to one `SourceDelta` (common
+  head and tail trimmed, widened to char boundaries) and broadcasts
+  `ProjectEvent::SourceChanged`; every other editor over the file applies
+  the delta in place, keeping its caret and undo history, and resyncs
+  wholesale only if it has fallen out of step. Identical text is a no-op,
+  which is what stops the echo. Dirty and save are per file, in the
+  project — an edit in the manuscript is as unsaved as one in a tab, and
+  one `cmd-s` writes both. Verified headless both directions.
+- Player, story graph, debugger; Search's replace previews, context knob
+  and references mode. (Settings' Project scope is complete as of
+  2026-09-05 — §4.8; the App-scope Editor section and the Problems panel's
+  "Configure Exxx…" door into Diagnostics are not.) (Search's cards **are editors** over
+  the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
+  windows edit-mapped through every change, `edited` badges, lazy
+  per-card `EditorState`s.) **Where the Player
+  sits in each view is an open ruling** (parked 2026-09-05, see
+  `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
+  split, a native companion in Single File view, and absent from
+  Continuous. The direction noted (not ruled): Code keeps the tab,
+  Continuous swaps the Player in and out rather than splitting the
+  scroller, Single File may take a side-by-side split.
+- The `#3064` per-segment token path on the db road is the worker's
+  business; the main thread uses `segment_file` directly and needs no db.

@@ -24,6 +24,9 @@ serde.workspace = true
 brink-project-config = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
+# `dialect_infer`: the teach-by-example inference compiles its hypothesis
+# patterns once (the same `regex` the dialect resolver already runs on).
+regex.workspace = true
 
 [dev-dependencies]
 # `test-util` (issue #2168): `extract.rs`'s tests compile inline ink source

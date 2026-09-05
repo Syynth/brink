@@ -1,0 +1,69 @@
+# The GPUI-native studio (decision log 2026-09-04, "The GPUI-native app is
+# the destination"), laid out in the three tiers ruled the same day
+# (`docs/gpui-studio-spec.md` §2).
+#
+# DELIBERATELY ITS OWN WORKSPACE, and also named in the root workspace's
+# `exclude` — both are needed, because the root's `crates/brink-*` members
+# glob would otherwise pull gpui's entire dependency graph into every
+# `cargo test --workspace` and every CI lane, for zero coverage benefit.
+# Same arrangement as `packages/brink-desktop/src-tauri`, which only escapes
+# by virtue of living outside the glob.
+#
+# One exclusion entry covers all three members because they are nested here
+# rather than sitting beside each other under `crates/`.
+[workspace]
+resolver = "3"
+members = ["model", "shell", "app"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Our fork of longbridge's GPUI Kit, pinned to a commit.
+#
+# Three commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
+# a capability the upstream editor lacks rather than a rename: `Editor:
+# Sizable`, the `IntoPlot` crate lookup, and in-text inlays. They are written
+# to be upstreamable; if they land, this goes back to the crates.io version.
+#
+# A FORK REPO, not a vendored tree with a re-patching script. Upstream moves
+# are then `git merge upstream/main` with real three-way merges and real
+# conflicts, instead of string replacements that silently match nothing.
+#
+# `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
+# same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
+gpui = { package = "gpui-pre", version = "0.3.3" }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7", features = ["tree-sitter"] }
+# The foundation under the kit, for the one renderer-trait type the kit does
+# not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
+# is the same crate the kit is built against.
+gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7" }
+gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
+# Must match gpui-base's lsp-types (the provider traits speak these types).
+lsp-types = "0.97"
+anyhow = "1"
+# The search engine's pattern (`app/src/search.rs`); the root pins "1" too.
+regex = "1"
+# Themes are handed to gpui-component in its theme-file shape
+# (`shell/src/theme.rs`); the kit already depends on this crate.
+serde_json = "1"
+# Same rowan the root workspace pins (TextSize/TextRange).
+rowan = "0.16.1"
+# The worker boundary (`docs/gpui-studio-spec.md` §3.3). Same crate
+# gpui-base itself uses, so no second async runtime enters the graph.
+async-channel = "2.3.1"
+
+brink-gpui-model = { path = "model" }
+brink-gpui-shell = { path = "shell" }
+
+brink-ide = { path = "../internal/brink-ide" }
+brink-db = { path = "../internal/brink-db" }
+brink-ir = { path = "../internal/brink-ir" }
+brink-syntax = { path = "../internal/brink-syntax" }
+brink-syntax-native = { path = "../internal/brink-syntax-native" }
+brink-analyzer = { path = "../internal/brink-analyzer" }
+brink-driver = { path = "../internal/brink-driver" }
+brink-project-config = { path = "../internal/brink-project-config" }
+brink-environment = { path = "../internal/brink-environment" }

@@ -125,7 +125,7 @@ impl EditorSession {
         }
         let mut policy = FixPolicy::new();
         // `configured_fix` is a `BTreeMap`, so this walk is deterministic.
-        for code in self.configured_fix.keys() {
+        for code in self.session.project_settings().fix.keys() {
             let Some(parsed) = DiagnosticCode::from_str_code(code) else {
                 // A code this compiler doesn't know. `[fix]` accepts it (the
                 // config crate is dependency-free of the real code set) and
@@ -159,7 +159,7 @@ impl EditorSession {
         ceiling: Option<ConfigFixPolicy>,
     ) -> ConfigFixPolicy {
         let mut config = brink_project_config::ProjectConfig::default();
-        config.fix.clone_from(&self.configured_fix);
+        config.fix.clone_from(&self.session.project_settings().fix);
         config.effective_fix_policy(code, ceiling)
     }
 

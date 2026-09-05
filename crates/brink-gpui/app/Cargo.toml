@@ -1,0 +1,31 @@
+# Tier 3 of `docs/gpui-studio-spec.md` §2: the features, and `main`.
+#
+# Binder, Editor, Problems, Player, Program Explorer. Depends on the shell
+# and the model; nothing depends on it.
+[package]
+name = "brink-gpui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-platform.workspace = true
+lsp-types.workspace = true
+anyhow.workspace = true
+async-channel.workspace = true
+rowan.workspace = true
+regex.workspace = true
+
+brink-gpui-model.workspace = true
+brink-gpui-shell.workspace = true
+
+brink-ide.workspace = true
+brink-db.workspace = true
+brink-ir.workspace = true
+brink-syntax.workspace = true
+brink-analyzer.workspace = true
+brink-driver.workspace = true
+brink-project-config.workspace = true
+serde_json.workspace = true

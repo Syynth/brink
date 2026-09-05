@@ -29,7 +29,9 @@ mod editor_dto;
 mod editor_refactor;
 mod external_binding;
 mod perf;
-mod program_model;
+/// The Program Explorer's model now lives at the session layer
+/// (decision log 2026-09-04) — re-exported so existing paths keep working.
+pub use brink_ide::program_model;
 /// Editor session protocol wire shapes (`docs/editor-worker-spec.md` §5) —
 /// public: this crate is the shapes' source of truth (spec §5.4).
 pub mod protocol;

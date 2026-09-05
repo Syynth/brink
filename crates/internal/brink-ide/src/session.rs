@@ -34,6 +34,22 @@ pub enum CompileEntryError {
 /// cache, no off-db snapshot road).
 pub struct IdeSession {
     db: ProjectDb,
+    /// `[project] drafts` globs, as the author wrote them. Session state
+    /// rather than analysis input: drafts are a *reporting* concept
+    /// (`crate::drafts`), and changing them needs no re-analyze.
+    draft_globs: Vec<String>,
+    /// What the last applied `brink.toml` resolved to
+    /// (`crate::project_settings`).
+    pub(crate) settings: crate::project_settings::ProjectSettings,
+    /// The lint policy the FILE resolved to, before any CLI/API override
+    /// tier is layered on top — the base a host reapplies its overrides
+    /// against (#1417).
+    file_lint_policy: LintPolicy,
+    /// Files mounted from the stdlib rather than authored by the user
+    /// ([`Self::mount_stdlib`]). They are tracked because several surfaces
+    /// have to exclude them — a mounted file is never the author's draft,
+    /// and never theirs to rename or delete.
+    mounted_std_ids: std::collections::BTreeSet<FileId>,
     /// The registered host-capability manifest (tooling/author-time), if any.
     host_manifest: Option<HostManifest>,
     /// Host-pushed values for `host`-source semantic types (Tier 3, #174).
@@ -129,6 +145,10 @@ impl IdeSession {
     pub fn new() -> Self {
         Self {
             db: ProjectDb::new(),
+            draft_globs: Vec::new(),
+            settings: crate::project_settings::ProjectSettings::default(),
+            file_lint_policy: LintPolicy::default(),
+            mounted_std_ids: std::collections::BTreeSet::new(),
             host_manifest: None,
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
@@ -140,6 +160,55 @@ impl IdeSession {
             conventions: None,
             emit_debug_info: true,
         }
+    }
+
+    /// Record that `id` was mounted from the stdlib rather than authored.
+    ///
+    /// The mounting itself stays with the host: the stdlib's text lives in
+    /// `brink-environment`, and making this crate depend on the compiler to
+    /// save a four-line loop would push that weight onto every consumer
+    /// (`brink-lsp` included). What must live here is the *consequence* —
+    /// which files are the author's — because rules are written against it.
+    pub fn mark_mounted_std(&mut self, id: FileId) {
+        self.mounted_std_ids.insert(id);
+    }
+
+    /// Whether `id` is a mounted stdlib file rather than the author's own.
+    #[must_use]
+    pub fn is_mounted_std(&self, id: FileId) -> bool {
+        self.mounted_std_ids.contains(&id)
+    }
+
+    /// Every mounted stdlib file, in id order.
+    pub fn mounted_std_ids(&self) -> impl Iterator<Item = FileId> + '_ {
+        self.mounted_std_ids.iter().copied()
+    }
+
+    /// Forget a mounted id — for a host that removes files from the session.
+    pub fn unmount_std(&mut self, id: FileId) {
+        self.mounted_std_ids.remove(&id);
+    }
+
+    /// The file-resolved lint policy — see the field.
+    pub(crate) fn set_file_lint_policy(&mut self, lints: LintPolicy) {
+        self.file_lint_policy = lints;
+    }
+
+    /// The lint policy `brink.toml` resolved to, before overrides.
+    #[must_use]
+    pub fn file_lint_policy(&self) -> &LintPolicy {
+        &self.file_lint_policy
+    }
+
+    /// `[project] drafts` globs (`crate::drafts`).
+    pub fn set_draft_globs(&mut self, globs: Vec<String>) {
+        self.draft_globs = globs;
+    }
+
+    /// The configured draft globs, as authored.
+    #[must_use]
+    pub fn draft_globs(&self) -> &[String] {
+        &self.draft_globs
     }
 
     /// Register (or replace) the host-capability manifest, then re-analyze.
