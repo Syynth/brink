@@ -229,7 +229,7 @@ impl FlowInstance {
                 let id = self
                     .flow
                     .external_fn_id()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                 Err(RuntimeError::UnresolvedExternalCall(id))
             }
         }
@@ -1398,7 +1398,7 @@ impl FlowInstance {
         let fn_id = self
             .flow
             .external_fn_id()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
         let entry = program.external_fn(fn_id);
         let fn_name = entry.map_or("?", |e| program.name(e.name));
         match handler.call(fn_name, self.flow.external_args()) {
@@ -1411,7 +1411,7 @@ impl FlowInstance {
                     let container_idx = program
                         .resolve_target(fb_id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
                     self.flow.invoke_fallback(container_idx);
                     Ok(None)
                 } else {
@@ -1541,7 +1541,7 @@ fn select_choice(
     let frame = current
         .call_stack
         .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
 
     frame.container_stack.clear();
     frame.container_stack.push(ContainerPosition {
@@ -1583,7 +1583,7 @@ pub(super) fn resolve_external_call(
 ) -> Result<bool, RuntimeError> {
     let fn_id = flow
         .external_fn_id()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
 
     let entry = program.external_fn(fn_id);
     let fn_name = entry.map_or("?", |e| program.name(e.name));
@@ -1600,7 +1600,7 @@ pub(super) fn resolve_external_call(
                 let container_idx = program
                     .resolve_target(fb_id)
                     .map(|(idx, _)| idx)
-                    .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+                    .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
 
                 flow.invoke_fallback(container_idx);
                 Ok(true)

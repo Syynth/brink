@@ -117,7 +117,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         let frame = thread
             .call_stack
             .last_mut()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
         frame.container_stack.pop();
         if frame.container_stack.is_empty() {
             let frame_type = frame.frame_type;
@@ -144,11 +144,11 @@ fn step_impl<R: crate::rng::StoryRng>(
         let frame = thread
             .call_stack
             .last_mut()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
         let top = frame
             .container_stack
             .last_mut()
-            .ok_or(RuntimeError::ContainerStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
         top.offset = offset;
     }
 
@@ -279,7 +279,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             // Increment visit count if flags set.
             let counting_flags = program.container(idx).counting_flags;
@@ -292,7 +292,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             frame.container_stack.push(ContainerPosition {
                 container_idx: idx,
                 offset: 0,
@@ -303,7 +303,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             frame.container_stack.pop();
         }
 
@@ -424,7 +424,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::GetGlobal(id) => {
             let idx = program
                 .resolve_global(id)
-                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
             let val = context.global(idx).clone();
             note_value_share(&val);
             note_effect_read(flow, program, id);
@@ -434,7 +434,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             guard_comparator_write(flow, "assigned a global variable")?;
             let idx = program
                 .resolve_global(id)
-                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
             let mut val = flow.pop_value()?;
             list_ops::retain_origins_on_assign(program, context.global(idx), &mut val);
             note_effect_write(flow, program, id);
@@ -449,7 +449,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
             frame.write_temp(idx, val);
         }
@@ -461,7 +461,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
             let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
             match current {
@@ -469,7 +469,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     guard_comparator_write(flow, "assigned a global through a `ref` parameter")?;
                     let global_idx = program
                         .resolve_global(target_id)
-                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                     list_ops::retain_origins_on_assign(
                         program,
                         context.global(global_idx),
@@ -485,7 +485,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let target = thread
                         .call_stack
                         .get_mut(frame_depth as usize)
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                     let ti = target_slot as usize;
                     let old = target.temps.get(ti).cloned().unwrap_or(Value::Null);
                     list_ops::retain_origins_on_assign(program, &old, &mut val);
@@ -508,7 +508,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let frame = thread
                         .call_stack
                         .last_mut()
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                     frame.write_temp(idx, val);
                 }
             }
@@ -520,7 +520,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let val = frame
                 .temps
                 .get(slot as usize)
@@ -553,7 +553,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     Value::VariablePointer(target_id) => {
                         let global_idx = program
                             .resolve_global(target_id)
-                            .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                            .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                         let global_val = context.global(global_idx).clone();
                         flow.value_stack.push(global_val);
                     }
@@ -565,7 +565,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         let target = thread
                             .call_stack
                             .get(frame_depth as usize)
-                            .ok_or(RuntimeError::CallStackUnderflow)?;
+                            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                         let target_val = target
                             .temps
                             .get(target_slot as usize)
@@ -595,7 +595,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let val = frame
                 .temps
                 .get(slot as usize)
@@ -610,7 +610,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             // itself.
             let idx = program
                 .resolve_global(id)
-                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedGlobal(id))?;
             let val = context.take_global(idx);
             note_effect_read(flow, program, id);
             flow.value_stack.push(val);
@@ -625,7 +625,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let current = frame
                 .temps
                 .get(slot as usize)
@@ -635,7 +635,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 Value::VariablePointer(target_id) => {
                     let global_idx = program
                         .resolve_global(target_id)
-                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
                     let taken = context.take_global(global_idx);
                     flow.value_stack.push(taken);
                 }
@@ -647,7 +647,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let target = thread
                         .call_stack
                         .get_mut(frame_depth as usize)
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                     let ti = target_slot as usize;
                     while target.temps.len() <= ti {
                         target.temps.push(Value::Null);
@@ -667,7 +667,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let frame = thread
                         .call_stack
                         .last_mut()
-                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                     let idx = slot as usize;
                     while frame.temps.len() <= idx {
                         frame.temps.push(Value::Null);
@@ -687,7 +687,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = thread
                 .call_stack
                 .last()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             let current = frame
                 .temps
                 .get(slot as usize)
@@ -772,7 +772,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
@@ -809,7 +809,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
@@ -837,7 +837,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             // Fork the current thread — the fork inherits the full call
             // stack (including any enclosing Tunnel frames) so that
@@ -860,7 +860,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let frame = forked
                 .call_stack
                 .last_mut()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
+                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
             // A fresh container stack, not the parent's nesting: the
             // thread is done the moment it runs off the end of its target,
             // and must not fall back into wherever the parent happened to
@@ -884,7 +884,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
@@ -919,7 +919,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let idx = program
                         .resolve_target(id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
                     let counting_flags = program.container(idx).counting_flags;
                     if counting_flags.contains(CountingFlags::VISITS) {
@@ -976,7 +976,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         } => {
             let (idx, _) = program
                 .resolve_target(target)
-                .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+                .ok_or_else(|| RuntimeError::UnresolvedDefinition(target))?;
             let params = program.container_params(idx);
             let n = bound_count as usize;
             // Pop the bound args (pushed in declared order; top is the last).
@@ -1010,7 +1010,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                     let idx = program
                         .resolve_target(id)
                         .map(|(idx, _)| idx)
-                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
                     let counting_flags = program.container(idx).counting_flags;
                     if counting_flags.contains(CountingFlags::VISITS) {
                         context.increment_visit(id);
@@ -1112,12 +1112,12 @@ fn step_impl<R: crate::rng::StoryRng>(
             if let Value::DivertTarget(id) = val {
                 let (idx, offset) = program
                     .resolve_target(id)
-                    .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                    .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
                 let thread = flow.current_thread_mut();
                 let frame = thread
                     .call_stack
                     .last_mut()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                 frame.return_address = Some(ContainerPosition {
                     container_idx: idx,
                     offset,
@@ -1134,7 +1134,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let text = flow
                 .output
                 .end_capture(program, line_tables, resolver)
-                .ok_or(RuntimeError::CaptureUnderflow)?;
+                .ok_or_else(|| RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::BeginFragment => {
@@ -1144,7 +1144,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let idx = flow
                 .output
                 .end_fragment()
-                .ok_or(RuntimeError::CaptureUnderflow)?;
+                .ok_or_else(|| RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::FragmentRef(idx));
         }
         Opcode::BeginChoice(flags, target_id) => {
@@ -1432,7 +1432,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 let frame = thread
                     .call_stack
                     .last_mut()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                    .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
                 let idx = slot as usize;
                 frame.write_temp(idx, value);
             }
@@ -1761,7 +1761,7 @@ fn fn_value_target_idx(v: &Value, program: &Program) -> Result<(u32, DefinitionI
         .ok_or_else(|| RuntimeError::NotCallable(value_type_name(v)))?;
     let (idx, _) = program
         .resolve_target(target)
-        .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+        .ok_or_else(|| RuntimeError::UnresolvedDefinition(target))?;
     Ok((idx, target))
 }
 
@@ -3020,7 +3020,7 @@ fn pop_call_frame(
     let popped = thread
         .call_stack
         .pop()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
     stats.frames_popped += 1;
 
     if matches!(
@@ -3076,13 +3076,13 @@ pub(crate) fn goto_target(
 ) -> Result<(), RuntimeError> {
     let (container_idx, byte_offset) = program
         .resolve_target(id)
-        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+        .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
 
     let thread = flow.current_thread_mut();
     let frame = thread
         .call_stack
         .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
 
     // Goto semantics: transfer control within the current call frame.
     //
@@ -3138,11 +3138,11 @@ fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
     let frame = thread
         .call_stack
         .last_mut()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
     let top = frame
         .container_stack
         .last_mut()
-        .ok_or(RuntimeError::ContainerStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
 
     // The offset was already advanced past the jump instruction.
     // The relative offset is from the current position.
@@ -3161,12 +3161,12 @@ fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
     let frame = thread
         .call_stack
         .last()
-        .ok_or(RuntimeError::CallStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
     let pos = frame
         .container_stack
         .last()
         .copied()
-        .ok_or(RuntimeError::ContainerStackUnderflow)?;
+        .ok_or_else(|| RuntimeError::ContainerStackUnderflow)?;
     Ok(pos)
 }
 
@@ -3237,7 +3237,7 @@ fn handle_begin_choice(
 
     let (target_idx, target_offset) = program
         .resolve_target(target_id)
-        .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
+        .ok_or_else(|| RuntimeError::UnresolvedDefinition(target_id))?;
 
     let idx = flow.pending_choices.len();
     let thread_fork = flow.fork_thread();

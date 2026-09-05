@@ -906,16 +906,16 @@ impl<R: StoryRng> Story<R> {
             .default
             .flow
             .external_fn_id()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+            .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
         let entry = self.program.external_fn(fn_id);
         let fallback_id = entry
             .and_then(|e| e.fallback)
-            .ok_or(RuntimeError::UnresolvedExternalCall(fn_id))?;
+            .ok_or_else(|| RuntimeError::UnresolvedExternalCall(fn_id))?;
         let container_idx = self
             .program
             .resolve_target(fallback_id)
             .map(|(idx, _)| idx)
-            .ok_or(RuntimeError::UnresolvedDefinition(fallback_id))?;
+            .ok_or_else(|| RuntimeError::UnresolvedDefinition(fallback_id))?;
         self.default.flow.output.begin_capture();
         self.default.flow.invoke_fallback(container_idx);
         Ok(())
@@ -955,7 +955,7 @@ impl<R: StoryRng> Story<R> {
             .program
             .resolve_target(entry_point)
             .map(|(idx, _)| idx)
-            .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
+            .ok_or_else(|| RuntimeError::UnresolvedDefinition(entry_point))?;
         let (mut flow, ctx) = FlowInstance::new_at(&self.program, container_idx);
         // Inherit this `Story`'s current enforcement setting (a dev override
         // set before spawning must apply to newly spawned flows too, not

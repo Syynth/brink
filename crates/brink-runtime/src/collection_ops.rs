@@ -974,7 +974,7 @@ pub(crate) fn push_literal(
     let value = program
         .literal_pool_entry(idx)
         .cloned()
-        .ok_or(RuntimeError::InvalidLiteralIndex(idx))?;
+        .ok_or_else(|| RuntimeError::InvalidLiteralIndex(idx))?;
     flow.value_stack.push(value);
     Ok(())
 }
