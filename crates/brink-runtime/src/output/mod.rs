@@ -380,6 +380,20 @@ pub(crate) struct OutputMark {
     pub(crate) fragment_depth: usize,
 }
 
+/// `OutputBuffer` reaches Bevy as part of `bevy-brink`'s `BrinkFlow`
+/// component, and Bevy requires components to be `Send + Sync`. Nothing in
+/// this module names that requirement, and violating it fails nowhere near
+/// here: an interior-mutability field added for a scratch buffer (`RefCell`
+/// and `Cell` are both `!Sync`) surfaced as dozens of
+/// `QueryData`/`IterQueryData` bound errors inside `bevy-brink`, on a CI leg
+/// this crate's own gates never run. Assert it here, where the field would
+/// be added.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<OutputBuffer>();
+    assert_send_sync::<OutputPart>();
+};
+
 /// Accumulates output text with glue resolution.
 ///
 /// The buffer is split into two storage areas:
@@ -389,6 +403,22 @@ pub(crate) struct OutputMark {
 ///   and function return value capture. Drained by `end_capture`.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputBuffer {
+    /// Reusable scan buffer for [`Self::has_completed_line`]'s glue pass.
+    ///
+    /// Not state: it carries nothing between calls and every call refills it
+    /// from scratch. It exists purely so the scan stops allocating.
+    /// `has_completed_line` runs once per VM step and used to build a fresh
+    /// `vec![false; unread.len()]` each time — measured at 467,587 `calloc`
+    /// calls against 466,851 steps on `crucible-8` (#3565), i.e. one zeroed
+    /// heap allocation per step, in a runtime whose profile is ~30%
+    /// allocator traffic.
+    ///
+    /// A plain field with a `&mut self` receiver, deliberately: `RefCell`
+    /// and `Cell` are both `!Sync`, and one here makes `OutputBuffer` —
+    /// and transitively `bevy-brink`'s `BrinkFlow` component — non-`Sync`,
+    /// which Bevy requires. That failure surfaces far from its cause, as
+    /// dozens of `QueryData`/`IterQueryData` bound errors in `bevy-brink`.
+    line_scan: Vec<bool>,
     /// Append-only output log. Parts are never removed.
     pub(crate) transcript: Vec<OutputPart>,
     /// Read cursor into transcript. Advances on take/flush.
@@ -423,6 +453,7 @@ pub(crate) struct OutputBuffer {
 impl OutputBuffer {
     pub fn new() -> Self {
         Self {
+            line_scan: Vec::new(),
             transcript: Vec::new(),
             cursor: 0,
             capture: Vec::new(),
@@ -1727,7 +1758,7 @@ mod tests {
 
     #[test]
     fn has_completed_line_empty() {
-        let buf = OutputBuffer::new();
+        let mut buf = OutputBuffer::new();
         assert!(!buf.has_completed_line());
     }
 

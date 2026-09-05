@@ -9,7 +9,6 @@
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use brink_format::{LineEntry, PluralResolver};
@@ -25,7 +24,7 @@ impl OutputBuffer {
     /// A Newline is "committed" when non-whitespace text appears after it
     /// in the buffer — at that point, no future Glue can reach past the
     /// text to eat the Newline.
-    pub(crate) fn has_completed_line(&self) -> bool {
+    pub(crate) fn has_completed_line(&mut self) -> bool {
         if self.has_checkpoint() {
             return false;
         }
@@ -40,8 +39,13 @@ impl OutputBuffer {
         }
 
         // Run glue marking pass to determine which newlines survive.
-        let mut remove = vec![false; unread.len()];
-        mark_glue_removals(unread, &mut remove);
+        // The buffer is reused across calls (see `OutputBuffer::line_scan`):
+        // this runs once per VM step, and allocating it here was one zeroed
+        // allocation per step (#3565).
+        let remove = &mut self.line_scan;
+        remove.clear();
+        remove.resize(unread.len(), false);
+        mark_glue_removals(unread, remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
         // not in after_glue state) followed by content — VISIBLE content
@@ -130,8 +134,12 @@ impl OutputBuffer {
                 return None;
             }
 
-            let mut remove = vec![false; unread.len()];
-            mark_glue_removals(unread, &mut remove);
+            // Same reused buffer as `has_completed_line` (#3565) — this is
+            // the identical glue scan, one line further along.
+            let remove = &mut self.line_scan;
+            remove.clear();
+            remove.resize(unread.len(), false);
+            mark_glue_removals(unread, remove);
 
             // Find the split point: the first surviving Newline (not removed,
             // not in after_glue state) that has content after it — the same
