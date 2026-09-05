@@ -250,7 +250,8 @@ Two defects carried from the spike are fixed here, not later:
   sits in each view is an open ruling** (parked 2026-09-05, see
   `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
   split, a native companion in Single File view, and absent from
-  Continuous; the alternative on the table is one companion slot beside the
-  editor root, whichever view is showing.
+  Continuous. The direction noted (not ruled): Code keeps the tab,
+  Continuous swaps the Player in and out rather than splitting the
+  scroller, Single File may take a side-by-side split.
 - The `#3064` per-segment token path on the db road is the worker's
   business; the main thread uses `segment_file` directly and needs no db.

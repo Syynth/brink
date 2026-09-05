@@ -105,11 +105,13 @@ hover, completions, and `cmd-s` save. The edit → analyze → diagnostics path
 - **Where the Player sits in each view.** Today it is three different
   answers: a session *document* in a Code-view split (ruled 2026-06-10), a
   companion split *native to* Single File view, and absent from Continuous.
-  The maintainer wants to revisit this — the leading alternative is the
-  Player as a companion of the editor root rather than of any one view (one
-  slot beside whichever view is showing) — but ruled "later, but just note
-  that". Do not build the native Player into any view until it is settled;
-  the three-view work leaves the companion slot as a placeholder.
+  The maintainer's direction, noted for later rather than ruled: **Code** —
+  a tab is fine, as today; **Continuous** — it has to *swap in and out*,
+  because the manuscript is one scroller and a permanent split fights the
+  scrolling; **Single File** — "a side-by-side split, maybe". So it is
+  per-view, not one root-level companion. Do not build the native Player
+  into any view until this is settled; the three-view work leaves the
+  companion slot as a placeholder.
 
 ## Deliberately not done
 
