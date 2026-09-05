@@ -101,7 +101,7 @@ pub fn link(
     if data.containers.is_empty() {
         return Err(RuntimeError::NoRootContainer);
     }
-    let link = link_static_targets(&containers, &address_map);
+    let link = link_static_operands(&containers, &address_map, &global_map);
 
     let root_idx = 0;
 
@@ -279,9 +279,10 @@ pub fn link(
     Ok((program, line_tables))
 }
 
-/// Resolve every static jump/call operand once and write its ordinal into a
-/// linked copy of each container's code — see `LinkTables` for the layout
-/// and the rulings it serves.
+/// Resolve every static operand once and write its resolved form into a
+/// linked copy of each container's code — a target's ordinal in
+/// `LinkTables::targets`, a global's slot index — see `LinkTables` for the
+/// layout and the rulings it serves.
 ///
 /// Ordinals are assigned in walk order (container by container, instruction
 /// by instruction), so two links of the same data produce the same table.
@@ -292,11 +293,12 @@ pub fn link(
     clippy::cast_possible_truncation,
     reason = "a target ordinal indexes a Vec built here; it cannot exceed u32"
 )]
-fn link_static_targets(
+fn link_static_operands(
     containers: &[LinkedContainer],
     address_map: &HashMap<DefinitionId, (u32, usize)>,
+    global_map: &HashMap<DefinitionId, u32>,
 ) -> LinkTables {
-    use brink_format::Opcode;
+    use brink_format::{Opcode, StaticKind};
 
     let mut targets: Vec<LinkedTarget> = Vec::new();
     let mut ordinals: HashMap<DefinitionId, u32> = HashMap::new();
@@ -306,35 +308,44 @@ fn link_static_targets(
         let mut linked = symbolic.clone();
         let mut offset = 0;
         while offset < symbolic.len() {
-            let site = Opcode::peek_target(symbolic, offset);
+            let site = Opcode::peek_static(symbolic, offset);
             let Ok(op) = Opcode::decode(symbolic, &mut offset) else {
                 break;
             };
             let Some(site) = site else {
                 continue;
             };
-            let (Opcode::Goto(id)
-            | Opcode::GotoIf(id)
-            | Opcode::EnterContainer(id)
-            | Opcode::Call(id)
-            | Opcode::TunnelCall(id)
-            | Opcode::ThreadCall(id)
-            | Opcode::BeginChoice(_, id)) = op
-            else {
-                continue;
+            let resolved = match (site.kind, op) {
+                (
+                    StaticKind::Target(_),
+                    Opcode::Goto(id)
+                    | Opcode::GotoIf(id)
+                    | Opcode::EnterContainer(id)
+                    | Opcode::Call(id)
+                    | Opcode::TunnelCall(id)
+                    | Opcode::ThreadCall(id)
+                    | Opcode::BeginChoice(_, id),
+                ) => address_map.get(&id).map(|&(container_idx, target_offset)| {
+                    *ordinals.entry(id).or_insert_with(|| {
+                        targets.push(LinkedTarget {
+                            container_idx,
+                            offset: target_offset,
+                            id,
+                        });
+                        (targets.len() - 1) as u32
+                    })
+                }),
+                // A global's linked operand is its slot index — `globals`
+                // is already dense, so no table is needed.
+                (
+                    StaticKind::Global(_),
+                    Opcode::GetGlobal(id) | Opcode::SetGlobal(id) | Opcode::TakeGlobal(id),
+                ) => global_map.get(&id).copied(),
+                _ => None,
             };
-            let Some(&(container_idx, target_offset)) = address_map.get(&id) else {
-                continue;
-            };
-            let ordinal = *ordinals.entry(id).or_insert_with(|| {
-                targets.push(LinkedTarget {
-                    container_idx,
-                    offset: target_offset,
-                    id,
-                });
-                (targets.len() - 1) as u32
-            });
-            linked[site.operand..site.end].copy_from_slice(&linked_operand(ordinal));
+            if let Some(operand) = resolved {
+                linked[site.operand..site.end].copy_from_slice(&linked_operand(operand));
+            }
         }
         code.push(linked);
     }
@@ -379,6 +390,28 @@ Side thread.
             .data
     }
 
+    /// Walk a container's symbolic bytecode, yielding each static-global
+    /// site with the id its operand carries.
+    fn global_sites(bytecode: &[u8]) -> Vec<(brink_format::StaticSite, DefinitionId)> {
+        let mut out = Vec::new();
+        let mut off = 0;
+        while off < bytecode.len() {
+            let site = Opcode::peek_static(bytecode, off);
+            let op = Opcode::decode(bytecode, &mut off).expect("symbolic bytecode decodes");
+            let Some(site) = site else { continue };
+            if !matches!(site.kind, brink_format::StaticKind::Global(_)) {
+                continue;
+            }
+            let (Opcode::GetGlobal(id) | Opcode::SetGlobal(id) | Opcode::TakeGlobal(id)) = op
+            else {
+                continue;
+            };
+            assert_eq!(site.end, off);
+            out.push((site, id));
+        }
+        out
+    }
+
     /// Walk a container's symbolic bytecode, yielding each static-target
     /// site with the id its operand carries.
     fn target_sites(bytecode: &[u8]) -> Vec<(brink_format::TargetSite, DefinitionId)> {
@@ -420,6 +453,7 @@ Side thread.
         assert_eq!(program.link.code.len(), program.containers.len());
 
         let mut sites_seen = 0;
+        let mut globals_seen = 0;
         let mut kinds = alloc::collections::BTreeSet::new();
         for (i, container) in program.containers.iter().enumerate() {
             let symbolic = &container.bytecode;
@@ -431,6 +465,15 @@ Side thread.
             assert_eq!(symbolic.len(), linked.len(), "same length, same offsets");
 
             let mut rewritten = alloc::vec![false; symbolic.len()];
+            for (site, id) in global_sites(symbolic) {
+                globals_seen += 1;
+                let slot = program.global_map.get(&id).copied();
+                let linked_slot = linked_ordinal(&linked[site.operand..site.end]);
+                assert_eq!(slot, linked_slot, "global site {site:?} for {id}");
+                if linked_slot.is_some() {
+                    rewritten[site.operand..site.end].fill(true);
+                }
+            }
             for (site, id) in target_sites(symbolic) {
                 sites_seen += 1;
                 kinds.insert(
@@ -465,6 +508,10 @@ Side thread.
         assert!(
             sites_seen >= 6,
             "the story exercises several targets: {sites_seen}"
+        );
+        assert!(
+            globals_seen >= 2,
+            "the story reads and writes a global: {globals_seen}"
         );
         for kind in ["Goto", "Call", "TunnelCall", "ThreadCall", "BeginChoice"] {
             assert!(kinds.contains(kind), "story exercises {kind}: {kinds:?}");

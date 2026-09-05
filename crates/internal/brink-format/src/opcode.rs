@@ -1736,6 +1736,36 @@ pub enum Opcode {
 
 // ── Opcode encode / decode ──────────────────────────────────────────────────
 
+// `Opcode::peek_static`'s classification table: discriminant byte → one of
+// the `CLASS_*` codes below, `0` for every instruction that carries no
+// static operand. Built once, at compile time, from the same constants the
+// encoder uses, so it cannot drift from them.
+const CLASS_GOTO: u8 = 1;
+const CLASS_GOTO_IF: u8 = 2;
+const CLASS_ENTER_CONTAINER: u8 = 3;
+const CLASS_CALL: u8 = 4;
+const CLASS_TUNNEL_CALL: u8 = 5;
+const CLASS_THREAD_CALL: u8 = 6;
+const CLASS_BEGIN_CHOICE: u8 = 7;
+const CLASS_GET_GLOBAL: u8 = 8;
+const CLASS_SET_GLOBAL: u8 = 9;
+const CLASS_TAKE_GLOBAL: u8 = 10;
+
+const STATIC_CLASS: [u8; 256] = {
+    let mut table = [0u8; 256];
+    table[GOTO as usize] = CLASS_GOTO;
+    table[GOTO_IF as usize] = CLASS_GOTO_IF;
+    table[ENTER_CONTAINER as usize] = CLASS_ENTER_CONTAINER;
+    table[CALL as usize] = CLASS_CALL;
+    table[TUNNEL_CALL as usize] = CLASS_TUNNEL_CALL;
+    table[THREAD_CALL as usize] = CLASS_THREAD_CALL;
+    table[BEGIN_CHOICE as usize] = CLASS_BEGIN_CHOICE;
+    table[GET_GLOBAL as usize] = CLASS_GET_GLOBAL;
+    table[SET_GLOBAL as usize] = CLASS_SET_GLOBAL;
+    table[TAKE_GLOBAL as usize] = CLASS_TAKE_GLOBAL;
+    table
+};
+
 /// The static-target instructions: each carries exactly one `DefinitionId`
 /// operand, and that operand names the address the instruction jumps to or
 /// calls. See [`Opcode::peek_target`].
@@ -1757,6 +1787,36 @@ pub enum TargetKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetSite {
     pub kind: TargetKind,
+    pub operand: usize,
+    pub end: usize,
+}
+
+/// The static-global instructions: each carries exactly one `DefinitionId`
+/// operand naming the global variable it reads or writes. `PushVarPointer`
+/// is deliberately not one — its operand becomes a `Value::VariablePointer`
+/// the story can hold and pass around, so it must stay an id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalKind {
+    Get,
+    Set,
+    Take,
+}
+
+/// Every instruction whose sole `DefinitionId` operand is static — a jump
+/// or call address, or a global variable — as [`Opcode::peek_static`]
+/// classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticKind {
+    Target(TargetKind),
+    Global(GlobalKind),
+}
+
+/// Where a static-operand instruction's operand sits: `buf[operand..end]`
+/// holds the `DefinitionId` (or the linked layer's replacement for it), and
+/// `end` is the offset of the next instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticSite {
+    pub kind: StaticKind,
     pub operand: usize,
     pub end: usize,
 }
@@ -2153,9 +2213,9 @@ impl Opcode {
     /// The width of a static-target operand: one `DefinitionId`.
     pub const TARGET_OPERAND_LEN: usize = 8;
 
-    /// Classify the instruction at `buf[offset]` as a static-target
-    /// instruction — one whose only `DefinitionId` operand names a jump or
-    /// call address — and locate that operand, **without decoding it**.
+    /// Classify the instruction at `buf[offset]` as one whose only
+    /// `DefinitionId` operand is static — a jump/call address or a global
+    /// variable — and locate that operand, **without decoding it**.
     ///
     /// This is an encoding fact about the instruction stream, offered to the
     /// runtime's linker: it resolves each such operand once and, in its own
@@ -2166,23 +2226,50 @@ impl Opcode {
     /// own dispatch. Returns `None` for any other instruction, and for a
     /// truncated buffer.
     #[must_use]
-    pub fn peek_target(buf: &[u8], offset: usize) -> Option<TargetSite> {
-        let disc = *buf.get(offset)?;
-        let (kind, operand) = match disc {
-            GOTO => (TargetKind::Goto, offset + 1),
-            GOTO_IF => (TargetKind::GotoIf, offset + 1),
-            ENTER_CONTAINER => (TargetKind::EnterContainer, offset + 1),
-            CALL => (TargetKind::Call, offset + 1),
-            TUNNEL_CALL => (TargetKind::TunnelCall, offset + 1),
-            THREAD_CALL => (TargetKind::ThreadCall, offset + 1),
-            BEGIN_CHOICE => {
+    #[inline]
+    pub fn peek_static(buf: &[u8], offset: usize) -> Option<StaticSite> {
+        // One table load decides the common case (not a static-operand
+        // instruction) — this runs on every VM fetch, so a sparse `match`
+        // over the discriminants is too expensive here.
+        let class = STATIC_CLASS[*buf.get(offset)? as usize];
+        if class == 0 {
+            return None;
+        }
+        let (kind, operand) = match class {
+            CLASS_GOTO => (StaticKind::Target(TargetKind::Goto), offset + 1),
+            CLASS_GOTO_IF => (StaticKind::Target(TargetKind::GotoIf), offset + 1),
+            CLASS_ENTER_CONTAINER => (StaticKind::Target(TargetKind::EnterContainer), offset + 1),
+            CLASS_CALL => (StaticKind::Target(TargetKind::Call), offset + 1),
+            CLASS_TUNNEL_CALL => (StaticKind::Target(TargetKind::TunnelCall), offset + 1),
+            CLASS_THREAD_CALL => (StaticKind::Target(TargetKind::ThreadCall), offset + 1),
+            CLASS_BEGIN_CHOICE => {
                 let flags = ChoiceFlags::from_byte(*buf.get(offset + 1)?);
-                (TargetKind::BeginChoice(flags), offset + 2)
+                (
+                    StaticKind::Target(TargetKind::BeginChoice(flags)),
+                    offset + 2,
+                )
             }
+            CLASS_GET_GLOBAL => (StaticKind::Global(GlobalKind::Get), offset + 1),
+            CLASS_SET_GLOBAL => (StaticKind::Global(GlobalKind::Set), offset + 1),
+            CLASS_TAKE_GLOBAL => (StaticKind::Global(GlobalKind::Take), offset + 1),
             _ => return None,
         };
         let end = operand + Self::TARGET_OPERAND_LEN;
-        (end <= buf.len()).then_some(TargetSite { kind, operand, end })
+        (end <= buf.len()).then_some(StaticSite { kind, operand, end })
+    }
+
+    /// [`Self::peek_static`] restricted to the jump/call targets.
+    #[must_use]
+    pub fn peek_target(buf: &[u8], offset: usize) -> Option<TargetSite> {
+        let site = Self::peek_static(buf, offset)?;
+        match site.kind {
+            StaticKind::Target(kind) => Some(TargetSite {
+                kind,
+                operand: site.operand,
+                end: site.end,
+            }),
+            StaticKind::Global(_) => None,
+        }
     }
 
     /// Decode a single instruction from `buf` starting at `*offset`.
@@ -2526,6 +2613,39 @@ mod tests {
             Opcode::peek_target(&buf, starts[4]),
             None,
             "Nop is not a target op"
+        );
+
+        // Globals classify under `peek_static` only; a variable pointer is
+        // not static at all.
+        let mut gbuf = Vec::new();
+        Opcode::GetGlobal(test_id()).encode(&mut gbuf);
+        let set_at = gbuf.len();
+        Opcode::SetGlobal(test_id()).encode(&mut gbuf);
+        let take_at = gbuf.len();
+        Opcode::TakeGlobal(test_id()).encode(&mut gbuf);
+        let ptr_at = gbuf.len();
+        Opcode::PushVarPointer(test_id()).encode(&mut gbuf);
+        assert_eq!(
+            Opcode::peek_static(&gbuf, 0).map(|s| (s.kind, s.operand, s.end)),
+            Some((StaticKind::Global(GlobalKind::Get), 1, set_at))
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, set_at).map(|s| s.kind),
+            Some(StaticKind::Global(GlobalKind::Set))
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, take_at).map(|s| s.kind),
+            Some(StaticKind::Global(GlobalKind::Take))
+        );
+        assert_eq!(
+            Opcode::peek_target(&gbuf, 0),
+            None,
+            "a global is not a target"
+        );
+        assert_eq!(
+            Opcode::peek_static(&gbuf, ptr_at),
+            None,
+            "PushVarPointer stays symbolic"
         );
         assert_eq!(Opcode::peek_target(&buf, buf.len()), None, "past the end");
         assert_eq!(
