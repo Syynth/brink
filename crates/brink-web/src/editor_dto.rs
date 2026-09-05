@@ -1330,89 +1330,10 @@ mod explain_match_to_js_tests {
 }
 
 /// The author-facing grouping for the codes a project can actually
-/// configure (#3169/#3148).
-///
-/// **This is a UI taxonomy, and it is deliberately not on `DiagnosticCode`.**
-/// The enum IS sectioned by comment, but into 37 sections named after the
-/// milestone that added each code — `B0.6 native frontend`, `Lambda
-/// lifting, LIR (issue #1709 review)`. That is developer organisation, and
-/// showing it to an author would be nonsense. So this groups by what a
-/// diagnostic is ABOUT, read from its title, not by where it sits in the
-/// enum.
-///
-/// Only OVERRIDABLE codes appear: those are the only ones `[lints]` can
-/// set, so they are the only ones the settings section lists. A new
-/// overridable code with no entry here fails
-/// `every_overridable_code_has_a_category` rather than quietly landing in
-/// a fallback bucket — assigning it is a judgement someone should make,
-/// not a default.
-const CATEGORIES: &[(&str, &str)] = &[
-    // Where the story goes next.
-    ("E033", "Flow"),
-    ("E131", "Flow"),
-    // The shape of a choice point.
-    ("E034", "Choices"),
-    ("E151", "Choices"),
-    ("E195", "Choices"),
-    // `~` lines and what they evaluate to.
-    ("E014", "Logic"),
-    ("E030", "Logic"),
-    // A `~ temp` read on a path its declaration does not dominate (#3354).
-    // "Logic" rather than "Names & shadowing": the name resolves fine — it
-    // is the same frame's slot — and what is wrong is *when* the `~ temp`
-    // line runs relative to the read.
-    ("E193", "Logic"),
-    // Calling something, and with what.
-    ("E031", "Functions & calls"),
-    ("E176", "Functions & calls"),
-    // Two things claiming one name.
-    ("E022", "Names & shadowing"),
-    ("E023", "Names & shadowing"),
-    ("E026", "Names & shadowing"),
-    ("E035", "Names & shadowing"),
-    ("E054", "Names & shadowing"),
-    ("E188", "Names & shadowing"),
-    // Annotations, inference, key domains.
-    ("E063", "Types"),
-    ("E106", "Types"),
-    ("E152", "Types"),
-    // Module boundaries and what crosses them.
-    ("E092", "Modules & visibility"),
-    ("E095", "Modules & visibility"),
-    ("E132", "Modules & visibility"),
-    ("E190", "Modules & visibility"),
-    // `@[convention(…)]` handlers competing for the same prose.
-    ("E168", "Conventions"),
-    ("E170", "Conventions"),
-    // Inline markup checked against the host manifest.
-    ("E164", "Host markup"),
-    ("E165", "Host markup"),
-    ("E173", "Host markup"),
-    // `///` tags on declarations.
-    ("E038", "Doc comments"),
-    ("E043", "Doc comments"),
-    // Spellings that still work but have been superseded.
-    ("E110", "Deprecated spellings"),
-    ("E172", "Deprecated spellings"),
-    // The advisory tiers. `Info`-default codes are overridable too — an
-    // author who does not want TODO notes reported has no other lever
-    // (ruled 2026-08-27, #3173).
-    ("E157", "Author notes"),
-    ("E189", "Author notes"),
-    // The `// brink-…` comment channel itself. Its own group rather than
-    // folded into "Deprecated spellings": the bare `// brink-disable-file`
-    // IS a superseded spelling, but E192 also covers a directive that was
-    // never valid (`// brink-disable-fil E027`), and grouping by "how the
-    // author got it wrong" would put those two in different places.
-    ("E192", "Suppression directives"),
-    // The compat-deny tier (#3373): brink accepts a construct inklecate
-    // rejects outright. Its own group rather than folded into "Logic" or
-    // "Names & shadowing": what unites current and future members is not
-    // what kind of mistake it is (there may be none — the program plays
-    // correctly) but that ink's own compiler draws a line brink doesn't.
-    ("E194", "Ink compatibility"),
-];
-
+/// configure (#3169/#3148) lives in
+/// `brink_ide::diagnostic_registry::CATEGORIES`, where the native studio
+/// reads the same table — see that module for why it is a UI taxonomy and
+/// deliberately not on `DiagnosticCode`.
 /// One diagnostic code, as the settings UI needs it (#3169).
 #[derive(serde::Serialize)]
 pub struct DiagnosticInfoJs {
@@ -1432,7 +1353,8 @@ pub struct DiagnosticInfoJs {
     /// blank panel by forgetting to check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
-    /// The author-facing group this belongs to — see [`CATEGORIES`].
+    /// The author-facing group this belongs to — see
+    /// `brink_ide::diagnostic_registry::CATEGORIES`.
     /// Present only for overridable codes, which are the only ones the
     /// settings section lists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1458,13 +1380,13 @@ pub struct DiagnosticInfoJs {
 #[wasm_bindgen]
 #[must_use]
 pub fn diagnostic_registry() -> String {
-    use brink_ir::hir::{DiagnosticCode, Severity};
-    let rows: Vec<DiagnosticInfoJs> = DiagnosticCode::ALL
-        .iter()
-        .map(|code| DiagnosticInfoJs {
-            code: code.as_str().to_owned(),
-            title: code.title().to_owned(),
-            default_severity: match code.severity() {
+    use brink_ir::hir::Severity;
+    let rows: Vec<DiagnosticInfoJs> = brink_ide::diagnostic_registry::registry()
+        .into_iter()
+        .map(|info| DiagnosticInfoJs {
+            code: info.code.as_str().to_owned(),
+            title: info.title.to_owned(),
+            default_severity: match info.default_severity {
                 Severity::Error => "error",
                 Severity::Warning => "warning",
                 // Hint joins Info: the Problems panel already buckets them
@@ -1473,13 +1395,10 @@ pub fn diagnostic_registry() -> String {
                 Severity::Info | Severity::Hint => "info",
             }
             .to_owned(),
-            overridable: code.is_overridable(),
-            explanation: code.explanation().map(str::to_owned),
-            category: CATEGORIES
-                .iter()
-                .find(|(c, _)| *c == code.as_str())
-                .map(|(_, group)| (*group).to_owned()),
-            surfaces: if code.is_native_only() {
+            overridable: info.overridable,
+            explanation: info.explanation.map(str::to_owned),
+            category: info.category.map(str::to_owned),
+            surfaces: if info.native_only {
                 vec!["native".to_owned()]
             } else {
                 vec!["ink".to_owned(), "native".to_owned()]
@@ -1616,7 +1535,7 @@ mod diagnostic_registry_tests {
         assert!(
             uncategorised.is_empty(),
             "overridable codes with no category: {uncategorised:?} \
-             — add them to CATEGORIES in editor_dto.rs"
+             — add them to CATEGORIES in brink-ide's diagnostic_registry.rs"
         );
     }
 
