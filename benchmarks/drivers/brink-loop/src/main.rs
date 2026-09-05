@@ -179,10 +179,86 @@ snapshot_cache_hits={} snapshot_cache_misses={} materializations={}",
         s.snapshot_cache_misses,
         s.materializations,
     );
+    #[cfg(feature = "histogram")]
+    if args.iter().any(|a| a == "--histogram") {
+        print_histogram(&data, &s);
+    }
+
     assert!(
         drift == 0,
         "brink-loop: {drift} of {iterations} iterations dispatched a different \
          opcode/step count from the first — the VM is nondeterministic on this \
          story, and every counter above is meaningless until that is fixed"
     );
+}
+
+/// Print the executed-opcode and opcode-pair histograms, naming each
+/// discriminant by decoding the artifact's symbolic bytecode once.
+#[cfg(feature = "histogram")]
+fn print_histogram(data: &brink_format::StoryData, stats: &brink_runtime::Stats) {
+    use brink_format::Opcode;
+    use std::collections::BTreeMap;
+
+    let mut names: BTreeMap<u8, String> = BTreeMap::new();
+    for container in &data.containers {
+        let code = &container.bytecode;
+        let mut off = 0;
+        while off < code.len() {
+            let disc = code[off];
+            match Opcode::decode(code, &mut off) {
+                Ok(op) => {
+                    // The variant name alone: `Debug` prints `Goto(...)` /
+                    // `MakeClosure { .. }` / `Nop`.
+                    let dbg = format!("{op:?}");
+                    let variant = dbg.split(['(', '{', ' ']).next().unwrap_or("?").to_owned();
+                    names.entry(disc).or_insert(variant);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    let name = |d: u8| names.get(&d).map_or("?", String::as_str);
+
+    let total: u64 = stats.opcode_hist.iter().sum();
+    let mut ops: Vec<(u64, u8)> = stats
+        .opcode_hist
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c > 0)
+        .map(|(d, &c)| (c, d as u8))
+        .collect();
+    ops.sort_by(|a, b| b.cmp(a));
+    eprintln!(
+        "brink-loop-histogram: {total} opcodes, {} distinct",
+        ops.len()
+    );
+    let mut cum = 0u64;
+    for (c, d) in ops.iter().take(30) {
+        cum += c;
+        eprintln!(
+            "  {:>9}  {:>5.1}%  cum {:>5.1}%  {}",
+            c,
+            *c as f64 * 100.0 / total as f64,
+            cum as f64 * 100.0 / total as f64,
+            name(*d)
+        );
+    }
+    let mut pairs: Vec<(u64, u8, u8)> = stats
+        .bigram_hist
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c > 0)
+        .map(|(i, &c)| (c, (i >> 8) as u8, (i & 0xff) as u8))
+        .collect();
+    pairs.sort_by(|a, b| b.cmp(a));
+    eprintln!("brink-loop-histogram: top pairs");
+    for (c, a, b) in pairs.iter().take(30) {
+        eprintln!(
+            "  {:>9}  {:>5.1}%  {} -> {}",
+            c,
+            *c as f64 * 100.0 / total as f64,
+            name(*a),
+            name(*b)
+        );
+    }
 }
