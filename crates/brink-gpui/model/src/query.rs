@@ -16,15 +16,35 @@
 //! the boundary. The mapping onto `lsp_types` lives with the editor that
 //! consumes it, so it exists once.
 
+use brink_ide::passage::PassageOrigin;
 use brink_ir::SymbolKind;
 
 /// What the UI wants to know.
 #[derive(Debug, Clone)]
 pub enum QueryKind {
-    Hover { path: String, offset: u32 },
-    Completions { path: String, offset: u32 },
-    DocumentSymbols { path: String },
-    InlayHints { path: String },
+    Hover {
+        path: String,
+        offset: u32,
+    },
+    Completions {
+        path: String,
+        offset: u32,
+    },
+    DocumentSymbols {
+        path: String,
+    },
+    InlayHints {
+        path: String,
+    },
+    /// Every knot and stitch in the project — the Conventions editor's
+    /// passage picker (ruled 2026-09-02: sample lines come from a
+    /// knot/stitch selector).
+    PassageIndex,
+    /// The content lines of `path` (`knot` or `knot.stitch`), as the
+    /// author would mark them.
+    Passage {
+        path: String,
+    },
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -36,7 +56,30 @@ pub enum QueryResult {
     Completions(Vec<Completion>),
     DocumentSymbols(Vec<Symbol>),
     InlayHints(Vec<InlayHint>),
+    PassageIndex(Vec<PassageSymbol>),
+    /// `None` when the path names nothing in the project.
+    Passage(Option<Vec<PassageLine>>),
     Unavailable,
+}
+
+/// One entry of the passage picker: `knot` or `knot.stitch`, and the file
+/// that declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassageSymbol {
+    pub path: String,
+    pub is_stitch: bool,
+    pub file: String,
+}
+
+/// One content line of a passage, with the file it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassageLine {
+    pub text: String,
+    pub tags: Vec<String>,
+    /// Zero-based source line.
+    pub line: u32,
+    pub origin: PassageOrigin,
+    pub file: String,
 }
 
 /// A parameter-name hint, drawn inside the line although the buffer does
@@ -100,7 +143,75 @@ pub(crate) fn answer(session: &brink_ide::session::IdeSession, kind: &QueryKind)
             Some(found) => QueryResult::InlayHints(found),
             None => QueryResult::Unavailable,
         },
+        QueryKind::PassageIndex => QueryResult::PassageIndex(passage_index(session)),
+        QueryKind::Passage { path } => QueryResult::Passage(passage(session, path)),
     }
+}
+
+/// Every knot and stitch of the author's files, in file order then
+/// declaration order — the mounted stdlib is not the author's to mark.
+fn passage_index(session: &brink_ide::session::IdeSession) -> Vec<PassageSymbol> {
+    let mut files: Vec<(String, brink_db::FileId)> = session
+        .db()
+        .file_ids()
+        .filter(|id| !session.is_mounted_std(*id))
+        .filter_map(|id| Some((session.db().file_path(id)?.to_owned(), id)))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for (file, id) in files {
+        let Some(hir) = session.hir(id) else {
+            continue;
+        };
+        for knot in &hir.knots {
+            out.push(PassageSymbol {
+                path: knot.name.text.clone(),
+                is_stitch: false,
+                file: file.clone(),
+            });
+            for stitch in &knot.stitches {
+                out.push(PassageSymbol {
+                    path: format!("{}.{}", knot.name.text, stitch.name.text),
+                    is_stitch: true,
+                    file: file.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The passage at `path`, found in whichever file declares it.
+fn passage(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<PassageLine>> {
+    for id in session.db().file_ids() {
+        if session.is_mounted_std(id) {
+            continue;
+        }
+        let Some(hir) = session.hir(id) else {
+            continue;
+        };
+        let source = session.source(id).unwrap_or("");
+        let Some(contexts) = session.line_contexts(id) else {
+            continue;
+        };
+        let Some(lines) = brink_ide::passage::passage_lines(hir, source, &contexts, path) else {
+            continue;
+        };
+        let file = session.db().file_path(id).unwrap_or("").to_owned();
+        return Some(
+            lines
+                .into_iter()
+                .map(|l| PassageLine {
+                    text: l.text,
+                    tags: l.tags,
+                    line: l.line,
+                    origin: l.origin,
+                    file: file.clone(),
+                })
+                .collect(),
+        );
+    }
+    None
 }
 
 fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<InlayHint>> {

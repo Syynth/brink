@@ -14,6 +14,7 @@ mod problems;
 mod project;
 mod search;
 mod settings_config;
+mod settings_conventions;
 mod settings_diagnostics;
 mod settings_formatting;
 mod settings_general;
@@ -41,6 +42,7 @@ use crate::continuous::ContinuousView;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
+use crate::settings_conventions::ConventionsSection;
 use crate::settings_diagnostics::DiagnosticsSection;
 use crate::settings_formatting::FormattingSection;
 use crate::settings_general::{GeneralSection, OpenConfig};
@@ -88,6 +90,7 @@ impl Studio {
         let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
         let prose = cx.new(|cx| ProseSection::new(project.clone(), window, cx));
+        let conventions = cx.new(|cx| ConventionsSection::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
             // The Project scope: the shell owns the App sections, and this
@@ -154,6 +157,24 @@ impl Studio {
                     ],
                 ),
                 prose.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "conventions",
+                    Scope::Project,
+                    "Conventions",
+                    &[
+                        "dialogue",
+                        "dialect",
+                        "cue",
+                        "speaker",
+                        "screenplay",
+                        "teach",
+                        "rules",
+                        "character",
+                    ],
+                ),
+                conventions.clone(),
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)

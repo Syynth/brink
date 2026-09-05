@@ -852,6 +852,7 @@ dependencies = [
  "lsp-types",
  "regex",
  "rowan",
+ "serde_json",
 ]
 
 [[package]]
@@ -898,6 +899,7 @@ dependencies = [
  "brink-project-config",
  "brink-syntax",
  "brink-syntax-native",
+ "regex",
  "rowan",
  "serde",
  "serde_json",

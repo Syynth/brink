@@ -155,6 +155,11 @@ pub struct Analyzed {
     /// closure exists, when every list is empty and "matches nothing" would
     /// be the wrong reading.
     pub drafts_known: bool,
+    /// The resolved `[dialogue]` dialect, or `None` when the config
+    /// declares none (or it failed — see `dialogue_error`).
+    pub dialogue: Option<brink_ir::DialogueDialect>,
+    /// Why `[dialogue]` did not resolve, if it did not.
+    pub dialogue_error: Option<String>,
     pub elapsed_ms: f64,
 }
 
@@ -177,8 +182,16 @@ pub struct Analyzed {
 /// (the studio's #3391 shape) and clears with the next parse that succeeds.
 #[derive(Debug, Default)]
 pub struct ConfigState {
+    root: PathBuf,
     /// Root-relative key of the config file, if the project has one.
     path: Option<String>,
+    /// The config text as last applied (or last attempted).
+    text: String,
+    /// Project files the mirror holds that are neither sources nor the
+    /// config — the `[dialogue]` artifact (`dialect.json`) above all. The
+    /// session never sees them as documents; the config's reader serves
+    /// them from here (an unsaved edit wins) and then from the disk.
+    artifacts: BTreeMap<String, String>,
     entry: Option<String>,
     /// The applied config's warnings, unprefixed.
     warnings: Vec<String>,
@@ -339,8 +352,14 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                 } => {
                     if config.path.as_deref() == Some(path.as_str()) {
                         apply_config_text(&mut session, &mut config, &text);
-                    } else {
+                    } else if session.file_id(&path).is_some() {
                         session.update_source(&path, text);
+                    } else {
+                        // Not a source: an artifact the config may point
+                        // at, so the config is applied again with it.
+                        config.artifacts.insert(path, text);
+                        let current = config.text.clone();
+                        apply_config_text(&mut session, &mut config, &current);
                     }
                     revision = revision.max(rev);
                     edited = true;
@@ -468,7 +487,10 @@ fn load_config(
     root: &Path,
     files: &[String],
 ) -> (Option<ConfigFile>, ConfigState) {
-    let mut state = ConfigState::default();
+    let mut state = ConfigState {
+        root: root.to_path_buf(),
+        ..ConfigState::default()
+    };
     let tree = brink_driver::RealFs::new(root);
     let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, &files[0]) else {
         return (None, state);
@@ -489,6 +511,7 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
     let Some(path) = state.path.clone() else {
         return;
     };
+    state.text = text.to_owned();
     match brink_project_config::parse_str_at(path.clone(), text) {
         Ok((config, parsed)) => {
             let mut warnings: Vec<String> = parsed.into_iter().map(|w| w.0).collect();
@@ -502,7 +525,21 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
             let dialect = config.dialect.unwrap_or_default();
             session.set_language_dialect(dialect);
             session.set_type_policy(brink_analyzer::resolve_type_policy(dialect, config.types));
-            warnings.extend(session.apply_project_config(&config, true, true, Some(&config_dir)));
+            let root = state.root.clone();
+            let artifacts = state.artifacts.clone();
+            let read_file = |key: &str| -> Option<String> {
+                artifacts
+                    .get(key)
+                    .cloned()
+                    .or_else(|| std::fs::read_to_string(root.join(key)).ok())
+            };
+            warnings.extend(session.apply_project_config_with_reader(
+                &config,
+                true,
+                true,
+                Some(&config_dir),
+                &read_file,
+            ));
             state.entry.clone_from(&config.entry);
             state.warnings = warnings;
             state.error = None;
@@ -614,6 +651,8 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
             })
             .collect(),
         drafts_known: report.compiled,
+        dialogue: session.project_settings().dialogue.clone(),
+        dialogue_error: session.project_settings().dialogue_error.clone(),
         elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
     }
 }

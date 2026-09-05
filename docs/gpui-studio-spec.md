@@ -387,10 +387,24 @@ writing 4, since only an absent key follows a later change to the
 default — and the tabs-vs-spaces row shown disabled as "not ruled".
 **Prose** (`settings_prose.rs`) is `[prose] enable`, the dialect select
 (read from the `[prose]` table by name, never `[project] dialect`), and
-the dictionary in the list shape. **Conventions** is not ported: the
-studio's teach-by-example editor infers a `[dialogue]` dialect in
-TypeScript (`@brink-lang/editor`'s `inferDialect`), and a native section
-needs that inference in Rust first.
+the dictionary in the list shape. **Conventions**
+(`settings_conventions.rs`) is the teach-by-example editor (ruled
+2026-09-02): the knot/stitch picker (the worker's `PassageIndex` and
+`Passage` queries over `brink_ide::passage`; typing narrows, focus lists
+all), five marks per line with choice text hidden by default, what was
+learned with its support counts, the Player preview folding runs under
+speaker headers, and "Use these rules" writing the `[dialogue]` section —
+asking first when the file's section was written or edited by hand. **Its
+engine is Rust** (the maintainer's call, 2026-09-05):
+`brink_ide::dialect_infer` holds the inference, the source and emitted
+parsers and the run rule, `brink_ide::dialogue_section` the stamped
+section writer; `@brink-lang/dialect`'s TypeScript is their mirror, held
+to one golden corpus duplicated in both suites, and the section hash is
+computed identically so a section either studio writes reads as its own
+in the other. The file form (`dialect.json`) is a project file the mirror
+holds like any other; the worker routes an edit to a non-source file into
+the config's artifact reader (`apply_project_config_with_reader`), so the
+artifact resolves before it is saved.
 
 ## 5. First slice
 
@@ -423,10 +437,10 @@ Two defects carried from the spike are fixed here, not later:
   which is what stops the echo. Dirty and save are per file, in the
   project — an edit in the manuscript is as unsaved as one in a tab, and
   one `cmd-s` writes both. Verified headless both directions.
-- Player, story graph, debugger; Settings ▸ Conventions (needs the
-  dialect inference in Rust — §4.8; General, Formatting, Diagnostics and
-  Prose landed 2026-09-05); Search's replace previews, context knob and
-  references mode. (Search's cards **are editors** over
+- Player, story graph, debugger; Search's replace previews, context knob
+  and references mode. (Settings' Project scope is complete as of
+  2026-09-05 — §4.8; the App-scope Editor section and the Problems panel's
+  "Configure Exxx…" door into Diagnostics are not.) (Search's cards **are editors** over
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
   windows edit-mapped through every change, `edited` badges, lazy
   per-card `EditorState`s.) **Where the Player

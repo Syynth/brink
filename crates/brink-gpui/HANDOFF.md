@@ -208,12 +208,27 @@ with Reset appearing, a word added and removed, the dialect picked.
 edit a beat late (a screenshot 1 s after a click can show the previous
 state; wait ~3 s or nudge the pointer), and a scratch `settings.json`
 from a keymap test can carry `"File: Save": null` — which is why `cmd-s`
-"did nothing" for twenty minutes here. **Not here yet**: Conventions (the
-studio's teach-by-example editor infers the `[dialogue]` dialect in
-TypeScript; a native section needs that in Rust), the Problems row menu's
-"Configure Exxx…" door into Diagnostics, and creating a `brink.toml` for a
-project that has none (the sections say so and stop; the worker would
-need to adopt a new config path).
+"did nothing" for twenty minutes here. **Not here yet**: the Problems row
+menu's "Configure Exxx…" door into Diagnostics, and creating a
+`brink.toml` for a project that has none (the sections say so and stop;
+the worker would need to adopt a new config path).
+
+**Conventions** (2026-09-05, `app/src/settings_conventions.rs`): the
+teach-by-example editor over `brink_ide::dialect_infer` +
+`dialogue_section` — the Rust port of `@brink-lang/dialect`'s inference
+and studio-store's section writer, made for this (the maintainer's call:
+the logic moves to Rust so the native studio can carry the UI). The golden
+corpus is duplicated in both suites; **a case added to one is added to the
+other.** The worker gained `PassageIndex`/`Passage` queries, carries the
+resolved dialect on every analysis, and routes an edit to a non-source
+file (`dialect.json`) into the config's artifact reader. Verified
+headless: the picker (typed filter, pick, choices hidden), six marks on
+the canvas sample, the four learned sentences with 2/2 · 2/2 · 1/1 · 3/3,
+the Player preview folding MARA's run, "Use these rules" writing the
+stamped `[dialogue]` table, the worker re-applying it ("Current
+conventions: at-cue"), and `cmd-s` writing the file. The kit's `Focus`
+input event did not open the list on the first click here, so the picker
+reads the field's focus handle at render instead.
 
 **Search** (2026-09-05, `app/src/search.rs`): the studio's engine (plain
 or regex, case, whole word, one composed pattern, 1000-match cap) over the

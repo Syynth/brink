@@ -108,6 +108,9 @@ pub struct Project {
     /// Per-glob attribution for `[project] drafts`, from the last analysis.
     draft_globs: Vec<DraftGlob>,
     drafts_known: bool,
+    /// The resolved `[dialogue]` dialect, from the last analysis.
+    dialogue: Option<brink_ir::DialogueDialect>,
+    dialogue_error: Option<String>,
     closure: BTreeSet<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
@@ -156,6 +159,8 @@ impl Project {
             drafts: BTreeSet::new(),
             draft_globs: Vec::new(),
             drafts_known: false,
+            dialogue: None,
+            dialogue_error: None,
             closure: BTreeSet::new(),
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -203,6 +208,8 @@ impl Project {
                 self.drafts = analyzed.drafts.into_iter().collect();
                 self.draft_globs = analyzed.draft_globs;
                 self.drafts_known = analyzed.drafts_known;
+                self.dialogue = analyzed.dialogue;
+                self.dialogue_error = analyzed.dialogue_error;
                 self.closure = analyzed.closure.into_iter().collect();
                 // The config can move the entry between analyses.
                 self.entry = analyzed.entry;
@@ -331,6 +338,13 @@ impl Project {
     #[must_use]
     pub fn is_config(&self, path: &str) -> bool {
         self.config.as_deref() == Some(path)
+    }
+
+    /// The project's resolved `[dialogue]` dialect, and why it failed to
+    /// resolve if it did — `(None, None)` for a project that declares none.
+    #[must_use]
+    pub fn dialogue(&self) -> (Option<&brink_ir::DialogueDialect>, Option<&str>) {
+        (self.dialogue.as_ref(), self.dialogue_error.as_deref())
     }
 
     /// `[project] drafts`, glob by glob, with what each currently matches
