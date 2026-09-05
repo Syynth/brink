@@ -677,6 +677,17 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
                 kind.mnemonic()
             )
         }
+        Opcode::GetTempBinaryImm(slot, kind, imm) => {
+            format!("get_temp_binary_imm {slot} kind={} {imm}", kind.mnemonic())
+        }
+        Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel) => format!(
+            "get_temp_binary_imm_jump_if_false {slot} kind={} {imm} {rel}",
+            kind.mnemonic()
+        ),
+        Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, rel) => format!(
+            "duplicate_binary_imm_jump_if_false kind={} {imm} {rel}",
+            kind.mnemonic()
+        ),
         Opcode::Spring => "spring".to_owned(),
         Opcode::Glue => "glue".to_owned(),
         Opcode::BeginTag => "begin_tag".to_owned(),

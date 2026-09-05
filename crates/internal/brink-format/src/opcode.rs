@@ -108,6 +108,14 @@ const BINARY_IMM: u8 = 0x6D;
 const BINARY_JUMP_IF_FALSE: u8 = 0x6E;
 const BINARY_IMM_JUMP_IF_FALSE: u8 = 0x6F;
 
+// Third family (`docs/optimizer-peephole.md` §1, the `left-operand-fold`
+// pass): the binary-immediate forms with the instruction that produced
+// their *left* operand folded in — a temp read, or a `Duplicate` (a peek at
+// the top of the stack). Optimizer-only.
+const GET_TEMP_BINARY_IMM: u8 = 0x70;
+const GET_TEMP_BINARY_IMM_JUMP_IF_FALSE: u8 = 0x71;
+const DUPLICATE_BINARY_IMM_JUMP_IF_FALSE: u8 = 0x74;
+
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
 const END_CHOICE: u8 = 0x73;
@@ -1380,6 +1388,20 @@ pub enum Opcode {
     /// as one instruction — the shape of every `if x <= 1` and `{ x == 3: }`
     /// in real stories. Operands are `(kind, imm, rel)`. Optimizer-only.
     BinaryImmJumpIfFalse(BinaryKind, i32, i32),
+    /// `GetTemp(slot); PushInt(imm); op` as one instruction: reads the temp
+    /// exactly as `GetTemp` does (pointer auto-dereference, the #3354
+    /// unwritten-slot default and warning) and pushes `left op imm`.
+    /// Operands are `(slot, kind, imm)`. Optimizer-only.
+    GetTempBinaryImm(u16, BinaryKind, i32),
+    /// `GetTemp(slot); PushInt(imm); op; JumpIfFalse(rel)` as one
+    /// instruction — every `if n <= 1` over a local. Operands are
+    /// `(slot, kind, imm, rel)`. Optimizer-only.
+    GetTempBinaryImmJumpIfFalse(u16, BinaryKind, i32, i32),
+    /// `Duplicate; PushInt(imm); op; JumpIfFalse(rel)` as one instruction:
+    /// compares the top of the stack against `imm` *without popping it* and
+    /// branches — the arm test of a switch-style `{ x: - 1: … - 2: … }`.
+    /// Operands are `(kind, imm, rel)`. Optimizer-only.
+    DuplicateBinaryImmJumpIfFalse(BinaryKind, i32, i32),
     /// Word break — renders as a single space between content parts.
     Spring,
     Glue,
@@ -2134,6 +2156,25 @@ impl Opcode {
                 write_i32(buf, imm);
                 write_i32(buf, rel);
             }
+            Self::GetTempBinaryImm(slot, kind, imm) => {
+                write_u8(buf, GET_TEMP_BINARY_IMM);
+                write_u16(buf, slot);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, imm);
+            }
+            Self::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel) => {
+                write_u8(buf, GET_TEMP_BINARY_IMM_JUMP_IF_FALSE);
+                write_u16(buf, slot);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, imm);
+                write_i32(buf, rel);
+            }
+            Self::DuplicateBinaryImmJumpIfFalse(kind, imm, rel) => {
+                write_u8(buf, DUPLICATE_BINARY_IMM_JUMP_IF_FALSE);
+                write_u8(buf, kind.to_byte());
+                write_i32(buf, imm);
+                write_i32(buf, rel);
+            }
             Self::Spring => write_u8(buf, SPRING),
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
@@ -2536,6 +2577,22 @@ impl Opcode {
                 let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
                 let imm = read_i32(buf, offset)?;
                 Self::BinaryImmJumpIfFalse(kind, imm, read_i32(buf, offset)?)
+            }
+            GET_TEMP_BINARY_IMM => {
+                let slot = read_u16(buf, offset)?;
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                Self::GetTempBinaryImm(slot, kind, read_i32(buf, offset)?)
+            }
+            GET_TEMP_BINARY_IMM_JUMP_IF_FALSE => {
+                let slot = read_u16(buf, offset)?;
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                let imm = read_i32(buf, offset)?;
+                Self::GetTempBinaryImmJumpIfFalse(slot, kind, imm, read_i32(buf, offset)?)
+            }
+            DUPLICATE_BINARY_IMM_JUMP_IF_FALSE => {
+                let kind = BinaryKind::from_byte(read_u8(buf, offset)?)?;
+                let imm = read_i32(buf, offset)?;
+                Self::DuplicateBinaryImmJumpIfFalse(kind, imm, read_i32(buf, offset)?)
             }
             SPRING => Self::Spring,
             GLUE => Self::Glue,
@@ -2968,6 +3025,9 @@ mod tests {
             roundtrip(&Opcode::BinaryImm(kind, -7));
             roundtrip(&Opcode::BinaryJumpIfFalse(kind, 300));
             roundtrip(&Opcode::BinaryImmJumpIfFalse(kind, i32::MIN, -12));
+            roundtrip(&Opcode::GetTempBinaryImm(0xBEEF, kind, 1));
+            roundtrip(&Opcode::GetTempBinaryImmJumpIfFalse(3, kind, -1, 0x7FFF));
+            roundtrip(&Opcode::DuplicateBinaryImmJumpIfFalse(kind, 2, -9));
             assert_eq!(BinaryKind::from_mnemonic(kind.mnemonic()), Some(kind));
         }
         assert_eq!(

@@ -341,6 +341,25 @@ fn assert_value_variants_exhaustive(value: &Value) {
 }
 
 /// Generate valid opcodes (not random bytes).
+/// The optimizer-only fused opcodes (`docs/optimizer-peephole.md` §1), kept
+/// apart from `arb_opcode` so that list stays under clippy's line budget as
+/// the families grow.
+fn arb_superinstruction() -> impl Strategy<Value = Opcode> {
+    prop_oneof![
+        (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EmitLineNl(idx, slots)),
+        (binary_kind(), any::<i32>()).prop_map(|(k, imm)| Opcode::BinaryImm(k, imm)),
+        (binary_kind(), any::<i32>()).prop_map(|(k, rel)| Opcode::BinaryJumpIfFalse(k, rel)),
+        (binary_kind(), any::<i32>(), any::<i32>())
+            .prop_map(|(k, imm, rel)| Opcode::BinaryImmJumpIfFalse(k, imm, rel)),
+        (any::<u16>(), binary_kind(), any::<i32>())
+            .prop_map(|(s, k, imm)| Opcode::GetTempBinaryImm(s, k, imm)),
+        (any::<u16>(), binary_kind(), any::<i32>(), any::<i32>())
+            .prop_map(|(s, k, imm, rel)| Opcode::GetTempBinaryImmJumpIfFalse(s, k, imm, rel)),
+        (binary_kind(), any::<i32>(), any::<i32>())
+            .prop_map(|(k, imm, rel)| Opcode::DuplicateBinaryImmJumpIfFalse(k, imm, rel)),
+    ]
+}
+
 fn arb_opcode() -> impl Strategy<Value = Opcode> {
     prop_oneof![
         any::<i32>().prop_map(Opcode::PushInt),
@@ -380,11 +399,7 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EvalLine(idx, slots)),
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
-        (any::<u16>(), any::<u8>()).prop_map(|(idx, slots)| Opcode::EmitLineNl(idx, slots)),
-        (binary_kind(), any::<i32>()).prop_map(|(k, imm)| Opcode::BinaryImm(k, imm)),
-        (binary_kind(), any::<i32>()).prop_map(|(k, rel)| Opcode::BinaryJumpIfFalse(k, rel)),
-        (binary_kind(), any::<i32>(), any::<i32>())
-            .prop_map(|(k, imm, rel)| Opcode::BinaryImmJumpIfFalse(k, imm, rel)),
+        arb_superinstruction(),
         Just(Opcode::Glue),
         Just(Opcode::AttachElement),
         Just(Opcode::EndElementRun),
@@ -526,6 +541,9 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::BinaryImm(_, _)
         | Opcode::BinaryJumpIfFalse(_, _)
         | Opcode::BinaryImmJumpIfFalse(_, _, _)
+        | Opcode::GetTempBinaryImm(_, _, _)
+        | Opcode::GetTempBinaryImmJumpIfFalse(_, _, _, _)
+        | Opcode::DuplicateBinaryImmJumpIfFalse(_, _, _)
         | Opcode::EmitValue
         | Opcode::EmitNewline
         | Opcode::Spring
