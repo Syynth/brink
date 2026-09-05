@@ -10,5 +10,6 @@ pub mod palette;
 pub mod rail;
 pub mod region;
 mod skin;
+pub mod theme;
 pub mod tool_window;
 pub mod workspace;

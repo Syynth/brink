@@ -287,6 +287,26 @@ quick-open (`cmd-p`).
 `DockAreaState` keyed on `(edge, group)`, plus the current `EditorView`,
 recents and settings. Stable under everything except deliberate re-homing.
 
+### 4.7 Themes and paint
+
+The studio's five themes (`docs/studio-shell-spec.md` §7.4; theme ruling
+2026-08-25) are the native app's themes, with the same token values the
+CSS sheets hold — `shell/src/theme.rs` carries them, and its tests pin the
+derivations (override sheets inherit from Mocha; the `marker`/`divert`/
+`halt` fallbacks follow `editor.css`). A theme is applied by building
+gpui-component's own `ThemeConfig` and installing it with `Theme::change`,
+so the kit's chrome, every editor (which the kit projects from the global
+theme on each render) and the Search cards repaint from one place; there
+is no private palette to keep in step.
+
+Brink's token types reach the editor through the kit's highlight table
+under Zed's names (`theme::syntax_key` is the only mapping), which keeps
+the highlighter's resolver the kit's own rather than a second seam. One
+command per theme; the choice persists in the platform config directory.
+The per-line styles of the studio's editor (cue lines, the TODO band,
+dimmed comment/include lines) wait on `LineContext` reaching the app from
+the worker.
+
 ## 5. First slice
 
 **Shell + Binder + Editor + save/open.** No Player.

@@ -879,9 +879,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "brink-gpui-model",
+ "brink-ir",
  "gpui-base",
  "gpui-component",
  "gpui-pre",
+ "serde_json",
 ]
 
 [[package]]

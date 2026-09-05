@@ -15,5 +15,10 @@ gpui.workspace = true
 gpui-component.workspace = true
 gpui-base.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 
 brink-gpui-model.workspace = true
+
+[dev-dependencies]
+# `theme.rs` pins that every token type brink emits has a colour.
+brink-ir.workspace = true

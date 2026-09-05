@@ -285,6 +285,8 @@ fn main() {
     // Windows/Linux implementations live in `gpui-pre-platform`.
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
         gpui_component::init(cx);
+        // The persisted studio theme, before the first paint.
+        brink_gpui_shell::theme::init(cx);
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

@@ -17,14 +17,14 @@ use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_han
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
-    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow,
-    tool_window_keystroke,
+    CommandRegistry, ToggleMenu, TogglePalette, ToggleToolWindow, tool_window_keystroke,
 };
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
 use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::skin::StudioSkin;
+use crate::theme::{self, SelectTheme};
 use crate::tool_window::{TabSlot, ToolWindow, ToolWindowSpec, select_tab};
 
 /// Reads a tool window's badge without the shell holding the panel's type.
@@ -159,6 +159,18 @@ impl Workspace {
             Some("cmd-shift-p"),
             cx,
         );
+        // One command per theme — the studio's `theme.select.<id>`.
+        for theme in theme::builtin() {
+            this.register_command(
+                "Theme",
+                theme.label,
+                SelectTheme {
+                    id: theme.id.into(),
+                },
+                None,
+                cx,
+            );
+        }
         this
     }
 
@@ -387,7 +399,7 @@ impl Workspace {
         // author has — before the overlay takes it. Per action, not from
         // `available_actions()`: that list is built by constructing each
         // listener's action type from nothing, which a data-carrying
-        // `no_json` action (`ToggleToolWindow`) cannot do,
+        // `no_json` action (`ToggleToolWindow`, `SelectTheme`) cannot do,
         // so it never appears there and read as disabled.
         let items: Vec<PaletteItem> = self
             .commands
@@ -578,6 +590,10 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, action: &ToggleToolWindow, window, cx| {
                 this.toggle_tool_window(&action.id, window, cx);
+            }))
+            .on_action(cx.listener(|_, action: &SelectTheme, window, cx| {
+                theme::select(&action.id, Some(window), cx);
+                cx.notify();
             }))
             .child(
                 TitleBar::new().child(

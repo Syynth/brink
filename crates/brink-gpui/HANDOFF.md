@@ -145,6 +145,26 @@ are per file in the project. Verified: an edit in Code view appears in the
 manuscript, an edit in the manuscript appears in Code view, one `cmd-s`
 writes both. Search cards are editors over this buffer (above).
 
+**Themes and paint** (2026-09-05, `shell/src/theme.rs`): the studio's five
+themes — Catppuccin Mocha (default), Catppuccin Latte, Manuscript, Inky,
+Inky Dark — carried as the SAME token values the CSS sheets hold
+(`packages/studio-shell/src/styles/themes/*.css`), built into
+gpui-component's own theme-file shape and installed with `Theme::change`,
+so chrome, editor and cards all repaint from one place. Brink's 19 token
+types ride Zed's fixed syntax names in the kit's highlight table
+(`theme::syntax_key` is the one mapping; `BrinkHighlighter::styles` asks
+through it), with the studio's CSS fallbacks resolved at build time
+(marker/divert → operator, halt → keyword) and its dressing (keywords
+semibold, comments italic, the escape mark at 40%). One palette command
+per theme ("Theme: Manuscript"); the choice persists in the platform
+config dir (`$BRINK_STUDIO_CONFIG_DIR` overrides — the headless runs use
+a scratch dir). Verified headless: all five on screen, a switch through
+the palette, the choice surviving a relaunch. **Not yet ported** from
+`editor.css`: the per-LINE styles — cue lines in `--bs-cue` at
+`--bs-cue-weight`, the TODO band, dimmed comment/include lines — need the
+worker's `LineContext` per file; the editor today underlines a TODO as
+the E189 info diagnostic instead of banding it.
+
 Two things noticed in those screenshots and NOT yet fixed: the Binder
 draws both the dock's title strip ("Binder") and its own header ("BINDER"
 + toolbar), and the manuscript's first section shows a partial row above
@@ -217,6 +237,19 @@ unverified by hand.
   else.
 - **No debounce, ever** (ruled). If a keystroke path is too slow, make its
   work O(edit); do not add a timer.
+- **`Window::available_actions()` cannot list a `no_json` action.** It
+  builds each listener's action type from nothing, which a data-carrying
+  action (`ToggleToolWindow`, `SelectTheme`) cannot do, so the list omits
+  it and a palette row keyed on that list reads as disabled — every
+  "View: Toggle …" row was, silently, until 2026-09-05. Ask per action:
+  `window.is_action_available(action, cx)`.
+- **The editor asks its providers synchronously, inside the keystroke.**
+  `Document::on_edited` runs from the `Change` event, delivered after the
+  update — so a completion query sent from the provider overtook the edit
+  and reached the worker with an offset past the text it held (it
+  panicked the analysis thread). `seed_edit` in `document.rs` pushes the
+  editor's text ahead of every query; `query::clamp_offset` is the guard
+  behind it. Keep both if you add a provider.
 - **Nothing in `app/` may touch an `IdeSession`.** The session is on the
   worker thread. Paint comes from `TokenCache`; everything else is a query.
 - **The shell must not depend on the feature crate.** That one-way edge is

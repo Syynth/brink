@@ -425,7 +425,12 @@ impl InputHighlighter for BrinkHighlighter {
             if start > cursor {
                 out.push((cursor..start, gpui::HighlightStyle::default()));
             }
-            out.push((start..end, resolver.style(name).unwrap_or_default()));
+            // Brink's roles ride Zed's names in the theme's table — the
+            // mapping is the shell's (`theme::syntax_key`), one place.
+            let style = brink_gpui_shell::theme::syntax_key(name)
+                .and_then(|key| resolver.style(key))
+                .unwrap_or_default();
+            out.push((start..end, style));
             cursor = end;
         }
         if cursor < range.end {

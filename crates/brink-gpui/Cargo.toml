@@ -46,6 +46,9 @@ lsp-types = "0.97"
 anyhow = "1"
 # The search engine's pattern (`app/src/search.rs`); the root pins "1" too.
 regex = "1"
+# Themes are handed to gpui-component in its theme-file shape
+# (`shell/src/theme.rs`); the kit already depends on this crate.
+serde_json = "1"
 # Same rowan the root workspace pins (TextSize/TextRange).
 rowan = "0.16.1"
 # The worker boundary (`docs/gpui-studio-spec.md` §3.3). Same crate
