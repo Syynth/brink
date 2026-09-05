@@ -366,6 +366,32 @@ so a select changes one key and leaves the author's comments, key order
 and quoting alone; the form re-reads the file on every `SourceChanged`
 to it, so it and an open tab can never disagree.
 
+The other three Project sections sit on the same seam
+(`app/src/settings_config.rs` is what they share: read the config out of
+the mirror, edit one key through `ConfigDocument`, write back through
+`Project::edit`; a project without a `brink.toml` gets a notice and a
+file that does not parse gets the reason). **Diagnostics**
+(`settings_diagnostics.rs`) is the studio's `[lints]`/`[fix]` table
+(#3148, #3419): two lists, and which list a code is in IS whether it is
+in the file — Configure writes the key at the code's current default so
+the first click changes nothing about the build, the down arrow removes
+it; a Fix column (`off | ask | auto`, the lit one clears) on every row;
+deny-warnings; explanations unfolded inline as markdown; codes the file
+names that this compiler lacks kept under their own heading rather than
+dropped. The code list and its author-facing grouping come from
+`brink_ide::diagnostic_registry`, the table moved out of `brink-web` so
+both studios list the same rows (a hand copy would drift the day a code
+is added). **Formatting** (`settings_formatting.rs`) is `[project]
+indent` as a stepper with a Reset that removes the key — not the same as
+writing 4, since only an absent key follows a later change to the
+default — and the tabs-vs-spaces row shown disabled as "not ruled".
+**Prose** (`settings_prose.rs`) is `[prose] enable`, the dialect select
+(read from the `[prose]` table by name, never `[project] dialect`), and
+the dictionary in the list shape. **Conventions** is not ported: the
+studio's teach-by-example editor infers a `[dialogue]` dialect in
+TypeScript (`@brink-lang/editor`'s `inferDialect`), and a native section
+needs that inference in Rust first.
+
 ## 5. First slice
 
 **Shell + Binder + Editor + save/open.** No Player.
@@ -397,10 +423,10 @@ Two defects carried from the spike are fixed here, not later:
   which is what stops the echo. Dirty and save are per file, in the
   project — an edit in the manuscript is as unsaved as one in a tab, and
   one `cmd-s` writes both. Verified headless both directions.
-- Player, story graph, debugger; Settings' remaining Project sections
-  (Diagnostics, Formatting, Conventions, Prose — the `brink.toml` seam and
-  General landed 2026-09-05, §4.8); Search's replace previews, context
-  knob and references mode. (Search's cards **are editors** over
+- Player, story graph, debugger; Settings ▸ Conventions (needs the
+  dialect inference in Rust — §4.8; General, Formatting, Diagnostics and
+  Prose landed 2026-09-05); Search's replace previews, context knob and
+  references mode. (Search's cards **are editors** over
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
   windows edit-mapped through every change, `edited` badges, lazy
   per-card `EditorState`s.) **Where the Player

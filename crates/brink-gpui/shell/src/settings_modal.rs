@@ -25,6 +25,7 @@ use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, Render, SharedString, Subscription, Window, div, px,
 };
+use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
@@ -444,6 +445,45 @@ pub fn setting_row(
                 ),
         )
         .child(div().flex_shrink_0().child(control))
+}
+
+/// `−  14 px  +`: a stepper over a number, `suffix` after it. `on_change`
+/// gets the stepped value; clamping is the caller's.
+pub fn setting_stepper(
+    id: &'static str,
+    value: f32,
+    suffix: &'static str,
+    on_change: impl Fn(f32, &mut Window, &mut App) + Clone + 'static,
+    cx: &App,
+) -> AnyElement {
+    let fg = cx.theme().foreground;
+    let dec = on_change.clone();
+    h_flex()
+        .gap_1()
+        .items_center()
+        .child(
+            Button::new(SharedString::from(format!("{id}-dec")))
+                .outline()
+                .xsmall()
+                .label("\u{2212}")
+                .on_click(move |_, window, cx| dec(value - 1., window, cx)),
+        )
+        .child(
+            div()
+                .min_w(px(44.))
+                .text_center()
+                .text_sm()
+                .text_color(fg)
+                .child(format!("{value:.0}{suffix}")),
+        )
+        .child(
+            Button::new(SharedString::from(format!("{id}-inc")))
+                .outline()
+                .xsmall()
+                .label("+")
+                .on_click(move |_, window, cx| on_change(value + 1., window, cx)),
+        )
+        .into_any_element()
 }
 
 /// A subordinate group heading inside a section — the pane header is the

@@ -13,7 +13,11 @@ mod icons;
 mod problems;
 mod project;
 mod search;
+mod settings_config;
+mod settings_diagnostics;
+mod settings_formatting;
 mod settings_general;
+mod settings_prose;
 mod single_view;
 mod todos;
 
@@ -37,7 +41,10 @@ use crate::continuous::ContinuousView;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
+use crate::settings_diagnostics::DiagnosticsSection;
+use crate::settings_formatting::FormattingSection;
 use crate::settings_general::{GeneralSection, OpenConfig};
+use crate::settings_prose::ProseSection;
 use crate::single_view::SingleFileView;
 use crate::todos::{OpenTodo, Todos};
 
@@ -78,10 +85,13 @@ impl Studio {
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
+        let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
+        let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
+        let prose = cx.new(|cx| ProseSection::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
-            // The Project scope's first section: the shell owns the App
-            // ones, and this crate owns `brink.toml`.
+            // The Project scope: the shell owns the App sections, and this
+            // crate owns `brink.toml` — the studio's four, in its order.
             workspace.add_settings_section(Section::new(
                 SectionMeta::new(
                     "general",
@@ -98,6 +108,52 @@ impl Studio {
                     ],
                 ),
                 general.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "formatting",
+                    Scope::Project,
+                    "Formatting",
+                    &[
+                        "indent",
+                        "spaces",
+                        "tabs",
+                        "width",
+                        "fmt",
+                        "format",
+                        "whitespace",
+                    ],
+                ),
+                formatting.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "diagnostics",
+                    Scope::Project,
+                    "Diagnostics",
+                    &[
+                        "lints", "warnings", "errors", "todo", "suppress", "allow", "deny", "fix",
+                    ],
+                ),
+                diagnostics.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "prose",
+                    Scope::Project,
+                    "Prose",
+                    &[
+                        "spelling",
+                        "spellcheck",
+                        "grammar",
+                        "dictionary",
+                        "dialect",
+                        "british",
+                        "american",
+                        "typo",
+                    ],
+                ),
+                prose.clone(),
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)

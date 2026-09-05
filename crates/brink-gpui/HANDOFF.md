@@ -187,11 +187,33 @@ through `brink_project_config::edit::ConfigDocument` — `remove_key` and
 `string` were added to it for this — so comments survive. Verified
 headless: the tab (TOML paint, a parse error squiggled and in Problems),
 the section, a select repointing the entry with the tab and the Binder
-following, a draft added and its row's report, save. **Not here yet**:
-Diagnostics (`[lints]`, `[fix]`), Formatting (`indent`), Conventions,
-Prose — each is a section over the same seam; and creating a `brink.toml`
-for a project that has none (the section says so and stops; the worker
-would need to adopt a new config path).
+following, a draft added and its row's report, save. 
+
+**Project scope: Formatting, Diagnostics, Prose** (2026-09-05,
+`app/src/settings_{formatting,diagnostics,prose}.rs`, sharing
+`settings_config.rs`): the studio's three, over the same seam.
+Diagnostics lists the compiler's own registry — moved to
+`brink_ide::diagnostic_registry` with its category table and drift
+guards, so `brink-web` and this crate read one table — as the studio's
+two lists (configured / not, Configure and remove moving a code between
+them, level and Fix pickers, deny-warnings, inline markdown explanations
+through the kit's `TextView`, unknown codes kept). Formatting is the
+indent stepper with a key-removing Reset. Prose is enable, the dialect
+select and the dictionary list. Verified headless on a project whose
+`brink.toml` exercises every table: level change, deny toggle, Configure
+(the open `brink.toml` tab showed the appended line, `cmd-s` wrote it
+with the comments intact), an explanation unfolded, the indent stepped
+with Reset appearing, a word added and removed, the dialect picked.
+**Two things to know when driving it headless:** the window repaints an
+edit a beat late (a screenshot 1 s after a click can show the previous
+state; wait ~3 s or nudge the pointer), and a scratch `settings.json`
+from a keymap test can carry `"File: Save": null` — which is why `cmd-s`
+"did nothing" for twenty minutes here. **Not here yet**: Conventions (the
+studio's teach-by-example editor infers the `[dialogue]` dialect in
+TypeScript; a native section needs that in Rust), the Problems row menu's
+"Configure Exxx…" door into Diagnostics, and creating a `brink.toml` for a
+project that has none (the sections say so and stop; the worker would
+need to adopt a new config path).
 
 **Search** (2026-09-05, `app/src/search.rs`): the studio's engine (plain
 or regex, case, whole word, one composed pattern, 1000-match cap) over the

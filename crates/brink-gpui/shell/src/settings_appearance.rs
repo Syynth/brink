@@ -20,15 +20,14 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, FontWeight, IntoElement, Render, SharedString, Window,
     div, px,
 };
-use gpui_component::button::Button;
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::settings::{
     self, AppSettings, DEFAULT_APP_FONT_SIZE, DEFAULT_EDITOR_FONT_SIZE, MAX_APP_FONT_SIZE,
     MAX_EDITOR_FONT_SIZE, MIN_APP_FONT_SIZE, MIN_EDITOR_FONT_SIZE,
 };
-use crate::settings_modal::{setting_group, setting_row};
+use crate::settings_modal::{setting_group, setting_row, setting_stepper};
 use crate::theme::{self, StudioTheme, hsla};
 
 pub struct AppearanceSection;
@@ -127,43 +126,6 @@ impl AppearanceSection {
             }))
             .into_any_element()
     }
-
-    /// `−  14 px  +`.
-    fn stepper(
-        id: &'static str,
-        value: f32,
-        on_change: impl Fn(f32, &mut Window, &mut App) + Clone + 'static,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let fg = cx.theme().foreground;
-        let dec = on_change.clone();
-        h_flex()
-            .gap_1()
-            .items_center()
-            .child(
-                Button::new(SharedString::from(format!("{id}-dec")))
-                    .outline()
-                    .xsmall()
-                    .label("\u{2212}")
-                    .on_click(move |_, window, cx| dec(value - 1., window, cx)),
-            )
-            .child(
-                div()
-                    .w(px(44.))
-                    .text_center()
-                    .text_sm()
-                    .text_color(fg)
-                    .child(format!("{value:.0} px")),
-            )
-            .child(
-                Button::new(SharedString::from(format!("{id}-inc")))
-                    .outline()
-                    .xsmall()
-                    .label("+")
-                    .on_click(move |_, window, cx| on_change(value + 1., window, cx)),
-            )
-            .into_any_element()
-    }
 }
 
 /// Set the editor's text size: persist, then re-apply the theme, whose
@@ -250,9 +212,10 @@ impl Render for AppearanceSection {
                 format!(
                     "{MIN_EDITOR_FONT_SIZE:.0}–{MAX_EDITOR_FONT_SIZE:.0} px, default {DEFAULT_EDITOR_FONT_SIZE:.0}. The text you write."
                 ),
-                Self::stepper(
+                setting_stepper(
                     "editor-font",
                     settings.editor_font_size,
+                    " px",
                     set_editor_font_size,
                     cx,
                 ),
@@ -263,9 +226,10 @@ impl Render for AppearanceSection {
                 format!(
                     "{MIN_APP_FONT_SIZE:.0}–{MAX_APP_FONT_SIZE:.0} px, default {DEFAULT_APP_FONT_SIZE:.0}. Sizes the studio's own chrome."
                 ),
-                Self::stepper(
+                setting_stepper(
                     "app-font",
                     settings.app_font_size,
+                    " px",
                     |size, _, cx| set_app_font_size(size, cx),
                     cx,
                 ),
