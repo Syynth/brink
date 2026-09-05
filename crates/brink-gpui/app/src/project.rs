@@ -43,9 +43,10 @@ pub struct Project {
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
     warnings: Vec<String>,
-    /// Whether any analysis has landed. Distinct from `closure_known`,
-    /// which is false whenever `brink.toml` names no entry however many
-    /// times the project has analyzed.
+    /// Whether any analysis has landed. Distinct from the closure being
+    /// non-empty, which stays false whenever `brink.toml` names no entry
+    /// however many times the project has analyzed — reading one for the
+    /// other is how Problems said "Not analyzed yet." forever.
     analyzed: bool,
     revision: u64,
     last_analyze_ms: f64,
@@ -192,11 +193,6 @@ impl Project {
     #[must_use]
     pub fn has_analyzed(&self) -> bool {
         self.analyzed
-    }
-
-    #[must_use]
-    pub fn closure_known(&self) -> bool {
-        !self.closure.is_empty()
     }
 
     /// `(path, offset, is_error)` for every error and warning, as the Binder

@@ -214,7 +214,7 @@ impl Document {
                     swatch: None,
                 })
                 .collect();
-            let _ = editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
+            editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
         })
         .detach();
     }
