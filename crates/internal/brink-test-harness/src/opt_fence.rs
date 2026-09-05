@@ -231,14 +231,31 @@ pub fn is_line_text_grounded(
     Ok(traces.iter().any(|t| {
         t.events.iter().any(|e| match e {
             crate::trace::TraceEvent::Line { text, .. } => {
-                literals.iter().any(|lit| text.contains(lit))
+                literals.iter().any(|lit| contains_bounded(text, lit))
             }
             crate::trace::TraceEvent::Choices(cs) => cs
                 .iter()
-                .any(|c| literals.iter().any(|lit| c.text.contains(lit))),
+                .any(|c| literals.iter().any(|lit| contains_bounded(&c.text, lit))),
             _ => false,
         })
     }))
+}
+
+/// `text` contains `lit` as a whole run — not as a fragment of a longer
+/// alphanumeric word. A one-letter choice label `[a]` must not ground a story
+/// whose only rendered text is `beta`: the retext control cannot be observed
+/// on a line the runs never reach, and plain substring containment said it
+/// could (a real 1-in-6 flake on generated stories, 2026-09-05).
+fn contains_bounded(text: &str, lit: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric();
+    text.match_indices(lit).any(|(at, _)| {
+        let before = text[..at].chars().next_back().is_none_or(|c| !word(c));
+        let after = text[at + lit.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !word(c));
+        (before && after) || !lit.chars().any(word)
+    })
 }
 
 /// Whether the story has any line-table entry at all.
