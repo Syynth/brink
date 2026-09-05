@@ -235,18 +235,20 @@ It now holds over 419 real corpus artifacts, measured.
 ## 11. The first pass (2026-09-05)
 
 `OptConfig::defaults()` is no longer empty: it holds `EmitLineNl`
-(`emit-line-nl`) and, since the same day, `BinaryFusion` (`binary-fusion`) —
-superinstructions on the shared peephole engine, `docs/optimizer-peephole.md`.
-Consequences for the fence:
+(`emit-line-nl`) and, since the same day, `BinaryFusion` (`binary-fusion`)
+and `LeftOperandFold` (`left-operand-fold`) — superinstructions on the
+shared peephole engine, `docs/optimizer-peephole.md`. Consequences for the
+fence:
 
 - `bytes_identical` is now asserted **against** `changed`, both ways: an
   untouched case must round-trip byte-for-byte (the §10 `brink-format`
   claim, still live), and a case a pass reports as changed must differ.
 - Every sweep and the generator property carry a **change floor**, so the
   pass set silently ceasing to match is a failure, not a quiet green.
-- `.inkb` moved to **v7** for the new opcode (`0x6C`) and to **v8** for the
-  binary-fusion family (`0x6D`–`0x6F`); fuzz seeds were regenerated each
-  time. Codegen never emits a fused form.
+- `.inkb` moved to **v7** for the new opcode (`0x6C`), to **v8** for the
+  binary-fusion family (`0x6D`–`0x6F`) and to **v9** for the left-operand
+  folds (`0x70`, `0x71`, `0x74`); fuzz seeds were regenerated each time.
+  Codegen never emits a fused form.
 
 Still deferred: the `brink opt` subcommand (the crate is still
 `publish = false`; the reasoning in §10 stands until it is hand-published)

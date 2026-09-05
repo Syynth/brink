@@ -1,12 +1,12 @@
 # Optimizer pass: peephole (superinstructions)
 
-**Status: LANDED (engine + two passes), 2026-09-05.** The catalogue's
+**Status: LANDED (engine + three passes), 2026-09-05.** The catalogue's
 `peephole` entry (`docs/optimizer-catalogue.md`), graduated per the per-pass
 template. This document covers the shared rewriting engine
 (`crates/brink-opt/src/peephole.rs`) and the rewrites that ride on it
-(`crates/brink-opt/src/passes.rs`): `emit-line-nl` (pass 1, `.inkb` v7) and
-`binary-fusion` (pass 2, `.inkb` v8). Later rewrites are additions to §1's
-tables, not new documents.
+(`crates/brink-opt/src/passes.rs`): `emit-line-nl` (pass 1, `.inkb` v7),
+`binary-fusion` (pass 2, `.inkb` v8) and `left-operand-fold` (pass 3, `.inkb`
+v9). Later rewrites are additions to §1's tables, not new documents.
 
 ## 0. Why superinstructions, and why here
 
@@ -86,6 +86,35 @@ it**: the immediate still fuses and the branch stays a separate instruction,
 which is why the pass checks `Labels::blocks_window` itself instead of
 leaving the refusal to the engine. Metric: `opcodes` executed, as for pass 1.
 
+### `left-operand-fold`
+
+Runs **after** `binary-fusion`, on its output — the order in
+`OptConfig::defaults` is load-bearing. It folds the instruction that
+produced a fused operator's *left* operand into the operator:
+
+| Window | Replacement | Opcode |
+|---|---|---|
+| `GetTemp(slot); BinaryImmJumpIfFalse(kind, imm, rel)` | `GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel′)` | `0x71` |
+| `GetTemp(slot); BinaryImm(kind, imm)` | `GetTempBinaryImm(slot, kind, imm)` | `0x70` |
+| `Duplicate; BinaryImmJumpIfFalse(kind, imm, rel)` | `DuplicateBinaryImmJumpIfFalse(kind, imm, rel′)` | `0x74` |
+
+On the original shapes that is `n - 1` in one instruction instead of three
+and `if n <= 1` in one instead of four; the `Duplicate` form is the arm test
+of a switch-style `{ x: - 1: … - 2: … }`, which compares the scrutinee
+against each case without consuming it.
+
+The temp read goes through `read_temp`, the helper `GetTemp` itself now
+calls — pointer and projection auto-dereference and the #3354
+unwritten-slot default with its warning are one body, not two. The
+`Duplicate` form peeks the stack (`peek_value`) exactly where `Duplicate`
+then the operator's pop would have left it. Metric: `opcodes` executed.
+
+Why a separate pass rather than longer windows in `binary-fusion`: the fold
+is defined on fused instructions, so it is idempotent and label-safe for
+free (its inputs are single instructions the engine already knows carry a
+branch), and a future rewrite that produces `BinaryImm*` from some other
+shape gets the fold without knowing about it.
+
 ## 2. Constraints
 
 The catalogue named three collisions. Each was checked against the format,
@@ -118,6 +147,11 @@ Two further observables, both from `docs/optimizer-spec.md` §10's findings:
   so int/float promotion, string comparison, list arithmetic and every error
   path are the unfused ones. The fusion is over *instruction boundaries*,
   never over the operator's semantics.
+- **Temp-read semantics.** `GetTempBinaryImm*` reads through `read_temp`,
+  which is `GetTemp`'s own body factored out — so the #3354 unwritten-slot
+  warning fires exactly as often as before, and a `ref` parameter's pointer
+  or projection dereferences the same way. The stack effect differs only in
+  that the read value never lands on the value stack.
 
 And the constraint the whole design sits under:
 
@@ -129,8 +163,8 @@ And the constraint the whole design sits under:
 
 What the passes **do not** do, deliberately: fuse across a label
 (correctness, above); touch a container they cannot decode; or rewrite the
-compiler's emission. Codegen never writes `0x6C`–`0x6F`; `brink-format`'s
-reader accepts them in any v8 artifact, so a hand-written `.inkt` may use
+compiler's emission. Codegen never writes `0x6C`–`0x71` or `0x74`;
+`brink-format`'s reader accepts them in any v9 artifact, so a hand-written `.inkt` may use
 `emit_line_nl` or `binary_imm kind=le 1` directly (the operator is spelled
 `kind=<mnemonic>`, a `kv_operand`, because a bare `add` would parse as a
 trailing operand of the previous line and swallow the next instruction's
@@ -181,11 +215,48 @@ unoptimized artifact:
 | hanoi-10 | 15 + 16 | 1 244 → 1 215 | 2 427 871 → 2 063 151 (−15.0%) | 1 314.7M → 1 220.8M (−7.1%) |
 | TheIntercept | 659 + 55 | 21 169 → 20 482 | 789 → 697 (−11.7%) | 709 108 → 690 826 (−2.6%) |
 
+All three passes resident (`emit-line-nl` + `binary-fusion` +
+`left-operand-fold`), against the unoptimized artifact, one paired run:
+
+| Story | Fusions (p1 + p2 + p3) | Bytecode bytes | Opcodes executed | Ir per iteration |
+|---|---|---|---|---|
+| crucible-8 | 55 + 67 + 47 | 3 482 → 3 347 | 466 239 → 289 640 (−37.9%) | 183.62M → 135.52M (−26.2%) |
+| hanoi-10 | 15 + 16 + 11 | 1 244 → 1 204 | 2 427 871 → 1 961 907 (−19.2%) | 1 329.6M → 1 204.3M (−9.4%) |
+| TheIntercept | 659 + 55 + 5 | 21 169 → 20 477 | 789 → 691 (−12.4%) | 708 796 → 692 232 (−2.3%) |
+
 Each fused instruction saves roughly 150–270 Ir — the dispatch overhead of
 one instruction plus, for the branch forms, a push/pop pair that no longer
 happens. Crucible is arithmetic-bound: `fib`'s `n <= 1`, `n - 1` and `n - 2`
-are exactly the three windows, and its 106 349 removed dispatches per
-iteration are 3 per call.
+are exactly the three windows, and after pass 3 each is **one instruction**
+— 176 599 dispatches removed per iteration, five per call.
+
+**Over the whole oracle corpus** — every checked-in oracle episode replayed
+on the unoptimized and the optimized artifact, summing the VM's `opcodes`
+counter (`cargo test -p brink-test-harness --test opt_corpus_stats --
+--ignored --nocapture`):
+
+| Tier | Cases | Episodes | Opcodes executed | Bytecode bytes |
+|---|---|---|---|---|
+| tier1 | 176 | 2 357 | 898 672 → 774 848 (−13.8%) | 18 879 → 18 224 |
+| tier2 | 122 | 1 172 | 528 359 → 503 086 (−4.8%) | 20 655 → 19 854 |
+| tier3 | 88 | 2 096 | 10 224 310 → 8 322 933 (−18.6%) | 29 446 → 28 413 |
+| tests_github (oracle-backed) | 4 | 1 011 | 742 100 → 593 122 (−20.1%) | 6 288 → 6 034 |
+| **total** | 390 | 6 636 | 12 393 441 → 10 193 989 (**−17.7%**) | 75 268 → 72 525 |
+
+Fusions across the corpus: `emit-line-nl` 2 013, `binary-fusion` 610,
+`left-operand-fold` 341. The per-case distribution is wide — a third of
+cases under 10%, a fifth over 25%, a handful of arithmetic-heavy ones
+(`print-num`, `print-number-as-english`) around 45–50% — and the two large
+cases that barely move (`tier2/lists/bug-adding-element`, 500K opcodes,
+−3.9%; `tier1/choices/sticky-choice`, −0.6%) contain **no** window for
+`binary-fusion` or `left-operand-fold` at all — their loops are list
+operations and choice re-presentation, not integer compares — which is where
+an episode-driven histogram should be pointed next.
+
+Per-iteration Ir of the *same* binary drifts a few percent between runs
+(the runtime's `std::HashMap`s are SipHash-keyed per process, so probe
+sequences differ), which is why every row above is a paired run and the
+plain/opt columns of different tables are not comparable to each other.
 
 The optimizer's own cost is a one-off per artifact: about 10M Ir for
 TheIntercept's 21 KB of bytecode with both passes, linear in the artifact
@@ -194,25 +265,35 @@ search, and a kept instruction is copied verbatim rather than re-encoded).
 
 ## 5. Next rewrites on the same engine
 
-From the bigram histogram **after both passes**, in order of measured
+From the bigram histogram **after all three passes**, in order of measured
 frequency on the reference stories:
 
-| Pair | Share | Fused form |
+| Pair | Share | Note |
 |---|---|---|
-| `GetTemp → BinaryImm`, `GetTemp → BinaryImmJumpIfFalse` | crucible 9.7% each | fold the local read into the fused op: `GetTempBinaryImm(slot, kind, imm)` and its branch form — 3→1 and 4→1 on the original shapes |
-| `Duplicate → BinaryImmJumpIfFalse` | hanoi 4.9% | the switch-style conditional (`{ x: - 1: … - 2: … }`); a `Duplicate`-folding branch form |
-| `Call → DeclareTemp`, `EnterContainer → EmitNewline`, fragment wrapping | crucible 9.7% each, hanoi 5.2% + 15% | compiler-side shapes, not passes — see §6 |
+| `EnterContainer → EmitNewline` | crucible 12.1% | compiler-side: every conditional-arm container opens with a newline — see §6 |
+| `Call → DeclareTemp`, `DeclareTemp → …` | crucible 12.0%, hanoi 5.5% | compiler-side: one `DeclareTemp` per parameter on every call — see §6 |
+| `BeginFragment → … → EndFragment` around `EmitValue`/`GetTemp` | hanoi 15% of all instructions | compiler-side: the fragment wrapping of call slots — see §6 |
+| `GetTemp → Call`, `GetTemp → Return`, `Add → Return` | crucible 6% each, hanoi 5% | possible folds (`GetTempCall`, `ReturnTemp`, `AddReturn`), each worth about one dispatch per call; measure before spending opcodes |
 
-Each is one `Rewrite` impl plus its opcode; the label and relocation rules
-(including branches inside replacements) are already paid for.
+The peephole family has now consumed every *instruction-pair* shape above
+6% that is not a codegen decision. What remains at the top of every
+histogram is emission — the compiler track, not more passes.
 
 ## 6. Questions for the ruling
 
 1. **Opcode budget.** Each fused form spends one of the unreserved opcode
    bytes and one `VERSION` bump. RULED 2026-09-05: acceptable — new opcodes
-   may be added to the format as passes need them. Pass 2 spent three (v8),
-   using a `BinaryKind` operand byte rather than one opcode per operator so
-   the format's opcode table grows by families rather than by operators.
+   may be added to the format as passes need them. Pass 2 spent three (v8)
+   and pass 3 three more (v9), using a `BinaryKind` operand byte rather than
+   one opcode per operator so the format's opcode table grows by families
+   rather than by operators. **Flags on existing opcodes** (a "then newline"
+   bit on `EmitLine`, say) were considered and declined: a flag test costs
+   the same as a kind byte at dispatch, but changing an existing opcode's
+   encoding would change every *unfused* instruction too, so codegen output
+   would no longer be byte-identical across the bump and the optimizer-only
+   provenance of the fused forms would blur. The working rule: a new
+   discriminant per window *shape*, a kind/flag byte for variants *within*
+   a shape, and never a flag that changes an instruction's length.
 2. **Shapes that belong to the compiler.** `DeclareTemp` once per parameter
    on every `Call`, the six-instruction fragment wrapping around call slots,
    and a leading `EmitNewline` on every conditional-arm container are codegen

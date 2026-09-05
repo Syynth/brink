@@ -94,7 +94,10 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// `BinaryJumpIfFalse` (`0x6E`), `BinaryImmJumpIfFalse` (`0x6F`), each with a
 /// `BinaryKind` operator byte — under the same one-bump-per-new-opcode-event
 /// rule and the same optimizer-only provenance.
-pub(crate) const VERSION: u16 = 8;
+/// v9 added the third family — `GetTempBinaryImm` (`0x70`),
+/// `GetTempBinaryImmJumpIfFalse` (`0x71`), `DuplicateBinaryImmJumpIfFalse`
+/// (`0x74`): the v8 forms with their left operand's producer folded in.
+pub(crate) const VERSION: u16 = 9;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

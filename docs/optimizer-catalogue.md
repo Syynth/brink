@@ -50,7 +50,7 @@ Every entry graduates into a document with these sections, in order:
 | Pass | Target metric | Collides with | Status |
 |---|---|---|---|
 | dedup line table | **translatable units** | VO slots, source hashes, translator context, debug anchors | candidate — likely first |
-| peephole | bytecode bytes, **opcodes executed** | choice indices, effect rows, debug offsets | **landed** — `docs/optimizer-peephole.md` (engine + `emit-line-nl` + `binary-fusion`, 2026-09-05) |
+| peephole | bytecode bytes, **opcodes executed** | choice indices, effect rows, debug offsets | **landed** — `docs/optimizer-peephole.md` (engine + `emit-line-nl` + `binary-fusion` + `left-operand-fold`, 2026-09-05) |
 | literal-pool / name-table compaction | pool sizes, artifact bytes | id stability, save-state keys | candidate |
 | eliminate redundant pure work | bytecode bytes | effect rows (which are also the proof) | candidate — blocked on a ruling |
 | inline containers | containers, bytecode bytes | visit counts, save keys, debug addresses, line-table anchors | candidate — probably not worth it |

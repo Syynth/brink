@@ -391,6 +391,21 @@ fn step_impl<R: crate::rng::StoryRng>(
             let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
             jump_unless(flow, &result, rel)?;
         }
+        Opcode::GetTempBinaryImm(slot, kind, imm) => {
+            let left = read_temp(flow, program, &*context, slot)?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            flow.value_stack.push(result);
+        }
+        Opcode::GetTempBinaryImmJumpIfFalse(slot, kind, imm, rel) => {
+            let left = read_temp(flow, program, &*context, slot)?;
+            let result = value_ops::binary_op(kind.into(), &left, &Value::Int(imm), program)?;
+            jump_unless(flow, &result, rel)?;
+        }
+        Opcode::DuplicateBinaryImmJumpIfFalse(kind, imm, rel) => {
+            let result =
+                value_ops::binary_op(kind.into(), flow.peek_value()?, &Value::Int(imm), program)?;
+            jump_unless(flow, &result, rel)?;
+        }
         Opcode::Negate => {
             let val = flow.pop_value()?;
             let result = match val {
@@ -512,77 +527,8 @@ fn step_impl<R: crate::rng::StoryRng>(
             }
         }
         Opcode::GetTemp(slot) => {
-            // Auto-dereference: if temp holds a pointer, push the
-            // pointed-to value instead.
-            let stack = &flow.current_thread().call_stack;
-            let top = stack
-                .top_depth()
-                .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
-            let val = stack
-                .temp(top, slot as usize)
-                .cloned()
-                .unwrap_or(Value::Null);
-            // Issue #3354 (RULED 2026-09-01 option C): a slot that the
-            // declaring `~ temp` has not written yet — either past the end
-            // of this frame's `temps` (never touched) or still holding the
-            // `Value::Null` padding `SetTemp`/`DeclareTemp` grow the vector
-            // with — reads as ink's missing-variable default rather than as
-            // a `Null` that faults on the next operator. That fault is what
-            // made `#3354`'s repro die with `cannot apply Add to Null and
-            // Int` where the C# runtime prints the line and warns; matching
-            // the reference keeps the ink-compat floor honest. The warning
-            // is the author-facing half at runtime; `E193` is the one that
-            // fires at compile time, before they ever play.
-            //
-            // The check is on `CallStack::is_temp_written`, NOT on the
-            // stored value being `Value::Null` — a `~ temp x = f()` whose
-            // `f` falls off its end without `~ return` legitimately stores
-            // `Value::Null` into an already-written slot (a void return),
-            // and that must read back as `Null` (interpolating as empty
-            // text, matching the pre-fix/main behaviour) rather than warn.
-            //
-            // Deliberately only on this opcode: `GetTempRaw` exists to see
-            // a slot exactly as it is (pointers included), and `TakeTemp`
-            // leaves `Null` behind by design, so neither may substitute.
-            if stack.is_temp_written(top, slot as usize) {
-                match val {
-                    Value::VariablePointer(target_id) => {
-                        let global_idx = program
-                            .resolve_global(target_id)
-                            .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
-                        let global_val = context.global(global_idx).clone();
-                        flow.value_stack.push(global_val);
-                    }
-                    Value::TempPointer {
-                        slot: target_slot,
-                        frame_depth,
-                    } => {
-                        let stack = &flow.current_thread().call_stack;
-                        let depth = frame_depth as usize;
-                        if stack.get(depth).is_none() {
-                            return Err(RuntimeError::CallStackUnderflow);
-                        }
-                        let target_val = stack
-                            .temp(depth, target_slot as usize)
-                            .cloned()
-                            .unwrap_or(Value::Null);
-                        flow.value_stack.push(target_val);
-                    }
-                    // T1e: a projection-bound `ref` parameter's read — same
-                    // additive-only reasoning as `SetTemp`'s new arm above.
-                    Value::Projection(p) => {
-                        let result = proj_ops::read(program, &*context, p.cell, &p.segments)?;
-                        flow.value_stack.push(result);
-                    }
-                    _ => {
-                        flow.value_stack.push(val);
-                    }
-                }
-            } else {
-                let name = uninitialized_temp_name(flow, program, slot);
-                flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
-                flow.value_stack.push(Value::Int(0));
-            }
+            let val = read_temp(flow, program, &*context, slot)?;
+            flow.value_stack.push(val);
         }
         Opcode::GetTempRaw(slot) => {
             // Raw read: push the temp's value as-is (including pointers).
@@ -2904,6 +2850,83 @@ fn pop_call_frame(
     }
 
     Ok(())
+}
+
+/// `Opcode::GetTemp`'s read, shared with the fused forms that fold a local
+/// read into a binary operator (`GetTempBinaryImm*`): pointer and
+/// projection auto-dereference, and the #3354 unwritten-slot default with
+/// its warning. Returns the value instead of pushing it so the fused arms
+/// can feed it straight to the operator.
+fn read_temp(
+    flow: &mut Flow,
+    program: &Program,
+    context: &(impl ContextAccess + ?Sized),
+    slot: u16,
+) -> Result<Value, RuntimeError> {
+    // Auto-dereference: if temp holds a pointer, push the
+    // pointed-to value instead.
+    let stack = &flow.current_thread().call_stack;
+    let top = stack
+        .top_depth()
+        .ok_or_else(|| RuntimeError::CallStackUnderflow)?;
+    let val = stack
+        .temp(top, slot as usize)
+        .cloned()
+        .unwrap_or(Value::Null);
+    // Issue #3354 (RULED 2026-09-01 option C): a slot that the
+    // declaring `~ temp` has not written yet — either past the end
+    // of this frame's `temps` (never touched) or still holding the
+    // `Value::Null` padding `SetTemp`/`DeclareTemp` grow the vector
+    // with — reads as ink's missing-variable default rather than as
+    // a `Null` that faults on the next operator. That fault is what
+    // made `#3354`'s repro die with `cannot apply Add to Null and
+    // Int` where the C# runtime prints the line and warns; matching
+    // the reference keeps the ink-compat floor honest. The warning
+    // is the author-facing half at runtime; `E193` is the one that
+    // fires at compile time, before they ever play.
+    //
+    // The check is on `CallStack::is_temp_written`, NOT on the
+    // stored value being `Value::Null` — a `~ temp x = f()` whose
+    // `f` falls off its end without `~ return` legitimately stores
+    // `Value::Null` into an already-written slot (a void return),
+    // and that must read back as `Null` (interpolating as empty
+    // text, matching the pre-fix/main behaviour) rather than warn.
+    //
+    // Deliberately only on this opcode: `GetTempRaw` exists to see
+    // a slot exactly as it is (pointers included), and `TakeTemp`
+    // leaves `Null` behind by design, so neither may substitute.
+    if stack.is_temp_written(top, slot as usize) {
+        match val {
+            Value::VariablePointer(target_id) => {
+                let global_idx = program
+                    .resolve_global(target_id)
+                    .ok_or_else(|| RuntimeError::UnresolvedGlobal(target_id))?;
+                Ok(context.global(global_idx).clone())
+            }
+            Value::TempPointer {
+                slot: target_slot,
+                frame_depth,
+            } => {
+                let stack = &flow.current_thread().call_stack;
+                let depth = frame_depth as usize;
+                if stack.get(depth).is_none() {
+                    return Err(RuntimeError::CallStackUnderflow);
+                }
+                Ok(stack
+                    .temp(depth, target_slot as usize)
+                    .cloned()
+                    .unwrap_or(Value::Null))
+            }
+            // T1e: a projection-bound `ref` parameter's read — same
+            // additive-only reasoning as `SetTemp`'s new arm above.
+            Value::Projection(p) => proj_ops::read(program, context, p.cell, &p.segments),
+            _ => Ok(val),
+        }
+    } else {
+        let name = uninitialized_temp_name(flow, program, slot);
+        flow.warn(crate::error::RuntimeWarning::UninitializedTemp { slot, name });
+        Ok(Value::Int(0))
+    }
 }
 
 fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), RuntimeError> {
