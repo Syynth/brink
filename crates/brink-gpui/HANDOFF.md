@@ -1,7 +1,7 @@
 # brink-gpui — handoff
 
-**Written:** 2026-09-04 · **Branch:** `bronch/gpui-native-desktop-spike-f7a90c`
-(27 commits ahead of `main`, all committed, nothing unpushed-and-uncommitted) ·
+**Written:** 2026-09-04, kept current · **Branch:** `claude/gpui-desktop-app-e8jb90`
+(draft PR #3568 against `main`) ·
 **Architecture:** `docs/gpui-studio-spec.md` — read that first; this file is
 only what a fresh session needs on top of it.
 
@@ -13,6 +13,8 @@ only what a fresh session needs on top of it.
    native studio's analysis runs off the main thread". Those are rulings, not
    proposals; do not re-litigate them.
 3. This file.
+4. `INVENTORY.md` — every surface built so far and what each one leaves
+   out, with the open rulings they wait on. Pick a slice from there.
 
 ## ⚠ Before planning anything: can you even build it?
 
