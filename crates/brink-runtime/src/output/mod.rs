@@ -3,7 +3,9 @@
 use core::mem;
 
 use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
+use alloc::string::String;
+#[cfg(test)]
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -151,8 +153,9 @@ impl OutputPart {
 
 /// Resolve a single output part to its text representation.
 ///
-/// `Text` parts pass through. `LineRef` and `ValueRef` are resolved
-/// using the provided program, line tables, and plural resolver.
+/// Thin owning wrapper over [`resolve_part_into`]; the production paths
+/// ([`resolve_parts`], [`resolve_lines_annotated`]) append straight into
+/// the line they are building instead, so a part's text is written once.
 fn resolve_part(
     part: &OutputPart,
     program: &Program,
@@ -160,14 +163,43 @@ fn resolve_part(
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
 ) -> String {
+    let mut out = String::new();
+    resolve_part_into(part, &mut out, program, line_tables, resolver, fragments);
+    out
+}
+
+/// Append a single output part's text to `out`.
+///
+/// `Text` parts pass through. `LineRef` and `ValueRef` are resolved
+/// using the provided program, line tables, and plural resolver.
+/// Structural parts (`Newline`, `Spring`, `Glue`, `Checkpoint`, `Tag`)
+/// append nothing — they are handled by the resolution pipeline.
+///
+/// A plain literal reserves one byte beyond its own length: the common
+/// line is a single `Plain` entry, and the caller that hands the line out
+/// ([`OutputBuffer::take_first_line`]) terminates it with `'\n'`. Without
+/// the spare byte that push reallocates every such line (measured as one
+/// `realloc` per delivered line on `TheIntercept`, #3570 follow-up).
+fn resolve_part_into(
+    part: &OutputPart,
+    out: &mut String,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) {
     match part {
-        OutputPart::Text(s) => s.clone(),
+        OutputPart::Text(s) => {
+            out.reserve(s.len() + 1);
+            out.push_str(s);
+        }
         OutputPart::LineRef {
             container_idx,
             line_idx,
             slots,
             ..
-        } => resolve_line_ref(
+        } => resolve_line_ref_into(
+            out,
             program,
             line_tables,
             *container_idx,
@@ -180,26 +212,47 @@ fn resolve_part(
             // Resolve the fragment's parts against current line tables.
             let idx = *idx as usize;
             if let Some(frag) = fragments.get(idx) {
-                resolve_parts(&frag.parts, program, line_tables, resolver, fragments)
-            } else {
-                String::new()
+                let s = resolve_parts(&frag.parts, program, line_tables, resolver, fragments);
+                out.push_str(&s);
             }
         }
         // B4 (`docs/stdlib-spec.md` §1.6b): the display boundary — a
         // final-`None` value renders as nothing, not `"none"`. See
         // `value_ops::stringify_display`'s doc comment for the full ruling.
-        OutputPart::ValueRef(val) => value_ops::stringify_display(val, program),
+        OutputPart::ValueRef(val) => out.push_str(&value_ops::stringify_display(val, program)),
         OutputPart::Newline
         | OutputPart::Spring
         | OutputPart::Glue
         | OutputPart::Checkpoint
         | OutputPart::Tag(_)
         | OutputPart::ElementAttach(..)
-        | OutputPart::ElementAttachEnd => String::new(),
+        | OutputPart::ElementAttachEnd => {}
     }
 }
 
+/// Collapse whitespace where a freshly appended segment `out[start..]`
+/// meets the text before it: when both sides carry whitespace at the join,
+/// the segment's leading run goes. Returns whether the segment holds any
+/// non-whitespace — the "this part produced visible content" signal both
+/// line walkers use to clear `after_glue`.
+///
+/// Equivalent to the former `s.trim_start()`-then-`push_str` on an owned
+/// per-part `String`, without the per-part allocation.
+fn collapse_join(out: &mut String, start: usize) -> bool {
+    let segment = &out[start..];
+    if segment.is_empty() {
+        return false;
+    }
+    let non_blank = !segment.trim().is_empty();
+    if segment.starts_with(char::is_whitespace) && out[..start].ends_with(char::is_whitespace) {
+        let lead = segment.len() - segment.trim_start().len();
+        out.replace_range(start..start + lead, "");
+    }
+    non_blank
+}
+
 /// Resolve a `LineRef` to its text content.
+#[cfg(test)]
 fn resolve_line_ref(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
@@ -209,22 +262,54 @@ fn resolve_line_ref(
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
 ) -> String {
+    let mut out = String::new();
+    resolve_line_ref_into(
+        &mut out,
+        program,
+        line_tables,
+        container_idx,
+        line_idx,
+        slots,
+        resolver,
+        fragments,
+    );
+    out
+}
+
+/// Append a `LineRef`'s text content to `out`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors `resolve_line_ref`'s parameter list"
+)]
+fn resolve_line_ref_into(
+    out: &mut String,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    container_idx: u32,
+    line_idx: u16,
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) {
     let scope_idx = program.scope_table_idx(container_idx) as usize;
     let lines = &line_tables[scope_idx];
     let Some(entry) = lines.get(line_idx as usize) else {
-        return String::new();
+        return;
     };
 
     match &entry.content {
-        LineContent::Plain(s) => s.clone(),
+        LineContent::Plain(s) => {
+            // See `resolve_part_into` for the spare byte.
+            out.reserve(s.len() + 1);
+            out.push_str(s);
+        }
         LineContent::Template(parts) => {
-            resolve_line_parts(parts, program, line_tables, slots, resolver, fragments)
+            resolve_line_parts_into(out, parts, program, line_tables, slots, resolver, fragments);
         }
     }
 }
 
-/// Resolve a sequence of `LinePart`s (a `LineContent::Template`'s own, or a
-/// [`LinePart::Span`]'s `children`) to flat text.
+/// Append a sequence of `LinePart`s to `out`.
 ///
 /// A span is presentational (§4.3) and the runtime's current public API
 /// (`Line::Text.text`) is flat text with no structured span surface yet
@@ -235,72 +320,72 @@ fn resolve_line_ref(
 /// additive groundwork for the future structured surface, not a
 /// replacement of it: §4.4 explicitly wants "structural parts over
 /// byte-range offsets" once that surface lands.
-fn resolve_line_parts(
+///
+/// Whitespace at part joins collapses exactly as it did when every part
+/// was its own `String`: an empty part is skipped, and a part starting
+/// with a space loses its leading whitespace when the template's text so
+/// far is empty or already ends in a space. "The template's text so far"
+/// is `out[base..start]` — the text this call appended, not whatever the
+/// caller had in `out` before it — so a nested span behaves like the fresh
+/// `String` it used to be.
+fn resolve_line_parts_into(
+    out: &mut String,
     parts: &[LinePart],
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
-) -> String {
-    let mut result = String::new();
+) {
+    let base = out.len();
     for part in parts {
-        let owned;
-        let fragment: &str = match part {
-            LinePart::Literal(s) => s.as_str(),
-            LinePart::Slot(n) => {
-                owned = slots
-                    .get(*n as usize)
-                    .map(|v| match v {
-                        Value::FragmentRef(idx) => {
-                            let idx = *idx as usize;
-                            fragments.get(idx).map_or_else(String::new, |frag| {
-                                resolve_parts(
-                                    &frag.parts,
-                                    program,
-                                    line_tables,
-                                    resolver,
-                                    fragments,
-                                )
-                            })
-                        }
-                        // B4 (`docs/stdlib-spec.md` §1.6b) — same
-                        // display-boundary forgiveness as the
-                        // `ValueRef` arm above; the surrounding
-                        // whitespace-collapse logic below already
-                        // treats an empty slot fragment correctly.
-                        other => value_ops::stringify_display(other, program),
-                    })
-                    .unwrap_or_default();
-                owned.as_str()
-            }
+        let start = out.len();
+        match part {
+            LinePart::Literal(s) => out.push_str(s),
+            LinePart::Slot(n) => match slots.get(*n as usize) {
+                Some(Value::FragmentRef(idx)) => {
+                    if let Some(frag) = fragments.get(*idx as usize) {
+                        let s =
+                            resolve_parts(&frag.parts, program, line_tables, resolver, fragments);
+                        out.push_str(&s);
+                    }
+                }
+                // B4 (`docs/stdlib-spec.md` §1.6b) — same display-boundary
+                // forgiveness as the `ValueRef` arm of `resolve_part_into`;
+                // the join collapse below already treats an empty slot
+                // fragment correctly.
+                Some(other) => out.push_str(&value_ops::stringify_display(other, program)),
+                None => {}
+            },
             LinePart::Select {
                 slot,
                 variants,
                 default,
-            } => {
-                owned = resolve_select(*slot, variants, default, slots, resolver).to_string();
-                owned.as_str()
-            }
+            } => out.push_str(resolve_select(*slot, variants, default, slots, resolver)),
             LinePart::Span { children, .. } => {
-                owned =
-                    resolve_line_parts(children, program, line_tables, slots, resolver, fragments);
-                owned.as_str()
+                resolve_line_parts_into(
+                    out,
+                    children,
+                    program,
+                    line_tables,
+                    slots,
+                    resolver,
+                    fragments,
+                );
             }
-        };
+        }
         // Skip empty fragments (null/empty slots) and collapse
         // whitespace at join points when empty slots produce
         // adjacent spaces or leading whitespace.
-        if fragment.is_empty() {
+        if out.len() == start {
             continue;
         }
-        if (result.is_empty() || result.ends_with(' ')) && fragment.starts_with(' ') {
-            result.push_str(fragment.trim_start());
-        } else {
-            result.push_str(fragment);
+        let result_empty_or_space = start == base || out[..start].ends_with(' ');
+        if result_empty_or_space && out[start..].starts_with(' ') {
+            let lead = out[start..].len() - out[start..].trim_start().len();
+            out.replace_range(start..start + lead, "");
         }
     }
-    result
 }
 
 /// Resolve a Select part against its slot value.
@@ -1024,16 +1109,10 @@ fn resolve_parts(
                 if part_involves_fragment_ref(part) {
                     saw_fragment_ref = true;
                 }
-                let s = resolve_part(part, program, line_tables, resolver, fragments);
+                let start = out.len();
+                resolve_part_into(part, &mut out, program, line_tables, resolver, fragments);
                 // Collapse adjacent whitespace at part boundaries.
-                let s = if s.starts_with(char::is_whitespace) && out.ends_with(char::is_whitespace)
-                {
-                    s.trim_start()
-                } else {
-                    &s
-                };
-                out.push_str(s);
-                if !s.trim().is_empty() {
+                if collapse_join(&mut out, start) {
                     after_glue = false;
                 }
             }
@@ -1241,10 +1320,12 @@ fn widen_source(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one linear pass over the output parts; each arm is a distinct part kind"
-)]
+/// Resolve `parts` into annotated lines, computing the glue marks itself.
+///
+/// The general entry point (`resolve_lines`, the transcript replayers).
+/// The streaming consumers in `consume.rs` already hold the marks for the
+/// slice they resolve and go through [`resolve_lines_annotated_marked`] /
+/// [`resolve_first_line_annotated`] instead of recomputing them.
 pub(crate) fn resolve_lines_annotated(
     parts: &[OutputPart],
     seed_element: BTreeMap<String, String>,
@@ -1256,12 +1337,128 @@ pub(crate) fn resolve_lines_annotated(
     if parts.is_empty() {
         return Vec::new();
     }
-
-    // First pass: mark newlines/glue for removal (same logic as resolve_parts).
     let mut remove = vec![false; parts.len()];
     mark_glue_removals(parts, &mut remove);
+    resolve_lines_annotated_marked(
+        parts,
+        &remove,
+        seed_element,
+        program,
+        line_tables,
+        resolver,
+        fragments,
+    )
+}
 
+/// [`resolve_lines_annotated`] over precomputed glue marks (`remove[i]` is
+/// whether `parts[i]` is a glue-removed part, as [`mark_glue_removals`]
+/// fills them in for exactly this slice).
+///
+/// The result always carries one final entry for the text after the last
+/// `Newline` (possibly empty) — its element field is the attachment state
+/// the caller carries forward.
+pub(crate) fn resolve_lines_annotated_marked(
+    parts: &[OutputPart],
+    remove: &[bool],
+    seed_element: BTreeMap<String, String>,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) -> Vec<AnnotatedResolvedLine> {
+    if parts.is_empty() {
+        return Vec::new();
+    }
     let mut lines: Vec<AnnotatedResolvedLine> = Vec::new();
+    let trailing = drive_lines(
+        parts,
+        remove,
+        seed_element,
+        program,
+        line_tables,
+        resolver,
+        fragments,
+        |line| lines.push(line),
+    );
+    lines.push(trailing);
+    lines
+}
+
+/// The streaming shape of [`resolve_lines_annotated_marked`]: resolve a
+/// slice that [`OutputBuffer::take_first_line`] has cut to end exactly on
+/// the first completed line's `Newline`, returning that line and the
+/// element-attachment state to carry into the next call — without
+/// materialising a `Vec` for what is, by construction, one line plus an
+/// empty trailing entry.
+///
+/// Faithful to the batch path's contract even off that construction: the
+/// returned line is the first one the walk produces (the trailing entry if
+/// it produces none — a slice that is all glue-removed or after-glue), and
+/// the carried state is the element field of whatever entry follows it.
+pub(crate) fn resolve_first_line_annotated(
+    parts: &[OutputPart],
+    remove: &[bool],
+    seed_element: BTreeMap<String, String>,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) -> (AnnotatedResolvedLine, BTreeMap<String, String>) {
+    let mut first: Option<AnnotatedResolvedLine> = None;
+    let mut next_element: Option<BTreeMap<String, String>> = None;
+    let trailing = drive_lines(
+        parts,
+        remove,
+        seed_element,
+        program,
+        line_tables,
+        resolver,
+        fragments,
+        |line| {
+            if first.is_none() {
+                first = Some(line);
+            } else if next_element.is_none() {
+                next_element = Some(line.3);
+            }
+        },
+    );
+    match first {
+        Some(line) => (line, next_element.unwrap_or(trailing.3)),
+        None => (trailing, BTreeMap::new()),
+    }
+}
+
+/// Trim leading and trailing whitespace without reallocating: the tail is
+/// truncated and the head shifted down in place. The buffer keeps its
+/// capacity, which is what lets `take_first_line`'s terminating `'\n'`
+/// land without a `realloc` on the common line.
+fn trim_in_place(s: &mut String) {
+    let end = s.trim_end().len();
+    s.truncate(end);
+    let lead = s.len() - s.trim_start().len();
+    if lead > 0 {
+        s.replace_range(..lead, "");
+    }
+}
+
+/// One linear pass over `parts`, emitting each completed line through
+/// `emit` and returning the trailing (unterminated) entry. Shared by the
+/// batch and streaming resolvers above so the two cannot drift.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the resolver context plus the sink"
+)]
+fn drive_lines(
+    parts: &[OutputPart],
+    remove: &[bool],
+    seed_element: BTreeMap<String, String>,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+    mut emit: impl FnMut(AnnotatedResolvedLine),
+) -> AnnotatedResolvedLine {
+    debug_assert_eq!(remove.len(), parts.len(), "one glue mark per part");
     let mut current_text = String::new();
     let mut current_tags: Vec<String> = Vec::new();
     // Issue #2108: unlike `current_tags` (reset every line), this
@@ -1326,17 +1523,17 @@ pub(crate) fn resolve_lines_annotated(
                 if part_involves_fragment_ref(part) {
                     saw_fragment_ref = true;
                 }
-                let s = resolve_part(part, program, line_tables, resolver, fragments);
+                let start = current_text.len();
+                resolve_part_into(
+                    part,
+                    &mut current_text,
+                    program,
+                    line_tables,
+                    resolver,
+                    fragments,
+                );
                 // Collapse adjacent whitespace at part boundaries.
-                let s = if s.starts_with(char::is_whitespace)
-                    && current_text.ends_with(char::is_whitespace)
-                {
-                    s.trim_start()
-                } else {
-                    &s
-                };
-                current_text.push_str(s);
-                if !s.trim().is_empty() {
+                if collapse_join(&mut current_text, start) {
                     after_glue = false;
                 }
             }
@@ -1350,17 +1547,16 @@ pub(crate) fn resolve_lines_annotated(
             }
             OutputPart::Newline => {
                 if !after_glue {
-                    let trimmed = current_text.trim().to_string();
+                    trim_in_place(&mut current_text);
                     let suppressed =
-                        trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
-                    lines.push((
-                        trimmed,
+                        current_text.is_empty() && current_tags.is_empty() && saw_fragment_ref;
+                    emit((
+                        mem::take(&mut current_text),
                         mem::take(&mut current_tags),
                         suppressed,
                         current_element.clone(),
                         current_source.take(),
                     ));
-                    current_text = String::new();
                     saw_fragment_ref = false;
                 }
                 since_newline = current_text.len();
@@ -1398,17 +1594,15 @@ pub(crate) fn resolve_lines_annotated(
     // arises when the story's last visible output is itself an empty
     // `content`/Fragment interpolation, which is precisely the case this
     // issue suppresses.
-    let trimmed = current_text.trim().to_string();
-    let suppressed = trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
-    lines.push((
-        trimmed,
+    trim_in_place(&mut current_text);
+    let suppressed = current_text.is_empty() && current_tags.is_empty() && saw_fragment_ref;
+    (
+        current_text,
         current_tags,
         suppressed,
         current_element,
         current_source,
-    ));
-
-    lines
+    )
 }
 
 /// Create a minimal `Program` for tests that only use `Text`/`Newline`/`Glue`.
@@ -1443,6 +1637,101 @@ fn test_dummy_program() -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streaming resolver `take_first_line` uses must agree with the
+    /// batch resolver it replaced, entry for entry: same first line, and the
+    /// carried element state is the element of the entry that follows it.
+    /// Over the shapes the streaming path meets — plain lines, glue across
+    /// a newline, tags, and an element run that ends right after the line.
+    #[test]
+    fn first_line_resolver_matches_batch_resolver() {
+        let program = test_dummy_program();
+        let seed = |k: &str, v: &str| {
+            let mut m = BTreeMap::new();
+            m.insert(k.to_string(), v.to_string());
+            m
+        };
+        let cases: Vec<(Vec<OutputPart>, BTreeMap<String, String>)> = vec![
+            (
+                vec![
+                    OutputPart::Text("hello ".to_string()),
+                    OutputPart::Text(" world".to_string()),
+                    OutputPart::Newline,
+                    OutputPart::Text("next".to_string()),
+                ],
+                BTreeMap::new(),
+            ),
+            (
+                vec![
+                    OutputPart::Text("a".to_string()),
+                    OutputPart::Newline,
+                    OutputPart::Glue,
+                    OutputPart::Text("b".to_string()),
+                    OutputPart::Newline,
+                ],
+                BTreeMap::new(),
+            ),
+            (
+                vec![
+                    OutputPart::Tag("t".to_string()),
+                    OutputPart::Text("  tagged  ".to_string()),
+                    OutputPart::Newline,
+                ],
+                BTreeMap::new(),
+            ),
+            (
+                vec![
+                    OutputPart::ElementAttach("k".to_string(), "v".to_string()),
+                    OutputPart::Text("in run".to_string()),
+                    OutputPart::Newline,
+                    OutputPart::ElementAttachEnd,
+                ],
+                seed("outer", "x"),
+            ),
+            (
+                vec![
+                    OutputPart::Text("carried".to_string()),
+                    OutputPart::Newline,
+                    OutputPart::ElementAttach("k2".to_string(), "v2".to_string()),
+                ],
+                seed("outer", "x"),
+            ),
+        ];
+        for (parts, seed_element) in cases {
+            let mut remove = vec![false; parts.len()];
+            mark_glue_removals(&parts, &mut remove);
+            // The slice `take_first_line` would cut: through the first
+            // newline the glue marks leave standing.
+            let split_at = parts
+                .iter()
+                .enumerate()
+                .position(|(i, p)| matches!(p, OutputPart::Newline) && !remove[i])
+                .expect("every case carries a kept newline");
+            let slice = &parts[..=split_at];
+            let marks = &remove[..=split_at];
+            let batch = resolve_lines_annotated_marked(
+                slice,
+                marks,
+                seed_element.clone(),
+                &program,
+                &[],
+                None,
+                &[],
+            );
+            let (line, next_element) =
+                resolve_first_line_annotated(slice, marks, seed_element, &program, &[], None, &[]);
+            assert_eq!(
+                batch.len(),
+                2,
+                "one line plus the trailing entry: {parts:?}"
+            );
+            assert_eq!(line, batch[0], "first line differs: {parts:?}");
+            assert_eq!(
+                next_element, batch[1].3,
+                "carried element differs: {parts:?}"
+            );
+        }
+    }
 
     /// Test helpers — `OutputBuffer` methods that need resolution context.
     /// Tests only use Text/Newline/Glue, so we pass an empty program.

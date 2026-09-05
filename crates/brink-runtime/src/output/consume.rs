@@ -13,7 +13,10 @@ use alloc::vec::Vec;
 
 use brink_format::{LineEntry, PluralResolver};
 
-use super::{OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_lines_annotated};
+use super::{
+    OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_first_line_annotated,
+    resolve_lines_annotated_marked,
+};
 use crate::program::Program;
 
 impl OutputBuffer {
@@ -203,18 +206,25 @@ impl OutputBuffer {
             // multi-line attach run's second-and-later lines still see it
             // even though the `ElementAttach` part(s) that produced it live
             // before `self.cursor` now (consumed by an earlier call).
+            // The slice is a prefix of `unread`, and the marks `line_scan`
+            // holds for that prefix are exactly the marks a fresh scan of the
+            // slice alone would produce: a glue marks only backwards, and a
+            // glue *after* `split_at` could reach into the prefix only by
+            // passing over the newline at `split_at` — which it would have
+            // marked, and the scan above chose `split_at` precisely because
+            // it is unmarked. So the marks are reused rather than recomputed
+            // (and re-allocated) per delivered line.
             let slice = &self.transcript[self.cursor..=self.cursor + split_at];
-            let mut lines = resolve_lines_annotated(
-                slice,
-                self.pending_element.clone(),
-                program,
-                line_tables,
-                resolver,
-                &self.fragments,
-            );
-            if lines.is_empty() {
-                return None;
-            }
+            let ((mut text, tags, suppressed, element, source), next_element) =
+                resolve_first_line_annotated(
+                    slice,
+                    &self.line_scan[..=split_at],
+                    self.pending_element.clone(),
+                    program,
+                    line_tables,
+                    resolver,
+                    &self.fragments,
+                );
 
             // Advance cursor past the consumed newline — unconditionally: a
             // suppressed line still consumed real transcript space and must
@@ -222,16 +232,12 @@ impl OutputBuffer {
             self.cursor += split_at + 1;
             self.rescan_completion();
 
-            let (mut text, tags, suppressed, element, source) = lines.swap_remove(0);
-            // The trailing filler entry — now at index 0 after `swap_remove`
-            // — carries the element-attachment state as of the END of this
-            // slice (past this line's own `Newline`, so it reflects any
-            // `ElementAttachEnd` that immediately followed it too). Carry
-            // that forward for whatever line the next call resolves,
-            // whether or not this one is suppressed.
-            self.pending_element = lines
-                .first()
-                .map_or_else(BTreeMap::new, |(_, _, _, e, _)| e.clone());
+            // The trailing filler entry carries the element-attachment state
+            // as of the END of this slice (past this line's own `Newline`, so
+            // it reflects any `ElementAttachEnd` that immediately followed it
+            // too). Carry that forward for whatever line the next call
+            // resolves, whether or not this one is suppressed.
+            self.pending_element = next_element;
             if suppressed {
                 continue;
             }
@@ -280,8 +286,13 @@ impl OutputBuffer {
             "flush_lines() called with active checkpoints"
         );
         let unread = &self.transcript[self.cursor..];
-        let annotated = resolve_lines_annotated(
+        let remove = &mut self.line_scan;
+        remove.clear();
+        remove.resize(unread.len(), false);
+        mark_glue_removals(unread, remove);
+        let annotated = resolve_lines_annotated_marked(
             unread,
+            remove,
             self.pending_element.clone(),
             program,
             line_tables,
