@@ -68,6 +68,11 @@ const LINE_HEIGHT_FACTOR: f32 = 1.5;
 /// through to the manuscript list.
 const SECTION_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
 
+/// Line-number digits every section reserves, so sections over files of
+/// different lengths share one text column. Four covers any file an
+/// author would keep in one piece.
+const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
+
 /// Height of the boundary heading between two files.
 const HEADING_HEIGHT: f32 = 30.0;
 
@@ -349,6 +354,11 @@ impl ContinuousView {
         let state = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(true)
+                // Every section gets the same gutter (maintainer, 2026-09-05):
+                // a 40-line file beside a 2,000-line one would otherwise
+                // start its text two digits further left, and the manuscript
+                // reads as one column or it does not read at all.
+                .min_line_number_digits(MANUSCRIPT_GUTTER_DIGITS)
                 .language("brink")
                 // Prose wraps (maintainer, 2026-09-05); the section is
                 // re-sized to its wrapped rows — see `section_height`.
