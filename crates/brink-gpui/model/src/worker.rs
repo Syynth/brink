@@ -31,6 +31,7 @@ use std::time::Instant;
 
 use brink_ide::session::IdeSession;
 
+use crate::play::{Play, PlayCommand, PlayOutcome};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
 use brink_ir::{Severity, SymbolKind};
@@ -71,6 +72,12 @@ pub enum Request {
         /// Echoed back on the resulting [`Analyzed`] so the UI can tell how
         /// far behind an arriving result is.
         revision: u64,
+    },
+    /// Drive the play session — see [`crate::play`]. Answered after the
+    /// queries of the same drain, against the same text.
+    Play {
+        command: PlayCommand,
+        reply: async_channel::Sender<PlayOutcome>,
     },
 }
 
@@ -314,6 +321,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
+    // The author's file keys, for the play session's entry stand-in rule.
+    let mut files: Vec<String> = Vec::new();
+    let mut play: Option<Play> = None;
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -326,12 +336,16 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         let mut reopened = None;
         let mut edited = false;
         let mut queries = Vec::new();
+        let mut plays = Vec::new();
         for request in batch {
             match request {
                 Request::Query { kind, reply } => queries.push((kind, reply)),
+                Request::Play { command, reply } => plays.push((command, reply)),
                 Request::Open { root } => {
                     session = session_with_stdlib();
                     config = ConfigState::default();
+                    play = None;
+                    files.clear();
                     let opened = match open(&mut session, root) {
                         Ok((opened, state)) => {
                             config = state;
@@ -372,6 +386,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         if let Some(opened) = reopened {
             usable = opened.is_ok();
             opened_ok = usable;
+            if let Ok(opened) = &opened {
+                files.clone_from(&opened.files);
+            }
             if responses
                 .send_blocking(Response::Opened(Box::new(opened)))
                 .is_err()
@@ -396,13 +413,38 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 
         // Queries last, so they read the analysis the same drain produced.
         for (kind, reply) in queries {
-            let result = if usable {
-                crate::query::answer(&session, &kind)
-            } else {
+            let result = if !usable {
                 QueryResult::Unavailable
+            } else if matches!(kind, QueryKind::Program) {
+                // Needs the entry and the file list, which only the loop
+                // holds — so it is answered here, not in `query::answer`.
+                QueryResult::Program(Box::new(crate::program::report(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
+            } else {
+                crate::query::answer(&mut session, &kind)
             };
             // A dropped receiver just means the asker moved on.
             let _ = reply.send_blocking(result);
+        }
+
+        // The play session last: a start compiles what the edits above
+        // produced.
+        for (command, reply) in plays {
+            let outcome = if usable {
+                crate::play::run(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                    &mut play,
+                    command,
+                )
+            } else {
+                PlayOutcome::unavailable()
+            };
+            let _ = reply.send_blocking(outcome);
         }
     }
 }
@@ -941,6 +983,653 @@ mod tests {
             worker.responses().is_empty(),
             "a drain carrying only queries must emit no Analyzed"
         );
+    }
+
+    // ── Navigation queries (INVENTORY §0 item 1) ────────────────────
+
+    use crate::query::{Fold, QueryKind, QueryResult, ReferenceKind, answer};
+
+    const MAIN: &str = "INCLUDE greet.ink\nStart here.\n-> greet\n";
+    // Sticky choices: a once-only choice without a label carries an
+    // advisory (E157) before and after any rename, which would make "clean
+    // afterwards" unfair to assert.
+    const GREET: &str = "=== greet ===\nHello.\n+ [Again] -> greet\n+ [Stop] -> DONE\n- -> DONE\n";
+
+    fn nav_tree(name: &str) -> Tree {
+        Tree::new(name, &[("main.ink", MAIN), ("greet.ink", GREET)])
+    }
+
+    fn play(worker: &Worker, command: PlayCommand) -> PlayOutcome {
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Play { command, reply });
+        answer.recv_blocking().expect("the worker answers")
+    }
+
+    fn line_texts(outcome: &PlayOutcome) -> Vec<&str> {
+        outcome
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                crate::play::PlayStep::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn program_report_reads_one_compile_three_ways() {
+        use crate::program::ProgramStatus;
+        let tree = Tree::new(
+            "program",
+            &[(
+                "main.ink",
+                "VAR torch = 3\nLIST moods = calm, (tense)\nEXTERNAL play_se(name)\n\
+                 === greet ===\nHello {torch}.\n= wave\nBye.\n-> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::Program,
+            reply,
+        });
+        let QueryResult::Program(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a program report");
+        };
+        assert_eq!(report.entry.as_deref(), Some("main.ink"));
+        let ProgramStatus::Ready(program) = &report.status else {
+            panic!("compiles clean: {report:?}");
+        };
+        let model = &program.model;
+        // The LIST declares a global too — `moods` holds the list value.
+        let globals: Vec<&str> = model.globals.iter().map(|g| g.name.as_str()).collect();
+        assert!(globals.contains(&"torch"), "{globals:?}");
+        assert!(globals.contains(&"moods"), "{globals:?}");
+        assert_eq!(model.lists.len(), 1);
+        assert_eq!(model.lists[0].items.len(), 2);
+        assert_eq!(model.externals.len(), 1);
+        let paths: Vec<&str> = model.knots.iter().map(|k| k.path.as_str()).collect();
+        let greet = model
+            .knots
+            .iter()
+            .find(|k| k.path == "greet")
+            .unwrap_or_else(|| panic!("greet among {paths:?}"));
+        assert_eq!(greet.children.len(), 1, "{paths:?}");
+        assert!(!greet.disasm.is_empty());
+        assert_eq!(paths, ["greet"], "only the author's knot");
+        assert!(
+            program
+                .lines
+                .scopes
+                .iter()
+                .any(|s| s.name.as_deref() == Some("greet")),
+            "{:?}",
+            program.lines.scopes
+        );
+        assert!(program.size.total > 0 && program.size.shipping <= program.size.total);
+        assert!(!program.size.sections.is_empty());
+
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: "-> nowhere\n".to_owned(),
+            revision: 1,
+        });
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::Program,
+            reply,
+        });
+        let QueryResult::Program(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a program report");
+        };
+        assert!(matches!(&report.status, ProgramStatus::Errors(e) if !e.is_empty()));
+    }
+
+    #[test]
+    fn play_runs_to_choices_and_on_through_one() {
+        use crate::play::{PlayError, PlayStep};
+        let tree = nav_tree("play");
+        let worker = drive(&tree);
+
+        // Nothing running yet.
+        let early = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(early.error, Some(PlayError::NotStarted));
+
+        // No brink.toml: `main.ink` stands in for the entry.
+        let started = play(&worker, PlayCommand::Start { at: None });
+        assert_eq!(started.error, None, "{started:?}");
+        assert_eq!(line_texts(&started), ["Start here.\n", "Hello.\n"]);
+        let Some(PlayStep::Choices(choices)) = started.steps.last() else {
+            panic!("ends on the choices: {started:?}");
+        };
+        assert_eq!(choices.len(), 2);
+        assert!(choices.iter().all(|c| c.sticky));
+        assert!(
+            choices[0]
+                .source
+                .as_ref()
+                .is_some_and(|l| l.path == "greet.ink"),
+            "the choice knows where it was written: {choices:?}"
+        );
+
+        let again = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(again.error, None, "{again:?}");
+        assert_eq!(line_texts(&again), ["Hello.\n"]);
+        assert!(matches!(again.steps.last(), Some(PlayStep::Choices(_))));
+
+        let stop = play(&worker, PlayCommand::Choose(1));
+        assert_eq!(stop.error, None, "{stop:?}");
+        assert_eq!(stop.steps.last(), Some(&PlayStep::Done));
+        assert!(stop.is_over());
+
+        // Play from here: straight into the knot, no "Start here.".
+        let from = play(
+            &worker,
+            PlayCommand::Start {
+                at: Some("greet".to_owned()),
+            },
+        );
+        assert_eq!(from.error, None, "{from:?}");
+        assert_eq!(line_texts(&from), ["Hello.\n"]);
+
+        // An edit after a start is not folded in until the next start.
+        worker.send(Request::Edit {
+            path: "greet.ink".to_owned(),
+            text: GREET.replace("Hello.", "Hi."),
+            revision: 1,
+        });
+        let stale = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(line_texts(&stale), ["Hello.\n"]);
+        let fresh = play(&worker, PlayCommand::Start { at: None });
+        assert_eq!(line_texts(&fresh), ["Start here.\n", "Hi.\n"]);
+
+        // A broken project has no program to run.
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: "-> nowhere\n".to_owned(),
+            revision: 2,
+        });
+        let broken = play(&worker, PlayCommand::Start { at: None });
+        assert!(
+            matches!(&broken.error, Some(PlayError::Compile(errors)) if !errors.is_empty()),
+            "{broken:?}"
+        );
+    }
+
+    fn offset_of(haystack: &str, needle: &str) -> u32 {
+        u32::try_from(haystack.find(needle).expect("the fixture names it")).expect("fits")
+    }
+
+    #[test]
+    fn definition_jumps_across_files_to_the_declaration() {
+        let tree = nav_tree("def");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let at = offset_of(MAIN, "greet\n") + 1;
+        let QueryResult::Definition(Some(loc)) = answer(
+            &mut session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: at,
+            },
+        ) else {
+            panic!("the divert must resolve");
+        };
+        assert_eq!(loc.path, "greet.ink");
+        assert_eq!(
+            &GREET[loc.start as usize..loc.end as usize],
+            "greet",
+            "the target is the declared name, not the whole header"
+        );
+    }
+
+    #[test]
+    fn definition_on_an_include_jumps_to_the_start_of_that_file() {
+        // An include is a reference to a file the way a divert is a
+        // reference to a knot; Cmd-clicking one lands in it.
+        let tree = nav_tree("include");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Definition(Some(loc)) = answer(
+            &mut session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet.ink") + 3,
+            },
+        ) else {
+            panic!("an INCLUDE must resolve to its file");
+        };
+        assert_eq!((loc.path.as_str(), loc.start, loc.end), ("greet.ink", 0, 0));
+    }
+
+    #[test]
+    fn definition_on_prose_is_an_ordinary_none_not_unavailable() {
+        let tree = nav_tree("def-none");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let result = answer(
+            &mut session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "here"),
+            },
+        );
+        assert!(
+            matches!(result, QueryResult::Definition(None)),
+            "got {result:?}"
+        );
+        let missing = answer(
+            &mut session,
+            &QueryKind::Definition {
+                path: "nope.ink".to_owned(),
+                offset: 0,
+            },
+        );
+        assert!(
+            matches!(missing, QueryResult::Unavailable),
+            "a file the session does not hold is Unavailable, not None"
+        );
+    }
+
+    #[test]
+    fn references_are_classified_and_ordered_by_file_then_offset() {
+        let tree = nav_tree("refs");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        // Asked from the declaration, with it included.
+        let QueryResult::References(refs) = answer(
+            &mut session,
+            &QueryKind::References {
+                path: "greet.ink".to_owned(),
+                offset: offset_of(GREET, "greet") + 2,
+                include_declaration: true,
+            },
+        ) else {
+            panic!("references must answer");
+        };
+        let summary: Vec<(&str, ReferenceKind)> = refs
+            .iter()
+            .map(|r| (r.location.path.as_str(), r.kind))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("greet.ink", ReferenceKind::Decl),
+                ("greet.ink", ReferenceKind::Divert),
+                ("main.ink", ReferenceKind::Divert),
+            ],
+            "decl first in its file, then the two diverts, files in order"
+        );
+        let mut sorted = refs.clone();
+        sorted.sort_by(|a, b| {
+            (&a.location.path, a.location.start).cmp(&(&b.location.path, b.location.start))
+        });
+        assert_eq!(refs, sorted);
+
+        // Without the declaration, only the sites remain.
+        let QueryResult::References(sites) = answer(
+            &mut session,
+            &QueryKind::References {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet\n") + 1,
+                include_declaration: false,
+            },
+        ) else {
+            panic!("references must answer");
+        };
+        assert!(sites.iter().all(|r| r.kind != ReferenceKind::Decl));
+        assert_eq!(sites.len(), 2);
+    }
+
+    #[test]
+    fn prepare_rename_offers_the_name_and_refuses_prose() {
+        let tree = nav_tree("prep");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let at = offset_of(MAIN, "greet\n") + 1;
+        let QueryResult::PrepareRename(Some((start, end))) = answer(
+            &mut session,
+            &QueryKind::PrepareRename {
+                path: "main.ink".to_owned(),
+                offset: at,
+            },
+        ) else {
+            panic!("a divert target is renameable");
+        };
+        assert_eq!(&MAIN[start as usize..end as usize], "greet");
+        let prose = answer(
+            &mut session,
+            &QueryKind::PrepareRename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "here"),
+            },
+        );
+        assert!(
+            matches!(prose, QueryResult::PrepareRename(None)),
+            "got {prose:?}"
+        );
+    }
+
+    /// Apply a plan's edits to in-memory sources, last-to-first per file.
+    fn apply_plan(plan: &crate::query::RenamePlan, files: &mut BTreeMap<String, String>) {
+        let mut edits = plan.edits.clone();
+        edits.sort_by(|a, b| (&b.path, b.start).cmp(&(&a.path, a.start)));
+        for e in edits {
+            let text = files
+                .get_mut(&e.path)
+                .expect("an edited file is a known file");
+            text.replace_range(e.start as usize..e.end as usize, &e.new_text);
+        }
+    }
+
+    #[test]
+    fn a_safe_rename_edits_every_site_across_files_and_stays_clean() {
+        let tree = nav_tree("rename");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Rename(Some(plan)) = answer(
+            &mut session,
+            &QueryKind::Rename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet\n") + 1,
+                new_name: "hello".to_owned(),
+            },
+        ) else {
+            panic!("the rename must be computable");
+        };
+        assert_eq!(plan.old_name, "greet");
+        assert!(plan.is_safe(), "introduced {:?}", plan.introduced);
+        assert!(!plan.external);
+        assert_eq!(plan.files(), ["greet.ink", "main.ink"]);
+        assert_eq!(plan.edits.len(), 3, "the declaration and both diverts");
+
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        files.insert("main.ink".to_owned(), MAIN.to_owned());
+        files.insert("greet.ink".to_owned(), GREET.to_owned());
+        apply_plan(&plan, &mut files);
+        assert!(files["greet.ink"].starts_with("=== hello ==="));
+        assert!(files["main.ink"].contains("-> hello\n"));
+        assert!(
+            !files["greet.ink"].contains("greet"),
+            "no site may be left behind"
+        );
+
+        // The renamed program must analyze clean — the promise a safe plan
+        // makes, checked against a fresh session rather than the gate's own
+        // word for it.
+        for (path, text) in &files {
+            session.update_source(path, text.clone());
+        }
+        let after = analyze(&mut session, &ConfigState::default(), 2);
+        assert!(after.diagnostics.is_empty(), "got {:?}", after.diagnostics);
+    }
+
+    #[test]
+    fn a_rename_that_would_collide_is_reported_not_refused() {
+        // Two knots; renaming one onto the other's name is computable but
+        // breaks the program. The plan comes back WITH its report, so the UI
+        // can show what breaks and offer Force (ruled 2026-06-20).
+        let tree = Tree::new(
+            "collide",
+            &[(
+                "main.ink",
+                "-> a\n=== a ===\nA.\n-> b\n=== b ===\nB.\n-> DONE\n",
+            )],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let src = "-> a\n=== a ===\nA.\n-> b\n=== b ===\nB.\n-> DONE\n";
+        let QueryResult::Rename(Some(plan)) = answer(
+            &mut session,
+            &QueryKind::Rename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(src, "=== a") + 4,
+                new_name: "b".to_owned(),
+            },
+        ) else {
+            panic!("a colliding rename is still computable");
+        };
+        assert!(!plan.is_safe());
+        assert!(
+            !plan.introduced.is_empty(),
+            "the report must say what breaks"
+        );
+        assert!(
+            plan.introduced
+                .iter()
+                .all(|d| d.path == "main.ink" && d.line >= 1)
+        );
+    }
+
+    #[test]
+    fn folding_offers_structural_folds_only_sorted_and_non_empty() {
+        let tree = nav_tree("fold");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::FoldingRanges(folds) = answer(
+            &mut session,
+            &QueryKind::FoldingRanges {
+                path: "greet.ink".to_owned(),
+            },
+        ) else {
+            panic!("folding must answer");
+        };
+        assert!(!folds.is_empty(), "a knot with a body is foldable");
+        assert!(
+            folds.contains(&Fold {
+                start_line: 0,
+                end_line: 4
+            }),
+            "the knot folds from its header to its last line; got {folds:?}"
+        );
+        assert!(folds.iter().all(|f| f.end_line > f.start_line));
+        let mut sorted = folds.clone();
+        sorted.sort_by_key(|f| (f.start_line, f.end_line));
+        assert_eq!(folds, sorted);
+    }
+
+    // ── Fixes (INVENTORY §0 item 3) ────────────────────────────────
+
+    use crate::fixes::{FixScope, Tier};
+
+    /// `greet` takes one parameter; the call over-supplies two — E031, whose
+    /// fixer is Safe (`brink_ide::arity_trim_fix`).
+    const FIXABLE: &str = "=== greet(name) ===\n~ return \"Hi \" + name\n\n=== main ===\n~ temp r = greet(\"Al\", \"Bob\")\n{r}\n-> DONE\n";
+    const FIXED: &str = "=== greet(name) ===\n~ return \"Hi \" + name\n\n=== main ===\n~ temp r = greet(\"Bob\")\n{r}\n-> DONE\n";
+
+    fn fixable_tree(name: &str) -> Tree {
+        Tree::new(
+            name,
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"test.ink\"\ndialect = \"brink\"\n",
+                ),
+                ("test.ink", FIXABLE),
+            ],
+        )
+    }
+
+    #[test]
+    fn fixes_under_the_cursor_are_offered_with_their_tier_and_edits() {
+        let tree = fixable_tree("fixes-at");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let _ = analyze(&mut session, &config, 1);
+        let QueryResult::FixesAt(fixes) = answer(
+            &mut session,
+            &QueryKind::FixesAt {
+                path: "test.ink".to_owned(),
+                offset: offset_of(FIXABLE, "greet(\"Al\"") + 2,
+            },
+        ) else {
+            panic!("fixes must answer");
+        };
+        assert_eq!(fixes.len(), 1, "{fixes:?}");
+        assert_eq!(fixes[0].code, "E031");
+        assert_eq!(fixes[0].tier, Tier::Safe);
+        assert!(fixes[0].caret.is_none());
+        let mut text = FIXABLE.to_owned();
+        for e in fixes[0].edits.iter().rev() {
+            assert_eq!(e.path, "test.ink");
+            text.replace_range(e.start as usize..e.end as usize, &e.new_text);
+        }
+        assert_eq!(text, FIXED);
+    }
+
+    #[test]
+    fn offers_pair_each_fix_with_its_diagnostic_and_count_the_batch() {
+        let tree = fixable_tree("offers");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &config, 1);
+        let QueryResult::FixOffers(offers) = answer(&mut session, &QueryKind::FixOffers) else {
+            panic!("offers must answer");
+        };
+        assert_eq!(offers.offers.len(), 1, "{:?}", offers.offers);
+        let offer = &offers.offers[0];
+        assert!(offer.batchable, "a Safe fix is batchable by default");
+        // The pairing key is exactly the diagnostic the Problems row shows.
+        let shown = analyzed
+            .diagnostics
+            .get("test.ink")
+            .expect("the row exists")
+            .iter()
+            .any(|d| d.start == offer.start && d.end == offer.end && d.code == offer.code);
+        assert!(shown, "an offer must name a visible row: {offer:?}");
+        assert_eq!(offers.batchable, 1, "Fix all safe (1)");
+    }
+
+    #[test]
+    fn fix_all_answers_the_fixed_text_and_leaves_the_session_as_found() {
+        let tree = fixable_tree("fix-all");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let _ = analyze(&mut session, &config, 1);
+        let QueryResult::FixAll(report) = answer(
+            &mut session,
+            &QueryKind::FixAll {
+                scope: FixScope::Project,
+            },
+        ) else {
+            panic!("fix all must answer");
+        };
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.remaining, 0);
+        assert!(!report.cap_hit);
+        assert_eq!(
+            report.files,
+            vec![("test.ink".to_owned(), FIXED.to_owned())]
+        );
+        // Rolled back: the host owns the write, and its undo must not
+        // snapshot the fixed text.
+        let id = session.file_id("test.ink").expect("held");
+        assert_eq!(session.source(id), Some(FIXABLE));
+        // A file scope naming an unknown file is Unavailable, not a panic.
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::FixAll {
+                    scope: FixScope::File("nope.ink".to_owned()),
+                },
+            ),
+            QueryResult::Unavailable
+        ));
+    }
+
+    #[test]
+    fn refactors_are_ink_only_and_resolve_to_new_text() {
+        let tree = Tree::new(
+            "refactor",
+            &[
+                (
+                    "main.ink",
+                    "=== zeta ===\nZ.\n-> DONE\n=== alpha ===\nA.\n-> DONE\n",
+                ),
+                ("mod.brink", "flow main {\n  Hello.\n}\n"),
+            ],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Refactors(native) = answer(
+            &mut session,
+            &QueryKind::Refactors {
+                path: "mod.brink".to_owned(),
+                offset: 0,
+            },
+        ) else {
+            panic!("refactors must answer");
+        };
+        assert!(native.is_empty(), "no ink structure in a .brink file");
+        let QueryResult::Refactors(ink) = answer(
+            &mut session,
+            &QueryKind::Refactors {
+                path: "main.ink".to_owned(),
+                offset: 4,
+            },
+        ) else {
+            panic!("refactors must answer");
+        };
+        let sort = ink
+            .iter()
+            .find(|r| r.title.to_lowercase().contains("sort"))
+            .expect("two unsorted knots offer a sort");
+        let QueryResult::ResolvedRefactor(Some(text)) = answer(
+            &mut session,
+            &QueryKind::ResolveRefactor {
+                path: "main.ink".to_owned(),
+                data: sort.data.clone(),
+            },
+        ) else {
+            panic!("the sort must resolve");
+        };
+        assert!(text.find("=== alpha").expect("alpha") < text.find("=== zeta").expect("zeta"));
+    }
+
+    #[test]
+    fn format_answers_the_formatter_output_for_ink_and_none_for_native() {
+        let messy = "=== start ===\n  Hello.\n* [Go]\n        Went.\n-> DONE\n";
+        let tree = Tree::new(
+            "format",
+            &[
+                ("main.ink", messy),
+                ("mod.brink", "flow main {\n     Hello.\n}\n"),
+            ],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Formatted(Some(text)) = answer(
+            &mut session,
+            &QueryKind::Format {
+                path: "main.ink".to_owned(),
+            },
+        ) else {
+            panic!("messy ink must format");
+        };
+        assert_ne!(text, messy);
+        // The same answer `brink fmt` gives, with the project's indent.
+        assert_eq!(
+            text,
+            brink_fmt::format(messy, &brink_fmt::FormatConfig::default())
+        );
+        // Formatting is idempotent, and an unchanged file answers None.
+        session.update_source("main.ink", text.clone());
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::Format {
+                    path: "main.ink".to_owned()
+                }
+            ),
+            QueryResult::Formatted(None)
+        ));
+        // The ink formatter never touches a native file.
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::Format {
+                    path: "mod.brink".to_owned()
+                }
+            ),
+            QueryResult::Formatted(None)
+        ));
     }
 
     #[test]

@@ -316,11 +316,63 @@ unverified by hand.
    `RailSlot::persistence_key` exists for exactly this; nothing calls them.
    (App settings do persist — `shell/src/settings.rs` — but the layout is
    not among them.)
-6. **`#3562` — `.brink` files have no incremental paint path.** Native
+6. ~~**Fold chevrons do not paint.**~~ **Fixed 2026-09-05.** The app
+   never registered the kit's asset source (`gpui_kit_assets::Assets`), so
+   every `IconName` — the fold chevrons included — drew nothing while its
+   hitbox was there all along. `Application::with_assets` in `main.rs`.
+   Chevrons show on gutter hover and on the caret's line, by the toolkit's
+   design (`paint_fold_icons`).
+7. **`#3562` — `.brink` files have no incremental paint path.** Native
    segmentation does not exist, so a native file pays a whole-file parse per
    keystroke (2.1 ms at 700 lines, 12.4 ms at 8,400) where `.ink` pays
    17–51 µs per knot. **The boundary question is a language ruling and must
    not be decided by an agent.**
+
+## Open small things (2026-09-05, end of day)
+
+- **The Program Explorer is unverified by hand** (same locked screen).
+  `program_report_reads_one_compile_three_ways` drives the worker; check
+  the right rail's Program button opens it, the four views, expanding a
+  knot / container / scope, a disassembly row and a line row opening
+  their source, and that an edit while it is shown refreshes it (and
+  while hidden marks it stale, refreshed on show).
+
+- **The Player is unverified by hand.** `model/src/worker.rs`'s
+  `play_runs_to_choices_and_on_through_one` drives compile → lines →
+  choices → choose → Done → play-from-here → stale-after-edit → compile
+  failure against the worker, and the app builds clean, but the screen
+  was locked before the panel could be looked at. Check: cmd-r docks the
+  Player tab in Code view and shows the first lines and the choice
+  buttons; a choice echoes as `+ text`/`* text` and runs on; Restart /
+  From start; the Binder row menu's "Play from here" on a knot and on a
+  stitch; clicking a transcript line opens its source; editing a file
+  while a story runs shows the "sources changed" status; a project with
+  errors lists them. Hot-reload of a running story is deliberately not
+  done (see `model/src/play.rs`'s module doc).
+
+- **Escape did not close the `cmd-.` code-action menu** when driven by
+  automation; `CodeActionMenu::handle_action` handles Escape when its own
+  `open` is true, which `sync_lsp` sets on render — unverified whether a
+  real keypress behaves the same. Check by hand first.
+- **Popover placement fix unverified by hand.** Fork commit 7504917 adds
+  the scroll offset to `range_to_bounds` (the caret already applies it),
+  which is what made hover/diagnostic popovers drift by the scroll
+  distance on both axes. Reasoned from the code; the screen was locked
+  before it could be driven.
+- The web studio's "format document" only sorts knots; the native
+  Format Document / Format on save run `brink-fmt` (the `brink fmt`
+  formatter, `[project] indent` honoured). The two surfaces now differ
+  here on purpose.
+
+## Rendering contract worth knowing (2026-09-05)
+
+gpui-component's `Root::render` draws the view, tooltips and native menus
+— and **not** its dialog, sheet and notification layers. Those are free
+functions (`Root::render_dialog_layer`, `render_notification_layer`,
+`render_sheet_layer`) the application root composes in, AFTER its own
+content so they paint on top. `Studio::render` does this now; before it
+did, every `open_dialog` and `push_notification` landed in a list nothing
+rendered, silently.
 
 ## Open, parked by the maintainer (2026-09-05)
 
@@ -331,17 +383,23 @@ unverified by hand.
   a tab is fine, as today; **Continuous** — it has to *swap in and out*,
   because the manuscript is one scroller and a permanent split fights the
   scrolling; **Single File** — "a side-by-side split, maybe". So it is
-  per-view, not one root-level companion. Do not build the native Player
-  into any view until this is settled; the three-view work leaves the
-  companion slot as a placeholder.
+  per-view, not one root-level companion. **2026-09-05: the Player is
+  built as the Code-view tab** (`app/src/player.rs`, `model/src/play.rs`;
+  the maintainer asked for "a working version of the player next") — the
+  one placement the direction already settles. `Play` (cmd-r) and the
+  Binder's "Play from here" switch the manuscript to Code first; the
+  Continuous swap-in and the Single File split are still open, and the
+  companion slot stays a placeholder.
 
 ## Deliberately not done
 
 - The **editor acceptance gate has not moved down** onto the shared session.
   The layering ruling (2026-09-04, "Both studio consumers sit on the same
   layer") requires it; this slice did not do it.
-- Player, story graph, debugger, settings — all out of the
-  ruled first slice.
+- Story graph, debugger, Output/Compiled Output/Program Explorer — all
+  out of the ruled first slice. (The Player is in, 2026-09-05; the compile
+  it needed now lives in the worker's play session, so the three
+  compile-bound tool windows are unblocked.)
 
 ## Things that will bite you
 

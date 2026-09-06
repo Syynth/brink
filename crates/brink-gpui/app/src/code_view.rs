@@ -24,12 +24,16 @@ use gpui::{
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_handle};
 
 use crate::document::{Document, DocumentEvent};
+use crate::player::Player;
 use crate::project::Project;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeViewEvent {
     /// The active document changed, or there is none.
     ActiveChanged,
+    /// A document's navigation asked to show `span` of `path`. Re-raised
+    /// for the studio, which opens tabs.
+    Navigate { path: String, span: Range<usize> },
 }
 
 pub struct CodeView {
@@ -116,6 +120,27 @@ impl CodeView {
         self.set_active(Some(document), cx);
     }
 
+    /// Put the Player in the centre dock (once) and select its tab.
+    pub fn show_player(
+        &mut self,
+        player: &Entity<Player>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !player.read(cx).is_docked() {
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(player.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        }
+        Player::activate(player, window, cx);
+    }
+
     /// The document Single File view shows.
     #[must_use]
     pub fn active_document(&self) -> Option<&Entity<Document>> {
@@ -138,6 +163,10 @@ impl CodeView {
     ) {
         match event {
             DocumentEvent::Activated => self.set_active(Some(document), cx),
+            DocumentEvent::Navigate { path, span } => cx.emit(CodeViewEvent::Navigate {
+                path: path.clone(),
+                span: span.clone(),
+            }),
             DocumentEvent::Closed => {
                 self.documents.retain(|d| *d != document);
                 self.subscriptions.retain(|(d, _)| *d != document);

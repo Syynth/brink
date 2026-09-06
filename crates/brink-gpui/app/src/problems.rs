@@ -27,7 +27,7 @@
 //! The prose bucket (there is no native prose checker), Fix buttons (the
 //! worker offers no fixes), and the suppress context menu (#3148).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use brink_gpui_model::worker::Diagnostic;
@@ -44,8 +44,16 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use rowan::TextSize;
 
+use brink_gpui_model::fixes::{FixPlan, FixScope};
+use brink_gpui_model::query::{QueryKind, QueryResult};
+
+use crate::fixes;
 use crate::icons;
 use crate::project::{Project, ProjectEvent};
+
+/// How a row finds its fixes in the one-per-analysis offers map: its
+/// diagnostic's `(path, start, end, code)`.
+type OfferKey = (String, u32, u32, String);
 
 /// Activating a row opens its file with the span selected.
 #[derive(Debug, Clone)]
@@ -136,6 +144,7 @@ pub struct Row {
     pub path: String,
     pub span: Range<usize>,
     pub bucket: Bucket,
+    pub code: String,
     pub message: String,
     /// 1-based, when the file's source was available to resolve it.
     pub line_col: Option<(u32, u32)>,
@@ -176,6 +185,7 @@ pub fn build_rows<'a>(
                 path: path.clone(),
                 span: d.start as usize..d.end as usize,
                 bucket: Bucket::of(d),
+                code: d.code.clone(),
                 message: d.message.clone(),
                 line_col: index.as_ref().map(|index| {
                     let (line, col) = index.line_col(TextSize::from(d.start));
@@ -315,6 +325,11 @@ pub struct Problems {
     filter_text: String,
     filter_open: bool,
     tab: TabSlot,
+    /// The fixes offered for each visible diagnostic — ONE query per
+    /// analysis (`docs/autofix-spec.md` §7), each row looking itself up.
+    offers: BTreeMap<OfferKey, Vec<FixPlan>>,
+    /// What "Fix all safe" would take: the batch's own count.
+    batchable: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -353,6 +368,8 @@ impl Problems {
             filter_text: String::new(),
             filter_open: false,
             tab: TabSlot::default(),
+            offers: BTreeMap::new(),
+            batchable: 0,
             _subscriptions: vec![on_filter, on_project],
         }
     }
@@ -372,6 +389,33 @@ impl Problems {
         });
         self.counts = count_by_bucket(&self.rows);
         self.relayout(cx);
+        self.refresh_offers(cx);
+    }
+
+    /// Ask once for every offered fix; rows look themselves up when drawn.
+    fn refresh_offers(&mut self, cx: &mut Context<Self>) {
+        let query = self.project.read(cx).query(QueryKind::FixOffers, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(QueryResult::FixOffers(offers)) = query.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.offers.clear();
+                for offer in offers.offers {
+                    this.offers
+                        .entry((offer.path, offer.start, offer.end, offer.code))
+                        .or_default()
+                        .push(offer.fix);
+                }
+                this.batchable = offers.batchable;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn fix_row(&mut self, plan: FixPlan, window: &mut Window, cx: &mut Context<Self>) {
+        fixes::apply_fix(&self.project, &plan, None, window, cx);
     }
 
     /// Re-apply the toggles, filter and grouping to the rows already built.
@@ -511,6 +555,15 @@ impl Problems {
                     path: row.path.clone(),
                     span: row.span.clone(),
                 };
+                let key: OfferKey = (
+                    row.path.clone(),
+                    u32::try_from(row.span.start).unwrap_or(u32::MAX),
+                    u32::try_from(row.span.end).unwrap_or(u32::MAX),
+                    row.code.clone(),
+                );
+                // The row's first offered fix; the rest are one `cmd-.`
+                // away in the editor once the row is opened.
+                let fix = self.offers.get(&key).and_then(|f| f.first()).cloned();
                 h_flex()
                     .id(("problem", ix))
                     // Full width and clipped, or a long message pushes the
@@ -542,6 +595,19 @@ impl Problems {
                             .text_color(fg)
                             .child(SharedString::from(row.message.clone())),
                     )
+                    .children(fix.map(|plan| {
+                        let tooltip = SharedString::from(plan.title.clone());
+                        Button::new(("problem-fix", ix))
+                            .ghost()
+                            .compact()
+                            .xsmall()
+                            .label("Fix")
+                            .tooltip(tooltip)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.fix_row(plan.clone(), window, cx);
+                            }))
+                    }))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -598,10 +664,25 @@ impl Panel for Problems {
             .iter()
             .map(|&bucket| self.render_toggle(bucket, cx))
             .collect();
+        let batchable = self.batchable;
         Some(
             h_flex()
                 .gap_0p5()
                 .items_center()
+                .when(batchable > 0, |el| {
+                    el.child(
+                        Button::new("problems-fix-all")
+                            .ghost()
+                            .compact()
+                            .xsmall()
+                            .label(format!("Fix all safe ({batchable})"))
+                            .tooltip("Apply every safe fix in the compilation")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                fixes::fix_all(&this.project, FixScope::Project, window, cx);
+                            })),
+                    )
+                    .child(div().w(px(6.)))
+                })
                 .children(toggles)
                 .child(div().w(px(6.)))
                 .child(Self::tool(
