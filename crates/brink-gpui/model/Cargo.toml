@@ -30,3 +30,4 @@ brink-environment.workspace = true
 brink-fmt.workspace = true
 brink-runtime.workspace = true
 brink-format.workspace = true
+brink-intl.workspace = true

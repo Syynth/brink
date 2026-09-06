@@ -248,7 +248,7 @@ Against studio-shell-spec §4's inventory:
 | **Player** | ~~open ruling~~ **built as the Code-view tab** (2026-09-05); Continuous swap-in and the Single File split remain the open ruling. |
 | **State View** (debugger) | the Player's session exposing state (not started). |
 | **Output / compile log** | unblocked: the worker compiles in `model/src/play.rs`; nothing surfaces it yet. |
-| **Program Explorer** | unblocked, same compile; not started. |
+| **Program Explorer** | **built** (2026-09-05, `model/src/program.rs`, `app/src/program.rs`): right dock, Structure / Lines / Disasm / Size, rows with provenance open their source. Residue: no executing-instruction overlay or `stepi` (debugger), no "open .inkt" (Compiled Output not built), no treemap (the Size view is bars). |
 | **Compiled Output** (`.inkt` tab) | unblocked, same compile; not started. |
 | **Story Graph** | the story-graph query in the worker; a canvas. |
 | **Story transcript** | listed as future in the web too. |

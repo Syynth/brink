@@ -104,6 +104,10 @@ pub enum QueryKind {
     Format {
         path: String,
     },
+    /// The compiled program, for the Program Explorer — see
+    /// [`crate::program`]. Answered by the worker loop itself, which holds
+    /// the entry and file list a compile needs.
+    Program,
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -135,6 +139,7 @@ pub enum QueryResult {
     ResolvedRefactor(Option<String>),
     /// `None` when the file is native, unknown, or already formatted.
     Formatted(Option<String>),
+    Program(Box<crate::program::ProgramReport>),
     Unavailable,
 }
 
@@ -331,6 +336,8 @@ pub(crate) fn answer(
             QueryResult::ResolvedRefactor(crate::fixes::resolve_refactor(session, path, data))
         }
         QueryKind::Format { path } => QueryResult::Formatted(format(session, path)),
+        // The worker loop answers this one before reaching here.
+        QueryKind::Program => QueryResult::Unavailable,
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),

@@ -14,6 +14,7 @@ mod icons;
 mod navigation;
 mod player;
 mod problems;
+mod program;
 mod project;
 mod rename;
 mod search;
@@ -48,6 +49,7 @@ use crate::code_view::CodeViewEvent;
 use crate::continuous::ContinuousView;
 use crate::player::{Player, PlayerEvent};
 use crate::problems::{OpenProblem, Problems};
+use crate::program::{ProgramEvent, ProgramExplorer};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
 use crate::settings_conventions::ConventionsSection;
@@ -112,6 +114,7 @@ impl Studio {
         let search = cx.new(|cx| SearchView::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let player = cx.new(|cx| Player::new(project.clone(), cx));
+        let program = cx.new(|cx| ProgramExplorer::new(project.clone(), cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
@@ -243,6 +246,16 @@ impl Studio {
                 window,
                 cx,
             );
+            // The right dock's first occupant: the compiled program, a tall
+            // tree that wants the side rather than the bottom.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("program", "Program", RailSlot::RIGHT_UPPER)
+                    .icon(icons::DOC)
+                    .size(px(380.)),
+                program.clone(),
+                window,
+                cx,
+            );
             // The three views (decision log 2026-08-26). Registered before
             // the project opens so the manuscript is subscribed when the
             // files land.
@@ -354,6 +367,14 @@ impl Studio {
                 this.show(path, span.clone(), window, cx);
             },
         );
+        let on_program = cx.subscribe_in(
+            &program,
+            window,
+            |this, _, event: &ProgramEvent, window, cx| {
+                let ProgramEvent::Navigate { path, span } = event;
+                this.show(path, span.clone(), window, cx);
+            },
+        );
         let on_problem = cx.subscribe_in(
             &problems,
             window,
@@ -409,8 +430,8 @@ impl Studio {
             search,
             player,
             _subscriptions: vec![
-                on_project, on_binder, on_player, on_problem, on_todo, on_search, on_code,
-                on_general,
+                on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
+                on_code, on_general,
             ],
         }
     }

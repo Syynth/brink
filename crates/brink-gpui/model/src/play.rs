@@ -191,7 +191,7 @@ pub fn run(
 
 /// The file to compile from: the applied entry, else the project's one
 /// file, else a root-level `main.*`.
-fn entry_file<'a>(entry: Option<&'a str>, files: &'a [String]) -> Option<&'a str> {
+pub(crate) fn entry_file<'a>(entry: Option<&'a str>, files: &'a [String]) -> Option<&'a str> {
     if let Some(entry) = entry {
         return Some(entry);
     }

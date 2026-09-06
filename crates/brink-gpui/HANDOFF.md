@@ -330,6 +330,13 @@ unverified by hand.
 
 ## Open small things (2026-09-05, end of day)
 
+- **The Program Explorer is unverified by hand** (same locked screen).
+  `program_report_reads_one_compile_three_ways` drives the worker; check
+  the right rail's Program button opens it, the four views, expanding a
+  knot / container / scope, a disassembly row and a line row opening
+  their source, and that an edit while it is shown refreshes it (and
+  while hidden marks it stale, refreshed on show).
+
 - **The Player is unverified by hand.** `model/src/worker.rs`'s
   `play_runs_to_choices_and_on_through_one` drives compile → lines →
   choices → choose → Done → play-from-here → stale-after-edit → compile

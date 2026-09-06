@@ -413,10 +413,18 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 
         // Queries last, so they read the analysis the same drain produced.
         for (kind, reply) in queries {
-            let result = if usable {
-                crate::query::answer(&mut session, &kind)
-            } else {
+            let result = if !usable {
                 QueryResult::Unavailable
+            } else if matches!(kind, QueryKind::Program) {
+                // Needs the entry and the file list, which only the loop
+                // holds — so it is answered here, not in `query::answer`.
+                QueryResult::Program(Box::new(crate::program::report(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
+            } else {
+                crate::query::answer(&mut session, &kind)
             };
             // A dropped receiver just means the asker moved on.
             let _ = reply.send_blocking(result);
@@ -1006,6 +1014,75 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn program_report_reads_one_compile_three_ways() {
+        use crate::program::ProgramStatus;
+        let tree = Tree::new(
+            "program",
+            &[(
+                "main.ink",
+                "VAR torch = 3\nLIST moods = calm, (tense)\nEXTERNAL play_se(name)\n\
+                 === greet ===\nHello {torch}.\n= wave\nBye.\n-> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::Program,
+            reply,
+        });
+        let QueryResult::Program(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a program report");
+        };
+        assert_eq!(report.entry.as_deref(), Some("main.ink"));
+        let ProgramStatus::Ready(program) = &report.status else {
+            panic!("compiles clean: {report:?}");
+        };
+        let model = &program.model;
+        // The LIST declares a global too — `moods` holds the list value.
+        let globals: Vec<&str> = model.globals.iter().map(|g| g.name.as_str()).collect();
+        assert!(globals.contains(&"torch"), "{globals:?}");
+        assert!(globals.contains(&"moods"), "{globals:?}");
+        assert_eq!(model.lists.len(), 1);
+        assert_eq!(model.lists[0].items.len(), 2);
+        assert_eq!(model.externals.len(), 1);
+        let paths: Vec<&str> = model.knots.iter().map(|k| k.path.as_str()).collect();
+        let greet = model
+            .knots
+            .iter()
+            .find(|k| k.path == "greet")
+            .unwrap_or_else(|| panic!("greet among {paths:?}"));
+        assert_eq!(greet.children.len(), 1, "{paths:?}");
+        assert!(!greet.disasm.is_empty());
+        assert_eq!(paths, ["greet"], "only the author's knot");
+        assert!(
+            program
+                .lines
+                .scopes
+                .iter()
+                .any(|s| s.name.as_deref() == Some("greet")),
+            "{:?}",
+            program.lines.scopes
+        );
+        assert!(program.size.total > 0 && program.size.shipping <= program.size.total);
+        assert!(!program.size.sections.is_empty());
+
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: "-> nowhere\n".to_owned(),
+            revision: 1,
+        });
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::Program,
+            reply,
+        });
+        let QueryResult::Program(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a program report");
+        };
+        assert!(matches!(&report.status, ProgramStatus::Errors(e) if !e.is_empty()));
     }
 
     #[test]

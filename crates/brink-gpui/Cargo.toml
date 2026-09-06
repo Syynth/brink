@@ -77,4 +77,5 @@ brink-environment = { path = "../internal/brink-environment" }
 brink-fmt = { path = "../internal/brink-fmt" }
 brink-runtime = { path = "../brink-runtime" }
 brink-format = { path = "../internal/brink-format" }
+brink-intl = { path = "../internal/brink-intl" }
 

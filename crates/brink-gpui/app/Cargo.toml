@@ -23,6 +23,7 @@ brink-gpui-model.workspace = true
 brink-gpui-shell.workspace = true
 
 brink-ide.workspace = true
+brink-intl.workspace = true
 brink-db.workspace = true
 brink-ir.workspace = true
 brink-syntax.workspace = true
