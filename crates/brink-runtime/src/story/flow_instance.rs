@@ -1222,9 +1222,13 @@ impl FlowInstance {
         self.stats.frames_pushed += 1;
 
         // Pass the full arg row (bound prefix then supplied) onto the value
-        // stack in declaration order — the prologue binds it exactly as an
-        // in-story call would.
+        // stack in declaration order, then bind it: `.inkb` v10 removed the
+        // callee's `DeclareTemp` prologue, so the VM does that work here —
+        // the same push-then-bind shape as `begin_function_eval_with_limit`,
+        // which keeps surplus-argument behaviour (a `bind`-curried closure
+        // over-supplied by the host) exactly as it was pre-v10.
         self.flow.value_stack.extend_from_slice(&full_args);
+        crate::vm::bind_entry_params(&mut self.flow, program, container_idx)?;
 
         self.eval = Some(EvalState {
             value_floor,

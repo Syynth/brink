@@ -692,16 +692,24 @@ Consequences worth stating:
   `thread_frame_growth_3561.rs` is what proved otherwise.
 - **Every site that positions execution at offset 0 of a container must
   bind.** That is the obligation the prologue used to discharge for free by
-  being bytecode. There are fourteen: the six frame pushes (`Call`, the two
+  being bytecode. There are fifteen: the six frame pushes (`Call`, the two
   `CallVariable` sites, function values, `TunnelCall`,
   `TunnelCallVariable`), `EnterContainer`, a divert landing at offset 0,
   a forked thread, the tunnel-onwards override (`->-> target(args)`, whose
   binding happens *after* the frame pops, since it rewrites the return
-  address), the external fallback, and the two host entry points. A
-  `debug_assert` in the VM's fetch preamble fires when execution stands at
-  offset 0 of a parameterized container with an unbound slot, so a missed
-  site surfaces on the first instruction rather than as a wrong value later.
-  That net found the tunnel-onwards case on its first run over the corpus.
+  address), the external fallback, and the **three** host entry points —
+  `begin_function_eval`, `choose_path_string_with_args`, and
+  `begin_function_value_eval`, the host-side re-invocation of an opaque
+  function value, whose full argument row (a `Closure`'s captured prefix
+  plus what the host supplies) is assembled by `vm::prepare_fn_value_call`
+  rather than by resolving a container and entering it, which is why no
+  reading of the entry shapes turned it up. A `debug_assert` in the VM's
+  fetch preamble fires when execution stands at offset 0 of a parameterized
+  container with an unbound slot, so a missed site surfaces on the first
+  instruction rather than as a wrong value later. That net found the
+  tunnel-onwards case on its first run over the corpus, and the
+  function-value case on the first CI run of a lane
+  (`bevy-brink`'s `bench-counters` job) the local sweep had excluded.
 - **A divert binds only when it lands at offset 0.** A break divert or
   gather loop into the middle of a parameterized knot carries no arguments
   and binds nothing — exactly the rule the prologue enforced by sitting at
