@@ -144,6 +144,33 @@ impl Player {
         self.start(at, cx);
     }
 
+    /// The numbered choice buttons are numbered for a reason: `1`-`9` take
+    /// that choice. Playtesting is a loop of read-then-pick, and reaching
+    /// for the mouse on every pick is the friction the numbers already
+    /// promised to remove.
+    ///
+    /// Bound on the panel's own focus rather than as a command: a digit is
+    /// only a choice while the Player has focus and is showing choices,
+    /// and a global `1` would fight every text field in the studio.
+    fn on_key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.choices.is_empty() {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        // Only a bare digit: `cmd-1` is the shell's tool-window toggle.
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let Some(n) = key.parse::<usize>().ok().filter(|n| *n >= 1) else {
+            return;
+        };
+        let Some(choice) = self.choices.get(n - 1) else {
+            return;
+        };
+        let index = choice.index;
+        self.choose(index, cx);
+    }
+
     fn choose(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -396,6 +423,7 @@ impl Render for Player {
         v_flex()
             .id("player")
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .text_sm()
             .child(

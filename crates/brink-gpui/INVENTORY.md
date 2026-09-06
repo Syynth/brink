@@ -52,8 +52,9 @@ In `.ink`-author order, the gaps that bite first:
    that open their source; `Play` (cmd-r), `Restart` (cmd-shift-r), and
    the Binder's "Play from here" on knots and stitches. Residue: only the
    Code-view placement (the other two views' placement is still the open
-   ruling), no execution highlight, no wake for `await` parks, no number
-   keys for choices.
+   ruling), no execution highlight, no wake for `await` parks. (Number
+   keys landed 2026-09-06: `1`-`9` take a choice, and Play/Restart focus
+   the panel so they work without a click first.)
 3. ~~**Fixes** — code actions in the editor, Fix buttons in Problems.~~
    **Built 2026-09-05** (`model/src/fixes.rs`, `app/src/fixes.rs`): the
    `cmd-.` menu (fixes every tier + whole-source refactors), Problems' per-row

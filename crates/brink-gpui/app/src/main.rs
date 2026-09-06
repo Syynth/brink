@@ -777,6 +777,12 @@ impl Studio {
         self.code
             .update(cx, |code, cx| code.show_player(&player, window, cx));
         player.update(cx, |player, cx| player.start(at, cx));
+        // Play is an explicit "run it now", and the choices are numbered so
+        // they can be picked by key — which needs the Player to have focus.
+        // Without this the numbers were dead until you clicked the panel,
+        // which is the friction the numbering exists to remove.
+        let handle = player.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
     }
 
     /// Show the `.inkt` dump: dock the tab if it is not docked, then select
@@ -847,6 +853,8 @@ impl Studio {
                 .update(cx, |code, cx| code.show_player(&player, window, cx));
         }
         player.update(cx, |player, cx| player.restart(cx));
+        let handle = player.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
