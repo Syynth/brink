@@ -732,6 +732,29 @@ call-heavy a story is: tier3 drops 7.3% unoptimized, tier2 (list- and
 choice-heavy, few calls) under 1%. Bytecode shrinks only slightly because a
 `DeclareTemp` is three bytes and the prologue was the only thing removed.
 
+Instructions retired (callgrind, paired against the pre-change build, per
+iteration, differenced across two iteration counts so compile and link
+cancel):
+
+| Story | Opcodes | Ir unoptimized | Ir optimized |
+|---|---|---|---|
+| crucible-8 | −7.5% | 183.62M → 177.94M (−3.1%) | 135.49M → 129.86M (−4.2%) |
+| hanoi-10 | −7.6% | 1 329.6M → 1 295.2M (−2.6%) | 1 204.4M → 1 170.3M (−2.8%) |
+| TheIntercept | −0.4% | 708 633 → 710 562 (+0.3%) | 687 777 → 692 414 (+0.7%) |
+
+**Opcodes removed is an upper bound on the benefit, not the benefit.** The
+binding work does not disappear, it stops being a dispatch — and every
+container entry now pays a load and a predicted branch to ask whether the
+container has parameters at all. TheIntercept has almost no parameterized
+calls, so it pays that and gains nothing.
+
+The first cut of this change *lost* on crucible — 7.5% fewer opcodes for
+0.04% more Ir — because `bind_entry_params` collected the callee's slots
+into a `Vec`, one malloc per call, worth about as much as the dispatch it
+replaced (5.7M Ir per crucible iteration). Read the slots straight out of
+the artifact; the borrow of `program` and the mutable borrow of the flow do
+not conflict.
+
 ## Temp scope and definite assignment
 
 RULED 2026-09-01 (issue #3354, option C; `docs/decision-log.md` "Uninitialized
