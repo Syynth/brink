@@ -664,6 +664,74 @@ not a judgment call made once at admission time and never re-checked.
   knot and its stitches, so the program plays (`Stitch sees 7.`); inklecate
   rejects it (`Unresolved variable: n`).
 
+## Parameter binding
+
+**RULED 2026-09-05 (`.inkb` v10).** A container's parameters are bound by the
+**VM at entry**, not by bytecode the callee runs.
+
+The caller's half is unchanged: evaluate arguments left to right, push them
+onto the value stack, then `Call` / `Goto` / `TunnelCall` / `ThreadCall` /
+`->-> target(args)`. What changed is the callee's half. Before v10 codegen
+emitted a leading `DeclareTemp(slot)` per parameter at offset 0 of every
+parameterized container, so *arriving* at offset 0 bound the parameters
+automatically, however control got there. Now `brink_runtime::vm`'s
+`bind_entry_params` pops `param_count` arguments into the frame's temp slots
+`param_count - 1 … 0`, and codegen emits no prologue at all.
+
+Consequences worth stating:
+
+- **The runtime binds from the slots the artifact records, not from
+  position.** `ContainerDef::params` carries each parameter's temp slot
+  (`ParamMeta::slot`, added in v10) and the VM uses it. Positional binding
+  would be wrong: a knot and its stitches share one call frame and one temp
+  map, so a knot's parameters take slots `0 …` and a **stitch's continue
+  after them** — `= opt(n)` inside `=== outer(m)` has `opt`'s single
+  parameter at slot 1, not 0. The first implementation assumed `0 … n-1`
+  (true for knots and functions, and pinned by a `brink-ir` unit test that
+  only covers knot parameters); the thread fixture in
+  `thread_frame_growth_3561.rs` is what proved otherwise.
+- **Every site that positions execution at offset 0 of a container must
+  bind.** That is the obligation the prologue used to discharge for free by
+  being bytecode. There are fourteen: the six frame pushes (`Call`, the two
+  `CallVariable` sites, function values, `TunnelCall`,
+  `TunnelCallVariable`), `EnterContainer`, a divert landing at offset 0,
+  a forked thread, the tunnel-onwards override (`->-> target(args)`, whose
+  binding happens *after* the frame pops, since it rewrites the return
+  address), the external fallback, and the two host entry points. A
+  `debug_assert` in the VM's fetch preamble fires when execution stands at
+  offset 0 of a parameterized container with an unbound slot, so a missed
+  site surfaces on the first instruction rather than as a wrong value later.
+  That net found the tunnel-onwards case on its first run over the corpus.
+- **A divert binds only when it lands at offset 0.** A break divert or
+  gather loop into the middle of a parameterized knot carries no arguments
+  and binds nothing — exactly the rule the prologue enforced by sitting at
+  offset 0.
+- **The `.inkb` bump is the point.** A v9 artifact's prologue decodes
+  perfectly under a v10 runtime and would re-bind parameters from an empty
+  stack, so v10 exists to make that a hard rejection instead of a wrong
+  answer (`docs/format-spec.md`).
+- **Hot patching is unaffected**: the parameter metadata lives on the
+  container definition in the unlinked layer, so a re-link over a patched
+  artifact binds exactly as a fresh link does.
+
+### Measured
+
+Every checked-in oracle episode replayed on the artifact before and after
+(`cargo test -p brink-test-harness --test opt_corpus_stats -- --ignored`),
+390 cases and 6 636 episodes:
+
+| | Opcodes executed | Bytecode bytes |
+|---|---|---|
+| unoptimized, with the prologue | 12 393 441 | 75 268 |
+| unoptimized, bound at entry | 11 649 477 (**−6.0%**) | 74 944 |
+| optimized, with the prologue | 10 193 989 | 72 525 |
+| optimized, bound at entry | 9 450 025 (**−7.3%**) | 72 201 |
+
+The saving is one dispatch per parameter per call, so it tracks how
+call-heavy a story is: tier3 drops 7.3% unoptimized, tier2 (list- and
+choice-heavy, few calls) under 1%. Bytecode shrinks only slightly because a
+`DeclareTemp` is three bytes and the prologue was the only thing removed.
+
 ## Temp scope and definite assignment
 
 RULED 2026-09-01 (issue #3354, option C; `docs/decision-log.md` "Uninitialized
