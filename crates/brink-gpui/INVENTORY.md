@@ -294,7 +294,7 @@ click-to-reveal, rail badge, status-bar cell, `CONFIG` rows for a broken
 | Prose bucket | not wired | the worker runs no prose checker. |
 | ~~Fix buttons~~ | built 2026-09-05 | per-row **Fix** (the row's first offer) and **Fix all safe (N)**, `N` from `collect()`. The row's context menu listing every offer is not built. |
 | ~~Suppressions never applied at all~~ | fixed 2026-09-06 | the worker read `db().diagnostics` RAW and never called `apply_suppressions`, so `// brink-disable`, `// brink-disable-file`, `brink-expect` and `@[allow(…)]` did nothing in this studio — in the panel or in the editor's squiggles. Found by building the suppress menu and watching the count not move. Suppressions now run before `effective_severity`, which is the order every other surface uses. |
-| ~~Suppress context menu (#3148)~~ | built 2026-09-06 | right-click a row: suppress the code on its line or in its file, or open Settings ▸ Diagnostics. Offered only for a code the suppression channel would accept — only warnings are suppressible, so offering it for an error would be a silent no-op. |
+| ~~Suppress context menu (#3148)~~ | built 2026-09-06 | right-click a row: suppress the code on its line or in its file, or open Settings ▸ Diagnostics. Offered for anything but an error — warnings and Info notes alike, since the channel's test is `!= Error` — so an `E189` author note can be silenced like any other code, and offering it for an error would be a silent no-op. |
 | ~~"Configure Exxx…" door into Settings ▸ Diagnostics~~ | built 2026-09-06 | the row's context menu opens the section (`Workspace::open_settings` already took a section id). |
 
 ### TODOs (`app/src/todos.rs`)

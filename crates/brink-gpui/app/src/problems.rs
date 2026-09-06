@@ -98,11 +98,18 @@ pub struct SuppressProblem {
 
 /// Whether the suppression channel would accept this code.
 ///
-/// Only warnings are suppressible — `brink_ir::suppressions` refuses a
-/// code whose DEFAULT severity is an error, because an error means no
-/// correct artifact can be produced and silencing one would be a way to
-/// ship broken code. A code the registry does not know is left alone
-/// rather than guessed at.
+/// **Everything but an error.** Warnings and Info notes are both
+/// suppressible; `brink_ir::suppressions` refuses a code whose DEFAULT
+/// severity is `Error`, because an error means no correct artifact can be
+/// produced and silencing one would be a way to ship broken code.
+///
+/// The rule is stated as "not an error" rather than "warnings only" on
+/// purpose: `brink_ir::suppressions`'s own heading reads "Only warnings
+/// are suppressible" while its text says it refuses errors, and reading
+/// the heading is what would leave an author unable to silence an Info
+/// note like `E189` — which the channel accepts perfectly well.
+///
+/// A code the registry does not know is left alone rather than guessed at.
 #[must_use]
 pub fn is_suppressible(code: &str) -> bool {
     brink_ide::diagnostic_registry::registry()
@@ -693,12 +700,11 @@ impl Problems {
                     }))
                     .context_menu(move |menu, _window, _cx| {
                         let menu = menu.action_context(menu_focus.clone()).label(code.clone());
-                        // Only a warning-tier code can be silenced: the
-                        // suppression channel refuses an error outright
-                        // (`brink_ir::suppressions` — "only warnings are
-                        // suppressible"), so offering it would build the
-                        // silent no-op the Diagnostics section exists to
-                        // prevent.
+                        // Anything but an error can be silenced — warnings
+                        // and Info notes alike. The channel refuses an
+                        // error outright, so offering it there would build
+                        // the silent no-op the Diagnostics section exists
+                        // to prevent.
                         let menu = if suppressible && line.is_some() {
                             menu.separator()
                                 .menu(
@@ -1068,6 +1074,41 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn warnings_and_info_are_suppressible_but_errors_are_not() {
+        // The rule is "not an error", not "warnings only": an Info note
+        // like E189 is silenceable, and an author who wants one gone must
+        // be offered the menu entry for it.
+        let registry = brink_ide::diagnostic_registry::registry();
+        let by_severity = |want: brink_ir::Severity| {
+            registry
+                .iter()
+                .find(|i| i.default_severity == want)
+                .map(|i| i.code.as_str().to_owned())
+        };
+        if let Some(code) = by_severity(brink_ir::Severity::Warning) {
+            assert!(is_suppressible(&code), "a warning is suppressible: {code}");
+        }
+        if let Some(code) = by_severity(brink_ir::Severity::Info) {
+            assert!(is_suppressible(&code), "an info note is too: {code}");
+        }
+        let error = by_severity(brink_ir::Severity::Error)
+            .expect("the registry has at least one error-tier code");
+        assert!(!is_suppressible(&error), "an error is not: {error}");
+    }
+
+    #[test]
+    fn the_todo_code_is_suppressible() {
+        // The one Info code named in this file, pinned by name so the
+        // general rule above cannot pass vacuously.
+        assert!(is_suppressible(TODO_CODE));
+    }
+
+    #[test]
+    fn an_unknown_code_is_left_alone() {
+        assert!(!is_suppressible("E9999"));
     }
 
     #[test]
