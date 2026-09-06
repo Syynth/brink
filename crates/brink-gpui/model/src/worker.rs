@@ -397,7 +397,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         // Queries last, so they read the analysis the same drain produced.
         for (kind, reply) in queries {
             let result = if usable {
-                crate::query::answer(&session, &kind)
+                crate::query::answer(&mut session, &kind)
             } else {
                 QueryResult::Unavailable
             };
@@ -968,7 +968,7 @@ mod tests {
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let at = offset_of(MAIN, "greet\n") + 1;
         let QueryResult::Definition(Some(loc)) = answer(
-            &session,
+            &mut session,
             &QueryKind::Definition {
                 path: "main.ink".to_owned(),
                 offset: at,
@@ -992,7 +992,7 @@ mod tests {
         let (mut session, _) = open_tree(&tree);
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let QueryResult::Definition(Some(loc)) = answer(
-            &session,
+            &mut session,
             &QueryKind::Definition {
                 path: "main.ink".to_owned(),
                 offset: offset_of(MAIN, "greet.ink") + 3,
@@ -1009,7 +1009,7 @@ mod tests {
         let (mut session, _) = open_tree(&tree);
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let result = answer(
-            &session,
+            &mut session,
             &QueryKind::Definition {
                 path: "main.ink".to_owned(),
                 offset: offset_of(MAIN, "here"),
@@ -1020,7 +1020,7 @@ mod tests {
             "got {result:?}"
         );
         let missing = answer(
-            &session,
+            &mut session,
             &QueryKind::Definition {
                 path: "nope.ink".to_owned(),
                 offset: 0,
@@ -1039,7 +1039,7 @@ mod tests {
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         // Asked from the declaration, with it included.
         let QueryResult::References(refs) = answer(
-            &session,
+            &mut session,
             &QueryKind::References {
                 path: "greet.ink".to_owned(),
                 offset: offset_of(GREET, "greet") + 2,
@@ -1069,7 +1069,7 @@ mod tests {
 
         // Without the declaration, only the sites remain.
         let QueryResult::References(sites) = answer(
-            &session,
+            &mut session,
             &QueryKind::References {
                 path: "main.ink".to_owned(),
                 offset: offset_of(MAIN, "greet\n") + 1,
@@ -1089,7 +1089,7 @@ mod tests {
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let at = offset_of(MAIN, "greet\n") + 1;
         let QueryResult::PrepareRename(Some((start, end))) = answer(
-            &session,
+            &mut session,
             &QueryKind::PrepareRename {
                 path: "main.ink".to_owned(),
                 offset: at,
@@ -1099,7 +1099,7 @@ mod tests {
         };
         assert_eq!(&MAIN[start as usize..end as usize], "greet");
         let prose = answer(
-            &session,
+            &mut session,
             &QueryKind::PrepareRename {
                 path: "main.ink".to_owned(),
                 offset: offset_of(MAIN, "here"),
@@ -1129,7 +1129,7 @@ mod tests {
         let (mut session, _) = open_tree(&tree);
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let QueryResult::Rename(Some(plan)) = answer(
-            &session,
+            &mut session,
             &QueryKind::Rename {
                 path: "main.ink".to_owned(),
                 offset: offset_of(MAIN, "greet\n") + 1,
@@ -1181,7 +1181,7 @@ mod tests {
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let src = "-> a\n=== a ===\nA.\n-> b\n=== b ===\nB.\n-> DONE\n";
         let QueryResult::Rename(Some(plan)) = answer(
-            &session,
+            &mut session,
             &QueryKind::Rename {
                 path: "main.ink".to_owned(),
                 offset: offset_of(src, "=== a") + 4,
@@ -1208,7 +1208,7 @@ mod tests {
         let (mut session, _) = open_tree(&tree);
         let _ = analyze(&mut session, &ConfigState::default(), 1);
         let QueryResult::FoldingRanges(folds) = answer(
-            &session,
+            &mut session,
             &QueryKind::FoldingRanges {
                 path: "greet.ink".to_owned(),
             },
@@ -1227,6 +1227,161 @@ mod tests {
         let mut sorted = folds.clone();
         sorted.sort_by_key(|f| (f.start_line, f.end_line));
         assert_eq!(folds, sorted);
+    }
+
+    // ── Fixes (INVENTORY §0 item 3) ────────────────────────────────
+
+    use crate::fixes::{FixScope, Tier};
+
+    /// `greet` takes one parameter; the call over-supplies two — E031, whose
+    /// fixer is Safe (`brink_ide::arity_trim_fix`).
+    const FIXABLE: &str = "=== greet(name) ===\n~ return \"Hi \" + name\n\n=== main ===\n~ temp r = greet(\"Al\", \"Bob\")\n{r}\n-> DONE\n";
+    const FIXED: &str = "=== greet(name) ===\n~ return \"Hi \" + name\n\n=== main ===\n~ temp r = greet(\"Bob\")\n{r}\n-> DONE\n";
+
+    fn fixable_tree(name: &str) -> Tree {
+        Tree::new(
+            name,
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"test.ink\"\ndialect = \"brink\"\n",
+                ),
+                ("test.ink", FIXABLE),
+            ],
+        )
+    }
+
+    #[test]
+    fn fixes_under_the_cursor_are_offered_with_their_tier_and_edits() {
+        let tree = fixable_tree("fixes-at");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let _ = analyze(&mut session, &config, 1);
+        let QueryResult::FixesAt(fixes) = answer(
+            &mut session,
+            &QueryKind::FixesAt {
+                path: "test.ink".to_owned(),
+                offset: offset_of(FIXABLE, "greet(\"Al\"") + 2,
+            },
+        ) else {
+            panic!("fixes must answer");
+        };
+        assert_eq!(fixes.len(), 1, "{fixes:?}");
+        assert_eq!(fixes[0].code, "E031");
+        assert_eq!(fixes[0].tier, Tier::Safe);
+        assert!(fixes[0].caret.is_none());
+        let mut text = FIXABLE.to_owned();
+        for e in fixes[0].edits.iter().rev() {
+            assert_eq!(e.path, "test.ink");
+            text.replace_range(e.start as usize..e.end as usize, &e.new_text);
+        }
+        assert_eq!(text, FIXED);
+    }
+
+    #[test]
+    fn offers_pair_each_fix_with_its_diagnostic_and_count_the_batch() {
+        let tree = fixable_tree("offers");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &config, 1);
+        let QueryResult::FixOffers(offers) = answer(&mut session, &QueryKind::FixOffers) else {
+            panic!("offers must answer");
+        };
+        assert_eq!(offers.offers.len(), 1, "{:?}", offers.offers);
+        let offer = &offers.offers[0];
+        assert!(offer.batchable, "a Safe fix is batchable by default");
+        // The pairing key is exactly the diagnostic the Problems row shows.
+        let shown = analyzed
+            .diagnostics
+            .get("test.ink")
+            .expect("the row exists")
+            .iter()
+            .any(|d| d.start == offer.start && d.end == offer.end && d.code == offer.code);
+        assert!(shown, "an offer must name a visible row: {offer:?}");
+        assert_eq!(offers.batchable, 1, "Fix all safe (1)");
+    }
+
+    #[test]
+    fn fix_all_answers_the_fixed_text_and_leaves_the_session_as_found() {
+        let tree = fixable_tree("fix-all");
+        let (mut session, _, config) = open_tree_with_config(&tree);
+        let _ = analyze(&mut session, &config, 1);
+        let QueryResult::FixAll(report) = answer(
+            &mut session,
+            &QueryKind::FixAll {
+                scope: FixScope::Project,
+            },
+        ) else {
+            panic!("fix all must answer");
+        };
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.remaining, 0);
+        assert!(!report.cap_hit);
+        assert_eq!(
+            report.files,
+            vec![("test.ink".to_owned(), FIXED.to_owned())]
+        );
+        // Rolled back: the host owns the write, and its undo must not
+        // snapshot the fixed text.
+        let id = session.file_id("test.ink").expect("held");
+        assert_eq!(session.source(id), Some(FIXABLE));
+        // A file scope naming an unknown file is Unavailable, not a panic.
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::FixAll {
+                    scope: FixScope::File("nope.ink".to_owned()),
+                },
+            ),
+            QueryResult::Unavailable
+        ));
+    }
+
+    #[test]
+    fn refactors_are_ink_only_and_resolve_to_new_text() {
+        let tree = Tree::new(
+            "refactor",
+            &[
+                (
+                    "main.ink",
+                    "=== zeta ===\nZ.\n-> DONE\n=== alpha ===\nA.\n-> DONE\n",
+                ),
+                ("mod.brink", "flow main {\n  Hello.\n}\n"),
+            ],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Refactors(native) = answer(
+            &mut session,
+            &QueryKind::Refactors {
+                path: "mod.brink".to_owned(),
+                offset: 0,
+            },
+        ) else {
+            panic!("refactors must answer");
+        };
+        assert!(native.is_empty(), "no ink structure in a .brink file");
+        let QueryResult::Refactors(ink) = answer(
+            &mut session,
+            &QueryKind::Refactors {
+                path: "main.ink".to_owned(),
+                offset: 4,
+            },
+        ) else {
+            panic!("refactors must answer");
+        };
+        let sort = ink
+            .iter()
+            .find(|r| r.title.to_lowercase().contains("sort"))
+            .expect("two unsorted knots offer a sort");
+        let QueryResult::ResolvedRefactor(Some(text)) = answer(
+            &mut session,
+            &QueryKind::ResolveRefactor {
+                path: "main.ink".to_owned(),
+                data: sort.data.clone(),
+            },
+        ) else {
+            panic!("the sort must resolve");
+        };
+        assert!(text.find("=== alpha").expect("alpha") < text.find("=== zeta").expect("zeta"));
     }
 
     #[test]

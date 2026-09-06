@@ -68,9 +68,16 @@ pub(crate) fn install(
     let lsp = state.lsp_mut();
     lsp.definition_provider = Some(Rc::new(BrinkDefinition {
         project: project.downgrade(),
-        path,
+        path: path.clone(),
         origin,
     }));
+    // Fixes and refactors — the code-action menu (`cmd-.`).
+    lsp.code_action_providers
+        .push(Rc::new(crate::fixes::BrinkCodeActions::new(
+            project.downgrade(),
+            path,
+            origin,
+        )));
     // gpui-base consults this BEFORE its own fallback, which is `open_url`
     // for an http(s) target and a same-buffer caret move otherwise —
     // neither of which can open another file. Returning `true` claims the

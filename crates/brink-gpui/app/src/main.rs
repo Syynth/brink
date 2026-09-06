@@ -9,6 +9,7 @@ mod binder;
 mod code_view;
 mod continuous;
 mod document;
+mod fixes;
 mod icons;
 mod navigation;
 mod problems;
@@ -66,6 +67,10 @@ actions!(
         FindReferences,
         /// Rename the symbol under the caret, cross-file and safe-by-default.
         RenameSymbol,
+        /// Every Safe fix in the active file, to a fixpoint.
+        FixAllInFile,
+        /// Every Safe fix in the compilation, to a fixpoint.
+        FixAllInProject,
     ]
 );
 
@@ -264,6 +269,15 @@ impl Studio {
                 cx,
             );
             workspace.register_command("Refactor", "Rename Symbol", RenameSymbol, Some("f2"), cx);
+            workspace.register_command(
+                "Refactor",
+                "Code Actions",
+                gpui_component::input::ToggleCodeActions,
+                Some("cmd-."),
+                cx,
+            );
+            workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
+            workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -518,6 +532,32 @@ impl Studio {
         .detach();
     }
 
+    fn fix_all_in_file(&mut self, _: &FixAllInFile, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        fixes::fix_all(
+            &self.project,
+            brink_gpui_model::fixes::FixScope::File(site.path.to_string()),
+            window,
+            cx,
+        );
+    }
+
+    fn fix_all_in_project(
+        &mut self,
+        _: &FixAllInProject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        fixes::fix_all(
+            &self.project,
+            brink_gpui_model::fixes::FixScope::Project,
+            window,
+            cx,
+        );
+    }
+
     /// Save every dirty file — whichever editor it was changed in.
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
         self.project.update(cx, |project, cx| {
@@ -563,6 +603,8 @@ impl Render for Studio {
             .on_action(cx.listener(Self::go_to_definition))
             .on_action(cx.listener(Self::find_references))
             .on_action(cx.listener(Self::rename_symbol))
+            .on_action(cx.listener(Self::fix_all_in_file))
+            .on_action(cx.listener(Self::fix_all_in_project))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.

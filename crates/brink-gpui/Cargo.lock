@@ -873,6 +873,7 @@ dependencies = [
  "brink-syntax-native",
  "gpui-pre",
  "rowan",
+ "serde_json",
 ]
 
 [[package]]

@@ -75,6 +75,29 @@ pub enum QueryKind {
     FoldingRanges {
         path: String,
     },
+    // ── Fixes (INVENTORY §0 item 3; `crate::fixes`) ───────────────────
+    /// Every offered fix for the visible diagnostics under `offset`.
+    FixesAt {
+        path: String,
+        offset: u32,
+    },
+    /// Every offered fix in the compilation, for the Problems panel.
+    FixOffers,
+    /// Run the safe batch to its fixpoint; the session is rolled back and
+    /// the changed files answered for the host to write.
+    FixAll {
+        scope: crate::fixes::FixScope,
+    },
+    /// Whole-source refactors at `offset` (sort knots, format a knot…).
+    Refactors {
+        path: String,
+        offset: u32,
+    },
+    /// The text a refactor produces.
+    ResolveRefactor {
+        path: String,
+        data: String,
+    },
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -98,6 +121,12 @@ pub enum QueryResult {
     /// plan that is computed but unsafe, which comes back with its report.
     Rename(Option<RenamePlan>),
     FoldingRanges(Vec<Fold>),
+    FixesAt(Vec<crate::fixes::FixPlan>),
+    FixOffers(crate::fixes::FixOffers),
+    FixAll(crate::fixes::FixAllReport),
+    Refactors(Vec<crate::fixes::Refactor>),
+    /// `None` when the refactor changes nothing.
+    ResolvedRefactor(Option<String>),
     Unavailable,
 }
 
@@ -269,8 +298,30 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
-pub(crate) fn answer(session: &brink_ide::session::IdeSession, kind: &QueryKind) -> QueryResult {
+pub(crate) fn answer(
+    session: &mut brink_ide::session::IdeSession,
+    kind: &QueryKind,
+) -> QueryResult {
     match kind {
+        QueryKind::FixesAt { path, offset } => match crate::fixes::fixes_at(session, path, *offset)
+        {
+            Some(found) => QueryResult::FixesAt(found),
+            None => QueryResult::Unavailable,
+        },
+        QueryKind::FixOffers => QueryResult::FixOffers(crate::fixes::offers(session)),
+        QueryKind::FixAll { scope } => match crate::fixes::fix_all(session, scope) {
+            Some(report) => QueryResult::FixAll(report),
+            None => QueryResult::Unavailable,
+        },
+        QueryKind::Refactors { path, offset } => {
+            match crate::fixes::refactors(session, path, *offset) {
+                Some(found) => QueryResult::Refactors(found),
+                None => QueryResult::Unavailable,
+            }
+        }
+        QueryKind::ResolveRefactor { path, data } => {
+            QueryResult::ResolvedRefactor(crate::fixes::resolve_refactor(session, path, data))
+        }
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),
