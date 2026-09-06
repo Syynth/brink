@@ -757,6 +757,19 @@ impl Program {
         &self.containers[idx as usize]
     }
 
+    /// The call-frame temp slots container `idx`'s parameters occupy, in
+    /// declared order — what the VM binds arguments into at entry since
+    /// `.inkb` v10 (`docs/compiler-spec.md` §"Parameter binding"). Not
+    /// necessarily `0 … n-1`: a stitch's parameters continue after its
+    /// knot's.
+    pub(crate) fn container_param_slots(&self, idx: u32) -> Vec<u16> {
+        self.containers[idx as usize]
+            .params
+            .iter()
+            .map(|p| p.slot)
+            .collect()
+    }
+
     /// The code the VM executes for container `idx`: the linker's rewritten
     /// copy when it produced one (`LinkTables::code`), else the symbolic
     /// bytecode — same bytes at every offset except static-target operands.

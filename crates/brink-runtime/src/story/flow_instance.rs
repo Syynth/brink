@@ -1084,10 +1084,13 @@ impl FlowInstance {
         );
         self.stats.frames_pushed += 1;
 
-        // Pass arguments onto the value stack in declaration order — the
-        // function's prologue (`DeclareTemp`) binds them exactly as it
-        // would for an in-story call.
+        // Pass arguments onto the value stack in declaration order, then
+        // bind them: `.inkb` v10 removed the callee's `DeclareTemp`
+        // prologue, so the VM does that work here. Pushing first and
+        // binding after keeps the pre-v10 behaviour exactly, surplus
+        // arguments included.
         self.flow.value_stack.extend_from_slice(args);
+        crate::vm::bind_entry_params(&mut self.flow, program, container_idx)?;
 
         self.eval = Some(EvalState {
             value_floor,
@@ -1396,7 +1399,10 @@ impl FlowInstance {
                         .resolve_target(fb_id)
                         .map(|(idx, _)| idx)
                         .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
-                    self.flow.invoke_fallback(container_idx);
+                    self.flow.invoke_fallback(
+                        container_idx,
+                        &program.container_param_slots(container_idx),
+                    );
                     Ok(None)
                 } else {
                     self.abort_eval(program, line_tables, resolver);
@@ -1583,7 +1589,7 @@ pub(super) fn resolve_external_call(
                     .map(|(idx, _)| idx)
                     .ok_or_else(|| RuntimeError::UnresolvedDefinition(fb_id))?;
 
-                flow.invoke_fallback(container_idx);
+                flow.invoke_fallback(container_idx, &program.container_param_slots(container_idx));
                 Ok(true)
             } else {
                 Err(RuntimeError::UnresolvedExternalCall(fn_id))
