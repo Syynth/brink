@@ -87,6 +87,31 @@ pub struct Document {
 
 impl EventEmitter<DocumentEvent> for Document {}
 
+/// The language name for brink's own files — the one the [`BrinkHighlighter`]
+/// answers to, and the only one with providers behind it.
+pub const BRINK: &str = "brink";
+
+/// Which highlighter paints a file, by extension.
+///
+/// **A language name is only half the wiring**: the kit resolves it against
+/// the tree-sitter grammars compiled into the binary, and an unresolved name
+/// is SILENT — the editor paints plain text and says nothing. So a name
+/// added here needs its grammar enabled in `crates/brink-gpui/Cargo.toml`'s
+/// `gpui-component` features too. `brink.toml` read as unhighlighted for
+/// exactly that reason until 2026-09-06.
+///
+/// Anything not listed is brink's own surface: `.ink` and `.brink` are the
+/// only extensions the worker collects as sources, so the fallback is the
+/// common case rather than a guess.
+#[must_use]
+pub fn language_of(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("toml") => "toml",
+        Some("json") => "json",
+        _ => BRINK,
+    }
+}
+
 impl Document {
     pub fn new(
         project: Entity<Project>,
@@ -102,19 +127,20 @@ impl Document {
         // worker re-applying the config on each edit. What differs is the
         // language: it is TOML, so the kit's own highlighter paints it and
         // brink's hover, completion and inlays stay out of it.
-        let config = project.read(cx).is_config(&path);
+        let language = language_of(&path);
+        let brink = language == BRINK;
         let folds: FoldCell = Rc::default();
-        let factory = (!config).then(|| {
+        let factory = brink.then(|| {
             highlighter_factory_with_folds(project.downgrade(), path.clone(), Some(folds.clone()))
         });
         let this_document = cx.weak_entity();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
-                .language(if config { "toml" } else { "brink" })
+                .language(language)
                 // Structural folds land in the gutter from `refresh_folds`;
                 // explicit rather than trusting the layout mode's default.
-                .folding(!config)
+                .folding(brink)
                 // Prose wraps (maintainer, 2026-09-05): a line of narrative
                 // is a paragraph, and scrolling sideways to read one is
                 // wrong in every view.
@@ -980,6 +1006,20 @@ mod tests {
     use super::*;
 
     const INK: &str = "TODO: at the top\n=== k ===\nHello.\n  TODO (art) sketch\nTODO\n-> DONE\n";
+
+    #[test]
+    fn a_file_is_painted_by_its_extension() {
+        assert_eq!(language_of("story.ink"), BRINK);
+        assert_eq!(language_of("scenes/act1.brink"), BRINK);
+        assert_eq!(language_of("brink.toml"), "toml");
+        assert_eq!(language_of("dialect.json"), "json");
+        // Not by name: a config is a config wherever it sits, and a file
+        // with no extension is brink's rather than unpainted.
+        assert_eq!(language_of("nested/dir/brink.toml"), "toml");
+        assert_eq!(language_of("README"), BRINK);
+        // The dot has to be in the last segment, not the directory.
+        assert_eq!(language_of("v1.0/story"), BRINK);
+    }
 
     fn notes() -> Vec<Range<usize>> {
         ["TODO: at the top", "TODO (art) sketch", "TODO\n"]

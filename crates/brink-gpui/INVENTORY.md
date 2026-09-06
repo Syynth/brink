@@ -75,12 +75,13 @@ worker now holds:
    copy-all, no row opens anything, and nothing but the project and the
    Player writes to it; Compiled Output has no find-in-dump of its own and
    no jump from a dump row to its source.
-2. **An `.inkt` highlighter** (maintainer, 2026-09-06) — a hand-written
-   `InputHighlighter` on the shape `BrinkHighlighter` already establishes,
-   so Compiled Output and the Program Explorer's Disasm view stop reading
-   as plain text. A lexer, not a parser: `(head`, `)`, `"strings"`,
-   integers, `$hex` symbols, `:type` keywords, `;` comments. No new
-   dependency, no ruling needed. The smallest of the three.
+2. ~~**An `.inkt` highlighter.**~~ **Built 2026-09-06**
+   (`app/src/inkt_highlight.rs`): a hand-written lexer over the token
+   shapes `inkt.pest` itself defines — head words, `$def_id`s, strings
+   with escapes, integers/floats/`0x`, `:type`, `key=` attributes, `->`
+   and `+`, and `;` comments for Compiled Output's own error text.
+   Residue: the Program Explorer's Disasm view still draws its own rows
+   and does not share it.
 3. **State View** (the debugger) — what the Program Explorer's executing-
    instruction overlay and `stepi` are both waiting on, with the Player's
    session as the base. The engine work (exposing state off a running
@@ -213,11 +214,14 @@ inferred, and they turned out to need different fixes.
 | Surface | Today | Note |
 |---|---|---|
 | `brink.toml` | ~~no highlighting at all~~ **highlighted 2026-09-06** | `Document::new` had always set `.language("toml")`; the grammar simply was not in the build, because `crates/brink-gpui/Cargo.toml` took `gpui-component` with `features = ["tree-sitter"]` — tree-sitter plus JSON only. Adding `"tree-sitter-toml"` to that list was the entire change. **An unresolved language name is silent, not an error**, which is why this read as weak highlighting rather than none; if another language is ever named here, check its grammar is actually enabled. |
-| Compiled Output (`.inkt`) | **no highlighting at all** | No language is set, and no grammar would help: the kit's list has no lisp/scheme/S-expression entry, and `.inkt` is brink's own format, whose in-tree reader is a `pest` grammar (`brink-format`'s `inkt/inkt.pest`) rather than a tree-sitter one. It wants a hand-written `InputHighlighter` on the shape `BrinkHighlighter` already establishes — a lexer over a small regular format (`(head`, `)`, `"strings"`, integers, `$hex` symbols, `:type` keywords, `;` comments), no new dependency, shareable with the Program Explorer's Disasm view. **Queued as §0 item 2.** |
+| Compiled Output (`.inkt`) | ~~no highlighting at all~~ **highlighted 2026-09-06** | No grammar would have helped — the kit's list has no lisp/S-expression entry, and `.inkt` is brink's own format whose in-tree reader is a `pest` grammar. `app/src/inkt_highlight.rs` is a hand-written lexer instead, taking its token shapes from `inkt.pest`'s own primitives so the painting cannot drift from what the reader accepts. Roles are Zed's names directly (brink's own roles ride `theme::syntax_key` to get there; these do not need to). |
+| `dialect.json` | **not openable at all** | The Conventions section writes it when a dialect does not fit the `[dialogue]` table, and nothing can then show it: `collect_sources` takes only `.ink`/`.brink`, so it never becomes a `Document`. `language_of` routes `.json` correctly and the grammar is compiled in, so the highlighting is ready the moment the file is reachable — what is missing is the worker returning it beside `brink.toml` and the Binder listing it. |
 
-Neither is `.ink`-specific, so the remaining one sits below the §0
-priority list in principle — it is in that list because the maintainer
-asked for it (2026-09-06).
+**A language name is only half the wiring**, and `document.rs`'s
+`language_of` now says so where it is decided: the kit resolves a name
+against the grammars compiled into the binary, and an unresolved one is
+silent. A name added there needs its grammar enabled in
+`crates/brink-gpui/Cargo.toml` too.
 
 ### Compiled Output (`app/src/compiled_output.rs`, `model/src/compiled.rs`)
 

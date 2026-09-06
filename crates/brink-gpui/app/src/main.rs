@@ -12,6 +12,7 @@ mod continuous;
 mod document;
 mod fixes;
 mod icons;
+mod inkt_highlight;
 mod navigation;
 mod output_log;
 mod player;

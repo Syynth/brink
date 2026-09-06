@@ -64,11 +64,17 @@ impl EventEmitter<PanelEvent> for CompiledOutputView {}
 impl CompiledOutputView {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut state = EditorState::new(window, cx)
                 .line_number(true)
+                .language(crate::inkt_highlight::LANGUAGE)
                 // The dump's own line structure is the point; wrapping a
                 // bytecode row would hide the column alignment it relies on.
-                .soft_wrap(false)
+                .soft_wrap(false);
+            // Installed before the editor's own `ensure_highlighter_factory`
+            // fills the slot, so the tree-sitter path is never consulted —
+            // there is no `.inkt` grammar for it to find anyway.
+            state.set_highlighter_factory(crate::inkt_highlight::factory(), cx);
+            state
         });
         let on_project = cx.subscribe_in(
             &project,
