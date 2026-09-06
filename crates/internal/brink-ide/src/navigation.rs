@@ -68,10 +68,37 @@ pub fn goto_definition(
         return loc;
     }
 
+    if let Some(loc) = include_target(db, file_id, offset) {
+        return Some(loc);
+    }
+
     let info = find_def_at_offset(analysis, file_id, offset)?;
     Some(LocationResult {
         file: info.file,
         range: info.range,
+    })
+}
+
+/// The file an `INCLUDE` statement under `offset` names, as a jump to its
+/// start — an include is a reference to a file the way a divert is a
+/// reference to a knot, and an author who Cmd-clicks one expects to land
+/// in it. `None` when `offset` is not on an include, or when the include
+/// names a file the project does not hold (which is already a diagnostic).
+fn include_target(
+    db: &ProjectDb,
+    file_id: FileId,
+    offset: rowan::TextSize,
+) -> Option<LocationResult> {
+    let hir = db.hir(file_id)?;
+    let from = db.file_path(file_id)?;
+    let site = hir
+        .includes
+        .iter()
+        .find(|inc| inc.ptr.text_range().contains_inclusive(offset))?;
+    let target = db.file_id(&brink_db::resolve_include_path(from, &site.file_path))?;
+    Some(LocationResult {
+        file: target,
+        range: TextRange::empty(rowan::TextSize::from(0)),
     })
 }
 
