@@ -140,16 +140,20 @@ fn a_container_without_parameters_is_unchanged() {
 }
 
 #[test]
-fn parameters_numbered_out_of_declared_order_are_refused() {
-    // The runtime binds slot `i` from the `i`-th argument, so a container
-    // whose second parameter lives in slot 5 would misbind every call.
+fn a_parameters_own_slot_is_carried_into_the_artifact() {
+    // Slots are NOT the parameter's position: a knot and its stitches share
+    // one frame and one temp map, so a stitch's parameters continue after
+    // its knot's (`= opt(n)` inside `=== outer(m)` puts `n` at slot 1). The
+    // VM binds from what is recorded here, so this is the field that makes
+    // such a container callable at all.
     let mut names = Vec::new();
-    let params = vec![param("a", 0, &mut names), param("b", 5, &mut names)];
-    let err = brink_codegen_inkb::emit(&program_with_params(params, names))
-        .expect_err("a container that numbers its parameters oddly must not emit");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("temp slot 5") && msg.contains("not 1"),
-        "the error should name the offending slot and the one required: {msg}"
+    let params = vec![param("a", 3, &mut names), param("b", 4, &mut names)];
+    let story = brink_codegen_inkb::emit(&program_with_params(params, names)).unwrap();
+    let callee = story.containers.iter().find(|c| c.id == id(2)).unwrap();
+    assert_eq!(callee.param_count, 2);
+    assert_eq!(
+        callee.params.iter().map(|p| p.slot).collect::<Vec<_>>(),
+        vec![3, 4],
+        "the declared slots must survive into the artifact verbatim"
     );
 }
