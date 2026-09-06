@@ -11,12 +11,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.code_actions_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.codeActions", || {
+            self.code_actions_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Compute code actions. Returns JSON array.
     pub fn code_actions(&self, offset: u32) -> String {
-        self.code_actions_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.codeActions", || {
+            self.code_actions_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 
     /// Apply a code action selected from [`code_actions`](Self::code_actions).
@@ -31,7 +35,9 @@ impl EditorSession {
     /// any `cross_file_edits` for structural moves, or `ok: false` with an
     /// `error` when the data is malformed or the action is a no-op.
     pub fn resolve_code_action(&self, data_json: &str, offset: u32) -> String {
-        self.resolve_code_action_impl(&self.active_path, self.view.as_ref(), data_json, offset)
+        crate::perf::time("ide.resolveCodeAction", || {
+            self.resolve_code_action_impl(&self.active_path, self.view.as_ref(), data_json, offset)
+        })
     }
 
     /// Document-handle variant of [`resolve_code_action`](Self::resolve_code_action).
@@ -39,7 +45,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return error_json("unknown document handle");
         };
-        self.resolve_code_action_impl(&d.path, d.view.as_ref(), data_json, offset)
+        crate::perf::time("ide.resolveCodeAction", || {
+            self.resolve_code_action_impl(&d.path, d.view.as_ref(), data_json, offset)
+        })
     }
 
     /// The auto-fixes offered for the diagnostics under `offset`
@@ -50,7 +58,9 @@ impl EditorSession {
     /// keyed off a *diagnostic* and carries its own minimal edits, which may
     /// land in other files (§4).
     pub fn fixes_at(&self, offset: u32) -> String {
-        self.fixes_at_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.fixesAt", || {
+            self.fixes_at_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 
     /// Document-handle variant of [`fixes_at`](Self::fixes_at).
@@ -58,7 +68,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.fixes_at_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.fixesAt", || {
+            self.fixes_at_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Turn a chosen fix (a `FixJs` from [`fixes_at`](Self::fixes_at), passed
@@ -68,7 +80,9 @@ impl EditorSession {
     ///
     /// Side-effect-free — the caller applies through its own apply seam.
     pub fn apply_fix(&self, fix_json: &str) -> String {
-        self.apply_fix_impl(&self.active_path, fix_json)
+        crate::perf::time("ide.applyFix", || {
+            self.apply_fix_impl(&self.active_path, fix_json)
+        })
     }
 
     /// [`apply_fix`](Self::apply_fix) for a named file rather than the active
@@ -78,7 +92,7 @@ impl EditorSession {
     /// `apply_fix` instead would report the fix's edits against whichever
     /// file happens to be open.
     pub fn apply_fix_at_path(&self, path: &str, fix_json: &str) -> String {
-        self.apply_fix_impl(path, fix_json)
+        crate::perf::time("ide.applyFix", || self.apply_fix_impl(path, fix_json))
     }
 
     /// Document-handle variant of [`apply_fix`](Self::apply_fix).
@@ -86,7 +100,7 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return error_json("unknown document handle");
         };
-        self.apply_fix_impl(&d.path, fix_json)
+        crate::perf::time("ide.applyFix", || self.apply_fix_impl(&d.path, fix_json))
     }
 }
 
@@ -157,7 +171,7 @@ impl EditorSession {
     /// road (`docs/autofix-spec.md` §7), where the row names its own file
     /// and the offset is already whole-file absolute.
     pub(super) fn fixes_at_path_impl(&self, path: &str, offset: u32) -> String {
-        self.fixes_at_impl(path, None, offset)
+        crate::perf::time("ide.fixesAt", || self.fixes_at_impl(path, None, offset))
     }
 
     fn fixes_at_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {

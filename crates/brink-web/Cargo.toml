@@ -81,6 +81,12 @@ rmp-serde = "1"
 web-sys = { version = "0.3", features = ["console", "Window", "Performance"] }
 
 [dev-dependencies]
+# Test-only: `editor::perf_probe` decomposes `ide.codeActions` by timing the
+# whole-document `brink_fmt::format` that `brink_ide::code_actions` runs
+# unconditionally, to say how much of the query that one call is. Not a
+# `[dependencies]` entry — nothing in the shipped wasm calls the formatter
+# directly; the editor's format road goes through `brink-ide`.
+brink-fmt = { workspace = true }
 # Drives the `#[wasm_bindgen_test]` suite (run via `wasm-pack test --node`),
 # which exercises the external-binding JS boundary end-to-end.
 wasm-bindgen-test = "0.3"

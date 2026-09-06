@@ -203,7 +203,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.get_view_source_impl(&d.path, d.view.as_ref())
+        crate::perf::time("ide.getViewSource", || {
+            self.get_view_source_impl(&d.path, d.view.as_ref())
+        })
     }
 
     /// Get the current active file path.

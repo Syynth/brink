@@ -21,12 +21,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.goto_definition_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.gotoDefinition", || {
+            self.goto_definition_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Compute goto-definition at the given byte offset. Returns JSON or "null".
     pub fn goto_definition(&self, offset: u32) -> String {
-        self.goto_definition_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.gotoDefinition", || {
+            self.goto_definition_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 
     /// Find all references for a document handle. Returns JSON array.
@@ -34,12 +38,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.find_references_impl(&d.path, d.view.as_ref(), offset, true)
+        crate::perf::time("ide.findReferences", || {
+            self.find_references_impl(&d.path, d.view.as_ref(), offset, true)
+        })
     }
 
     /// Find all references. Returns JSON array.
     pub fn find_references(&self, offset: u32) -> String {
-        self.find_references_impl(&self.active_path, self.view.as_ref(), offset, true)
+        crate::perf::time("ide.findReferences", || {
+            self.find_references_impl(&self.active_path, self.view.as_ref(), offset, true)
+        })
     }
 
     /// Find all references at an explicit file path + offset, with control over
@@ -47,7 +55,9 @@ impl EditorSession {
     /// the file by `path` against the session, not the active document. Returns
     /// a JSON `Location[]` array (`"[]"` if the path or analysis is unavailable).
     pub fn find_references_at(&self, path: &str, offset: u32, include_declaration: bool) -> String {
-        self.find_references_impl(path, None, offset, include_declaration)
+        crate::perf::time("ide.findReferences", || {
+            self.find_references_impl(path, None, offset, include_declaration)
+        })
     }
 
     /// [`Self::find_references_at`], with each site classified by how it
@@ -128,7 +138,9 @@ impl EditorSession {
         // the file-absolute UTF-16 offset of the declaration's name start.
         let offset = byte_to_utf16(source, info.range.start().into());
         let path = path.to_owned();
-        self.find_references_impl(&path, None, offset, include_declaration)
+        crate::perf::time("ide.findReferences", || {
+            self.find_references_impl(&path, None, offset, include_declaration)
+        })
     }
 
     /// Check if rename is possible for a document handle. Returns JSON or "null".
@@ -136,12 +148,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.prepare_rename_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.prepareRename", || {
+            self.prepare_rename_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Check if rename is possible. Returns JSON or "null".
     pub fn prepare_rename(&self, offset: u32) -> String {
-        self.prepare_rename_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.prepareRename", || {
+            self.prepare_rename_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 }
 
