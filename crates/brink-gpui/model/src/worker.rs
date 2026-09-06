@@ -943,6 +943,273 @@ mod tests {
         );
     }
 
+    // ── Navigation queries (INVENTORY §0 item 1) ────────────────────
+
+    use crate::query::{Fold, QueryKind, QueryResult, ReferenceKind, answer};
+
+    const MAIN: &str = "INCLUDE greet.ink\nStart here.\n-> greet\n";
+    // Sticky choices: a once-only choice without a label carries an
+    // advisory (E157) before and after any rename, which would make "clean
+    // afterwards" unfair to assert.
+    const GREET: &str = "=== greet ===\nHello.\n+ [Again] -> greet\n+ [Stop] -> DONE\n- -> DONE\n";
+
+    fn nav_tree(name: &str) -> Tree {
+        Tree::new(name, &[("main.ink", MAIN), ("greet.ink", GREET)])
+    }
+
+    fn offset_of(haystack: &str, needle: &str) -> u32 {
+        u32::try_from(haystack.find(needle).expect("the fixture names it")).expect("fits")
+    }
+
+    #[test]
+    fn definition_jumps_across_files_to_the_declaration() {
+        let tree = nav_tree("def");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let at = offset_of(MAIN, "greet\n") + 1;
+        let QueryResult::Definition(Some(loc)) = answer(
+            &session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: at,
+            },
+        ) else {
+            panic!("the divert must resolve");
+        };
+        assert_eq!(loc.path, "greet.ink");
+        assert_eq!(
+            &GREET[loc.start as usize..loc.end as usize],
+            "greet",
+            "the target is the declared name, not the whole header"
+        );
+    }
+
+    #[test]
+    fn definition_on_prose_is_an_ordinary_none_not_unavailable() {
+        let tree = nav_tree("def-none");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let result = answer(
+            &session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "here"),
+            },
+        );
+        assert!(
+            matches!(result, QueryResult::Definition(None)),
+            "got {result:?}"
+        );
+        let missing = answer(
+            &session,
+            &QueryKind::Definition {
+                path: "nope.ink".to_owned(),
+                offset: 0,
+            },
+        );
+        assert!(
+            matches!(missing, QueryResult::Unavailable),
+            "a file the session does not hold is Unavailable, not None"
+        );
+    }
+
+    #[test]
+    fn references_are_classified_and_ordered_by_file_then_offset() {
+        let tree = nav_tree("refs");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        // Asked from the declaration, with it included.
+        let QueryResult::References(refs) = answer(
+            &session,
+            &QueryKind::References {
+                path: "greet.ink".to_owned(),
+                offset: offset_of(GREET, "greet") + 2,
+                include_declaration: true,
+            },
+        ) else {
+            panic!("references must answer");
+        };
+        let summary: Vec<(&str, ReferenceKind)> = refs
+            .iter()
+            .map(|r| (r.location.path.as_str(), r.kind))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("greet.ink", ReferenceKind::Decl),
+                ("greet.ink", ReferenceKind::Divert),
+                ("main.ink", ReferenceKind::Divert),
+            ],
+            "decl first in its file, then the two diverts, files in order"
+        );
+        let mut sorted = refs.clone();
+        sorted.sort_by(|a, b| {
+            (&a.location.path, a.location.start).cmp(&(&b.location.path, b.location.start))
+        });
+        assert_eq!(refs, sorted);
+
+        // Without the declaration, only the sites remain.
+        let QueryResult::References(sites) = answer(
+            &session,
+            &QueryKind::References {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet\n") + 1,
+                include_declaration: false,
+            },
+        ) else {
+            panic!("references must answer");
+        };
+        assert!(sites.iter().all(|r| r.kind != ReferenceKind::Decl));
+        assert_eq!(sites.len(), 2);
+    }
+
+    #[test]
+    fn prepare_rename_offers_the_name_and_refuses_prose() {
+        let tree = nav_tree("prep");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let at = offset_of(MAIN, "greet\n") + 1;
+        let QueryResult::PrepareRename(Some((start, end))) = answer(
+            &session,
+            &QueryKind::PrepareRename {
+                path: "main.ink".to_owned(),
+                offset: at,
+            },
+        ) else {
+            panic!("a divert target is renameable");
+        };
+        assert_eq!(&MAIN[start as usize..end as usize], "greet");
+        let prose = answer(
+            &session,
+            &QueryKind::PrepareRename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "here"),
+            },
+        );
+        assert!(
+            matches!(prose, QueryResult::PrepareRename(None)),
+            "got {prose:?}"
+        );
+    }
+
+    /// Apply a plan's edits to in-memory sources, last-to-first per file.
+    fn apply_plan(plan: &crate::query::RenamePlan, files: &mut BTreeMap<String, String>) {
+        let mut edits = plan.edits.clone();
+        edits.sort_by(|a, b| (&b.path, b.start).cmp(&(&a.path, a.start)));
+        for e in edits {
+            let text = files
+                .get_mut(&e.path)
+                .expect("an edited file is a known file");
+            text.replace_range(e.start as usize..e.end as usize, &e.new_text);
+        }
+    }
+
+    #[test]
+    fn a_safe_rename_edits_every_site_across_files_and_stays_clean() {
+        let tree = nav_tree("rename");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Rename(Some(plan)) = answer(
+            &session,
+            &QueryKind::Rename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet\n") + 1,
+                new_name: "hello".to_owned(),
+            },
+        ) else {
+            panic!("the rename must be computable");
+        };
+        assert_eq!(plan.old_name, "greet");
+        assert!(plan.is_safe(), "introduced {:?}", plan.introduced);
+        assert!(!plan.external);
+        assert_eq!(plan.files(), ["greet.ink", "main.ink"]);
+        assert_eq!(plan.edits.len(), 3, "the declaration and both diverts");
+
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        files.insert("main.ink".to_owned(), MAIN.to_owned());
+        files.insert("greet.ink".to_owned(), GREET.to_owned());
+        apply_plan(&plan, &mut files);
+        assert!(files["greet.ink"].starts_with("=== hello ==="));
+        assert!(files["main.ink"].contains("-> hello\n"));
+        assert!(
+            !files["greet.ink"].contains("greet"),
+            "no site may be left behind"
+        );
+
+        // The renamed program must analyze clean — the promise a safe plan
+        // makes, checked against a fresh session rather than the gate's own
+        // word for it.
+        for (path, text) in &files {
+            session.update_source(path, text.clone());
+        }
+        let after = analyze(&mut session, &ConfigState::default(), 2);
+        assert!(after.diagnostics.is_empty(), "got {:?}", after.diagnostics);
+    }
+
+    #[test]
+    fn a_rename_that_would_collide_is_reported_not_refused() {
+        // Two knots; renaming one onto the other's name is computable but
+        // breaks the program. The plan comes back WITH its report, so the UI
+        // can show what breaks and offer Force (ruled 2026-06-20).
+        let tree = Tree::new(
+            "collide",
+            &[(
+                "main.ink",
+                "-> a\n=== a ===\nA.\n-> b\n=== b ===\nB.\n-> DONE\n",
+            )],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let src = "-> a\n=== a ===\nA.\n-> b\n=== b ===\nB.\n-> DONE\n";
+        let QueryResult::Rename(Some(plan)) = answer(
+            &session,
+            &QueryKind::Rename {
+                path: "main.ink".to_owned(),
+                offset: offset_of(src, "=== a") + 4,
+                new_name: "b".to_owned(),
+            },
+        ) else {
+            panic!("a colliding rename is still computable");
+        };
+        assert!(!plan.is_safe());
+        assert!(
+            !plan.introduced.is_empty(),
+            "the report must say what breaks"
+        );
+        assert!(
+            plan.introduced
+                .iter()
+                .all(|d| d.path == "main.ink" && d.line >= 1)
+        );
+    }
+
+    #[test]
+    fn folding_offers_structural_folds_only_sorted_and_non_empty() {
+        let tree = nav_tree("fold");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::FoldingRanges(folds) = answer(
+            &session,
+            &QueryKind::FoldingRanges {
+                path: "greet.ink".to_owned(),
+            },
+        ) else {
+            panic!("folding must answer");
+        };
+        assert!(!folds.is_empty(), "a knot with a body is foldable");
+        assert!(
+            folds.contains(&Fold {
+                start_line: 0,
+                end_line: 4
+            }),
+            "the knot folds from its header to its last line; got {folds:?}"
+        );
+        assert!(folds.iter().all(|f| f.end_line > f.start_line));
+        let mut sorted = folds.clone();
+        sorted.sort_by_key(|f| (f.start_line, f.end_line));
+        assert_eq!(folds, sorted);
+    }
+
     #[test]
     fn opening_a_tree_with_no_sources_is_an_error_not_a_panic() {
         let tree = Tree::new("empty", &[("README.md", "nothing here\n")]);
