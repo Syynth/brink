@@ -145,6 +145,7 @@ else. Everything below is listed against that directory.
 | ~~Folding: gutter chevrons~~ | built 2026-09-05 | `QueryKind::FoldingRanges` → the highlighter's `fold_ranges` → gutter chevrons on hover / the caret's line. (They were invisible only because no asset source was registered — HANDOFF #6.) |
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
 | ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. Extract actions and the gated structural moves are still out. |
+| Highlighting for `brink.toml` and `.inkt` | see below | both paint as plain text; the TOML grammar is one feature flag away, `.inkt` wants a hand-written lexer. Own subsection after this table. |
 | Find/replace panel inside a document | parity gap | `find-panel.ts`. |
 | Signature help | parity gap | `signature-help.ts`. |
 | Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
@@ -195,6 +196,36 @@ marks itself stale and asks when shown.
 | Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
 | Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
 
+### Syntax highlighting outside `.ink`/`.brink`
+
+Brink's own files paint from brink's own CST (`BrinkHighlighter` over
+`TokenCache`), and that is the part that works. **Every other language the
+studio shows is unhighlighted**, which is easy to miss because the text is
+legible either way — it just carries no structure. Verified on screen
+2026-09-06, not inferred:
+
+| Surface | Today | Why |
+|---|---|---|
+| `brink.toml` | **no highlighting at all** — comment, `[table]`, key and string all one colour | `Document::new` sets `.language("toml")`, but the grammar is not in the build: `crates/brink-gpui/Cargo.toml` takes `gpui-component` with `features = ["tree-sitter"]`, which is `tree-sitter` + `tree-sitter-json` only. The kit HAS `tree-sitter-toml` (its `tree-sitter-languages` list carries 30-odd grammars); we do not enable it. So the language name resolves to nothing and the editor paints plain text — silently, since an unknown language is not an error. |
+| Compiled Output (`.inkt`) | **no highlighting at all** | No language is set, and none would help: the kit's grammar list has no lisp/scheme/S-expression entry, and `.inkt` is brink's own format. Its in-tree reader is a `pest` grammar (`brink-format`'s `inkt/inkt.pest`), not a tree-sitter one. |
+
+Two different fixes, and neither is blocked:
+
+- **TOML is a feature flag.** Adding `"tree-sitter-toml"` to the
+  `gpui-component` features in `crates/brink-gpui/Cargo.toml` is the whole
+  change; `.language("toml")` already points at it. The cost is one more
+  grammar compiled into the binary — a maintainer's call on dependency
+  weight rather than a design question.
+- **`.inkt` wants a hand-written highlighter**, on the shape
+  `BrinkHighlighter` already establishes: an `InputHighlighter` that lexes
+  the dump into runs. The format is small and regular — `(head`, `)`,
+  `"strings"`, integers, `$hex` symbols, `:type` keywords, `;` comments —
+  so this is a lexer, not a parser, and it needs no new dependency. It
+  would also give the Program Explorer's Disasm view something to share.
+
+Neither is `.ink`-specific, so both sit below the §0 list — but the TOML
+one is the cheapest visible improvement in this file.
+
 ### Compiled Output (`app/src/compiled_output.rs`, `model/src/compiled.rs`)
 
 Built 2026-09-06: the `.inkt` dump as a read-only Code-view tab, a
@@ -206,6 +237,7 @@ Errors are reported in the buffer rather than leaving a stale dump up.
 
 | Left out | Kind | Note |
 |---|---|---|
+| Syntax highlighting | parity gap | the dump paints as plain text; the web's tab has a minimal `.inkt` CM6 mode. See "Syntax highlighting outside `.ink`/`.brink`" above — it wants a hand-written lexer, not a grammar. |
 | A find-in-dump of its own | parity gap | the web's CM6 mode carries search; this has the editor's selection and scrolling only. |
 | A dump row jumping to its source | parity gap | the Program Explorer's disassembly rows do this; the dump does not. |
 | Reached only from the palette | parity gap | the Program Explorer's "open .inkt" toolbar button is not built. |
