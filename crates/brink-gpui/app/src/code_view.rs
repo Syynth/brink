@@ -24,6 +24,7 @@ use gpui::{
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_handle};
 
 use crate::document::{Document, DocumentEvent};
+use crate::player::Player;
 use crate::project::Project;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,27 @@ impl CodeView {
         // dock will confirm it on the next tick, but the views should not
         // wait a frame to agree.
         self.set_active(Some(document), cx);
+    }
+
+    /// Put the Player in the centre dock (once) and select its tab.
+    pub fn show_player(
+        &mut self,
+        player: &Entity<Player>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !player.read(cx).is_docked() {
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(player.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        }
+        Player::activate(player, window, cx);
     }
 
     /// The document Single File view shows.

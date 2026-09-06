@@ -28,3 +28,5 @@ brink-driver.workspace = true
 brink-project-config.workspace = true
 brink-environment.workspace = true
 brink-fmt.workspace = true
+brink-runtime.workspace = true
+brink-format.workspace = true

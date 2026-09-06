@@ -350,7 +350,7 @@ impl Document {
             // push makes this frame show them rather than the next edit.
             *cell.borrow_mut() = candidates;
             let candidates = cell.borrow().clone();
-            let _ = editor.update(cx, |state, cx| {
+            editor.update(cx, |state, cx| {
                 state.apply_highlighter_fold_candidates(candidates, cx);
             });
         })

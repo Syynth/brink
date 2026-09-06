@@ -868,9 +868,11 @@ dependencies = [
  "brink-driver",
  "brink-environment",
  "brink-fmt",
+ "brink-format",
  "brink-ide",
  "brink-ir",
  "brink-project-config",
+ "brink-runtime",
  "brink-syntax",
  "brink-syntax-native",
  "gpui-pre",
@@ -936,6 +938,16 @@ dependencies = [
  "thiserror 2.0.20",
  "toml 0.8.23",
  "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
+name = "brink-runtime"
+version = "0.0.16"
+dependencies = [
+ "brink-format",
+ "glam",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

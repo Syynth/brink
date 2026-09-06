@@ -43,8 +43,16 @@ In `.ink`-author order, the gaps that bite first:
    kind badges, F2 with the ruled breakage report and Force, in both Code
    and Continuous views; Cmd-click / F12 on an `INCLUDE` opens the file.
    Residue: the toolkit exposes no Fold All / Unfold All.
-2. **The Player** and everything session-bound behind it — blocked on the
-   placement ruling, and on a compile + runtime session in the worker.
+2. ~~**The Player** and everything session-bound behind it.~~ **Built
+   2026-09-05** (`model/src/play.rs`, `app/src/player.rs`): a compile +
+   runtime session on the worker (`Request::Play`), a Code-view tab with
+   the transcript, tags, live choice buttons, Restart / From start, the
+   stale-sources status, compile-failure and runtime-error rows, and lines
+   that open their source; `Play` (cmd-r), `Restart` (cmd-shift-r), and
+   the Binder's "Play from here" on knots and stitches. Residue: only the
+   Code-view placement (the other two views' placement is still the open
+   ruling), no execution highlight, no wake for `await` parks, no number
+   keys for choices.
 3. ~~**Fixes** — code actions in the editor, Fix buttons in Problems.~~
    **Built 2026-09-05** (`model/src/fixes.rs`, `app/src/fixes.rs`): the
    `cmd-.` menu (fixes every tier + whole-source refactors), Problems' per-row
@@ -84,7 +92,7 @@ Built: an inner `DockArea` of documents — tabs, drag between groups, splits
 | Left out | Kind | Note |
 |---|---|---|
 | Quick-open (`cmd-p`) | parity gap | spec §4.5 defers it. |
-| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | not started | see §2; the Settings tab is replaced by the modal by ruling. |
+| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | Player built | the Player docks as a centre tab (`CodeView::show_player`); Compiled Output and Story Graph not started; the Settings tab is replaced by the modal by ruling. |
 
 ### Single File view (`app/src/single_view.rs`)
 
@@ -125,7 +133,7 @@ else. Everything below is listed against that directory.
 | Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
 | Inline markup / screenplay / structural styles / hanging indent | parity gap | `inline-markup.ts`, `screenplay.ts`, `structural-styles.ts`, `hanging-indent.ts`. |
 | Per-LINE styles: cue lines, dimmed comment/include lines | worker query + port | `IdeSession::line_contexts` exists; the worker does not carry it per file (HANDOFF "Themes and paint"). Only the TODO band is laid. |
-| Execution highlight, play-from-here | not started | session-bound; waits on the Player. |
+| Execution highlight, play-from-here | play-from-here built | Binder row menu → `PlayFromHere` action → `BinderEvent::Play`; execution highlight not started (lines carry `source`, so the data is there). |
 | Conflict view, breakage/boundary editing, element-type transitions | parity gap | `conflict-view.ts`, `breakage.ts`, `boundary.ts`, `element-type.ts`, `keybindings.ts`'s modal editing keys. |
 | Prose checker diagnostics in the editor | not wired | `crates/brink-prose` is Rust, but the worker does not link or run it; see Problems and Settings ▸ Prose. |
 | `.brink` incremental paint | **open ruling** (#3562), **`.brink` only** | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
@@ -237,11 +245,11 @@ Against studio-shell-spec §4's inventory:
 
 | Surface | Blocked on |
 |---|---|
-| **Player** | **open ruling** on where it sits per view, plus a compile + runtime session in the worker. Do not build into any view until ruled. |
-| **State View** (debugger) | the Player. |
-| **Output / compile log** | a compile in the worker. |
-| **Program Explorer** | a compile in the worker. |
-| **Compiled Output** (`.inkt` tab) | a compile in the worker. |
+| **Player** | ~~open ruling~~ **built as the Code-view tab** (2026-09-05); Continuous swap-in and the Single File split remain the open ruling. |
+| **State View** (debugger) | the Player's session exposing state (not started). |
+| **Output / compile log** | unblocked: the worker compiles in `model/src/play.rs`; nothing surfaces it yet. |
+| **Program Explorer** | unblocked, same compile; not started. |
+| **Compiled Output** (`.inkt` tab) | unblocked, same compile; not started. |
 | **Story Graph** | the story-graph query in the worker; a canvas. |
 | **Story transcript** | listed as future in the web too. |
 | **Notification service** | nothing; a shell service. |
@@ -262,7 +270,7 @@ Against studio-shell-spec §4's inventory:
 
 ## 4. Open rulings this inventory waits on
 
-1. Player placement per view (HANDOFF "Open, parked").
+1. Player placement in Continuous and Single File (HANDOFF "Open, parked"; the Code-view tab is built).
 2. `#3562` — the `.brink` segmentation boundary (`.brink` only; lower priority).
 3. Tabs vs spaces in Formatting.
 4. Which tiers of `crates/brink-gpui` CI gates.

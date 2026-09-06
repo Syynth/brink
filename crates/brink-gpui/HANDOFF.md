@@ -330,6 +330,19 @@ unverified by hand.
 
 ## Open small things (2026-09-05, end of day)
 
+- **The Player is unverified by hand.** `model/src/worker.rs`'s
+  `play_runs_to_choices_and_on_through_one` drives compile → lines →
+  choices → choose → Done → play-from-here → stale-after-edit → compile
+  failure against the worker, and the app builds clean, but the screen
+  was locked before the panel could be looked at. Check: cmd-r docks the
+  Player tab in Code view and shows the first lines and the choice
+  buttons; a choice echoes as `+ text`/`* text` and runs on; Restart /
+  From start; the Binder row menu's "Play from here" on a knot and on a
+  stitch; clicking a transcript line opens its source; editing a file
+  while a story runs shows the "sources changed" status; a project with
+  errors lists them. Hot-reload of a running story is deliberately not
+  done (see `model/src/play.rs`'s module doc).
+
 - **Escape did not close the `cmd-.` code-action menu** when driven by
   automation; `CodeActionMenu::handle_action` handles Escape when its own
   `open` is true, which `sync_lsp` sets on render — unverified whether a
@@ -363,17 +376,23 @@ rendered, silently.
   a tab is fine, as today; **Continuous** — it has to *swap in and out*,
   because the manuscript is one scroller and a permanent split fights the
   scrolling; **Single File** — "a side-by-side split, maybe". So it is
-  per-view, not one root-level companion. Do not build the native Player
-  into any view until this is settled; the three-view work leaves the
-  companion slot as a placeholder.
+  per-view, not one root-level companion. **2026-09-05: the Player is
+  built as the Code-view tab** (`app/src/player.rs`, `model/src/play.rs`;
+  the maintainer asked for "a working version of the player next") — the
+  one placement the direction already settles. `Play` (cmd-r) and the
+  Binder's "Play from here" switch the manuscript to Code first; the
+  Continuous swap-in and the Single File split are still open, and the
+  companion slot stays a placeholder.
 
 ## Deliberately not done
 
 - The **editor acceptance gate has not moved down** onto the shared session.
   The layering ruling (2026-09-04, "Both studio consumers sit on the same
   layer") requires it; this slice did not do it.
-- Player, story graph, debugger, settings — all out of the
-  ruled first slice.
+- Story graph, debugger, Output/Compiled Output/Program Explorer — all
+  out of the ruled first slice. (The Player is in, 2026-09-05; the compile
+  it needed now lives in the worker's play session, so the three
+  compile-bound tool windows are unblocked.)
 
 ## Things that will bite you
 

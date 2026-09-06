@@ -387,8 +387,10 @@ fn format(session: &brink_ide::session::IdeSession, path: &str) -> Option<String
         return None;
     }
     let source = session.source(id)?;
-    let mut config = brink_project_config::ProjectConfig::default();
-    config.indent = session.project_settings().indent;
+    let config = brink_project_config::ProjectConfig {
+        indent: session.project_settings().indent,
+        ..Default::default()
+    };
     let formatted = brink_fmt::format(
         source,
         &brink_fmt::FormatConfig::from_project_config(&config),

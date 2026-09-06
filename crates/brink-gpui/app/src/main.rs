@@ -12,6 +12,7 @@ mod document;
 mod fixes;
 mod icons;
 mod navigation;
+mod player;
 mod problems;
 mod project;
 mod rename;
@@ -45,6 +46,7 @@ use crate::binder::{Binder, BinderEvent};
 use crate::code_view::CodeView;
 use crate::code_view::CodeViewEvent;
 use crate::continuous::ContinuousView;
+use crate::player::{Player, PlayerEvent};
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
 use crate::search::{SearchEvent, SearchView};
@@ -74,6 +76,10 @@ actions!(
         FixAllInFile,
         /// Every Safe fix in the compilation, to a fixpoint.
         FixAllInProject,
+        /// Run the story from its entry, in the Player.
+        Play,
+        /// Run the story again from where the last Play began.
+        PlayRestart,
     ]
 );
 
@@ -89,6 +95,9 @@ struct Studio {
     /// Continuous view — the whole project as one scroller.
     manuscript: Entity<ContinuousView>,
     search: Entity<SearchView>,
+    /// The Player, a centre tab in Code view. Made once; docked on the
+    /// first Play, re-docked if its tab was closed.
+    player: Entity<Player>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -102,6 +111,7 @@ impl Studio {
         let todos = cx.new(|cx| Todos::new(project.clone(), window, cx));
         let search = cx.new(|cx| SearchView::new(project.clone(), window, cx));
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
+        let player = cx.new(|cx| Player::new(project.clone(), cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
@@ -288,6 +298,8 @@ impl Studio {
             );
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
+            workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
+            workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -311,7 +323,13 @@ impl Studio {
             &binder,
             window,
             |this, binder, event: &BinderEvent, window, cx| {
-                let BinderEvent::Open { path, offset } = event;
+                let BinderEvent::Open { path, offset } = event else {
+                    let BinderEvent::Play { path } = event else {
+                        return;
+                    };
+                    this.play_at(Some(path.clone()), window, cx);
+                    return;
+                };
                 this.open(path, offset.map(|o| o..o), window, cx);
                 // The manuscript's per-file editors do not scroll — its list
                 // does — so revealing a file there is a separate move from
@@ -326,6 +344,14 @@ impl Studio {
                 // studio's.
                 let handle = binder.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
+            },
+        );
+        let on_player = cx.subscribe_in(
+            &player,
+            window,
+            |this, _, event: &PlayerEvent, window, cx| {
+                let PlayerEvent::Navigate { path, span } = event;
+                this.show(path, span.clone(), window, cx);
             },
         );
         let on_problem = cx.subscribe_in(
@@ -381,8 +407,10 @@ impl Studio {
             code,
             manuscript,
             search,
+            player,
             _subscriptions: vec![
-                on_project, on_binder, on_problem, on_todo, on_search, on_code, on_general,
+                on_project, on_binder, on_player, on_problem, on_todo, on_search, on_code,
+                on_general,
             ],
         }
     }
@@ -607,7 +635,7 @@ impl Studio {
             let mut changed = 0;
             for (path, query) in queries {
                 if let Ok(QueryResult::Formatted(Some(text))) = query.await {
-                    let _ = project.update(cx, |project, cx| {
+                    project.update(cx, |project, cx| {
                         if project.edit(&path, text, None, cx) {
                             changed += 1;
                         }
@@ -635,6 +663,34 @@ impl Studio {
             let _ = cx.update(|_, cx| write_all(&project, cx));
         })
         .detach();
+    }
+
+    /// Run the story in the Player — from the entry, or from `at`. The
+    /// Player is a Code-view tab, so the manuscript gives way to Code; how
+    /// the manuscript itself should host a session is parked
+    /// (`HANDOFF.md`, "Open, parked").
+    fn play_at(&mut self, at: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.workspace.read(cx).editor_root().clone();
+        if root.read(cx).view() == EditorView::Continuous {
+            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
+        }
+        let player = self.player.clone();
+        self.code
+            .update(cx, |code, cx| code.show_player(&player, window, cx));
+        player.update(cx, |player, cx| player.start(at, cx));
+    }
+
+    fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
+        self.play_at(None, window, cx);
+    }
+
+    fn play_restart(&mut self, _: &PlayRestart, window: &mut Window, cx: &mut Context<Self>) {
+        let player = self.player.clone();
+        if !player.read(cx).is_docked() {
+            self.code
+                .update(cx, |code, cx| code.show_player(&player, window, cx));
+        }
+        player.update(cx, |player, cx| player.restart(cx));
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
@@ -684,6 +740,8 @@ impl Render for Studio {
             .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(Self::fix_all_in_file))
             .on_action(cx.listener(Self::fix_all_in_project))
+            .on_action(cx.listener(Self::play))
+            .on_action(cx.listener(Self::play_restart))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.

@@ -31,6 +31,7 @@ use std::time::Instant;
 
 use brink_ide::session::IdeSession;
 
+use crate::play::{Play, PlayCommand, PlayOutcome};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
 use brink_ir::{Severity, SymbolKind};
@@ -71,6 +72,12 @@ pub enum Request {
         /// Echoed back on the resulting [`Analyzed`] so the UI can tell how
         /// far behind an arriving result is.
         revision: u64,
+    },
+    /// Drive the play session — see [`crate::play`]. Answered after the
+    /// queries of the same drain, against the same text.
+    Play {
+        command: PlayCommand,
+        reply: async_channel::Sender<PlayOutcome>,
     },
 }
 
@@ -314,6 +321,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
+    // The author's file keys, for the play session's entry stand-in rule.
+    let mut files: Vec<String> = Vec::new();
+    let mut play: Option<Play> = None;
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -326,12 +336,16 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         let mut reopened = None;
         let mut edited = false;
         let mut queries = Vec::new();
+        let mut plays = Vec::new();
         for request in batch {
             match request {
                 Request::Query { kind, reply } => queries.push((kind, reply)),
+                Request::Play { command, reply } => plays.push((command, reply)),
                 Request::Open { root } => {
                     session = session_with_stdlib();
                     config = ConfigState::default();
+                    play = None;
+                    files.clear();
                     let opened = match open(&mut session, root) {
                         Ok((opened, state)) => {
                             config = state;
@@ -372,6 +386,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         if let Some(opened) = reopened {
             usable = opened.is_ok();
             opened_ok = usable;
+            if let Ok(opened) = &opened {
+                files.clone_from(&opened.files);
+            }
             if responses
                 .send_blocking(Response::Opened(Box::new(opened)))
                 .is_err()
@@ -403,6 +420,23 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
             };
             // A dropped receiver just means the asker moved on.
             let _ = reply.send_blocking(result);
+        }
+
+        // The play session last: a start compiles what the edits above
+        // produced.
+        for (command, reply) in plays {
+            let outcome = if usable {
+                crate::play::run(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                    &mut play,
+                    command,
+                )
+            } else {
+                PlayOutcome::unavailable()
+            };
+            let _ = reply.send_blocking(outcome);
         }
     }
 }
@@ -955,6 +989,94 @@ mod tests {
 
     fn nav_tree(name: &str) -> Tree {
         Tree::new(name, &[("main.ink", MAIN), ("greet.ink", GREET)])
+    }
+
+    fn play(worker: &Worker, command: PlayCommand) -> PlayOutcome {
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Play { command, reply });
+        answer.recv_blocking().expect("the worker answers")
+    }
+
+    fn line_texts(outcome: &PlayOutcome) -> Vec<&str> {
+        outcome
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                crate::play::PlayStep::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn play_runs_to_choices_and_on_through_one() {
+        use crate::play::{PlayError, PlayStep};
+        let tree = nav_tree("play");
+        let worker = drive(&tree);
+
+        // Nothing running yet.
+        let early = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(early.error, Some(PlayError::NotStarted));
+
+        // No brink.toml: `main.ink` stands in for the entry.
+        let started = play(&worker, PlayCommand::Start { at: None });
+        assert_eq!(started.error, None, "{started:?}");
+        assert_eq!(line_texts(&started), ["Start here.\n", "Hello.\n"]);
+        let Some(PlayStep::Choices(choices)) = started.steps.last() else {
+            panic!("ends on the choices: {started:?}");
+        };
+        assert_eq!(choices.len(), 2);
+        assert!(choices.iter().all(|c| c.sticky));
+        assert!(
+            choices[0]
+                .source
+                .as_ref()
+                .is_some_and(|l| l.path == "greet.ink"),
+            "the choice knows where it was written: {choices:?}"
+        );
+
+        let again = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(again.error, None, "{again:?}");
+        assert_eq!(line_texts(&again), ["Hello.\n"]);
+        assert!(matches!(again.steps.last(), Some(PlayStep::Choices(_))));
+
+        let stop = play(&worker, PlayCommand::Choose(1));
+        assert_eq!(stop.error, None, "{stop:?}");
+        assert_eq!(stop.steps.last(), Some(&PlayStep::Done));
+        assert!(stop.is_over());
+
+        // Play from here: straight into the knot, no "Start here.".
+        let from = play(
+            &worker,
+            PlayCommand::Start {
+                at: Some("greet".to_owned()),
+            },
+        );
+        assert_eq!(from.error, None, "{from:?}");
+        assert_eq!(line_texts(&from), ["Hello.\n"]);
+
+        // An edit after a start is not folded in until the next start.
+        worker.send(Request::Edit {
+            path: "greet.ink".to_owned(),
+            text: GREET.replace("Hello.", "Hi."),
+            revision: 1,
+        });
+        let stale = play(&worker, PlayCommand::Choose(0));
+        assert_eq!(line_texts(&stale), ["Hello.\n"]);
+        let fresh = play(&worker, PlayCommand::Start { at: None });
+        assert_eq!(line_texts(&fresh), ["Start here.\n", "Hi.\n"]);
+
+        // A broken project has no program to run.
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: "-> nowhere\n".to_owned(),
+            revision: 2,
+        });
+        let broken = play(&worker, PlayCommand::Start { at: None });
+        assert!(
+            matches!(&broken.error, Some(PlayError::Compile(errors)) if !errors.is_empty()),
+            "{broken:?}"
+        );
     }
 
     fn offset_of(haystack: &str, needle: &str) -> u32 {

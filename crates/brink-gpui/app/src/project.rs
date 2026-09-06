@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use brink_gpui_model::play::{PlayCommand, PlayOutcome};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
 use gpui::{App, AppContext as _, Context, EntityId, EventEmitter, Task};
@@ -354,6 +355,14 @@ impl Project {
     pub fn query(&self, kind: QueryKind, cx: &App) -> Task<Result<QueryResult>> {
         let (reply, answer) = async_channel::bounded(1);
         self.worker.send(Request::Query { kind, reply });
+        cx.background_spawn(async move { Ok(answer.recv().await?) })
+    }
+
+    /// Drive the play session. Same ordering rule as [`Project::query`]:
+    /// a start compiles the text every queued edit has already produced.
+    pub fn play(&self, command: PlayCommand, cx: &App) -> Task<Result<PlayOutcome>> {
+        let (reply, answer) = async_channel::bounded(1);
+        self.worker.send(Request::Play { command, reply });
         cx.background_spawn(async move { Ok(answer.recv().await?) })
     }
 
