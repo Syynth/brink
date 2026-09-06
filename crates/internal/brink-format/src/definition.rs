@@ -59,6 +59,16 @@ pub struct ParamMeta {
     pub name: NameId,
     /// `true` if declared `ref`, `false` for a by-value param.
     pub is_ref: bool,
+    /// The call-frame temp slot this parameter occupies (`.inkb` v10).
+    ///
+    /// **Not** simply the parameter's position: a knot and its stitches
+    /// share one frame and one temp map, so a knot's parameters take slots
+    /// `0 …` and a *stitch*'s parameters continue after them
+    /// (`brink-ir`'s `alloc_temps`). `= opt(n)` inside `=== outer(m)` has
+    /// `opt`'s single parameter at slot 1. The VM binds arguments at
+    /// container entry (`docs/compiler-spec.md` §"Parameter binding"), so
+    /// it needs the real slot, not an assumed one.
+    pub slot: u16,
 }
 
 /// Metadata for a single interpolation slot in a template line.

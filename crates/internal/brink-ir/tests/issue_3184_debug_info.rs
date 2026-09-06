@@ -145,11 +145,11 @@ fn golden_hash(bytes: &[u8]) -> u64 {
 /// printing `golden_hash(&buf_a)` and pasting the new value here. Last
 /// regenerated for the `.inkb` v9 header (the optimizer-only superinstruction
 /// opcodes, which codegen never emits — only the version byte moved).
-const EXPECTED_INK_HASH: u64 = 0x3494_ae7c_069a_5eca;
+const EXPECTED_INK_HASH: u64 = 0x9fdc_c5c3_3d3b_e515;
 
 /// Sibling of [`EXPECTED_INK_HASH`] for the native-surface fixture in
 /// `byte_identical_when_debug_info_off_native`.
-const EXPECTED_NATIVE_HASH: u64 = 0x0952_d4d0_2007_ce86;
+const EXPECTED_NATIVE_HASH: u64 = 0x5e0d_81e3_98cf_c727;
 
 #[test]
 fn byte_identical_when_debug_info_off_ink() {
@@ -423,21 +423,34 @@ fn debug_info_structural_invariants_hold_ink() {
     .expect("emit succeeds");
     assert_structural_invariants(&story);
 
-    // At least one container (the parameterized function) must have a
-    // params-prologue entry: offset 0, `Container.provenance` (not any
-    // `Stmt`'s), not itself the PROLOGUE_END landing point.
+    // `.inkb` v10 (`docs/compiler-spec.md` §"Parameter binding"): a
+    // parameterized container has no prologue bytecode at all — the VM binds
+    // its arguments at entry — so offset 0 is its first *statement*, and
+    // that statement is the breakpoint landing point. Before v10 the leading
+    // `DeclareTemp` run owned offset 0 and needed an entry of its own,
+    // carrying the container's provenance because no statement stood behind
+    // it; this asserts that entry is gone rather than merely moved.
     let debug_info = story.debug_info.as_ref().unwrap();
-    let has_param_prologue_entry = debug_info.containers.iter().any(|t| {
+    let stray_prologue_entry = debug_info.containers.iter().any(|t| {
         t.entries
             .first()
             .is_some_and(|e| e.bytecode_offset == 0 && e.flags & DEBUG_FLAG_PROLOGUE_END == 0)
             && t.entries.len() > 1
     });
     assert!(
-        has_param_prologue_entry,
-        "expected the parameterized `add` function's container to carry a \
-         leading non-PROLOGUE_END entry at offset 0 for its DeclareTemp \
-         parameter binding"
+        !stray_prologue_entry,
+        "a container still carries a leading non-PROLOGUE_END entry at offset 0 — \
+         since v10 nothing binds parameters in bytecode, so offset 0 belongs to \
+         the first statement and is the prologue-end landing point"
+    );
+    assert!(
+        debug_info.containers.iter().any(|t| {
+            t.entries
+                .first()
+                .is_some_and(|e| e.bytecode_offset == 0 && e.flags & DEBUG_FLAG_PROLOGUE_END != 0)
+        }),
+        "the parameterized function's first statement should be both offset 0 and \
+         the prologue-end landing point"
     );
 }
 

@@ -1130,7 +1130,8 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     for _ in 0..param_meta_count {
         let name = NameId(read_u16(buf, off)?);
         let is_ref = read_u8(buf, off)? != 0;
-        params.push(ParamMeta { name, is_ref });
+        let slot = read_u16(buf, off)?;
+        params.push(ParamMeta { name, is_ref, slot });
     }
     // `ContainerDef::params`'s doc invariant: `params.len()` always equals
     // `param_count` whenever per-param metadata is present at all (empty

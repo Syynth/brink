@@ -997,6 +997,7 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     for p in &c.params {
         write_u16(buf, p.name.0);
         write_u8(buf, u8::from(p.is_ref));
+        write_u16(buf, p.slot);
     }
     write_u32(buf, c.bytecode.len() as u32);
     buf.extend_from_slice(&c.bytecode);
