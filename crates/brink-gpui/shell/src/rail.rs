@@ -80,19 +80,21 @@ where
         )
     };
 
-    let occupied = buttons.iter().any(|b| b.slot.edge == edge) || leading.is_some();
+    // Both rails are always drawn, occupied or not (maintainer, 2026-09-05):
+    // the rail is the region model made visible, and a right dock with no
+    // rail beside it reads as a dock that cannot be reached.
     v_flex()
-        .when(occupied, |s| s.w(RAIL_WIDTH))
+        .w(RAIL_WIDTH)
         .h_full()
         .py_1()
         .gap_1()
         .items_center()
         .justify_between()
         .bg(theme.sidebar)
-        .when(occupied && edge == RailEdge::Left, |s| {
+        .when(edge == RailEdge::Left, |s| {
             s.border_r_1().border_color(theme.border)
         })
-        .when(occupied && edge == RailEdge::Right, |s| {
+        .when(edge == RailEdge::Right, |s| {
             s.border_l_1().border_color(theme.border)
         })
         // Upper group flows from the top; the lower group is pinned to the

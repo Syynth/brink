@@ -2497,7 +2497,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=a6adb0affdd6c34a7c35183a7f775117db40c679#a6adb0affdd6c34a7c35183a7f775117db40c679"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2533,7 +2533,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=a6adb0affdd6c34a7c35183a7f775117db40c679#a6adb0affdd6c34a7c35183a7f775117db40c679"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2577,7 +2577,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=a6adb0affdd6c34a7c35183a7f775117db40c679#a6adb0affdd6c34a7c35183a7f775117db40c679"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2588,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=a6adb0affdd6c34a7c35183a7f775117db40c679#a6adb0affdd6c34a7c35183a7f775117db40c679"
 dependencies = [
  "anyhow",
  "gpui-pre",

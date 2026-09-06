@@ -23,9 +23,10 @@ publish = false
 [workspace.dependencies]
 # Our fork of longbridge's GPUI Kit, pinned to a commit.
 #
-# Three commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
+# Four commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
 # a capability the upstream editor lacks rather than a rename: `Editor:
-# Sizable`, the `IntoPlot` crate lookup, and in-text inlays. They are written
+# Sizable`, the `IntoPlot` crate lookup, in-text inlays, and the wrapped
+# row count a content-sized editor needs once soft wrap is on. They are written
 # to be upstreamable; if they land, this goes back to the crates.io version.
 #
 # A FORK REPO, not a vendored tree with a re-patching script. Upstream moves
@@ -35,11 +36,11 @@ publish = false
 # `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7", features = ["tree-sitter"] }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "a6adb0affdd6c34a7c35183a7f775117db40c679", features = ["tree-sitter"] }
 # The foundation under the kit, for the one renderer-trait type the kit does
 # not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
 # is the same crate the kit is built against.
-gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7" }
+gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "a6adb0affdd6c34a7c35183a7f775117db40c679" }
 gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
