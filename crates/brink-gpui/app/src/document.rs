@@ -56,13 +56,17 @@ pub(crate) fn apply_delta(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum DocumentEvent {
     /// The dock made this the displayed tab of its group — what Code view
     /// takes as "the active document" (`code_view.rs`).
     Activated,
     /// The tab was closed; the document has left the dock for good.
     Closed,
+    /// Navigation asked to show `span` of `path` — a definition, or a
+    /// reference. Raised rather than handled: only the host that holds the
+    /// tabs can open one.
+    Navigate { path: String, span: Range<usize> },
 }
 
 pub struct Document {
@@ -73,6 +77,8 @@ pub struct Document {
     /// the highlighter snapshots the TODO band's colours when it updates.
     /// `None` for `brink.toml`, which the kit's own TOML highlighter paints.
     factory: Option<InputHighlighterFactory>,
+    /// The fold candidates the highlighter reports — see [`FoldCell`].
+    folds: FoldCell,
     /// The tab group holding this document, from the dock's `on_added_to`.
     /// What [`Document::activate`] selects the tab through.
     group: Option<WeakEntity<TabGroup>>,
@@ -97,11 +103,22 @@ impl Document {
         // language: it is TOML, so the kit's own highlighter paints it and
         // brink's hover, completion and inlays stay out of it.
         let config = project.read(cx).is_config(&path);
-        let factory = (!config).then(|| highlighter_factory(project.downgrade(), path.clone()));
+        let folds: FoldCell = Rc::default();
+        let factory = (!config).then(|| {
+            highlighter_factory_with_folds(project.downgrade(), path.clone(), Some(folds.clone()))
+        });
+        let this_document = cx.weak_entity();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
-                .language(if config { "toml" } else { "brink" });
+                .language(if config { "toml" } else { "brink" })
+                // Structural folds land in the gutter from `refresh_folds`;
+                // explicit rather than trusting the layout mode's default.
+                .folding(!config)
+                // Prose wraps (maintainer, 2026-09-05): a line of narrative
+                // is a paragraph, and scrolling sideways to read one is
+                // wrong in every view.
+                .soft_wrap(true);
 
             if let Some(factory) = &factory {
                 // Installed BEFORE gpui-component's Input render, whose
@@ -121,6 +138,19 @@ impl Document {
                     path: path.clone(),
                     origin,
                 }));
+                // Navigation shows a target by raising an event: a tab is
+                // the host's to open, not the document's.
+                let me = this_document.clone();
+                let navigate: crate::navigation::Navigate =
+                    Rc::new(move |path, span, _window, cx| {
+                        let _ = me.update(cx, |_, cx| {
+                            cx.emit(DocumentEvent::Navigate {
+                                path: path.to_owned(),
+                                span,
+                            });
+                        });
+                    });
+                crate::navigation::install(&mut state, &project, path.clone(), origin, navigate);
             }
             state.set_value(text, window, cx);
             state
@@ -188,11 +218,12 @@ impl Document {
             },
         );
 
-        let this = Self {
+        let mut this = Self {
             path,
             editor,
             project,
             factory,
+            folds,
             group: None,
             _subscriptions: vec![on_change, on_project, on_theme, on_settings],
         };
@@ -204,6 +235,13 @@ impl Document {
         this.project.update(cx, |project, cx| {
             project.edit(&path, seed, Some(origin), cx);
         });
+        // A file opened after the project analyzed gets no `Analyzed` of its
+        // own — the seed above is a no-op when the text is unchanged — so
+        // its diagnostics, inlays and folds are pulled once here rather
+        // than waiting for the first keystroke.
+        if this.project.read(cx).has_analyzed() {
+            this.refresh(cx);
+        }
         this
     }
 
@@ -269,6 +307,56 @@ impl Document {
         cx.notify();
     }
 
+    /// The site a keyboard navigation command acts on: this editor over
+    /// this file.
+    #[must_use]
+    pub fn site(&self) -> crate::navigation::EditorSite {
+        crate::navigation::EditorSite {
+            editor: self.editor.clone(),
+            project: self.project.clone(),
+            path: self.path.clone(),
+        }
+    }
+
+    /// Structural fold candidates (ruled #479: never the run folds) into the
+    /// gutter. A query, like inlays, and for the same reason; `brink.toml`
+    /// has none.
+    fn refresh_folds(&mut self, cx: &mut Context<Self>) {
+        if self.factory.is_none() {
+            return;
+        }
+        let query = self.project.read(cx).query(
+            QueryKind::FoldingRanges {
+                path: self.path.to_string(),
+            },
+            cx,
+        );
+        let editor = self.editor.clone();
+        let cell = self.folds.clone();
+        cx.spawn(async move |_, cx| {
+            let Ok(QueryResult::FoldingRanges(folds)) = query.await else {
+                return;
+            };
+            let candidates = folds
+                .into_iter()
+                .map(|f| {
+                    gpui_component::input::FoldRange::new(
+                        f.start_line as usize,
+                        f.end_line as usize,
+                    )
+                })
+                .collect();
+            // The cell is what the highlighter reports from now on; the
+            // push makes this frame show them rather than the next edit.
+            *cell.borrow_mut() = candidates;
+            let candidates = cell.borrow().clone();
+            let _ = editor.update(cx, |state, cx| {
+                state.apply_highlighter_fold_candidates(candidates, cx);
+            });
+        })
+        .detach();
+    }
+
     /// Fold the analysis the worker just published into the editor.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (rope, source) = {
@@ -295,6 +383,8 @@ impl Document {
             }
             cx.notify();
         });
+
+        self.refresh_folds(cx);
 
         // Inlays are a query rather than part of the analysis broadcast:
         // computing them for every file on every keystroke would be
@@ -380,6 +470,9 @@ pub struct BrinkHighlighter {
     project: WeakEntity<Project>,
     path: SharedString,
     cache: TokenCache,
+    /// The structural folds the worker answered, or `None` for a host that
+    /// does not fold (a manuscript section, a search card).
+    folds: Option<FoldCell>,
     /// Absolute byte ranges + theme token-type names, sorted, disjoint.
     runs: Vec<(std::ops::Range<usize>, SharedString)>,
     /// Every `TODO:` line — the studio's `.brink-todo` band (ruled
@@ -406,10 +499,30 @@ pub(crate) fn highlighter_factory(
     project: WeakEntity<Project>,
     path: SharedString,
 ) -> InputHighlighterFactory {
+    highlighter_factory_with_folds(project, path, None)
+}
+
+/// Structural fold candidates, shared between a document and its
+/// highlighter. gpui-base takes fold candidates FROM the highlighter
+/// (`EditorMode::drive_highlighter` → `InputHighlighter::fold_ranges`) on
+/// every highlight pass, replacing whatever was pushed in from outside —
+/// so candidates pushed through `apply_highlighter_fold_candidates` alone
+/// vanished on the next paint. The highlighter is the toolkit's source of
+/// folds; this cell is how the worker's answer becomes the highlighter's.
+pub(crate) type FoldCell = Rc<std::cell::RefCell<Vec<gpui_component::input::FoldRange>>>;
+
+pub(crate) fn highlighter_factory_with_folds(
+    project: WeakEntity<Project>,
+    path: SharedString,
+    folds: Option<FoldCell>,
+) -> InputHighlighterFactory {
     Rc::new(move |language| {
         (language == "brink").then(|| {
-            Box::new(BrinkHighlighter::new(project.clone(), path.clone()))
-                as Box<dyn InputHighlighter>
+            Box::new(BrinkHighlighter::new(
+                project.clone(),
+                path.clone(),
+                folds.clone(),
+            )) as Box<dyn InputHighlighter>
         })
     })
 }
@@ -497,12 +610,13 @@ impl BrinkHighlighter {
     /// its own per section, which is why this is not private: every section
     /// is a different file on screen at once, so a highlighter that followed
     /// "the active file" would paint them all the same.
-    pub fn new(project: WeakEntity<Project>, path: SharedString) -> Self {
+    pub fn new(project: WeakEntity<Project>, path: SharedString, folds: Option<FoldCell>) -> Self {
         let cache = TokenCache::new(&path);
         Self {
             project,
             path,
             cache,
+            folds,
             runs: Vec::new(),
             todo_lines: Vec::new(),
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
@@ -606,7 +720,10 @@ impl InputHighlighter for BrinkHighlighter {
     }
 
     fn fold_ranges(&self, _text: &Rope) -> Vec<gpui_component::input::FoldRange> {
-        Vec::new()
+        self.folds
+            .as_ref()
+            .map(|cell| cell.borrow().clone())
+            .unwrap_or_default()
     }
 }
 
@@ -624,7 +741,29 @@ impl InputHighlighter for BrinkHighlighter {
 /// thread with `end byte index 199 is out of bounds for string of length
 /// 198`). An identical text is a no-op in `Project::edit`, so the seed
 /// costs nothing when the document is already current.
-fn seed_edit(
+/// Hover and completion on an editor over `path` — the half of "a brink
+/// editor" that predates `navigation::install`; the manuscript's sections
+/// call both.
+pub(crate) fn install_language_providers(
+    state: &mut EditorState,
+    project: &WeakEntity<Project>,
+    path: SharedString,
+    origin: gpui::EntityId,
+) {
+    let lsp = state.lsp_mut();
+    lsp.hover_provider = Some(Rc::new(BrinkHover {
+        project: project.clone(),
+        path: path.clone(),
+        origin,
+    }));
+    lsp.completion_provider = Some(Rc::new(BrinkCompletion {
+        project: project.clone(),
+        path,
+        origin,
+    }));
+}
+
+pub(crate) fn seed_edit(
     project: &Entity<Project>,
     path: &SharedString,
     text: &Rope,
@@ -727,7 +866,7 @@ impl CompletionProvider for BrinkCompletion {
     }
 }
 
-fn position(index: &LineIndex, offset: u32) -> lsp::Position {
+pub(crate) fn position(index: &LineIndex, offset: u32) -> lsp::Position {
     let (line, character) = index.line_col(rowan::TextSize::from(offset));
     lsp::Position { line, character }
 }

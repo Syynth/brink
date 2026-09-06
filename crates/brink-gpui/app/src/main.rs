@@ -10,8 +10,10 @@ mod code_view;
 mod continuous;
 mod document;
 mod icons;
+mod navigation;
 mod problems;
 mod project;
+mod rename;
 mod search;
 mod settings_config;
 mod settings_conventions;
@@ -34,10 +36,12 @@ use gpui::{
     AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement, Render,
     Subscription, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
+use gpui_component::WindowExt as _;
 use gpui_component::{Root, TitleBar};
 
 use crate::binder::{Binder, BinderEvent};
 use crate::code_view::CodeView;
+use crate::code_view::CodeViewEvent;
 use crate::continuous::ContinuousView;
 use crate::problems::{OpenProblem, Problems};
 use crate::project::{Project, ProjectEvent};
@@ -56,6 +60,12 @@ actions!(
         Save,
         /// `search.focus`: show the Search window and put the caret in it.
         SearchFocus,
+        /// Jump to the declaration of the symbol under the caret.
+        GoToDefinition,
+        /// Every use of the symbol under the caret, as Search cards.
+        FindReferences,
+        /// Rename the symbol under the caret, cross-file and safe-by-default.
+        RenameSymbol,
     ]
 );
 
@@ -240,6 +250,20 @@ impl Studio {
                 Some("cmd-shift-f"),
                 cx,
             );
+            // Navigation (INVENTORY §0 item 1). Cmd-click goes through the
+            // editor's own provider + `show_document` hook; the keyboard
+            // commands resolve the focused editor here, because gpui-base's
+            // `GoToDefinition` action only follows a target a Cmd-hover has
+            // already resolved.
+            workspace.register_command("Go", "Go to Definition", GoToDefinition, Some("f12"), cx);
+            workspace.register_command(
+                "Go",
+                "Find References",
+                FindReferences,
+                Some("shift-f12"),
+                cx,
+            );
+            workspace.register_command("Refactor", "Rename Symbol", RenameSymbol, Some("f2"), cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -298,6 +322,17 @@ impl Studio {
                 this.open(path, Some(span.clone()), window, cx);
             },
         );
+        // A document's navigation raises where to go; the tabs are this
+        // view's to open.
+        let on_code = cx.subscribe_in(
+            &code,
+            window,
+            |this, _, event: &CodeViewEvent, window, cx| {
+                if let CodeViewEvent::Navigate { path, span } = event {
+                    this.open(path, Some(span.clone()), window, cx);
+                }
+            },
+        );
         // "Open brink.toml" in the General section: the text is a
         // document, so the section hands over to Code view.
         let on_general = cx.subscribe_in(
@@ -323,7 +358,7 @@ impl Studio {
             manuscript,
             search,
             _subscriptions: vec![
-                on_project, on_binder, on_problem, on_todo, on_search, on_general,
+                on_project, on_binder, on_problem, on_todo, on_search, on_code, on_general,
             ],
         }
     }
@@ -368,6 +403,121 @@ impl Studio {
             .update(cx, |search, cx| search.focus_query(window, cx));
     }
 
+    /// The editor a navigation command acts on: the manuscript's focused
+    /// section in Continuous view, else Code view's active document (which
+    /// is also what Single File shows).
+    fn focused_site(&self, window: &Window, cx: &gpui::App) -> Option<navigation::EditorSite> {
+        let view = self.workspace.read(cx).editor_root().read(cx).view();
+        if view == EditorView::Continuous {
+            return self.manuscript.read(cx).focused_section(window, cx);
+        }
+        self.code
+            .read(cx)
+            .active_document()
+            .map(|doc| doc.read(cx).site())
+    }
+
+    /// Show `span` of `path` the way the current view shows things: a tab
+    /// in Code/Single File, a scroll in the manuscript.
+    fn show(
+        &mut self,
+        path: &str,
+        span: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self.workspace.read(cx).editor_root().read(cx).view();
+        if view == EditorView::Continuous {
+            self.manuscript
+                .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
+        } else {
+            self.open(path, Some(span), window, cx);
+        }
+    }
+
+    fn go_to_definition(
+        &mut self,
+        _: &GoToDefinition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let found = navigation::definition(&site, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(loc) = found.await else {
+                let _ = cx.update(|window, cx| {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info(
+                            "No definition for the symbol under the caret.",
+                        ),
+                        cx,
+                    );
+                });
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show(&loc.path, loc.start as usize..loc.end as usize, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn find_references(&mut self, _: &FindReferences, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let found = navigation::find_references(&site, cx);
+        let search = self.search.clone();
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let Some((name, refs)) = found.await else {
+                let _ = cx.update(|window, cx| {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info(
+                            "No references for the symbol under the caret.",
+                        ),
+                        cx,
+                    );
+                });
+                return;
+            };
+            let _ = cx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.open_tool_window("search", window, cx);
+                });
+                search.update(cx, |search, cx| search.show_references(name, &refs, cx));
+            });
+        })
+        .detach();
+    }
+
+    fn rename_symbol(&mut self, _: &RenameSymbol, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let prepared = navigation::prepare_rename(&site, cx);
+        cx.spawn_in(window, async move |_, cx| {
+            let prepared = prepared.await;
+            let Some((range, current)) = prepared else {
+                let _ = cx.update(|window, cx| {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info(
+                            "Nothing renameable under the caret.",
+                        ),
+                        cx,
+                    );
+                });
+                return;
+            };
+            let _ = cx.update(|window, cx| {
+                rename::prompt(site, range.start, current, window, cx);
+            });
+        })
+        .detach();
+    }
+
     /// Save every dirty file — whichever editor it was changed in.
     fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
         self.project.update(cx, |project, cx| {
@@ -396,12 +546,28 @@ impl Studio {
 }
 
 impl Render for Studio {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // gpui-component's `Root` draws the view, tooltips and native menus
+        // — and NOT its dialog and notification layers. Those are free
+        // functions the application root composes in; without them every
+        // `open_dialog` and `push_notification` lands in a list nothing
+        // renders (which is how a rename prompt and three toasts went
+        // missing on 2026-09-05).
+        let notifications = Root::render_notification_layer(window, cx);
+        let dialogs = Root::render_dialog_layer(window, cx);
         gpui::div()
             .size_full()
+            .relative()
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::search_focus))
+            .on_action(cx.listener(Self::go_to_definition))
+            .on_action(cx.listener(Self::find_references))
+            .on_action(cx.listener(Self::rename_symbol))
             .child(self.workspace.clone())
+            // After the workspace: later children paint on top, and a
+            // dialog under the window it belongs to is no dialog at all.
+            .children(notifications)
+            .children(dialogs)
     }
 }
 

@@ -131,6 +131,9 @@ pub struct Match {
     pub frozen: String,
     /// The window's text no longer reads as `frozen` — the `edited` badge.
     pub edited: bool,
+    /// How the site uses the symbol, when the snapshot is a references
+    /// list rather than a text search — the card's badge.
+    pub kind: Option<brink_gpui_model::query::ReferenceKind>,
 }
 
 /// What [`Match::map_edit`] asks the card's editor to do.
@@ -346,6 +349,7 @@ pub fn search<'a>(
                 window,
                 hit,
                 edited: false,
+                kind: None,
             });
         }
         if any {
@@ -355,6 +359,53 @@ pub fn search<'a>(
             break;
         }
     }
+    snapshot
+}
+
+/// A references list as a snapshot: one card per site, the same context
+/// window a text hit gets, and the site's kind on the card. `files` is
+/// consulted for the text; a reference into a file it lacks is dropped.
+pub fn references_snapshot<'a>(
+    files: impl Fn(&str) -> Option<&'a str>,
+    refs: &[brink_gpui_model::query::Reference],
+    context: (usize, usize),
+) -> Snapshot {
+    let mut snapshot = Snapshot::default();
+    let mut seen_files: Vec<&str> = Vec::new();
+    for r in refs {
+        let Some(source) = files(&r.location.path) else {
+            continue;
+        };
+        let starts = line_starts(source);
+        let last_line = if source.ends_with('\n') && starts.len() > 1 {
+            starts.len() - 2
+        } else {
+            starts.len() - 1
+        };
+        let (start, end) = (r.location.start as usize, r.location.end as usize);
+        if end > source.len() || start > end {
+            continue;
+        }
+        let line_ix = line_index_at(&starts, start);
+        let first = line_ix.saturating_sub(context.0);
+        let last = (line_ix + context.1).min(last_line).max(line_ix);
+        let window = starts[first]..line_end(source, &starts, last);
+        snapshot.matches.push(Match {
+            path: r.location.path.clone(),
+            line: line_ix as u32 + 1,
+            container: container_at(source, start),
+            first_line: first as u32 + 1,
+            frozen: source[window.clone()].to_owned(),
+            hit: start..end.min(window.end),
+            window,
+            edited: false,
+            kind: Some(r.kind),
+        });
+        if !seen_files.contains(&r.location.path.as_str()) {
+            seen_files.push(&r.location.path);
+        }
+    }
+    snapshot.files = seen_files.len();
     snapshot
 }
 
@@ -438,6 +489,10 @@ pub struct SearchView {
     options: SearchOptions,
     /// The last search's result — frozen until the next search.
     snapshot: Option<Snapshot>,
+    /// When the snapshot is a references list: the symbol's name. The
+    /// query box is left alone — typing in it runs a search and clears
+    /// this, which is the right way out of a references list.
+    references: Option<String>,
     /// A regex the author has not finished typing, shown under the input.
     error: Option<String>,
     collapsed: BTreeSet<usize>,
@@ -498,6 +553,7 @@ impl SearchView {
             query,
             options: SearchOptions::default(),
             snapshot: None,
+            references: None,
             error: None,
             collapsed: BTreeSet::new(),
             editors: HashMap::new(),
@@ -527,8 +583,32 @@ impl SearchView {
 
     /// Run the query against the sources as they are now. Replaces the
     /// snapshot; nothing else does.
+    /// Show every use of `name` as cards — Find References lands here, as
+    /// the studio's does (docs/search-results-cards-spec.md).
+    pub fn show_references(
+        &mut self,
+        name: String,
+        refs: &[brink_gpui_model::query::Reference],
+        cx: &mut Context<Self>,
+    ) {
+        self.collapsed.clear();
+        self.editors.clear();
+        self.card_subs.clear();
+        self.error = None;
+        let snapshot = {
+            let project = self.project.read(cx);
+            references_snapshot(|path| project.loaded_source(path), refs, CONTEXT)
+        };
+        let count = snapshot.matches.len();
+        self.snapshot = Some(snapshot);
+        self.references = Some(name);
+        self.list = ListState::new(count, ListAlignment::Top, px(300.));
+        cx.notify();
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
         let query = self.query.read(cx).value().to_string();
+        self.references = None;
         self.collapsed.clear();
         self.editors.clear();
         self.card_subs.clear();
@@ -802,13 +882,21 @@ impl SearchView {
         let snapshot = self.snapshot.as_ref()?;
         let theme = cx.theme();
         let n = snapshot.matches.len();
-        let text = format!(
-            "{n} result{} \u{B7} {} file{}{}",
-            if n == 1 { "" } else { "s" },
-            snapshot.files,
-            if snapshot.files == 1 { "" } else { "s" },
-            if snapshot.capped { " (capped)" } else { "" }
-        );
+        let text = match &self.references {
+            Some(name) => format!(
+                "{n} reference{} to `{name}` \u{B7} {} file{}",
+                if n == 1 { "" } else { "s" },
+                snapshot.files,
+                if snapshot.files == 1 { "" } else { "s" },
+            ),
+            None => format!(
+                "{n} result{} \u{B7} {} file{}{}",
+                if n == 1 { "" } else { "s" },
+                snapshot.files,
+                if snapshot.files == 1 { "" } else { "s" },
+                if snapshot.capped { " (capped)" } else { "" }
+            ),
+        };
         Some(
             h_flex()
                 .h(px(28.))
@@ -895,6 +983,17 @@ impl SearchView {
                     .clone()
                     .map(|c| div().text_color(muted).child(c)),
             )
+            // The reference kind, when this is a references list: how the
+            // site uses the symbol (spec PR E's per-card badge).
+            .children(m.kind.map(|kind| {
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(accent.opacity(0.5))
+                    .text_color(accent)
+                    .child(kind.badge())
+            }))
             .when(m.edited, |el| {
                 el.child(
                     div()

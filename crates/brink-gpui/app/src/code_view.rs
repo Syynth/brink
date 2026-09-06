@@ -26,10 +26,13 @@ use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_
 use crate::document::{Document, DocumentEvent};
 use crate::project::Project;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeViewEvent {
     /// The active document changed, or there is none.
     ActiveChanged,
+    /// A document's navigation asked to show `span` of `path`. Re-raised
+    /// for the studio, which opens tabs.
+    Navigate { path: String, span: Range<usize> },
 }
 
 pub struct CodeView {
@@ -138,6 +141,10 @@ impl CodeView {
     ) {
         match event {
             DocumentEvent::Activated => self.set_active(Some(document), cx),
+            DocumentEvent::Navigate { path, span } => cx.emit(CodeViewEvent::Navigate {
+                path: path.clone(),
+                span: span.clone(),
+            }),
             DocumentEvent::Closed => {
                 self.documents.retain(|d| *d != document);
                 self.subscriptions.retain(|(d, _)| *d != document);
