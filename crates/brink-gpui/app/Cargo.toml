@@ -29,4 +29,5 @@ brink-syntax.workspace = true
 brink-analyzer.workspace = true
 brink-driver.workspace = true
 brink-project-config.workspace = true
+serde.workspace = true
 serde_json.workspace = true

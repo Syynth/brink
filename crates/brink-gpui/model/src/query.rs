@@ -139,7 +139,7 @@ pub enum QueryResult {
 }
 
 /// A place in the project, in bytes of that file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub path: String,
     pub start: u32,
@@ -180,7 +180,7 @@ pub struct Reference {
 
 /// One edit of a rename, in bytes of `path` as it was when the plan was
 /// computed. Ranges are disjoint per file; apply them last-to-first.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TextEdit {
     pub path: String,
     pub start: u32,

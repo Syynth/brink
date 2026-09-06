@@ -8,13 +8,12 @@
 //! `Project::edit` at the end, so every editor over a touched file follows
 //! and undo sees an ordinary edit.
 //!
-//! The provider keeps what it last offered and hands the toolkit an index
-//! into that list as the action's `data`, rather than serializing a plan
-//! through `lsp_types::CodeAction` and back: the plan is plain data the app
-//! already holds, and the round trip would only be a second copy of it.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Each action carries its own payload in `lsp_types::CodeAction::data`. A
+//! first cut kept the last-offered list and handed the toolkit an index into
+//! it — and the toolkit asks for actions again whenever the caret moves, so
+//! a menu built from one list could be confirmed against another: choosing
+//! "Format knot" applied a different file's E031 fix. The payload rides
+//! with the entry it belongs to.
 
 use anyhow::Result;
 use brink_gpui_model::fixes::{FixAllReport, FixPlan, FixScope, Refactor, Tier};
@@ -28,8 +27,8 @@ use lsp_types as lsp;
 use crate::document::seed_edit;
 use crate::project::Project;
 
-/// What one menu entry does when chosen.
-#[derive(Clone)]
+/// What one menu entry does when chosen — the action's `data`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum Offered {
     Fix(FixPlan),
     Refactor(Refactor),
@@ -39,8 +38,6 @@ pub struct BrinkCodeActions {
     project: WeakEntity<Project>,
     path: SharedString,
     origin: EntityId,
-    /// The last list offered, which the chosen action's `data` indexes.
-    offered: Rc<RefCell<Vec<Offered>>>,
 }
 
 impl BrinkCodeActions {
@@ -49,18 +46,17 @@ impl BrinkCodeActions {
             project,
             path,
             origin,
-            offered: Rc::default(),
         }
     }
 }
 
-fn entry(ix: usize, title: String, kind: lsp::CodeActionKind) -> lsp::CodeAction {
-    lsp::CodeAction {
+fn entry(offered: &Offered, title: String, kind: lsp::CodeActionKind) -> Option<lsp::CodeAction> {
+    Some(lsp::CodeAction {
         title,
         kind: Some(kind),
-        data: Some(serde_json::Value::from(ix)),
+        data: Some(serde_json::to_value(offered).ok()?),
         ..Default::default()
-    }
+    })
 }
 
 /// The menu label: the fixer's own wording, with the tier appended when it
@@ -104,7 +100,6 @@ impl CodeActionProvider for BrinkCodeActions {
             },
             cx,
         );
-        let offered = self.offered.clone();
         cx.spawn(async move |_| {
             let mut list: Vec<Offered> = Vec::new();
             if let Ok(QueryResult::FixesAt(fixes)) = fixes.await {
@@ -113,18 +108,17 @@ impl CodeActionProvider for BrinkCodeActions {
             if let Ok(QueryResult::Refactors(found)) = refactors.await {
                 list.extend(found.into_iter().map(Offered::Refactor));
             }
-            let actions = list
+            Ok(list
                 .iter()
-                .enumerate()
-                .map(|(ix, item)| match item {
-                    Offered::Fix(plan) => entry(ix, fix_title(plan), lsp::CodeActionKind::QUICKFIX),
+                .filter_map(|item| match item {
+                    Offered::Fix(plan) => {
+                        entry(item, fix_title(plan), lsp::CodeActionKind::QUICKFIX)
+                    }
                     Offered::Refactor(r) => {
-                        entry(ix, r.title.clone(), lsp::CodeActionKind::REFACTOR)
+                        entry(item, r.title.clone(), lsp::CodeActionKind::REFACTOR)
                     }
                 })
-                .collect();
-            *offered.borrow_mut() = list;
-            Ok(actions)
+                .collect())
         })
     }
 
@@ -139,16 +133,9 @@ impl CodeActionProvider for BrinkCodeActions {
         let Some(project) = self.project.upgrade() else {
             return Task::ready(Ok(()));
         };
-        let chosen = action
+        let chosen: Option<Offered> = action
             .data
-            .as_ref()
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|ix| {
-                self.offered
-                    .borrow()
-                    .get(usize::try_from(ix).ok()?)
-                    .cloned()
-            });
+            .and_then(|data| serde_json::from_value(data).ok());
         match chosen {
             Some(Offered::Fix(plan)) => {
                 apply_fix(&project, &plan, Some((&state, &self.path)), window, cx);

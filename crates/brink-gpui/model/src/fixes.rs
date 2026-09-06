@@ -34,7 +34,7 @@ use brink_ir::{DiagnosticCode, FileId};
 use crate::query::{Location, TextEdit};
 
 /// `brink_ide::fix::Applicability`, as plain data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tier {
     Safe,
     Suggested,
@@ -62,7 +62,7 @@ impl Tier {
 
 /// One offered fix, ready to apply: the edits are in bytes of each file as
 /// it is now.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FixPlan {
     pub code: String,
     pub title: String,
@@ -343,7 +343,7 @@ pub(crate) fn fix_all(session: &mut IdeSession, scope: &FixScope) -> Option<FixA
 /// A whole-source refactor the editor offers beside the fixes: sort knots,
 /// sort or format a knot's stitches, reorder a stitch. Carried as its
 /// serialized `CodeActionData` so the resolve query needs no cursor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Refactor {
     pub title: String,
     pub data: String,

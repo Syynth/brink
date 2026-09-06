@@ -328,6 +328,22 @@ unverified by hand.
    17–51 µs per knot. **The boundary question is a language ruling and must
    not be decided by an agent.**
 
+## Open small things (2026-09-05, end of day)
+
+- **Escape did not close the `cmd-.` code-action menu** when driven by
+  automation; `CodeActionMenu::handle_action` handles Escape when its own
+  `open` is true, which `sync_lsp` sets on render — unverified whether a
+  real keypress behaves the same. Check by hand first.
+- **Popover placement fix unverified by hand.** Fork commit 7504917 adds
+  the scroll offset to `range_to_bounds` (the caret already applies it),
+  which is what made hover/diagnostic popovers drift by the scroll
+  distance on both axes. Reasoned from the code; the screen was locked
+  before it could be driven.
+- The web studio's "format document" only sorts knots; the native
+  Format Document / Format on save run `brink-fmt` (the `brink fmt`
+  formatter, `[project] indent` honoured). The two surfaces now differ
+  here on purpose.
+
 ## Rendering contract worth knowing (2026-09-05)
 
 gpui-component's `Root::render` draws the view, tooltips and native menus

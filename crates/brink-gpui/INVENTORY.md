@@ -45,7 +45,14 @@ In `.ink`-author order, the gaps that bite first:
    Residue: the toolkit exposes no Fold All / Unfold All.
 2. **The Player** and everything session-bound behind it — blocked on the
    placement ruling, and on a compile + runtime session in the worker.
-3. **Fixes** — code actions in the editor, Fix buttons in Problems.
+3. ~~**Fixes** — code actions in the editor, Fix buttons in Problems.~~
+   **Built 2026-09-05** (`model/src/fixes.rs`, `app/src/fixes.rs`): the
+   `cmd-.` menu (fixes every tier + whole-source refactors), Problems' per-row
+   **Fix** and header **Fix all safe (N)**, palette "Fix All Safe in
+   File/Project". Residue: no fix-on-save (§6.2's app ceiling setting is
+   not in the native studio), the structural moves (promote/demote/move
+   stitch) stay off the menu until they get the breakage gate, and the
+   context-menu fix entries the web has.
 4. **Find/replace inside a document**, and Search's Replace.
 5. **Quick-open** and `Escape` back to the editor.
 6. **Layout persistence** and an open-project dialog.
@@ -112,7 +119,7 @@ else. Everything below is listed against that directory.
 | ~~Go-to-definition, references, rename~~ | built 2026-09-05 | `QueryKind::{Definition, References, PrepareRename, Rename}`; rename is a dialog prompt (the web studio's is inline in the editor — a parity gap in shape, not in behaviour). |
 | ~~Folding: gutter chevrons~~ | built 2026-09-05 | `QueryKind::FoldingRanges` → the highlighter's `fold_ranges` → gutter chevrons on hover / the caret's line. (They were invisible only because no asset source was registered — HANDOFF #6.) |
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
-| Code actions, fixes, extract actions | worker query + port | `brink_ide::code_actions` exists; the worker offers no fixes query and the editor has no action UI (`docs/autofix-spec.md`). Also blocks Problems' Fix buttons. |
+| ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. Extract actions and the gated structural moves are still out. |
 | Find/replace panel inside a document | parity gap | `find-panel.ts`. |
 | Signature help | parity gap | `signature-help.ts`. |
 | Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
@@ -149,7 +156,7 @@ click-to-reveal, rail badge, status-bar cell, `CONFIG` rows for a broken
 | Left out | Kind | Note |
 |---|---|---|
 | Prose bucket | not wired | the worker runs no prose checker. |
-| Fix buttons | worker query + port | the worker offers no fixes (see the editor's code-actions row). |
+| ~~Fix buttons~~ | built 2026-09-05 | per-row **Fix** (the row's first offer) and **Fix all safe (N)**, `N` from `collect()`. The row's context menu listing every offer is not built. |
 | Suppress context menu (#3148) | parity gap | |
 | "Configure Exxx…" door into Settings ▸ Diagnostics | parity gap | the section exists; the row menu does not open it (HANDOFF "Not here yet"). |
 
@@ -190,7 +197,7 @@ in Code view (ruled 2026-09-05).
 
 | Left out | Kind | Note |
 |---|---|---|
-| App ▸ Editor (default view, fix-on-save) | parity gap | the web's `EditorViewSection` + `EditorSection`; font sizes live in Appearance here, and fix-on-save has no fixes to run. |
+| App ▸ Editor (default view, fix-on-save) | parity gap | the web's `EditorViewSection` + `EditorSection`; font sizes and **Format on save** (built 2026-09-05, `brink-fmt` over every dirty `.ink`) live in Appearance here; fix-on-save is not built. |
 | App ▸ Player (playback, debug info, external-function check) | not started | nothing to configure until the Player exists. |
 | Creating `brink.toml` for a project without one | parity gap | every Project section says so and stops; the worker would need to adopt a new config path. |
 | Formatting: tabs vs spaces | **open ruling** | the row is drawn disabled. |
@@ -220,7 +227,7 @@ config re-application, drafts report, resolved dialect.
 
 | Left out | Kind | Note |
 |---|---|---|
-| CodeActions query | worker query | `brink-ide` has it; the worker does not expose it. (Definition / References / Rename / Folding: built 2026-09-05.) |
+| ~~CodeActions query~~ | built 2026-09-05 | (Definition / References / Rename / Folding / Fixes / Format: all built 2026-09-05.) |
 | `line_contexts` per file | worker query | for per-line styles. |
 | Compile to `StoryData` and a runtime session | not started | everything session-bound waits on it. |
 

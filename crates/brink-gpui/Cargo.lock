@@ -853,6 +853,7 @@ dependencies = [
  "lsp-types",
  "regex",
  "rowan",
+ "serde",
  "serde_json",
 ]
 
@@ -874,6 +875,7 @@ dependencies = [
  "brink-syntax-native",
  "gpui-pre",
  "rowan",
+ "serde",
  "serde_json",
 ]
 
@@ -2500,7 +2502,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5#c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2536,7 +2538,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5#c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2580,7 +2582,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5#c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2591,7 +2593,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5#c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "anyhow",
  "gpui-pre",
