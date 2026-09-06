@@ -418,9 +418,13 @@ impl Studio {
         let on_program = cx.subscribe_in(
             &program,
             window,
-            |this, _, event: &ProgramEvent, window, cx| {
-                let ProgramEvent::Navigate { path, span } = event;
-                this.show(path, span.clone(), window, cx);
+            |this, _, event: &ProgramEvent, window, cx| match event {
+                ProgramEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                ProgramEvent::OpenCompiledOutput => {
+                    this.open_compiled_output(&OpenCompiledOutput, window, cx);
+                }
             },
         );
         let on_problem = cx.subscribe_in(

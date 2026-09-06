@@ -198,7 +198,7 @@ marks itself stale and asks when shown.
 | Left out | Kind | Note |
 |---|---|---|
 | Executing-instruction overlay, `stepi` | not started | needs the State View's session state (D9/W9 in the web). |
-| "open .inkt" button | parity gap | Compiled Output is built (§1) and reachable from the palette; the Program Explorer has no button to it yet. |
+| ~~"open .inkt" button~~ | built 2026-09-06 | right-aligned in the view row; raises `ProgramEvent::OpenCompiledOutput` rather than opening the tab itself, since a tab is the host's to open — the same rule the panel's navigation rows follow. |
 | Size treemap | parity gap | `ProgramSizeView.tsx` draws a treemap; this draws bars. |
 | Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
 | Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
@@ -237,7 +237,7 @@ Errors are reported in the buffer rather than leaving a stale dump up.
 | Syntax highlighting | parity gap | the dump paints as plain text; the web's tab has a minimal `.inkt` CM6 mode. See "Syntax highlighting outside `.ink`/`.brink`" above — it wants a hand-written lexer, not a grammar. |
 | A find-in-dump of its own | parity gap | the web's CM6 mode carries search; this has the editor's selection and scrolling only. |
 | A dump row jumping to its source | parity gap | the Program Explorer's disassembly rows do this; the dump does not. |
-| Reached only from the palette | parity gap | the Program Explorer's "open .inkt" toolbar button is not built. |
+| ~~Reached only from the palette~~ | built 2026-09-06 | the Program Explorer's `.inkt` button opens it too. |
 
 ### Output log (`app/src/output_log.rs`)
 

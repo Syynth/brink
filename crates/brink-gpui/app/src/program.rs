@@ -38,7 +38,14 @@ use crate::project::{Project, ProjectEvent};
 /// A row with provenance was clicked: open it.
 #[derive(Debug, Clone)]
 pub enum ProgramEvent {
-    Navigate { path: String, span: Range<usize> },
+    Navigate {
+        path: String,
+        span: Range<usize>,
+    },
+    /// The `.inkt` toolbar button: show the dump of this same compile.
+    /// The panel raises it rather than opening the tab itself — a tab is
+    /// the host's to open, as it is for a navigation.
+    OpenCompiledOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,22 +394,41 @@ impl ProgramExplorer {
                     }),
             )
             .child(div().text_xs().text_color(muted).child(counts))
-            .child(h_flex().gap_0p5().children(View::ALL.iter().map(|&v| {
-                let on = v == view;
-                Button::new(v.label())
-                    .ghost()
-                    .compact()
-                    .toggled(on)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_0p5()
+                    .child(h_flex().gap_0p5().children(View::ALL.iter().map(|&v| {
+                        let on = v == view;
+                        Button::new(v.label())
+                            .ghost()
+                            .compact()
+                            .toggled(on)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if on { primary } else { muted })
+                                    .child(v.label()),
+                            )
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.set_view(v, cx);
+                            }))
+                    })))
+                    .child(div().flex_1())
+                    // The dump is a fifth reading of this same compile, and
+                    // it belongs in the editor rather than the dock — so the
+                    // button opens a tab (the web's `.inkt` toolbar button,
+                    // §4 "Program Explorer").
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(if on { primary } else { muted })
-                            .child(v.label()),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.set_view(v, cx);
-                    }))
-            })))
+                        Button::new("open-inkt")
+                            .ghost()
+                            .compact()
+                            .child(div().text_xs().text_color(muted).child(".inkt"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ProgramEvent::OpenCompiledOutput);
+                            })),
+                    ),
+            )
             .into_any_element()
     }
 
