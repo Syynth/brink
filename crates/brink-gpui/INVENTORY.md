@@ -153,7 +153,7 @@ else. Everything below is listed against that directory.
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
 | ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. Extract actions and the gated structural moves are still out. |
 | Highlighting for `.inkt` | see below | the dump paints as plain text and wants a hand-written lexer (§0 item 2). `brink.toml` is highlighted as of 2026-09-06. Own subsection after this table. |
-| Find/replace panel inside a document | parity gap | `find-panel.ts`. |
+| ~~Find/replace panel inside a document~~ | built 2026-09-06 | `cmd-f` / `cmd-alt-f`. The panel is the TOOLKIT's — `EditorState::new` already sets `searchable`, so every brink editor carried it and only the key was missing; the kit's own `Search`/`Replace` actions are registered as commands rather than wrapped, so there is one implementation and both are in the palette. Case, regex, match count, prev/next, Replace and Replace All all come with it. |
 | Signature help | parity gap | `signature-help.ts`. |
 | Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
 | Inline markup / screenplay / structural styles / hanging indent | parity gap | `inline-markup.ts`, `screenplay.ts`, `structural-styles.ts`, `hanging-indent.ts`. |

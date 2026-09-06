@@ -336,6 +336,25 @@ impl Studio {
             );
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
+            // The find panel is the TOOLKIT's, not ours: `EditorState::new`
+            // sets `searchable`, so every brink editor already carries it —
+            // what was missing was a key to open it. Registering the kit's
+            // own actions rather than wrapping them keeps one implementation
+            // and puts them in the palette like everything else.
+            workspace.register_command(
+                "Find",
+                "Find in File",
+                gpui_component::input::Search,
+                Some("cmd-f"),
+                cx,
+            );
+            workspace.register_command(
+                "Find",
+                "Replace in File",
+                gpui_component::input::Replace,
+                Some("cmd-alt-f"),
+                cx,
+            );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
             workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
