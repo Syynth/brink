@@ -19,6 +19,8 @@ mod navigation;
 mod outline;
 mod passage;
 mod perf_coverage;
+#[cfg(test)]
+mod perf_probe;
 mod prose;
 mod refactor;
 mod spans;
