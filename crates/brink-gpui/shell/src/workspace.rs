@@ -7,6 +7,8 @@
 
 use std::rc::Rc;
 
+use std::collections::BTreeMap;
+
 use gpui::prelude::*;
 use gpui::{
     Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
@@ -489,9 +491,16 @@ impl Workspace {
                 )
             })
             .collect();
+        // The scroll half belongs to whoever owns the documents, not to
+        // the shell — so it is carried through from what is already saved
+        // rather than blanked. `Workspace::save_layout` is the app's door
+        // for replacing it.
+        let saved = crate::settings::AppSettings::get(cx).layout;
         crate::settings::Layout {
             docks,
             editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
+            scroll_root: saved.scroll_root,
+            scroll: saved.scroll,
         }
     }
 
@@ -529,8 +538,16 @@ impl Workspace {
     /// Write the current shape into the settings. Cheap and idempotent —
     /// `settings::update` compares before writing — so a caller may say
     /// this whenever the layout might have moved.
-    pub fn save_layout(this: &Entity<Self>, cx: &mut App) {
-        let layout = this.read(cx).layout(cx);
+    pub fn save_layout(
+        this: &Entity<Self>,
+        scroll: Option<(String, BTreeMap<String, f32>)>,
+        cx: &mut App,
+    ) {
+        let mut layout = this.read(cx).layout(cx);
+        if let Some((root, scroll)) = scroll {
+            layout.scroll_root = Some(root);
+            layout.scroll = scroll;
+        }
         crate::settings::update(cx, |settings| settings.layout = layout);
     }
 

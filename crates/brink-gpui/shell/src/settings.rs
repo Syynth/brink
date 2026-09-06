@@ -84,6 +84,14 @@ pub struct Layout {
     pub docks: BTreeMap<String, DockShape>,
     /// `EditorView::persistence_key`.
     pub editor_view: Option<String>,
+    /// The project the scrolls below belong to, as an absolute path.
+    /// Scrolls are per-file and files are per-project, so they are only
+    /// put back when the same project is opened again — and keeping ONE
+    /// project's worth is what stops this growing without bound as the
+    /// author moves between projects.
+    pub scroll_root: Option<String>,
+    /// Where each file was scrolled to, by root-relative path.
+    pub scroll: BTreeMap<String, f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -100,7 +108,17 @@ impl Layout {
             .iter()
             .map(|(k, shape)| (k.clone(), json!({ "open": shape.open, "size": shape.size })))
             .collect();
-        json!({ "docks": Value::Object(docks), "editor_view": self.editor_view })
+        let scroll: serde_json::Map<String, Value> = self
+            .scroll
+            .iter()
+            .map(|(k, top)| (k.clone(), json!(top)))
+            .collect();
+        json!({
+            "docks": Value::Object(docks),
+            "editor_view": self.editor_view,
+            "scroll_root": self.scroll_root,
+            "scroll": Value::Object(scroll),
+        })
     }
 
     fn from_json(value: &Value) -> Self {
@@ -128,7 +146,30 @@ impl Layout {
             .get("editor_view")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        Self { docks, editor_view }
+        let scroll_root = value
+            .get("scroll_root")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let scroll = value
+            .get("scroll")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| {
+                        // A non-finite offset would put a file at an
+                        // unreachable place; drop it and keep the top.
+                        let top = v.as_f64().map(|n| n as f32).filter(|n| n.is_finite())?;
+                        Some((k.clone(), top))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            docks,
+            editor_view,
+            scroll_root,
+            scroll,
+        }
     }
 }
 
@@ -395,6 +436,27 @@ mod tests {
         assert_eq!(layout.docks["right"].size, None);
         assert_eq!(layout.docks["bottom"].size, None);
         assert!(layout.docks["left"].open, "the open flag still counts");
+    }
+
+    #[test]
+    fn a_scroll_map_round_trips_with_its_project() {
+        let mut s = AppSettings::default();
+        s.layout.scroll_root = Some("/work/harbour".to_owned());
+        s.layout.scroll.insert("story.ink".to_owned(), -252.0);
+        s.layout.scroll.insert("scenes/act1.ink".to_owned(), 0.0);
+        assert_eq!(AppSettings::from_json(&s.to_json()), s);
+    }
+
+    #[test]
+    fn a_non_finite_scroll_is_dropped() {
+        // NaN or infinity would put a file at an unreachable place; the
+        // top is the honest fallback.
+        let value = json!({
+            "layout": { "scroll": { "a.ink": "nonsense", "b.ink": -10.0 } }
+        });
+        let layout = AppSettings::from_json(&value).layout;
+        assert_eq!(layout.scroll.get("a.ink"), None);
+        assert_eq!(layout.scroll.get("b.ink"), Some(&-10.0));
     }
 
     #[test]

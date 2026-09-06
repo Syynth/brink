@@ -285,6 +285,23 @@ impl Document {
         &self.editor
     }
 
+    /// How far this document is scrolled, in logical pixels from the top.
+    /// Negative in the toolkit's convention; kept as it comes so a restore
+    /// is a straight put-back rather than a sign to get right twice.
+    #[must_use]
+    pub fn scroll_top(&self, cx: &App) -> f32 {
+        f32::from(self.editor.read(cx).scroll_offset().y)
+    }
+
+    /// Put a remembered scroll back.
+    pub fn set_scroll_top(&self, top: f32, cx: &mut App) {
+        self.editor.update(cx, |state, cx| {
+            let mut offset = state.scroll_offset();
+            offset.y = gpui::px(top);
+            state.set_scroll_offset(offset, cx);
+        });
+    }
+
     /// The caret as 1-based line and column, for the status bar.
     #[must_use]
     pub fn cursor_line_column(&self, cx: &App) -> (usize, usize) {

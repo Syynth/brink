@@ -93,6 +93,8 @@ actions!(
         OpenCompiledOutput,
         /// Go to a file, knot or stitch by name.
         QuickOpenGoTo,
+        /// Close the studio, saving the window's shape on the way out.
+        Quit,
     ]
 );
 
@@ -377,12 +379,28 @@ impl Studio {
                 Some("cmd-p"),
                 cx,
             );
+            // An app with no Quit command is a gap on its own, and it is
+            // also the only way the quit hook below is ever reached: a
+            // kill signal does not run it.
+            workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
             // After every tool window is registered: their `open()`
             // defaults decide the first run, and a saved shape overrides
             // them (`Workspace::apply_layout`).
             let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
             workspace.apply_layout(&saved, window, cx);
         });
+
+        // The remembered scrolls, but only if they belong to THIS project:
+        // a scroll is per-file, and a path means a different place in a
+        // different tree. Restored before the project opens, so the first
+        // document to appear already lands where it was left.
+        {
+            let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+            let root = root.display().to_string();
+            if saved.scroll_root.as_deref() == Some(root.as_str()) {
+                code.update(cx, |code, _| code.set_scroll_state(saved.scroll));
+            }
+        }
 
         // Persist the shape on quit. The toolkit fires `LayoutChanged` on
         // every step of a drag and asks subscribers to debounce; a quit
@@ -393,8 +411,12 @@ impl Studio {
         // unfinished drag.
         cx.on_app_quit({
             let workspace = workspace.clone();
+            let code = code.clone();
+            let project = project.clone();
             move |_: &mut Studio, cx: &mut Context<Studio>| {
-                Workspace::save_layout(&workspace, cx);
+                let root = project.read(cx).root().display().to_string();
+                let scroll = code.read(cx).scroll_state(cx);
+                Workspace::save_layout(&workspace, Some((root, scroll)), cx);
                 async move {}
             }
         })
@@ -863,6 +885,11 @@ impl Studio {
         self.caret = Some(cx.observe(&editor, |this, _, cx| this.refresh_status(cx)));
     }
 
+    fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        // `on_app_quit` does the saving; this is the door to it.
+        cx.quit();
+    }
+
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
         self.play_at(None, window, cx);
     }
@@ -943,6 +970,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::play_restart))
             .on_action(cx.listener(Self::open_compiled_output))
             .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.

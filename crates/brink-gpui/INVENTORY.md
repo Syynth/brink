@@ -107,7 +107,7 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 
 | Left out | Kind | Note |
 |---|---|---|
-| Layout persistence | partly built | **2026-09-06**: the three docks' open state and width, and the editor view, ride `AppSettings` (`Workspace::layout`/`apply_layout`), written on every discrete change and on quit. **Not the panel tree** — restoring open documents means rebuilding panels through the toolkit's `PanelRegistry`, and a `Document` panel is per-file, which also has to decide what a persisted file that no longer exists means. |
+| Layout persistence | partly built | **2026-09-06**: the three docks' open state and width, the editor view, and each file's SCROLL position ride `AppSettings` (`Workspace::layout`/`apply_layout`), written on every discrete change and on quit (`cmd-q`, which also landed — there was no Quit command). Scrolls are kept for one project at a time, guarded by `scroll_root`: a path means a different place in a different tree, and one project's worth is what stops the map growing without bound. **Not the panel tree** — restoring open documents means rebuilding panels through the toolkit's `PanelRegistry`, and a `Document` panel is per-file, which also has to decide what a persisted file that no longer exists means. |
 | Strip drag to re-dock | parity gap | studio-shell-spec §5.1; Phase 3 in the web too. |
 | Tool-window / editor-group maximize | parity gap | studio-shell-spec §5.4. |
 | Responsive tiers (wide/medium/narrow) | parity gap | studio-shell-spec §5.3; the window is one tier. |

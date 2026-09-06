@@ -57,6 +57,31 @@ pub enum QuickOpenEvent {
     Dismiss,
 }
 
+/// What an item is, which decides its icon. The Binder's icon language
+/// (`crate::icons`), so a knot reads the same in both places — the row is
+/// scanned by shape before it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Knot,
+    Stitch,
+}
+
+impl Kind {
+    #[must_use]
+    pub fn icon(self) -> &'static str {
+        match self {
+            // The outline file, not the entry or draft variants: those say
+            // something about the file's ROLE, which this list does not.
+            Self::File => crate::icons::FILE,
+            // Outline, by the Binder's fill rule: filled means collapsed
+            // over content, and nothing here is collapsed.
+            Self::Knot => crate::icons::KNOT,
+            Self::Stitch => crate::icons::STITCH,
+        }
+    }
+}
+
 /// One openable place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
@@ -64,6 +89,7 @@ pub struct Item {
     pub title: SharedString,
     /// The file it lives in, shown subdued when it differs from the title.
     pub detail: Option<SharedString>,
+    pub kind: Kind,
     pub path: String,
     pub span: Option<Range<usize>>,
 }
@@ -73,6 +99,7 @@ impl Item {
         Self {
             title: SharedString::from(path.to_owned()),
             detail: None,
+            kind: Kind::File,
             path: path.to_owned(),
             span: None,
         }
@@ -82,6 +109,11 @@ impl Item {
         Self {
             title: SharedString::from(symbol.path.clone()),
             detail: Some(SharedString::from(symbol.file.clone())),
+            kind: if symbol.is_stitch {
+                Kind::Stitch
+            } else {
+                Kind::Knot
+            },
             path: symbol.file.clone(),
             span: Some(symbol.span.clone()),
         }
@@ -320,6 +352,14 @@ impl QuickOpen {
                 .gap_2()
                 .items_center()
                 .when(selected, |el| el.bg(theme.accent))
+                // A fixed slot, so the titles line up whatever the icon:
+                // a ragged left edge is harder to scan than no icon at all.
+                // 13px is the Binder's size, since these are its icons.
+                .child(div().w(px(16.)).flex_none().child(crate::icons::icon(
+                    item.kind.icon(),
+                    px(13.),
+                    theme.muted_foreground,
+                )))
                 .child(div().child(item.title.clone()))
                 .children(item.detail.as_ref().map(|d| {
                     div()

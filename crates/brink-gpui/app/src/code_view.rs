@@ -44,6 +44,12 @@ pub struct CodeView {
     _skin: Rc<DockSkin>,
     /// Open documents, oldest first.
     documents: Vec<Entity<Document>>,
+    /// Where each file was scrolled to, by root-relative path — including
+    /// files whose tab has since been closed. A document is a view of the
+    /// shared buffer and comes and goes; where you were reading in a file
+    /// is a fact about the FILE, so it outlives the tab and is restored
+    /// when the file is opened again.
+    scroll: std::collections::BTreeMap<String, f32>,
     active: Option<Entity<Document>>,
     /// One subscription per open document, dropped with it when it closes.
     subscriptions: Vec<(Entity<Document>, Subscription)>,
@@ -62,6 +68,7 @@ impl CodeView {
             dock_area,
             _skin: skin,
             documents: Vec::new(),
+            scroll: std::collections::BTreeMap::new(),
             active: None,
             subscriptions: Vec::new(),
         }
@@ -103,6 +110,9 @@ impl CodeView {
                         cx,
                     );
                 });
+                if let Some(top) = self.scroll.get(path).copied() {
+                    document.update(cx, |doc, cx| doc.set_scroll_top(top, cx));
+                }
                 Document::activate(&document, window, cx);
                 let subscription = cx.subscribe(&document, Self::on_document_event);
                 self.subscriptions.push((document.clone(), subscription));
@@ -166,6 +176,35 @@ impl CodeView {
         CompiledOutputView::activate(compiled, window, cx);
     }
 
+    /// Note where a file was scrolled to. Bounded: a project has as many
+    /// entries as it has files, and a path is only ever overwritten.
+    fn remember_scroll(&mut self, path: String, top: f32) {
+        if top.is_finite() {
+            self.scroll.insert(path, top);
+        }
+    }
+
+    /// Every remembered scroll, with the OPEN documents' current positions
+    /// folded in — an open tab's live position is the truth, and the map
+    /// only knows what it was told when a tab closed.
+    #[must_use]
+    pub fn scroll_state(&self, cx: &App) -> std::collections::BTreeMap<String, f32> {
+        let mut out = self.scroll.clone();
+        for document in &self.documents {
+            let document = document.read(cx);
+            let top = document.scroll_top(cx);
+            if top.is_finite() {
+                out.insert(document.path().to_string(), top);
+            }
+        }
+        out
+    }
+
+    /// Seed the remembered scrolls — the persisted ones, at startup.
+    pub fn set_scroll_state(&mut self, scroll: std::collections::BTreeMap<String, f32>) {
+        self.scroll = scroll;
+    }
+
     /// The document Single File view shows.
     #[must_use]
     pub fn active_document(&self) -> Option<&Entity<Document>> {
@@ -193,6 +232,10 @@ impl CodeView {
                 span: span.clone(),
             }),
             DocumentEvent::Closed => {
+                // Last chance to read it: the entity is about to go.
+                let path = document.read(cx).path().to_string();
+                let top = document.read(cx).scroll_top(cx);
+                self.remember_scroll(path, top);
                 self.documents.retain(|d| *d != document);
                 self.subscriptions.retain(|(d, _)| *d != document);
                 if self.active.as_ref() == Some(&document) {
