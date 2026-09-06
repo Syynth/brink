@@ -43,6 +43,10 @@ gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c12ec25ca7
 # is the same crate the kit is built against.
 gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5" }
 gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
+# The kit's icon SVGs (`IconName`), embedded. Without an asset source every
+# `IconName` in the app draws nothing — which is how the fold chevrons went
+# missing while their hitboxes were there all along.
+gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "c12ec25ca776f6bd6a1770d17fbc4f59c39ee9d5" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 anyhow = "1"
@@ -69,3 +73,4 @@ brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-project-config = { path = "../internal/brink-project-config" }
 brink-environment = { path = "../internal/brink-environment" }
+

@@ -247,7 +247,14 @@ impl ContinuousView {
     /// per-file editors do not scroll: this list does.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
         if let Some(index) = self.files.iter().position(|f| f == path) {
-            self.list.scroll_to_reveal_item(index);
+            // The file's START under the sticky heading. `scroll_to_reveal_
+            // item` would do the least scrolling that shows any of the item,
+            // which for a long file below the viewport is its last screen —
+            // a Binder click then landed on the file's end.
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: index,
+                offset_in_item: px(0.),
+            });
             cx.notify();
         }
     }

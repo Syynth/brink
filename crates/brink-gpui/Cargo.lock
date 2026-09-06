@@ -847,6 +847,7 @@ dependencies = [
  "brink-project-config",
  "brink-syntax",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "lsp-types",

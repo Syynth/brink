@@ -12,6 +12,7 @@ publish.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-platform.workspace = true
+gpui-kit-assets.workspace = true
 lsp-types.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true

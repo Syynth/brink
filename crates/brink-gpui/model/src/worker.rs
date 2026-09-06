@@ -985,6 +985,25 @@ mod tests {
     }
 
     #[test]
+    fn definition_on_an_include_jumps_to_the_start_of_that_file() {
+        // An include is a reference to a file the way a divert is a
+        // reference to a knot; Cmd-clicking one lands in it.
+        let tree = nav_tree("include");
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Definition(Some(loc)) = answer(
+            &session,
+            &QueryKind::Definition {
+                path: "main.ink".to_owned(),
+                offset: offset_of(MAIN, "greet.ink") + 3,
+            },
+        ) else {
+            panic!("an INCLUDE must resolve to its file");
+        };
+        assert_eq!((loc.path.as_str(), loc.start, loc.end), ("greet.ink", 0, 0));
+    }
+
+    #[test]
     fn definition_on_prose_is_an_ordinary_none_not_unavailable() {
         let tree = nav_tree("def-none");
         let (mut session, _) = open_tree(&tree);

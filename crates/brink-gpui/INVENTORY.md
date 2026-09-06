@@ -41,9 +41,8 @@ In `.ink`-author order, the gaps that bite first:
    folding.~~ **Built 2026-09-05** (`app/src/navigation.rs`,
    `app/src/rename.rs`): F12 / Cmd-click, Shift-F12 into Search cards with
    kind badges, F2 with the ruled breakage report and Force, in both Code
-   and Continuous views. Residue: fold candidates reach the editor but the
-   gutter chevrons do not paint (see the frame section), and the toolkit
-   exposes no Fold All / Unfold All.
+   and Continuous views; Cmd-click / F12 on an `INCLUDE` opens the file.
+   Residue: the toolkit exposes no Fold All / Unfold All.
 2. **The Player** and everything session-bound behind it — blocked on the
    placement ruling, and on a compile + runtime session in the worker.
 3. **Fixes** — code actions in the editor, Fix buttons in Problems.
@@ -111,7 +110,7 @@ else. Everything below is listed against that directory.
 | Left out | Kind | Note |
 |---|---|---|
 | ~~Go-to-definition, references, rename~~ | built 2026-09-05 | `QueryKind::{Definition, References, PrepareRename, Rename}`; rename is a dialog prompt (the web studio's is inline in the editor — a parity gap in shape, not in behaviour). |
-| Folding: gutter chevrons | parity gap | `QueryKind::FoldingRanges` answers, the candidates reach `EditorState` through the highlighter's `fold_ranges` (the toolkit's source), and `is_fold_candidate` should be true for them — yet gpui-base's `paint_fold_icons` (gated on gutter hover or the caret's line) paints none. Unresolved in the toolkit; the data path is verified. |
+| ~~Folding: gutter chevrons~~ | built 2026-09-05 | `QueryKind::FoldingRanges` → the highlighter's `fold_ranges` → gutter chevrons on hover / the caret's line. (They were invisible only because no asset source was registered — HANDOFF #6.) |
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
 | Code actions, fixes, extract actions | worker query + port | `brink_ide::code_actions` exists; the worker offers no fixes query and the editor has no action UI (`docs/autofix-spec.md`). Also blocks Problems' Fix buttons. |
 | Find/replace panel inside a document | parity gap | `find-panel.ts`. |

@@ -580,28 +580,33 @@ fn main() {
 
     // gpui-pre publishes the core without a platform backend; the macOS/
     // Windows/Linux implementations live in `gpui-pre-platform`.
-    Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
-        gpui_component::init(cx);
-        // The persisted settings and their theme, before the first paint.
-        brink_gpui_shell::settings::init(cx);
-        brink_gpui_shell::theme::init(cx);
-        let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            ..TitleBar::window_options()
-        };
-        let root = root.clone();
-        let opened = cx.open_window(options, move |window, cx| {
-            // The app font size scales the window's rem.
-            let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
-            window.set_rem_size(px(rem));
-            let view = cx.new(|cx| Studio::new(root, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
+    // The kit's icons (`IconName`) are assets the application has to
+    // register; a `Button::icon(IconName::ChevronDown)` with no asset
+    // source silently draws nothing.
+    Application::with_platform(gpui_platform::current_platform(false))
+        .with_assets(gpui_kit_assets::Assets)
+        .run(move |cx| {
+            gpui_component::init(cx);
+            // The persisted settings and their theme, before the first paint.
+            brink_gpui_shell::settings::init(cx);
+            brink_gpui_shell::theme::init(cx);
+            let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..TitleBar::window_options()
+            };
+            let root = root.clone();
+            let opened = cx.open_window(options, move |window, cx| {
+                // The app font size scales the window's rem.
+                let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
+                window.set_rem_size(px(rem));
+                let view = cx.new(|cx| Studio::new(root, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            });
+            if let Err(err) = opened {
+                eprintln!("failed to open window: {err:#}");
+                std::process::exit(1);
+            }
+            cx.activate(true);
         });
-        if let Err(err) = opened {
-            eprintln!("failed to open window: {err:#}");
-            std::process::exit(1);
-        }
-        cx.activate(true);
-    });
 }
