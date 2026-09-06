@@ -54,10 +54,16 @@ struct Registered {
 
 /// One cell of the status bar. A cell that `opens` a tool window is drawn
 /// as a button — the spec's "N errors — click → Problems" (§4 status bar).
+///
+/// `docs/studio-shell-spec.md` §7.3 puts the bar in two groups: what the
+/// PROJECT is doing on the left, what the CARET is doing on the right. A
+/// cell says which end it belongs to rather than the bar keeping two
+/// lists, so a caller builds one vector in the order it thinks in.
 #[derive(Debug, Clone)]
 pub struct StatusCell {
     pub text: SharedString,
     pub opens: Option<SharedString>,
+    pub align_end: bool,
 }
 
 impl StatusCell {
@@ -66,7 +72,15 @@ impl StatusCell {
         Self {
             text: text.into(),
             opens: None,
+            align_end: false,
         }
+    }
+
+    /// Put this cell in the right-hand group.
+    #[must_use]
+    pub fn align_end(mut self) -> Self {
+        self.align_end = true;
+        self
     }
 
     /// Clicking the cell opens the tool window with this id.
@@ -633,13 +647,18 @@ impl Workspace {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (hover, fg) = (theme.muted.opacity(0.6), theme.foreground);
-        let cells: Vec<AnyElement> = self
-            .status
-            .iter()
-            .enumerate()
-            .map(|(ix, cell)| match &cell.opens {
+        // Copied out before the cells are built: `render` takes `cx`
+        // mutably, so a live `cx.theme()` borrow would outlive it.
+        let (sidebar, border, muted) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.border, theme.muted_foreground)
+        };
+        let (hover, fg) = {
+            let theme = cx.theme();
+            (theme.muted.opacity(0.6), theme.foreground)
+        };
+        let render = |ix: usize, cell: &StatusCell, cx: &mut Context<Self>| -> AnyElement {
+            match &cell.opens {
                 None => div().child(cell.text.clone()).into_any_element(),
                 Some(tool) => {
                     let tool = tool.clone();
@@ -655,19 +674,34 @@ impl Workspace {
                         }))
                         .into_any_element()
                 }
-            })
-            .collect();
+            }
+        };
+        let mut start: Vec<AnyElement> = Vec::new();
+        let mut end: Vec<AnyElement> = Vec::new();
+        for (ix, cell) in self.status.iter().enumerate() {
+            let element = render(ix, cell, cx);
+            if cell.align_end {
+                end.push(element);
+            } else {
+                start.push(element);
+            }
+        }
         h_flex()
             .h(px(24.))
             .px_3()
             .gap_4()
             .items_center()
-            .bg(theme.sidebar)
+            .bg(sidebar)
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(border)
             .text_xs()
-            .text_color(theme.muted_foreground)
-            .children(cells)
+            .text_color(muted)
+            .children(start)
+            // The two groups, held apart: what the project is doing stays
+            // at the start, what the caret is doing sits at the far end
+            // (§7.3) rather than drifting with the left group's width.
+            .child(div().flex_1())
+            .child(h_flex().gap_4().items_center().children(end))
             .into_any_element()
     }
 

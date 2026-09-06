@@ -109,7 +109,7 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 | Strip drag to re-dock | parity gap | studio-shell-spec §5.1; Phase 3 in the web too. |
 | Tool-window / editor-group maximize | parity gap | studio-shell-spec §5.4. |
 | Responsive tiers (wide/medium/narrow) | parity gap | studio-shell-spec §5.3; the window is one tier. |
-| Status bar right segment | parity gap | cursor position, element type + the conversion dropdown, key hints (§7.3). Only the left group exists. |
+| Status bar right segment | partly built | **2026-09-06**: the group exists (`StatusCell::align_end`, held apart by a spacer) and carries the active file and `Ln x, Col y`, live — the caret has no event, so the studio OBSERVES the active editor and re-observes when the active document changes. Still missing from §7.3: the element type + its conversion dropdown, and key hints. |
 | Notification service / toasts | partly built | `Root::render_notification_layer`/`render_dialog_layer` are composed by the app root (`app/src/main.rs`), so `window.push_notification` and `open_dialog` work — rename, fix-all and failed navigation all use them. Missing is §7.5's *service*: no registry, no severities, no dismissal policy, and no one place errors are routed to. |
 | Open-project dialog, recents | parity gap | the project is a CLI argument (HANDOFF 4). |
 | Binder draws two headers | cosmetic | the dock's title strip and its own "BINDER" header both render (HANDOFF, "Two things noticed"). |

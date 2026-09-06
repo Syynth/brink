@@ -276,6 +276,22 @@ impl Document {
         &self.path
     }
 
+    /// The editor behind this document. Handed out so a host can OBSERVE
+    /// it — the caret has no event of its own (the kit's `InputEvent` is
+    /// Change/Enter/Focus/Blur), but moving it notifies, which is what the
+    /// status bar's cursor cell rides on.
+    #[must_use]
+    pub fn editor(&self) -> &Entity<EditorState> {
+        &self.editor
+    }
+
+    /// The caret as 1-based line and column, for the status bar.
+    #[must_use]
+    pub fn cursor_line_column(&self, cx: &App) -> (usize, usize) {
+        let position = self.editor.read(cx).cursor_position();
+        (position.line as usize + 1, position.character as usize + 1)
+    }
+
     /// Whether the file differs from disk — a fact about the file, read from
     /// the project, so every editor over it agrees.
     #[must_use]

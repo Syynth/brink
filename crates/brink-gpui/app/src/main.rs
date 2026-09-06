@@ -117,6 +117,11 @@ struct Studio {
     /// Quick-open while it is up. Made per opening: its items are read
     /// when it opens, so there is nothing to keep alive between times.
     quick_open: Option<(Entity<QuickOpen>, Subscription)>,
+    /// An observation of the ACTIVE document's editor, for the status
+    /// bar's cursor cell. The caret has no event of its own, but moving it
+    /// notifies — so this is an `observe`, replaced whenever the active
+    /// document changes and dropped when there is none.
+    caret: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -464,9 +469,13 @@ impl Studio {
         let on_code = cx.subscribe_in(
             &code,
             window,
-            |this, _, event: &CodeViewEvent, window, cx| {
-                if let CodeViewEvent::Navigate { path, span } = event {
+            |this, _, event: &CodeViewEvent, window, cx| match event {
+                CodeViewEvent::Navigate { path, span } => {
                     this.open(path, Some(span.clone()), window, cx);
+                }
+                CodeViewEvent::ActiveChanged => {
+                    this.watch_caret(cx);
+                    this.refresh_status(cx);
                 }
             },
         );
@@ -497,6 +506,7 @@ impl Studio {
             player,
             compiled,
             quick_open: None,
+            caret: None,
             _subscriptions: vec![
                 on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
                 on_code, on_general,
@@ -814,6 +824,18 @@ impl Studio {
         cx.notify();
     }
 
+    /// Follow the active document's caret. Dropped and remade rather than
+    /// kept per document: only one document is active, and an observation
+    /// of a closed one would keep it alive.
+    fn watch_caret(&mut self, cx: &mut Context<Self>) {
+        self.caret = None;
+        let Some(document) = self.code.read(cx).active_document().cloned() else {
+            return;
+        };
+        let editor = document.read(cx).editor().clone();
+        self.caret = Some(cx.observe(&editor, |this, _, cx| this.refresh_status(cx)));
+    }
+
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
         self.play_at(None, window, cx);
     }
@@ -840,6 +862,20 @@ impl Studio {
                 StatusCell::new(format!("worst {worst:.1} ms")),
             ]
         };
+        // The right-hand group (§7.3): where the caret is, and in what.
+        let mut cells = cells;
+        if let Some(document) = self.code.read(cx).active_document() {
+            let document = document.read(cx);
+            let (line, column) = document.cursor_line_column(cx);
+            let name = document
+                .path()
+                .rsplit('/')
+                .next()
+                .unwrap_or(document.path())
+                .to_owned();
+            cells.push(StatusCell::new(name).align_end());
+            cells.push(StatusCell::new(format!("Ln {line}, Col {column}")).align_end());
+        }
         self.workspace
             .update(cx, |workspace, cx| workspace.set_status(cells, cx));
     }
