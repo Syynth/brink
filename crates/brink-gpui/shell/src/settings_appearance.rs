@@ -208,6 +208,17 @@ impl Render for AppearanceSection {
                 cx,
             ))
             .child(setting_row(
+                "Format on save",
+                "Run the formatter over every changed .ink file before it is written, with the project's indent.",
+                Switch::new("format-on-save")
+                    .checked(settings.format_on_save)
+                    .on_click(|on, _, cx| {
+                        let on = *on;
+                        settings::update(cx, |s| s.format_on_save = on);
+                    }),
+                cx,
+            ))
+            .child(setting_row(
                 "Editor font size",
                 format!(
                     "{MIN_EDITOR_FONT_SIZE:.0}–{MAX_EDITOR_FONT_SIZE:.0} px, default {DEFAULT_EDITOR_FONT_SIZE:.0}. The text you write."

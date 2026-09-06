@@ -5406,6 +5406,22 @@
 - **WHAT:** The teach-by-example Conventions editor's engine — the shape inference over marked lines, the source and emitted parsers it verifies against, the emitted-side run rule, the `[dialogue]` table projection — and the marker-stamped `[dialogue]` section writer are **Rust**, in `brink-ide`, the crate both studios sit on. `@brink-lang/dialect`'s `infer.ts`/`config.ts`/`DialectParser`/`runsOf` and studio-store's `dialogue-section.ts` stay as the web studio's pure-TypeScript mirror (an editor or a game engine shares them without wasm), and the two are held together by **one golden corpus** duplicated in both test suites — a case added to one is added to the other — and by the section hash, which both compute identically so a section either studio writes reads as its own in the other. The same move puts the Diagnostics section's code list and its author-facing category table in `brink_ide::diagnostic_registry`, with `brink-web` reading it rather than owning it.
 - **WHY:** The maintainer asked for the conventions/dialect logic in Rust so the native studio could carry the Conventions UI. A second implementation in the app crate would have been a third copy free to drift from the other two; putting the one the native studio reads in `brink-ide` makes it the reference, with the TypeScript kept for the reason it was written pure in the first place. Duplicating the corpus rather than sharing a fixture file is deliberate: each suite stays self-contained in its own toolchain, and the rule that a case is added to both is cheaper than a cross-language fixture loader.
 
+## The native studio wraps prose in every view
+- **WHEN:** 2026-09-05
+- **PROJECT:** brink
+- **SYSTEM:** GPUI native studio editor (`crates/brink-gpui`)
+- **SCOPE:** minor/local
+- **WHAT:** Soft wrap is on in every editor that shows a brink file — document tabs and manuscript sections alike. Manuscript sections size themselves to their *wrapped* row count, exposed by the gpui-kit fork as `EditorState::wrap_row_count`.
+- **WHY:** A line of narrative is a paragraph; scrolling sideways to read one is wrong in every view, and in the manuscript it was worse than wrong — a revealed selection dragged the section sideways instead of the list down.
+
+## Side docks draw no tab strip; both rails are always drawn
+- **WHEN:** 2026-09-05
+- **PROJECT:** brink
+- **SYSTEM:** GPUI native studio shell (`shell/src/skin.rs`, `shell/src/rail.rs`)
+- **SCOPE:** minor/local
+- **WHAT:** A rail-addressed side dock draws no tab strip over its tool windows; the rail is the switcher and each window has its own header. The bottom dock keeps its strip, which also carries the panels' toolbars. Both rails are drawn whether or not they hold a button.
+- **WHY:** The strip named the same thing a third time ("why is it there?"). The rail is the region model made visible; a right dock with no rail beside it reads as a dock that cannot be reached.
+
 ## Parameters are bound by the VM at container entry (`.inkb` v10)
 - **WHEN:** 2026-09-05
 - **PROJECT:** brink

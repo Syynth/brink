@@ -843,15 +843,18 @@ dependencies = [
  "brink-gpui-model",
  "brink-gpui-shell",
  "brink-ide",
+ "brink-intl",
  "brink-ir",
  "brink-project-config",
  "brink-syntax",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "lsp-types",
  "regex",
  "rowan",
+ "serde",
  "serde_json",
 ]
 
@@ -865,13 +868,19 @@ dependencies = [
  "brink-db",
  "brink-driver",
  "brink-environment",
+ "brink-fmt",
+ "brink-format",
  "brink-ide",
+ "brink-intl",
  "brink-ir",
  "brink-project-config",
+ "brink-runtime",
  "brink-syntax",
  "brink-syntax-native",
  "gpui-pre",
  "rowan",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -907,6 +916,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-intl"
+version = "0.0.16"
+dependencies = [
+ "brink-format",
+ "icu_locale_core",
+ "icu_plurals",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "xliff2",
+]
+
+[[package]]
 name = "brink-ir"
 version = "0.0.16"
 dependencies = [
@@ -931,6 +953,16 @@ dependencies = [
  "thiserror 2.0.20",
  "toml 0.8.23",
  "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
+name = "brink-runtime"
+version = "0.0.16"
+dependencies = [
+ "brink-format",
+ "glam",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2008,6 +2040,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
+name = "fixed_decimal"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79c3c892f121fff406e5dd6b28c1b30096b95111c30701a899d4f2b18da6d1bd"
+dependencies = [
+ "displaydoc",
+ "smallvec",
+ "writeable",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2497,7 +2540,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2533,7 +2576,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2577,7 +2620,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2588,7 +2631,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7#c3f5bcaccf87f8e00b74b142a4b6bc3042148cd7"
+source = "git+https://github.com/Syynth/gpui-kit?rev=75049177aab57ffa4982a1c179d9d3c156659c0d#75049177aab57ffa4982a1c179d9d3c156659c0d"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -3448,10 +3491,31 @@ checksum = "d56e28588da92eee5c3201a6eff33fabdd49b62269c8938d4ff050ce4d900deb"
 dependencies = [
  "displaydoc",
  "litemap",
+ "serde",
  "tinystr",
  "writeable",
  "zerovec",
 ]
+
+[[package]]
+name = "icu_locale_fallback"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "251af8e57c9400e3eb58242fe5b8b1152b2a64fdf4cf632f923c38ccee6f2fa9"
+dependencies = [
+ "icu_locale_core",
+ "icu_locale_fallback_data",
+ "icu_provider",
+ "potential_utf",
+ "tinystr",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_locale_fallback_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "decf2a22ec8fa68f1a0c1129a3f8583f8f8bc24e8b9ccbe98ead99f62a4dc3a8"
 
 [[package]]
 name = "icu_normalizer"
@@ -3472,6 +3536,25 @@ name = "icu_normalizer_data"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1563da1ed3e0b3bf3d74c9b85917ac9c56464d2f57242270c09c9e752f8021a0"
+
+[[package]]
+name = "icu_plurals"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e475e6766ef87b1d3c1f97be6363995b0bfaeddbc789671615df598a97ff0593"
+dependencies = [
+ "fixed_decimal",
+ "icu_locale_fallback",
+ "icu_plurals_data",
+ "icu_provider",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_plurals_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1251aa39a95e1333888e499b1263e1c196447a28948acf5bdabd82c046f153bf"
 
 [[package]]
 name = "icu_properties"
@@ -3502,6 +3585,8 @@ checksum = "d27bbb9d3abbefac45d55f647c9de1d44aafcd1186eb91879afef17c396c3e73"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
+ "serde",
+ "stable_deref_trait",
  "writeable",
  "yoke",
  "zerofrom",
@@ -5247,6 +5332,8 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
+ "serde_core",
+ "writeable",
  "zerovec",
 ]
 
@@ -7077,6 +7164,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
 dependencies = [
  "displaydoc",
+ "serde_core",
  "zerovec",
 ]
 
@@ -8854,6 +8942,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
+name = "xliff2"
+version = "0.0.16"
+dependencies = [
+ "quick-xml",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9165,6 +9261,7 @@ dependencies = [
  "displaydoc",
  "yoke",
  "zerofrom",
+ "zerovec",
 ]
 
 [[package]]
@@ -9173,6 +9270,7 @@ version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
 dependencies = [
+ "serde",
  "yoke",
  "zerofrom",
  "zerovec-derive",

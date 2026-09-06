@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use brink_gpui_model::play::{PlayCommand, PlayOutcome};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
 use gpui::{App, AppContext as _, Context, EntityId, EventEmitter, Task};
@@ -266,6 +267,58 @@ impl Project {
         true
     }
 
+    /// Apply byte-range edits to the files they name, last-to-first within
+    /// each file so earlier offsets stay valid, then push each rewritten
+    /// file through [`Project::edit`] with no origin — so every editor
+    /// showing it, tab or manuscript section, follows the delta. Returns
+    /// the number of files that actually changed.
+    ///
+    /// Edits are in bytes of the text as it was when the plan was
+    /// computed; the plan is computed against the same sources this holds,
+    /// so an edit that no longer fits (the text moved underneath it) is
+    /// skipped rather than applied somewhere wrong.
+    pub fn apply_edits(
+        &mut self,
+        edits: &[brink_gpui_model::query::TextEdit],
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let mut by_file: BTreeMap<&str, Vec<&brink_gpui_model::query::TextEdit>> = BTreeMap::new();
+        for e in edits {
+            by_file.entry(e.path.as_str()).or_default().push(e);
+        }
+        let mut changed = 0;
+        for (path, mut file_edits) in by_file {
+            let Some(mut text) = self.sources.get(path).cloned() else {
+                continue;
+            };
+            file_edits.sort_by_key(|e| std::cmp::Reverse(e.start));
+            for e in file_edits {
+                let (start, end) = (e.start as usize, e.end as usize);
+                if start <= end
+                    && end <= text.len()
+                    && text.is_char_boundary(start)
+                    && text.is_char_boundary(end)
+                {
+                    text.replace_range(start..end, &e.new_text);
+                }
+            }
+            if self.edit(path, text, None, cx) {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Every file whose text differs from what is on disk, sorted.
+    #[must_use]
+    pub fn dirty_paths(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .filter(|(path, text)| self.saved.get(*path) != Some(text))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// Whether a file's text differs from what is on disk.
     #[must_use]
     pub fn is_dirty(&self, path: &str) -> bool {
@@ -302,6 +355,14 @@ impl Project {
     pub fn query(&self, kind: QueryKind, cx: &App) -> Task<Result<QueryResult>> {
         let (reply, answer) = async_channel::bounded(1);
         self.worker.send(Request::Query { kind, reply });
+        cx.background_spawn(async move { Ok(answer.recv().await?) })
+    }
+
+    /// Drive the play session. Same ordering rule as [`Project::query`]:
+    /// a start compiles the text every queued edit has already produced.
+    pub fn play(&self, command: PlayCommand, cx: &App) -> Task<Result<PlayOutcome>> {
+        let (reply, answer) = async_channel::bounded(1);
+        self.worker.send(Request::Play { command, reply });
         cx.background_spawn(async move { Ok(answer.recv().await?) })
     }
 

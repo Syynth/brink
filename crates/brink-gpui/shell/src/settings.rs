@@ -57,6 +57,8 @@ pub struct AppSettings {
     pub show_gutters: bool,
     /// Parameter-name hints drawn inside the line.
     pub show_inlay_hints: bool,
+    /// Run the formatter over every dirty file before it is written.
+    pub format_on_save: bool,
     /// By the command's full title ("View: Toggle Binder") — the name the
     /// palette shows, and the only identity a data-carrying action has.
     pub keymap: BTreeMap<String, KeymapOverride>,
@@ -72,6 +74,7 @@ impl Default for AppSettings {
             app_font_size: DEFAULT_APP_FONT_SIZE,
             show_gutters: true,
             show_inlay_hints: true,
+            format_on_save: false,
             keymap: BTreeMap::new(),
         }
     }
@@ -111,6 +114,7 @@ impl AppSettings {
             "app_font_size": self.app_font_size,
             "show_gutters": self.show_gutters,
             "show_inlay_hints": self.show_inlay_hints,
+            "format_on_save": self.format_on_save,
             "keymap": Value::Object(keymap),
         })
     }
@@ -157,6 +161,10 @@ impl AppSettings {
                 .get("show_gutters")
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.show_gutters),
+            format_on_save: value
+                .get("format_on_save")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.format_on_save),
             show_inlay_hints: value
                 .get("show_inlay_hints")
                 .and_then(Value::as_bool)
@@ -262,6 +270,7 @@ mod tests {
             app_font_size: 13.,
             show_gutters: false,
             show_inlay_hints: true,
+            format_on_save: false,
             keymap: BTreeMap::new(),
         };
         s.keymap

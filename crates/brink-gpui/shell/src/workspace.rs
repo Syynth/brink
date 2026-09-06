@@ -84,6 +84,9 @@ pub struct Workspace {
     /// (`crate::editor_view`).
     editor_root: Entity<EditorRoot>,
     tools: Vec<Registered>,
+    /// Panel names of the side docks' tool windows — the groups the skin
+    /// draws no tab strip for (`skin.rs`).
+    barless: Rc<std::cell::RefCell<std::collections::HashSet<&'static str>>>,
     /// Rendered along the bottom edge, under everything.
     status: Vec<StatusCell>,
     /// Every command, in registration order (`crate::commands`).
@@ -111,11 +114,15 @@ impl Workspace {
         // strip. `DockSkin::new` needs the area's own context, hence the
         // capture — the toolkit's `DockSkin::dock_area` does the same dance.
         let mut skin = None;
+        let mut barless = None;
         let dock_area = cx.new(|cx| {
             let inner = DockSkin::new(cx);
             skin = Some(inner.clone());
-            DockArea::new("brink-studio", Some(1), window, cx)
-                .with_renderer(Rc::new(StudioSkin::new(inner)))
+            DockArea::new("brink-studio", Some(1), window, cx).with_renderer(Rc::new({
+                let studio = StudioSkin::new(inner);
+                barless = Some(studio.barless());
+                studio
+            }))
         });
         if let Some(skin) = skin {
             // The rails are the one affordance for opening and closing a dock
@@ -137,6 +144,7 @@ impl Workspace {
 
         let mut this = Self {
             dock_area,
+            barless: barless.unwrap_or_default(),
             editor_root,
             tools: Vec::new(),
             status: Vec::new(),
@@ -199,7 +207,7 @@ impl Workspace {
                 Scope::App,
                 "Appearance",
                 &[
-                    "theme", "colour", "color", "font", "size", "gutter", "inlay",
+                    "theme", "colour", "color", "font", "size", "gutter", "inlay", "format", "save",
                 ],
             ),
             appearance,
@@ -337,6 +345,14 @@ impl Workspace {
         let placement = spec.dock_placement();
         let size = spec.default_size;
         let open = spec.open_by_default;
+
+        // A side dock's tool windows are switched by the rail; their group
+        // draws no tab strip (`skin.rs`).
+        if spec.slot.group == crate::region::RailGroup::Upper {
+            self.barless
+                .borrow_mut()
+                .insert(panel.read(cx).panel_name());
+        }
 
         let me = PanelId::from(panel.entity_id());
         let badge = {
