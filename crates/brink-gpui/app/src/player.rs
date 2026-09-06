@@ -27,7 +27,17 @@ use crate::project::{Project, ProjectEvent};
 /// Clicking a line with a known source opens it.
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
-    Navigate { path: String, span: Range<usize> },
+    Navigate {
+        path: String,
+        span: Range<usize>,
+    },
+    /// Something worth keeping outside the transcript — a compile failure
+    /// or a runtime error. Restart clears the transcript; the Output log
+    /// (`crate::output_log`) keeps the record.
+    Log {
+        level: crate::output_log::Level,
+        text: SharedString,
+    },
 }
 
 /// One row of the transcript.
@@ -159,10 +169,15 @@ impl Player {
                 if this.generation == generation {
                     this.busy = false;
                     match outcome {
-                        Ok(outcome) => this.apply(outcome),
+                        Ok(outcome) => this.apply(outcome, cx),
                         Err(e) => {
                             this.running = false;
-                            this.push(Entry::Error(format!("{e:#}").into()));
+                            let text = SharedString::from(format!("{e:#}"));
+                            this.push(Entry::Error(text.clone()));
+                            cx.emit(PlayerEvent::Log {
+                                level: crate::output_log::Level::Error,
+                                text,
+                            });
                         }
                     }
                     cx.notify();
@@ -173,7 +188,7 @@ impl Player {
         cx.notify();
     }
 
-    fn apply(&mut self, outcome: PlayOutcome) {
+    fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
         for step in outcome.steps {
             match step {
                 PlayStep::Line { text, tags, source } => {
@@ -200,15 +215,30 @@ impl Player {
             }
         }
         for warning in outcome.warnings {
-            self.push(Entry::Notice(format!("warning: {warning}").into()));
+            let text = SharedString::from(format!("warning: {warning}"));
+            self.push(Entry::Notice(text.clone()));
+            cx.emit(PlayerEvent::Log {
+                level: crate::output_log::Level::Warning,
+                text,
+            });
         }
         if let Some(error) = outcome.error {
             self.running = false;
             self.choices.clear();
-            self.push(Entry::Error(error.to_string().into()));
+            let text = SharedString::from(error.to_string());
+            self.push(Entry::Error(text.clone()));
+            cx.emit(PlayerEvent::Log {
+                level: crate::output_log::Level::Error,
+                text,
+            });
             if let PlayError::Compile(errors) = error {
                 for line in errors {
-                    self.push(Entry::Error(line.into()));
+                    let text = SharedString::from(line);
+                    self.push(Entry::Error(text.clone()));
+                    cx.emit(PlayerEvent::Log {
+                        level: crate::output_log::Level::Error,
+                        text,
+                    });
                 }
                 self.push(Entry::Notice("Fix them in Problems, then Restart.".into()));
             }

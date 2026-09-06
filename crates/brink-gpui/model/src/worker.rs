@@ -423,6 +423,13 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                 )))
+            } else if matches!(kind, QueryKind::CompiledOutput) {
+                // Same reason as `Program`, and the same memoized compile.
+                QueryResult::CompiledOutput(Box::new(crate::compiled::output(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
             } else {
                 crate::query::answer(&mut session, &kind)
             };
@@ -1083,6 +1090,56 @@ mod tests {
             panic!("a program report");
         };
         assert!(matches!(&report.status, ProgramStatus::Errors(e) if !e.is_empty()));
+    }
+
+    #[test]
+    fn compiled_output_dumps_the_inkt_of_the_same_compile() {
+        use crate::compiled::CompiledStatus;
+        let tree = Tree::new(
+            "inkt",
+            &[(
+                "main.ink",
+                "VAR torch = 3\n=== greet ===\nHello {torch}.\n-> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::CompiledOutput,
+            reply,
+        });
+        let QueryResult::CompiledOutput(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a compiled-output report");
+        };
+        assert_eq!(report.entry.as_deref(), Some("main.ink"));
+        let CompiledStatus::Ready { text, bytes } = &report.status else {
+            panic!("compiles clean: {report:?}");
+        };
+        // The `.inkt` grammar's own shape, not a pretty-print of ours: a
+        // `(story` head, the global, and the knot by name.
+        assert!(text.starts_with("(story"), "{text}");
+        assert!(text.contains("torch"), "{text}");
+        assert!(text.contains("greet"), "{text}");
+        assert!(*bytes > 0, "the .inkb it was read from has a size");
+    }
+
+    #[test]
+    fn compiled_output_reports_errors_rather_than_a_stale_dump() {
+        use crate::compiled::CompiledStatus;
+        let tree = Tree::new("inkt-bad", &[("main.ink", "-> nowhere\n")]);
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::CompiledOutput,
+            reply,
+        });
+        let QueryResult::CompiledOutput(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a compiled-output report");
+        };
+        assert!(
+            matches!(&report.status, CompiledStatus::Errors(e) if !e.is_empty()),
+            "{report:?}"
+        );
     }
 
     #[test]

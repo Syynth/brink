@@ -7,11 +7,13 @@
 
 mod binder;
 mod code_view;
+mod compiled_output;
 mod continuous;
 mod document;
 mod fixes;
 mod icons;
 mod navigation;
+mod output_log;
 mod player;
 mod problems;
 mod program;
@@ -46,7 +48,9 @@ use gpui_component::{Root, TitleBar};
 use crate::binder::{Binder, BinderEvent};
 use crate::code_view::CodeView;
 use crate::code_view::CodeViewEvent;
+use crate::compiled_output::CompiledOutputView;
 use crate::continuous::ContinuousView;
+use crate::output_log::OutputLog;
 use crate::player::{Player, PlayerEvent};
 use crate::problems::{OpenProblem, Problems};
 use crate::program::{ProgramEvent, ProgramExplorer};
@@ -82,6 +86,8 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// The compiled story's `.inkt` dump, as a read-only tab.
+        OpenCompiledOutput,
     ]
 );
 
@@ -100,6 +106,9 @@ struct Studio {
     /// The Player, a centre tab in Code view. Made once; docked on the
     /// first Play, re-docked if its tab was closed.
     player: Entity<Player>,
+    /// Compiled Output — the `.inkt` dump, a read-only Code-view tab on
+    /// the same terms as the Player: made once, docked on first ask.
+    compiled: Entity<CompiledOutputView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -115,6 +124,10 @@ impl Studio {
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let player = cx.new(|cx| Player::new(project.clone(), cx));
         let program = cx.new(|cx| ProgramExplorer::new(project.clone(), cx));
+        let compiled = cx.new(|cx| CompiledOutputView::new(project.clone(), window, cx));
+        let output = cx.new(|cx| OutputLog::new(project.clone(), cx));
+        // The log keeps what the transcript throws away on a Restart.
+        output.update(cx, |log, cx| log.watch_player(&player, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
@@ -246,6 +259,17 @@ impl Studio {
                 window,
                 cx,
             );
+            // Third tab in the lower-left dock: the studio's Output /
+            // compile log (`docs/studio-shell-spec.md` §4) — the timings
+            // and the errors that have no file and span to sit on.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("output", "Output", RailSlot::LEFT_LOWER)
+                    .icon(icons::DOC)
+                    .size(px(160.)),
+                output.clone(),
+                window,
+                cx,
+            );
             // The right dock's first occupant: the compiled program, a tall
             // tree that wants the side rather than the bottom.
             workspace.add_tool_window(
@@ -313,6 +337,7 @@ impl Studio {
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
+            workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
         });
 
         let on_project = cx.subscribe_in(
@@ -363,7 +388,10 @@ impl Studio {
             &player,
             window,
             |this, _, event: &PlayerEvent, window, cx| {
-                let PlayerEvent::Navigate { path, span } = event;
+                // `Log` is the Output window's business, not navigation's.
+                let PlayerEvent::Navigate { path, span } = event else {
+                    return;
+                };
                 this.show(path, span.clone(), window, cx);
             },
         );
@@ -429,6 +457,7 @@ impl Studio {
             manuscript,
             search,
             player,
+            compiled,
             _subscriptions: vec![
                 on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
                 on_code, on_general,
@@ -701,6 +730,23 @@ impl Studio {
         player.update(cx, |player, cx| player.start(at, cx));
     }
 
+    /// Show the `.inkt` dump: dock the tab if it is not docked, then select
+    /// it. Like the Player, it is a Code-view tab, so the manuscript gives
+    /// way to Code first.
+    fn open_compiled_output(
+        &mut self,
+        _: &OpenCompiledOutput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_editor_view(EditorView::Code, window, cx);
+        });
+        let compiled = self.compiled.clone();
+        self.code
+            .update(cx, |code, cx| code.show_compiled(&compiled, window, cx));
+    }
+
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
         self.play_at(None, window, cx);
     }
@@ -763,6 +809,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::fix_all_in_project))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::play_restart))
+            .on_action(cx.listener(Self::open_compiled_output))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.

@@ -1,3 +1,4 @@
+pub mod compiled;
 pub mod fixes;
 pub mod play;
 pub mod program;

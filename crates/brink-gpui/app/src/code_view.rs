@@ -23,6 +23,7 @@ use gpui::{
 };
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_handle};
 
+use crate::compiled_output::CompiledOutputView;
 use crate::document::{Document, DocumentEvent};
 use crate::player::Player;
 use crate::project::Project;
@@ -139,6 +140,30 @@ impl CodeView {
             });
         }
         Player::activate(player, window, cx);
+    }
+
+    /// Put Compiled Output in the centre dock (once) and select its tab.
+    /// Same shape as [`Self::show_player`]: a singleton panel that is not
+    /// a file, so it never joins `documents` and never becomes the active
+    /// document Single File view would show.
+    pub fn show_compiled(
+        &mut self,
+        compiled: &Entity<CompiledOutputView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !compiled.read(cx).is_docked() {
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(compiled.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        }
+        CompiledOutputView::activate(compiled, window, cx);
     }
 
     /// The document Single File view shows.
