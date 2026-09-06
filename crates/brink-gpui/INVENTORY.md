@@ -1,6 +1,7 @@
 # brink-gpui — surface inventory
 
-**Written:** 2026-09-05 · **Branch:** `claude/gpui-desktop-app-e8jb90` (PR #3568)
+**Written:** 2026-09-05 · **Last trued up:** 2026-09-06 (the Player and the
+Program Explorer) · **Branch:** `bronch/gpui-native-desktop-spike-f7a90c`
 
 What has been built in the native studio so far, and — surface by surface —
 what each one **leaves out**. `HANDOFF.md` says how to work here and
@@ -65,6 +66,21 @@ In `.ink`-author order, the gaps that bite first:
 5. **Quick-open** and `Escape` back to the editor.
 6. **Layout persistence** and an open-project dialog.
 
+**Suggested next order (2026-09-06)**, cheapest-first against what the
+worker now holds:
+
+1. **Compiled Output** and **Output / compile log** — both are a day's work
+   on the compile that already exists (`model/src/program.rs` runs it,
+   `brink_format::write_inkt` writes the dump, the worker already times
+   analysis and the play session already drains runtime warnings). Neither
+   needs a ruling.
+2. **State View** (the debugger) — what the Program Explorer's executing-
+   instruction overlay and `stepi` are both waiting on, with the Player's
+   session as the base. The engine work (exposing state off a running
+   `Story`) goes below `IdeSession`, per the layering ruling.
+3. **Story Graph** — the largest remaining piece: a story-graph query in
+   the worker plus a pan/zoom canvas.
+
 ## 1. Surfaces built, and what each leaves out
 
 ### The frame — rails, docks, status bar (`shell/src/workspace.rs`, `rail.rs`, `region.rs`, `tool_window.rs`)
@@ -80,7 +96,7 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 | Tool-window / editor-group maximize | parity gap | studio-shell-spec §5.4. |
 | Responsive tiers (wide/medium/narrow) | parity gap | studio-shell-spec §5.3; the window is one tier. |
 | Status bar right segment | parity gap | cursor position, element type + the conversion dropdown, key hints (§7.3). Only the left group exists. |
-| Notification service / toasts | parity gap | §7.5. Nothing in the app can notify; errors go to Problems or nowhere. |
+| Notification service / toasts | partly built | `Root::render_notification_layer`/`render_dialog_layer` are composed by the app root (`app/src/main.rs`), so `window.push_notification` and `open_dialog` work — rename, fix-all and failed navigation all use them. Missing is §7.5's *service*: no registry, no severities, no dismissal policy, and no one place errors are routed to. |
 | Open-project dialog, recents | parity gap | the project is a CLI argument (HANDOFF 4). |
 | Binder draws two headers | cosmetic | the dock's title strip and its own "BINDER" header both render (HANDOFF, "Two things noticed"). |
 
@@ -138,6 +154,45 @@ else. Everything below is listed against that directory.
 | Prose checker diagnostics in the editor | not wired | `crates/brink-prose` is Rust, but the worker does not link or run it; see Problems and Settings ▸ Prose. |
 | `.brink` incremental paint | **open ruling** (#3562), **`.brink` only** | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
 | Hover verified by hand | verification | typing, completions and save were driven headless; hover was not. |
+
+### Player (`model/src/play.rs`, `app/src/player.rs`)
+
+Built: the runtime on the worker beside the analysis session
+(`Request::Play`), a Code-view centre tab with the transcript (lines with
+tags, echoed choices, turn boundaries, runtime warnings, compile and
+runtime errors), live choice buttons, Restart / From start, the
+"sources changed" status, and transcript lines that open their source.
+`Play` (cmd-r), `Restart` (cmd-shift-r), and the Binder's "Play from here"
+on knots and stitches.
+
+| Left out | Kind | Note |
+|---|---|---|
+| Placement in Continuous and Single File | **open ruling** | the Code-view tab is the one placement the parked direction settles (HANDOFF "Open, parked"). |
+| Hot-swapping a running story after an edit | deliberate | the module doc says why: the story keeps running on what it compiled from, the status says so, a restart picks the edit up. |
+| Waking an `await` park | not started | `Step::Suspended` is shown as a turn boundary; there is no `wake_check` affordance. |
+| Number keys for choices | parity gap | choices are buttons only. |
+| Execution highlight in the editor | not started | lines carry `source`, so the data is there; see also the Program Explorer's overlay. |
+| External-function binding | not started | `FallbackHandler` only — an external with no fallback body faults. |
+
+### Program Explorer (`model/src/program.rs`, `app/src/program.rs`)
+
+Built: a right-dock tool window over one worker compile
+(`QueryKind::Program`), read four ways — **Structure** (globals, lists,
+externals, the knot → stitch tree with bytecode-track/lines-fill size
+bars), **Lines** (the compiled tables, scoped as the compiler scopes them,
+templates spelled inline), **Disasm** (every scope and anonymous `c-N`
+container's name-resolved bytecode), **Size** (sections, per-scope line
+tables, bytecode by knot). Rows with provenance open their source. It
+re-queries after an analysis only while it is the shown tab; hidden, it
+marks itself stale and asks when shown.
+
+| Left out | Kind | Note |
+|---|---|---|
+| Executing-instruction overlay, `stepi` | not started | needs the State View's session state (D9/W9 in the web). |
+| "open .inkt" button | not started | Compiled Output is not built; the button has nowhere to go. |
+| Size treemap | parity gap | `ProgramSizeView.tsx` draws a treemap; this draws bars. |
+| Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
+| Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
 
 ### Binder (`app/src/binder.rs`)
 
@@ -206,7 +261,7 @@ in Code view (ruled 2026-09-05).
 | Left out | Kind | Note |
 |---|---|---|
 | App ▸ Editor (default view, fix-on-save) | parity gap | the web's `EditorViewSection` + `EditorSection`; font sizes and **Format on save** (built 2026-09-05, `brink-fmt` over every dirty `.ink`) live in Appearance here; fix-on-save is not built. |
-| App ▸ Player (playback, debug info, external-function check) | not started | nothing to configure until the Player exists. |
+| App ▸ Player (playback, debug info, external-function check) | parity gap | the Player exists now (§1), so this section has something to configure and nothing is drawn. |
 | Creating `brink.toml` for a project without one | parity gap | every Project section says so and stops; the worker would need to adopt a new config path. |
 | Formatting: tabs vs spaces | **open ruling** | the row is drawn disabled. |
 | Diagnostics: prose codes | not wired | the registry lists compiler codes only. |
@@ -237,7 +292,9 @@ config re-application, drafts report, resolved dialect.
 |---|---|---|
 | ~~CodeActions query~~ | built 2026-09-05 | (Definition / References / Rename / Folding / Fixes / Format: all built 2026-09-05.) |
 | `line_contexts` per file | worker query | for per-line styles. |
-| Compile to `StoryData` and a runtime session | not started | everything session-bound waits on it. |
+| ~~Compile to `StoryData` and a runtime session~~ | built 2026-09-05/06 | `Request::Play` (the runtime, `model/src/play.rs`) and `QueryKind::Program` (the compile read three ways, `model/src/program.rs`). Both go through the memoized `IdeSession::compile` under one entry rule (`play::entry_file`). |
+| Story-graph query | worker query | for the Story Graph document. |
+| Prose checking | not started | `brink-prose` is a separate wasm module in the web; nothing native runs it (Problems' prose bucket depends on it). |
 
 ## 2. Surfaces not started at all
 
@@ -245,14 +302,14 @@ Against studio-shell-spec §4's inventory:
 
 | Surface | Blocked on |
 |---|---|
-| **Player** | ~~open ruling~~ **built as the Code-view tab** (2026-09-05); Continuous swap-in and the Single File split remain the open ruling. |
-| **State View** (debugger) | the Player's session exposing state (not started). |
-| **Output / compile log** | unblocked: the worker compiles in `model/src/play.rs`; nothing surfaces it yet. |
-| **Program Explorer** | **built** (2026-09-05, `model/src/program.rs`, `app/src/program.rs`): right dock, Structure / Lines / Disasm / Size, rows with provenance open their source. Residue: no executing-instruction overlay or `stepi` (debugger), no "open .inkt" (Compiled Output not built), no treemap (the Size view is bars). |
-| **Compiled Output** (`.inkt` tab) | unblocked, same compile; not started. |
+| **Player** | ~~not started~~ **built** — see §1. Continuous swap-in and the Single File split remain the open ruling. |
+| **Program Explorer** | ~~not started~~ **built** — see §1. |
+| **State View** (debugger) | nothing in the shared layer exposes a running `Story`'s state. The Player owns the session, so this is engine work below `IdeSession` plus a panel. |
+| **Output / compile log** | nothing — but unblocked: the worker compiles, times analysis, and drains runtime warnings. Wants a bottom-dock panel and a place to route errors (see the notification row in §1). |
+| **Compiled Output** (`.inkt` tab) | nothing — but unblocked: `brink_format::write_inkt` over the same compile, as a read-only Code-view tab. The Program Explorer's "open .inkt" button waits on it. |
 | **Story Graph** | the story-graph query in the worker; a canvas. |
-| **Story transcript** | listed as future in the web too. |
-| **Notification service** | nothing; a shell service. |
+| **Story transcript** | listed as future in the web too. The Player's transcript is per-session and is not this. |
+| **Notification service** | the layers render (§1); the service does not exist. |
 | **Library** (Binder section) | nothing; a Binder slice. |
 
 ## 3. Cross-cutting
