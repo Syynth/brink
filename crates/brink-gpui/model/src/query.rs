@@ -257,6 +257,10 @@ pub struct PassageSymbol {
     pub path: String,
     pub is_stitch: bool,
     pub file: String,
+    /// The declaration's own name span, so a caller can reveal it rather
+    /// than only open its file. Byte offsets, like everything else that
+    /// crosses this boundary.
+    pub span: std::ops::Range<usize>,
 }
 
 /// One content line of a passage, with the file it came from.
@@ -590,6 +594,11 @@ fn folding_ranges(session: &brink_ide::session::IdeSession, path: &str) -> Optio
     Some(out)
 }
 
+/// A HIR name's range as the plain byte range this boundary speaks in.
+fn range_of(range: &brink_ir::TextRange) -> std::ops::Range<usize> {
+    usize::from(range.start())..usize::from(range.end())
+}
+
 /// Every knot and stitch of the author's files, in file order then
 /// declaration order — the mounted stdlib is not the author's to mark.
 fn passage_index(session: &brink_ide::session::IdeSession) -> Vec<PassageSymbol> {
@@ -610,12 +619,14 @@ fn passage_index(session: &brink_ide::session::IdeSession) -> Vec<PassageSymbol>
                 path: knot.name.text.clone(),
                 is_stitch: false,
                 file: file.clone(),
+                span: range_of(&knot.name.range),
             });
             for stitch in &knot.stitches {
                 out.push(PassageSymbol {
                     path: format!("{}.{}", knot.name.text, stitch.name.text),
                     is_stitch: true,
                     file: file.clone(),
+                    span: range_of(&stitch.name.range),
                 });
             }
         }

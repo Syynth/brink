@@ -63,7 +63,13 @@ In `.ink`-author order, the gaps that bite first:
    stitch) stay off the menu until they get the breakage gate, and the
    context-menu fix entries the web has.
 4. **Find/replace inside a document**, and Search's Replace.
-5. **Quick-open** and `Escape` back to the editor.
+5. ~~**Quick-open**~~ **built 2026-09-06** (`app/src/quick_open.rs`,
+   `cmd-p`) — files and every knot/stitch, fuzzy-ranked, Enter revealing
+   the declaration. `Escape` back to the editor is still open, and is
+   **not** the small binding it looks like: the command registry models a
+   keystroke but not a key CONTEXT, so a global `Escape` would compete
+   with every overlay's own dismissal (the palette, the find panel, the
+   `cmd-.` menu). It needs a context on the binding first.
 6. **Layout persistence** and an open-project dialog.
 
 **Suggested next order (2026-09-06)**, cheapest-first against what the
@@ -310,7 +316,7 @@ toggles, view switching, per-theme commands, overrides from settings.
 | Left out | Kind | Note |
 |---|---|---|
 | `Escape` from a tool window back to the editor | parity gap | spec §4.5 defers it. |
-| Quick-open | parity gap | as above. |
+| ~~Quick-open~~ | built 2026-09-06 | `cmd-p`; `app/src/quick_open.rs`. |
 | `cmd-shift-<digit>` chords | platform | cannot match on Linux — do not bind them (HANDOFF). |
 
 ### Settings (`shell/src/settings*.rs`, `app/src/settings_*.rs`)

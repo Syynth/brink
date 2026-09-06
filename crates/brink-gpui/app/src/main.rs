@@ -19,6 +19,7 @@ mod player;
 mod problems;
 mod program;
 mod project;
+mod quick_open;
 mod rename;
 mod search;
 mod settings_config;
@@ -56,6 +57,7 @@ use crate::player::{Player, PlayerEvent};
 use crate::problems::{OpenProblem, Problems};
 use crate::program::{ProgramEvent, ProgramExplorer};
 use crate::project::{Project, ProjectEvent};
+use crate::quick_open::{QuickOpen, QuickOpenEvent};
 use crate::search::{SearchEvent, SearchView};
 use crate::settings_conventions::ConventionsSection;
 use crate::settings_diagnostics::DiagnosticsSection;
@@ -89,6 +91,8 @@ actions!(
         PlayRestart,
         /// The compiled story's `.inkt` dump, as a read-only tab.
         OpenCompiledOutput,
+        /// Go to a file, knot or stitch by name.
+        QuickOpenGoTo,
     ]
 );
 
@@ -110,6 +114,9 @@ struct Studio {
     /// Compiled Output — the `.inkt` dump, a read-only Code-view tab on
     /// the same terms as the Player: made once, docked on first ask.
     compiled: Entity<CompiledOutputView>,
+    /// Quick-open while it is up. Made per opening: its items are read
+    /// when it opens, so there is nothing to keep alive between times.
+    quick_open: Option<(Entity<QuickOpen>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -358,6 +365,13 @@ impl Studio {
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
             workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
+            workspace.register_command(
+                "Go",
+                "Go to File\u{2026}",
+                QuickOpenGoTo,
+                Some("cmd-p"),
+                cx,
+            );
         });
 
         let on_project = cx.subscribe_in(
@@ -482,6 +496,7 @@ impl Studio {
             search,
             player,
             compiled,
+            quick_open: None,
             _subscriptions: vec![
                 on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
                 on_code, on_general,
@@ -771,6 +786,34 @@ impl Studio {
             .update(cx, |code, cx| code.show_compiled(&compiled, window, cx));
     }
 
+    /// Open quick-open, or close it if it is already up — the palette's
+    /// own toggle behaviour, so the key that opened it also dismisses it.
+    fn quick_open(&mut self, _: &QuickOpenGoTo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_open.take().is_some() {
+            cx.notify();
+            return;
+        }
+        let project = self.project.clone();
+        let picker = cx.new(|cx| QuickOpen::new(project, window, cx));
+        let subscription = cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &QuickOpenEvent, window, cx| {
+                match event {
+                    QuickOpenEvent::Open { path, span } => {
+                        this.show(path, span.clone().unwrap_or(0..0), window, cx);
+                    }
+                    QuickOpenEvent::Dismiss => {}
+                }
+                this.quick_open = None;
+                cx.notify();
+            },
+        );
+        picker.update(cx, |picker, cx| picker.focus(window, cx));
+        self.quick_open = Some((picker, subscription));
+        cx.notify();
+    }
+
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
         self.play_at(None, window, cx);
     }
@@ -834,9 +877,11 @@ impl Render for Studio {
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::play_restart))
             .on_action(cx.listener(Self::open_compiled_output))
+            .on_action(cx.listener(Self::quick_open))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.
+            .children(self.quick_open.as_ref().map(|(p, _)| p.clone()))
             .children(notifications)
             .children(dialogs)
     }
