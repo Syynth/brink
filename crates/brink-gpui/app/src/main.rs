@@ -54,7 +54,7 @@ use crate::compiled_output::CompiledOutputView;
 use crate::continuous::ContinuousView;
 use crate::output_log::OutputLog;
 use crate::player::{Player, PlayerEvent};
-use crate::problems::{OpenProblem, Problems};
+use crate::problems::{OpenProblem, Problems, ProblemsMenu};
 use crate::program::{ProgramEvent, ProgramExplorer};
 use crate::project::{Project, ProjectEvent};
 use crate::quick_open::{QuickOpen, QuickOpenEvent};
@@ -496,6 +496,20 @@ impl Studio {
                 this.open(&event.path, Some(event.span.clone()), window, cx);
             },
         );
+        let on_problem_menu = cx.subscribe_in(
+            &problems,
+            window,
+            |this, _, event: &ProblemsMenu, window, cx| match event {
+                ProblemsMenu::Suppress { path, line, code } => {
+                    this.suppress(path, *line, code, window, cx);
+                }
+                ProblemsMenu::Configure => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.open_settings(Some("diagnostics"), window, cx);
+                    });
+                }
+            },
+        );
         let on_todo = cx.subscribe_in(&todos, window, |this, _, event: &OpenTodo, window, cx| {
             this.open(&event.path, Some(event.span.clone()), window, cx);
         });
@@ -551,8 +565,16 @@ impl Studio {
             quick_open: None,
             caret: None,
             _subscriptions: vec![
-                on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
-                on_code, on_general,
+                on_project,
+                on_binder,
+                on_player,
+                on_program,
+                on_problem,
+                on_problem_menu,
+                on_todo,
+                on_search,
+                on_code,
+                on_general,
             ],
         }
     }
@@ -883,6 +905,43 @@ impl Studio {
         };
         let editor = document.read(cx).editor().clone();
         self.caret = Some(cx.observe(&editor, |this, _, cx| this.refresh_status(cx)));
+    }
+
+    /// Write a suppression directive: on the diagnostic's line, or for the
+    /// whole file. Through `Project::edit` like every other change, so the
+    /// tab, the manuscript and any Search card over that file all follow
+    /// it, and the worker re-analyzes — which is what makes the row leave.
+    fn suppress(
+        &mut self,
+        path: &str,
+        line: Option<u32>,
+        code: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.project.read(cx).loaded_source(path).map(str::to_owned) else {
+            return;
+        };
+        let next = match line {
+            Some(line) => {
+                crate::problems::suppress_line_edit(&source, line, code).map(|(at, text)| {
+                    let mut out = source.clone();
+                    out.insert_str(at, &text);
+                    out
+                })
+            }
+            None => crate::problems::suppress_file_source(&source, code),
+        };
+        let Some(next) = next else {
+            // Already covered, or a line that is no longer there: doing
+            // nothing is the honest answer, not a duplicate directive.
+            return;
+        };
+        self.project
+            .update(cx, |project, cx| project.edit(path, next, None, cx));
+        // Show what was written: a silenced diagnostic that leaves without
+        // a visible cause reads as the panel losing track.
+        self.open(path, None, window, cx);
     }
 
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {

@@ -649,10 +649,22 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
             continue;
         };
         let path = path.to_owned();
-        let found: Vec<Diagnostic> = session
-            .db()
-            .diagnostics(id)
-            .unwrap_or(&[])
+        // Suppressions FIRST, then severity. `db().diagnostics` is the raw
+        // list: a `// brink-disable`/`brink-expect` directive withdraws a
+        // diagnostic before any surface sees it, and reading the raw list
+        // here is what made those directives do nothing in this studio —
+        // the same defect the web's fix road already had and fixed
+        // (`brink_ide::fix`'s own note). An `@[allow(…)]` scope rides
+        // `HirFile::allow_scopes` and is folded in by `Suppressions`
+        // itself, so this one call covers both channels.
+        let raw: Vec<brink_ir::Diagnostic> = session.db().diagnostics(id).unwrap_or(&[]).to_vec();
+        let raw = match (session.db().suppressions(id), session.db().source(id)) {
+            (Some(suppressions), Some(source)) => {
+                brink_ir::suppressions::apply_suppressions(id, source, raw, suppressions)
+            }
+            _ => raw,
+        };
+        let found: Vec<Diagnostic> = raw
             .iter()
             .filter_map(|d| {
                 let severity = brink_analyzer::effective_severity(d.code, types, &lints)?;
@@ -830,6 +842,50 @@ mod tests {
             session.draft_paths(),
             vec!["notes/scratch.ink".to_owned()],
             "a glob match outside the compile closure is a draft"
+        );
+    }
+
+    /// Drain until the next `Analyzed`, which is the only response an edit
+    /// produces.
+    fn next_analysis(worker: &Worker) -> Box<Analyzed> {
+        loop {
+            if let Response::Analyzed(analyzed) = next(worker) {
+                return analyzed;
+            }
+        }
+    }
+
+    #[test]
+    fn a_brink_disable_directive_withdraws_its_diagnostic() {
+        // The comment channel reads FORWARD: the directive silences the
+        // NEXT line. Reading the RAW diagnostics list here is what made
+        // every `// brink-disable` in this studio do nothing.
+        let tree = Tree::new(
+            "suppress",
+            &[("main.ink", "=== k ===\n* [Go] -> k\n-> DONE\n")],
+        );
+        let worker = drive(&tree);
+        let before = next_analysis(&worker);
+        let code = before
+            .diagnostics
+            .get("main.ink")
+            .and_then(|d| d.first())
+            .map(|d| d.code.clone())
+            .expect("the unnamed once-only choice reports something");
+
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: format!("=== k ===\n// brink-disable {code}\n* [Go] -> k\n-> DONE\n"),
+            revision: 2,
+        });
+        let after = next_analysis(&worker);
+        assert!(
+            after
+                .diagnostics
+                .get("main.ink")
+                .is_none_or(|d| d.iter().all(|d| d.code != code)),
+            "the directive withdraws it, got {:?}",
+            after.diagnostics.get("main.ink")
         );
     }
 
