@@ -3013,14 +3013,17 @@ pub(crate) fn bind_entry_params(
     let Some(depth) = flow.current_thread().call_stack.top_depth() else {
         return Ok(());
     };
-    // Collected first: `params` borrows `program`, and the writes below
-    // borrow `flow` mutably one at a time.
-    let slots: Vec<u16> = container.params.iter().map(|p| p.slot).collect();
-    for slot in slots.into_iter().rev() {
+    // Borrowed straight from `program`, never collected: this runs on every
+    // parameterized call, and a `Vec` here costs a malloc that wipes out the
+    // dispatch the change exists to remove (measured: crucible's Ir went up
+    // despite 7.5% fewer opcodes, until this allocation was taken out).
+    // `program` and `flow` are separate parameters, so the immutable borrow
+    // of one coexists with the mutable borrow of the other.
+    for param in container.params.iter().rev() {
         let val = flow.pop_value()?;
         flow.current_thread_mut()
             .call_stack
-            .write_temp(depth, usize::from(slot), val);
+            .write_temp(depth, usize::from(param.slot), val);
     }
     Ok(())
 }
@@ -3305,11 +3308,12 @@ fn thread_call(
     // into belongs to the new thread's own (cloned) call stack, which is not
     // installed on `flow` yet — so this cannot go through
     // `bind_entry_params`.
-    let slots = program.container_param_slots(target.container_idx);
     if let Some(depth) = forked.call_stack.top_depth() {
-        for slot in slots.into_iter().rev() {
+        for param in program.container(target.container_idx).params.iter().rev() {
             let val = flow.pop_value()?;
-            forked.call_stack.write_temp(depth, usize::from(slot), val);
+            forked
+                .call_stack
+                .write_temp(depth, usize::from(param.slot), val);
         }
     }
     forked.base_depth = forked.call_stack.len();
