@@ -13,6 +13,13 @@
 //! panel replace the text on each compile. So the buffer keeps selection,
 //! scrolling and the gutter, and typing into it does nothing.
 //!
+//! The flag goes on the **element**, not the state: `Editor` pushes its own
+//! `readonly` into the state on every render, so `set_readonly` at
+//! construction is overwritten by the element's default on the first frame.
+//! Setting it there instead of here is the difference between a dump you
+//! can read and one you can edit — which the first version of this panel
+//! was, until it was typed into.
+//!
 //! Compile-bound and refreshed on the Program Explorer's rule: while it is
 //! the shown tab it re-asks after each analysis; hidden, it marks itself
 //! stale and asks when shown. A dump is a whole-file replacement, so there
@@ -57,13 +64,11 @@ impl EventEmitter<PanelEvent> for CompiledOutputView {}
 impl CompiledOutputView {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
-            let mut state = EditorState::new(window, cx)
+            EditorState::new(window, cx)
                 .line_number(true)
                 // The dump's own line structure is the point; wrapping a
                 // bytecode row would hide the column alignment it relies on.
-                .soft_wrap(false);
-            state.set_readonly(true, cx);
-            state
+                .soft_wrap(false)
         });
         let on_project = cx.subscribe_in(
             &project,
@@ -255,6 +260,21 @@ impl Render for CompiledOutputView {
             .size_full()
             .text_xs()
             .child(header)
-            .child(div().flex_1().child(Editor::new(&self.editor)))
+            // `flex_1` belongs on the Editor itself, not on a wrapper: the
+            // editor computes its visible line range from its OWN height
+            // (`continuous.rs` documents the same trap), so an editor
+            // inside a flexed div has no height and lays out one line.
+            .child(
+                Editor::new(&self.editor)
+                    // Read-only belongs on the ELEMENT, not the state: the
+                    // `Editor` element pushes its own `readonly` into the
+                    // state on every render, so a flag set once at
+                    // construction is overwritten by the element's default
+                    // on the first frame (it was — typing into the dump
+                    // edited it).
+                    .readonly(true)
+                    .flex_1()
+                    .bordered(false),
+            )
     }
 }

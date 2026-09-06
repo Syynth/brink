@@ -30,12 +30,14 @@ use std::collections::VecDeque;
 use gpui::prelude::*;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Subscription, Window, div, uniform_list,
+    ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+
+use brink_ir::Severity;
 
 use crate::player::PlayerEvent;
 use crate::project::{Project, ProjectEvent};
@@ -110,20 +112,32 @@ impl Log {
         }
     }
 
-    /// An analysis landed. Returns whether it earned a row of its own.
-    pub fn analyzed(&mut self, elapsed_ms: f64, problems: usize) -> bool {
+    /// An analysis landed. `errors`/`warnings` are counts within
+    /// `problems`, and they decide the row's colour: a project whose only
+    /// problems are Info notes is not a project in trouble, and colouring
+    /// its row amber said it was.
+    pub fn analyzed(
+        &mut self,
+        elapsed_ms: f64,
+        problems: usize,
+        errors: usize,
+        warnings: usize,
+    ) -> bool {
         let moved = self.last_problems != Some(problems);
         let notable = self.verbose || !self.analyzed_once || moved || elapsed_ms >= SLOW_MS;
         self.analyzed_once = true;
         self.last_problems = Some(problems);
         if notable {
             let slow = if elapsed_ms >= SLOW_MS { " (slow)" } else { "" };
+            let level = if errors > 0 {
+                Level::Error
+            } else if warnings > 0 {
+                Level::Warning
+            } else {
+                Level::Info
+            };
             self.push(
-                if problems > 0 {
-                    Level::Warning
-                } else {
-                    Level::Info
-                },
+                level,
                 "analysis",
                 format!("{elapsed_ms:.1} ms · {problems} problem(s){slow}"),
             );
@@ -142,6 +156,11 @@ impl Log {
 pub struct OutputLog {
     project: Entity<Project>,
     log: Log,
+    scroll: UniformListScrollHandle,
+    /// Rows at the last render, so a row added since can be scrolled to.
+    /// A log that does not follow its own tail makes you scroll to find
+    /// what just happened, which is the one thing it exists to show.
+    shown_rows: usize,
     focus: FocusHandle,
     tab: TabSlot,
     _subscriptions: Vec<Subscription>,
@@ -165,9 +184,20 @@ impl OutputLog {
                     this.log.push(Level::Error, "project", message.clone());
                 }
                 ProjectEvent::Analyzed => {
-                    let (last, _worst) = project.read(cx).timings();
-                    let problems = project.read(cx).problem_count();
-                    this.log.analyzed(last, problems);
+                    let project = project.read(cx);
+                    let (last, _worst) = project.timings();
+                    let (mut errors, mut warnings, mut problems) = (0, 0, 0);
+                    for (_, diagnostics) in project.all_diagnostics() {
+                        for d in diagnostics {
+                            problems += 1;
+                            match d.severity {
+                                Severity::Error => errors += 1,
+                                Severity::Warning => warnings += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                    this.log.analyzed(last, problems, errors, warnings);
                 }
                 ProjectEvent::Saved => {
                     this.log.push(Level::Info, "project", "saved");
@@ -179,6 +209,8 @@ impl OutputLog {
         Self {
             project,
             log: Log::default(),
+            scroll: UniformListScrollHandle::new(),
+            shown_rows: 0,
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
             _subscriptions: vec![on_project],
@@ -317,8 +349,13 @@ impl ToolWindow for OutputLog {
 impl Render for OutputLog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let header = self.render_header(cx);
         let count = self.log.rows().len();
+        // Follow the tail: a row arrived since the last frame, so show it.
+        if count > self.shown_rows && count > 0 {
+            self.scroll.scroll_to_item(count - 1, ScrollStrategy::Top);
+        }
+        self.shown_rows = count;
+        let header = self.render_header(cx);
         let _ = &self.project;
         v_flex()
             .id("output-log")
@@ -340,6 +377,7 @@ impl Render for OutputLog {
                                 .collect::<Vec<_>>()
                         }),
                     )
+                    .track_scroll(&self.scroll)
                     .p_1()
                     .flex_1(),
                 )
@@ -354,16 +392,16 @@ mod tests {
     #[test]
     fn the_first_analysis_is_always_logged() {
         let mut log = Log::default();
-        assert!(log.analyzed(1.0, 0), "the first analysis is news");
+        assert!(log.analyzed(1.0, 0, 0, 0), "the first analysis is news");
         assert_eq!(log.rows().len(), 1);
     }
 
     #[test]
     fn a_quiet_analysis_folds_into_the_last_row() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0);
-        assert!(!log.analyzed(1.0, 0), "nothing moved, so no new row");
-        assert!(!log.analyzed(2.0, 0));
+        log.analyzed(1.0, 0, 0, 0);
+        assert!(!log.analyzed(1.0, 0, 0, 0), "nothing moved, so no new row");
+        assert!(!log.analyzed(2.0, 0, 0, 0));
         assert_eq!(log.rows().len(), 1, "still one analysis row");
         assert_eq!(log.rows()[0].also, 2, "and it counts the quiet ones");
     }
@@ -371,8 +409,8 @@ mod tests {
     #[test]
     fn a_moved_problem_count_earns_a_row() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0);
-        assert!(log.analyzed(1.0, 3), "0 -> 3 problems is news");
+        log.analyzed(1.0, 0, 0, 0);
+        assert!(log.analyzed(1.0, 3, 0, 1), "0 -> 3 problems is news");
         assert_eq!(log.rows().len(), 2);
         assert_eq!(log.rows()[1].level, Level::Warning);
     }
@@ -380,8 +418,8 @@ mod tests {
     #[test]
     fn a_slow_analysis_earns_a_row_even_when_nothing_moved() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0);
-        assert!(log.analyzed(SLOW_MS, 0), "slow is worth saying");
+        log.analyzed(1.0, 0, 0, 0);
+        assert!(log.analyzed(SLOW_MS, 0, 0, 0), "slow is worth saying");
         assert!(
             log.rows()[1].text.contains("(slow)"),
             "and it says why: {}",
@@ -395,9 +433,19 @@ mod tests {
             verbose: true,
             ..Log::default()
         };
-        log.analyzed(1.0, 0);
-        assert!(log.analyzed(1.0, 0));
+        log.analyzed(1.0, 0, 0, 0);
+        assert!(log.analyzed(1.0, 0, 0, 0));
         assert_eq!(log.rows().len(), 2);
+    }
+
+    #[test]
+    fn info_only_problems_do_not_colour_the_row_as_trouble() {
+        let mut log = Log::default();
+        // Six Info notes and nothing else: not a project in trouble.
+        log.analyzed(1.0, 6, 0, 0);
+        assert_eq!(log.rows()[0].level, Level::Info);
+        log.analyzed(1.0, 7, 1, 0);
+        assert_eq!(log.rows()[1].level, Level::Error, "an error is trouble");
     }
 
     #[test]
@@ -418,10 +466,10 @@ mod tests {
     #[test]
     fn clearing_does_not_re_log_an_unchanged_count_as_news() {
         let mut log = Log::default();
-        log.analyzed(1.0, 2);
+        log.analyzed(1.0, 2, 0, 0);
         log.clear();
         assert!(
-            !log.analyzed(1.0, 2),
+            !log.analyzed(1.0, 2, 0, 0),
             "the count did not move, so it is not news again"
         );
     }

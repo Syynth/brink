@@ -267,7 +267,10 @@ impl Player {
                     .gap_2()
                     .px_4()
                     .py_1()
-                    .child(div().flex_1().child(text.clone()))
+                    // `min_w_0`: a flex item's minimum is its content by
+                    // default, so a long line refused to shrink and pushed
+                    // its own tags off the right edge instead of wrapping.
+                    .child(div().flex_1().min_w_0().child(text.clone()))
                     .children(
                         tags.iter()
                             .map(|tag| div().text_xs().text_color(muted).child(format!("# {tag}"))),
