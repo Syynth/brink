@@ -377,7 +377,28 @@ impl Studio {
                 Some("cmd-p"),
                 cx,
             );
+            // After every tool window is registered: their `open()`
+            // defaults decide the first run, and a saved shape overrides
+            // them (`Workspace::apply_layout`).
+            let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+            workspace.apply_layout(&saved, window, cx);
         });
+
+        // Persist the shape on quit. The toolkit fires `LayoutChanged` on
+        // every step of a drag and asks subscribers to debounce; a quit
+        // hook needs no timer and no debounce, and the shape a person
+        // wants back is the one they left, not each frame of getting
+        // there. Toggling a tool window or switching view writes too (see
+        // `save_layout` in the handlers), so a crash loses at most an
+        // unfinished drag.
+        cx.on_app_quit({
+            let workspace = workspace.clone();
+            move |_: &mut Studio, cx: &mut Context<Studio>| {
+                Workspace::save_layout(&workspace, cx);
+                async move {}
+            }
+        })
+        .detach();
 
         let on_project = cx.subscribe_in(
             &project,

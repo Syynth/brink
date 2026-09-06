@@ -460,12 +460,87 @@ impl Workspace {
             root.occupant_focus()
         });
         window.focus(&focus.unwrap_or_else(|| self.focus.clone()), cx);
+        self.persist_layout(cx);
         cx.notify();
     }
 
     #[must_use]
     pub fn editor_view(&self, cx: &App) -> EditorView {
         self.editor_root.read(cx).view()
+    }
+
+    /// The window's current shape, for the settings.
+    ///
+    /// Only the three docks and the editor view: the panel TREE is not
+    /// persisted (see `settings::Layout`), so nothing here has to survive
+    /// a panel that no longer exists.
+    #[must_use]
+    pub fn layout(&self, cx: &App) -> crate::settings::Layout {
+        let area = self.dock_area.read(cx);
+        let docks = DOCKS
+            .iter()
+            .map(|(name, placement)| {
+                (
+                    (*name).to_owned(),
+                    crate::settings::DockShape {
+                        open: area.is_dock_open(*placement),
+                        size: area.dock_size(*placement).map(f32::from),
+                    },
+                )
+            })
+            .collect();
+        crate::settings::Layout {
+            docks,
+            editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
+        }
+    }
+
+    /// Put a persisted shape back. Called once, after the tool windows are
+    /// registered — their `ToolWindowSpec::open()` defaults decide the
+    /// first run, and this overrides them when there is something saved.
+    pub fn apply_layout(
+        &mut self,
+        layout: &crate::settings::Layout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (name, placement) in DOCKS {
+            let Some(shape) = layout.docks.get(*name) else {
+                continue;
+            };
+            if let Some(size) = shape.size {
+                self.dock_area.update(cx, |area, cx| {
+                    area.set_dock_size(*placement, px(size), window, cx)
+                });
+            }
+            if self.dock_area.read(cx).is_dock_open(*placement) != shape.open {
+                self.dock_area
+                    .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+            }
+        }
+        if let Some(key) = &layout.editor_view
+            && let Some(view) = EditorView::ALL.iter().find(|v| v.persistence_key() == key)
+        {
+            self.set_editor_view(*view, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Write the current shape into the settings. Cheap and idempotent —
+    /// `settings::update` compares before writing — so a caller may say
+    /// this whenever the layout might have moved.
+    pub fn save_layout(this: &Entity<Self>, cx: &mut App) {
+        let layout = this.read(cx).layout(cx);
+        crate::settings::update(cx, |settings| settings.layout = layout);
+    }
+
+    /// The same, from inside a method. Called after every discrete change
+    /// a person makes — a dock toggled, a view switched — so the shape
+    /// survives a kill as well as a clean quit; `on_app_quit` alone would
+    /// lose it to a crash, and SIGTERM does not run it either.
+    fn persist_layout(&self, cx: &mut Context<Self>) {
+        let layout = self.layout(cx);
+        crate::settings::update(cx, |settings| settings.layout = layout);
     }
 
     /// The rail-button gesture. Tab-level: a closed dock opens showing this
@@ -488,6 +563,7 @@ impl Workspace {
             }
             (tool.select)(window, cx);
         }
+        self.persist_layout(cx);
         cx.notify();
     }
 
@@ -504,6 +580,7 @@ impl Workspace {
                 .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
         }
         (tool.select)(window, cx);
+        self.persist_layout(cx);
         cx.notify();
     }
 
@@ -730,6 +807,13 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+/// The three docks, by the name their shape is persisted under.
+const DOCKS: &[(&str, DockPlacement)] = &[
+    ("left", DockPlacement::Left),
+    ("right", DockPlacement::Right),
+    ("bottom", DockPlacement::Bottom),
+];
 
 impl ToolWindowSpec {
     fn dock_placement(&self) -> DockPlacement {

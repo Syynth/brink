@@ -62,6 +62,74 @@ pub struct AppSettings {
     /// By the command's full title ("View: Toggle Binder") — the name the
     /// palette shows, and the only identity a data-carrying action has.
     pub keymap: BTreeMap<String, KeymapOverride>,
+    /// The window's shape at the last save: which docks were open, how wide
+    /// they were, and which editor view was showing.
+    ///
+    /// **Not the panel tree.** Restoring which documents were open would
+    /// mean rebuilding every panel through the toolkit's `PanelRegistry`,
+    /// and a `Document` panel is per-file — a much larger thing, and one
+    /// that has to decide what a persisted file that no longer exists
+    /// means. This is the part with no such question in it, and it is most
+    /// of what a person notices: the app opens looking like they left it.
+    pub layout: Layout,
+}
+
+/// The persisted window shape. Sizes are logical pixels.
+///
+/// Hand-serialized like [`AppSettings`] itself, and read as leniently: a
+/// layout from another build must never blank the window.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Layout {
+    /// Keyed by the dock's placement name (`left`, `right`, `bottom`).
+    pub docks: BTreeMap<String, DockShape>,
+    /// `EditorView::persistence_key`.
+    pub editor_view: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DockShape {
+    pub open: bool,
+    /// Absent when the dock has never been sized by hand.
+    pub size: Option<f32>,
+}
+
+impl Layout {
+    fn to_json(&self) -> Value {
+        let docks: serde_json::Map<String, Value> = self
+            .docks
+            .iter()
+            .map(|(k, shape)| (k.clone(), json!({ "open": shape.open, "size": shape.size })))
+            .collect();
+        json!({ "docks": Value::Object(docks), "editor_view": self.editor_view })
+    }
+
+    fn from_json(value: &Value) -> Self {
+        let docks = value
+            .get("docks")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .map(|(k, v)| {
+                        let open = v.get("open").and_then(Value::as_bool).unwrap_or(false);
+                        // A size is only meaningful as a positive, finite
+                        // number of pixels; anything else takes the dock's
+                        // own default rather than collapsing it.
+                        let size = v
+                            .get("size")
+                            .and_then(Value::as_f64)
+                            .map(|n| n as f32)
+                            .filter(|n| n.is_finite() && *n > 0.0);
+                        (k.clone(), DockShape { open, size })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let editor_view = value
+            .get("editor_view")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Self { docks, editor_view }
+    }
 }
 
 impl Global for AppSettings {}
@@ -76,6 +144,7 @@ impl Default for AppSettings {
             show_inlay_hints: true,
             format_on_save: false,
             keymap: BTreeMap::new(),
+            layout: Layout::default(),
         }
     }
 }
@@ -116,6 +185,7 @@ impl AppSettings {
             "show_inlay_hints": self.show_inlay_hints,
             "format_on_save": self.format_on_save,
             "keymap": Value::Object(keymap),
+            "layout": self.layout.to_json(),
         })
     }
 
@@ -170,6 +240,10 @@ impl AppSettings {
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.show_inlay_hints),
             keymap,
+            layout: value
+                .get("layout")
+                .map(Layout::from_json)
+                .unwrap_or_default(),
         }
     }
 }
@@ -272,12 +346,61 @@ mod tests {
             show_inlay_hints: true,
             format_on_save: false,
             keymap: BTreeMap::new(),
+            layout: Layout::default(),
         };
         s.keymap
             .insert("File: Save".to_owned(), Some("cmd-shift-s".to_owned()));
         s.keymap.insert("View: Toggle Binder".to_owned(), None);
         let back = AppSettings::from_json(&s.to_json());
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn a_layout_round_trips_through_json() {
+        let mut s = AppSettings::default();
+        s.layout.docks.insert(
+            "left".to_owned(),
+            DockShape {
+                open: true,
+                size: Some(260.0),
+            },
+        );
+        s.layout.docks.insert(
+            "right".to_owned(),
+            DockShape {
+                open: false,
+                size: None,
+            },
+        );
+        s.layout.editor_view = Some("continuous".to_owned());
+        assert_eq!(AppSettings::from_json(&s.to_json()), s);
+    }
+
+    #[test]
+    fn a_nonsense_dock_size_is_dropped_rather_than_collapsing_the_dock() {
+        // A zero or negative width would leave a dock present and
+        // invisible, which reads as a broken window rather than a small
+        // one; an absent size takes the dock's own default instead.
+        let value = json!({
+            "layout": {
+                "docks": {
+                    "left": { "open": true, "size": 0.0 },
+                    "right": { "open": true, "size": -5.0 },
+                    "bottom": { "open": true }
+                }
+            }
+        });
+        let layout = AppSettings::from_json(&value).layout;
+        assert_eq!(layout.docks["left"].size, None);
+        assert_eq!(layout.docks["right"].size, None);
+        assert_eq!(layout.docks["bottom"].size, None);
+        assert!(layout.docks["left"].open, "the open flag still counts");
+    }
+
+    #[test]
+    fn a_file_with_no_layout_reads_as_the_default() {
+        let value = json!({ "theme": "inky-dark" });
+        assert_eq!(AppSettings::from_json(&value).layout, Layout::default());
     }
 
     #[test]

@@ -71,7 +71,8 @@ In `.ink`-author order, the gaps that bite first:
    keystroke but not a key CONTEXT, so a global `Escape` would compete
    with every overlay's own dismissal (the palette, the find panel, the
    `cmd-.` menu). It needs a context on the binding first.
-6. **Layout persistence** and an open-project dialog.
+6. ~~**Layout persistence**~~ (the docks and the view, 2026-09-06 — not
+   the panel tree, see §1) and an open-project dialog.
 
 **Suggested next order (2026-09-06)**, cheapest-first against what the
 worker now holds:
@@ -106,7 +107,7 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 
 | Left out | Kind | Note |
 |---|---|---|
-| Layout persistence | parity gap | `DockAreaState::dump/load` and `RailSlot::persistence_key` exist; nothing calls them (HANDOFF "Known broken" 5). |
+| Layout persistence | partly built | **2026-09-06**: the three docks' open state and width, and the editor view, ride `AppSettings` (`Workspace::layout`/`apply_layout`), written on every discrete change and on quit. **Not the panel tree** — restoring open documents means rebuilding panels through the toolkit's `PanelRegistry`, and a `Document` panel is per-file, which also has to decide what a persisted file that no longer exists means. |
 | Strip drag to re-dock | parity gap | studio-shell-spec §5.1; Phase 3 in the web too. |
 | Tool-window / editor-group maximize | parity gap | studio-shell-spec §5.4. |
 | Responsive tiers (wide/medium/narrow) | parity gap | studio-shell-spec §5.3; the window is one tier. |

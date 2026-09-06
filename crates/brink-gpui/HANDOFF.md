@@ -312,10 +312,13 @@ unverified by hand.
    rail opens-and-selects, switches, or closes accordingly; a button is
    pressed only when its window is the one on screen.
 4. **Open-project is a CLI argument only.** No file dialog, no recents.
-5. **No layout persistence.** `DockAreaState` has `dump`/`load` and
-   `RailSlot::persistence_key` exists for exactly this; nothing calls them.
-   (App settings do persist — `shell/src/settings.rs` — but the layout is
-   not among them.)
+5. ~~**No layout persistence.**~~ **Partly fixed 2026-09-06**: the three
+   docks' open state and width and the current editor view ride
+   `AppSettings` (`Workspace::layout`/`apply_layout`), saved on every
+   discrete change and again on quit — `on_app_quit` alone loses them to
+   a crash, and SIGTERM does not run it either. The panel TREE is still
+   not persisted: rebuilding open documents needs the toolkit's
+   `PanelRegistry`, and a `Document` panel is per-file.
 6. ~~**Fold chevrons do not paint.**~~ **Fixed 2026-09-05.** The app
    never registered the kit's asset source (`gpui_kit_assets::Assets`), so
    every `IconName` — the fold chevrons included — drew nothing while its
