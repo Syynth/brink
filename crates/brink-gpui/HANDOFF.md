@@ -316,11 +316,31 @@ unverified by hand.
    `RailSlot::persistence_key` exists for exactly this; nothing calls them.
    (App settings do persist — `shell/src/settings.rs` — but the layout is
    not among them.)
-6. **`#3562` — `.brink` files have no incremental paint path.** Native
+6. **Fold chevrons do not paint.** The whole data path is verified —
+   `QueryKind::FoldingRanges` answers 14 folds for a real file, the
+   highlighter reports them through `fold_ranges` (the toolkit re-reads
+   candidates from there on every pass, so anything pushed in from
+   outside is overwritten), and `apply_highlighter_fold_candidates` runs
+   with folding on — but gpui-base's `paint_fold_icons` (which paints an
+   icon only on gutter hover or for the caret's line) draws nothing, and an
+   unpainted icon registers no click handler, so there is no hitbox either.
+   Next step is inside the fork: instrument `layout_fold_icons` /
+   `paint_fold_icons` in `crates/base/src/input/base/element.rs`.
+7. **`#3562` — `.brink` files have no incremental paint path.** Native
    segmentation does not exist, so a native file pays a whole-file parse per
    keystroke (2.1 ms at 700 lines, 12.4 ms at 8,400) where `.ink` pays
    17–51 µs per knot. **The boundary question is a language ruling and must
    not be decided by an agent.**
+
+## Rendering contract worth knowing (2026-09-05)
+
+gpui-component's `Root::render` draws the view, tooltips and native menus
+— and **not** its dialog, sheet and notification layers. Those are free
+functions (`Root::render_dialog_layer`, `render_notification_layer`,
+`render_sheet_layer`) the application root composes in, AFTER its own
+content so they paint on top. `Studio::render` does this now; before it
+did, every `open_dialog` and `push_notification` landed in a list nothing
+rendered, silently.
 
 ## Open, parked by the maintainer (2026-09-05)
 

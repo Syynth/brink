@@ -37,8 +37,13 @@ included, since a `[dialogue]` dialect runs over `.ink` sources too).
 
 In `.ink`-author order, the gaps that bite first:
 
-1. **The editor's navigation** — go-to-definition, references, rename,
-   folding (`brink-ide` has each; the worker exposes none).
+1. ~~**The editor's navigation** — go-to-definition, references, rename,
+   folding.~~ **Built 2026-09-05** (`app/src/navigation.rs`,
+   `app/src/rename.rs`): F12 / Cmd-click, Shift-F12 into Search cards with
+   kind badges, F2 with the ruled breakage report and Force, in both Code
+   and Continuous views. Residue: fold candidates reach the editor but the
+   gutter chevrons do not paint (see the frame section), and the toolkit
+   exposes no Fold All / Unfold All.
 2. **The Player** and everything session-bound behind it — blocked on the
    placement ruling, and on a compile + runtime session in the worker.
 3. **Fixes** — code actions in the editor, Fix buttons in Problems.
@@ -105,8 +110,9 @@ else. Everything below is listed against that directory.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Go-to-definition, references, rename (inline name input) | worker query + port | `brink_ide::navigation::goto_definition` and `rename` exist; the worker exposes no `Definition`/`References`/`Rename` `QueryKind`. Search's references mode waits on the same query. |
-| Folding | worker query + port | `brink_ide::folding::folding_ranges` exists; the worker exposes no query for it and the editor wires no fold provider. |
+| ~~Go-to-definition, references, rename~~ | built 2026-09-05 | `QueryKind::{Definition, References, PrepareRename, Rename}`; rename is a dialog prompt (the web studio's is inline in the editor — a parity gap in shape, not in behaviour). |
+| Folding: gutter chevrons | parity gap | `QueryKind::FoldingRanges` answers, the candidates reach `EditorState` through the highlighter's `fold_ranges` (the toolkit's source), and `is_fold_candidate` should be true for them — yet gpui-base's `paint_fold_icons` (gated on gutter hover or the caret's line) paints none. Unresolved in the toolkit; the data path is verified. |
+| Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
 | Code actions, fixes, extract actions | worker query + port | `brink_ide::code_actions` exists; the worker offers no fixes query and the editor has no action UI (`docs/autofix-spec.md`). Also blocks Problems' Fix buttons. |
 | Find/replace panel inside a document | parity gap | `find-panel.ts`. |
 | Signature help | parity gap | `signature-help.ts`. |
@@ -215,7 +221,7 @@ config re-application, drafts report, resolved dialect.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Definition / References / Rename / Folding / CodeActions queries | worker query | `brink-ide` has each; the worker does not expose them. |
+| CodeActions query | worker query | `brink-ide` has it; the worker does not expose it. (Definition / References / Rename / Folding: built 2026-09-05.) |
 | `line_contexts` per file | worker query | for per-line styles. |
 | Compile to `StoryData` and a runtime session | not started | everything session-bound waits on it. |
 
