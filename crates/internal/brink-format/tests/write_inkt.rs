@@ -684,7 +684,7 @@ fn params_count_mismatch_is_a_parse_error() {
   )
 
   (container $01_406ea523c53def
-    (params 0 (val 0))
+    (params 0 (val 0 0))
     (code
       done
     )
