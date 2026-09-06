@@ -296,6 +296,88 @@ fn what_an_edit_invalidates() {
     println!("  inlayHints   (everything warm)  {:>6.2} ms", hints / n);
 }
 
+/// Would viewport-scoping `inlayHints` actually help? **Partly — and the
+/// remainder is the more interesting half.**
+///
+/// The host asks for `(0, doc.length)`; a real viewport is ~50 lines. On a
+/// 100 KB story, asking for 2% of the document costs ~4.3 ms against
+/// ~15.8 ms for all of it: a 3.7x saving, not the ~50x a
+/// purely range-proportional walk would give.
+///
+/// So the cost decomposes into two parts that want two different fixes:
+///
+/// - **~11.5 ms range-proportional** — recovered by having the host pass its
+///   viewport instead of the whole document. A TypeScript change.
+/// - **~4.3 ms range-INDEPENDENT floor** — paid even for 2% of the file, and
+///   paid on every keystroke. Whatever this is, a narrower range never
+///   removes it; it lives in `brink_ide::inlay_hints` (or an input it pulls
+///   that the earlier probe did not isolate) and is the harder, more
+///   valuable target of the two.
+///
+/// Measured after a real edit, since that is the state that costs — the
+/// same call is ~1 ms on an unchanged document either way. Each half of the
+/// comparison gets its own edit so neither is measured on a document the
+/// other has already warmed.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn does_range_scoping_help_inlay_hints() {
+    const N: usize = 10;
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+
+    let src = read(LARGE);
+    let doc_len = u32::try_from(src.len()).expect("len fits");
+    // ~50 lines around the middle, which is what a viewport actually spans.
+    let mid = doc_len / 2;
+    let vp_start = mid.saturating_sub(1000);
+    let vp_end = mid.saturating_add(1000);
+
+    let mut session = EditorSession::new();
+    session.set_perf_enabled(true);
+    session.update_file("story.ink", &src);
+    assert!(session.set_active_file("story.ink"));
+    let doc = session.open_document("story.ink");
+
+    let mut whole = 0.0;
+    let mut viewport = 0.0;
+    for i in 0..N {
+        // Each half gets its OWN edit, so neither is measured on a document
+        // the other has already warmed.
+        let mut a = src.clone();
+        let _ = writeln!(a, "\n// {}", "x".repeat(i + 1));
+        session.update_file("story.ink", &a);
+        let t0 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, 0, doc_len));
+        whole += crate::perf::now_ms() - t0;
+
+        let mut b = src.clone();
+        let _ = writeln!(b, "\n// {}", "y".repeat(i + 1));
+        session.update_file("story.ink", &b);
+        let t1 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, vp_start, vp_end));
+        viewport += crate::perf::now_ms() - t1;
+    }
+
+    println!("\ninlayHints after an edit, on a {doc_len}-byte story (mean of {N}):");
+    println!("  whole document (0..{doc_len})  {:>7.2} ms", whole / n);
+    println!(
+        "  ~50-line viewport ({vp_start}..{vp_end}) {:>5.2} ms",
+        viewport / n
+    );
+    let floor = viewport / n;
+    let proportional = (whole - viewport) / n;
+    println!(
+        "  ratio {:.2}x over {:.1}% of the document\n\
+         \x20 -> ~{:.1} ms is range-proportional (a host viewport recovers it)\n\
+         \x20 -> ~{:.1} ms is a range-INDEPENDENT floor, paid every keystroke\n\
+         \x20    whatever the range; only the walk itself can remove that.",
+        whole / viewport.max(f64::MIN_POSITIVE),
+        100.0 * f64::from(vp_end - vp_start) / f64::from(doc_len),
+        proportional,
+        floor
+    );
+}
+
 /// How the two whole-document ranged queries scale with document size.
 ///
 /// The host calls `inlayHints` and `argumentWidgets` as `(0, doc.length)` —
