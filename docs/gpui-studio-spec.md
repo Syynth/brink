@@ -437,8 +437,12 @@ Two defects carried from the spike are fixed here, not later:
   which is what stops the echo. Dirty and save are per file, in the
   project — an edit in the manuscript is as unsaved as one in a tab, and
   one `cmd-s` writes both. Verified headless both directions.
-- Player, story graph, debugger; Search's replace previews, context knob
-  and references mode. (Settings' Project scope is complete as of
+- Story graph, debugger; Search's replace previews, context knob and
+  references mode. (The Player landed 2026-09-05 as a Code-view tab;
+  **Compiled Output** and the **Output / compile log** landed 2026-09-06
+  — `app/src/compiled_output.rs` reads the `.inkt` dump off the worker's
+  memoized compile as a read-only centre tab, `app/src/output_log.rs` is
+  the bottom-dock log of timings and the errors that carry no span.) (Settings' Project scope is complete as of
   2026-09-05 — §4.8; the App-scope Editor section and the Problems panel's
   "Configure Exxx…" door into Diagnostics are not.) (Search's cards **are editors** over
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:

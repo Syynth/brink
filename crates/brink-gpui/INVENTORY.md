@@ -69,11 +69,12 @@ In `.ink`-author order, the gaps that bite first:
 **Suggested next order (2026-09-06)**, cheapest-first against what the
 worker now holds:
 
-1. **Compiled Output** and **Output / compile log** — both are a day's work
-   on the compile that already exists (`model/src/program.rs` runs it,
-   `brink_format::write_inkt` writes the dump, the worker already times
-   analysis and the play session already drains runtime warnings). Neither
-   needs a ruling.
+1. ~~**Compiled Output** and **Output / compile log**.~~ **Built
+   2026-09-06** (`model/src/compiled.rs`, `app/src/compiled_output.rs`,
+   `app/src/output_log.rs`). Residue: the log has no severity filter or
+   copy-all, no row opens anything, and nothing but the project and the
+   Player writes to it; Compiled Output has no find-in-dump of its own and
+   no jump from a dump row to its source.
 2. **State View** (the debugger) — what the Program Explorer's executing-
    instruction overlay and `stepi` are both waiting on, with the Player's
    session as the base. The engine work (exposing state off a running
@@ -108,7 +109,7 @@ Built: an inner `DockArea` of documents — tabs, drag between groups, splits
 | Left out | Kind | Note |
 |---|---|---|
 | Quick-open (`cmd-p`) | parity gap | spec §4.5 defers it. |
-| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | Player built | the Player docks as a centre tab (`CodeView::show_player`); Compiled Output and Story Graph not started; the Settings tab is replaced by the modal by ruling. |
+| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | mostly built | the Player and Compiled Output dock as centre tabs (`CodeView::show_player`/`show_compiled`); Story Graph not started; the Settings tab is replaced by the modal by ruling. |
 
 ### Single File view (`app/src/single_view.rs`)
 
@@ -189,10 +190,42 @@ marks itself stale and asks when shown.
 | Left out | Kind | Note |
 |---|---|---|
 | Executing-instruction overlay, `stepi` | not started | needs the State View's session state (D9/W9 in the web). |
-| "open .inkt" button | not started | Compiled Output is not built; the button has nowhere to go. |
+| "open .inkt" button | parity gap | Compiled Output is built (§1) and reachable from the palette; the Program Explorer has no button to it yet. |
 | Size treemap | parity gap | `ProgramSizeView.tsx` draws a treemap; this draws bars. |
 | Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
 | Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
+
+### Compiled Output (`app/src/compiled_output.rs`, `model/src/compiled.rs`)
+
+Built 2026-09-06: the `.inkt` dump as a read-only Code-view tab, a
+singleton on the Player's terms (docked on first ask, selected after),
+written on the worker off the same memoized compile the Program Explorer
+and the play session use. Refreshed on the Program Explorer's rule —
+while shown it re-asks after each analysis, hidden it marks itself stale.
+Errors are reported in the buffer rather than leaving a stale dump up.
+
+| Left out | Kind | Note |
+|---|---|---|
+| A find-in-dump of its own | parity gap | the web's CM6 mode carries search; this has the editor's selection and scrolling only. |
+| A dump row jumping to its source | parity gap | the Program Explorer's disassembly rows do this; the dump does not. |
+| Reached only from the palette | parity gap | the Program Explorer's "open .inkt" toolbar button is not built. |
+
+### Output log (`app/src/output_log.rs`)
+
+Built 2026-09-06: the bottom-dock compile log, third tab beside Problems
+and TODOs. Project open/save, analysis timings and the Player's compile
+and runtime failures; nothing that has a file and a span, which is
+Problems' business. An analysis earns a row when it is the first, when
+the problem count moved, or when it was slow, and the quiet ones fold
+into a `+N more` tail; `Every analysis` turns the filter off. 500 rows,
+oldest dropped, with the dropped count in the header. Follows its tail.
+
+| Left out | Kind | Note |
+|---|---|---|
+| Severity filter, copy-all | parity gap | the header carries `Every analysis` and Clear only. |
+| A row opening anything | parity gap | a compile error names a code but does not navigate; Problems is where a span-carrying diagnostic goes. |
+| Only two writers | parity gap | the project and the Player. A save failure, a config write, a format run and a fix-all say nothing here; each is a call to `Log::push` away, and the notification service (§1, the frame) is the other half of that question. |
+| No timestamps | parity gap | rows are in order but undated, which is enough for one session and not for a long one. |
 
 ### Binder (`app/src/binder.rs`)
 
@@ -305,8 +338,8 @@ Against studio-shell-spec §4's inventory:
 | **Player** | ~~not started~~ **built** — see §1. Continuous swap-in and the Single File split remain the open ruling. |
 | **Program Explorer** | ~~not started~~ **built** — see §1. |
 | **State View** (debugger) | nothing in the shared layer exposes a running `Story`'s state. The Player owns the session, so this is engine work below `IdeSession` plus a panel. |
-| **Output / compile log** | nothing — but unblocked: the worker compiles, times analysis, and drains runtime warnings. Wants a bottom-dock panel and a place to route errors (see the notification row in §1). |
-| **Compiled Output** (`.inkt` tab) | nothing — but unblocked: `brink_format::write_inkt` over the same compile, as a read-only Code-view tab. The Program Explorer's "open .inkt" button waits on it. |
+| **Output / compile log** | ~~unblocked~~ **built 2026-09-06** — see §1. |
+| **Compiled Output** (`.inkt` tab) | ~~unblocked~~ **built 2026-09-06** — see §1. |
 | **Story Graph** | the story-graph query in the worker; a canvas. |
 | **Story transcript** | listed as future in the web too. The Player's transcript is per-session and is not this. |
 | **Notification service** | the layers render (§1); the service does not exist. |
