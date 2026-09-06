@@ -30,7 +30,7 @@ use gpui::{
     IntoElement, Render, SharedString, Subscription, Window, div, px, relative, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dock::{BasePanel, Panel, PanelEvent, PanelId};
+use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::project::{Project, ProjectEvent};
@@ -152,6 +152,10 @@ pub struct ProgramExplorer {
     /// Expanded tree rows, by key — everything starts folded.
     expanded: BTreeSet<String>,
     items: Vec<Item>,
+    /// Whether the panel is the shown tab, from the dock's `set_active` and
+    /// from being rendered. Tracked rather than asked: asking the tab group
+    /// reads this entity back while it is being updated (a panic).
+    shown: bool,
     /// An analysis landed while the panel was not shown.
     stale: bool,
     busy: bool,
@@ -178,6 +182,7 @@ impl ProgramExplorer {
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
             items: Vec::new(),
+            shown: false,
             stale: true,
             busy: false,
             generation: 0,
@@ -185,10 +190,6 @@ impl ProgramExplorer {
             tab: TabSlot::default(),
             _subscriptions: vec![on_project],
         }
-    }
-
-    fn is_shown(&self, cx: &Context<Self>) -> bool {
-        self.tab.is_active(PanelId::from(cx.entity_id()), cx)
     }
 
     /// A click on a row with provenance opens it.
@@ -207,7 +208,7 @@ impl ProgramExplorer {
 
     /// Ask again if shown; otherwise remember to.
     fn refresh_if_shown(&mut self, cx: &mut Context<Self>) {
-        if self.is_shown(cx) {
+        if self.shown {
             self.refresh(cx);
         } else {
             self.stale = true;
@@ -1208,6 +1209,7 @@ impl BasePanel for ProgramExplorer {
     }
 
     fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.shown = active;
         if active && self.stale {
             self.refresh(cx);
         }
@@ -1223,6 +1225,7 @@ impl BasePanel for ProgramExplorer {
     }
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.shown = false;
         self.tab.removed();
     }
 }
@@ -1245,8 +1248,10 @@ impl ToolWindow for ProgramExplorer {
 
 impl Render for ProgramExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Shown for the first time before any analysis landed: ask now.
-        if self.stale && !self.busy && self.is_shown(cx) {
+        // Being rendered is being shown — the dock renders only the active
+        // tab of an open dock. First shown before any analysis landed: ask now.
+        self.shown = true;
+        if self.stale && !self.busy {
             self.refresh(cx);
         }
         let muted = cx.theme().muted_foreground;
