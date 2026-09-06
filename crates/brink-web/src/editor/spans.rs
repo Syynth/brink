@@ -10,12 +10,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.line_contexts_impl(&d.path, d.view.as_ref())
+        crate::perf::time("ide.lineContexts", || {
+            self.line_contexts_impl(&d.path, d.view.as_ref())
+        })
     }
 
     /// Compute per-line context from the HIR. Returns JSON array of `LineContext`.
     pub fn line_contexts(&self) -> String {
-        self.line_contexts_impl(&self.active_path, self.view.as_ref())
+        crate::perf::time("ide.lineContexts", || {
+            self.line_contexts_impl(&self.active_path, self.view.as_ref())
+        })
     }
 
     /// Compute semantic tokens for a document handle. Returns JSON array of tokens.
@@ -23,12 +27,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.semantic_tokens_impl(&d.path, d.view.as_ref())
+        crate::perf::time("ide.semanticTokens", || {
+            self.semantic_tokens_impl(&d.path, d.view.as_ref())
+        })
     }
 
     /// Compute semantic tokens. Returns JSON array of tokens.
     pub fn semantic_tokens(&self) -> String {
-        self.semantic_tokens_impl(&self.active_path, self.view.as_ref())
+        crate::perf::time("ide.semanticTokens", || {
+            self.semantic_tokens_impl(&self.active_path, self.view.as_ref())
+        })
     }
 
     /// The HIR structural projection for a document handle (#454): a JSON
@@ -38,7 +46,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "{\"spans\":[],\"lines\":[]}".to_owned();
         };
-        self.hir_spans_impl(&d.path, d.view.as_ref())
+        crate::perf::time("ide.hirSpans", || {
+            self.hir_spans_impl(&d.path, d.view.as_ref())
+        })
     }
 
     /// The outbound-delta segment manifest for a FILE handle's document

@@ -308,7 +308,10 @@ impl EditorSession {
         let FixRequest::Run(select, policy) = self.parse_fix_request(select_json) else {
             return "[]".to_owned();
         };
-        serde_json::to_string(&self.fix_offers_impl(&select, &policy)).unwrap_or_default()
+        serde_json::to_string(&crate::perf::time("ide.fixOffers", || {
+            self.fix_offers_impl(&select, &policy)
+        }))
+        .unwrap_or_default()
     }
 
     /// How many fixes one batch round would take for `select` — the `N` in

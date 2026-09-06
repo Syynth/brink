@@ -107,7 +107,9 @@ impl EditorSession {
         };
         let path = d.path.clone();
         let view = d.view;
-        self.explain_match_impl(&path, view, offset)
+        crate::perf::time("ide.explainMatch", || {
+            self.explain_match_impl(&path, view, offset)
+        })
     }
 
     /// Explain what would match the line containing `offset` in the active
@@ -115,7 +117,9 @@ impl EditorSession {
     pub fn explain_match(&mut self, offset: u32) -> String {
         let path = self.active_path.clone();
         let view = self.view;
-        self.explain_match_impl(&path, view, offset)
+        crate::perf::time("ide.explainMatch", || {
+            self.explain_match_impl(&path, view, offset)
+        })
     }
 }
 

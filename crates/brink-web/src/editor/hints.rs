@@ -23,12 +23,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.inlay_hints_impl(&d.path, d.view.as_ref(), start, end)
+        crate::perf::time("ide.inlayHints", || {
+            self.inlay_hints_impl(&d.path, d.view.as_ref(), start, end)
+        })
     }
 
     /// Compute inlay hints. Returns JSON array.
     pub fn inlay_hints(&self, start: u32, end: u32) -> String {
-        self.inlay_hints_impl(&self.active_path, self.view.as_ref(), start, end)
+        crate::perf::time("ide.inlayHints", || {
+            self.inlay_hints_impl(&self.active_path, self.view.as_ref(), start, end)
+        })
     }
 
     /// Color hints (`hex_color` argument literals) for a document handle, for
@@ -38,7 +42,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.color_hints_impl(&d.path, d.view.as_ref(), start, end)
+        crate::perf::time("ide.colorHints", || {
+            self.color_hints_impl(&d.path, d.view.as_ref(), start, end)
+        })
     }
 
     /// Argument-widget sites for a document handle (argument-widget spec §4):
@@ -52,7 +58,9 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.argument_widgets_impl(&d.path, d.view.as_ref(), start, end)
+        crate::perf::time("ide.argumentWidgets", || {
+            self.argument_widgets_impl(&d.path, d.view.as_ref(), start, end)
+        })
     }
 
     /// Compute signature help for a document handle. Returns JSON or "null".
@@ -60,12 +68,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.signature_help_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.signatureHelp", || {
+            self.signature_help_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Compute signature help. Returns JSON or "null".
     pub fn signature_help(&self, offset: u32) -> String {
-        self.signature_help_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.signatureHelp", || {
+            self.signature_help_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 }
 

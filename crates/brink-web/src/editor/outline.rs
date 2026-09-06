@@ -19,12 +19,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.document_symbols_impl(&d.path)
+        crate::perf::time("ide.documentSymbols", || {
+            self.document_symbols_impl(&d.path)
+        })
     }
 
     /// Compute document symbols (outline). Returns JSON array.
     pub fn document_symbols(&self) -> String {
-        self.document_symbols_impl(&self.active_path)
+        crate::perf::time("ide.documentSymbols", || {
+            self.document_symbols_impl(&self.active_path)
+        })
     }
 
     /// Get document symbols for a specific file. Returns JSON `DocumentSymbol[]`.
@@ -139,7 +143,10 @@ impl EditorSession {
     /// matching two globs is listed under both — this is attribution, not a
     /// partition.
     pub(crate) fn draft_glob_report_json(&self) -> String {
-        serde_json::to_string(&self.draft_glob_report_inner()).unwrap_or_default()
+        serde_json::to_string(&crate::perf::time("ide.draftGlobReport", || {
+            self.draft_glob_report_inner()
+        }))
+        .unwrap_or_default()
     }
 
     fn draft_glob_report_inner(&self) -> DraftGlobReportJs {
