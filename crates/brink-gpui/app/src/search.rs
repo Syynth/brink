@@ -56,6 +56,7 @@ use gpui::{
     HighlightStyle, IntoElement, ListAlignment, ListState, Render, SharedString, Subscription,
     WeakEntity, Window, div, list, px,
 };
+use gpui_component::Disableable as _;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
 use gpui_component::input::{
@@ -134,6 +135,13 @@ pub struct Match {
     /// How the site uses the symbol, when the snapshot is a references
     /// list rather than a text search — the card's badge.
     pub kind: Option<brink_gpui_model::query::ReferenceKind>,
+    /// The bytes this match was made of, as the search saw them.
+    ///
+    /// Replace checks the file still reads this way at [`Self::hit`]
+    /// before touching it. A hit is edit-mapped and can slide onto
+    /// different text, and replacing at a stale range would rewrite
+    /// something the author never searched for.
+    pub matched_text: Option<String>,
 }
 
 /// What [`Match::map_edit`] asks the card's editor to do.
@@ -340,6 +348,7 @@ pub fn search<'a>(
             let last = (line_ix + context.1).min(last_line).max(line_ix);
             let window = starts[first]..line_end(source, &starts, last);
             let hit = found.start()..found.end().min(window.end);
+            let matched_text = source.get(hit.clone()).map(str::to_owned);
             snapshot.matches.push(Match {
                 path: path.to_owned(),
                 line: line_ix as u32 + 1,
@@ -350,6 +359,7 @@ pub fn search<'a>(
                 hit,
                 edited: false,
                 kind: None,
+                matched_text,
             });
         }
         if any {
@@ -396,6 +406,7 @@ pub fn references_snapshot<'a>(
             container: container_at(source, start),
             first_line: first as u32 + 1,
             frozen: source[window.clone()].to_owned(),
+            matched_text: source.get(start..end.min(window.end)).map(str::to_owned),
             hit: start..end.min(window.end),
             window,
             edited: false,
@@ -495,6 +506,14 @@ pub struct SearchView {
     references: Option<String>,
     /// A regex the author has not finished typing, shown under the input.
     error: Option<String>,
+    /// The replacement text, and whether its row is disclosed. VS Code's
+    /// shape, and the studio's: replace is a mode of find, not a second
+    /// surface.
+    replace: Entity<InputState>,
+    replacing: bool,
+    /// Replace All asks first, and the confirmation says how much it is
+    /// about to change — the studio's rule for the same button.
+    confirm_all: bool,
     collapsed: BTreeSet<usize>,
     /// Editors for the cards that have been on screen, by card index.
     editors: HashMap<usize, CardEditor>,
@@ -548,9 +567,13 @@ impl SearchView {
                 }
             },
         );
+        let replace = cx.new(|cx| InputState::new(window, cx).placeholder("Replace with\u{2026}"));
         Self {
             project,
             query,
+            replace,
+            replacing: false,
+            confirm_all: false,
             options: SearchOptions::default(),
             snapshot: None,
             references: None,
@@ -878,6 +901,102 @@ impl SearchView {
             .into_any_element()
     }
 
+    /// Whether `m`'s hit still reads as the text the search matched.
+    ///
+    /// A card's hit is edit-mapped through every change to its file, so it can
+    /// slide onto bytes that are no longer the match — and replacing there
+    /// would rewrite something the author never searched for. The `edited`
+    /// badge already shows this; replace has to ACT on it.
+    #[must_use]
+    fn still_the_match(source: Option<&str>, hit: &Range<usize>, matched: Option<&str>) -> bool {
+        let (Some(source), Some(matched)) = (source, matched) else {
+            return false;
+        };
+        source.get(hit.clone()) == Some(matched)
+    }
+
+    /// The hits this replace would touch, as edits.
+    ///
+    /// A hit whose range no longer reads as what the search matched is
+    /// skipped: cards are edit-mapped and a `hit` can be emptied or moved
+    /// by an edit since the snapshot froze, and replacing at a stale range
+    /// would corrupt text the author never searched for. The `edited`
+    /// badge already marks those cards; this is the same judgement, acted
+    /// on rather than only shown.
+    fn replacement_edits(&self, cx: &App) -> Vec<brink_gpui_model::query::TextEdit> {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        let with = self.replace.read(cx).value().to_string();
+        let project = self.project.read(cx);
+        snapshot
+            .matches
+            .iter()
+            .filter(|m| !m.hit.is_empty())
+            .filter(|m| {
+                Self::still_the_match(
+                    project.loaded_source(&m.path),
+                    &m.hit,
+                    m.matched_text.as_deref(),
+                )
+            })
+            .map(|m| brink_gpui_model::query::TextEdit {
+                path: m.path.clone(),
+                start: m.hit.start as u32,
+                end: m.hit.end as u32,
+                new_text: with.clone(),
+            })
+            .collect()
+    }
+
+    /// Replace one card's hit.
+    ///
+    /// Built from the card's OWN match rather than by indexing into
+    /// `replacement_edits`: that list has the stale hits filtered out, so
+    /// its indices are not card indices — taking the nth of it would
+    /// replace a different match than the button that was pressed.
+    fn replace_one(&mut self, card: usize, cx: &mut Context<Self>) {
+        let with = self.replace.read(cx).value().to_string();
+        let edit = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.matches.get(card))
+            .and_then(|m| {
+                let source = self.project.read(cx).loaded_source(&m.path);
+                Self::still_the_match(source, &m.hit, m.matched_text.as_deref()).then(|| {
+                    brink_gpui_model::query::TextEdit {
+                        path: m.path.clone(),
+                        start: m.hit.start as u32,
+                        end: m.hit.end as u32,
+                        new_text: with,
+                    }
+                })
+            });
+        self.apply_replacements(edit.into_iter().collect(), cx);
+    }
+
+    fn replace_all(&mut self, cx: &mut Context<Self>) {
+        let edits = self.replacement_edits(cx);
+        self.apply_replacements(edits, cx);
+    }
+
+    fn apply_replacements(
+        &mut self,
+        edits: Vec<brink_gpui_model::query::TextEdit>,
+        cx: &mut Context<Self>,
+    ) {
+        if edits.is_empty() {
+            return;
+        }
+        self.project
+            .update(cx, |project, cx| project.apply_edits(&edits, cx));
+        self.confirm_all = false;
+        // The snapshot is now a description of text that no longer exists,
+        // so it is replaced rather than mapped: re-running is the honest
+        // answer, and it is what the `↻` button does anyway.
+        self.run(cx);
+    }
+
     fn render_summary(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let snapshot = self.snapshot.as_ref()?;
         let theme = cx.theme();
@@ -932,6 +1051,83 @@ impl SearchView {
         )
     }
 
+    /// The replace row, disclosed under the query. Absent for a references
+    /// list: those sites are not a text pattern, and replacing them by
+    /// text would be a rename done wrong (`f2` is the one that is safe).
+    fn render_replace(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.replacing || self.references.is_some() {
+            return None;
+        }
+        let theme = cx.theme();
+        let edits = self.replacement_edits(cx);
+        let n = edits.len();
+        let files = {
+            let mut paths: Vec<&str> = edits.iter().map(|e| e.path.as_str()).collect();
+            paths.sort_unstable();
+            paths.dedup();
+            paths.len()
+        };
+        let confirm = self.confirm_all;
+        Some(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .px_2()
+                .pb_1()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .child(div().flex_1().child(Input::new(&self.replace).xsmall()))
+                        .child(
+                            Button::new("search-replace-all")
+                                .ghost()
+                                .xsmall()
+                                .label("Replace All")
+                                .disabled(n == 0)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.confirm_all = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(confirm, |el| {
+                    el.child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .text_xs()
+                            .child(div().flex_1().text_color(theme.warning).child(format!(
+                                "Replace {n} match{} in {files} file{}?",
+                                if n == 1 { "" } else { "es" },
+                                if files == 1 { "" } else { "s" }
+                            )))
+                            .child(
+                                Button::new("search-replace-all-yes")
+                                    .primary()
+                                    .xsmall()
+                                    .label("Replace")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.replace_all(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("search-replace-all-no")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.confirm_all = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     fn render_header(
         &self,
         card: usize,
@@ -947,6 +1143,9 @@ impl SearchView {
             theme.warning,
         );
         let collapsed = self.collapsed.contains(&card);
+        let replaceable = self.replacing
+            && self.references.is_none()
+            && Self::still_the_match(Some(source), &m.hit, m.matched_text.as_deref());
         let location = format!("{}:{}", m.path, m.line);
         let preview = collapsed.then(|| m.preview(source));
         h_flex()
@@ -1016,6 +1215,20 @@ impl SearchView {
                     .child(p)
             }))
             .child(div().flex_1())
+            // Only while replacing, and only on a card whose hit is still
+            // its match: a button that would silently do nothing is worse
+            // than no button.
+            .when(replaceable, |el| {
+                el.child(
+                    Button::new(("search-replace-one", card))
+                        .ghost()
+                        .xsmall()
+                        .label("Replace")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.replace_one(card, cx);
+                        })),
+                )
+            })
             .child(div().text_color(muted).child("\u{2197}"))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.reveal(card, cx);
@@ -1196,6 +1409,7 @@ impl Render for SearchView {
         let theme = cx.theme();
         let (muted, danger) = (theme.muted_foreground, theme.danger);
         let summary = self.render_summary(cx);
+        let replace_row = self.render_replace(cx);
         let count = self.snapshot.as_ref().map_or(0, |s| s.matches.len());
         let empty: Option<SharedString> = match (&self.error, &self.snapshot) {
             (Some(error), _) => Some(error.clone().into()),
@@ -1208,7 +1422,29 @@ impl Render for SearchView {
             .id("search")
             .size_full()
             .text_xs()
-            .child(div().px_2().py_1().child(Input::new(&self.query).small()))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .child(div().flex_1().child(Input::new(&self.query).small()))
+                    // The disclosure, VS Code's shape: replace is a mode of
+                    // find rather than a second surface.
+                    .child(
+                        Button::new("search-replace-toggle")
+                            .ghost()
+                            .xsmall()
+                            .toggled(self.replacing)
+                            .label("Replace")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.replacing = !this.replacing;
+                                this.confirm_all = false;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children(replace_row)
             .children(summary)
             .when_some(empty, |el, text| {
                 el.child(
@@ -1238,6 +1474,54 @@ mod tests {
     use super::*;
 
     const INK: &str = "=== start ===\nHello there.\n* [Go left] -> left\n= inner\nstill here\n\n=== left ===\nYou went left.\nhello again\n";
+
+    #[test]
+    fn a_hit_that_still_reads_as_its_match_is_replaceable() {
+        let source = "You could see the lighthouse from here.";
+        let hit = 18..28;
+        assert_eq!(&source[hit.clone()], "lighthouse");
+        assert!(SearchView::still_the_match(
+            Some(source),
+            &hit,
+            Some("lighthouse")
+        ));
+    }
+
+    #[test]
+    fn a_hit_that_has_slid_onto_other_text_is_not_replaced() {
+        // An edit above the hit moved it: the range is still in bounds and
+        // still a word, just not the one that was searched for. Replacing
+        // here would rewrite text the author never matched.
+        let source = "A much longer line now, lighthouse elsewhere.";
+        let hit = 18..28;
+        assert_ne!(&source[hit.clone()], "lighthouse");
+        assert!(!SearchView::still_the_match(
+            Some(source),
+            &hit,
+            Some("lighthouse")
+        ));
+    }
+
+    #[test]
+    fn a_hit_past_the_end_of_the_file_is_not_replaced() {
+        // The file shrank under the snapshot.
+        assert!(!SearchView::still_the_match(
+            Some("short"),
+            &(10..20),
+            Some("lighthouse")
+        ));
+    }
+
+    #[test]
+    fn a_match_with_no_recorded_text_is_not_replaced() {
+        // Nothing to compare against is not a licence to replace blind.
+        assert!(!SearchView::still_the_match(
+            Some("lighthouse"),
+            &(0..10),
+            None
+        ));
+        assert!(!SearchView::still_the_match(None, &(0..10), Some("x")));
+    }
 
     fn opts(case: bool, word: bool, regex: bool) -> SearchOptions {
         SearchOptions {

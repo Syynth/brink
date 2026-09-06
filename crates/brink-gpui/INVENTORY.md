@@ -63,7 +63,10 @@ In `.ink`-author order, the gaps that bite first:
    not in the native studio), the structural moves (promote/demote/move
    stitch) stay off the menu until they get the breakage gate, and the
    context-menu fix entries the web has.
-4. **Find/replace inside a document**, and Search's Replace.
+4. ~~**Find/replace inside a document**, and Search's Replace.~~ **Built
+   2026-09-06** — `cmd-f`/`cmd-alt-f` in any editor (the toolkit's own
+   panel, which every editor already carried), and Search's replace row
+   with a per-card Replace and a confirmed Replace All.
 5. ~~**Quick-open**~~ **built 2026-09-06** (`app/src/quick_open.rs`,
    `cmd-p`) — files and every knot/stitch, fuzzy-ranked, Enter revealing
    the declaration. `Escape` back to the editor is still open, and is
@@ -306,7 +309,7 @@ the summary strip, `cmd-shift-f`.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Replace previews / Replace All | parity gap | ruled surface (`docs/search-results-cards-spec.md`); held back. |
+| ~~Replace / Replace All~~ | built 2026-09-06 | a disclosed replace row (VS Code's shape), a per-card Replace, and a Replace All gated by a confirmation naming the match and file counts. A hit whose bytes no longer read as what the search matched is skipped and its button hidden — cards are edit-mapped, so a hit can slide onto text the author never searched for. Replacement is literal; capture groups are not offered. |
 | References mode | worker query + port | see the editor's navigation row. |
 | Context knob (lines above/below) | parity gap | the window is the ruled default and not tunable. |
 
