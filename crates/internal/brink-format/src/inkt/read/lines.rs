@@ -115,9 +115,15 @@ pub(super) fn parse_container(
                         line: 0,
                         col: 0,
                     })?;
+                    let slot_int = mi.next().ok_or_else(|| InktParseError {
+                        message: "expected slot in param_meta".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
                     params.push(ParamMeta {
                         name: NameId(parse_u16(&name_int)?),
                         is_ref,
+                        slot: parse_u16(&slot_int)?,
                     });
                 }
                 // `ContainerDef::params`'s doc invariant: `params.len()`

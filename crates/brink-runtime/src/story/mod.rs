@@ -917,7 +917,10 @@ impl<R: StoryRng> Story<R> {
             .map(|(idx, _)| idx)
             .ok_or_else(|| RuntimeError::UnresolvedDefinition(fallback_id))?;
         self.default.flow.output.begin_capture();
-        self.default.flow.invoke_fallback(container_idx);
+        let param_slots = self.program.container_param_slots(container_idx);
+        self.default
+            .flow
+            .invoke_fallback(container_idx, &param_slots);
         Ok(())
     }
 

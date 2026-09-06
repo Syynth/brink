@@ -271,7 +271,7 @@ frequency on the reference stories:
 | Pair | Share | Note |
 |---|---|---|
 | `EnterContainer → EmitNewline` | crucible 12.1% | compiler-side: every conditional-arm container opens with a newline — see §6 |
-| `Call → DeclareTemp`, `DeclareTemp → …` | crucible 12.0%, hanoi 5.5% | compiler-side: one `DeclareTemp` per parameter on every call — see §6 |
+| ~~`Call → DeclareTemp`~~ | ~~crucible 12.0%, hanoi 5.5%~~ | **fixed in codegen, 2026-09-05**: parameters are bound by the VM at container entry and the prologue is gone (`.inkb` v10, `docs/compiler-spec.md` §"Parameter binding"). The first of §6's compiler-side shapes to land. |
 | `BeginFragment → … → EndFragment` around `EmitValue`/`GetTemp` | hanoi 15% of all instructions | compiler-side: the fragment wrapping of call slots — see §6 |
 | `GetTemp → Call`, `GetTemp → Return`, `Add → Return` | crucible 6% each, hanoi 5% | possible folds (`GetTempCall`, `ReturnTemp`, `AddReturn`), each worth about one dispatch per call; measure before spending opcodes |
 
