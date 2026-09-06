@@ -152,6 +152,30 @@ struct DraggedRow {
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
     Open { path: String, offset: Option<usize> },
+    /// Start the story at a knot or `knot.stitch`.
+    Play { path: String },
+}
+
+/// The row menu's "Play from here": the knot or `knot.stitch` path, as the
+/// runtime addresses it. Dispatched with the Binder as the action context,
+/// so it lands here whichever editor had focus when the menu opened.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct PlayFromHere {
+    pub path: String,
+}
+
+impl Row {
+    /// The runtime path of a symbol row — `knot` or `knot.stitch` — read
+    /// off its key (`file::knot[::stitch]`). `None` for files and folders.
+    fn play_path(&self) -> Option<String> {
+        match self.kind {
+            RowKind::Knot | RowKind::Stitch => {
+                Some(self.key.split("::").skip(1).collect::<Vec<_>>().join("."))
+            }
+            RowKind::Folder | RowKind::File => None,
+        }
+    }
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -850,6 +874,8 @@ impl Binder {
         };
         let key_for_move = row.key.clone();
         let menu_key = row.key.clone();
+        let menu_focus = self.focus.clone();
+        let play_path = row.play_path();
         let kind_for_move = row.kind;
 
         // Indent guides: one hairline under each ancestor's icon column.
@@ -1008,11 +1034,16 @@ impl Binder {
                 this.apply_drop(&dragged, cx);
             }))
             .context_menu(move |menu, _window, _cx| {
-                menu.label(row.label.clone())
+                let menu = menu
+                    .action_context(menu_focus.clone())
+                    .label(row.label.clone())
                     .separator()
-                    .menu("Open", Box::new(NoopAction))
-                    .menu("Play from here", Box::new(NoopAction))
-                    .separator()
+                    .menu("Open", Box::new(NoopAction));
+                let menu = match play_path.clone() {
+                    Some(path) => menu.menu("Play from here", Box::new(PlayFromHere { path })),
+                    None => menu,
+                };
+                menu.separator()
                     .menu("Rename…", Box::new(NoopAction))
                     .menu("Delete", Box::new(NoopAction))
             })
@@ -1215,6 +1246,11 @@ impl Render for Binder {
         v_flex()
             .id("binder")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|_, action: &PlayFromHere, _, cx| {
+                cx.emit(BinderEvent::Play {
+                    path: action.path.clone(),
+                });
+            }))
             .size_full()
             .bg(sidebar)
             .border_r_1()

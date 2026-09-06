@@ -33,9 +33,9 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
 use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ListAlignment,
-    ListState, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    list, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
+    ListAlignment, ListState, ParentElement as _, Render, SharedString, Styled as _, Subscription,
+    WeakEntity, Window, div, list, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Sizable as _, h_flex,
@@ -68,6 +68,11 @@ const LINE_HEIGHT_FACTOR: f32 = 1.5;
 /// through to the manuscript list.
 const SECTION_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
 
+/// Line-number digits every section reserves, so sections over files of
+/// different lengths share one text column. Four covers any file an
+/// author would keep in one piece.
+const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
+
 /// Height of the boundary heading between two files.
 const HEADING_HEIGHT: f32 = 30.0;
 
@@ -81,16 +86,20 @@ const HEADING_HEIGHT: f32 = 30.0;
 /// belongs at the END of the manuscript, not after every chapter.
 const TRAILING_ROWS: usize = 8;
 
-/// A section is sized to its file's content, so the OUTER list is the only
-/// scroller — the same arrangement as the studio's. `rows()` is textarea-only
-/// in gpui-base, so the height goes on the element.
+/// A section's height before it has laid out: its file's line count, so
+/// the OUTER list is the only scroller — the same arrangement as the
+/// studio's. `rows()` is textarea-only in gpui-base, so the height goes on
+/// the element.
 ///
-/// **This is only exact with soft wrap off.** With wrapping on, a section's
-/// height is its *wrapped* row count, which lives in `InputBaseState`'s
-/// `display_map` — `pub(super)`, so a consumer cannot read it. Undersize the
-/// section and the editor gets a viewport smaller than its content and starts
-/// scrolling ITSELF, which is the second bug: the wheel moves one file
-/// instead of the manuscript.
+/// Only a first guess once soft wrap is on. A wrapped section's true height
+/// is its *wrapped* row count, which the fork exposes as
+/// `EditorState::wrap_row_count` (the toolkit keeps `display_map` private);
+/// [`ContinuousView::remeasure_sections`] re-sizes every mounted section
+/// against it on each frame, so a resize that re-wraps is caught too.
+/// Undersize a section and the editor gets a viewport smaller than its
+/// content and starts scrolling ITSELF — the wheel then moves one file
+/// instead of the manuscript, and a revealed selection drags the section
+/// sideways instead of the list down.
 fn section_height(source: &str, line_height: f32) -> f32 {
     display_rows(source) as f32 * line_height
 }
@@ -128,6 +137,14 @@ pub struct ContinuousView {
     /// only a first guess: the first laid-out section reports the true value
     /// through `EditorState::line_height()` and every section is re-measured.
     measured_line_height: Option<f32>,
+    /// A `(path, span)` to select once that file's section exists. Set by
+    /// [`ContinuousView::reveal_span`] when the section has not been
+    /// mounted yet; the list mounts it on the way there, and the next
+    /// render applies the selection.
+    pending_reveal: Option<(String, std::ops::Range<usize>)>,
+    /// A handle on this entity for the sections' navigation sink, which
+    /// runs from a bare `&mut App`.
+    me: WeakEntity<Self>,
     focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -160,6 +177,8 @@ impl ContinuousView {
             section_subs: Rc::new(RefCell::new(Vec::new())),
             mounted: Rc::new(RefCell::new((0, 0.0))),
             measured_line_height: None,
+            pending_reveal: None,
+            me: cx.weak_entity(),
             focus: cx.focus_handle(),
             _subscriptions: vec![watch],
         }
@@ -212,8 +231,8 @@ impl ContinuousView {
         } else {
             0
         };
-        let text = editor.read(cx).value();
-        let height = section_height(&text, line_height) + trailing as f32 * line_height;
+        let rows = editor.read(cx).wrap_row_count().max(1);
+        let height = (rows + trailing) as f32 * line_height;
         if let Some(section) = self.editors.borrow_mut().get_mut(path) {
             section.1 = height;
         }
@@ -228,13 +247,97 @@ impl ContinuousView {
     /// per-file editors do not scroll: this list does.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
         if let Some(index) = self.files.iter().position(|f| f == path) {
-            self.list.scroll_to_reveal_item(index);
+            // The file's START under the sticky heading. `scroll_to_reveal_
+            // item` would do the least scrolling that shows any of the item,
+            // which for a long file below the viewport is its last screen —
+            // a Binder click then landed on the file's end.
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: index,
+                offset_in_item: px(0.),
+            });
             cx.notify();
         }
     }
 
+    /// Scroll to a file AND select a span inside it — a definition or a
+    /// reference. If the section is not mounted yet the selection is
+    /// parked; the scroll mounts it and the next render applies it.
+    pub fn reveal_span(
+        &mut self,
+        path: &str,
+        span: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reveal(path, cx);
+        // Applied from `render`, AFTER `remeasure_sections`: a section whose
+        // wrapped height differs from its estimate is spliced there, and
+        // `ListState::splice` zeroes the scroll offset inside the spliced
+        // item — a scroll applied before that pass was thrown away by it.
+        self.pending_reveal = Some((path.to_owned(), span));
+        cx.notify();
+    }
+
+    fn apply_pending_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some((path, span)) = self.pending_reveal.clone() else {
+            return;
+        };
+        let Some((editor, _)) = self.editors.borrow().get(&path).cloned() else {
+            return;
+        };
+        let Some(index) = self.files.iter().position(|f| f == &path) else {
+            self.pending_reveal = None;
+            return;
+        };
+        self.pending_reveal = None;
+        // The section does not scroll — the list does — so "show this span"
+        // is a list offset: the heading, then the span's row, backed off a
+        // few rows so the target is not pinned to the top edge.
+        let line = editor
+            .read(cx)
+            .value()
+            .get(..span.start)
+            .map_or(0, |before| before.matches('\n').count());
+        let line_height = self
+            .measured_line_height
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
+        let offset = (HEADING_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.0);
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(offset),
+        });
+        editor.update(cx, |state, cx| {
+            state.set_selected_range(span, cx);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// The section whose editor has focus, as a navigation site — what a
+    /// keyboard command acts on in this view.
+    #[must_use]
+    pub fn focused_section(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<crate::navigation::EditorSite> {
+        let editors = self.editors.borrow();
+        let (path, (editor, _)) = editors
+            .iter()
+            .find(|(_, (editor, _))| editor.read(cx).focus_handle(cx).is_focused(window))?;
+        Some(crate::navigation::EditorSite {
+            editor: editor.clone(),
+            project: self.project.clone(),
+            path: path.clone().into(),
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a section is built from the list closure with everything it needs in hand"
+    )]
     fn build_editor(
         project: &Entity<Project>,
+        me: &WeakEntity<Self>,
         section_subs: &Rc<RefCell<Vec<Subscription>>>,
         path: &str,
         is_last: bool,
@@ -254,16 +357,39 @@ impl ContinuousView {
 
         let key: SharedString = path.to_owned().into();
         let weak = project.downgrade();
+        let manuscript = me.clone();
         let state = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(true)
+                // Every section gets the same gutter (maintainer, 2026-09-05):
+                // a 40-line file beside a 2,000-line one would otherwise
+                // start its text two digits further left, and the manuscript
+                // reads as one column or it does not read at all.
+                .min_line_number_digits(MANUSCRIPT_GUTTER_DIGITS)
                 .language("brink")
-                // See `section_height`: wrapping would make the section's
-                // true height unknowable from outside the crate.
-                .soft_wrap(false)
+                // Prose wraps (maintainer, 2026-09-05); the section is
+                // re-sized to its wrapped rows — see `section_height`.
+                .soft_wrap(true)
+                // A fold hides rows, and a section is exactly its rows — a
+                // folded section would be taller than its content and
+                // start scrolling itself (see `section_height`). The
+                // manuscript is a reading surface; folding belongs to the
+                // tabs.
+                .folding(false)
                 // See `TRAILING_ROWS`.
                 .scroll_beyond_last_line(Some(trailing));
             state.set_highlighter_factory(highlighter_factory(weak.clone(), key.clone()), cx);
+
+            // The same providers a tab's editor gets — navigation must not
+            // depend on which view a file is read in. What differs is the
+            // sink: a target is shown by scrolling the manuscript to it.
+            let origin = cx.entity().entity_id();
+            crate::document::install_language_providers(&mut state, &weak, key.clone(), origin);
+            let navigate: crate::navigation::Navigate = Rc::new(move |path, span, _window, cx| {
+                let _ = manuscript.update(cx, |this, cx| this.reveal_span(path, span, cx));
+            });
+            crate::navigation::install(&mut state, project, key.clone(), origin, navigate);
+
             state.set_value(source, window, cx);
             state
         });
@@ -306,18 +432,46 @@ impl ContinuousView {
             return;
         };
         self.measured_line_height = Some(real);
-        let trailing = TRAILING_ROWS as f32 * real;
-        let last = self.files.last().cloned();
-        for (path, section) in self.editors.borrow_mut().iter_mut() {
-            let rows = section.0.read(cx).text().to_string();
-            section.1 = display_rows(&rows) as f32 * real
-                + if Some(path) == last.as_ref() {
-                    trailing
-                } else {
-                    0.0
-                };
-        }
+        self.remeasure_sections(cx);
         self.list.remeasure();
+        cx.notify();
+    }
+
+    /// Size every mounted section to the rows its editor will actually draw
+    /// — the wrapped count, once it has laid out. Runs every frame; it is a
+    /// read per mounted section, and it is what keeps a section exact across
+    /// a resize that re-wraps its lines.
+    fn remeasure_sections(&mut self, cx: &mut Context<Self>) {
+        let line_height = self
+            .measured_line_height
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
+        let last = self.files.len().saturating_sub(1);
+        let mut changed: Vec<usize> = Vec::new();
+        for (path, section) in self.editors.borrow_mut().iter_mut() {
+            let Some(index) = self.files.iter().position(|f| f == path) else {
+                continue;
+            };
+            let rows = section.0.read(cx).wrap_row_count().max(1);
+            let trailing = if index == last { TRAILING_ROWS } else { 0 };
+            let height = (rows + trailing) as f32 * line_height;
+            if (section.1 - height).abs() > 0.5 {
+                section.1 = height;
+                changed.push(index);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        // `splice` keeps the scroll position for every item but the one it
+        // touches — that one's offset is zeroed — so the position is put
+        // back afterwards. The list clamps it to the new height at layout.
+        let top = self.list.logical_scroll_top();
+        for index in &changed {
+            self.list.splice(*index..index + 1, 1);
+        }
+        if changed.contains(&top.item_ix) {
+            self.list.scroll_to(top);
+        }
         cx.notify();
     }
 }
@@ -331,11 +485,14 @@ impl gpui::Focusable for ContinuousView {
 impl Render for ContinuousView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.adopt_measured_line_height(cx);
+        self.remeasure_sections(cx);
+        self.apply_pending_reveal(cx);
 
         let surface = cx.theme().background;
         let files = self.files.clone();
         let count = files.len();
         let project = self.project.clone();
+        let me = self.me.clone();
         let editors = self.editors.clone();
         let section_subs = self.section_subs.clone();
         let mounted = self.mounted.clone();
@@ -370,6 +527,7 @@ impl Render for ContinuousView {
                         .or_insert_with(|| {
                             ContinuousView::build_editor(
                                 &project,
+                                &me,
                                 &section_subs,
                                 &path,
                                 index + 1 == count,

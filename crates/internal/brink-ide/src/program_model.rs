@@ -12,6 +12,9 @@
 //! disassembly. Mirrors `brink_format`'s `.inkt` writer but resolves
 //! `DefinitionId`s to author-facing knot paths and variable names instead of
 //! hashes.
+//!
+//! The types are plain public data: the wasm wrapper serializes them, the
+//! native studio reads the fields directly.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -21,44 +24,44 @@ use brink_format::{
 };
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct ProgramModel {
-    checksum: String,
+    pub checksum: String,
     /// Whether this compile carried a `DebugInfo` section — the difference
     /// between "no provenance on these rows" and "provenance is off".
-    debug_info: bool,
-    globals: Vec<ProgramGlobalJs>,
-    lists: Vec<ProgramListJs>,
-    externals: Vec<ProgramExternalJs>,
-    knots: Vec<KnotNodeJs>,
+    pub debug_info: bool,
+    pub globals: Vec<ProgramGlobalJs>,
+    pub lists: Vec<ProgramListJs>,
+    pub externals: Vec<ProgramExternalJs>,
+    pub knots: Vec<KnotNodeJs>,
 }
 
-#[derive(Serialize)]
-struct ProgramGlobalJs {
-    name: String,
-    ty: String,
-    default: String,
-    mutable: bool,
+#[derive(Serialize, Debug, Clone)]
+pub struct ProgramGlobalJs {
+    pub name: String,
+    pub ty: String,
+    pub default: String,
+    pub mutable: bool,
 }
 
-#[derive(Serialize)]
-struct ProgramListJs {
-    name: String,
-    items: Vec<ProgramListItemJs>,
+#[derive(Serialize, Debug, Clone)]
+pub struct ProgramListJs {
+    pub name: String,
+    pub items: Vec<ProgramListItemJs>,
 }
 
-#[derive(Serialize)]
-struct ProgramListItemJs {
-    name: String,
-    ordinal: i32,
+#[derive(Serialize, Debug, Clone)]
+pub struct ProgramListItemJs {
+    pub name: String,
+    pub ordinal: i32,
 }
 
-#[derive(Serialize)]
-struct ProgramExternalJs {
-    name: String,
-    arg_count: u8,
+#[derive(Serialize, Debug, Clone)]
+pub struct ProgramExternalJs {
+    pub name: String,
+    pub arg_count: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
-    fallback: Option<String>,
+    pub fallback: Option<String>,
 }
 
 /// An anonymous child container (gather, choice target, sequence wrapper)
@@ -67,22 +70,22 @@ struct ProgramExternalJs {
 /// Disassembly view (#3339) needs these as first-class rows: the paused
 /// position routinely sits INSIDE one, and a rail of scope containers
 /// alone would show a highlight with no home.
-#[derive(Serialize)]
-struct AnonContainerJs {
-    label: String,
-    container_idx: u32,
-    byte_size: u32,
-    disasm: Vec<DisasmLineJs>,
+#[derive(Serialize, Debug, Clone)]
+pub struct AnonContainerJs {
+    pub label: String,
+    pub container_idx: u32,
+    pub byte_size: u32,
+    pub disasm: Vec<DisasmLineJs>,
 }
 
-#[derive(Serialize)]
-struct KnotNodeJs {
-    path: String,
-    name: String,
+#[derive(Serialize, Debug, Clone)]
+pub struct KnotNodeJs {
+    pub path: String,
+    pub name: String,
     /// "knot" | "stitch"
-    kind: &'static str,
-    flags: Vec<&'static str>,
-    path_hash: i32,
+    pub kind: &'static str,
+    pub flags: Vec<&'static str>,
+    pub path_hash: i32,
     /// This container's index in `StoryData::containers` — the same
     /// `container_idx` a runtime `DebugPosition`/`DebugFrame::position`
     /// addresses (D4, #3182) and the `DebugInfo` section's per-container
@@ -91,20 +94,20 @@ struct KnotNodeJs {
     /// currently executing instruction" in the Program Explorer (D9,
     /// #3187) — before this field, a disassembly line had nothing to key a
     /// running position against.
-    container_idx: u32,
+    pub container_idx: u32,
     /// Total bytecode bytes of this SCOPE — the scope container itself plus
     /// every anonymous child container (gathers, choice targets, sequence
     /// wrappers) that belongs to it via `scope_id`. The anonymous children
     /// are deliberately not tree nodes, so without this rollup their bytes
     /// would be invisible to any size accounting (#3339's size bars and
     /// treemap read exactly this).
-    byte_size: u32,
+    pub byte_size: u32,
     /// Containers in the scope, anonymous children included ("4 cont.").
-    container_count: u32,
-    disasm: Vec<DisasmLineJs>,
+    pub container_count: u32,
+    pub disasm: Vec<DisasmLineJs>,
     /// This scope's anonymous child containers, in table order.
-    anon: Vec<AnonContainerJs>,
-    children: Vec<KnotNodeJs>,
+    pub anon: Vec<AnonContainerJs>,
+    pub children: Vec<KnotNodeJs>,
 }
 
 /// One decoded bytecode instruction, keeping the byte offset it decoded
@@ -112,26 +115,26 @@ struct KnotNodeJs {
 /// used to decode with a running offset and emit only the formatted
 /// mnemonic string, so a "current instruction" highlight had no offset to
 /// match a live `DebugPosition` against.
-#[derive(Serialize)]
-struct DisasmLineJs {
+#[derive(Serialize, Debug, Clone)]
+pub struct DisasmLineJs {
     /// Byte offset of this instruction within the container's own
     /// bytecode — matches `DebugPosition::offset` / `DebugEntry::bytecode_offset`.
-    offset: u32,
-    text: String,
+    pub offset: u32,
+    pub text: String,
     /// Where this instruction came from (#3339 provenance column) — the
     /// `DebugInfo` section's offset→source map, resolved at model-build
     /// time. Absent when the compile carried no debug info, or for the
     /// synthetic-sentinel file (§2.5). Byte offsets, like every source
     /// range on this wire.
     #[serde(skip_serializing_if = "Option::is_none")]
-    src: Option<DisasmSrcJs>,
+    pub src: Option<DisasmSrcJs>,
 }
 
-#[derive(Serialize, Debug)]
-struct DisasmSrcJs {
-    file: String,
-    start: u32,
-    end: u32,
+#[derive(Serialize, Debug, Clone)]
+pub struct DisasmSrcJs {
+    pub file: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// Fill each instruction's source provenance from the `DebugInfo` section.
