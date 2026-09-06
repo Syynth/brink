@@ -28,14 +28,15 @@ mod todos;
 use std::ops::Range;
 use std::path::PathBuf;
 
+use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
 use brink_gpui_shell::workspace::{StatusCell, Workspace};
 use gpui::{
-    AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement, Render,
-    Subscription, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
+    App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement,
+    Render, Subscription, Task, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_component::WindowExt as _;
 use gpui_component::{Root, TitleBar};
@@ -67,6 +68,8 @@ actions!(
         FindReferences,
         /// Rename the symbol under the caret, cross-file and safe-by-default.
         RenameSymbol,
+        /// The active file as `brink fmt` would write it.
+        FormatDocument,
         /// Every Safe fix in the active file, to a fixpoint.
         FixAllInFile,
         /// Every Safe fix in the compilation, to a fixpoint.
@@ -274,6 +277,13 @@ impl Studio {
                 "Code Actions",
                 gpui_component::input::ToggleCodeActions,
                 Some("cmd-."),
+                cx,
+            );
+            workspace.register_command(
+                "Refactor",
+                "Format Document",
+                FormatDocument,
+                Some("alt-shift-f"),
                 cx,
             );
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
@@ -558,13 +568,73 @@ impl Studio {
         );
     }
 
-    /// Save every dirty file — whichever editor it was changed in.
-    fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
-        self.project.update(cx, |project, cx| {
-            for (path, err) in project.save_all(cx) {
-                eprintln!("failed to save {path}: {err:#}");
+    fn format_document(&mut self, _: &FormatDocument, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let project = self.project.clone();
+        let format = Self::format_files(&project, vec![site.path.to_string()], cx);
+        cx.spawn_in(window, async move |_, cx| {
+            let formatted = format.await;
+            let _ = cx.update(|window, cx| {
+                if formatted == 0 {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info("Already formatted."),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Format each of `paths` in turn and write the result into the
+    /// project; resolves to how many files changed. Formatting is a worker
+    /// query, so this is sequential and asynchronous — a save that formats
+    /// first waits on it.
+    fn format_files(project: &Entity<Project>, paths: Vec<String>, cx: &mut App) -> Task<usize> {
+        let queries: Vec<(String, Task<anyhow::Result<QueryResult>>)> = paths
+            .into_iter()
+            .map(|path| {
+                let query = project
+                    .read(cx)
+                    .query(QueryKind::Format { path: path.clone() }, cx);
+                (path, query)
+            })
+            .collect();
+        let project = project.clone();
+        cx.spawn(async move |cx| {
+            let mut changed = 0;
+            for (path, query) in queries {
+                if let Ok(QueryResult::Formatted(Some(text))) = query.await {
+                    let _ = project.update(cx, |project, cx| {
+                        if project.edit(&path, text, None, cx) {
+                            changed += 1;
+                        }
+                    });
+                }
             }
-        });
+            changed
+        })
+    }
+
+    /// Save every dirty file — whichever editor it was changed in. With
+    /// "Format on save" on, every dirty file is formatted first, so what is
+    /// written is what the editors then show.
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        let format_first = brink_gpui_shell::settings::AppSettings::get(cx).format_on_save;
+        let project = self.project.clone();
+        if !format_first {
+            write_all(&project, cx);
+            return;
+        }
+        let dirty = project.read(cx).dirty_paths();
+        let format = Self::format_files(&project, dirty, cx);
+        cx.spawn_in(window, async move |_, cx| {
+            let _ = format.await;
+            let _ = cx.update(|_, cx| write_all(&project, cx));
+        })
+        .detach();
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
@@ -585,6 +655,14 @@ impl Studio {
     }
 }
 
+fn write_all(project: &Entity<Project>, cx: &mut App) {
+    project.update(cx, |project, cx| {
+        for (path, err) in project.save_all(cx) {
+            eprintln!("failed to save {path}: {err:#}");
+        }
+    });
+}
+
 impl Render for Studio {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // gpui-component's `Root` draws the view, tooltips and native menus
@@ -603,6 +681,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::go_to_definition))
             .on_action(cx.listener(Self::find_references))
             .on_action(cx.listener(Self::rename_symbol))
+            .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(Self::fix_all_in_file))
             .on_action(cx.listener(Self::fix_all_in_project))
             .child(self.workspace.clone())

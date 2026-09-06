@@ -207,7 +207,7 @@ impl Workspace {
                 Scope::App,
                 "Appearance",
                 &[
-                    "theme", "colour", "color", "font", "size", "gutter", "inlay",
+                    "theme", "colour", "color", "font", "size", "gutter", "inlay", "format", "save",
                 ],
             ),
             appearance,

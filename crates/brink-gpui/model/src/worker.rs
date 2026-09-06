@@ -1385,6 +1385,55 @@ mod tests {
     }
 
     #[test]
+    fn format_answers_the_formatter_output_for_ink_and_none_for_native() {
+        let messy = "=== start ===\n  Hello.\n* [Go]\n        Went.\n-> DONE\n";
+        let tree = Tree::new(
+            "format",
+            &[
+                ("main.ink", messy),
+                ("mod.brink", "flow main {\n     Hello.\n}\n"),
+            ],
+        );
+        let (mut session, _) = open_tree(&tree);
+        let _ = analyze(&mut session, &ConfigState::default(), 1);
+        let QueryResult::Formatted(Some(text)) = answer(
+            &mut session,
+            &QueryKind::Format {
+                path: "main.ink".to_owned(),
+            },
+        ) else {
+            panic!("messy ink must format");
+        };
+        assert_ne!(text, messy);
+        // The same answer `brink fmt` gives, with the project's indent.
+        assert_eq!(
+            text,
+            brink_fmt::format(messy, &brink_fmt::FormatConfig::default())
+        );
+        // Formatting is idempotent, and an unchanged file answers None.
+        session.update_source("main.ink", text.clone());
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::Format {
+                    path: "main.ink".to_owned()
+                }
+            ),
+            QueryResult::Formatted(None)
+        ));
+        // The ink formatter never touches a native file.
+        assert!(matches!(
+            answer(
+                &mut session,
+                &QueryKind::Format {
+                    path: "mod.brink".to_owned()
+                }
+            ),
+            QueryResult::Formatted(None)
+        ));
+    }
+
+    #[test]
     fn opening_a_tree_with_no_sources_is_an_error_not_a_panic() {
         let tree = Tree::new("empty", &[("README.md", "nothing here\n")]);
         let mut session = session_with_stdlib();

@@ -26,3 +26,4 @@ brink-analyzer.workspace = true
 brink-driver.workspace = true
 brink-project-config.workspace = true
 brink-environment.workspace = true
+brink-fmt.workspace = true

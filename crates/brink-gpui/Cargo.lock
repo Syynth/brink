@@ -866,6 +866,7 @@ dependencies = [
  "brink-db",
  "brink-driver",
  "brink-environment",
+ "brink-fmt",
  "brink-ide",
  "brink-ir",
  "brink-project-config",

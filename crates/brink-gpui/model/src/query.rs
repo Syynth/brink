@@ -98,6 +98,12 @@ pub enum QueryKind {
         path: String,
         data: String,
     },
+    /// The file as `brink fmt` would write it (`[project] indent`
+    /// honoured). Ink only: the formatter parses with the ink frontend, so
+    /// a `.brink` file answers `None` rather than being fed to it.
+    Format {
+        path: String,
+    },
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -127,6 +133,8 @@ pub enum QueryResult {
     Refactors(Vec<crate::fixes::Refactor>),
     /// `None` when the refactor changes nothing.
     ResolvedRefactor(Option<String>),
+    /// `None` when the file is native, unknown, or already formatted.
+    Formatted(Option<String>),
     Unavailable,
 }
 
@@ -322,6 +330,7 @@ pub(crate) fn answer(
         QueryKind::ResolveRefactor { path, data } => {
             QueryResult::ResolvedRefactor(crate::fixes::resolve_refactor(session, path, data))
         }
+        QueryKind::Format { path } => QueryResult::Formatted(format(session, path)),
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),
@@ -366,6 +375,25 @@ pub(crate) fn answer(
             None => QueryResult::Unavailable,
         },
     }
+}
+
+/// `brink_fmt::format` over `path`, with the project's `[project] indent`.
+/// `None` for a native file (the formatter is the ink formatter — gated
+/// rather than relied on to no-op, the #2291 lesson), an unknown path, or
+/// text the formatter leaves alone.
+fn format(session: &brink_ide::session::IdeSession, path: &str) -> Option<String> {
+    let id = session.file_id(path)?;
+    if session.is_native(id) || session.is_mounted_std(id) {
+        return None;
+    }
+    let source = session.source(id)?;
+    let mut config = brink_project_config::ProjectConfig::default();
+    config.indent = session.project_settings().indent;
+    let formatted = brink_fmt::format(
+        source,
+        &brink_fmt::FormatConfig::from_project_config(&config),
+    );
+    (formatted != source).then_some(formatted)
 }
 
 // ── Navigation ───────────────────────────────────────────────────────

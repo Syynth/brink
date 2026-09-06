@@ -73,4 +73,5 @@ brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-project-config = { path = "../internal/brink-project-config" }
 brink-environment = { path = "../internal/brink-environment" }
+brink-fmt = { path = "../internal/brink-fmt" }
 

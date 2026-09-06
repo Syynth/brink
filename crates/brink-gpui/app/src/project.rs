@@ -308,6 +308,16 @@ impl Project {
         changed
     }
 
+    /// Every file whose text differs from what is on disk, sorted.
+    #[must_use]
+    pub fn dirty_paths(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .filter(|(path, text)| self.saved.get(*path) != Some(text))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// Whether a file's text differs from what is on disk.
     #[must_use]
     pub fn is_dirty(&self, path: &str) -> bool {
