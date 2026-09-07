@@ -216,7 +216,7 @@ marks itself stale and asks when shown.
 | Executing-instruction overlay, `stepi` | not started | needs the State View's session state (D9/W9 in the web). |
 | ~~"open .inkt" button~~ | built 2026-09-06 | right-aligned in the view row; raises `ProgramEvent::OpenCompiledOutput` rather than opening the tab itself, since a tab is the host's to open — the same rule the panel's navigation rows follow. |
 | Size treemap | parity gap | `ProgramSizeView.tsx` draws a treemap; this draws bars. |
-| Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
+| ~~Jumps between views (disasm row → its line, size row → its container)~~ | built 2026-09-07 | an `emit_line #N` row carries a `line #N` chip — its own click target, so the row still means "open the source" — and a size row's `›` takes a line-table row to that scope in Lines and a bytecode row to that knot in Disasm. A jump switches the view, expands what has to be open, scrolls the row to centre and washes it in the accent, since a scroll alone leaves you hunting for which of forty rows you were sent to. The scope is carried by NAME and resolved to its id at the moment of the jump, against the report then in hand. Verified: a size row → `shore`'s table, and `emit_line #2` → `harbour_scene` line #2. |
 | Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
 
 ### Syntax highlighting outside `.ink`/`.brink`
