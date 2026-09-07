@@ -130,6 +130,14 @@ impl Player {
         }
     }
 
+    /// Whether a running story is older than the sources — the Player's
+    /// own "sources changed" state, which the Program Explorer reports as
+    /// a degraded session.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.running && self.stale
+    }
+
     /// What the status bar says about the session.
     #[must_use]
     pub fn state(&self) -> SessionState {

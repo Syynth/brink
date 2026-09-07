@@ -158,6 +158,9 @@ impl Studio {
         let output = cx.new(|cx| OutputLog::new(project.clone(), cx));
         // The log keeps what the transcript throws away on a Restart.
         output.update(cx, |log, cx| log.watch_player(&player, cx));
+        // And the Program Explorer says when the running story is on an
+        // older program than the one it is showing.
+        program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));

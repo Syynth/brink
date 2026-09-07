@@ -194,6 +194,12 @@ pub struct ProgramExplorer {
     shown: bool,
     /// An analysis landed while the panel was not shown.
     stale: bool,
+    /// A story is running on a program older than this one (the web's
+    /// `sessionDegraded`). Read from the Player, which is the only thing
+    /// that knows a session exists: what it compiled from is gone from
+    /// the mirror, so a checksum comparison would be comparing the
+    /// current program with itself.
+    session_degraded: bool,
     busy: bool,
     generation: u64,
     focus: FocusHandle,
@@ -222,6 +228,7 @@ impl ProgramExplorer {
             scroll: UniformListScrollHandle::new(),
             shown: false,
             stale: true,
+            session_degraded: false,
             busy: false,
             generation: 0,
             focus: cx.focus_handle(),
@@ -303,6 +310,19 @@ impl ProgramExplorer {
         }
         self.relayout();
         cx.notify();
+    }
+
+    /// Watch the Player for a degraded session — a story still running on
+    /// a program this panel no longer shows.
+    pub fn watch_player(&mut self, player: &Entity<crate::player::Player>, cx: &mut Context<Self>) {
+        let subscription = cx.observe(player, |this: &mut Self, player, cx| {
+            let degraded = player.read(cx).is_stale();
+            if this.session_degraded != degraded {
+                this.session_degraded = degraded;
+                cx.notify();
+            }
+        });
+        self._subscriptions.push(subscription);
     }
 
     /// Take a row's cross-reference: switch to the view that holds it,
@@ -445,6 +465,11 @@ impl ProgramExplorer {
             Some(("compiling…".into(), muted))
         } else if self.stale {
             Some(("stale".into(), warn))
+        } else if self.session_degraded {
+            // What is on screen is the CURRENT program; the story running
+            // in the Player is not this one. Saying so is the difference
+            // between reading a disassembly and reading the right one.
+            Some(("the running story is on an older program".into(), warn))
         } else {
             None
         };
