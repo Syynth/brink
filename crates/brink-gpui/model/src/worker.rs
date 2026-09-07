@@ -73,6 +73,18 @@ pub enum Request {
         /// far behind an arriving result is.
         revision: u64,
     },
+    /// A file was created or renamed INTO the project: analyse it under
+    /// this path from now on.
+    ///
+    /// Distinct from [`Request::Edit`], which is the text of a file the
+    /// session already knows — `update_source` would create the file
+    /// silently there, and a typo'd path would become a phantom source
+    /// nobody could see. Here creating one IS the point, so it is said
+    /// out loud.
+    AddFile { path: String, text: String },
+    /// A file left the project: forget it. A rename is a `RemoveFile`
+    /// then an `AddFile`, in that order.
+    RemoveFile { path: String },
     /// Drive the play session — see [`crate::play`]. Answered after the
     /// queries of the same drain, against the same text.
     Play {
@@ -376,6 +388,22 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                         apply_config_text(&mut session, &mut config, &current);
                     }
                     revision = revision.max(rev);
+                    edited = true;
+                }
+                Request::AddFile { path, text } => {
+                    session.update_source(&path, text);
+                    if !files.contains(&path) {
+                        files.push(path);
+                        // The file list is the order every surface reads —
+                        // keep it sorted rather than "whenever it was
+                        // made", which would put a new file last forever.
+                        files.sort();
+                    }
+                    edited = true;
+                }
+                Request::RemoveFile { path } => {
+                    session.remove_file(&path);
+                    files.retain(|f| f != &path);
                     edited = true;
                 }
             }

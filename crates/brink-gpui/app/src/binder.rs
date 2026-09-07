@@ -151,9 +151,25 @@ struct DraggedRow {
 
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
-    Open { path: String, offset: Option<usize> },
+    Open {
+        path: String,
+        offset: Option<usize>,
+    },
     /// Start the story at a knot or `knot.stitch`.
-    Play { path: String },
+    Play {
+        path: String,
+    },
+    /// A file operation the studio runs: it owns the prompts and the
+    /// dialogs, and the panel owns only the rows they were asked from.
+    NewFile {
+        folder: String,
+    },
+    RenameFile {
+        path: String,
+    },
+    DeleteFile {
+        path: String,
+    },
 }
 
 /// The row menu's "Play from here": the knot or `knot.stitch` path, as the
@@ -163,6 +179,40 @@ pub enum BinderEvent {
 #[action(namespace = binder, no_json)]
 pub struct PlayFromHere {
     pub path: String,
+}
+
+/// Rename a file from the Binder's menu. Files only: a knot's name is
+/// `f2`'s business, which is cross-file and safe-by-default, and a menu
+/// item that renamed one by text alone would quietly break its diverts.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct RenameFile {
+    pub path: String,
+}
+
+/// Delete a file from the Binder's menu, after a confirmation naming it.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct DeleteFile {
+    pub path: String,
+}
+
+/// Create a file in `folder` — the folder of the row the menu was opened
+/// on, so a new file lands beside the one you were looking at.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewFile {
+    /// Root-relative, and empty for the project root.
+    pub folder: String,
+}
+
+/// The folder a path sits in, root-relative and possibly empty — where a
+/// new file made from this row's menu goes.
+fn folder_of(path: &str) -> String {
+    match path.rfind('/') {
+        Some(at) => path[..at].to_owned(),
+        None => String::new(),
+    }
 }
 
 impl Row {
@@ -327,6 +377,13 @@ impl Binder {
         let watch = cx.subscribe(&project, |this: &mut Self, _, event: &ProjectEvent, cx| {
             match event {
                 ProjectEvent::Opened { .. } => {
+                    this.symbols.clear();
+                    this.pending_symbols.clear();
+                    this.rebuild(cx);
+                }
+                // A file was created, renamed or deleted: the tree is a
+                // different tree now.
+                ProjectEvent::FilesChanged => {
                     this.symbols.clear();
                     this.pending_symbols.clear();
                     this.rebuild(cx);
@@ -877,6 +934,8 @@ impl Binder {
         let menu_key = row.key.clone();
         let menu_focus = self.focus.clone();
         let play_path = row.play_path();
+        let file_path = row.path.clone();
+        let is_file = row.kind == RowKind::File;
         let kind_for_move = row.kind;
 
         // Indent guides: one hairline under each ancestor's icon column.
@@ -1044,9 +1103,32 @@ impl Binder {
                     Some(path) => menu.menu("Play from here", Box::new(PlayFromHere { path })),
                     None => menu,
                 };
+                let menu = menu.separator().menu(
+                    "New File…",
+                    Box::new(NewFile {
+                        folder: folder_of(&file_path),
+                    }),
+                );
+                // Rename and Delete are FILE operations. On a symbol row
+                // they would have to mean something else — renaming a knot
+                // is `f2`'s cross-file, safe-by-default job — so they are
+                // not offered there rather than offered and wrong.
+                if !is_file {
+                    return menu;
+                }
                 menu.separator()
-                    .menu("Rename…", Box::new(NoopAction))
-                    .menu("Delete", Box::new(NoopAction))
+                    .menu(
+                        "Rename…",
+                        Box::new(RenameFile {
+                            path: file_path.clone(),
+                        }),
+                    )
+                    .menu(
+                        "Delete…",
+                        Box::new(DeleteFile {
+                            path: file_path.clone(),
+                        }),
+                    )
             })
             .into_any_element()
     }
@@ -1101,6 +1183,20 @@ impl Binder {
                     .text_color(theme.muted_foreground)
                     .child("BINDER"),
             )
+            .child(Self::tool(
+                "new-file",
+                icons::PLUS,
+                false,
+                cx,
+                |_, _, cx| {
+                    // At the root: the header belongs to the whole tree,
+                    // and a row's own menu is where "beside this one"
+                    // lives.
+                    cx.emit(BinderEvent::NewFile {
+                        folder: String::new(),
+                    });
+                },
+            ))
             .child(Self::tool(
                 "mode-files",
                 icons::DOC,
@@ -1249,6 +1345,21 @@ impl Render for Binder {
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, action: &PlayFromHere, _, cx| {
                 cx.emit(BinderEvent::Play {
+                    path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &NewFile, _, cx| {
+                cx.emit(BinderEvent::NewFile {
+                    folder: action.folder.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &RenameFile, _, cx| {
+                cx.emit(BinderEvent::RenameFile {
+                    path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &DeleteFile, _, cx| {
+                cx.emit(BinderEvent::DeleteFile {
                     path: action.path.clone(),
                 });
             }))

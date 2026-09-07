@@ -131,6 +131,31 @@ impl CodeView {
         self.set_active(Some(document), cx);
     }
 
+    /// Close the document over `path`, if one is open.
+    ///
+    /// A deleted file's tab has to go: its editor still holds the text,
+    /// and the next `cmd-s` would write the file straight back — a delete
+    /// that undoes itself on the next save is worse than no delete.
+    pub fn close_document(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(document) = self
+            .documents
+            .iter()
+            .find(|d| d.read(cx).path().as_ref() == path)
+            .cloned()
+        else {
+            return;
+        };
+        self.dock_area.update(cx, |area, cx| {
+            area.remove_panel(document.clone(), window, cx);
+        });
+        self.documents.retain(|d| *d != document);
+        self.subscriptions.retain(|(d, _)| *d != document);
+        if self.active.as_ref() == Some(&document) {
+            let next = self.documents.first().cloned();
+            self.set_active(next, cx);
+        }
+    }
+
     /// Reveal a span in a document that is ALREADY open, without opening
     /// one or selecting its tab. Answers whether it found anything.
     ///

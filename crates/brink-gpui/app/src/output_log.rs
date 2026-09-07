@@ -316,6 +316,10 @@ impl OutputLog {
                     this.log
                         .push(Level::Error, "project", format!("{path}: {message}"));
                 }
+                ProjectEvent::FilesChanged => {
+                    this.log
+                        .push(Level::Info, "project", "the file set changed");
+                }
                 ProjectEvent::SourceChanged { .. } => return,
             }
             cx.notify();

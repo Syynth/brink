@@ -279,14 +279,15 @@ oldest dropped, with the dropped count in the header. Follows its tail.
 Built: Files and Structure modes, the fill rule, entry mark, closure
 dimming, diagnostic marks, drag to reorder (in memory), filter, expand and
 collapse all, keyboard navigation, hover row actions, right-click menu,
-`brink.toml` listed beside sources.
+`brink.toml` listed beside sources, and (2026-09-07) creating, renaming
+and deleting files.
 
 | Left out | Kind | Note |
 |---|---|---|
 | Undo stack | parity gap | "Deliberately skipped" in the module doc. |
 | Library section (mounted `std/`) | parity gap | ruled 2026-08-06 in the web; not built here. |
 | Multi-select | parity gap | |
-| Inline create (new file / knot) | parity gap | |
+| ~~Create, rename and delete a FILE~~ | built 2026-09-07 | `app/src/files.rs`, through `Project::{create_file, rename_file, delete_file}` (which own both the mirror and the disk, and write immediately — a file in the Binder and not on disk is one the next `INCLUDE` cannot find). The header's `+` makes one at the root; a row's menu makes one beside it, and carries Rename…/Delete… — which until now were `NoopAction`s, i.e. menu items that did nothing. Rename and Delete are offered on FILE rows only: renaming a knot is `f2`'s cross-file, safe-by-default job. A bare name gets `.ink`; a path that climbs out of the root is refused. Renaming moves the text the EDITORS hold, so unsaved work survives; it does NOT rewrite `INCLUDE` lines or `brink.toml` (the analysis reports the break where it reports every other unresolved path). Deleting closes the file's tab first — otherwise the next `cmd-s` writes it straight back. Creating a knot inline is still a gap. |
 | `.binder.json` drag-order persistence | parity gap | reorder lives in memory only. |
 
 ### Problems (`app/src/problems.rs`)

@@ -39,6 +39,10 @@ pub enum ProjectEvent {
         origin: Option<EntityId>,
         delta: SourceDelta,
     },
+    /// The set of files changed — one was created, renamed or deleted.
+    /// Every surface keyed by path (the Binder, Search, the manuscript)
+    /// rebuilds; an analysis follows on its own.
+    FilesChanged,
     /// Dirty files were written to disk.
     Saved,
     /// A dirty file could NOT be written. Nothing else reports this: the
@@ -136,6 +140,30 @@ pub struct Project {
     /// so it is held for its lifetime, not its value.
     _pump: Task<()>,
     empty_kinds: Kinds,
+}
+
+/// A root-relative path a file operation will accept.
+///
+/// Refused: an absolute path, anything with a `..` segment, a trailing
+/// slash, an empty name. A project's files live under its root, and a
+/// path that climbs out of it would write somewhere the author cannot
+/// see from the Binder.
+fn normalise_path(path: &str) -> Result<String> {
+    let path = path.trim().trim_start_matches("./");
+    if path.is_empty() {
+        anyhow::bail!("a file needs a name");
+    }
+    if path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
+        anyhow::bail!("{path} is not inside the project");
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
+        anyhow::bail!("{path} is not a path inside the project");
+    }
+    Ok(parts.join("/"))
 }
 
 impl EventEmitter<ProjectEvent> for Project {}
@@ -363,6 +391,100 @@ impl Project {
         failures
     }
 
+    /// Create `path` (root-relative) with `text`, on disk and in the
+    /// session. Answers what went wrong, if anything.
+    ///
+    /// The file is written straight away rather than left dirty: a file
+    /// that exists in the Binder and not on disk is a file the next
+    /// `INCLUDE` cannot find, and the author has no way to tell.
+    pub fn create_file(&mut self, path: &str, text: &str, cx: &mut Context<Self>) -> Result<()> {
+        let path = normalise_path(path)?;
+        if self.sources.contains_key(&path) {
+            anyhow::bail!("{path} is already in the project");
+        }
+        let full = self.root.join(&path);
+        if full.exists() {
+            anyhow::bail!("{path} already exists on disk");
+        }
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&full, text)?;
+        self.sources.insert(path.clone(), text.to_owned());
+        self.saved.insert(path.clone(), text.to_owned());
+        self.files.push(path.clone());
+        self.files.sort();
+        self.worker.send(Request::AddFile {
+            path,
+            text: text.to_owned(),
+        });
+        cx.emit(ProjectEvent::FilesChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Move `from` to `to`, on disk and in the session.
+    ///
+    /// The text that moves is the text the EDITORS hold, not what is on
+    /// disk: renaming a file with unsaved work must not throw that work
+    /// away, so the move writes the current text to the new path.
+    pub fn rename_file(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<()> {
+        let to = normalise_path(to)?;
+        if from == to {
+            return Ok(());
+        }
+        if !self.sources.contains_key(from) {
+            anyhow::bail!("{from} is not in the project");
+        }
+        if self.sources.contains_key(&to) || self.root.join(&to).exists() {
+            anyhow::bail!("{to} already exists");
+        }
+        let text = self.sources.get(from).cloned().unwrap_or_default();
+        let target = self.root.join(&to);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, &text)?;
+        // Only after the new file is safely written.
+        let _ = std::fs::remove_file(self.root.join(from));
+        self.sources.remove(from);
+        self.saved.remove(from);
+        self.sources.insert(to.clone(), text.clone());
+        self.saved.insert(to.clone(), text.clone());
+        self.files.retain(|f| f != from);
+        self.files.push(to.clone());
+        self.files.sort();
+        if self.entry.as_deref() == Some(from) {
+            // The config still names the old path; the analysis will say
+            // so. Moving the entry is the author's to decide.
+            self.entry = None;
+        }
+        self.worker.send(Request::RemoveFile {
+            path: from.to_owned(),
+        });
+        self.worker.send(Request::AddFile { path: to, text });
+        cx.emit(ProjectEvent::FilesChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Delete `path` from the project and from disk.
+    pub fn delete_file(&mut self, path: &str, cx: &mut Context<Self>) -> Result<()> {
+        if !self.sources.contains_key(path) {
+            anyhow::bail!("{path} is not in the project");
+        }
+        std::fs::remove_file(self.root.join(path))?;
+        self.sources.remove(path);
+        self.saved.remove(path);
+        self.files.retain(|f| f != path);
+        self.worker.send(Request::RemoveFile {
+            path: path.to_owned(),
+        });
+        cx.emit(ProjectEvent::FilesChanged);
+        cx.notify();
+        Ok(())
+    }
+
     /// Ask the worker a question. The returned task resolves when the worker
     /// gets to it — after any edit already queued, so the answer is never
     /// against staler text than the caller has.
@@ -507,6 +629,32 @@ mod tests {
 
     fn delta(old: &str, new: &str) -> SourceDelta {
         diff(old, new).expect("texts differ")
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_project_is_refused() {
+        // A file operation writes to disk. Everything it will accept has
+        // to stay under the root, or the Binder would show one thing and
+        // the filesystem hold another.
+        assert!(normalise_path("../secrets.ink").is_err());
+        assert!(normalise_path("a/../../b.ink").is_err());
+        assert!(normalise_path("/etc/passwd").is_err());
+        assert!(
+            normalise_path("C:/x.ink").is_err(),
+            "a drive is not a path here"
+        );
+        assert!(normalise_path("").is_err());
+        assert!(normalise_path("   ").is_err());
+        assert!(normalise_path("a//b.ink").is_err(), "an empty segment");
+        assert!(normalise_path("a/./b.ink").is_err());
+    }
+
+    #[test]
+    fn an_ordinary_path_survives_normalisation() {
+        assert_eq!(normalise_path("scene.ink").unwrap(), "scene.ink");
+        assert_eq!(normalise_path("acts/two.ink").unwrap(), "acts/two.ink");
+        assert_eq!(normalise_path("  scene.ink  ").unwrap(), "scene.ink");
+        assert_eq!(normalise_path("./scene.ink").unwrap(), "scene.ink");
     }
 
     #[test]

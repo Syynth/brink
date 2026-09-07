@@ -10,6 +10,7 @@ mod code_view;
 mod compiled_output;
 mod continuous;
 mod document;
+mod files;
 mod fixes;
 mod icons;
 mod inkt_highlight;
@@ -470,6 +471,8 @@ impl Studio {
                     this.refresh_status(cx);
                 }
                 ProjectEvent::Analyzed => this.refresh_status(cx),
+                // The file set moving changes the status bar's file count.
+                ProjectEvent::FilesChanged => this.refresh_status(cx),
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::Saved
@@ -481,10 +484,29 @@ impl Studio {
             window,
             |this, binder, event: &BinderEvent, window, cx| {
                 let BinderEvent::Open { path, offset } = event else {
-                    let BinderEvent::Play { path } = event else {
-                        return;
-                    };
-                    this.play_at(Some(path.clone()), window, cx);
+                    match event {
+                        BinderEvent::Play { path } => {
+                            this.play_at(Some(path.clone()), window, cx);
+                        }
+                        // The file operations live in the studio, not the
+                        // panel: they open dialogs and they change the
+                        // project, and the Binder's business is the rows.
+                        BinderEvent::NewFile { folder } => {
+                            files::new_file(this.project.clone(), folder.clone(), window, cx);
+                        }
+                        BinderEvent::RenameFile { path } => {
+                            files::rename_file(this.project.clone(), path.clone(), window, cx);
+                        }
+                        BinderEvent::DeleteFile { path } => {
+                            // Before the dialog: its editor would write the
+                            // file straight back on the next `cmd-s`.
+                            this.code.update(cx, |code, cx| {
+                                code.close_document(path, window, cx);
+                            });
+                            files::delete_file(this.project.clone(), path.clone(), window, cx);
+                        }
+                        BinderEvent::Open { .. } => {}
+                    }
                     return;
                 };
                 this.open(path, offset.map(|o| o..o), window, cx);
