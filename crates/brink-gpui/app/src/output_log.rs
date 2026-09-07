@@ -367,6 +367,46 @@ impl OutputLog {
                         .push(Level::Info, "project", "the file set changed");
                 }
                 // Neither is news for a log.
+                // The disk moving under the project is exactly the kind
+                // of thing this window keeps: it happened without the
+                // author doing it, and a toast is gone in four seconds.
+                ProjectEvent::DiskChanged(reports) => {
+                    for report in reports {
+                        let (level, text, opens) = match report {
+                            crate::project::DiskReport::Reloaded(path) => (
+                                Level::Info,
+                                format!("{path} changed on disk and was reloaded"),
+                                Some(path.clone()),
+                            ),
+                            crate::project::DiskReport::Conflicted(path) => (
+                                Level::Warning,
+                                format!(
+                                    "{path} changed on disk while you had unsaved edits \u{2014} \
+                                     your text was kept"
+                                ),
+                                Some(path.clone()),
+                            ),
+                            crate::project::DiskReport::Vanished { path, dirty } => (
+                                if *dirty { Level::Warning } else { Level::Info },
+                                if *dirty {
+                                    format!("{path} was deleted on disk with unsaved edits")
+                                } else {
+                                    format!("{path} was deleted on disk")
+                                },
+                                None,
+                            ),
+                            crate::project::DiskReport::Appeared(path) => (
+                                Level::Info,
+                                format!("{path} appeared on disk"),
+                                Some(path.clone()),
+                            ),
+                        };
+                        match opens {
+                            Some(path) => this.log.push_about(level, "project", text, path),
+                            None => this.log.push(level, "project", text),
+                        }
+                    }
+                }
                 ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged => return,

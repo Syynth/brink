@@ -525,6 +525,7 @@ impl Binder {
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged
+                | ProjectEvent::DiskChanged(_)
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             }

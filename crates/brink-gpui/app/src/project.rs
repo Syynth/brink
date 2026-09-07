@@ -43,6 +43,9 @@ pub enum ProjectEvent {
     },
     /// A file's prose lints moved. Problems lists them; nothing else does.
     ProseChanged,
+    /// The disk moved under the project. The changes are already applied
+    /// — this is what the studio should SAY about them.
+    DiskChanged(Vec<DiskReport>),
     /// A breakpoint was marked, cleared, or found to bind to nothing.
     /// Every editor over the file repaints its marks.
     BreakpointsChanged,
@@ -149,6 +152,10 @@ pub struct Project {
     /// would count prose in the "N problems" the status bar means by
     /// compiler problems.
     prose: BTreeMap<String, Vec<Diagnostic>>,
+    /// Files whose disk text has moved under an unsaved buffer, and what
+    /// the disk said when it was reported. Kept so the same conflict is
+    /// announced once rather than once per filesystem event.
+    conflicted: BTreeMap<String, String>,
     /// The breakpoints the author has marked, as `(path, 1-based line)`.
     /// The PROJECT owns them, not any one editor: the marks outlive a
     /// closed tab and a restarted session, and the worker arms whatever
@@ -176,6 +183,21 @@ pub struct Project {
     /// so it is held for its lifetime, not its value.
     _pump: Task<()>,
     empty_kinds: Kinds,
+}
+
+/// What the studio should SAY about a disk change. The Project applies
+/// the change; saying so is the studio's, which owns the notifications.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiskReport {
+    /// Taken from disk into a clean buffer.
+    Reloaded(String),
+    /// Changed on disk under unsaved edits; the buffer was kept.
+    Conflicted(String),
+    Vanished {
+        path: String,
+        dirty: bool,
+    },
+    Appeared(String),
 }
 
 /// A root-relative path a file operation will accept.
@@ -241,6 +263,7 @@ impl Project {
             kinds: BTreeMap::new(),
             cues: BTreeMap::new(),
             prose: BTreeMap::new(),
+            conflicted: BTreeMap::new(),
             breakpoints: BTreeSet::new(),
             unbound: BTreeSet::new(),
             warnings: Vec::new(),
@@ -281,6 +304,7 @@ impl Project {
                     self.kinds.clear();
                     self.cues.clear();
                     self.prose.clear();
+                    self.conflicted.clear();
                     self.drafts.clear();
                     self.draft_globs.clear();
                     self.drafts_known = false;
@@ -427,6 +451,7 @@ impl Project {
     pub fn save_all(&mut self, cx: &mut Context<Self>) -> Vec<(String, std::io::Error)> {
         let mut failures = Vec::new();
         let mut wrote = false;
+        let mut written: Vec<String> = Vec::new();
         for (path, text) in &self.sources {
             if self.saved.get(path) == Some(text) {
                 continue;
@@ -434,10 +459,16 @@ impl Project {
             match std::fs::write(self.root.join(path), text) {
                 Ok(()) => {
                     self.saved.insert(path.clone(), text.clone());
+                    written.push(path.clone());
                     wrote = true;
                 }
                 Err(err) => failures.push((path.clone(), err)),
             }
+        }
+        // The save settles the argument: this text IS the disk now, so a
+        // conflict reported before it is over.
+        for path in &written {
+            self.conflicted.remove(path);
         }
         for (path, err) in &failures {
             cx.emit(ProjectEvent::SaveFailed {
@@ -770,6 +801,81 @@ impl Project {
     #[must_use]
     pub fn kinds_for(&self, path: &str) -> &Kinds {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
+    }
+
+    /// Apply what happened to these paths on disk.
+    ///
+    /// The policy is `watch::classify`'s and the web studio's: a change
+    /// under a CLEAN buffer is adopted, a change under a DIRTY one keeps
+    /// the buffer and is reported. Nothing here writes to disk — this is
+    /// the direction that reads.
+    pub fn disk_changed(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        let mut reports = Vec::new();
+        let mut files_changed = false;
+        for path in paths {
+            let disk = std::fs::read_to_string(self.root.join(path)).ok();
+            let change = crate::watch::classify(
+                self.saved.get(path).map(String::as_str),
+                self.sources.get(path).map(String::as_str),
+                disk.as_deref(),
+            );
+            match change {
+                crate::watch::DiskChange::Ignore => {}
+                crate::watch::DiskChange::Adopt(text) => {
+                    self.conflicted.remove(path);
+                    // Through `edit`, so every editor over the file
+                    // follows and the worker re-analyses; then `saved` is
+                    // put back level, because this text IS what is on
+                    // disk and the file is not dirty.
+                    self.edit(path, text.clone(), None, cx);
+                    self.saved.insert(path.clone(), text);
+                    reports.push(DiskReport::Reloaded(path.clone()));
+                }
+                crate::watch::DiskChange::Conflict(disk) => {
+                    // One write often reaches a watcher as several
+                    // events; the author needs telling once, not once per
+                    // event. Anything that MOVES the disk again is news
+                    // again.
+                    if self.conflicted.get(path) != Some(&disk) {
+                        self.conflicted.insert(path.clone(), disk);
+                        reports.push(DiskReport::Conflicted(path.clone()));
+                    }
+                }
+                crate::watch::DiskChange::Vanished => {
+                    let dirty = self.is_dirty(path);
+                    self.sources.remove(path);
+                    self.saved.remove(path);
+                    self.files.retain(|f| f != path);
+                    self.worker.send(Request::RemoveFile { path: path.clone() });
+                    files_changed = true;
+                    reports.push(DiskReport::Vanished {
+                        path: path.clone(),
+                        dirty,
+                    });
+                }
+                crate::watch::DiskChange::Appeared(text) => {
+                    self.sources.insert(path.clone(), text.clone());
+                    self.saved.insert(path.clone(), text.clone());
+                    self.files.push(path.clone());
+                    self.files.sort();
+                    self.worker.send(Request::AddFile {
+                        path: path.clone(),
+                        text,
+                    });
+                    files_changed = true;
+                    reports.push(DiskReport::Appeared(path.clone()));
+                }
+            }
+        }
+        if files_changed {
+            cx.emit(ProjectEvent::FilesChanged);
+            cx.notify();
+        }
+        if !reports.is_empty() {
+            // Saying so is the studio's: it owns the notifications and the
+            // window they need.
+            cx.emit(ProjectEvent::DiskChanged(reports));
+        }
     }
 
     /// Record a file's prose lints — the document that ran the check

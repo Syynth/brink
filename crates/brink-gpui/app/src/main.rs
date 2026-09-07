@@ -37,6 +37,7 @@ mod story_graph;
 mod structural;
 mod todos;
 mod treemap;
+mod watch;
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -175,6 +176,9 @@ struct Studio {
     /// notifies — so this is an `observe`, replaced whenever the active
     /// document changes and dropped when there is none.
     caret: Option<Subscription>,
+    /// The filesystem watch, held for the window's lifetime: dropping the
+    /// task stops the pump and the watcher with it.
+    _watching: gpui::Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -576,6 +580,45 @@ impl Studio {
                 ProjectEvent::Analyzed => this.refresh_status(cx),
                 // The file set moving changes the status bar's file count.
                 ProjectEvent::FilesChanged => this.refresh_status(cx),
+                // A change nobody in the studio made: said out loud, and
+                // kept in the Output log, which subscribes to the same
+                // event. A conflict is a warning because it is the one
+                // case where the author has work the disk disagrees with.
+                ProjectEvent::DiskChanged(reports) => {
+                    for report in reports {
+                        let (severity, text) = match report {
+                            crate::project::DiskReport::Reloaded(path) => (
+                                Severity::Info,
+                                format!("{path} changed on disk \u{2014} reloaded."),
+                            ),
+                            crate::project::DiskReport::Conflicted(path) => (
+                                Severity::Warning,
+                                format!(
+                                    "{path} changed on disk while you had unsaved edits. \
+                                     Your text was kept; saving will overwrite the disk."
+                                ),
+                            ),
+                            crate::project::DiskReport::Vanished { path, dirty } => (
+                                if *dirty {
+                                    Severity::Warning
+                                } else {
+                                    Severity::Info
+                                },
+                                if *dirty {
+                                    format!(
+                                        "{path} was deleted on disk, and you had unsaved edits."
+                                    )
+                                } else {
+                                    format!("{path} was deleted on disk.")
+                                },
+                            ),
+                            crate::project::DiskReport::Appeared(path) => {
+                                (Severity::Info, format!("{path} appeared on disk."))
+                            }
+                        };
+                        notify(severity, "project", text, window, cx);
+                    }
+                }
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
@@ -816,6 +859,10 @@ impl Studio {
             },
         );
 
+        // Watching starts with the project: a change made outside the
+        // studio between opening a file and saving it was invisible, and
+        // the next save simply overwrote it.
+        let watching = watch::start(project.clone(), root.clone(), cx);
         project.update(cx, |project, _| project.open(root));
 
         // Keys have somewhere to land from the first frame.
@@ -833,6 +880,7 @@ impl Studio {
             graph,
             quick_open: None,
             caret: None,
+            _watching: watching,
             _subscriptions: vec![
                 on_project,
                 on_binder,
