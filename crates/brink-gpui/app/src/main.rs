@@ -488,7 +488,8 @@ impl Studio {
             workspace.apply_layout(&saved, window, cx);
         });
 
-        // The remembered scrolls, but only if they belong to THIS project:
+        // The remembered scrolls and open tabs, but only if they belong
+        // to THIS project:
         // a scroll is per-file, and a path means a different place in a
         // different tree. Restored before the project opens, so the first
         // document to appear already lands where it was left.
@@ -512,9 +513,8 @@ impl Studio {
             let code = code.clone();
             let project = project.clone();
             move |_: &mut Studio, cx: &mut Context<Studio>| {
-                let root = project.read(cx).root().display().to_string();
-                let scroll = code.read(cx).scroll_state(cx);
-                Workspace::save_layout(&workspace, Some((root, scroll)), cx);
+                let documents = document_state(&project, &code, cx);
+                Workspace::save_layout(&workspace, Some(documents), cx);
                 async move {}
             }
         })
@@ -732,6 +732,11 @@ impl Studio {
                 CodeViewEvent::ActiveChanged => {
                     this.watch_caret(cx);
                     this.refresh_status(cx);
+                    // The tabs moved: opened, closed, or a different one
+                    // showing. Written now rather than only on quit, so a
+                    // kill loses nothing — `settings::update` compares
+                    // before writing, so this is cheap to say often.
+                    this.save_documents(cx);
                 }
             },
         );
@@ -785,6 +790,14 @@ impl Studio {
 
     /// Open the project's entry, or its first file when it names none.
     fn open_initial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The tabs that were open last time, if they were this project's
+        // and they still exist. A file that has since been deleted or
+        // renamed is SKIPPED, not opened empty: the studio would be
+        // showing a document for something that is not there.
+        let restored = self.restore_tabs(window, cx);
+        if restored {
+            return;
+        }
         let first = {
             let project = self.project.read(cx);
             project
@@ -795,6 +808,42 @@ impl Studio {
         if let Some(path) = first {
             self.open(&path, None, window, cx);
         }
+    }
+
+    /// Write the open tabs and their scrolls into the settings.
+    fn save_documents(&self, cx: &mut App) {
+        let documents = document_state(&self.project, &self.code, cx);
+        Workspace::save_layout(&self.workspace, Some(documents), cx);
+    }
+
+    /// Reopen the remembered tabs. Returns whether any opened — `false`
+    /// falls back to the entry, which is also what a first run gets.
+    fn restore_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+        let root = self.project.read(cx).root().display().to_string();
+        if saved.scroll_root.as_deref() != Some(root.as_str()) {
+            return false;
+        }
+        let known: Vec<String> = {
+            let project = self.project.read(cx);
+            saved
+                .open_files
+                .iter()
+                .filter(|path| project.loaded_source(path).is_some())
+                .cloned()
+                .collect()
+        };
+        if known.is_empty() {
+            return false;
+        }
+        for path in &known {
+            self.open(path, None, window, cx);
+        }
+        // Last, so it ends up showing: opening a tab selects it.
+        if let Some(active) = saved.active_file.filter(|a| known.contains(a)) {
+            self.open(&active, None, window, cx);
+        }
+        true
     }
 
     /// Open a file in Code view, or select it if it is already open, and
@@ -1443,6 +1492,24 @@ impl Studio {
         }
         self.workspace
             .update(cx, |workspace, cx| workspace.set_status(cells, cx));
+    }
+}
+
+/// What the layout remembers about the documents: which project they
+/// belong to, where each is scrolled, which are open and which is
+/// showing. Assembled here because the app owns the documents; the shell
+/// only stores it.
+fn document_state(
+    project: &Entity<Project>,
+    code: &Entity<CodeView>,
+    cx: &App,
+) -> brink_gpui_shell::settings::Documents {
+    let code = code.read(cx);
+    brink_gpui_shell::settings::Documents {
+        root: project.read(cx).root().display().to_string(),
+        scroll: code.scroll_state(cx),
+        open: code.open_paths(cx),
+        active: code.active_path(cx),
     }
 }
 

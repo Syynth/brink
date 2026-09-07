@@ -120,6 +120,27 @@ pub struct Layout {
     pub scroll_root: Option<String>,
     /// Where each file was scrolled to, by root-relative path.
     pub scroll: BTreeMap<String, f32>,
+    /// The documents that were open, in tab order — put back when the
+    /// same project is opened again, under the same `scroll_root` rule.
+    pub open_files: Vec<String>,
+    /// Which of them was showing.
+    pub active_file: Option<String>,
+}
+
+/// What the app knows about the open documents when a layout is saved.
+/// The shell owns the docks and the view; the documents belong to
+/// whoever holds them, so they arrive from outside rather than being
+/// read here.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Documents {
+    /// The project they belong to, as an absolute path.
+    pub root: String,
+    /// Where each file is scrolled to, by root-relative path.
+    pub scroll: BTreeMap<String, f32>,
+    /// The open documents in tab order.
+    pub open: Vec<String>,
+    /// Which of them is showing.
+    pub active: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -146,6 +167,8 @@ impl Layout {
             "editor_view": self.editor_view,
             "scroll_root": self.scroll_root,
             "scroll": Value::Object(scroll),
+            "open_files": self.open_files,
+            "active_file": self.active_file,
         })
     }
 
@@ -192,11 +215,31 @@ impl Layout {
                     .collect()
             })
             .unwrap_or_default();
+        // A path is only useful as a non-empty string; anything else in
+        // the list is dropped rather than opened as a file with no name.
+        let open_files = value
+            .get("open_files")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let active_file = value
+            .get("active_file")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned);
         Self {
             docks,
             editor_view,
             scroll_root,
             scroll,
+            open_files,
+            active_file,
         }
     }
 }
@@ -530,6 +573,27 @@ mod tests {
         );
         s.layout.editor_view = Some("continuous".to_owned());
         assert_eq!(AppSettings::from_json(&s.to_json()), s);
+    }
+
+    #[test]
+    fn the_open_tabs_round_trip_and_a_nameless_one_is_dropped() {
+        let mut s = AppSettings::default();
+        s.layout.scroll_root = Some("/w/story".to_owned());
+        s.layout.open_files = vec!["main.ink".to_owned(), "shore.ink".to_owned()];
+        s.layout.active_file = Some("shore.ink".to_owned());
+        assert_eq!(AppSettings::from_json(&s.to_json()), s);
+
+        // An empty path is not a file, and neither is a number — both are
+        // dropped rather than opened as a document with no name.
+        let value = json!({
+            "layout": {
+                "open_files": ["a.ink", "", 7, "b.ink"],
+                "active_file": ""
+            }
+        });
+        let layout = AppSettings::from_json(&value).layout;
+        assert_eq!(layout.open_files, ["a.ink", "b.ink"]);
+        assert_eq!(layout.active_file, None);
     }
 
     #[test]

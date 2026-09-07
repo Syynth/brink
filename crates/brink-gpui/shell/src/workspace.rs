@@ -7,8 +7,6 @@
 
 use std::rc::Rc;
 
-use std::collections::BTreeMap;
-
 use gpui::prelude::*;
 use gpui::{
     Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
@@ -573,16 +571,18 @@ impl Workspace {
                 )
             })
             .collect();
-        // The scroll half belongs to whoever owns the documents, not to
-        // the shell — so it is carried through from what is already saved
-        // rather than blanked. `Workspace::save_layout` is the app's door
-        // for replacing it.
+        // The scroll and open-document halves belong to whoever owns the
+        // documents, not to the shell — so they are carried through from
+        // what is already saved rather than blanked.
+        // `Workspace::save_layout` is the app's door for replacing them.
         let saved = crate::settings::AppSettings::get(cx).layout;
         crate::settings::Layout {
             docks,
             editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
             scroll_root: saved.scroll_root,
             scroll: saved.scroll,
+            open_files: saved.open_files,
+            active_file: saved.active_file,
         }
     }
 
@@ -630,13 +630,15 @@ impl Workspace {
     /// this whenever the layout might have moved.
     pub fn save_layout(
         this: &Entity<Self>,
-        scroll: Option<(String, BTreeMap<String, f32>)>,
+        documents: Option<crate::settings::Documents>,
         cx: &mut App,
     ) {
         let mut layout = this.read(cx).layout(cx);
-        if let Some((root, scroll)) = scroll {
-            layout.scroll_root = Some(root);
-            layout.scroll = scroll;
+        if let Some(documents) = documents {
+            layout.scroll_root = Some(documents.root);
+            layout.scroll = documents.scroll;
+            layout.open_files = documents.open;
+            layout.active_file = documents.active;
         }
         crate::settings::update(cx, |settings| settings.layout = layout);
     }

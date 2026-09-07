@@ -286,6 +286,22 @@ impl CodeView {
         self.scroll = scroll;
     }
 
+    /// Every open document's path, in the order they were opened — the
+    /// tab order, and the order they are reopened in.
+    #[must_use]
+    pub fn open_paths(&self, cx: &App) -> Vec<String> {
+        self.documents
+            .iter()
+            .map(|d| d.read(cx).path().to_string())
+            .collect()
+    }
+
+    /// The active document's path, if any.
+    #[must_use]
+    pub fn active_path(&self, cx: &App) -> Option<String> {
+        Some(self.active.as_ref()?.read(cx).path().to_string())
+    }
+
     /// The document Single File view shows.
     #[must_use]
     pub fn active_document(&self) -> Option<&Entity<Document>> {
