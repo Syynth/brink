@@ -501,3 +501,179 @@ fn code_actions_decomposition() {
         formatted.len()
     );
 }
+
+/// The keystroke bill through the write path the host **actually** uses.
+///
+/// `interaction_cost_over_real_stories` writes with `update_file`, which is
+/// `timed_update_and_analyze` — the source write PLUS an eager
+/// `refresh_analysis`. That is not the keystroke path. The host splices
+/// through `apply_edits_document`, whose doc comment is explicit that it
+/// writes the source input *without* the fused eager analysis: "consumers
+/// pull what they need … the diagnostics bundle is computed when the
+/// debounced compile path asks, not per keystroke".
+///
+/// So the earlier `ide.analyze` row is work the editor defers to the 500 ms
+/// compile, and counting it per keystroke overstates the bill. This measures
+/// both paths side by side on the same document so the difference is the
+/// eager analysis and nothing else.
+///
+/// It also settles what the incremental machinery does and does not cover.
+/// The analysis half **is** per-knot incremental (#3084): `raw_lowered_query`
+/// rides the segment road, `segment_lowered_query` parses only its own
+/// segment's text, and a knot-interior edit re-lowers one knot. But that
+/// same query's doc says the road "deliberately does NOT read `parse_query`
+/// … IDE consumers that want the whole-file tree still pull `parse_query`
+/// themselves" — and `inlay_hints`/`argument_widgets` are exactly those
+/// consumers (`hints.rs` pulls `syntax_root`, i.e. `db.parse(id)`, a
+/// whole-file parse keyed on the file). So the queries that dominate the
+/// keystroke bill are the ones that opt out of the incremental road.
+#[derive(Clone, Copy)]
+enum Write {
+    EagerPush,
+    SpliceAtEnd,
+    SpliceMidKnot,
+}
+
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn the_real_keystroke_write_path() {
+    const KEYSTROKES: usize = 20;
+    #[expect(clippy::cast_precision_loss, reason = "20 iterations")]
+    let n = KEYSTROKES as f64;
+
+    for (label, rel) in [("SMALL", SMALL), ("LARGE", LARGE)] {
+        let src = read(rel);
+        let doc_len = u32::try_from(src.len()).expect("len fits");
+        println!(
+            "\n════ {label}: {} bytes, {} lines ════",
+            src.len(),
+            src.lines().count()
+        );
+
+        for mode in [Write::EagerPush, Write::SpliceAtEnd, Write::SpliceMidKnot] {
+            let mut session = EditorSession::new();
+            session.set_perf_enabled(true);
+            session.update_file("story.ink", &src);
+            assert!(session.set_active_file("story.ink"));
+            let doc = session.open_document("story.ink");
+            keystroke_sweep(&session, doc, doc_len);
+            session.perf_reset();
+
+            for i in 0..KEYSTROKES {
+                match mode {
+                    Write::EagerPush => {
+                        // The probe's original path: full push + eager analyze.
+                        let mut edited = src.clone();
+                        let _ = writeln!(edited, "\n// {}", "x".repeat(i + 1));
+                        session.update_file("story.ink", &edited);
+                    }
+                    // The host's path: a one-character insert spliced in, no
+                    // eager analysis. Position matters to the segment road,
+                    // so both ends of its range are measured: appending
+                    // dirties the last segment only (its cheapest case),
+                    // while typing mid-document dirties an interior knot and
+                    // shifts every segment after it.
+                    Write::SpliceAtEnd | Write::SpliceMidKnot => {
+                        let at = if matches!(mode, Write::SpliceAtEnd) {
+                            doc_len.saturating_add(u32::try_from(i).unwrap_or(0))
+                        } else {
+                            doc_len / 2
+                        };
+                        let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+                        let ok = session.apply_edits_document(doc, &edits);
+                        assert!(ok, "apply_edits_document must accept the splice");
+                    }
+                }
+                keystroke_sweep(&session, doc, doc_len);
+            }
+
+            let path = match mode {
+                Write::EagerPush => "update_file (probe's original: push + eager analyze)",
+                Write::SpliceAtEnd => "apply_edits_document, appending (host path, last segment)",
+                Write::SpliceMidKnot => {
+                    "apply_edits_document, mid-document (host path, interior knot)"
+                }
+            };
+            print_table(path, &session.perf_counters_json(), n);
+        }
+    }
+}
+
+/// Where the keystroke bill actually comes from: **whole-project type
+/// inference, re-run on every edit.** Not the hint walk, not the parse.
+///
+/// The chain: the hint walk resolves each `~ temp` to its inferred type via
+/// `db.infer_body(def)`; `infer_body_query` opens with
+/// `scc_membership_query(db, project)`, the call-graph SCC partition for the
+/// **entire project**, keyed on the project. Its own doc calls that
+/// deliberate — "SCC membership is inherently a global graph property, not
+/// narrowable per-def" (Ruling 2c) — and FG-2 gives the layer below it a
+/// per-SCC cutoff so an *unchanged* graph backdates. The cutoff protects
+/// downstream memos from re-solving; it does not stop the graph itself from
+/// being rebuilt.
+///
+/// Measured on a 100 KB story, after a single one-character insert at the
+/// END of the file — an edit that cannot change any call edge:
+///
+/// ```text
+///   db.type_inference()     16.30 ms
+///   inlayHints, 1st          5.09 ms
+///   inlayHints, 2nd          0.91 ms
+/// ```
+///
+/// Pulling the inference aggregation first absorbs most of what the hint
+/// call was being blamed for, and the hints then cost ~1 ms — which is what
+/// they cost warm, and what they actually are. So the per-keystroke figure
+/// is dominated by an inference layer that does not participate in the
+/// per-knot incremental road at all: `raw_lowered_query` re-lowers one knot,
+/// and then the call graph over every def in the project is rebuilt anyway.
+///
+/// This is the thing to fix. Viewport-scoping the hints or optimising the
+/// walk both address the ~1 ms, not the ~16 ms.
+///
+/// (A second, independent cost sits in the walk: `collect_inferred_type_hint`
+/// finds a temp's `SymbolInfo` with `analysis.index.symbols.values().find(…)`
+/// — a linear scan of every symbol in the project, per temp hint. It is not
+/// what this test measures, but it is why the residual first-call cost above
+/// is 5 ms rather than 1.)
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn what_the_first_pull_after_an_edit_pays_for() {
+    const N: usize = 10;
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+
+    let src = read(LARGE);
+    let doc_len = u32::try_from(src.len()).expect("len fits");
+    let mut session = EditorSession::new();
+    session.set_perf_enabled(true);
+    session.update_file("story.ink", &src);
+    assert!(session.set_active_file("story.ink"));
+    let doc = session.open_document("story.ink");
+
+    let (mut first, mut second, mut third) = (0.0, 0.0, 0.0);
+    for i in 0..N {
+        let at = doc_len.saturating_add(u32::try_from(i).unwrap_or(0));
+        let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+        assert!(session.apply_edits_document(doc, &edits), "splice accepted");
+
+        // Pull the type-inference aggregation FIRST, before any hint call.
+        // If the hints' first-call cost is really the inference layer being
+        // invalidated, this absorbs it and the hint calls all come back cheap.
+        let t0 = crate::perf::now_ms();
+        std::hint::black_box(session.session.db().type_inference());
+        let t1 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, 0, doc_len));
+        let t2 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, 0, doc_len));
+        let t3 = crate::perf::now_ms();
+        first += t1 - t0;
+        second += t2 - t1;
+        third += t3 - t2;
+    }
+
+    println!("\nafter ONE one-character edit at end of file (mean of {N}):");
+    println!("  db.type_inference()   {:>7.2} ms", first / n);
+    println!("  inlayHints, 1st       {:>7.2} ms", second / n);
+    println!("  inlayHints, 2nd       {:>7.2} ms", third / n);
+}
