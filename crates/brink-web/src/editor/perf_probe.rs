@@ -950,3 +950,64 @@ fn which_queries_reexecute_after_one_edit() {
         }
     }
 }
+
+/// The question that decides the next round: when the author edits a
+/// PROSE line — no symbol, no call, no divert changes — what does each
+/// editor query cost, and which salsa queries actually execute under it?
+/// A memo that validates or backdates costs nothing and does not appear.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn what_a_prose_edit_executes() {
+    let src = read(LARGE);
+    let doc_len = u32::try_from(src.len()).expect("len fits");
+    // A prose line deep inside a knot: change one word.
+    let needle = "The night is cold.";
+    let at = src
+        .find(needle)
+        .map_or(doc_len / 2, |i| u32::try_from(i).unwrap_or(0));
+    let mut session = EditorSession::new();
+    session.set_perf_enabled(true);
+    session.update_file("story.ink", &src);
+    assert!(session.set_active_file("story.ink"));
+    let doc = session.open_document("story.ink");
+    // Warm every query once so only post-edit work is measured.
+    keystroke_sweep(&session, doc, doc_len);
+    let _ = session.inlay_hints_doc(doc, 0, doc_len);
+
+    // One character inserted into the prose line, through the host's path.
+    let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+    let ((), write_counts) = brink_db::count_executions(|| {
+        assert!(session.apply_edits_document(doc, &edits));
+    });
+
+    println!("\nTheIntercept, one character typed into a prose line — per editor query:");
+    println!("{:<18} {:>8}  salsa executions caused", "query", "ms");
+    let report = |name: &str, counts: &std::collections::BTreeMap<String, u64>, ms: f64| {
+        let mut rows: Vec<(&String, &u64)> = counts.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let list: Vec<String> = rows.iter().map(|(q, n)| format!("{q}×{n}")).collect();
+        println!("{name:<18} {ms:>8.2}  {}", list.join(", "));
+    };
+    report("updateSource", &write_counts, 0.0);
+
+    macro_rules! timed {
+        ($label:expr, $call:expr) => {{
+            let t0 = crate::perf::now_ms();
+            let ((), counts) = brink_db::count_executions(|| {
+                std::hint::black_box($call);
+            });
+            let ms = crate::perf::now_ms() - t0;
+            report($label, &counts, ms);
+        }};
+    }
+    timed!("lineContexts", session.line_contexts_doc(doc));
+    timed!("semanticTokens", session.semantic_tokens_doc(doc));
+    timed!("foldingRanges", session.folding_ranges_doc(doc));
+    timed!("hirSpans", session.hir_spans_doc(doc));
+    timed!(
+        "argumentWidgets",
+        session.argument_widgets_doc(doc, 0, doc_len)
+    );
+    timed!("inlayHints", session.inlay_hints_doc(doc, 0, doc_len));
+    timed!("(compile, 500ms)", session.compile_project("story.ink"));
+}
