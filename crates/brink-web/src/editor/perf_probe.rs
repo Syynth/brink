@@ -598,3 +598,82 @@ fn the_real_keystroke_write_path() {
         }
     }
 }
+
+/// Where the keystroke bill actually comes from: **whole-project type
+/// inference, re-run on every edit.** Not the hint walk, not the parse.
+///
+/// The chain: the hint walk resolves each `~ temp` to its inferred type via
+/// `db.infer_body(def)`; `infer_body_query` opens with
+/// `scc_membership_query(db, project)`, the call-graph SCC partition for the
+/// **entire project**, keyed on the project. Its own doc calls that
+/// deliberate — "SCC membership is inherently a global graph property, not
+/// narrowable per-def" (Ruling 2c) — and FG-2 gives the layer below it a
+/// per-SCC cutoff so an *unchanged* graph backdates. The cutoff protects
+/// downstream memos from re-solving; it does not stop the graph itself from
+/// being rebuilt.
+///
+/// Measured on a 100 KB story, after a single one-character insert at the
+/// END of the file — an edit that cannot change any call edge:
+///
+/// ```text
+///   db.type_inference()     16.30 ms
+///   inlayHints, 1st          5.09 ms
+///   inlayHints, 2nd          0.91 ms
+/// ```
+///
+/// Pulling the inference aggregation first absorbs most of what the hint
+/// call was being blamed for, and the hints then cost ~1 ms — which is what
+/// they cost warm, and what they actually are. So the per-keystroke figure
+/// is dominated by an inference layer that does not participate in the
+/// per-knot incremental road at all: `raw_lowered_query` re-lowers one knot,
+/// and then the call graph over every def in the project is rebuilt anyway.
+///
+/// This is the thing to fix. Viewport-scoping the hints or optimising the
+/// walk both address the ~1 ms, not the ~16 ms.
+///
+/// (A second, independent cost sits in the walk: `collect_inferred_type_hint`
+/// finds a temp's `SymbolInfo` with `analysis.index.symbols.values().find(…)`
+/// — a linear scan of every symbol in the project, per temp hint. It is not
+/// what this test measures, but it is why the residual first-call cost above
+/// is 5 ms rather than 1.)
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn what_the_first_pull_after_an_edit_pays_for() {
+    const N: usize = 10;
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+
+    let src = read(LARGE);
+    let doc_len = u32::try_from(src.len()).expect("len fits");
+    let mut session = EditorSession::new();
+    session.set_perf_enabled(true);
+    session.update_file("story.ink", &src);
+    assert!(session.set_active_file("story.ink"));
+    let doc = session.open_document("story.ink");
+
+    let (mut first, mut second, mut third) = (0.0, 0.0, 0.0);
+    for i in 0..N {
+        let at = doc_len.saturating_add(u32::try_from(i).unwrap_or(0));
+        let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+        assert!(session.apply_edits_document(doc, &edits), "splice accepted");
+
+        // Pull the type-inference aggregation FIRST, before any hint call.
+        // If the hints' first-call cost is really the inference layer being
+        // invalidated, this absorbs it and the hint calls all come back cheap.
+        let t0 = crate::perf::now_ms();
+        std::hint::black_box(session.session.db().type_inference());
+        let t1 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, 0, doc_len));
+        let t2 = crate::perf::now_ms();
+        std::hint::black_box(session.inlay_hints_doc(doc, 0, doc_len));
+        let t3 = crate::perf::now_ms();
+        first += t1 - t0;
+        second += t2 - t1;
+        third += t3 - t2;
+    }
+
+    println!("\nafter ONE one-character edit at end of file (mean of {N}):");
+    println!("  db.type_inference()   {:>7.2} ms", first / n);
+    println!("  inlayHints, 1st       {:>7.2} ms", second / n);
+    println!("  inlayHints, 2nd       {:>7.2} ms", third / n);
+}
