@@ -85,10 +85,19 @@ pub fn is_synthetic_temp_name(name: &str) -> bool {
     name.starts_with(SYNTHETIC_TEMP_PREFIX)
 }
 
-/// Per-file counter behind [`SYNTHETIC_TEMP_PREFIX`] names — one per
-/// [`normalize_file`] call, so names are unique within the file and
-/// deterministic across the two compile roads (both normalize each file
-/// exactly once, in the same statement order).
+/// Per-DEFINITION counter behind [`SYNTHETIC_TEMP_PREFIX`] names — one per
+/// root-content block and one per knot (stitches share their knot's, being
+/// lowered into it), so names are unique within the definition that owns
+/// the locals and deterministic across the compile roads.
+///
+/// Per-definition rather than per-file (#3586) so that normalizing a
+/// one-knot FRAGMENT yields byte-identical names to normalizing the whole
+/// file that contains it. That equality is what lets `brink-db` lower a
+/// knot's LIR chunk from its own segment — the fragment is the only input
+/// that backdates across an edit elsewhere in the file — without the two
+/// roads disagreeing about a single local's name. A file-wide counter made
+/// every knot's names depend on how many lifts happened in the knots above
+/// it, so the fragment road could not reproduce them.
 #[derive(Default)]
 struct Hoister {
     next: u32,
@@ -107,9 +116,12 @@ impl Hoister {
 /// Normalize an entire HIR file by lifting inline sequences/conditionals
 /// in all blocks (root, knot bodies, stitch bodies).
 pub fn normalize_file(hir: &mut HirFile) {
-    let mut hoister = Hoister::default();
-    normalize_block(&mut hir.root_content, &mut hoister);
+    normalize_block(&mut hir.root_content, &mut Hoister::default());
     for knot in &mut hir.knots {
+        // One counter per knot (see [`Hoister`]): a knot's synthetic names
+        // must not depend on the knots before it, or a fragment could not
+        // reproduce them.
+        let mut hoister = Hoister::default();
         normalize_block(&mut knot.body, &mut hoister);
         for stitch in &mut knot.stitches {
             normalize_block(&mut stitch.body, &mut hoister);
