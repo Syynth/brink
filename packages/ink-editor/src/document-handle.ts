@@ -316,6 +316,34 @@ export class DocHandle {
       const refined = this.refinedAssembled();
       if (refined !== null) return refined;
     }
+    // W3, keystroke path: with a classifier attached and NO refined slices
+    // cached to preserve, the classifier plane alone answers — the same
+    // mirror-first shape {@link lineContexts} already takes, and identical
+    // output to the blend below, which would serve every segment from this
+    // same plane once `segSlices` is empty.
+    //
+    // This is what keeps the project session's whole-file lex off the
+    // keystroke path. `segment_manifest_doc` re-lexes the file through
+    // `file_segments_query` (0.6 ms on a 100 KB story), and asking both
+    // planes paid it twice per keystroke — it was the last main-thread
+    // analysis-session call there. A desynced mirror or a stale key falls
+    // back wholesale to the session road below.
+    if (fast && this.segSlices.size === 0 && this.mirror) {
+      const mirrored = this.mirror.manifest();
+      if (mirrored !== null) {
+        const quickOut: SemanticToken[] = [];
+        let complete = true;
+        for (const seg of mirrored.segments) {
+          const quick = this.mirror.fastTokens(seg.key);
+          if (quick === null) {
+            complete = false;
+            break;
+          }
+          for (const t of quick) quickOut.push({ ...t, line: t.line + seg.ownedFrom });
+        }
+        if (complete) return quickOut;
+      }
+    }
     const manifest = this.segmentManifest();
     if (manifest === null) return this.session.getSemanticTokensDoc(this.id);
     const out: SemanticToken[] = [];
