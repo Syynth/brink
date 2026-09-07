@@ -541,8 +541,15 @@ pub struct BrinkHighlighter {
     /// editor composes decoration and syntax colours through an unordered
     /// set, and the band must win on every word.
     todo_lines: Vec<TodoLine>,
+    /// Lines faded rather than painted at full strength: `INCLUDE` /
+    /// `EXTERNAL` and whole-line comments (`muted_lines`).
+    muted_lines: Vec<Range<usize>>,
     band: (gpui::Hsla, gpui::Hsla),
 }
+
+/// How far a muted line's colour is faded. Enough to fall behind the
+/// prose, not so far that it cannot be read when looked at.
+pub(crate) const MUTED_FADE: f32 = 0.55;
 
 /// One `TODO:` line: its full extent and its `TODO:` keyword.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -621,6 +628,63 @@ pub(crate) fn todo_lines(source: &str, notes: &[Range<usize>]) -> Vec<TodoLine> 
     out
 }
 
+/// The lines a manuscript reads past rather than reads: an `INCLUDE`
+/// (structure, not story) and a line that is only a comment.
+///
+/// Derived from the SOURCE with the parse's own line boundaries rather
+/// than from the analysis: both shapes are decidable from the text, and a
+/// worker round-trip would make the paint lag the keystroke. The dialect
+/// classifications the studio also styles per line — cue, dialogue,
+/// action — are NOT decidable here: they need the analysis, and they are
+/// left out rather than guessed at (`INVENTORY.md`, per-LINE styles).
+#[must_use]
+pub(crate) fn muted_lines(source: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for line in source.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let end = start + line.trim_end_matches(['\n', '\r']).len();
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // `INCLUDE x` and `EXTERNAL f(...)`: the file's plumbing. A line
+        // that merely CONTAINS the word is not one — the keyword opens
+        // the line or it is prose about including something.
+        let plumbing = text.starts_with("INCLUDE ") || text.starts_with("EXTERNAL ");
+        let comment = text.starts_with("//") || text.starts_with("/*");
+        if plumbing || comment {
+            out.push(start..end);
+        }
+    }
+    out
+}
+
+/// Fade every run on a muted line. The colour is kept and its alpha cut,
+/// so a comment stays comment-coloured and an `INCLUDE` stays a keyword —
+/// they simply stop competing with the prose beside them.
+pub(crate) fn overlay_muted(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    muted: &[Range<usize>],
+    fade: f32,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if muted.is_empty() {
+        return runs;
+    }
+    runs.into_iter()
+        .map(|(range, mut style)| {
+            let on = muted
+                .iter()
+                .any(|line| line.start <= range.start && range.end <= line.end);
+            if on && let Some(colour) = style.color {
+                style.color = Some(colour.opacity(fade));
+            }
+            (range, style)
+        })
+        .collect()
+}
+
 /// Lay the band over already-styled runs: inside a TODO line every run
 /// takes the ink colour on the band background, and the keyword goes bold.
 /// Runs are split at the band's and the keyword's edges; nothing outside
@@ -678,6 +742,7 @@ impl BrinkHighlighter {
             folds,
             runs: Vec::new(),
             todo_lines: Vec::new(),
+            muted_lines: Vec::new(),
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
         }
     }
@@ -711,6 +776,7 @@ impl InputHighlighter for BrinkHighlighter {
             self.cache.update(&source, project.kinds_for(&self.path))
         };
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
+        self.muted_lines = muted_lines(&source);
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
         self.band = (
             brink_gpui_shell::theme::hsla(tokens.todo_band),
@@ -775,6 +841,9 @@ impl InputHighlighter for BrinkHighlighter {
         if cursor < range.end {
             out.push((cursor..range.end, gpui::HighlightStyle::default()));
         }
+        // Muting first, the band second: a TODO line is never muted, and
+        // the band must win on every word it covers.
+        let out = overlay_muted(out, &self.muted_lines, MUTED_FADE);
         overlay_todo(out, &self.todo_lines, self.band)
     }
 
@@ -1090,6 +1159,49 @@ mod tests {
         // Two notes on one line collapse to one band.
         let twice = [notes()[0].clone(), notes()[0].clone()];
         assert_eq!(todo_lines(INK, &twice).len(), 1);
+    }
+
+    #[test]
+    fn plumbing_and_whole_line_comments_are_the_muted_lines() {
+        let source = "INCLUDE harbour.ink\n// a note\nThe tide was out.\nEXTERNAL ring(x)\n\n  // indented\nAn INCLUDE inside prose is not one.\n";
+        let muted = muted_lines(source);
+        let text: Vec<&str> = muted.iter().map(|r| &source[r.clone()]).collect();
+        assert_eq!(
+            text,
+            vec![
+                "INCLUDE harbour.ink",
+                "// a note",
+                "EXTERNAL ring(x)",
+                "  // indented",
+            ],
+            "prose that merely mentions INCLUDE is prose"
+        );
+    }
+
+    #[test]
+    fn muting_fades_a_colour_and_leaves_everything_else_alone() {
+        let source = "INCLUDE a.ink\nHello.\n";
+        let muted = muted_lines(source);
+        let colour = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+        let style = |color| gpui::HighlightStyle {
+            color: Some(color),
+            ..gpui::HighlightStyle::default()
+        };
+        let runs = vec![(0..7, style(colour)), (14..19, style(colour))];
+        let out = overlay_muted(runs, &muted, MUTED_FADE);
+        assert!(
+            (out[0].1.color.unwrap().a - MUTED_FADE).abs() < 0.001,
+            "the INCLUDE keyword fades"
+        );
+        assert_eq!(
+            out[0].1.color.unwrap().h,
+            colour.h,
+            "and keeps its own colour: a comment stays comment-coloured"
+        );
+        assert!(
+            (out[1].1.color.unwrap().a - 1.0).abs() < 0.001,
+            "the prose is untouched"
+        );
     }
 
     #[test]
