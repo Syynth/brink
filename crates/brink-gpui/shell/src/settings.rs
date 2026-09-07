@@ -72,7 +72,16 @@ pub struct AppSettings {
     /// means. This is the part with no such question in it, and it is most
     /// of what a person notices: the app opens looking like they left it.
     pub layout: Layout,
+    /// Projects opened before, most recent first — the roots the File
+    /// menu offers to reopen. Absolute paths, since a recent is only
+    /// meaningful as a place on this machine.
+    pub recents: Vec<String>,
 }
+
+/// How many recent projects are remembered. A recents list is a
+/// convenience, not an archive: past a handful, scanning it costs more
+/// than retyping the path.
+pub const MAX_RECENTS: usize = 8;
 
 /// The persisted window shape. Sizes are logical pixels.
 ///
@@ -186,6 +195,7 @@ impl Default for AppSettings {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            recents: Vec::new(),
         }
     }
 }
@@ -227,6 +237,7 @@ impl AppSettings {
             "format_on_save": self.format_on_save,
             "keymap": Value::Object(keymap),
             "layout": self.layout.to_json(),
+            "recents": self.recents.clone(),
         })
     }
 
@@ -284,6 +295,19 @@ impl AppSettings {
             layout: value
                 .get("layout")
                 .map(Layout::from_json)
+                .unwrap_or_default(),
+            recents: value
+                .get("recents")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .take(MAX_RECENTS)
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
@@ -346,6 +370,26 @@ pub fn init(cx: &mut App) {
     cx.set_global(settings);
 }
 
+/// Note a project as opened: it goes to the front of the recents, at most
+/// once, and the list is capped. Moving an already-listed project to the
+/// front is a real change and is written — "most recent first" is the
+/// whole content of the list.
+pub fn remember_project(root: &Path, cx: &mut App) {
+    let path = root.to_string_lossy().into_owned();
+    if path.is_empty() {
+        return;
+    }
+    update(cx, |settings| push_recent(&mut settings.recents, path));
+}
+
+/// The recents rule, without the globals: newest first, listed once,
+/// capped.
+pub fn push_recent(recents: &mut Vec<String>, path: String) {
+    recents.retain(|p| p != &path);
+    recents.insert(0, path);
+    recents.truncate(MAX_RECENTS);
+}
+
 /// Change the settings: `f` edits them, the file is rewritten, and every
 /// observer of the global is told. No-op when `f` changes nothing.
 pub fn update(cx: &mut App, f: impl FnOnce(&mut AppSettings)) {
@@ -388,6 +432,7 @@ mod tests {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            recents: vec!["/home/me/harbour".to_owned()],
         };
         s.keymap
             .insert("File: Save".to_owned(), Some("cmd-shift-s".to_owned()));
@@ -505,6 +550,52 @@ mod tests {
         save_to(&dir, &s).unwrap();
         assert_eq!(load_from(&dir), s, "settings.json now wins");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reopened_project_moves_to_the_front_and_the_list_is_capped() {
+        let mut recents = Vec::new();
+        for i in 0..MAX_RECENTS + 3 {
+            push_recent(&mut recents, format!("/p/{i}"));
+        }
+        assert_eq!(recents.len(), MAX_RECENTS, "capped");
+        assert_eq!(
+            recents[0],
+            format!("/p/{}", MAX_RECENTS + 2),
+            "newest first"
+        );
+        assert!(!recents.contains(&"/p/0".to_owned()), "oldest fell off");
+
+        // Reopening one already listed moves it; it is not listed twice.
+        let again = recents[3].clone();
+        push_recent(&mut recents, again.clone());
+        assert_eq!(recents[0], again);
+        assert_eq!(
+            recents.iter().filter(|p| **p == again).count(),
+            1,
+            "listed once"
+        );
+        assert_eq!(recents.len(), MAX_RECENTS, "and no longer than before");
+    }
+
+    #[test]
+    fn recents_round_trip_and_a_malformed_list_is_not_fatal() {
+        let s = AppSettings {
+            recents: vec!["/a".to_owned(), "/b".to_owned()],
+            ..AppSettings::default()
+        };
+        assert_eq!(AppSettings::from_json(&s.to_json()).recents, s.recents);
+
+        let junk = json!({ "recents": [1, "", "/c", { "x": 1 }] });
+        assert_eq!(
+            AppSettings::from_json(&junk).recents,
+            vec!["/c".to_owned()],
+            "only the usable entries survive; the file is never fatal"
+        );
+        assert_eq!(
+            AppSettings::from_json(&json!({ "recents": "not a list" })).recents,
+            Vec::<String>::new()
+        );
     }
 
     #[test]
