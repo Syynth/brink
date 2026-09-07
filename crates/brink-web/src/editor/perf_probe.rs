@@ -501,3 +501,100 @@ fn code_actions_decomposition() {
         formatted.len()
     );
 }
+
+/// The keystroke bill through the write path the host **actually** uses.
+///
+/// `interaction_cost_over_real_stories` writes with `update_file`, which is
+/// `timed_update_and_analyze` — the source write PLUS an eager
+/// `refresh_analysis`. That is not the keystroke path. The host splices
+/// through `apply_edits_document`, whose doc comment is explicit that it
+/// writes the source input *without* the fused eager analysis: "consumers
+/// pull what they need … the diagnostics bundle is computed when the
+/// debounced compile path asks, not per keystroke".
+///
+/// So the earlier `ide.analyze` row is work the editor defers to the 500 ms
+/// compile, and counting it per keystroke overstates the bill. This measures
+/// both paths side by side on the same document so the difference is the
+/// eager analysis and nothing else.
+///
+/// It also settles what the incremental machinery does and does not cover.
+/// The analysis half **is** per-knot incremental (#3084): `raw_lowered_query`
+/// rides the segment road, `segment_lowered_query` parses only its own
+/// segment's text, and a knot-interior edit re-lowers one knot. But that
+/// same query's doc says the road "deliberately does NOT read `parse_query`
+/// … IDE consumers that want the whole-file tree still pull `parse_query`
+/// themselves" — and `inlay_hints`/`argument_widgets` are exactly those
+/// consumers (`hints.rs` pulls `syntax_root`, i.e. `db.parse(id)`, a
+/// whole-file parse keyed on the file). So the queries that dominate the
+/// keystroke bill are the ones that opt out of the incremental road.
+#[derive(Clone, Copy)]
+enum Write {
+    EagerPush,
+    SpliceAtEnd,
+    SpliceMidKnot,
+}
+
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn the_real_keystroke_write_path() {
+    const KEYSTROKES: usize = 20;
+    #[expect(clippy::cast_precision_loss, reason = "20 iterations")]
+    let n = KEYSTROKES as f64;
+
+    for (label, rel) in [("SMALL", SMALL), ("LARGE", LARGE)] {
+        let src = read(rel);
+        let doc_len = u32::try_from(src.len()).expect("len fits");
+        println!(
+            "\n════ {label}: {} bytes, {} lines ════",
+            src.len(),
+            src.lines().count()
+        );
+
+        for mode in [Write::EagerPush, Write::SpliceAtEnd, Write::SpliceMidKnot] {
+            let mut session = EditorSession::new();
+            session.set_perf_enabled(true);
+            session.update_file("story.ink", &src);
+            assert!(session.set_active_file("story.ink"));
+            let doc = session.open_document("story.ink");
+            keystroke_sweep(&session, doc, doc_len);
+            session.perf_reset();
+
+            for i in 0..KEYSTROKES {
+                match mode {
+                    Write::EagerPush => {
+                        // The probe's original path: full push + eager analyze.
+                        let mut edited = src.clone();
+                        let _ = writeln!(edited, "\n// {}", "x".repeat(i + 1));
+                        session.update_file("story.ink", &edited);
+                    }
+                    // The host's path: a one-character insert spliced in, no
+                    // eager analysis. Position matters to the segment road,
+                    // so both ends of its range are measured: appending
+                    // dirties the last segment only (its cheapest case),
+                    // while typing mid-document dirties an interior knot and
+                    // shifts every segment after it.
+                    Write::SpliceAtEnd | Write::SpliceMidKnot => {
+                        let at = if matches!(mode, Write::SpliceAtEnd) {
+                            doc_len.saturating_add(u32::try_from(i).unwrap_or(0))
+                        } else {
+                            doc_len / 2
+                        };
+                        let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+                        let ok = session.apply_edits_document(doc, &edits);
+                        assert!(ok, "apply_edits_document must accept the splice");
+                    }
+                }
+                keystroke_sweep(&session, doc, doc_len);
+            }
+
+            let path = match mode {
+                Write::EagerPush => "update_file (probe's original: push + eager analyze)",
+                Write::SpliceAtEnd => "apply_edits_document, appending (host path, last segment)",
+                Write::SpliceMidKnot => {
+                    "apply_edits_document, mid-document (host path, interior knot)"
+                }
+            };
+            print_table(path, &session.perf_counters_json(), n);
+        }
+    }
+}
