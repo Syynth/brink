@@ -47,6 +47,9 @@ const WATCHED: &[&str] = &[
     "effects_scc_query",
     "effects_query",
     "lir_knot_chunk_query",
+    // Per-def declared signatures, pulled for every knot/stitch the way the
+    // inlay-hint and hover collectors do.
+    "signature_query",
 ];
 
 fn knot(name: &str, next: Option<&str>, value: u32) -> String {
@@ -77,6 +80,15 @@ fn warm(db: &mut ProjectDb, text: &str) {
 fn pull(db: &ProjectDb) {
     let _ = db.type_inference();
     let _ = db.story_data();
+    let index = db.symbol_index();
+    for (id, info) in &index.symbols {
+        if matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+        ) {
+            let _ = db.signature(*id);
+        }
+    }
 }
 
 /// Apply `edit`, pull, and return what executed.
@@ -137,12 +149,17 @@ fn the_counter_is_live_a_cold_build_executes_each_per_def_query_per_knot() {
             ("effects_scc_query", 3),
             ("effects_query", 3),
             ("lir_knot_chunk_query", 3),
+            ("signature_query", 4),
         ],
     );
 }
 
 // ── the firewall, edge by edge ────────────────────────────────────────────
 
+/// `signature_query` reads 2 here, not 1: the edited knot (re-executes,
+/// backdates — `Sig` is declaration-only) plus `VAR gold`, which is a
+/// root-content def and still on the whole-file road (`def_segment` maps
+/// knots and stitches only). Cheap and `Eq`-cut, but counted honestly.
 #[test]
 fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
     let mut db = ProjectDb::new();
@@ -167,6 +184,7 @@ fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
             ("effects_scc_query", 0),
             ("effects_query", 0),
             ("lir_knot_chunk_query", 3),
+            ("signature_query", 2),
         ],
     );
 }
@@ -195,6 +213,7 @@ fn appending_at_end_of_file_reexecutes_the_last_knots_defs_only() {
             ("effects_scc_query", 0),
             ("effects_query", 0),
             ("lir_knot_chunk_query", 3),
+            ("signature_query", 2),
         ],
     );
 }
@@ -228,6 +247,7 @@ fn editing_a_var_initializer_of_the_same_type_reexecutes_no_def() {
             ("effects_scc_query", 0),
             ("effects_query", 0),
             ("lir_knot_chunk_query", 3),
+            ("signature_query", 1),
         ],
     );
 }
@@ -279,6 +299,7 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
             ("effects_scc_query", 0),
             ("effects_query", 0),
             ("lir_knot_chunk_query", 3),
+            ("signature_query", 1),
         ],
     );
 }
@@ -323,6 +344,7 @@ fn inserting_a_knot_reexecutes_the_knots_after_it() {
             ("effects_scc_query", 4),
             ("effects_query", 4),
             ("lir_knot_chunk_query", 4),
+            ("signature_query", 5),
         ],
     );
 }

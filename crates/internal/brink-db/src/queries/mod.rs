@@ -1450,13 +1450,26 @@ pub(crate) fn signature_query<'db>(
     let index = resolution_index_query(db, project);
     let def_id = def.def(db);
     let declaring_file = index.symbols.get(&def_id)?.file;
+    let opts = project.analysis_options(db);
+    // Segment road, per-def (#3585 follow-up): a knot/stitch's signature is
+    // read off its own segment's fragment, so a prose edit in another knot
+    // of the same file leaves this memo validated — and `Sig` is range-free
+    // (`Eq`-derived, declaration-only by contract), so even the edited
+    // knot's signature backdates unless its declaration line changed.
+    if let Some((_sf, _seg, frag)) = def_segment(db, project, def_id) {
+        return brink_analyzer::signature(
+            def_id,
+            index,
+            &[(declaring_file, &frag)],
+            opts.host_manifest.as_ref(),
+        );
+    }
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
         .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
-    let opts = project.analysis_options(db);
     brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
 }
 
