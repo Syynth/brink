@@ -117,6 +117,10 @@ pub struct Workspace {
     settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
     /// The registered settings sections (`crate::settings_modal`).
     sections: Vec<Section>,
+    /// Which docks were open before the editor was maximized, so
+    /// un-maximizing puts back what was there and not a guess at it.
+    /// `None` when not maximized.
+    unmaximized: Option<Vec<(&'static str, bool)>>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -170,6 +174,7 @@ impl Workspace {
             overlay: None,
             settings: None,
             sections: Vec::new(),
+            unmaximized: None,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -632,6 +637,55 @@ impl Workspace {
     }
 
     /// Replace the status-bar cells, left to right.
+    /// Whether the editor is maximized — every dock hidden.
+    #[must_use]
+    pub fn is_maximized(&self) -> bool {
+        self.unmaximized.is_some()
+    }
+
+    /// Give the editor the whole window, and give it back
+    /// (`docs/studio-shell-spec.md` §5.4).
+    ///
+    /// Restoring puts back exactly the docks that were open, rather than
+    /// opening all three: a writer who works with the Binder closed does
+    /// not want it back for having read one scene full-width.
+    pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.unmaximized.take() {
+            Some(before) => {
+                for (name, open) in before {
+                    let Some((_, placement)) = DOCKS.iter().find(|(n, _)| *n == name) else {
+                        continue;
+                    };
+                    if self.dock_area.read(cx).is_dock_open(*placement) != open {
+                        self.dock_area
+                            .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+                    }
+                }
+            }
+            None => {
+                let before: Vec<(&'static str, bool)> = DOCKS
+                    .iter()
+                    .map(|(name, placement)| {
+                        (*name, self.dock_area.read(cx).is_dock_open(*placement))
+                    })
+                    .collect();
+                // Nothing open is already maximized; toggling then would
+                // record "all closed" and lose the way back.
+                if before.iter().all(|(_, open)| !open) {
+                    return;
+                }
+                for (_, placement) in DOCKS {
+                    if self.dock_area.read(cx).is_dock_open(*placement) {
+                        self.dock_area
+                            .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+                    }
+                }
+                self.unmaximized = Some(before);
+            }
+        }
+        cx.notify();
+    }
+
     pub fn set_status(&mut self, cells: Vec<StatusCell>, cx: &mut Context<Self>) {
         self.status = cells;
         cx.notify();

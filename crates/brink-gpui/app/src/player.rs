@@ -130,6 +130,22 @@ impl Player {
         }
     }
 
+    /// What the status bar says about the session.
+    #[must_use]
+    pub fn state(&self) -> SessionState {
+        if self.busy {
+            SessionState::Working
+        } else if !self.choices.is_empty() {
+            SessionState::AwaitingChoice
+        } else if self.running {
+            SessionState::Running
+        } else if self.entries.is_empty() {
+            SessionState::Idle
+        } else {
+            SessionState::Over
+        }
+    }
+
     /// Whether the panel currently sits in a dock.
     #[must_use]
     pub fn is_docked(&self) -> bool {
@@ -401,6 +417,35 @@ impl Player {
     }
 }
 
+/// The story session's state, for the status bar (`docs/studio-shell-spec.md`
+/// §7.3: "story state (idle / running / awaiting choice)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    /// No story has been started in this window.
+    Idle,
+    /// A command is in flight.
+    Working,
+    /// Running, and waiting for the reader to pick.
+    AwaitingChoice,
+    /// Started, mid-turn, nothing to pick yet.
+    Running,
+    /// The story ended, or an error stopped it.
+    Over,
+}
+
+impl SessionState {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "running…",
+            Self::AwaitingChoice => "awaiting a choice",
+            Self::Running => "running",
+            Self::Over => "story over",
+        }
+    }
+}
+
 /// Where follow-in-editor should land for a batch of steps: the LAST
 /// line in it that has a source.
 ///
@@ -543,6 +588,26 @@ mod tests {
                 end: start + 4,
             }),
         }
+    }
+
+    #[test]
+    fn every_session_state_says_something_different() {
+        use super::SessionState;
+        let all = [
+            SessionState::Idle,
+            SessionState::Working,
+            SessionState::AwaitingChoice,
+            SessionState::Running,
+            SessionState::Over,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|s| s.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            all.len(),
+            "two states reading the same is a lie"
+        );
     }
 
     #[test]

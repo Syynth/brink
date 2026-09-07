@@ -95,6 +95,8 @@ actions!(
         QuickOpenGoTo,
         /// Choose a project folder and open it in a new window.
         OpenProject,
+        /// Give the editor the whole window, and give it back.
+        MaximizeEditor,
         /// Close the studio, saving the window's shape on the way out.
         Quit,
     ]
@@ -395,6 +397,13 @@ impl Studio {
             // also the only way the quit hook below is ever reached: a
             // kill signal does not run it.
             workspace.register_command(
+                "View",
+                "Maximize Editor",
+                MaximizeEditor,
+                Some("cmd-shift-e"),
+                cx,
+            );
+            workspace.register_command(
                 "File",
                 "Open Project\u{2026}",
                 OpenProject,
@@ -517,6 +526,11 @@ impl Studio {
                 }
             },
         );
+        // The status bar carries the story state, and the Player changes it
+        // without an event of its own — so observe the entity.
+        let on_player_state = cx.observe(&player, |this: &mut Self, _, cx| {
+            this.refresh_status(cx);
+        });
         let on_compiled = cx.subscribe_in(
             &compiled,
             window,
@@ -625,6 +639,7 @@ impl Studio {
                 on_project,
                 on_binder,
                 on_player,
+                on_player_state,
                 on_program,
                 on_compiled,
                 on_problem,
@@ -1115,6 +1130,11 @@ impl Studio {
         open_project_window(root, cx);
     }
 
+    fn maximize_editor(&mut self, _: &MaximizeEditor, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| workspace.toggle_maximize(window, cx));
+    }
+
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         // `on_app_quit` does the saving; this is the door to it.
         cx.quit();
@@ -1148,8 +1168,15 @@ impl Studio {
                 StatusCell::new(format!("worst {worst:.1} ms")),
             ]
         };
-        // The right-hand group (§7.3): where the caret is, and in what.
+        // The story state (§7.3's left group) — said once here rather than
+        // read off the Player's own header, which is not on screen unless
+        // its tab is.
         let mut cells = cells;
+        let state = self.player.read(cx).state();
+        if state != crate::player::SessionState::Idle {
+            cells.push(StatusCell::new(state.label()));
+        }
+        // The right-hand group (§7.3): where the caret is, and in what.
         if let Some(document) = self.code.read(cx).active_document() {
             let document = document.read(cx);
             let (line, column) = document.cursor_line_column(cx);
@@ -1202,6 +1229,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_compiled_output))
             .on_action(cx.listener(Self::quick_open))
             .on_action(cx.listener(Self::open_project))
+            .on_action(cx.listener(Self::maximize_editor))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
