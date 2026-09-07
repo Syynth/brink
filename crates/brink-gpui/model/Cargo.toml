@@ -28,7 +28,7 @@ brink-driver.workspace = true
 brink-project-config.workspace = true
 brink-environment.workspace = true
 brink-fmt.workspace = true
-brink-runtime.workspace = true
+brink-runtime = { workspace = true, features = ["debug-hooks"] }
 brink-format.workspace = true
 brink-intl.workspace = true
 brink-prose.workspace = true

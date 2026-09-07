@@ -390,6 +390,10 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
+    // The breakpoints the editor has marked, source-level and outliving
+    // any one play session — a mark set before Play is pressed must be
+    // armed by the Start that follows.
+    let mut breakpoints: Vec<(String, u32)> = Vec::new();
     // The author's file keys, for the play session's entry stand-in rule.
     let mut files: Vec<String> = Vec::new();
     let mut play: Option<Play> = None;
@@ -558,6 +562,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                     &mut play,
+                    &mut breakpoints,
                     command,
                 )
             } else {
