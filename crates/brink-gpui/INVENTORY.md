@@ -387,7 +387,7 @@ Against studio-shell-spec §4's inventory:
 |---|---|
 | **Player** | ~~not started~~ **built** — see §1. Continuous swap-in and the Single File split remain the open ruling. |
 | **Program Explorer** | ~~not started~~ **built** — see §1. |
-| **State View** (debugger) | nothing in the shared layer exposes a running `Story`'s state. The Player owns the session, so this is engine work below `IdeSession` plus a panel. |
+| **State View** (debugger) | ~~blocked on engine work~~ **built 2026-09-07** — `app/src/state_view.rs`. That blocker was stale: `Story::debug_snapshot` already assembles status, location, turn, globals, call stack, visit counts, pending choices and the RNG. What was missing was a way to ASK, which is one command on the play session (`PlayCommand::Snapshot`). It reads and does not step — setting a variable, `stepi` and breakpoints each change a running story and are worth their own slice. Refreshed by observing the Player, never polled: a story waiting for a choice is not changing. One nuance it reports faithfully: the runtime's own `visit_counts` comes back empty for this corpus, so the panel says "nothing visited yet" rather than inventing a number. |
 | **Output / compile log** | ~~unblocked~~ **built 2026-09-06** — see §1. |
 | **Compiled Output** (`.inkt` tab) | ~~unblocked~~ **built 2026-09-06** — see §1. |
 | **Story Graph** | the story-graph query in the worker; a canvas. |

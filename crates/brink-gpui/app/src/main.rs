@@ -30,6 +30,7 @@ mod settings_formatting;
 mod settings_general;
 mod settings_prose;
 mod single_view;
+mod state_view;
 mod todos;
 mod treemap;
 
@@ -66,6 +67,7 @@ use crate::settings_formatting::FormattingSection;
 use crate::settings_general::{GeneralSection, OpenConfig};
 use crate::settings_prose::ProseSection;
 use crate::single_view::SingleFileView;
+use crate::state_view::StateView;
 use crate::todos::{OpenTodo, Todos};
 use brink_gpui_shell::notify::{Severity, notify};
 
@@ -157,6 +159,7 @@ impl Studio {
         let program = cx.new(|cx| ProgramExplorer::new(project.clone(), cx));
         let compiled = cx.new(|cx| CompiledOutputView::new(project.clone(), window, cx));
         let output = cx.new(|cx| OutputLog::new(project.clone(), cx));
+        let state = cx.new(|cx| StateView::new(project.clone(), player.clone(), cx));
         // The log keeps what the transcript throws away on a Restart.
         output.update(cx, |log, cx| log.watch_player(&player, cx));
         // And the Program Explorer says when the running story is on an
@@ -311,6 +314,16 @@ impl Studio {
                     .icon(icons::DOC)
                     .size(px(380.)),
                 program.clone(),
+                window,
+                cx,
+            );
+            // Under the Program Explorer in the right dock: the debugger
+            // pane, which reads the same session the Player runs.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("state", "State", RailSlot::RIGHT_UPPER)
+                    .icon(icons::KNOT)
+                    .size(px(380.)),
+                state.clone(),
                 window,
                 cx,
             );

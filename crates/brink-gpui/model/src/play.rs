@@ -29,6 +29,38 @@ pub enum PlayCommand {
     Choose(usize),
     /// Drop the session.
     Stop,
+    /// Read the running story's state without advancing it — what the
+    /// State View shows. Answered with a [`PlayOutcome`] carrying no
+    /// steps and a `state`; a session that is not running answers with
+    /// `state: None` rather than an error, since "nothing is running" is
+    /// a state the panel has something to say about.
+    Snapshot,
+}
+
+/// The running story's state, as the State View reads it.
+///
+/// A flattened `brink_runtime::DebugSnapshot`: the runtime already
+/// assembles all of this (status, position, globals, call stack, visit
+/// counts, pending choices, RNG), so the panel needs no engine work — it
+/// needed a way to ASK, which is [`PlayCommand::Snapshot`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlayState {
+    /// `active` / `waiting_for_choice` / `done` / `ended`.
+    pub status: String,
+    /// The nearest named knot or stitch the cursor is in.
+    pub location: Option<String>,
+    pub turn: u32,
+    /// Globals as `(name, value)`, in the runtime's order.
+    pub globals: Vec<(String, String)>,
+    /// Call frames, innermost first: `(kind, location)`.
+    pub call_stack: Vec<(String, Option<String>)>,
+    /// Visit counts by path, sorted by path — anonymous containers are
+    /// left out, as the runtime's own path-resolved list does.
+    pub visits: Vec<(String, u32)>,
+    /// The choices on offer, as the reader sees them.
+    pub choices: Vec<String>,
+    /// The story RNG, as the runtime reports it: `(seed, previous)`.
+    pub rng: (i32, i32),
 }
 
 /// One step of story output, the runtime's [`Step`] with only what a
@@ -112,6 +144,9 @@ pub struct PlayOutcome {
     /// Runtime warnings drained after the run, already rendered.
     pub warnings: Vec<String>,
     pub error: Option<PlayError>,
+    /// The session's state, on a [`PlayCommand::Snapshot`] and nowhere
+    /// else. `None` means no story is running.
+    pub state: Option<PlayState>,
 }
 
 impl PlayOutcome {
@@ -168,6 +203,10 @@ pub fn run(
                 Err(e) => PlayOutcome::failed(e),
             }
         }
+        PlayCommand::Snapshot => PlayOutcome {
+            state: play.as_ref().map(|running| snapshot(&running.story)),
+            ..PlayOutcome::default()
+        },
         PlayCommand::Choose(index) => {
             let Some(running) = play.as_mut() else {
                 return PlayOutcome::failed(PlayError::NotStarted);
@@ -239,6 +278,38 @@ fn start(
     Ok(Play { story })
 }
 
+/// The running story's state, flattened for the UI.
+///
+/// The runtime assembles the snapshot; this only drops what the panel has
+/// no use for (the `DefinitionId`-keyed visit ids, the per-frame bytecode
+/// positions) and turns the rest into plain data, since nothing of the
+/// engine crosses to the main thread.
+fn snapshot(story: &Story<FastRng>) -> PlayState {
+    let snap = story.debug_snapshot();
+    PlayState {
+        status: snap.status.to_owned(),
+        location: snap.current_location,
+        turn: snap.turn_index,
+        globals: snap
+            .globals
+            .into_iter()
+            .map(|g| (g.name, g.value))
+            .collect(),
+        call_stack: snap
+            .call_stack
+            .into_iter()
+            .map(|f| (f.kind.to_owned(), f.location))
+            .collect(),
+        visits: snap
+            .visit_counts
+            .into_iter()
+            .map(|v| (v.path, v.count))
+            .collect(),
+        choices: snap.pending_choices.into_iter().map(|c| c.text).collect(),
+        rng: (snap.rng.seed, snap.rng.previous),
+    }
+}
+
 /// Run to the next yield point.
 fn advance(play: &mut Play) -> PlayOutcome {
     let mut outcome = PlayOutcome::default();
@@ -293,6 +364,67 @@ fn convert(step: Step) -> PlayStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_of_nothing_running_is_a_state_of_none_not_an_error() {
+        // The State View has something to say about "no session" — it says
+        // so — and an error would make the panel show a failure instead.
+        let mut session = IdeSession::new();
+        let mut play = None;
+        let outcome = run(&mut session, None, &[], &mut play, PlayCommand::Snapshot);
+        assert!(outcome.state.is_none());
+        assert!(outcome.error.is_none(), "not running is not a failure");
+        assert!(outcome.steps.is_empty(), "a snapshot advances nothing");
+    }
+
+    #[test]
+    fn a_snapshot_reads_the_running_story_without_advancing_it() {
+        let mut session = IdeSession::new();
+        session.update_source(
+            "main.ink",
+            "VAR lamps = 2\n-> shore\n=== shore ===\nThe tide was out.\n* [Go] -> END\n".to_owned(),
+        );
+        let files = ["main.ink".to_owned()];
+        let mut play = None;
+        let started = run(
+            &mut session,
+            Some("main.ink"),
+            &files,
+            &mut play,
+            PlayCommand::Start { at: None },
+        );
+        assert!(started.error.is_none(), "{:?}", started.error);
+
+        let first = run(
+            &mut session,
+            Some("main.ink"),
+            &files,
+            &mut play,
+            PlayCommand::Snapshot,
+        );
+        let state = first.state.expect("a story is running");
+        assert_eq!(state.status, "waiting_for_choice");
+        assert_eq!(state.location.as_deref(), Some("shore"));
+        assert_eq!(state.turn, 1);
+        assert_eq!(
+            state.globals,
+            vec![("lamps".to_owned(), "2".to_owned())],
+            "globals come through with their values"
+        );
+        assert_eq!(state.choices, vec!["Go".to_owned()]);
+        assert!(!state.call_stack.is_empty(), "a running story has a stack");
+
+        // Reading twice reads the same: a snapshot must not be a step.
+        let again = run(
+            &mut session,
+            Some("main.ink"),
+            &files,
+            &mut play,
+            PlayCommand::Snapshot,
+        );
+        assert_eq!(again.state.as_ref().map(|s| s.turn), Some(1));
+        assert_eq!(again.state.map(|s| s.choices), Some(state.choices));
+    }
 
     #[test]
     fn entry_falls_back_to_the_lone_file_then_main() {
