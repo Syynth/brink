@@ -95,6 +95,50 @@ impl StatusCell {
     }
 }
 
+/// How much room the window has (`docs/studio-shell-spec.md` §5.3).
+///
+/// Only the width matters: the docks that give way are the side ones, and
+/// what a narrow window cannot afford is columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Everything fits.
+    Wide,
+    /// One side dock gives way — the right, which holds inspectors
+    /// rather than the file you are working in.
+    Medium,
+    /// Both side docks give way; the editor keeps the window.
+    Narrow,
+}
+
+impl Tier {
+    /// The tier for a viewport width. The thresholds are the width at
+    /// which the editor stops having room to read in, not round numbers:
+    /// two 260px side docks plus a 600px editor is ~1120, and one dock
+    /// plus that editor is ~860.
+    #[must_use]
+    pub fn of(width: f32) -> Self {
+        if width >= 1120. {
+            Self::Wide
+        } else if width >= 860. {
+            Self::Medium
+        } else {
+            Self::Narrow
+        }
+    }
+
+    /// Which docks this tier can afford, by placement name.
+    #[must_use]
+    pub fn allows(self, dock: &str) -> bool {
+        match self {
+            Self::Wide => true,
+            Self::Medium => dock != "right",
+            // The bottom dock is a strip, not a column: Problems still
+            // fits when nothing beside the editor does.
+            Self::Narrow => dock == "bottom",
+        }
+    }
+}
+
 /// The studio window.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
@@ -117,6 +161,12 @@ pub struct Workspace {
     settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
     /// The registered settings sections (`crate::settings_modal`).
     sections: Vec<Section>,
+    /// The width tier the window was last laid out at
+    /// (`docs/studio-shell-spec.md` §5.3), and the docks that were open
+    /// before it narrowed — so widening puts back what the author had,
+    /// not a guess at it.
+    tier: Tier,
+    pre_narrow: Option<Vec<(&'static str, bool)>>,
     /// Whether the notification history popover is open (§7.5's bell).
     notices_open: bool,
     /// Which docks were open before the editor was maximized, so
@@ -176,6 +226,8 @@ impl Workspace {
             overlay: None,
             settings: None,
             sections: Vec::new(),
+            tier: Tier::Wide,
+            pre_narrow: None,
             notices_open: false,
             unmaximized: None,
             focus: cx.focus_handle(),
@@ -640,6 +692,53 @@ impl Workspace {
     }
 
     /// Replace the status-bar cells, left to right.
+    /// Re-lay the window for its current width (§5.3). Closing is
+    /// automatic; REOPENING only ever puts back what was open before the
+    /// window narrowed, so a dock the author closed themselves stays
+    /// closed.
+    fn apply_tier(&mut self, width: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let tier = Tier::of(width);
+        if tier == self.tier {
+            return;
+        }
+        let widening = self.tier != Tier::Wide && tier == Tier::Wide;
+        // Maximized is the author's own "no docks": leave it alone.
+        if self.unmaximized.is_some() {
+            self.tier = tier;
+            return;
+        }
+        if self.pre_narrow.is_none() && tier != Tier::Wide {
+            self.pre_narrow = Some(
+                DOCKS
+                    .iter()
+                    .map(|(name, placement)| {
+                        (*name, self.dock_area.read(cx).is_dock_open(*placement))
+                    })
+                    .collect(),
+            );
+        }
+        for (name, placement) in DOCKS {
+            let open = self.dock_area.read(cx).is_dock_open(*placement);
+            let want = if widening {
+                self.pre_narrow
+                    .as_ref()
+                    .and_then(|before| before.iter().find(|(n, _)| n == name))
+                    .is_some_and(|(_, open)| *open)
+            } else {
+                open && tier.allows(name)
+            };
+            if open != want {
+                self.dock_area
+                    .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+            }
+        }
+        if widening {
+            self.pre_narrow = None;
+        }
+        self.tier = tier;
+        cx.notify();
+    }
+
     /// Whether the editor is maximized — every dock hidden.
     #[must_use]
     pub fn is_maximized(&self) -> bool {
@@ -1067,6 +1166,11 @@ impl gpui::Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // §5.3: the window is laid out for the room it has. Checked here
+        // rather than on a resize event, which gpui does not raise for a
+        // view — a render IS the resize notification.
+        let width = f32::from(window.viewport_size().width);
+        self.apply_tier(width, window, cx);
         let buttons = self.buttons(cx);
         let this = cx.entity();
         let click = {
@@ -1175,6 +1279,30 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
+    use super::Tier;
+
+    #[test]
+    fn the_tier_follows_the_width_and_says_what_fits() {
+        assert_eq!(Tier::of(1440.), Tier::Wide);
+        assert_eq!(Tier::of(1120.), Tier::Wide, "the boundary is inclusive");
+        assert_eq!(Tier::of(1000.), Tier::Medium);
+        assert_eq!(Tier::of(860.), Tier::Medium);
+        assert_eq!(Tier::of(700.), Tier::Narrow);
+
+        // Wide affords everything; medium gives up the right dock, which
+        // holds inspectors rather than the file you are working in;
+        // narrow keeps only the bottom strip.
+        for dock in ["left", "right", "bottom"] {
+            assert!(Tier::Wide.allows(dock));
+        }
+        assert!(Tier::Medium.allows("left"));
+        assert!(Tier::Medium.allows("bottom"));
+        assert!(!Tier::Medium.allows("right"));
+        assert!(!Tier::Narrow.allows("left"));
+        assert!(!Tier::Narrow.allows("right"));
+        assert!(Tier::Narrow.allows("bottom"), "a strip is not a column");
+    }
+
     use super::*;
     use crate::region::RailSlot;
 
