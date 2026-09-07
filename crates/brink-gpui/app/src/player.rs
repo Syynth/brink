@@ -31,6 +31,14 @@ pub enum PlayerEvent {
         path: String,
         span: Range<usize>,
     },
+    /// Follow-in-editor: reveal this line's source WITHOUT taking focus.
+    /// Distinct from `Navigate`, which is a click and means "take me
+    /// there" — following must leave the keyboard on the Player, or the
+    /// number keys stop picking choices halfway through a story.
+    Follow {
+        path: String,
+        span: Range<usize>,
+    },
     /// Something worth keeping outside the transcript — a compile failure
     /// or a runtime error. Restart clears the transcript; the Output log
     /// (`crate::output_log`) keeps the record.
@@ -73,6 +81,10 @@ pub struct Player {
     start_at: Option<String>,
     /// Sources changed since the running story was compiled.
     stale: bool,
+    /// Follow-in-editor is held off because the author is editing. An
+    /// edit means they are reading their own text, not the story's;
+    /// Play and Restart resume it. Mirrors the web's `followPaused`.
+    follow_paused: bool,
     /// Bumped on every start so a reply from before it is dropped.
     generation: u64,
     focus: FocusHandle,
@@ -86,14 +98,21 @@ impl EventEmitter<PanelEvent> for Player {}
 impl Player {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
-            if let ProjectEvent::SourceChanged { .. } = event
-                && this.running
-                && !this.stale
-            {
-                this.stale = true;
-                cx.notify();
+            if let ProjectEvent::SourceChanged { .. } = event {
+                // Editing pauses following: the author is reading their
+                // own text now, and having the editor jump under them
+                // mid-sentence is the opposite of help.
+                this.follow_paused = true;
+                if this.running && !this.stale {
+                    this.stale = true;
+                    cx.notify();
+                }
             }
         });
+        // The transcript's size is a setting; a change to it has to reach
+        // the panel, not wait for the next line.
+        cx.observe_global::<brink_gpui_shell::settings::AppSettings>(|_, cx| cx.notify())
+            .detach();
         Self {
             project,
             entries: Vec::new(),
@@ -103,6 +122,7 @@ impl Player {
             running: false,
             start_at: None,
             stale: false,
+            follow_paused: false,
             generation: 0,
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
@@ -131,6 +151,8 @@ impl Player {
         self.list = ListState::new(0, ListAlignment::Top, px(600.));
         self.running = true;
         self.stale = false;
+        // Play and Restart are the way back to following, as the web's are.
+        self.follow_paused = false;
         if let Some(path) = &at {
             self.push(Entry::Notice(format!("— from {path} —").into()));
         }
@@ -216,6 +238,7 @@ impl Player {
     }
 
     fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
+        let follow = last_source(&outcome.steps);
         for step in outcome.steps {
             match step {
                 PlayStep::Line { text, tags, source } => {
@@ -240,6 +263,15 @@ impl Player {
                     self.push(Entry::Notice("— suspended at an await —".into()));
                 }
             }
+        }
+        if let Some(loc) = follow
+            && !self.follow_paused
+            && brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
+        {
+            cx.emit(PlayerEvent::Follow {
+                path: loc.path.clone(),
+                span: loc.start as usize..loc.end as usize,
+            });
         }
         for warning in outcome.warnings {
             let text = SharedString::from(format!("warning: {warning}"));
@@ -369,6 +401,19 @@ impl Player {
     }
 }
 
+/// Where follow-in-editor should land for a batch of steps: the LAST
+/// line in it that has a source.
+///
+/// A run delivers many lines at once. Revealing each in turn would scroll
+/// the editor through all of them to arrive at exactly the same place, and
+/// the place is what the author wants to see — where the story is now.
+fn last_source(steps: &[PlayStep]) -> Option<Location> {
+    steps.iter().rev().find_map(|step| match step {
+        PlayStep::Line { source, .. } => source.clone(),
+        _ => None,
+    })
+}
+
 impl Focusable for Player {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
@@ -419,6 +464,7 @@ impl Render for Player {
                 .map(|at| (format!("from {at}").into(), muted))
         };
         let prompt = self.render_prompt(cx);
+        let prose_size = brink_gpui_shell::settings::AppSettings::get(cx).player_size();
 
         v_flex()
             .id("player")
@@ -465,14 +511,70 @@ impl Render for Player {
             })
             .when(started, |el| {
                 el.child(
+                    // The transcript's own size — the reading surface, not
+                    // the chrome around it. Set on the list rather than the
+                    // panel so the header, the status and the choice
+                    // buttons stay at the studio's scale.
                     list(
                         self.list.clone(),
                         cx.processor(|this, ix, _window, cx| this.render_entry(ix, cx)),
                     )
                     .flex_1()
-                    .py_2(),
+                    .py_2()
+                    .text_size(px(prose_size)),
                 )
             })
             .children(prompt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Location, last_source};
+    use brink_gpui_model::play::PlayStep;
+
+    fn line(text: &str, source: Option<(&str, u32)>) -> PlayStep {
+        PlayStep::Line {
+            text: text.to_owned(),
+            tags: Vec::new(),
+            source: source.map(|(path, start)| Location {
+                path: path.to_owned(),
+                start,
+                end: start + 4,
+            }),
+        }
+    }
+
+    #[test]
+    fn following_lands_on_the_last_line_of_the_run() {
+        let steps = vec![
+            line("first", Some(("story.ink", 10))),
+            line("second", Some(("story.ink", 40))),
+            PlayStep::Done,
+        ];
+        assert_eq!(
+            last_source(&steps).map(|l| l.start),
+            Some(40),
+            "where the story is now, not where the run started"
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_source_does_not_cancel_the_one_before_it() {
+        // A synthetic line (a glue join, a tag-only line) has no source.
+        // Following stays on the last line that HAS one rather than
+        // giving up on the batch.
+        let steps = vec![
+            line("real", Some(("story.ink", 10))),
+            line("synthetic", None),
+        ];
+        assert_eq!(last_source(&steps).map(|l| l.start), Some(10));
+    }
+
+    #[test]
+    fn a_run_of_nothing_followable_asks_for_no_reveal() {
+        assert!(last_source(&[]).is_none());
+        assert!(last_source(&[PlayStep::Done]).is_none());
+        assert!(last_source(&[line("x", None)]).is_none());
     }
 }

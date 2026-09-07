@@ -32,6 +32,7 @@ use crate::settings_keymap::KeymapSection;
 use crate::settings_modal::{
     MODAL_HEIGHT, MODAL_WIDTH, Scope, Section, SectionMeta, SettingsEvent, SettingsModal,
 };
+use crate::settings_player::PlayerSection;
 use crate::skin::StudioSkin;
 use crate::theme::{self, SelectTheme};
 use crate::tool_window::{Badge, TabSlot, ToolWindow, ToolWindowSpec, select_tab};
@@ -227,6 +228,16 @@ impl Workspace {
                 ],
             ),
             appearance,
+        ));
+        let player = cx.new(PlayerSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "player",
+                Scope::App,
+                "Player",
+                &["play", "player", "follow", "transcript", "font", "size"],
+            ),
+            player,
         ));
         let keymap = cx.new(|cx| KeymapSection::new(me, window, cx));
         this.add_settings_section(Section::new(

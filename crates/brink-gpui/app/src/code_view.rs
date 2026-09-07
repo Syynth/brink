@@ -131,6 +131,37 @@ impl CodeView {
         self.set_active(Some(document), cx);
     }
 
+    /// Reveal a span in a document that is ALREADY open, without opening
+    /// one or selecting its tab. Answers whether it found anything.
+    ///
+    /// This is follow-in-editor's reveal, and the restraint is the point:
+    /// the Player is a centre tab beside the documents, so opening or
+    /// selecting a tab as the story plays would hide the Player behind
+    /// the source it is following. Where the author has split the group —
+    /// or is reading the manuscript, which shows every file at once — the
+    /// reveal lands in view; where they have not, it moves a caret they
+    /// will find when they look. Putting the Player beside the file
+    /// automatically is the open ruling on Player placement, and not this
+    /// change's to make.
+    pub fn reveal_if_open(
+        &mut self,
+        path: &str,
+        span: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(document) = self
+            .documents
+            .iter()
+            .find(|d| d.read(cx).path().as_ref() == path)
+            .cloned()
+        else {
+            return false;
+        };
+        document.update(cx, |document, cx| document.reveal(span, window, cx));
+        true
+    }
+
     /// Put the Player in the centre dock (once) and select its tab.
     pub fn show_player(
         &mut self,

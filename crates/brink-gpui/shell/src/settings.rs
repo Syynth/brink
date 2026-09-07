@@ -72,6 +72,17 @@ pub struct AppSettings {
     /// means. This is the part with no such question in it, and it is most
     /// of what a person notices: the app opens looking like they left it.
     pub layout: Layout,
+    /// While a story plays, reveal each line's source in the editor.
+    ///
+    /// The web studio's "Follow in editor", on by default there and here:
+    /// it is what makes the Player and the editor one tool rather than
+    /// two. It pauses itself while you are editing (an edit means you are
+    /// reading your own text, not the story's) and Play or Restart
+    /// resumes it.
+    pub follow_in_editor: bool,
+    /// The Player's prose size in logical pixels; `0` follows the app
+    /// type scale. Sizes the reading surface only, never the chrome.
+    pub player_font_size: f32,
     /// Projects opened before, most recent first — the roots the File
     /// menu offers to reopen. Absolute paths, since a recent is only
     /// meaningful as a place on this machine.
@@ -195,6 +206,8 @@ impl Default for AppSettings {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            follow_in_editor: true,
+            player_font_size: 0.,
             recents: Vec::new(),
         }
     }
@@ -211,6 +224,17 @@ impl AppSettings {
     #[must_use]
     pub fn get(cx: &App) -> Self {
         cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// The Player's prose size in pixels: its own, or the app's when it
+    /// is set to follow (`0`).
+    #[must_use]
+    pub fn player_size(&self) -> f32 {
+        if self.player_font_size > 0. {
+            self.player_font_size
+        } else {
+            self.app_font_size
+        }
     }
 
     /// The window's rem size for this app font size: gpui's text scale is
@@ -237,6 +261,8 @@ impl AppSettings {
             "format_on_save": self.format_on_save,
             "keymap": Value::Object(keymap),
             "layout": self.layout.to_json(),
+            "follow_in_editor": self.follow_in_editor,
+            "player_font_size": self.player_font_size,
             "recents": self.recents.clone(),
         })
     }
@@ -296,6 +322,25 @@ impl AppSettings {
                 .get("layout")
                 .map(Layout::from_json)
                 .unwrap_or_default(),
+            follow_in_editor: value
+                .get("follow_in_editor")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.follow_in_editor),
+            // `0` means "follow the app", so it is not clamped to the
+            // minimum the way a real size is.
+            player_font_size: match num("player_font_size") {
+                // Anything under the minimum is "follow the app", which is
+                // also where the stepper lands when it steps off the
+                // bottom — one rule, so a file and the UI agree.
+                Some(size) if size < MIN_EDITOR_FONT_SIZE => 0.,
+                Some(size) => clamp_font_size(
+                    size,
+                    defaults.player_font_size,
+                    MIN_EDITOR_FONT_SIZE,
+                    MAX_EDITOR_FONT_SIZE,
+                ),
+                None => defaults.player_font_size,
+            },
             recents: value
                 .get("recents")
                 .and_then(Value::as_array)
@@ -432,6 +477,8 @@ mod tests {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            follow_in_editor: false,
+            player_font_size: 20.,
             recents: vec!["/home/me/harbour".to_owned()],
         };
         s.keymap
@@ -595,6 +642,43 @@ mod tests {
         assert_eq!(
             AppSettings::from_json(&json!({ "recents": "not a list" })).recents,
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_player_size_follows_the_app_until_it_is_set() {
+        let mut s = AppSettings::default();
+        assert_eq!(s.player_font_size, 0., "0 means follow the app");
+        assert!((s.player_size() - s.app_font_size).abs() < f32::EPSILON);
+        s.player_font_size = 20.;
+        assert!((s.player_size() - 20.).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_player_settings_round_trip_and_zero_survives_the_clamp() {
+        let s = AppSettings {
+            follow_in_editor: false,
+            player_font_size: 20.,
+            ..AppSettings::default()
+        };
+        let back = AppSettings::from_json(&s.to_json());
+        assert!(!back.follow_in_editor);
+        assert!((back.player_font_size - 20.).abs() < f32::EPSILON);
+
+        // 0 is "follow the app", not a size, so it is not pulled up to the
+        // minimum the way a real one is.
+        let zero = AppSettings::from_json(&json!({ "player_font_size": 0.0 }));
+        assert_eq!(zero.player_font_size, 0.);
+        let tiny = AppSettings::from_json(&json!({ "player_font_size": 3.0 }));
+        assert_eq!(tiny.player_font_size, 0., "below the minimum is a step off");
+        let huge = AppSettings::from_json(&json!({ "player_font_size": 400.0 }));
+        assert!(
+            (huge.player_font_size - MAX_EDITOR_FONT_SIZE).abs() < f32::EPSILON,
+            "a size above the maximum is clamped, not taken"
+        );
+        assert!(
+            AppSettings::from_json(&json!({})).follow_in_editor,
+            "following is on by default, as the web studio has it"
         );
     }
 

@@ -13,6 +13,7 @@ pub mod settings;
 pub mod settings_appearance;
 pub mod settings_keymap;
 pub mod settings_modal;
+pub mod settings_player;
 mod skin;
 pub mod theme;
 pub mod tool_window;

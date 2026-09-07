@@ -498,11 +498,23 @@ impl Studio {
             &player,
             window,
             |this, _, event: &PlayerEvent, window, cx| {
-                // `Log` is the Output window's business, not navigation's.
-                let PlayerEvent::Navigate { path, span } = event else {
-                    return;
-                };
-                this.show(path, span.clone(), window, cx);
+                match event {
+                    PlayerEvent::Navigate { path, span } => {
+                        this.show(path, span.clone(), window, cx);
+                    }
+                    // Following never opens or selects a tab: the Player
+                    // is a centre tab beside the documents, so doing
+                    // either would hide the Player behind the source it
+                    // is following. In the manuscript it scrolls, which
+                    // is where following shows best; in Code view it
+                    // moves the caret of an already-open document, which
+                    // lands in view when the group is split.
+                    PlayerEvent::Follow { path, span } => {
+                        this.follow(path, span.clone(), window, cx);
+                    }
+                    // `Log` is the Output window's business.
+                    PlayerEvent::Log { .. } => {}
+                }
             },
         );
         let on_compiled = cx.subscribe_in(
@@ -694,6 +706,26 @@ impl Studio {
                 .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
         } else {
             self.open(path, Some(span), window, cx);
+        }
+    }
+
+    /// Follow-in-editor's reveal — see `CodeView::reveal_if_open` for why
+    /// it is deliberately quieter than `show`.
+    fn follow(
+        &mut self,
+        path: &str,
+        span: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self.workspace.read(cx).editor_root().read(cx).view();
+        if view == EditorView::Continuous {
+            self.manuscript
+                .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
+        } else {
+            self.code.update(cx, |code, cx| {
+                code.reveal_if_open(path, span, window, cx);
+            });
         }
     }
 
