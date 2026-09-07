@@ -301,6 +301,13 @@ impl Project {
         origin: Option<EntityId>,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A mounted library file is not the author's: it is openable and
+        // read-only, and nothing it emits may reach the mirror. Without
+        // this the editor's first Change put the text into `sources` and
+        // not `saved`, and the tab came up marked unsaved.
+        if self.is_library(path) {
+            return false;
+        }
         let old = self
             .sources
             .get(path)
@@ -543,6 +550,20 @@ impl Project {
         Ok(())
     }
 
+    /// The mounted stdlib, `(key, text)` — the Binder's Library section.
+    /// Not the author's files: they are never in `files`, never dirty,
+    /// never saved, and open read-only.
+    #[must_use]
+    pub fn library(&self) -> &'static [(&'static str, &'static str)] {
+        brink_gpui_model::library_sources()
+    }
+
+    /// Whether `path` is a mounted library file rather than the author's.
+    #[must_use]
+    pub fn is_library(&self, path: &str) -> bool {
+        self.library().iter().any(|(key, _)| *key == path)
+    }
+
     /// The config's artifacts, root-relative — openable and saveable, but
     /// not sources.
     #[must_use]
@@ -611,7 +632,14 @@ impl Project {
     /// for a path the project never held.
     #[must_use]
     pub fn loaded_source(&self, path: &str) -> Option<&str> {
-        self.sources.get(path).map(String::as_str)
+        self.sources.get(path).map(String::as_str).or_else(|| {
+            // A library file is not in the mirror — nothing edits it — but
+            // it is openable, so its text has to be reachable by path.
+            self.library()
+                .iter()
+                .find(|(key, _)| *key == path)
+                .map(|(_, text)| *text)
+        })
     }
 
     #[must_use]

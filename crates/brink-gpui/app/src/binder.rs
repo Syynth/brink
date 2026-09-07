@@ -429,12 +429,13 @@ impl Binder {
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (sources, config, artifacts, entry, closure, diagnostics, drafts) = {
+        let (sources, config, artifacts, library, entry, closure, diagnostics, drafts) = {
             let project = self.project.read(cx);
             (
                 project.files().to_vec(),
                 project.config_path().map(str::to_owned),
                 project.artifacts().to_vec(),
+                project.library(),
                 project.entry().map(str::to_owned),
                 project
                     .files()
@@ -468,6 +469,11 @@ impl Binder {
         // Conventions section writes one, and until now nothing in the
         // studio could open what it had written.
         files.extend(artifacts.iter().cloned());
+        // The Library — the mounted stdlib (ruled 2026-08-06). Listed
+        // last and under its own folder, since `std/` is the key prefix
+        // the session mounts them at, so the tree builder puts them in a
+        // folder of that name with no special case here.
+        files.extend(library.iter().map(|(key, _)| (*key).to_owned()));
 
         let mut file_marks: HashMap<&str, Marks> = HashMap::new();
         for (path, _, is_error) in &diagnostics {
@@ -954,7 +960,11 @@ impl Binder {
         let menu_focus = self.focus.clone();
         let play_path = row.play_path();
         let file_path = row.path.clone();
-        let is_file = row.kind == RowKind::File;
+        // A library file is a FILE row, but not the author's: renaming or
+        // deleting one is not offered. (`Project`'s own operations refuse
+        // it too — it is not in the mirror — but a menu item that only
+        // ever reports an error is a menu item that should not be there.)
+        let is_file = row.kind == RowKind::File && !self.project.read(cx).is_library(&row.path);
         let kind_for_move = row.kind;
 
         // Indent guides: one hairline under each ancestor's icon column.

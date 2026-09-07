@@ -285,7 +285,7 @@ and deleting files.
 | Left out | Kind | Note |
 |---|---|---|
 | Undo stack | parity gap | "Deliberately skipped" in the module doc. |
-| Library section (mounted `std/`) | parity gap | ruled 2026-08-06 in the web; not built here. |
+| ~~Library section (mounted `std/`)~~ | built 2026-09-07 | see §2. Read-only, no file operations offered, listed under the `std/` prefix the session mounts it at. |
 | Multi-select | parity gap | |
 | ~~Create, rename and delete a FILE~~ | built 2026-09-07 | `app/src/files.rs`, through `Project::{create_file, rename_file, delete_file}` (which own both the mirror and the disk, and write immediately — a file in the Binder and not on disk is one the next `INCLUDE` cannot find). The header's `+` makes one at the root; a row's menu makes one beside it, and carries Rename…/Delete… — which until now were `NoopAction`s, i.e. menu items that did nothing. Rename and Delete are offered on FILE rows only: renaming a knot is `f2`'s cross-file, safe-by-default job. A bare name gets `.ink`; a path that climbs out of the root is refused. Renaming moves the text the EDITORS hold, so unsaved work survives; it does NOT rewrite `INCLUDE` lines or `brink.toml` (the analysis reports the break where it reports every other unresolved path). Deleting closes the file's tab first — otherwise the next `cmd-s` writes it straight back. Creating a knot inline is still a gap. |
 | ~~`.binder.json` drag-order persistence~~ | built 2026-09-07 | `model/src/binder_order.rs`, a port of `studio-store/src/binder-order.ts` (#3038) keeping its identity convention exactly — child ids are project-relative paths, a folder id carries a trailing `/`, the root container is `""` — so one project opened in either studio reads the same. The **Project** owns it, because the Project owns the disk: a rename re-keys the sidecar and a delete drops it, wherever the operation was asked for. A corrupt file self-heals to the fallback (losing an arrangement beats not opening), the map is a `BTreeMap` so the written file is byte-stable, and a failed write is reported through `SaveFailed` rather than swallowed. Empty folders (the `folders` registry) are parsed and written but nothing creates one yet — the Binder has no "new folder". |
@@ -393,7 +393,7 @@ Against studio-shell-spec §4's inventory:
 | **Story Graph** | the story-graph query in the worker; a canvas. |
 | **Story transcript** | listed as future in the web too. The Player's transcript is per-session and is not this. |
 | **Notification service** | the layers render (§1); the service does not exist. |
-| **Library** (Binder section) | nothing; a Binder slice. |
+| **Library** (Binder section) | ~~nothing~~ **built 2026-09-07** — the mounted stdlib lists in the Binder under its own `std/` prefix (no special case: that IS the key the session mounts it at), opens READ-ONLY, and is offered no Rename or Delete. `Project::edit` refuses a library path outright, which is also what stopped the tab coming up marked unsaved — the editor's first Change had been putting the text into `sources` and not `saved`. Re-exported from `brink-environment`'s `stdlib_sources`, the one place a module is registered, so the studio cannot drift from what the session mounts. |
 
 ## 3. Cross-cutting
 

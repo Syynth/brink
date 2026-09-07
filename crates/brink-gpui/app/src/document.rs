@@ -1025,9 +1025,15 @@ impl gpui_component::dock::Panel for Document {
 }
 
 impl gpui::Render for Document {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // A mounted library file is not the author's to change. Read-only
+        // belongs on the ELEMENT (the `Editor` pushes its own flag into
+        // the state every render — see `compiled_output.rs`, where a
+        // construction-time flag was overwritten on the first frame).
+        let readonly = self.project.read(cx).is_library(&self.path);
         gpui_component::v_flex().size_full().child(
             gpui_component::input::Editor::new(&self.editor)
+                .readonly(readonly)
                 .flex_1()
                 .bordered(false),
         )
