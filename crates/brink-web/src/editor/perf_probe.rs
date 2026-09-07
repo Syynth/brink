@@ -677,3 +677,135 @@ fn what_the_first_pull_after_an_edit_pays_for() {
     println!("  inlayHints, 1st       {:>7.2} ms", second / n);
     println!("  inlayHints, 2nd       {:>7.2} ms", third / n);
 }
+
+/// Does the FG-2.1 per-file firewall actually hold, and what does it leave?
+///
+/// `call_graph_query`'s doc says each `call_edges_query` "is validated
+/// without re-executing unless *that specific def's* declaring file changed
+/// — so an edit in file X only pays for X's own defs". If that holds, the
+/// keystroke cost of `type_inference` should fall roughly linearly as the
+/// same knots are spread over more files, because an edit then invalidates
+/// only one file's share of the defs.
+///
+/// This builds the SAME set of knots as 1, 2, 4, 8 and 16 files (`INCLUDE`d
+/// from an entry), edits ONE of them, and prices `db.type_inference()`.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn does_the_per_file_firewall_hold() {
+    const KNOTS: usize = 240;
+    const N: usize = 10;
+    // A knot that calls the next one, so the call graph has real edges and
+    // the SCC partition has something to do.
+    fn knot(i: usize) -> String {
+        format!(
+            "=== knot_{i} ===\n\
+             ~ temp local_{i} = {i}\n\
+             The value is {{local_{i}}}.\n\
+             {{ local_{i} > 0: -> knot_{next} | -> DONE }}\n",
+            next = i + 1
+        )
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+    println!("\n{KNOTS} knots, same content, spread over N files:");
+    println!(
+        "{:>7} {:>14} {:>16}",
+        "files", "knots/file", "type_inference"
+    );
+
+    for files in [1_usize, 2, 4, 8, 16] {
+        let per_file = KNOTS / files;
+        let mut session = EditorSession::new();
+        session.set_perf_enabled(true);
+
+        let mut entry = String::new();
+        for f in 0..files {
+            let _ = writeln!(entry, "INCLUDE part{f}.ink");
+        }
+        entry.push_str("-> knot_0\n");
+
+        for f in 0..files {
+            let mut text = String::new();
+            for k in (f * per_file)..((f + 1) * per_file) {
+                text.push_str(&knot(k));
+            }
+            // The last knot diverts to a knot that does not exist; end it.
+            session.update_file(&format!("part{f}.ink"), &text);
+        }
+        session.update_file("main.ink", &entry);
+        assert!(session.set_active_file("main.ink"));
+        let _ = session.session.db().type_inference();
+
+        // Edit ONE file, repeatedly, and price the inference pull.
+        let target = "part0.ink";
+        let base = session
+            .session
+            .file_id(target)
+            .and_then(|id| session.session.source(id).map(str::to_owned))
+            .unwrap_or_default();
+        let mut total = 0.0;
+        for i in 0..N {
+            let mut edited = base.clone();
+            let _ = writeln!(edited, "// {}", "x".repeat(i + 1));
+            session.update_file(target, &edited);
+            let t0 = crate::perf::now_ms();
+            std::hint::black_box(session.session.db().type_inference());
+            total += crate::perf::now_ms() - t0;
+        }
+        println!("{files:>7} {per_file:>14} {:>13.2} ms", total / n);
+    }
+}
+
+/// Within ONE file, how does the invalidation cost scale with the number of
+/// knots? The per-file firewall (see `does_the_per_file_firewall_hold`)
+/// means an edit pays for its own file's defs — this asks what that bill
+/// looks like as the file grows, which is what decides whether narrowing the
+/// firewall to per-segment is worth the work.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn within_one_file_how_does_invalidation_scale() {
+    const N: usize = 10;
+    fn knot(i: usize) -> String {
+        format!(
+            "=== knot_{i} ===\n\
+             ~ temp local_{i} = {i}\n\
+             The value is {{local_{i}}}.\n\
+             {{ local_{i} > 0: -> knot_{next} | -> DONE }}\n",
+            next = i + 1
+        )
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+    println!("\none file, edited once, N knots in it:");
+    println!("{:>7} {:>16} {:>16}", "knots", "type_inference", "per knot");
+    for knots in [15_usize, 30, 60, 120, 240, 480] {
+        let mut session = EditorSession::new();
+        session.set_perf_enabled(true);
+        let mut text = String::new();
+        for k in 0..knots {
+            text.push_str(&knot(k));
+        }
+        session.update_file("story.ink", &text);
+        assert!(session.set_active_file("story.ink"));
+        let _ = session.session.db().type_inference();
+
+        let mut total = 0.0;
+        for i in 0..N {
+            let mut edited = text.clone();
+            let _ = writeln!(edited, "// {}", "x".repeat(i + 1));
+            session.update_file("story.ink", &edited);
+            let t0 = crate::perf::now_ms();
+            std::hint::black_box(session.session.db().type_inference());
+            total += crate::perf::now_ms() - t0;
+        }
+        #[expect(clippy::cast_precision_loss, reason = "knot counts are small")]
+        let k = knots as f64;
+        println!(
+            "{knots:>7} {:>13.2} ms {:>13.3} ms",
+            total / n,
+            total / n / k
+        );
+    }
+}
