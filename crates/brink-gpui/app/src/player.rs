@@ -39,6 +39,12 @@ pub enum PlayerEvent {
         path: String,
         span: Range<usize>,
     },
+    /// A debug verb came to rest on a source line — reveal it, so the
+    /// author is looking at where the story is.
+    Stopped {
+        path: String,
+        line: u32,
+    },
     /// Something worth keeping outside the transcript — a compile failure
     /// or a runtime error. Restart clears the transcript; the Output log
     /// (`crate::output_log`) keeps the record.
@@ -232,6 +238,13 @@ impl Player {
         self.send(PlayCommand::Choose(index), cx);
     }
 
+    /// Run a debug verb against the live session. Nothing running is not
+    /// an error the panel invents: the worker answers `NotStarted` and
+    /// the transcript says so, exactly as `Choose` does.
+    pub fn debug(&mut self, command: PlayCommand, cx: &mut Context<Self>) {
+        self.send(command, cx);
+    }
+
     fn send(&mut self, command: PlayCommand, cx: &mut Context<Self>) {
         self.busy = true;
         let generation = self.generation;
@@ -262,6 +275,29 @@ impl Player {
     }
 
     fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
+        // A Start arms the marked lines against the program it just
+        // compiled, and says which of them bound to nothing. The Project
+        // owns the marks, so it is told: a mark that can never hit is
+        // drawn differently rather than left looking armed.
+        if !outcome.unbound.is_empty() {
+            let unbound = outcome.unbound.clone();
+            self.project
+                .update(cx, |project, cx| project.set_unbound(unbound, cx));
+        }
+        // Where a debug verb came to rest — the transcript says so, and
+        // the studio reveals it.
+        if let Some(stop) = &outcome.stop {
+            let text: SharedString = match &stop.at {
+                Some((path, line)) => {
+                    format!("— stopped at {path}:{line} ({})", stop.reason).into()
+                }
+                None => format!("— stopped ({})", stop.reason).into(),
+            };
+            self.push(Entry::Notice(text));
+            if let Some((path, line)) = stop.at.clone() {
+                cx.emit(PlayerEvent::Stopped { path, line });
+            }
+        }
         let follow = last_source(&outcome.steps);
         for step in outcome.steps {
             match step {

@@ -41,6 +41,9 @@ pub enum ProjectEvent {
         origin: Option<EntityId>,
         delta: SourceDelta,
     },
+    /// A breakpoint was marked, cleared, or found to bind to nothing.
+    /// Every editor over the file repaints its marks.
+    BreakpointsChanged,
     /// The set of files changed — one was created, renamed or deleted.
     /// Every surface keyed by path (the Binder, Search, the manuscript)
     /// rebuilds; an analysis follows on its own.
@@ -138,6 +141,15 @@ pub struct Project {
     /// the highlighter paints a cue, a parenthetical and a dialogue run
     /// from. Empty for a project with no `[dialogue]` dialect.
     cues: BTreeMap<String, Vec<CueLine>>,
+    /// The breakpoints the author has marked, as `(path, 1-based line)`.
+    /// The PROJECT owns them, not any one editor: the marks outlive a
+    /// closed tab and a restarted session, and the worker arms whatever
+    /// this holds at the next Start.
+    breakpoints: BTreeSet<(String, u32)>,
+    /// Marked lines the last arming could not bind — a comment, a blank,
+    /// or code that folded away. Drawn differently, so a mark that can
+    /// never hit says so instead of looking armed.
+    unbound: BTreeSet<(String, u32)>,
     warnings: Vec<String>,
     /// Whether any analysis has landed. Distinct from the closure being
     /// non-empty, which stays false whenever `brink.toml` names no entry
@@ -220,6 +232,8 @@ impl Project {
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
             cues: BTreeMap::new(),
+            breakpoints: BTreeSet::new(),
+            unbound: BTreeSet::new(),
             warnings: Vec::new(),
             analyzed: false,
             revision: 0,
@@ -746,6 +760,84 @@ impl Project {
     #[must_use]
     pub fn kinds_for(&self, path: &str) -> &Kinds {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
+    }
+
+    /// Toggle the breakpoint on `path`'s 1-based `line`, then tell the
+    /// worker. Returns whether there is now one there.
+    pub fn toggle_breakpoint(&mut self, path: &str, line: u32, cx: &mut Context<Self>) -> bool {
+        let key = (path.to_owned(), line);
+        let on = if self.breakpoints.remove(&key) {
+            self.unbound.remove(&key);
+            false
+        } else {
+            self.breakpoints.insert(key);
+            true
+        };
+        self.send_breakpoints(cx);
+        on
+    }
+
+    /// Drop every breakpoint.
+    pub fn clear_breakpoints(&mut self, cx: &mut Context<Self>) {
+        if self.breakpoints.is_empty() {
+            return;
+        }
+        self.breakpoints.clear();
+        self.unbound.clear();
+        self.send_breakpoints(cx);
+    }
+
+    /// Hand the current set to the worker and record which lines bound to
+    /// nothing. A set with no story running is not an error — it is the
+    /// ordinary case of marking a line before pressing Play.
+    fn send_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let lines: Vec<(String, u32)> = self.breakpoints.iter().cloned().collect();
+        let task = self.play(PlayCommand::SetBreakpoints(lines), cx);
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(outcome) = outcome
+                    && outcome.error.is_none()
+                {
+                    this.unbound = outcome.unbound.into_iter().collect();
+                }
+                cx.emit(ProjectEvent::BreakpointsChanged);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.emit(ProjectEvent::BreakpointsChanged);
+    }
+
+    /// Record which marks the worker could not bind — from a Start, which
+    /// arms them against the program it just compiled.
+    pub fn set_unbound(&mut self, unbound: Vec<(String, u32)>, cx: &mut Context<Self>) {
+        let next: BTreeSet<(String, u32)> = unbound.into_iter().collect();
+        if next == self.unbound {
+            return;
+        }
+        self.unbound = next;
+        cx.emit(ProjectEvent::BreakpointsChanged);
+        cx.notify();
+    }
+
+    /// The marked lines in `path`, each with whether it bound.
+    #[must_use]
+    pub fn breakpoints_in(&self, path: &str) -> Vec<(u32, bool)> {
+        self.breakpoints
+            .iter()
+            .filter(|(p, _)| p == path)
+            .map(|key| (key.1, !self.unbound.contains(key)))
+            .collect()
+    }
+
+    /// Every breakpoint, in path then line order.
+    #[must_use]
+    pub fn all_breakpoints(&self) -> Vec<(String, u32, bool)> {
+        self.breakpoints
+            .iter()
+            .map(|key| (key.0.clone(), key.1, !self.unbound.contains(key)))
+            .collect()
     }
 
     /// The file's dialect-classified lines. Like `kinds_for`, this lags by

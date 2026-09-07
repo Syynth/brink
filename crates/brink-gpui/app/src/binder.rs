@@ -429,6 +429,7 @@ impl Binder {
                 // no row either.
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             }

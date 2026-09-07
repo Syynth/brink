@@ -85,6 +85,17 @@ impl StateView {
         // The Player changes the story's state without an event of its
         // own — it notifies — so this observes the entity.
         let watch = cx.observe(&player, |this: &mut Self, _, cx| this.refresh(cx));
+        // Marks are the project's, and they move without the story
+        // moving — a toggle with nothing running still has to show.
+        let marks = cx.subscribe(
+            &project,
+            |this: &mut Self, _, event: &crate::project::ProjectEvent, cx| {
+                if matches!(event, crate::project::ProjectEvent::BreakpointsChanged) {
+                    this.relayout(cx);
+                    cx.notify();
+                }
+            },
+        );
         let mut this = Self {
             project,
             player,
@@ -95,9 +106,9 @@ impl StateView {
             rows: Vec::new(),
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
-            _subscriptions: vec![watch],
+            _subscriptions: vec![watch, marks],
         };
-        this.relayout();
+        this.relayout(cx);
         this
     }
 
@@ -115,7 +126,7 @@ impl StateView {
                 }
                 this.busy = false;
                 this.state = outcome.ok().and_then(|o| o.state);
-                this.relayout();
+                this.relayout(cx);
                 cx.notify();
             });
         })
@@ -127,12 +138,49 @@ impl StateView {
         if !self.collapsed.remove(key) {
             self.collapsed.insert(key.to_owned());
         }
-        self.relayout();
+        self.relayout(cx);
         cx.notify();
     }
 
-    fn relayout(&mut self) {
+    fn relayout(&mut self, cx: &App) {
         let mut rows = Vec::new();
+        // Breakpoints first, and drawn whether or not a story is running:
+        // marking lines before pressing Play is the ordinary way to reach
+        // one, and a panel that hid them until then would make that look
+        // like it had not worked.
+        let marks = self.project.read(cx).all_breakpoints();
+        let collapsed = self.collapsed.contains("breakpoints");
+        rows.push(Row::Section {
+            key: "breakpoints".to_owned(),
+            title: format!("Breakpoints ({})", marks.len()).into(),
+            collapsed,
+        });
+        if !collapsed {
+            if marks.is_empty() {
+                rows.push(Row::Text {
+                    text: "None. F9 marks the caret's line.".into(),
+                    dim: true,
+                });
+            }
+            // Nothing is ARMED until a Start binds it against a compiled
+            // program, so a mark before that is only "set" — claiming
+            // otherwise would promise a stop the run has not agreed to.
+            let running = self.state.is_some();
+            for (path, line, bound) in marks {
+                rows.push(Row::Pair {
+                    key: format!("{path}:{line}").into(),
+                    // A mark that bound to nothing says so here as well as
+                    // in the editor: it is the panel an author checks when
+                    // a breakpoint did not stop anything.
+                    value: match (running, bound) {
+                        (false, _) => SharedString::from("set"),
+                        (true, true) => SharedString::from("armed"),
+                        (true, false) => SharedString::from("no code on this line"),
+                    },
+                    accent: bound,
+                });
+            }
+        }
         let Some(state) = self.state.clone() else {
             rows.push(Row::Text {
                 text: "No story is running. Play (cmd-r) starts one.".into(),
@@ -385,6 +433,31 @@ impl StateView {
             .border_color(border)
             .text_xs()
             .child(div().flex_1().text_color(muted).child(summary))
+            // The debug verbs, beside the state they change. Both step
+            // granularities are here because both are first-class (RULED
+            // 2026-08-28): `Step` is a source line, `Instr` one VM
+            // instruction, and the Program Explorer shows what that is.
+            .child(Self::verb(
+                "state-continue",
+                "Continue",
+                "F5",
+                PlayCommand::Continue,
+                cx,
+            ))
+            .child(Self::verb(
+                "state-step",
+                "Step",
+                "F10",
+                PlayCommand::StepLine,
+                cx,
+            ))
+            .child(Self::verb(
+                "state-stepi",
+                "Instr",
+                "F11",
+                PlayCommand::StepInstruction,
+                cx,
+            ))
             .child(
                 Button::new("state-refresh")
                     .ghost()
@@ -392,6 +465,28 @@ impl StateView {
                     .label("Refresh")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.refresh(cx))),
             )
+            .into_any_element()
+    }
+
+    /// One debug-verb button. Sending goes through the Player, which owns
+    /// the session and the transcript the verb's output lands in.
+    fn verb(
+        id: &'static str,
+        label: &'static str,
+        key: &'static str,
+        command: PlayCommand,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        Button::new(id)
+            .ghost()
+            .xsmall()
+            .label(label)
+            .tooltip(format!("{label} ({key})"))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                let command = command.clone();
+                this.player
+                    .update(cx, |player, cx| player.debug(command, cx));
+            }))
             .into_any_element()
     }
 }

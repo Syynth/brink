@@ -292,6 +292,16 @@ impl CodeView {
         self.active.as_ref()
     }
 
+    /// The active document's path and the caret's 1-based line — where a
+    /// breakpoint goes when the author asks for one. `None` with nothing
+    /// open.
+    #[must_use]
+    pub fn caret_line(&self, cx: &App) -> Option<(String, u32)> {
+        let document = self.active.as_ref()?.read(cx);
+        let (line, _column) = document.cursor_line_column(cx);
+        Some((document.path().to_string(), u32::try_from(line).ok()?))
+    }
+
     fn set_active(&mut self, document: Option<Entity<Document>>, cx: &mut Context<Self>) {
         if self.active != document {
             self.active = document;

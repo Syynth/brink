@@ -40,6 +40,7 @@ mod treemap;
 use std::ops::Range;
 use std::path::PathBuf;
 
+use brink_gpui_model::play::PlayCommand;
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
 use brink_gpui_shell::region::RailSlot;
@@ -96,6 +97,17 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// Mark or unmark the caret's line as a breakpoint.
+        ToggleBreakpoint,
+        /// Forget every breakpoint in the project.
+        ClearBreakpoints,
+        /// Run on to the next breakpoint, choice point, or the end.
+        DebugContinue,
+        /// Advance one source line.
+        DebugStepLine,
+        /// Advance one VM instruction — the other granularity, not a
+        /// finer setting of the same one (RULED 2026-08-28).
+        DebugStepInstruction,
         /// The compiled story's `.inkt` dump, as a read-only tab.
         OpenCompiledOutput,
         /// The story graph — knots and diverts as a picture.
@@ -411,6 +423,29 @@ impl Studio {
             );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
+            workspace.register_command(
+                "Debug",
+                "Toggle Breakpoint",
+                ToggleBreakpoint,
+                Some("f9"),
+                cx,
+            );
+            workspace.register_command(
+                "Debug",
+                "Clear All Breakpoints",
+                ClearBreakpoints,
+                None,
+                cx,
+            );
+            workspace.register_command("Debug", "Continue", DebugContinue, Some("f5"), cx);
+            workspace.register_command("Debug", "Step", DebugStepLine, Some("f10"), cx);
+            workspace.register_command(
+                "Debug",
+                "Step Instruction",
+                DebugStepInstruction,
+                Some("f11"),
+                cx,
+            );
             workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
             workspace.register_command("Program", "Story Graph", OpenStoryGraph, None, cx);
             workspace.register_command(
@@ -501,6 +536,7 @@ impl Studio {
                 ProjectEvent::FilesChanged => this.refresh_status(cx),
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             },
@@ -583,6 +619,15 @@ impl Studio {
                     // lands in view when the group is split.
                     PlayerEvent::Follow { path, span } => {
                         this.follow(path, span.clone(), window, cx);
+                    }
+                    // A debug stop: put the author's eye on the line the
+                    // story is halted on. Follow rather than navigate —
+                    // the keyboard stays where it was, so F10 keeps
+                    // stepping instead of typing into the source.
+                    PlayerEvent::Stopped { path, line } => {
+                        if let Some(span) = this.line_span(path, *line, cx) {
+                            this.follow(path, span, window, cx);
+                        }
                     }
                     // `Log` is the Output window's business.
                     PlayerEvent::Log { .. } => {}
@@ -1263,6 +1308,77 @@ impl Studio {
         self.play_at(None, window, cx);
     }
 
+    /// Mark the caret's line, or unmark it. The line is the EDITOR's,
+    /// because a breakpoint is set where you are looking; with no
+    /// document open there is no line to mark and the command says so
+    /// rather than marking line 1 of something.
+    fn toggle_breakpoint(
+        &mut self,
+        _: &ToggleBreakpoint,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((path, line)) = self.code.read(cx).caret_line(cx) else {
+            notify(
+                Severity::Info,
+                "debug",
+                "Open a file and put the caret on a line to mark it.",
+                window,
+                cx,
+            );
+            return;
+        };
+        let on = self
+            .project
+            .update(cx, |project, cx| project.toggle_breakpoint(&path, line, cx));
+        let what = if on { "Breakpoint at" } else { "Cleared" };
+        notify(
+            Severity::Info,
+            "debug",
+            format!("{what} {path}:{line}."),
+            window,
+            cx,
+        );
+    }
+
+    fn clear_breakpoints(
+        &mut self,
+        _: &ClearBreakpoints,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project
+            .update(cx, |project, cx| project.clear_breakpoints(cx));
+    }
+
+    fn debug_continue(&mut self, _: &DebugContinue, window: &mut Window, cx: &mut Context<Self>) {
+        self.debug(PlayCommand::Continue, window, cx);
+    }
+
+    fn debug_step_line(&mut self, _: &DebugStepLine, window: &mut Window, cx: &mut Context<Self>) {
+        self.debug(PlayCommand::StepLine, window, cx);
+    }
+
+    fn debug_step_instruction(
+        &mut self,
+        _: &DebugStepInstruction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.debug(PlayCommand::StepInstruction, window, cx);
+    }
+
+    /// Send a debug verb to the running session, showing the Player first
+    /// — the transcript is where its output lands.
+    fn debug(&mut self, command: PlayCommand, window: &mut Window, cx: &mut Context<Self>) {
+        let player = self.player.clone();
+        if !player.read(cx).is_docked() {
+            self.code
+                .update(cx, |code, cx| code.show_player(&player, window, cx));
+        }
+        player.update(cx, |player, cx| player.debug(command, cx));
+    }
+
     fn play_restart(&mut self, _: &PlayRestart, window: &mut Window, cx: &mut Context<Self>) {
         let player = self.player.clone();
         if !player.read(cx).is_docked() {
@@ -1272,6 +1388,23 @@ impl Studio {
         player.update(cx, |player, cx| player.restart(cx));
         let handle = player.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
+    }
+
+    /// The byte span of a file's 1-based line, from the mirror's text.
+    /// `None` for a file the project does not hold, or a line past its
+    /// end — which an edit since the stop can produce.
+    fn line_span(&self, path: &str, line: u32, cx: &App) -> Option<Range<usize>> {
+        let project = self.project.read(cx);
+        let source = project.loaded_source(path)?;
+        let mut at = 0usize;
+        for (i, text) in source.split_inclusive('\n').enumerate() {
+            if u32::try_from(i + 1).ok()? == line {
+                let end = at + text.trim_end_matches(['\n', '\r']).len();
+                return Some(at..end);
+            }
+            at += text.len();
+        }
+        None
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
@@ -1344,6 +1477,11 @@ impl Render for Studio {
             .on_action(cx.listener(Self::fix_all_in_file))
             .on_action(cx.listener(Self::fix_all_in_project))
             .on_action(cx.listener(Self::play))
+            .on_action(cx.listener(Self::toggle_breakpoint))
+            .on_action(cx.listener(Self::clear_breakpoints))
+            .on_action(cx.listener(Self::debug_continue))
+            .on_action(cx.listener(Self::debug_step_line))
+            .on_action(cx.listener(Self::debug_step_instruction))
             .on_action(cx.listener(Self::play_restart))
             .on_action(cx.listener(Self::open_compiled_output))
             .on_action(cx.listener(Self::open_story_graph))
