@@ -152,6 +152,10 @@ pub struct Project {
     /// would count prose in the "N problems" the status bar means by
     /// compiler problems.
     prose: BTreeMap<String, Vec<Diagnostic>>,
+    /// The file operations the Binder has run, newest last — what
+    /// `undo_file_op` inverts. Bounded: this is a way back out of the
+    /// last mistake, not a history of the session.
+    file_ops: Vec<FileOp>,
     /// Files whose disk text has moved under an unsaved buffer, and what
     /// the disk said when it was reported. Kept so the same conflict is
     /// announced once rather than once per filesystem event.
@@ -184,6 +188,32 @@ pub struct Project {
     _pump: Task<()>,
     empty_kinds: Kinds,
 }
+
+/// A file operation, kept so it can be undone. A create is undone by a
+/// delete, a rename by the opposite rename, and a delete by writing back
+/// the text it had — which is why the text is kept here and nowhere
+/// else: once the file is gone, this is the only copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOp {
+    Created { path: String },
+    Renamed { from: String, to: String },
+    Deleted { path: String, text: String },
+}
+
+impl FileOp {
+    /// How the undo names itself, in the studio's own vocabulary.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Created { path } => format!("creating {path}"),
+            Self::Renamed { from, to } => format!("renaming {from} to {to}"),
+            Self::Deleted { path, .. } => format!("deleting {path}"),
+        }
+    }
+}
+
+/// How many operations back the Binder can go.
+const UNDO_DEPTH: usize = 20;
 
 /// What the studio should SAY about a disk change. The Project applies
 /// the change; saying so is the studio's, which owns the notifications.
@@ -264,6 +294,7 @@ impl Project {
             cues: BTreeMap::new(),
             prose: BTreeMap::new(),
             conflicted: BTreeMap::new(),
+            file_ops: Vec::new(),
             breakpoints: BTreeSet::new(),
             unbound: BTreeSet::new(),
             warnings: Vec::new(),
@@ -507,12 +538,69 @@ impl Project {
         self.files.push(path.clone());
         self.files.sort();
         self.worker.send(Request::AddFile {
-            path,
+            path: path.clone(),
             text: text.to_owned(),
         });
+        self.remember(FileOp::Created { path });
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
+    }
+
+    /// Push an operation onto the undo stack, oldest dropped past the cap.
+    fn remember(&mut self, op: FileOp) {
+        self.file_ops.push(op);
+        if self.file_ops.len() > UNDO_DEPTH {
+            self.file_ops.remove(0);
+        }
+    }
+
+    /// What the next undo would take back, for the command's own label.
+    #[must_use]
+    pub fn undoable_file_op(&self) -> Option<&FileOp> {
+        self.file_ops.last()
+    }
+
+    /// Take back the last file operation.
+    ///
+    /// Refused rather than forced when taking it back would lose work: a
+    /// created or renamed file with unsaved edits, or a path something
+    /// else now occupies. The whole point is to undo a mistake, and an
+    /// undo that makes a second one is worse than none.
+    pub fn undo_file_op(&mut self, cx: &mut Context<Self>) -> Result<String> {
+        let Some(op) = self.file_ops.pop() else {
+            anyhow::bail!("nothing to undo");
+        };
+        let done = op.describe();
+        let result = match &op {
+            FileOp::Created { path } => {
+                if self.is_dirty(path) {
+                    anyhow::bail!("{path} has unsaved edits — save or revert it first");
+                }
+                self.delete_file(path, cx)
+            }
+            FileOp::Renamed { from, to } => {
+                if self.is_dirty(to) {
+                    anyhow::bail!("{to} has unsaved edits — save or revert it first");
+                }
+                self.rename_file(to, from, cx)
+            }
+            FileOp::Deleted { path, text } => self.create_file(path, text, cx),
+        };
+        match result {
+            Ok(()) => {
+                // Undoing is not itself an operation to undo: the inverse
+                // pushed one, and leaving it there would make the next
+                // undo redo this one.
+                self.file_ops.pop();
+                Ok(done)
+            }
+            Err(err) => {
+                // Put it back: a refusal must leave the stack as it was.
+                self.remember(op);
+                Err(err)
+            }
+        }
     }
 
     /// Move `from` to `to`, on disk and in the session.
@@ -558,7 +646,14 @@ impl Project {
         self.worker.send(Request::RemoveFile {
             path: from.to_owned(),
         });
-        self.worker.send(Request::AddFile { path: to, text });
+        self.worker.send(Request::AddFile {
+            path: to.clone(),
+            text,
+        });
+        self.remember(FileOp::Renamed {
+            from: from.to_owned(),
+            to,
+        });
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
@@ -570,6 +665,9 @@ impl Project {
             anyhow::bail!("{path} is not in the project");
         }
         std::fs::remove_file(self.root.join(path))?;
+        // Kept for the undo: once the file is gone this is the only copy,
+        // and it is the text the EDITORS held, unsaved edits included.
+        let text = self.sources.get(path).cloned().unwrap_or_default();
         self.sources.remove(path);
         self.saved.remove(path);
         self.files.retain(|f| f != path);
@@ -577,6 +675,10 @@ impl Project {
         self.write_binder_order(cx);
         self.worker.send(Request::RemoveFile {
             path: path.to_owned(),
+        });
+        self.remember(FileOp::Deleted {
+            path: path.to_owned(),
+            text,
         });
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();

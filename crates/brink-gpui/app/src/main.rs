@@ -133,6 +133,9 @@ actions!(
         OpenProject,
         /// Give the editor the whole window, and give it back.
         MaximizeEditor,
+        /// Take back the last file operation — a create, a rename, a
+        /// delete. Not the editor's undo, which is per-document text.
+        UndoFileOp,
         /// Leave a tool window and put the keyboard back in the editor.
         /// Bound to `escape` INSIDE a tool window only — every overlay
         /// means something by that key too, and each has its own context.
@@ -538,6 +541,7 @@ impl Studio {
                 Some(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT),
                 cx,
             );
+            workspace.register_command("File", "Undo File Operation", UndoFileOp, None, cx);
             workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
             // After every tool window is registered: their `open()`
             // defaults decide the first run, and a saved shape overrides
@@ -1616,6 +1620,36 @@ impl Studio {
         window.focus(&handle, cx);
     }
 
+    /// Take back the last create, rename or delete. Deliberately without
+    /// a key: `cmd-z` is the editor's, and a chord that sometimes undid a
+    /// word and sometimes brought a deleted file back would be worse than
+    /// a palette entry that says what it does.
+    fn undo_file_op(&mut self, _: &UndoFileOp, window: &mut Window, cx: &mut Context<Self>) {
+        // The file an undo may reopen or close is the studio's business:
+        // a recreated file should not be reopened behind the author's
+        // back, and a file being un-created must have its tab closed
+        // first or the next `cmd-s` writes it straight back.
+        if let Some(crate::project::FileOp::Created { path }) =
+            self.project.read(cx).undoable_file_op().cloned()
+        {
+            self.code
+                .update(cx, |code, cx| code.close_document(&path, window, cx));
+        }
+        let undone = self
+            .project
+            .update(cx, |project, cx| project.undo_file_op(cx));
+        match undone {
+            Ok(done) => notify(
+                Severity::Success,
+                "files",
+                format!("Undid {done}."),
+                window,
+                cx,
+            ),
+            Err(err) => notify(Severity::Warning, "files", format!("{err}"), window, cx),
+        }
+    }
+
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         // `on_app_quit` does the saving; this is the door to it.
         cx.quit();
@@ -1831,6 +1865,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_project))
             .on_action(cx.listener(Self::maximize_editor))
             .on_action(cx.listener(Self::open_recent))
+            .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())

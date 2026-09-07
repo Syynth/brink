@@ -27,8 +27,11 @@
 //! the disk, so a rename re-keys the arrangement and a delete drops it
 //! however the operation was asked for. This panel only says what moved.
 //!
-//! Deliberately skipped (not what the spike is asking): the undo stack,
-//! the Library section, multi-select, and creating a knot inline.
+//! Everything the spike deliberately skipped has since landed: the
+//! Library section, multi-select, creating a knot inline, and the undo
+//! stack (`Project::undo_file_op`, reached from File ▸ Undo File
+//! Operation — the operations are the Project's, since the Project owns
+//! the disk).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

@@ -184,7 +184,8 @@ pub fn delete_files(
             // Said plainly: the studio has no undo for this, and
             // pretending otherwise would be the lie.
             .description(format!(
-                "{listed}Removed from the project and from disk. This cannot be undone here."
+                "{listed}Removed from the project and from disk. \
+                 File ▸ Undo File Operation brings the last one back."
             ))
             .show_cancel(true)
             .button_props(
