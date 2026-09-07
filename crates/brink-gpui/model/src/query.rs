@@ -108,6 +108,10 @@ pub enum QueryKind {
     /// [`crate::program`]. Answered by the worker loop itself, which holds
     /// the entry and file list a compile needs.
     Program,
+    /// The compiled program's `.inkt` dump, for Compiled Output — see
+    /// [`crate::compiled`]. Answered by the worker loop for the same
+    /// reason as [`Self::Program`], and off the same memoized compile.
+    CompiledOutput,
 }
 
 /// The answer. `Unavailable` is the honest result for a path the session
@@ -140,6 +144,7 @@ pub enum QueryResult {
     /// `None` when the file is native, unknown, or already formatted.
     Formatted(Option<String>),
     Program(Box<crate::program::ProgramReport>),
+    CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
 }
 
@@ -252,6 +257,10 @@ pub struct PassageSymbol {
     pub path: String,
     pub is_stitch: bool,
     pub file: String,
+    /// The declaration's own name span, so a caller can reveal it rather
+    /// than only open its file. Byte offsets, like everything else that
+    /// crosses this boundary.
+    pub span: std::ops::Range<usize>,
 }
 
 /// One content line of a passage, with the file it came from.
@@ -336,8 +345,8 @@ pub(crate) fn answer(
             QueryResult::ResolvedRefactor(crate::fixes::resolve_refactor(session, path, data))
         }
         QueryKind::Format { path } => QueryResult::Formatted(format(session, path)),
-        // The worker loop answers this one before reaching here.
-        QueryKind::Program => QueryResult::Unavailable,
+        // The worker loop answers these two before reaching here.
+        QueryKind::Program | QueryKind::CompiledOutput => QueryResult::Unavailable,
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),
@@ -585,6 +594,11 @@ fn folding_ranges(session: &brink_ide::session::IdeSession, path: &str) -> Optio
     Some(out)
 }
 
+/// A HIR name's range as the plain byte range this boundary speaks in.
+fn range_of(range: &brink_ir::TextRange) -> std::ops::Range<usize> {
+    usize::from(range.start())..usize::from(range.end())
+}
+
 /// Every knot and stitch of the author's files, in file order then
 /// declaration order — the mounted stdlib is not the author's to mark.
 fn passage_index(session: &brink_ide::session::IdeSession) -> Vec<PassageSymbol> {
@@ -605,12 +619,14 @@ fn passage_index(session: &brink_ide::session::IdeSession) -> Vec<PassageSymbol>
                 path: knot.name.text.clone(),
                 is_stitch: false,
                 file: file.clone(),
+                span: range_of(&knot.name.range),
             });
             for stitch in &knot.stitches {
                 out.push(PassageSymbol {
                     path: format!("{}.{}", knot.name.text, stitch.name.text),
                     is_stitch: true,
                     file: file.clone(),
+                    span: range_of(&stitch.name.range),
                 });
             }
         }

@@ -341,7 +341,8 @@ impl Binder {
                 // no row either.
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
-                | ProjectEvent::Saved => {}
+                | ProjectEvent::Saved
+                | ProjectEvent::SaveFailed { .. } => {}
             }
         });
         let mut this = Self {

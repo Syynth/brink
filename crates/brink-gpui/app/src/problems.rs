@@ -41,6 +41,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use rowan::TextSize;
 
@@ -60,6 +61,61 @@ type OfferKey = (String, u32, u32, String);
 pub struct OpenProblem {
     pub path: String,
     pub span: Range<usize>,
+}
+
+/// What the row's context menu asks the studio to do. Raised rather than
+/// done here for the same reason a navigation is: only the host holds the
+/// tabs and the settings window.
+#[derive(Debug, Clone)]
+pub enum ProblemsMenu {
+    /// Silence this code on this line, or in this file.
+    Suppress {
+        path: String,
+        /// `None` for the whole file.
+        line: Option<u32>,
+        code: String,
+    },
+    /// Open Settings ▸ Diagnostics — the door the panel has lacked.
+    Configure,
+}
+
+gpui::actions!(
+    problems,
+    [
+        /// Open Settings at the Diagnostics section.
+        ConfigureProblem,
+    ]
+);
+
+/// Silence one code, on a line or in a file.
+#[derive(Debug, Clone, PartialEq, gpui::Action)]
+#[action(namespace = problems, no_json)]
+pub struct SuppressProblem {
+    pub path: String,
+    pub line: Option<u32>,
+    pub code: String,
+}
+
+/// Whether the suppression channel would accept this code.
+///
+/// **Everything but an error.** Warnings and Info notes are both
+/// suppressible; `brink_ir::suppressions` refuses a code whose DEFAULT
+/// severity is `Error`, because an error means no correct artifact can be
+/// produced and silencing one would be a way to ship broken code.
+///
+/// The rule is stated as "not an error" rather than "warnings only" on
+/// purpose: `brink_ir::suppressions`'s own heading reads "Only warnings
+/// are suppressible" while its text says it refuses errors, and reading
+/// the heading is what would leave an author unable to silence an Info
+/// note like `E189` — which the channel accepts perfectly well.
+///
+/// A code the registry does not know is left alone rather than guessed at.
+#[must_use]
+pub fn is_suppressible(code: &str) -> bool {
+    brink_ide::diagnostic_registry::registry()
+        .iter()
+        .find(|info| info.code.as_str() == code)
+        .is_some_and(|info| info.default_severity != brink_ir::Severity::Error)
 }
 
 /// The lint code TODO notes carry (decision log 2026-08-23: emitted at HIR
@@ -334,6 +390,26 @@ pub struct Problems {
 }
 
 impl EventEmitter<OpenProblem> for Problems {}
+impl EventEmitter<ProblemsMenu> for Problems {}
+
+impl Problems {
+    fn on_suppress(
+        &mut self,
+        action: &SuppressProblem,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(ProblemsMenu::Suppress {
+            path: action.path.clone(),
+            line: action.line,
+            code: action.code.clone(),
+        });
+    }
+
+    fn on_configure(&mut self, _: &ConfigureProblem, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ProblemsMenu::Configure);
+    }
+}
 impl EventEmitter<PanelEvent> for Problems {}
 
 impl Problems {
@@ -564,6 +640,11 @@ impl Problems {
                 // The row's first offered fix; the rest are one `cmd-.`
                 // away in the editor once the row is opened.
                 let fix = self.offers.get(&key).and_then(|f| f.first()).cloned();
+                let menu_focus = self.focus.clone();
+                let path = row.path.clone();
+                let code = SharedString::from(row.code.clone());
+                let line = row.line_col.map(|(l, _)| l);
+                let suppressible = is_suppressible(&row.code);
                 h_flex()
                     .id(("problem", ix))
                     // Full width and clipped, or a long message pushes the
@@ -617,6 +698,46 @@ impl Problems {
                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                         cx.emit(open.clone());
                     }))
+                    .context_menu(move |menu, _window, _cx| {
+                        let menu = menu.action_context(menu_focus.clone()).label(code.clone());
+                        // Anything but an error can be silenced — warnings
+                        // and Info notes alike. The channel refuses an
+                        // error outright, so offering it there would build
+                        // the silent no-op the Diagnostics section exists
+                        // to prevent.
+                        let menu = if suppressible && line.is_some() {
+                            menu.separator()
+                                .menu(
+                                    "Suppress on this line",
+                                    Box::new(SuppressProblem {
+                                        path: path.clone(),
+                                        line,
+                                        code: code.to_string(),
+                                    }),
+                                )
+                                .menu(
+                                    "Suppress in this file",
+                                    Box::new(SuppressProblem {
+                                        path: path.clone(),
+                                        line: None,
+                                        code: code.to_string(),
+                                    }),
+                                )
+                        } else if suppressible {
+                            menu.separator().menu(
+                                "Suppress in this file",
+                                Box::new(SuppressProblem {
+                                    path: path.clone(),
+                                    line: None,
+                                    code: code.to_string(),
+                                }),
+                            )
+                        } else {
+                            menu
+                        };
+                        menu.separator()
+                            .menu("Configure\u{2026}", Box::new(ConfigureProblem))
+                    })
                     .into_any_element()
             }
         }
@@ -752,6 +873,8 @@ impl Render for Problems {
         v_flex()
             .id("problems")
             .track_focus(&self.focus)
+            .on_action(cx.listener(Self::on_suppress))
+            .on_action(cx.listener(Self::on_configure))
             .size_full()
             .text_xs()
             .when(self.filter_open, |el| {
@@ -774,6 +897,65 @@ impl Render for Problems {
                 )
             })
     }
+}
+
+/// Where a suppression comment goes, and what it says.
+///
+/// The comment channel is line-scoped and reads FORWARD:
+/// `// brink-disable E027` silences the **next** line
+/// (`brink_ir::suppressions`). So the directive is inserted on its own line
+/// ABOVE the diagnostic's line, wearing that line's indentation — a
+/// directive tacked onto the end of the line would silence the line after
+/// the one the author pointed at.
+///
+/// Returns the byte offset to insert at and the text, or `None` when the
+/// line is out of range.
+#[must_use]
+pub fn suppress_line_edit(source: &str, line: u32, code: &str) -> Option<(usize, String)> {
+    let line_ix = line.checked_sub(1)? as usize;
+    let mut at = 0usize;
+    for (i, l) in source.split_inclusive('\n').enumerate() {
+        if i == line_ix {
+            let indent: String = l.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            return Some((at, format!("{indent}// brink-disable {code}\n")));
+        }
+        at += l.len();
+    }
+    None
+}
+
+/// The file-wide form. An existing `// brink-disable-file` line takes the
+/// code rather than a second directive being added: two lines silencing
+/// different codes is legal but reads as a mistake, and the parser is
+/// happy with a list.
+///
+/// Returns the whole new source, or `None` when the code is already
+/// covered — so a menu entry that would change nothing can be hidden.
+#[must_use]
+pub fn suppress_file_source(source: &str, code: &str) -> Option<String> {
+    const DIRECTIVE: &str = "// brink-disable-file";
+    let mut at = 0usize;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(DIRECTIVE) {
+            // `-all` is a different directive and already covers this.
+            if rest.starts_with("-all") {
+                return None;
+            }
+            if rest.split_whitespace().any(|c| c == code) {
+                return None;
+            }
+            let end = at + line.trim_end_matches(['\n', '\r']).len();
+            let mut out = String::with_capacity(source.len() + code.len() + 1);
+            out.push_str(&source[..end]);
+            out.push(' ');
+            out.push_str(code);
+            out.push_str(&source[end..]);
+            return Some(out);
+        }
+        at += line.len();
+    }
+    Some(format!("{DIRECTIVE} {code}\n{source}"))
 }
 
 #[cfg(test)]
@@ -892,6 +1074,91 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn warnings_and_info_are_suppressible_but_errors_are_not() {
+        // The rule is "not an error", not "warnings only": an Info note
+        // like E189 is silenceable, and an author who wants one gone must
+        // be offered the menu entry for it.
+        let registry = brink_ide::diagnostic_registry::registry();
+        let by_severity = |want: brink_ir::Severity| {
+            registry
+                .iter()
+                .find(|i| i.default_severity == want)
+                .map(|i| i.code.as_str().to_owned())
+        };
+        if let Some(code) = by_severity(brink_ir::Severity::Warning) {
+            assert!(is_suppressible(&code), "a warning is suppressible: {code}");
+        }
+        if let Some(code) = by_severity(brink_ir::Severity::Info) {
+            assert!(is_suppressible(&code), "an info note is too: {code}");
+        }
+        let error = by_severity(brink_ir::Severity::Error)
+            .expect("the registry has at least one error-tier code");
+        assert!(!is_suppressible(&error), "an error is not: {error}");
+    }
+
+    #[test]
+    fn the_todo_code_is_suppressible() {
+        // The one Info code named in this file, pinned by name so the
+        // general rule above cannot pass vacuously.
+        assert!(is_suppressible(TODO_CODE));
+    }
+
+    #[test]
+    fn an_unknown_code_is_left_alone() {
+        assert!(!is_suppressible("E9999"));
+    }
+
+    #[test]
+    fn a_line_suppression_goes_above_the_line_it_silences() {
+        // The directive reads FORWARD, so it must sit on its own line
+        // above — on the same line it would silence the wrong one.
+        let src = "=== k ===\nHello.\n-> DONE\n";
+        let (at, text) = suppress_line_edit(src, 2, "E027").expect("line 2 exists");
+        assert_eq!(at, "=== k ===\n".len());
+        assert_eq!(text, "// brink-disable E027\n");
+        let mut out = src.to_owned();
+        out.insert_str(at, &text);
+        assert_eq!(out, "=== k ===\n// brink-disable E027\nHello.\n-> DONE\n");
+    }
+
+    #[test]
+    fn a_line_suppression_keeps_the_lines_indentation() {
+        let src = "=== k ===\n    Hello.\n";
+        let (_, text) = suppress_line_edit(src, 2, "E027").expect("line 2");
+        assert_eq!(text, "    // brink-disable E027\n");
+    }
+
+    #[test]
+    fn a_line_past_the_end_has_no_edit() {
+        assert!(suppress_line_edit("one\n", 9, "E027").is_none());
+        assert!(suppress_line_edit("one\n", 0, "E027").is_none(), "1-based");
+    }
+
+    #[test]
+    fn a_file_suppression_goes_at_the_top() {
+        let out = suppress_file_source("=== k ===\n", "E027").expect("not yet covered");
+        assert_eq!(out, "// brink-disable-file E027\n=== k ===\n");
+    }
+
+    #[test]
+    fn a_second_code_joins_the_existing_directive() {
+        // Rather than a second line: the parser takes a list, and two
+        // directives read as a mistake.
+        let src = "// brink-disable-file E027\n=== k ===\n";
+        let out = suppress_file_source(src, "E035").expect("E035 not covered");
+        assert_eq!(out, "// brink-disable-file E027 E035\n=== k ===\n");
+    }
+
+    #[test]
+    fn a_code_already_covered_has_no_edit() {
+        let src = "// brink-disable-file E027 E035\n=== k ===\n";
+        assert!(suppress_file_source(src, "E035").is_none());
+        // `-all` covers everything, so adding a code would be noise.
+        let all = "// brink-disable-file-all\n=== k ===\n";
+        assert!(suppress_file_source(all, "E027").is_none());
     }
 
     #[test]

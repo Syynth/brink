@@ -280,11 +280,14 @@ highlighter lays, see TODOs above) — cue lines in `--bs-cue` at
 `--bs-cue-weight`, dimmed comment/include lines — need the worker's
 `LineContext` per file.
 
-Two things noticed in those screenshots and NOT yet fixed: the Binder
-draws both the dock's title strip ("Binder") and its own header ("BINDER"
-+ toolbar), and the manuscript's first section shows a partial row above
-the next heading (the measured-line-height issue `continuous.rs` already
-describes).
+Of the two things noticed in those screenshots, one is fixed: the Binder
+no longer draws both the dock's title strip and its own header — the
+side docks draw no tab bar at all since the barless skin (`shell/src/
+skin.rs`, maintainer 2026-09-05 "why is it there?"), so its own
+"BINDER" + toolbar row is the only header, confirmed on screen
+2026-09-07. Still open: the manuscript's first section shows a partial
+row above the next heading (the measured-line-height issue
+`continuous.rs` already describes).
 
 **Linux builds** (verified 2026-09-05, contrary to the earlier worry): the
 whole workspace, app included, builds and links on an ubuntu container with
@@ -312,10 +315,13 @@ unverified by hand.
    rail opens-and-selects, switches, or closes accordingly; a button is
    pressed only when its window is the one on screen.
 4. **Open-project is a CLI argument only.** No file dialog, no recents.
-5. **No layout persistence.** `DockAreaState` has `dump`/`load` and
-   `RailSlot::persistence_key` exists for exactly this; nothing calls them.
-   (App settings do persist — `shell/src/settings.rs` — but the layout is
-   not among them.)
+5. ~~**No layout persistence.**~~ **Partly fixed 2026-09-06**: the three
+   docks' open state and width and the current editor view ride
+   `AppSettings` (`Workspace::layout`/`apply_layout`), saved on every
+   discrete change and again on quit — `on_app_quit` alone loses them to
+   a crash, and SIGTERM does not run it either. The panel TREE is still
+   not persisted: rebuilding open documents needs the toolkit's
+   `PanelRegistry`, and a `Document` panel is per-file.
 6. ~~**Fold chevrons do not paint.**~~ **Fixed 2026-09-05.** The app
    never registered the kit's asset source (`gpui_kit_assets::Assets`), so
    every `IconName` — the fold chevrons included — drew nothing while its
@@ -330,25 +336,43 @@ unverified by hand.
 
 ## Open small things (2026-09-05, end of day)
 
-- **The Program Explorer is unverified by hand** (same locked screen).
-  `program_report_reads_one_compile_three_ways` drives the worker; check
-  the right rail's Program button opens it, the four views, expanding a
-  knot / container / scope, a disassembly row and a line row opening
-  their source, and that an edit while it is shown refreshes it (and
-  while hidden marks it stale, refreshed on show).
+- ~~**The Program Explorer is unverified by hand.**~~ **Verified
+  2026-09-06** (headless, on a two-file scratch project): the right rail
+  opens it, all four views render — Structure with globals and the knot
+  tree with size bars, Lines with the scoped tables, Disasm with every
+  container's instruction and byte counts, Size with sections, line
+  tables and the shipping/debug split — and an edit while it is shown
+  refreshes it, reporting `No program: the story has 1 error(s)` with the
+  `E024` when the project stops compiling. **Still unchecked**: a
+  disassembly or line row opening its source, and the hidden→stale→shown
+  path.
 
-- **The Player is unverified by hand.** `model/src/worker.rs`'s
-  `play_runs_to_choices_and_on_through_one` drives compile → lines →
-  choices → choose → Done → play-from-here → stale-after-edit → compile
-  failure against the worker, and the app builds clean, but the screen
-  was locked before the panel could be looked at. Check: cmd-r docks the
-  Player tab in Code view and shows the first lines and the choice
-  buttons; a choice echoes as `+ text`/`* text` and runs on; Restart /
-  From start; the Binder row menu's "Play from here" on a knot and on a
-  stitch; clicking a transcript line opens its source; editing a file
-  while a story runs shows the "sources changed" status; a project with
-  errors lists them. Hot-reload of a running story is deliberately not
-  done (see `model/src/play.rs`'s module doc).
+- ~~**The Player is unverified by hand.**~~ **Verified 2026-09-06**
+  (headless): cmd-r docks the Player tab in Code view with the first
+  lines and the numbered choice buttons; a choice echoes as `* text` and
+  the story runs on to the next lines and choices; tags render beside
+  their line; a compile failure lists the errors and says to fix them in
+  Problems. Driving it found one defect, now fixed: a long line pushed
+  its own tags off the right edge instead of wrapping (`min_w_0` — a flex
+  item's minimum is its content by default). **Still unchecked**:
+  Restart / From start, the Binder menu's "Play from here", a transcript
+  line opening its source, and the "sources changed" status. Hot-reload
+  of a running story is deliberately not done (see `model/src/play.rs`).
+
+- **Compiled Output and the Output log** (2026-09-06,
+  `app/src/compiled_output.rs`, `app/src/output_log.rs`,
+  `model/src/compiled.rs`) — the two surfaces INVENTORY's order put next,
+  both off the compile that already exists. Verified headless: the dump
+  paints in full with line numbers and refuses typing, it reports the
+  project's errors rather than leaving a stale dump up, the log coalesces
+  quiet analyses into `+N more` and follows its tail, and a Player
+  compile failure reaches it in red. **Two traps worth keeping**, each
+  found on screen rather than in the compiler: `flex_1` belongs on the
+  `Editor` element, not a wrapper div (an editor sizes its visible range
+  from its own height, so a wrapped one lays out ONE line), and
+  `readonly` belongs on the element too — `Editor` pushes its own flag
+  into the state every render, so `set_readonly` at construction is
+  overwritten on the first frame and the "read-only" dump was editable.
 
 - **Escape did not close the `cmd-.` code-action menu** when driven by
   automation; `CodeActionMenu::handle_action` handles Escape when its own

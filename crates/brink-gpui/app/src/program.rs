@@ -27,18 +27,26 @@ use brink_intl::{ContentJson, LinesJson, PartJson, ScopeJson};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, Render, SharedString, Subscription, Window, div, px, relative, uniform_list,
+    IntoElement, Render, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle,
+    Window, div, px, relative, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
 use crate::project::{Project, ProjectEvent};
 
 /// A row with provenance was clicked: open it.
 #[derive(Debug, Clone)]
 pub enum ProgramEvent {
-    Navigate { path: String, span: Range<usize> },
+    Navigate {
+        path: String,
+        span: Range<usize>,
+    },
+    /// The `.inkt` toolbar button: show the dump of this same compile.
+    /// The panel raises it rather than opening the tab itself — a tab is
+    /// the host's to open, as it is for a navigation.
+    OpenCompiledOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +71,22 @@ impl View {
 }
 
 /// Source provenance on a row, in the compiler's file keys.
+/// A jump from one view of the program to another — the web studio's
+/// cross-view targeting. A row that names something another view holds
+/// says so, and clicking it takes you there and puts the row under a
+/// highlight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Jump {
+    /// Lines view, a scope's table, at one line index. `scope` is the
+    /// scope's NAME (empty for the root), because that is what a disasm
+    /// node and a size row both know; the scope id is looked up from it.
+    Line { scope: String, index: u16 },
+    /// Lines view, a whole scope's table.
+    Scope { scope: String },
+    /// Disasm view, one knot's bytecode, by knot path.
+    Knot { path: String },
+}
+
 #[derive(Debug, Clone)]
 struct Src {
     path: String,
@@ -117,6 +141,9 @@ enum Item {
         offset: u32,
         text: SharedString,
         src: Option<Src>,
+        /// The line this instruction emits, when it emits one — the
+        /// `emit_line #N` operand, paired with the scope it is in.
+        line_ref: Option<Jump>,
     },
     /// One compiled line.
     Line {
@@ -131,6 +158,10 @@ enum Item {
         bytes: usize,
         ratio: f32,
         indent: usize,
+        /// The view that holds what this row measures, if one does: a
+        /// line-table row is a scope, a bytecode row is a knot. Section
+        /// rows measure something no other view lists, and carry none.
+        jump: Option<Jump>,
     },
     Error(SharedString),
 }
@@ -152,6 +183,11 @@ pub struct ProgramExplorer {
     /// Expanded tree rows, by key — everything starts folded.
     expanded: BTreeSet<String>,
     items: Vec<Item>,
+    /// The row a jump landed on, by index into `items`. Cleared by any
+    /// relayout that is not the jump's own, so it can never point at a
+    /// row that has since become a different one.
+    highlight: Option<usize>,
+    scroll: UniformListScrollHandle,
     /// Whether the panel is the shown tab, from the dock's `set_active` and
     /// from being rendered. Tracked rather than asked: asking the tab group
     /// reads this entity back while it is being updated (a panic).
@@ -182,6 +218,8 @@ impl ProgramExplorer {
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
             items: Vec::new(),
+            highlight: None,
+            scroll: UniformListScrollHandle::new(),
             shown: false,
             stale: true,
             busy: false,
@@ -267,6 +305,46 @@ impl ProgramExplorer {
         cx.notify();
     }
 
+    /// Take a row's cross-reference: switch to the view that holds it,
+    /// open what has to be open, and put the row under a highlight.
+    fn jump(&mut self, jump: &Jump, cx: &mut Context<Self>) {
+        let Some(program) = self.program() else {
+            return;
+        };
+        let landing = match jump {
+            Jump::Line { scope, index } => {
+                let Some(id) = scope_id_named(&program.lines, scope) else {
+                    return;
+                };
+                self.view = View::Lines;
+                self.expanded.insert(format!("lines:{id}"));
+                Some(Landing::Line(*index))
+            }
+            Jump::Scope { scope } => {
+                let Some(id) = scope_id_named(&program.lines, scope) else {
+                    return;
+                };
+                self.view = View::Lines;
+                let key = format!("lines:{id}");
+                self.expanded.insert(key.clone());
+                Some(Landing::Group(key))
+            }
+            Jump::Knot { path } => {
+                self.view = View::Disasm;
+                let key = format!("disasm:{path}");
+                self.expanded.insert(key.clone());
+                Some(Landing::Group(key))
+            }
+        };
+        self.relayout();
+        // After the relayout, which clears any previous highlight.
+        self.highlight = landing.and_then(|landing| landing.find(&self.items));
+        if let Some(ix) = self.highlight {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
     fn program(&self) -> Option<&Program> {
         match &self.report {
             Some(ProgramReport {
@@ -280,6 +358,9 @@ impl ProgramExplorer {
     // ── Layout ───────────────────────────────────────────────────────
 
     fn relayout(&mut self) {
+        // The rows are about to be different ones; a highlight by index
+        // would land on whatever now sits there.
+        self.highlight = None;
         self.items = match &self.report {
             None => Vec::new(),
             Some(ProgramReport {
@@ -387,22 +468,41 @@ impl ProgramExplorer {
                     }),
             )
             .child(div().text_xs().text_color(muted).child(counts))
-            .child(h_flex().gap_0p5().children(View::ALL.iter().map(|&v| {
-                let on = v == view;
-                Button::new(v.label())
-                    .ghost()
-                    .compact()
-                    .toggled(on)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_0p5()
+                    .child(h_flex().gap_0p5().children(View::ALL.iter().map(|&v| {
+                        let on = v == view;
+                        Button::new(v.label())
+                            .ghost()
+                            .compact()
+                            .toggled(on)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if on { primary } else { muted })
+                                    .child(v.label()),
+                            )
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.set_view(v, cx);
+                            }))
+                    })))
+                    .child(div().flex_1())
+                    // The dump is a fifth reading of this same compile, and
+                    // it belongs in the editor rather than the dock — so the
+                    // button opens a tab (the web's `.inkt` toolbar button,
+                    // §4 "Program Explorer").
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(if on { primary } else { muted })
-                            .child(v.label()),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.set_view(v, cx);
-                    }))
-            })))
+                        Button::new("open-inkt")
+                            .ghost()
+                            .compact()
+                            .child(div().text_xs().text_color(muted).child(".inkt"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ProgramEvent::OpenCompiledOutput);
+                            })),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -459,7 +559,11 @@ impl ProgramExplorer {
         let Some(item) = self.items.get(ix) else {
             return div().into_any_element();
         };
-        let row = |id: usize| {
+        // The row a jump landed on keeps a wash of the accent until the
+        // next relayout — a scroll alone leaves you hunting for which row
+        // of forty you were sent to.
+        let landed = self.highlight == Some(ix);
+        let row = move |id: usize| {
             h_flex()
                 .id(("program-row", id))
                 .w_full()
@@ -469,6 +573,7 @@ impl ProgramExplorer {
                 .items_center()
                 .rounded_sm()
                 .text_xs()
+                .when(landed, |el| el.bg(primary.opacity(0.18)))
         };
         let chevron = |open: bool| {
             div()
@@ -586,7 +691,12 @@ impl ProgramExplorer {
                     }))
                     .into_any_element()
             }
-            Item::Instr { offset, text, src } => {
+            Item::Instr {
+                offset,
+                text,
+                src,
+                line_ref,
+            } => {
                 let el = row(ix)
                     .pl(px(28.))
                     .font_family("monospace")
@@ -597,6 +707,23 @@ impl ProgramExplorer {
                             .child(format!("{offset:04x}")),
                     )
                     .child(div().flex_1().text_color(fg).truncate().child(text.clone()))
+                    // The chip is its own click target, so the row keeps
+                    // meaning "open the source" and the cross-reference
+                    // does not have to fight it for the same gesture.
+                    .children(line_ref.clone().map(|jump| {
+                        let label = match &jump {
+                            Jump::Line { index, .. } => format!("line #{index}"),
+                            _ => String::new(),
+                        };
+                        Button::new(("instr-line", ix))
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .tooltip("Show this line in Lines")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.jump(&jump, cx);
+                            }))
+                    }))
                     .when(src.is_some(), |el| {
                         el.child(div().text_color(muted).child("\u{203A}"))
                     });
@@ -647,25 +774,40 @@ impl ProgramExplorer {
                 bytes,
                 ratio,
                 indent,
-            } => row(ix)
-                .pl(px(8. + *indent as f32 * 12.))
-                .child(
-                    div()
-                        .w(px(120.))
-                        .text_color(fg)
-                        .truncate()
-                        .child(label.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .h(px(6.))
-                        .rounded_sm()
-                        .bg(track)
-                        .child(div().w(relative(*ratio)).h_full().rounded_sm().bg(primary)),
-                )
-                .child(div().w(px(64.)).text_color(muted).child(fmt_bytes(*bytes)))
-                .into_any_element(),
+                jump,
+            } => {
+                let el = row(ix)
+                    .pl(px(8. + *indent as f32 * 12.))
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .text_color(fg)
+                            .truncate()
+                            .child(label.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(6.))
+                            .rounded_sm()
+                            .bg(track)
+                            .child(div().w(relative(*ratio)).h_full().rounded_sm().bg(primary)),
+                    )
+                    .child(div().w(px(64.)).text_color(muted).child(fmt_bytes(*bytes)));
+                match jump {
+                    Some(jump) => {
+                        let jump = jump.clone();
+                        el.cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .child(div().text_color(muted).child("\u{203A}"))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.jump(&jump, cx);
+                            }))
+                            .into_any_element()
+                    }
+                    None => el.into_any_element(),
+                }
+            }
         }
     }
 }
@@ -916,7 +1058,7 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
             expanded: is_expanded,
         });
         if is_expanded {
-            push_instrs(items, &node.disasm);
+            push_instrs(items, &node.disasm, &node.path);
         }
         for anon in &node.anon {
             let key = format!("disasm:{}.{}", node.path, anon.label);
@@ -934,7 +1076,9 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
                 expanded: is_expanded,
             });
             if is_expanded {
-                push_instrs(items, &anon.disasm);
+                // An anonymous container's lines belong to the scope that
+                // owns it, which is the knot this container hangs under.
+                push_instrs(items, &anon.disasm, &node.path);
             }
         }
         for child in &node.children {
@@ -955,7 +1099,42 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
     items
 }
 
-fn push_instrs(items: &mut Vec<Item>, disasm: &[brink_ide::program_model::DisasmLineJs]) {
+/// What a jump is looking for once the rows have been rebuilt.
+enum Landing {
+    Group(String),
+    Line(u16),
+}
+
+impl Landing {
+    /// The row index, or `None` when the rebuilt rows do not hold it —
+    /// which is not an error: a scope with no lines has no row to land on.
+    fn find(&self, items: &[Item]) -> Option<usize> {
+        items.iter().position(|item| match (self, item) {
+            (Self::Group(want), Item::Group { key, .. }) => key == want,
+            (Self::Line(want), Item::Line { index, .. }) => index == want,
+            _ => false,
+        })
+    }
+}
+
+/// The id of the scope with this name — empty meaning the root scope,
+/// which is the one with no name at all.
+fn scope_id_named(lines: &LinesJson, name: &str) -> Option<String> {
+    lines
+        .scopes
+        .iter()
+        .find(|s| match &s.name {
+            Some(n) => n == name,
+            None => name.is_empty(),
+        })
+        .map(|s| s.id.clone())
+}
+
+fn push_instrs(
+    items: &mut Vec<Item>,
+    disasm: &[brink_ide::program_model::DisasmLineJs],
+    scope: &str,
+) {
     for line in disasm {
         items.push(Item::Instr {
             offset: line.offset,
@@ -965,8 +1144,29 @@ fn push_instrs(items: &mut Vec<Item>, disasm: &[brink_ide::program_model::Disasm
                 start: s.start,
                 end: s.end,
             }),
+            line_ref: emitted_line(&line.text).map(|index| Jump::Line {
+                scope: scope.to_owned(),
+                index,
+            }),
         });
     }
+}
+
+/// The line index an `emit_line #N …` instruction emits.
+///
+/// Read off the rendered text rather than the opcode: the panel is handed
+/// `DisasmLineJs`, which is already formatted, and the format is
+/// `brink-ide`'s own (`format_opcode`). Only the two emit forms name a
+/// line; every other operand `#N` would be a different table.
+fn emitted_line(text: &str) -> Option<u16> {
+    let rest = text
+        .strip_prefix("emit_line_nl ")
+        .or_else(|| text.strip_prefix("emit_line "))?;
+    rest.strip_prefix('#')?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Root first, knots in appearance order, stitches under their knot.
@@ -1145,6 +1345,9 @@ fn layout_size(program: &Program, collapsed: &BTreeSet<String>) -> Vec<Item> {
                 bytes: s.bytes,
                 ratio: s.bytes as f32 / total as f32,
                 indent: 1,
+                // A section is a region of the file, not a thing another
+                // view lists.
+                jump: None,
             });
         }
     }
@@ -1169,6 +1372,9 @@ fn layout_size(program: &Program, collapsed: &BTreeSet<String>) -> Vec<Item> {
                 bytes: s.bytes,
                 ratio: s.bytes as f32 / max as f32,
                 indent: 1,
+                jump: Some(Jump::Scope {
+                    scope: s.name.clone().unwrap_or_default(),
+                }),
             });
         }
     }
@@ -1189,6 +1395,9 @@ fn layout_size(program: &Program, collapsed: &BTreeSet<String>) -> Vec<Item> {
                 bytes: bytes as usize,
                 ratio: bytes as f32 / max as f32,
                 indent: 1,
+                jump: Some(Jump::Knot {
+                    path: k.path.clone(),
+                }),
             });
         }
     }
@@ -1285,6 +1494,7 @@ impl Render for ProgramExplorer {
                             range.map(|i| this.render_item(i, cx)).collect::<Vec<_>>()
                         }),
                     )
+                    .track_scroll(&self.scroll)
                     .p_1()
                     .flex_1(),
                 )
@@ -1301,6 +1511,69 @@ mod tests {
     fn bytes_format_like_the_web_view() {
         assert_eq!(fmt_bytes(512), "512 B");
         assert_eq!(fmt_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn only_the_emit_forms_name_a_line() {
+        assert_eq!(emitted_line("emit_line #3 0"), Some(3));
+        assert_eq!(emitted_line("emit_line_nl #12 1"), Some(12));
+        // Another opcode's `#N` indexes a different table, and following
+        // it would take the author to an unrelated line.
+        assert_eq!(emitted_line("push_const #3"), None);
+        assert_eq!(emitted_line("goto $01_abc"), None);
+        assert_eq!(emitted_line("emit_line"), None);
+        assert_eq!(emitted_line("emit_line x"), None);
+    }
+
+    #[test]
+    fn a_landing_finds_its_row_and_admits_when_there_is_none() {
+        let items = vec![
+            Item::Group {
+                key: "lines:s1".to_owned(),
+                label: SharedString::from("shore"),
+                facts: SharedString::default(),
+                depth: 0,
+                expanded: true,
+            },
+            Item::Line {
+                index: 0,
+                text: SharedString::from("first"),
+                template: false,
+                src: None,
+            },
+            Item::Line {
+                index: 4,
+                text: SharedString::from("fifth"),
+                template: false,
+                src: None,
+            },
+        ];
+        assert_eq!(Landing::Group("lines:s1".to_owned()).find(&items), Some(0));
+        assert_eq!(Landing::Line(4).find(&items), Some(2));
+        // A scope with no such line lands nowhere — and on no wrong row.
+        assert_eq!(Landing::Line(9).find(&items), None);
+        assert_eq!(Landing::Group("disasm:x".to_owned()).find(&items), None);
+    }
+
+    #[test]
+    fn a_scope_is_found_by_name_with_the_root_as_the_empty_one() {
+        let scope = |name: Option<&str>, id: &str| ScopeJson {
+            name: name.map(str::to_owned),
+            id: id.to_owned(),
+            lines: Vec::new(),
+        };
+        let lines = LinesJson {
+            version: 1,
+            source_checksum: String::new(),
+            scopes: vec![
+                scope(None, "0"),
+                scope(Some("shore"), "1"),
+                scope(Some("shore.linger"), "2"),
+            ],
+        };
+        assert_eq!(scope_id_named(&lines, ""), Some("0".to_owned()), "root");
+        assert_eq!(scope_id_named(&lines, "shore.linger"), Some("2".to_owned()));
+        assert_eq!(scope_id_named(&lines, "nowhere"), None);
     }
 
     #[test]

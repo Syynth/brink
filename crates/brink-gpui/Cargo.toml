@@ -37,7 +37,7 @@ publish = false
 # `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "75049177aab57ffa4982a1c179d9d3c156659c0d", features = ["tree-sitter"] }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "75049177aab57ffa4982a1c179d9d3c156659c0d", features = ["tree-sitter", "tree-sitter-toml"] }
 # The foundation under the kit, for the one renderer-trait type the kit does
 # not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
 # is the same crate the kit is built against.
@@ -76,6 +76,6 @@ brink-project-config = { path = "../internal/brink-project-config" }
 brink-environment = { path = "../internal/brink-environment" }
 brink-fmt = { path = "../internal/brink-fmt" }
 brink-runtime = { path = "../brink-runtime" }
-brink-format = { path = "../internal/brink-format" }
+brink-format = { path = "../internal/brink-format", features = ["inkt-write"] }
 brink-intl = { path = "../internal/brink-intl" }
 

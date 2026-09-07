@@ -23,6 +23,7 @@ use gpui::{
 };
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_handle};
 
+use crate::compiled_output::CompiledOutputView;
 use crate::document::{Document, DocumentEvent};
 use crate::player::Player;
 use crate::project::Project;
@@ -43,6 +44,12 @@ pub struct CodeView {
     _skin: Rc<DockSkin>,
     /// Open documents, oldest first.
     documents: Vec<Entity<Document>>,
+    /// Where each file was scrolled to, by root-relative path — including
+    /// files whose tab has since been closed. A document is a view of the
+    /// shared buffer and comes and goes; where you were reading in a file
+    /// is a fact about the FILE, so it outlives the tab and is restored
+    /// when the file is opened again.
+    scroll: std::collections::BTreeMap<String, f32>,
     active: Option<Entity<Document>>,
     /// One subscription per open document, dropped with it when it closes.
     subscriptions: Vec<(Entity<Document>, Subscription)>,
@@ -61,6 +68,7 @@ impl CodeView {
             dock_area,
             _skin: skin,
             documents: Vec::new(),
+            scroll: std::collections::BTreeMap::new(),
             active: None,
             subscriptions: Vec::new(),
         }
@@ -102,6 +110,9 @@ impl CodeView {
                         cx,
                     );
                 });
+                if let Some(top) = self.scroll.get(path).copied() {
+                    document.update(cx, |doc, cx| doc.set_scroll_top(top, cx));
+                }
                 Document::activate(&document, window, cx);
                 let subscription = cx.subscribe(&document, Self::on_document_event);
                 self.subscriptions.push((document.clone(), subscription));
@@ -118,6 +129,37 @@ impl CodeView {
         // dock will confirm it on the next tick, but the views should not
         // wait a frame to agree.
         self.set_active(Some(document), cx);
+    }
+
+    /// Reveal a span in a document that is ALREADY open, without opening
+    /// one or selecting its tab. Answers whether it found anything.
+    ///
+    /// This is follow-in-editor's reveal, and the restraint is the point:
+    /// the Player is a centre tab beside the documents, so opening or
+    /// selecting a tab as the story plays would hide the Player behind
+    /// the source it is following. Where the author has split the group —
+    /// or is reading the manuscript, which shows every file at once — the
+    /// reveal lands in view; where they have not, it moves a caret they
+    /// will find when they look. Putting the Player beside the file
+    /// automatically is the open ruling on Player placement, and not this
+    /// change's to make.
+    pub fn reveal_if_open(
+        &mut self,
+        path: &str,
+        span: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(document) = self
+            .documents
+            .iter()
+            .find(|d| d.read(cx).path().as_ref() == path)
+            .cloned()
+        else {
+            return false;
+        };
+        document.update(cx, |document, cx| document.reveal(span, window, cx));
+        true
     }
 
     /// Put the Player in the centre dock (once) and select its tab.
@@ -139,6 +181,59 @@ impl CodeView {
             });
         }
         Player::activate(player, window, cx);
+    }
+
+    /// Put Compiled Output in the centre dock (once) and select its tab.
+    /// Same shape as [`Self::show_player`]: a singleton panel that is not
+    /// a file, so it never joins `documents` and never becomes the active
+    /// document Single File view would show.
+    pub fn show_compiled(
+        &mut self,
+        compiled: &Entity<CompiledOutputView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !compiled.read(cx).is_docked() {
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(compiled.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        }
+        CompiledOutputView::activate(compiled, window, cx);
+    }
+
+    /// Note where a file was scrolled to. Bounded: a project has as many
+    /// entries as it has files, and a path is only ever overwritten.
+    fn remember_scroll(&mut self, path: String, top: f32) {
+        if top.is_finite() {
+            self.scroll.insert(path, top);
+        }
+    }
+
+    /// Every remembered scroll, with the OPEN documents' current positions
+    /// folded in — an open tab's live position is the truth, and the map
+    /// only knows what it was told when a tab closed.
+    #[must_use]
+    pub fn scroll_state(&self, cx: &App) -> std::collections::BTreeMap<String, f32> {
+        let mut out = self.scroll.clone();
+        for document in &self.documents {
+            let document = document.read(cx);
+            let top = document.scroll_top(cx);
+            if top.is_finite() {
+                out.insert(document.path().to_string(), top);
+            }
+        }
+        out
+    }
+
+    /// Seed the remembered scrolls — the persisted ones, at startup.
+    pub fn set_scroll_state(&mut self, scroll: std::collections::BTreeMap<String, f32>) {
+        self.scroll = scroll;
     }
 
     /// The document Single File view shows.
@@ -168,6 +263,10 @@ impl CodeView {
                 span: span.clone(),
             }),
             DocumentEvent::Closed => {
+                // Last chance to read it: the entity is about to go.
+                let path = document.read(cx).path().to_string();
+                let top = document.read(cx).scroll_top(cx);
+                self.remember_scroll(path, top);
                 self.documents.retain(|d| *d != document);
                 self.subscriptions.retain(|(d, _)| *d != document);
                 if self.active.as_ref() == Some(&document) {

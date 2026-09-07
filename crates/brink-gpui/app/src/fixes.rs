@@ -211,6 +211,33 @@ pub fn fix_all(project: &Entity<Project>, scope: FixScope, window: &mut Window, 
         .detach();
 }
 
+/// Apply every Safe fix in `scope` and answer how many landed — the same
+/// engine as [`fix_all`] with none of its talk.
+///
+/// Fix-on-save runs on every `cmd-s`, and a "Nothing to fix." toast each
+/// time would be noise about the thing that did NOT happen. The count
+/// comes back so a caller can say something once if it wants to.
+pub fn fix_all_quietly(
+    project: &Entity<Project>,
+    scope: FixScope,
+    cx: &mut App,
+) -> gpui::Task<usize> {
+    let query = project.read(cx).query(QueryKind::FixAll { scope }, cx);
+    let project = project.clone();
+    cx.spawn(async move |cx| {
+        let Ok(QueryResult::FixAll(report)) = query.await else {
+            return 0;
+        };
+        let applied = report.applied;
+        project.update(cx, |project, cx| {
+            for (path, text) in report.files {
+                project.edit(&path, text, None, cx);
+            }
+        });
+        applied
+    })
+}
+
 fn write_report(
     project: &Entity<Project>,
     report: FixAllReport,

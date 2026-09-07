@@ -7,15 +7,19 @@
 
 mod binder;
 mod code_view;
+mod compiled_output;
 mod continuous;
 mod document;
 mod fixes;
 mod icons;
+mod inkt_highlight;
 mod navigation;
+mod output_log;
 mod player;
 mod problems;
 mod program;
 mod project;
+mod quick_open;
 mod rename;
 mod search;
 mod settings_config;
@@ -46,11 +50,14 @@ use gpui_component::{Root, TitleBar};
 use crate::binder::{Binder, BinderEvent};
 use crate::code_view::CodeView;
 use crate::code_view::CodeViewEvent;
+use crate::compiled_output::{CompiledOutputEvent, CompiledOutputView};
 use crate::continuous::ContinuousView;
+use crate::output_log::OutputLog;
 use crate::player::{Player, PlayerEvent};
-use crate::problems::{OpenProblem, Problems};
+use crate::problems::{OpenProblem, Problems, ProblemsMenu};
 use crate::program::{ProgramEvent, ProgramExplorer};
 use crate::project::{Project, ProjectEvent};
+use crate::quick_open::{QuickOpen, QuickOpenEvent};
 use crate::search::{SearchEvent, SearchView};
 use crate::settings_conventions::ConventionsSection;
 use crate::settings_diagnostics::DiagnosticsSection;
@@ -82,8 +89,26 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// The compiled story's `.inkt` dump, as a read-only tab.
+        OpenCompiledOutput,
+        /// Go to a file, knot or stitch by name.
+        QuickOpenGoTo,
+        /// Choose a project folder and open it in a new window.
+        OpenProject,
+        /// Close the studio, saving the window's shape on the way out.
+        Quit,
     ]
 );
+
+/// Reopen a project from the recents. Data-carrying, so each recent is
+/// its own palette entry rather than a submenu the palette cannot model —
+/// `no_json` because the path is the whole payload and nothing outside
+/// the app builds one.
+#[derive(Clone, PartialEq, Eq, gpui::Action)]
+#[action(namespace = brink, no_json)]
+struct OpenRecentProject {
+    path: String,
+}
 
 /// The application root: it owns the model and the features, and hands the
 /// shell its panels and views.
@@ -100,6 +125,17 @@ struct Studio {
     /// The Player, a centre tab in Code view. Made once; docked on the
     /// first Play, re-docked if its tab was closed.
     player: Entity<Player>,
+    /// Compiled Output — the `.inkt` dump, a read-only Code-view tab on
+    /// the same terms as the Player: made once, docked on first ask.
+    compiled: Entity<CompiledOutputView>,
+    /// Quick-open while it is up. Made per opening: its items are read
+    /// when it opens, so there is nothing to keep alive between times.
+    quick_open: Option<(Entity<QuickOpen>, Subscription)>,
+    /// An observation of the ACTIVE document's editor, for the status
+    /// bar's cursor cell. The caret has no event of its own, but moving it
+    /// notifies — so this is an `observe`, replaced whenever the active
+    /// document changes and dropped when there is none.
+    caret: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -115,6 +151,10 @@ impl Studio {
         let code = cx.new(|cx| CodeView::new(project.clone(), window, cx));
         let player = cx.new(|cx| Player::new(project.clone(), cx));
         let program = cx.new(|cx| ProgramExplorer::new(project.clone(), cx));
+        let compiled = cx.new(|cx| CompiledOutputView::new(project.clone(), window, cx));
+        let output = cx.new(|cx| OutputLog::new(project.clone(), cx));
+        // The log keeps what the transcript throws away on a Restart.
+        output.update(cx, |log, cx| log.watch_player(&player, cx));
         let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
@@ -246,6 +286,17 @@ impl Studio {
                 window,
                 cx,
             );
+            // Third tab in the lower-left dock: the studio's Output /
+            // compile log (`docs/studio-shell-spec.md` §4) — the timings
+            // and the errors that have no file and span to sit on.
+            workspace.add_tool_window(
+                ToolWindowSpec::new("output", "Output", RailSlot::LEFT_LOWER)
+                    .icon(icons::DOC)
+                    .size(px(160.)),
+                output.clone(),
+                window,
+                cx,
+            );
             // The right dock's first occupant: the compiled program, a tall
             // tree that wants the side rather than the bottom.
             workspace.add_tool_window(
@@ -311,25 +362,109 @@ impl Studio {
             );
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
+            // The find panel is the TOOLKIT's, not ours: `EditorState::new`
+            // sets `searchable`, so every brink editor already carries it —
+            // what was missing was a key to open it. Registering the kit's
+            // own actions rather than wrapping them keeps one implementation
+            // and puts them in the palette like everything else.
+            workspace.register_command(
+                "Find",
+                "Find in File",
+                gpui_component::input::Search,
+                Some("cmd-f"),
+                cx,
+            );
+            workspace.register_command(
+                "Find",
+                "Replace in File",
+                gpui_component::input::Replace,
+                Some("cmd-alt-f"),
+                cx,
+            );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
+            workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
+            workspace.register_command(
+                "Go",
+                "Go to File\u{2026}",
+                QuickOpenGoTo,
+                Some("cmd-p"),
+                cx,
+            );
+            // An app with no Quit command is a gap on its own, and it is
+            // also the only way the quit hook below is ever reached: a
+            // kill signal does not run it.
+            workspace.register_command(
+                "File",
+                "Open Project\u{2026}",
+                OpenProject,
+                Some("cmd-shift-o"),
+                cx,
+            );
+            // One entry per remembered project, listed newest first. The
+            // project THIS window opened is not among them: it is
+            // remembered after this runs, so a window never offers to
+            // reopen itself.
+            for path in brink_gpui_shell::settings::AppSettings::get(cx).recents {
+                let title = format!("Open Recent: {}", recent_label(&path));
+                workspace.register_command("File", title, OpenRecentProject { path }, None, cx);
+            }
+            workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
+            // After every tool window is registered: their `open()`
+            // defaults decide the first run, and a saved shape overrides
+            // them (`Workspace::apply_layout`).
+            let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+            workspace.apply_layout(&saved, window, cx);
         });
+
+        // The remembered scrolls, but only if they belong to THIS project:
+        // a scroll is per-file, and a path means a different place in a
+        // different tree. Restored before the project opens, so the first
+        // document to appear already lands where it was left.
+        {
+            let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+            let root = root.display().to_string();
+            if saved.scroll_root.as_deref() == Some(root.as_str()) {
+                code.update(cx, |code, _| code.set_scroll_state(saved.scroll));
+            }
+        }
+
+        // Persist the shape on quit. The toolkit fires `LayoutChanged` on
+        // every step of a drag and asks subscribers to debounce; a quit
+        // hook needs no timer and no debounce, and the shape a person
+        // wants back is the one they left, not each frame of getting
+        // there. Toggling a tool window or switching view writes too (see
+        // `save_layout` in the handlers), so a crash loses at most an
+        // unfinished drag.
+        cx.on_app_quit({
+            let workspace = workspace.clone();
+            let code = code.clone();
+            let project = project.clone();
+            move |_: &mut Studio, cx: &mut Context<Studio>| {
+                let root = project.read(cx).root().display().to_string();
+                let scroll = code.read(cx).scroll_state(cx);
+                Workspace::save_layout(&workspace, Some((root, scroll)), cx);
+                async move {}
+            }
+        })
+        .detach();
 
         let on_project = cx.subscribe_in(
             &project,
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
-                ProjectEvent::Opened { elapsed_ms } => {
-                    eprintln!("project opened in {elapsed_ms:.1} ms");
-                    for warning in this.project.read(cx).warnings() {
-                        eprintln!("warning: {warning}");
-                    }
+                // The open timing, the load warnings and an open failure
+                // all land in the Output log, which subscribes to the same
+                // events — this handler is only the window's own reaction.
+                ProjectEvent::Opened { .. } => {
                     this.open_initial(window, cx);
                     this.refresh_status(cx);
                 }
-                ProjectEvent::OpenFailed(message) => eprintln!("failed to open: {message}"),
                 ProjectEvent::Analyzed => this.refresh_status(cx),
-                ProjectEvent::SourceChanged { .. } | ProjectEvent::Saved => {}
+                ProjectEvent::OpenFailed(_)
+                | ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::Saved
+                | ProjectEvent::SaveFailed { .. } => {}
             },
         );
         let on_binder = cx.subscribe_in(
@@ -363,16 +498,52 @@ impl Studio {
             &player,
             window,
             |this, _, event: &PlayerEvent, window, cx| {
-                let PlayerEvent::Navigate { path, span } = event;
-                this.show(path, span.clone(), window, cx);
+                match event {
+                    PlayerEvent::Navigate { path, span } => {
+                        this.show(path, span.clone(), window, cx);
+                    }
+                    // Following never opens or selects a tab: the Player
+                    // is a centre tab beside the documents, so doing
+                    // either would hide the Player behind the source it
+                    // is following. In the manuscript it scrolls, which
+                    // is where following shows best; in Code view it
+                    // moves the caret of an already-open document, which
+                    // lands in view when the group is split.
+                    PlayerEvent::Follow { path, span } => {
+                        this.follow(path, span.clone(), window, cx);
+                    }
+                    // `Log` is the Output window's business.
+                    PlayerEvent::Log { .. } => {}
+                }
+            },
+        );
+        let on_compiled = cx.subscribe_in(
+            &compiled,
+            window,
+            |this, _, event: &CompiledOutputEvent, window, cx| match event {
+                CompiledOutputEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                CompiledOutputEvent::NoSource => {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info(
+                            "That row carries no source location.",
+                        ),
+                        cx,
+                    );
+                }
             },
         );
         let on_program = cx.subscribe_in(
             &program,
             window,
-            |this, _, event: &ProgramEvent, window, cx| {
-                let ProgramEvent::Navigate { path, span } = event;
-                this.show(path, span.clone(), window, cx);
+            |this, _, event: &ProgramEvent, window, cx| match event {
+                ProgramEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                ProgramEvent::OpenCompiledOutput => {
+                    this.open_compiled_output(&OpenCompiledOutput, window, cx);
+                }
             },
         );
         let on_problem = cx.subscribe_in(
@@ -380,6 +551,20 @@ impl Studio {
             window,
             |this, _, event: &OpenProblem, window, cx| {
                 this.open(&event.path, Some(event.span.clone()), window, cx);
+            },
+        );
+        let on_problem_menu = cx.subscribe_in(
+            &problems,
+            window,
+            |this, _, event: &ProblemsMenu, window, cx| match event {
+                ProblemsMenu::Suppress { path, line, code } => {
+                    this.suppress(path, *line, code, window, cx);
+                }
+                ProblemsMenu::Configure => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.open_settings(Some("diagnostics"), window, cx);
+                    });
+                }
             },
         );
         let on_todo = cx.subscribe_in(&todos, window, |this, _, event: &OpenTodo, window, cx| {
@@ -398,9 +583,13 @@ impl Studio {
         let on_code = cx.subscribe_in(
             &code,
             window,
-            |this, _, event: &CodeViewEvent, window, cx| {
-                if let CodeViewEvent::Navigate { path, span } = event {
+            |this, _, event: &CodeViewEvent, window, cx| match event {
+                CodeViewEvent::Navigate { path, span } => {
                     this.open(path, Some(span.clone()), window, cx);
+                }
+                CodeViewEvent::ActiveChanged => {
+                    this.watch_caret(cx);
+                    this.refresh_status(cx);
                 }
             },
         );
@@ -429,9 +618,21 @@ impl Studio {
             manuscript,
             search,
             player,
+            compiled,
+            quick_open: None,
+            caret: None,
             _subscriptions: vec![
-                on_project, on_binder, on_player, on_program, on_problem, on_todo, on_search,
-                on_code, on_general,
+                on_project,
+                on_binder,
+                on_player,
+                on_program,
+                on_compiled,
+                on_problem,
+                on_problem_menu,
+                on_todo,
+                on_search,
+                on_code,
+                on_general,
             ],
         }
     }
@@ -505,6 +706,26 @@ impl Studio {
                 .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
         } else {
             self.open(path, Some(span), window, cx);
+        }
+    }
+
+    /// Follow-in-editor's reveal — see `CodeView::reveal_if_open` for why
+    /// it is deliberately quieter than `show`.
+    fn follow(
+        &mut self,
+        path: &str,
+        span: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self.workspace.read(cx).editor_root().read(cx).view();
+        if view == EditorView::Continuous {
+            self.manuscript
+                .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
+        } else {
+            self.code.update(cx, |code, cx| {
+                code.reveal_if_open(path, span, window, cx);
+            });
         }
     }
 
@@ -671,16 +892,43 @@ impl Studio {
     /// "Format on save" on, every dirty file is formatted first, so what is
     /// written is what the editors then show.
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        let format_first = brink_gpui_shell::settings::AppSettings::get(cx).format_on_save;
+        let settings = brink_gpui_shell::settings::AppSettings::get(cx);
         let project = self.project.clone();
-        if !format_first {
+        if !settings.format_on_save && !settings.fix_on_save {
             write_all(&project, cx);
             return;
         }
+        // Both are per-FILE and scoped to what is dirty: saving must not
+        // rewrite a file the author has not touched.
         let dirty = project.read(cx).dirty_paths();
-        let format = Self::format_files(&project, dirty, cx);
+        // Fixes first, then the formatter — so what is laid out is what
+        // the fixes wrote, rather than a fix landing on formatted text and
+        // leaving it unformatted again.
+        let fixes: Vec<gpui::Task<usize>> = if settings.fix_on_save {
+            dirty
+                .iter()
+                .map(|path| {
+                    fixes::fix_all_quietly(
+                        &project,
+                        brink_gpui_model::fixes::FixScope::File(path.clone()),
+                        cx,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let format_on_save = settings.format_on_save;
         cx.spawn_in(window, async move |_, cx| {
-            let _ = format.await;
+            for fix in fixes {
+                fix.await;
+            }
+            if format_on_save {
+                let format = cx.update(|_, cx| Self::format_files(&project, dirty, cx));
+                if let Ok(format) = format {
+                    format.await;
+                }
+            }
             let _ = cx.update(|_, cx| write_all(&project, cx));
         })
         .detach();
@@ -699,6 +947,177 @@ impl Studio {
         self.code
             .update(cx, |code, cx| code.show_player(&player, window, cx));
         player.update(cx, |player, cx| player.start(at, cx));
+        // Play is an explicit "run it now", and the choices are numbered so
+        // they can be picked by key — which needs the Player to have focus.
+        // Without this the numbers were dead until you clicked the panel,
+        // which is the friction the numbering exists to remove.
+        let handle = player.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Show the `.inkt` dump: dock the tab if it is not docked, then select
+    /// it. Like the Player, it is a Code-view tab, so the manuscript gives
+    /// way to Code first.
+    fn open_compiled_output(
+        &mut self,
+        _: &OpenCompiledOutput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_editor_view(EditorView::Code, window, cx);
+        });
+        let compiled = self.compiled.clone();
+        self.code
+            .update(cx, |code, cx| code.show_compiled(&compiled, window, cx));
+    }
+
+    /// Open quick-open, or close it if it is already up — the palette's
+    /// own toggle behaviour, so the key that opened it also dismisses it.
+    fn quick_open(&mut self, _: &QuickOpenGoTo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_open.take().is_some() {
+            cx.notify();
+            return;
+        }
+        let project = self.project.clone();
+        let picker = cx.new(|cx| QuickOpen::new(project, window, cx));
+        let subscription = cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &QuickOpenEvent, window, cx| {
+                match event {
+                    QuickOpenEvent::Open { path, span } => {
+                        this.show(path, span.clone().unwrap_or(0..0), window, cx);
+                    }
+                    QuickOpenEvent::Dismiss => {}
+                }
+                this.quick_open = None;
+                cx.notify();
+            },
+        );
+        picker.update(cx, |picker, cx| picker.focus(window, cx));
+        self.quick_open = Some((picker, subscription));
+        cx.notify();
+    }
+
+    /// Follow the active document's caret. Dropped and remade rather than
+    /// kept per document: only one document is active, and an observation
+    /// of a closed one would keep it alive.
+    fn watch_caret(&mut self, cx: &mut Context<Self>) {
+        self.caret = None;
+        let Some(document) = self.code.read(cx).active_document().cloned() else {
+            return;
+        };
+        let editor = document.read(cx).editor().clone();
+        self.caret = Some(cx.observe(&editor, |this, _, cx| this.refresh_status(cx)));
+    }
+
+    /// Write a suppression directive: on the diagnostic's line, or for the
+    /// whole file. Through `Project::edit` like every other change, so the
+    /// tab, the manuscript and any Search card over that file all follow
+    /// it, and the worker re-analyzes — which is what makes the row leave.
+    fn suppress(
+        &mut self,
+        path: &str,
+        line: Option<u32>,
+        code: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.project.read(cx).loaded_source(path).map(str::to_owned) else {
+            return;
+        };
+        let next = match line {
+            Some(line) => {
+                crate::problems::suppress_line_edit(&source, line, code).map(|(at, text)| {
+                    let mut out = source.clone();
+                    out.insert_str(at, &text);
+                    out
+                })
+            }
+            None => crate::problems::suppress_file_source(&source, code),
+        };
+        let Some(next) = next else {
+            // Already covered, or a line that is no longer there: doing
+            // nothing is the honest answer, not a duplicate directive.
+            return;
+        };
+        self.project
+            .update(cx, |project, cx| project.edit(path, next, None, cx));
+        // Show what was written: a silenced diagnostic that leaves without
+        // a visible cause reads as the panel losing track.
+        self.open(path, None, window, cx);
+    }
+
+    /// Ask the platform for a folder, then open it in a new window.
+    ///
+    /// A new window rather than this one: every panel here is built around
+    /// one root — the documents, the Binder's tree, the worker's session —
+    /// so swapping the root under them would mean tearing all of it down
+    /// and building it again, which is what opening a window does anyway.
+    fn open_project(&mut self, _: &OpenProject, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let chosen = paths.await;
+            cx.update(|window, cx| match chosen {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(root) = paths.into_iter().next() {
+                        open_project_window(root, cx);
+                    }
+                }
+                // Cancelled: the person said no, which is not news.
+                Ok(Ok(None)) => {}
+                // On Linux the picker is the desktop portal, which is not
+                // always there (a bare X session, a container). Saying so
+                // beats a menu entry that silently does nothing.
+                Ok(Err(err)) => {
+                    window.push_notification(
+                        gpui_component::notification::Notification::error(format!(
+                            "Could not open the folder picker: {err}"
+                        )),
+                        cx,
+                    );
+                }
+                Err(_) => {}
+            })
+        })
+        .detach();
+    }
+
+    fn open_recent(
+        &mut self,
+        action: &OpenRecentProject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = PathBuf::from(&action.path);
+        if !root.is_dir() {
+            // A recent outlives the folder it names. Say so and drop it,
+            // rather than opening a window onto nothing.
+            window.push_notification(
+                gpui_component::notification::Notification::error(format!(
+                    "{} is no longer there.",
+                    action.path
+                )),
+                cx,
+            );
+            let gone = action.path.clone();
+            brink_gpui_shell::settings::update(cx, |settings| {
+                settings.recents.retain(|p| p != &gone);
+            });
+            return;
+        }
+        open_project_window(root, cx);
+    }
+
+    fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        // `on_app_quit` does the saving; this is the door to it.
+        cx.quit();
     }
 
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
@@ -712,6 +1131,8 @@ impl Studio {
                 .update(cx, |code, cx| code.show_player(&player, window, cx));
         }
         player.update(cx, |player, cx| player.restart(cx));
+        let handle = player.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
@@ -727,16 +1148,31 @@ impl Studio {
                 StatusCell::new(format!("worst {worst:.1} ms")),
             ]
         };
+        // The right-hand group (§7.3): where the caret is, and in what.
+        let mut cells = cells;
+        if let Some(document) = self.code.read(cx).active_document() {
+            let document = document.read(cx);
+            let (line, column) = document.cursor_line_column(cx);
+            let name = document
+                .path()
+                .rsplit('/')
+                .next()
+                .unwrap_or(document.path())
+                .to_owned();
+            cells.push(StatusCell::new(name).align_end());
+            cells.push(StatusCell::new(format!("Ln {line}, Col {column}")).align_end());
+        }
         self.workspace
             .update(cx, |workspace, cx| workspace.set_status(cells, cx));
     }
 }
 
 fn write_all(project: &Entity<Project>, cx: &mut App) {
+    // `save_all` emits `ProjectEvent::SaveFailed` per failure, which the
+    // Output log turns into an error row — so a failed write is visible in
+    // the window rather than only on a stderr nobody is reading.
     project.update(cx, |project, cx| {
-        for (path, err) in project.save_all(cx) {
-            eprintln!("failed to save {path}: {err:#}");
-        }
+        let _ = project.save_all(cx);
     });
 }
 
@@ -763,11 +1199,65 @@ impl Render for Studio {
             .on_action(cx.listener(Self::fix_all_in_project))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::play_restart))
+            .on_action(cx.listener(Self::open_compiled_output))
+            .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::open_project))
+            .on_action(cx.listener(Self::open_recent))
+            .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.
+            .children(self.quick_open.as_ref().map(|(p, _)| p.clone()))
             .children(notifications)
             .children(dialogs)
+    }
+}
+
+/// A recent's label: the folder's own name, with its parent for context —
+/// a list of `story`, `story`, `story` names nothing.
+fn recent_label(path: &str) -> String {
+    let path = std::path::Path::new(path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    match path.parent().and_then(std::path::Path::file_name) {
+        Some(parent) => format!("{name} ({})", parent.to_string_lossy()),
+        None => name,
+    }
+}
+
+/// Open a studio window on `root`, and remember it as a recent.
+///
+/// The one place a window is made: `main` and Open Project both come
+/// through here, so the rem size, the title bar options and the recents
+/// bookkeeping cannot drift apart between the first window and the rest.
+fn open_project_window(root: PathBuf, cx: &mut App) -> bool {
+    let root = root.canonicalize().unwrap_or(root);
+    let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        ..TitleBar::window_options()
+    };
+    let opening = root.clone();
+    let opened = cx.open_window(options, move |window, cx| {
+        // The app font size scales the window's rem.
+        let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
+        window.set_rem_size(px(rem));
+        let view = cx.new(|cx| Studio::new(opening, window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    });
+    match opened {
+        Ok(_) => {
+            // After the window: `Studio::new` registers one command per
+            // recent, and a window must not offer to reopen itself.
+            brink_gpui_shell::settings::remember_project(&root, cx);
+            true
+        }
+        Err(err) => {
+            eprintln!("failed to open window: {err:#}");
+            false
+        }
     }
 }
 
@@ -790,23 +1280,31 @@ fn main() {
             // The persisted settings and their theme, before the first paint.
             brink_gpui_shell::settings::init(cx);
             brink_gpui_shell::theme::init(cx);
-            let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..TitleBar::window_options()
-            };
-            let root = root.clone();
-            let opened = cx.open_window(options, move |window, cx| {
-                // The app font size scales the window's rem.
-                let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
-                window.set_rem_size(px(rem));
-                let view = cx.new(|cx| Studio::new(root, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            });
-            if let Err(err) = opened {
-                eprintln!("failed to open window: {err:#}");
+            if !open_project_window(root.clone(), cx) {
                 std::process::exit(1);
             }
             cx.activate(true);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recent_label;
+
+    #[test]
+    fn a_recent_is_labelled_by_its_folder_and_its_parent() {
+        assert_eq!(
+            recent_label("/home/me/stories/harbour"),
+            "harbour (stories)"
+        );
+        // Two projects both called `story` are told apart by the parent —
+        // which is why the parent is there at all.
+        assert_eq!(recent_label("/a/one/story"), "story (one)");
+        assert_eq!(recent_label("/a/two/story"), "story (two)");
+        assert_eq!(
+            recent_label("/"),
+            "/",
+            "no name and no parent: say the path"
+        );
+    }
 }
