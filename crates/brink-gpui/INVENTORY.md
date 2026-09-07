@@ -134,7 +134,7 @@ Built: an inner `DockArea` of documents — tabs, drag between groups, splits
 | Left out | Kind | Note |
 |---|---|---|
 | ~~Quick-open (`cmd-p`)~~ | built 2026-09-06 | `app/src/quick_open.rs`. |
-| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | mostly built | the Player and Compiled Output dock as centre tabs (`CodeView::show_player`/`show_compiled`); Story Graph not started; the Settings tab is replaced by the modal by ruling. |
+| ~~Session documents (Player, Compiled Output, Story Graph, Settings-as-tab)~~ | built | the Player, Compiled Output and (2026-09-07) the Story Graph all dock as centre tabs (`CodeView::show_player`/`show_compiled`/`show_graph`); the Settings tab is replaced by the modal by ruling. |
 
 ### Single File view (`app/src/single_view.rs`)
 
@@ -390,7 +390,7 @@ Against studio-shell-spec §4's inventory:
 | **State View** (debugger) | ~~blocked on engine work~~ **built 2026-09-07** — `app/src/state_view.rs`. That blocker was stale: `Story::debug_snapshot` already assembles status, location, turn, globals, call stack, visit counts, pending choices and the RNG. What was missing was a way to ASK, which is one command on the play session (`PlayCommand::Snapshot`). It reads and does not step — setting a variable, `stepi` and breakpoints each change a running story and are worth their own slice. Refreshed by observing the Player, never polled: a story waiting for a choice is not changing. One nuance it reports faithfully: the runtime's own `visit_counts` comes back empty for this corpus, so the panel says "nothing visited yet" rather than inventing a number. |
 | **Output / compile log** | ~~unblocked~~ **built 2026-09-06** — see §1. |
 | **Compiled Output** (`.inkt` tab) | ~~unblocked~~ **built 2026-09-06** — see §1. |
-| **Story Graph** | the story-graph query in the worker; a canvas. |
+| **Story Graph** | ~~the query and a canvas~~ **built 2026-09-07** — `model/src/graph.rs` (the worker query over `brink_ide::story_graph`, which already computed the whole thing), `app/src/graph_layout.rs` (layered by shortest divert distance from the entry; islands walked from their own roots, so an unreachable knot — the thing an author opens a graph to find — is still drawn), `app/src/story_graph.rs` (the panel). Edges are PAINTED in a `canvas` under the nodes and the nodes are ordinary elements on top, so they carry shaped text, hover and clicks. Pan by dragging the background, zoom by buttons; clicking a node opens its declaration. A centre tab on the Player's terms. Left out: following an edge to its divert site (the edge carries it — the hard half is done), and any layout beyond the layering. |
 | **Story transcript** | listed as future in the web too. The Player's transcript is per-session and is not this. |
 | **Notification service** | the layers render (§1); the service does not exist. |
 | **Library** (Binder section) | ~~nothing~~ **built 2026-09-07** — the mounted stdlib lists in the Binder under its own `std/` prefix (no special case: that IS the key the session mounts it at), opens READ-ONLY, and is offered no Rename or Delete. `Project::edit` refuses a library path outright, which is also what stopped the tab coming up marked unsaved — the editor's first Change had been putting the text into `sources` and not `saved`. Re-exported from `brink-environment`'s `stdlib_sources`, the one place a module is registered, so the studio cannot drift from what the session mounts. |

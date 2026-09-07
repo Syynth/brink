@@ -12,6 +12,7 @@ mod continuous;
 mod document;
 mod files;
 mod fixes;
+mod graph_layout;
 mod icons;
 mod inkt_highlight;
 mod navigation;
@@ -31,6 +32,7 @@ mod settings_general;
 mod settings_prose;
 mod single_view;
 mod state_view;
+mod story_graph;
 mod todos;
 mod treemap;
 
@@ -95,6 +97,8 @@ actions!(
         PlayRestart,
         /// The compiled story's `.inkt` dump, as a read-only tab.
         OpenCompiledOutput,
+        /// The story graph — knots and diverts as a picture.
+        OpenStoryGraph,
         /// Go to a file, knot or stitch by name.
         QuickOpenGoTo,
         /// Choose a project folder and open it in a new window.
@@ -131,6 +135,8 @@ struct Studio {
     /// The Player, a centre tab in Code view. Made once; docked on the
     /// first Play, re-docked if its tab was closed.
     player: Entity<Player>,
+    /// The Story Graph — a centre tab on the Player's terms, made once.
+    graph: Entity<crate::story_graph::StoryGraphView>,
     /// Compiled Output — the `.inkt` dump, a read-only Code-view tab on
     /// the same terms as the Player: made once, docked on first ask.
     compiled: Entity<CompiledOutputView>,
@@ -158,6 +164,7 @@ impl Studio {
         let player = cx.new(|cx| Player::new(project.clone(), cx));
         let program = cx.new(|cx| ProgramExplorer::new(project.clone(), cx));
         let compiled = cx.new(|cx| CompiledOutputView::new(project.clone(), window, cx));
+        let graph = cx.new(|cx| crate::story_graph::StoryGraphView::new(project.clone(), cx));
         let output = cx.new(|cx| OutputLog::new(project.clone(), cx));
         let state = cx.new(|cx| StateView::new(project.clone(), player.clone(), cx));
         // The log keeps what the transcript throws away on a Restart.
@@ -404,6 +411,7 @@ impl Studio {
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
             workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
+            workspace.register_command("Program", "Story Graph", OpenStoryGraph, None, cx);
             workspace.register_command(
                 "Go",
                 "Go to File\u{2026}",
@@ -588,6 +596,16 @@ impl Studio {
                 }
             },
         );
+        // A node click opens its declaration, on the same road every
+        // other panel's navigation takes.
+        let on_graph = cx.subscribe_in(
+            &graph,
+            window,
+            |this, _, event: &crate::story_graph::StoryGraphEvent, window, cx| {
+                let crate::story_graph::StoryGraphEvent::Navigate { path, span } = event;
+                this.show(path, span.clone(), window, cx);
+            },
+        );
         let on_program = cx.subscribe_in(
             &program,
             window,
@@ -673,6 +691,7 @@ impl Studio {
             search,
             player,
             compiled,
+            graph,
             quick_open: None,
             caret: None,
             _subscriptions: vec![
@@ -682,6 +701,7 @@ impl Studio {
                 on_player_state,
                 on_program,
                 on_compiled,
+                on_graph,
                 on_problem,
                 on_problem_menu,
                 on_todo,
@@ -1176,6 +1196,23 @@ impl Studio {
             .update(cx, |workspace, cx| workspace.toggle_maximize(window, cx));
     }
 
+    /// Show the story graph — a centre tab, so the manuscript gives way
+    /// to Code first, exactly as the Player and the dump do.
+    fn open_story_graph(
+        &mut self,
+        _: &OpenStoryGraph,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.workspace.read(cx).editor_root().clone();
+        if root.read(cx).view() == EditorView::Continuous {
+            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
+        }
+        let graph = self.graph.clone();
+        self.code
+            .update(cx, |code, cx| code.show_graph(&graph, window, cx));
+    }
+
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         // `on_app_quit` does the saving; this is the door to it.
         cx.quit();
@@ -1268,6 +1305,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::play_restart))
             .on_action(cx.listener(Self::open_compiled_output))
+            .on_action(cx.listener(Self::open_story_graph))
             .on_action(cx.listener(Self::quick_open))
             .on_action(cx.listener(Self::open_project))
             .on_action(cx.listener(Self::maximize_editor))

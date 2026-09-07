@@ -1,6 +1,7 @@
 pub mod binder_order;
 pub mod compiled;
 pub mod fixes;
+pub mod graph;
 pub mod play;
 pub mod program;
 pub mod query;

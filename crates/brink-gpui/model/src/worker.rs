@@ -475,6 +475,14 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                 )))
+            } else if matches!(kind, QueryKind::StoryGraph) {
+                // Same reason as `Program`: the entry and the file list
+                // live in this loop.
+                QueryResult::StoryGraph(Box::new(crate::graph::report(
+                    &session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
             } else if matches!(kind, QueryKind::CompiledOutput) {
                 // Same reason as `Program`, and the same memoized compile.
                 QueryResult::CompiledOutput(Box::new(crate::compiled::output(
@@ -1821,6 +1829,51 @@ mod tests {
         let mut session = session_with_stdlib();
         let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
+    }
+
+    #[test]
+    fn the_story_graph_query_answers_with_nodes_and_edges() {
+        let tree = Tree::new(
+            "graph",
+            &[
+                ("brink.toml", "[project]\nentry = \"main.ink\"\n"),
+                (
+                    "main.ink",
+                    "-> shore\n=== shore ===\nThe tide.\n* [Walk] -> light\n=== light ===\nThe lamp.\n-> END\n",
+                ),
+            ],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::StoryGraph,
+            reply,
+        });
+        let QueryResult::StoryGraph(graph) = answer.recv_blocking().expect("answered") else {
+            panic!("a story graph");
+        };
+        let names: Vec<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(names.contains(&"shore"), "{names:?}");
+        assert!(names.contains(&"light"), "{names:?}");
+        assert_eq!(
+            graph.entry.as_deref(),
+            Some("shore"),
+            "the entry is the root"
+        );
+        // The choice's target is an edge, and it knows where it was
+        // written — which is how following one opens the source.
+        let choice = graph
+            .edges
+            .iter()
+            .find(|e| e.from == "shore" && e.to == "light")
+            .expect("shore -> light");
+        assert_eq!(choice.kind, "choice");
+        let (path, start, end) = choice.site.clone().expect("a site");
+        assert_eq!(path, "main.ink");
+        assert!(end > start);
+        // `-> END` is a pseudo-node: it is nowhere in the text.
+        let end_node = graph.nodes.iter().find(|n| n.kind == "end");
+        assert!(end_node.is_some_and(|n| n.file.is_none() && n.range.is_none()));
     }
 
     #[test]

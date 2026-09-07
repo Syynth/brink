@@ -40,6 +40,10 @@ pub enum QueryKind {
     /// passage picker (ruled 2026-09-02: sample lines come from a
     /// knot/stitch selector).
     PassageIndex,
+    /// The whole-project story graph — knots and stitches as nodes,
+    /// diverts and choices as edges. Answered in the worker loop rather
+    /// than in `answer`, since it needs the entry and the file list.
+    StoryGraph,
     /// The content lines of `path` (`knot` or `knot.stitch`), as the
     /// author would mark them.
     Passage {
@@ -144,6 +148,7 @@ pub enum QueryResult {
     /// `None` when the file is native, unknown, or already formatted.
     Formatted(Option<String>),
     Program(Box<crate::program::ProgramReport>),
+    StoryGraph(Box<crate::graph::StoryGraphReport>),
     CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
 }
@@ -346,7 +351,11 @@ pub(crate) fn answer(
         }
         QueryKind::Format { path } => QueryResult::Formatted(format(session, path)),
         // The worker loop answers these two before reaching here.
-        QueryKind::Program | QueryKind::CompiledOutput => QueryResult::Unavailable,
+        // Answered in the worker loop, which holds the entry and the
+        // file list; reaching here means something asked out of band.
+        QueryKind::Program | QueryKind::CompiledOutput | QueryKind::StoryGraph => {
+            QueryResult::Unavailable
+        }
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),

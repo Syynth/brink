@@ -27,6 +27,7 @@ use crate::compiled_output::CompiledOutputView;
 use crate::document::{Document, DocumentEvent};
 use crate::player::Player;
 use crate::project::Project;
+use crate::story_graph::StoryGraphView;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeViewEvent {
@@ -230,6 +231,30 @@ impl CodeView {
             });
         }
         CompiledOutputView::activate(compiled, window, cx);
+    }
+
+    /// Put the Story Graph in the centre dock (once) and select its tab —
+    /// the Player's and Compiled Output's terms, for the same reason: a
+    /// graph wants the width, and it is a view OF the project rather than
+    /// a tool beside it.
+    pub fn show_graph(
+        &mut self,
+        graph: &Entity<StoryGraphView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !graph.read(cx).is_docked() {
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(graph.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        }
+        StoryGraphView::activate(graph, window, cx);
     }
 
     /// Note where a file was scrolled to. Bounded: a project has as many
