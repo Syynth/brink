@@ -874,7 +874,7 @@ impl Render for ConventionsSection {
             theme.mono_font_family.clone(),
         );
         let Some(_) = config_text(&self.project, cx) else {
-            return no_config("conventions", cx);
+            return no_config(&self.project, "conventions", cx);
         };
         let (current, error) = {
             let (d, e) = self.project.read(cx).dialogue();

@@ -513,6 +513,36 @@ impl Project {
         Ok(())
     }
 
+    /// Write a `brink.toml` for a project that has none, and adopt it.
+    ///
+    /// The default names the entry and nothing else: every other key has
+    /// a default the analysis already applies, and a file full of keys
+    /// nobody chose is a file nobody can read later.
+    pub fn create_config(&mut self, cx: &mut Context<Self>) -> Result<()> {
+        if self.config.is_some() {
+            anyhow::bail!("this project already has a brink.toml");
+        }
+        let entry = self
+            .entry
+            .clone()
+            .or_else(|| self.files.first().cloned())
+            .ok_or_else(|| anyhow::anyhow!("the project has no files to point at"))?;
+        let path = "brink.toml".to_owned();
+        let full = self.root.join(&path);
+        if full.exists() {
+            anyhow::bail!("brink.toml already exists on disk");
+        }
+        let text = format!("[project]\nentry = \"{entry}\"\n");
+        std::fs::write(&full, &text)?;
+        self.sources.insert(path.clone(), text.clone());
+        self.saved.insert(path.clone(), text.clone());
+        self.config = Some(path.clone());
+        self.worker.send(Request::SetConfig { path, text });
+        cx.emit(ProjectEvent::FilesChanged);
+        cx.notify();
+        Ok(())
+    }
+
     /// The config's artifacts, root-relative — openable and saveable, but
     /// not sources.
     #[must_use]

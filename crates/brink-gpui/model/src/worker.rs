@@ -83,6 +83,12 @@ pub enum Request {
     /// nobody could see. Here creating one IS the point, so it is said
     /// out loud.
     AddFile { path: String, text: String },
+    /// Adopt `path` as the project's `brink.toml` — a project that had
+    /// none until the studio wrote one. Distinct from [`Request::Edit`],
+    /// which only re-applies the config the session already knows: a
+    /// project with no config path treats every write as an artifact,
+    /// which is where a newly created `brink.toml` went before this.
+    SetConfig { path: String, text: String },
     /// A file left the project: forget it. A rename is a `RemoveFile`
     /// then an `AddFile`, in that order.
     RemoveFile { path: String },
@@ -411,6 +417,12 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                         // made", which would put a new file last forever.
                         files.sort();
                     }
+                    edited = true;
+                }
+                Request::SetConfig { path, text } => {
+                    config.path = Some(path);
+                    let current = text.clone();
+                    apply_config_text(&mut session, &mut config, &current);
                     edited = true;
                 }
                 Request::RemoveFile { path } => {

@@ -281,6 +281,9 @@ impl GeneralSection {
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
                 ProjectEvent::Opened { .. } => this.sync_form(window, cx),
+                // A `brink.toml` was just created for a project that had
+                // none: the form has a file to read for the first time.
+                ProjectEvent::FilesChanged => this.sync_form(window, cx),
                 // The drafts report moves with the analysis.
                 ProjectEvent::Analyzed => cx.notify(),
                 // The file moved under us — a Code tab, or our own write
@@ -512,12 +515,11 @@ impl Render for GeneralSection {
                 .w_full()
                 .gap_2()
                 .child(setting_group("Project", cx))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(muted)
-                        .child("This project has no brink.toml, so there is nothing to configure here. Add one beside the entry file and reopen the project."),
-                )
+                .child(crate::settings_config::no_config(
+                    &self.project,
+                    "settings",
+                    cx,
+                ))
                 .into_any_element();
         };
         let broken = self.form.as_ref().err().cloned();
