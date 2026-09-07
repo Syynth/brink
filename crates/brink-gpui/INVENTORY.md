@@ -159,7 +159,7 @@ headings, editable, on the shared buffer.
 | Left out | Kind | Note |
 |---|---|---|
 | Player swap-in | **open ruling** | the direction noted is swap, not split. |
-| First section shows a partial row above the next heading | cosmetic | the measured-line-height issue the module doc describes. |
+| ~~First section shows a partial row above the next heading~~ | not reproducible 2026-09-07 | driven on the rig with a two-file project: the boundary is clean at rest and after scrolling — `a.ink`'s trailing empty row is drawn whole before `b.ink`'s heading. The row predates the `wrap_row_count` re-measure that runs every frame (`remeasure_sections`), which is what a partial row was a symptom of. |
 
 ### The editor itself (`app/src/document.rs`, `model/src/tokens.rs`, `model/src/query.rs`)
 
