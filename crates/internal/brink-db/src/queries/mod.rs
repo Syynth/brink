@@ -162,20 +162,66 @@ pub(crate) struct BrinkDatabase {
 #[salsa::db]
 impl salsa::Database for BrinkDatabase {}
 
-/// Execution counter (`perf_probe`, #3585): per-query execution counts, fed by salsa's
-/// `WillExecute` event. Global (the callback must be `Send + Sync`);
-/// drained by `take_execution_counts()`. Counts only real executions —
-/// a memo that validates or backdates never fires `WillExecute`.
-pub(crate) static EXEC_COUNTS: std::sync::Mutex<BTreeMap<String, u64>> =
-    std::sync::Mutex::new(BTreeMap::new());
+/// Per-query execution counter (#3585), fed by salsa's `WillExecute` event.
+///
+/// Counts **real executions only**: a memo that validates or backdates never
+/// fires `WillExecute`. That is the number that decides whether a query's
+/// dependencies are right — a too-coarse dependency returns the correct
+/// value and passes every correctness test; the only thing it changes is
+/// this count. `tests/query_execution_counts.rs` pins it per edit shape.
+///
+/// **Thread-local.** Tests run on parallel threads and this db executes
+/// queries on the calling thread (no rayon), so a per-thread store keeps
+/// one test's counts out of another's. Off by default; while off the
+/// callback costs one thread-local flag read per query execution.
+mod exec_counts {
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
 
-/// Off by default: the callback below runs on EVERY query execution, and
-/// formatting a key on that path is instrumentation in the production
-/// path. One relaxed atomic load per execution while off.
-static EXEC_COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    thread_local! {
+        static ON: Cell<bool> = const { Cell::new(false) };
+        static COUNTS: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+    }
 
+    pub(super) fn record(event: &salsa::Event) {
+        if !ON.with(Cell::get) {
+            return;
+        }
+        if let salsa::EventKind::WillExecute { database_key } = &event.kind {
+            let key = format!("{database_key:?}");
+            let name = key.split('(').next().unwrap_or(&key).to_owned();
+            COUNTS.with(|c| *c.borrow_mut().entry(name).or_insert(0) += 1);
+        }
+    }
+
+    pub fn set_enabled(on: bool) {
+        ON.with(|c| c.set(on));
+    }
+
+    pub fn take() -> BTreeMap<String, u64> {
+        COUNTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+    }
+}
+
+/// Turn execution counting on or off for the current thread.
 pub fn set_execution_counting(on: bool) {
-    EXEC_COUNTING.store(on, std::sync::atomic::Ordering::Relaxed);
+    exec_counts::set_enabled(on);
+}
+
+/// Drain the current thread's execution counts: `query name -> executions`.
+pub fn take_execution_counts() -> BTreeMap<String, u64> {
+    exec_counts::take()
+}
+
+/// Run `f` with execution counting on, returning its result and the
+/// executions it caused. Counts queued before the call are discarded, so
+/// the map is exactly `f`'s own work.
+pub fn count_executions<R>(f: impl FnOnce() -> R) -> (R, BTreeMap<String, u64>) {
+    let _ = exec_counts::take();
+    exec_counts::set_enabled(true);
+    let out = f();
+    exec_counts::set_enabled(false);
+    (out, exec_counts::take())
 }
 
 #[expect(
@@ -183,24 +229,7 @@ pub fn set_execution_counting(on: bool) {
     reason = "salsa's `event_callback` is `Box<dyn Fn(Event)>` — by value is the required shape"
 )]
 fn count_execution(event: salsa::Event) {
-    if !EXEC_COUNTING.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    if let salsa::EventKind::WillExecute { database_key } = &event.kind {
-        let key = format!("{database_key:?}");
-        let name = key.split('(').next().unwrap_or(&key).to_owned();
-        if let Ok(mut m) = EXEC_COUNTS.lock() {
-            *m.entry(name).or_insert(0) += 1;
-        }
-    }
-}
-
-pub fn take_execution_counts() -> BTreeMap<String, u64> {
-    std::mem::take(
-        &mut *EXEC_COUNTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+    exec_counts::record(&event);
 }
 
 impl Default for BrinkDatabase {

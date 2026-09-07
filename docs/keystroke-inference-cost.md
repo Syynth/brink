@@ -152,6 +152,37 @@ churn), `fg2_scc_dependency_edges` (mutual recursion converges; a new
 call edge re-solves downstream), the brink-web acceptance gate, the oracle
 ratchet, `tier1_native`, brink-ide's fixer obligations.
 
+## Enforcement: execution-count pins
+
+`crates/internal/brink-db/tests/query_execution_counts.rs` turns the
+counter into a gate. For each edit shape it pins the **exact** number of
+executions of ten watched queries, measured, not reasoned:
+
+| after this edit (3-knot file) | per-def queries (each) | `segment_lowered` | `call_graph` / `scc_membership` |
+|---|--:|--:|--:|
+| cold build (negative control) | 3 | 4 | 1 / 1 |
+| edit inside one knot | **1** | 1 | 0 / 0 |
+| append at end of file | **1** | 1 | 0 / 0 |
+| `VAR` initializer, same type | **0** | 1 | 0 / 0 |
+| edit a knot in another file | **1** | 1 | 0 / 0 |
+| insert a knot above others | 4 | 2 | 1 / 1 |
+
+Two things the numbers taught that the design notes had wrong: FG-2's
+`Eq` cutoff holds `call_graph_query` and `scc_membership_query` at **0**
+for every edit that leaves the edge set alone (only inserting a knot
+re-executes them); and inserting a knot costs 4, not 3, because the knot
+above it changed too (`-> inserted`).
+
+**The negative control.** With this week's real regression re-injected —
+`def_segment` indexing `file_segments_query`'s whole `Vec` instead of going
+through `file_segment_at_query` — all six scenarios go red in 0.1 s, each
+reporting 3 per-def executions where 1 is pinned. The bug that took a
+counter to find would have failed CI the moment it was written.
+
+The pins are exact on purpose (the `db_memo_retention` precedent): a range
+lets the next coarse edge in. When a count moves, the assertion prints the
+whole execution map, so the failure names what else executed.
+
 ## Design notes for the ruling
 
 - **This narrows FG-2.1 (#638) one level.** That ruling shrank

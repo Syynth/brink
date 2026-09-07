@@ -29,7 +29,7 @@ pub use queries::{
     CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, has_recognized_source_extension,
     is_native_source_path, partition_diagnostics,
 };
-pub use queries::{set_execution_counting, take_execution_counts};
+pub use queries::{count_executions, set_execution_counting, take_execution_counts};
 // Extracted to the `brink-source-tree` L0 leaf (decision-log 2026-07-23,
 // issue #1323 ruling on #1325) so `brink-project-config` can depend on the
 // seam without a cycle through this crate. Re-exported here so
