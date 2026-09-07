@@ -50,7 +50,7 @@ use gpui_component::{Root, TitleBar};
 use crate::binder::{Binder, BinderEvent};
 use crate::code_view::CodeView;
 use crate::code_view::CodeViewEvent;
-use crate::compiled_output::CompiledOutputView;
+use crate::compiled_output::{CompiledOutputEvent, CompiledOutputView};
 use crate::continuous::ContinuousView;
 use crate::output_log::OutputLog;
 use crate::player::{Player, PlayerEvent};
@@ -505,6 +505,23 @@ impl Studio {
                 this.show(path, span.clone(), window, cx);
             },
         );
+        let on_compiled = cx.subscribe_in(
+            &compiled,
+            window,
+            |this, _, event: &CompiledOutputEvent, window, cx| match event {
+                CompiledOutputEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                CompiledOutputEvent::NoSource => {
+                    window.push_notification(
+                        gpui_component::notification::Notification::info(
+                            "That row carries no source location.",
+                        ),
+                        cx,
+                    );
+                }
+            },
+        );
         let on_program = cx.subscribe_in(
             &program,
             window,
@@ -597,6 +614,7 @@ impl Studio {
                 on_binder,
                 on_player,
                 on_program,
+                on_compiled,
                 on_problem,
                 on_problem_menu,
                 on_todo,

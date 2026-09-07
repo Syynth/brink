@@ -280,11 +280,14 @@ highlighter lays, see TODOs above) — cue lines in `--bs-cue` at
 `--bs-cue-weight`, dimmed comment/include lines — need the worker's
 `LineContext` per file.
 
-Two things noticed in those screenshots and NOT yet fixed: the Binder
-draws both the dock's title strip ("Binder") and its own header ("BINDER"
-+ toolbar), and the manuscript's first section shows a partial row above
-the next heading (the measured-line-height issue `continuous.rs` already
-describes).
+Of the two things noticed in those screenshots, one is fixed: the Binder
+no longer draws both the dock's title strip and its own header — the
+side docks draw no tab bar at all since the barless skin (`shell/src/
+skin.rs`, maintainer 2026-09-05 "why is it there?"), so its own
+"BINDER" + toolbar row is the only header, confirmed on screen
+2026-09-07. Still open: the manuscript's first section shows a partial
+row above the next heading (the measured-line-height issue
+`continuous.rs` already describes).
 
 **Linux builds** (verified 2026-09-05, contrary to the earlier worry): the
 whole workspace, app included, builds and links on an ubuntu container with

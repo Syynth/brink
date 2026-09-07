@@ -88,7 +88,9 @@ worker now holds:
    timestamps, a per-severity filter with unfiltered counts, Copy, and
    save-failure/load-warning rows. Residue: no row opens anything, a
    config write and a format run still say nothing, and Compiled Output
-   has no jump from a dump row to its source.
+   has ~~no jump from a dump row to its source~~ (2026-09-07: F12 /
+   Go to Source, reading both the `(source …)` clause and the debug-info
+   `(entry …)` rows).
 2. ~~**An `.inkt` highlighter.**~~ **Built 2026-09-06**
    (`app/src/inkt_highlight.rs`): a hand-written lexer over the token
    shapes `inkt.pest` itself defines — head words, `$def_id`s, strings
@@ -120,7 +122,7 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 | Status bar right segment | partly built | **2026-09-06**: the group exists (`StatusCell::align_end`, held apart by a spacer) and carries the active file and `Ln x, Col y`, live — the caret has no event, so the studio OBSERVES the active editor and re-observes when the active document changes. Still missing from §7.3: the element type + its conversion dropdown, and key hints. |
 | Notification service / toasts | partly built | `Root::render_notification_layer`/`render_dialog_layer` are composed by the app root (`app/src/main.rs`), so `window.push_notification` and `open_dialog` work — rename, fix-all and failed navigation all use them. Missing is §7.5's *service*: no registry, no severities, no dismissal policy, and no one place errors are routed to. |
 | ~~Open-project dialog, recents~~ | built 2026-09-07 | `File ▸ Open Project…` (`cmd-shift-o`) asks the platform for a folder and opens it in a NEW window — every panel here is built around one root, so swapping it would mean tearing all of them down, which is what a window does anyway. Recents ride `AppSettings` (newest first, listed once, capped at `MAX_RECENTS`), and each is registered as its own `File ▸ Open Recent: name (parent)` command, since the palette models commands and not submenus. A window never offers to reopen itself (the root is remembered AFTER its commands are registered), and a recent whose folder has gone says so and drops itself. On Linux the picker is the desktop portal, which a bare X session or a container does not have — that failure raises a notification rather than a menu entry that does nothing (verified: it reports the D-Bus address it could not reach). |
-| Binder draws two headers | cosmetic | the dock's title strip and its own "BINDER" header both render (HANDOFF, "Two things noticed"). |
+| ~~Binder draws two headers~~ | not a gap since the barless skin | the side docks draw no tab bar (`shell/src/skin.rs`, ruled 2026-09-05), so the panel's own "BINDER" + toolbar row is the only header. Confirmed on screen 2026-09-07; the note in HANDOFF predated the skin. |
 
 ### Code view (`app/src/code_view.rs`, `document.rs`)
 
@@ -250,7 +252,7 @@ Errors are reported in the buffer rather than leaving a stale dump up.
 |---|---|---|
 | ~~Syntax highlighting~~ | built 2026-09-06 | `app/src/inkt_highlight.rs`, a hand-written lexer over `inkt.pest`'s own primitives. |
 | ~~A find-in-dump of its own~~ | built 2026-09-06 | free with the `cmd-f` binding: the dump is an `EditorState`, so it carries the toolkit's find panel like every other editor. Verified on screen (`globals` → 1/1), and Replace correctly does not appear on a read-only buffer. |
-| A dump row jumping to its source | parity gap | the Program Explorer's disassembly rows do this; the dump does not. |
+| ~~A dump row jumping to its source~~ | built 2026-09-07 | `Go to Source` (F12 while the dump has focus, or the header button). Two row shapes carry a position and both are read: a line-table row's own `(source "file" a..b)` clause, and a debug-info `(entry off file_idx start len …)` row, which names its file by INDEX into the same dump's `(file …)` table — the shape a real dump is mostly made of, and why resolving takes the whole text. A `(file …)` row opens that file. Anything else says it carries no source rather than borrowing the nearest row above. Verified: F12 on `(entry 0 1 40 8 …)` opened `story.ink` at `-> shore`. |
 | ~~Reached only from the palette~~ | built 2026-09-06 | the Program Explorer's `.inkt` button opens it too. |
 
 ### Output log (`app/src/output_log.rs`)
