@@ -1,5 +1,646 @@
 # @brink-lang/web
 
+## 0.18.0
+
+### Patch Changes
+
+- fc827ec: HIR overlay spans for anonymous weave containers — choices, gather
+  continuations, conditional/sequence branches, inline sequences — now
+  carry the compiled program's real `DefinitionId` in `def_id` (previously
+  `null`; only named containers had identity). A labeled choice reports
+  the label's own id. This is the #3234 anonymous-container identity join:
+  the ids equal codegen's by construction, so debugger addresses inside
+  weaves can join back to source through the overlay.
+- d0acebb: `EditorSession` exposes the auto-fix batch road (`docs/autofix-spec.md` §5/§7):
+
+  - `getFixOffers(select)` — every offered fix of a selection, paired with the
+    `(path, start, end, code)` of the diagnostic it discharges and a
+    `batchable` flag (whether `fixAll` would take it unattended).
+  - `countFixes(select)` — how many fixes one batch round would take.
+  - `fixAll(select)` — the fixpoint loop, answering the `Report` plus
+    `files: [{ path, new_source }]`. The session is left exactly as it was
+    found; the host applies the sources through its own seam.
+  - `getFixesInFile(path, offset)` / `applyFixInFile(path, fix)` — the
+    cursor-menu pair for a file other than the active one.
+
+  A selection may restrict by `codes`, `tiers`, `path`, and an app-scope
+  `ceiling` (`"off" | "ask" | "auto"`), which only ever narrows what
+  `brink.toml`'s `[fix]` table allows. That table is now read: a code promoted
+  to `"auto"` becomes batchable, and one set to `"off"` is withdrawn from
+  every fix query.
+
+- 16072b0: Internal: the auto-fix batching engine behind the fix surfaces
+  (`docs/autofix-spec.md` §5/§6.1) — `Select` picks the diagnostics of a
+  compilation, `applyRound`'s Rust counterpart turns them into one
+  non-overlapping edit set, and the fixpoint loop repeats to a hard cap of five
+  rounds, reporting a cap breach rather than swallowing it.
+
+  No wasm API changes in this release: `getFixes` / `applyFix` behave exactly as
+  before. The batch entry points reach `@brink-lang/web` in a later milestone.
+
+- c0695b8: New auto-fix surface: `getFixes` / `getFixesDoc` return the fixes for the
+  diagnostics under a cursor, and `applyFix` / `applyFixDoc` turn a chosen fix
+  into the sources to write (the same `StructuralResult` shape the structural
+  ops already return).
+
+  A `Fix { code, title, applicability, edits, caret? }` carries its own minimal
+  edits, which may span files — unlike a `CodeAction`, whose opaque `data` is
+  round-tripped through `resolveCodeAction`. The three diagnostic-keyed
+  quick-fixes that used to arrive as code actions (add-import for `E025`, the
+  `#fn(...)` creation-site trims for `E080`/`E081`, the `call`/`bind`
+  over-arity trim for `E063`) now arrive as fixes instead, so
+  `getCodeActions` no longer lists them and `CodeActionData` no longer has an
+  `AddImport` / `TrimFnLiteralArgs` / `BindFnLiteralRefArgs` /
+  `TrimValueCallArgs` variant.
+
+  One behavioral consequence: a fix is offered where its diagnostic is, so the
+  cursor must sit on the squiggle — previously the `call`/`bind` trim was
+  offered anywhere inside the call.
+
+- ba08f3c: `brink.toml` now recognizes a `[fix]` table (`docs/autofix-spec.md` §6.1),
+  shaped like `[lints]`: `CODE = "off" | "ask" | "auto"`. `apply_project_config`
+  and `discover_project_config` no longer report `[fix]` as an unknown
+  top-level key, and an unrecognized value under it (`E033 = "sideways"`, or a
+  non-string/non-table shape) now surfaces as an error from those calls instead
+  of being silently ignored.
+- 94b8c37: Auto-fix `Safe` tier: the obligation behind `Fix.applicability === "safe"` is
+  now an executable check rather than a label.
+  `brink_test_harness::fix::assert_safe_fix` compiles a fixer's pre-fix and
+  post-fix sources, replays the pre-fix program's explored run set on the
+  post-fix program, and diffs the exported line tables — observable equivalence
+  plus translation identity.
+
+  No API or behavior change in this release: nothing declares
+  `applicability: "safe"` yet. The four fixers that reach the wasm surface
+  (`E025` add-import, `E063` call/bind trim, `E080`/`E081` creation-site) all
+  discharge diagnostics that prevent compilation, so there is no pre-fix
+  program to preserve and none of them can be promoted to `safe` — they stay
+  `"suggested"`, one explicit click each.
+
+- b9820be: Auto-fix surfaces now intersect the project's own severity resolution. A
+  diagnostic code set to `allow` in `brink.toml`'s `[lints]` table is
+  suppressed — it has no Problems row — but `getFixOffers`, `countFixes`,
+  `fixAll` and `fixesAtPath` read the raw per-file diagnostic list, so such a
+  code was still offered a Fix button, counted into "Fix all safe (N)", and
+  rewritten by the batch with nothing on screen to explain it. All four
+  queries now withdraw every code whose effective severity resolves to
+  "suppressed", before any other narrowing, so a caller naming the code
+  explicitly cannot get it back either.
+
+  `fixesAtPath` (the editor/Problems-row cursor menu) also now applies the
+  _other_ suppression channel: an inline `// brink-disable`/`brink-expect`
+  directive or an `@[allow(…)]` scope withdraws a diagnostic from the menu the
+  same way it already withdrew it from `fixOffers`/`fixCount`/`fixAll` — the
+  cursor menu previously read the compilation's raw per-file diagnostics with
+  no suppression applied at all, so a line the author had explicitly silenced
+  could still offer a Fix action with no diagnostic on screen to explain it.
+
+- c0ffbce: A blank line (an empty-list or empty-string interpolation on a line of
+  its own) between a delivered line and a turn boundary — `-> END`,
+  `-> DONE`, a choice point — is no longer delivered as its own line,
+  matching ink, whose lookahead drops it; blank lines followed by content
+  are still delivered, and a turn's leading blank lines collapse to one
+  (#3533).
+- b0d3fce: Anonymous-container ids are now edit-local: the conditional/sequence
+  counter is weave-block-local instead of knot-global, and a `(label)`
+  anchors its whole subtree (`#lbl:` scopes). Inserting content shifts
+  anonymous visit-state ids only for later siblings in the same block —
+  never across the knot — and never inside a labeled choice or block.
+  One-time renumbering: previously-saved anonymous visit states resolve as
+  dropped on load (`anonymous_states_dropped`); named state is unaffected.
+  Also fixes an E060 "internal codegen error" on legal ink when a
+  block-level alternative held a choice in more than one branch.
+- b82cb34: Break-on-write data breakpoints (W18, spec §F6 RULED): right-click a global in the Debugger panel's Variables section → "Break on write" — a write to the watched global pauses the run AND Continue tiers at the writing instruction, with the watchpoint named in the stop reason (the Player chip reads "Paused on write — gold"). Armed watchpoints are listed in the Breakpoints section with the diamond glyph (`◆ gold — on write`), checkbox enable/disable and remove like position breakpoints, stored by author name so they survive hot reloads. `WebSession` gains `debugWatchpointAdd`/`debugWatchpointRemove`/`debugWatchpoints`; the watchpoint stop reason now carries the global's `name`.
+- d90a460: A choice carries its kind and its source (#3435): `Choice.sticky` (`+`
+  vs `*`, as written) and `Choice.source` (the choice text's location, the
+  same shape a line's provenance uses) on both the journaled `choices`
+  line and the debug snapshot's `pending_choices`. The studio's transcript
+  echo of a taken choice (`> text`) now records `choiceKind` and `source`,
+  so the Player can draw the marker and link the echo back to the script.
+- daaf25f: Choice-point visualization (W11/#3304, RULED). At a choice stop the
+  editor lights the whole choice point: every PRESENTED choice's line gets
+  the success band (the plural highlight seam's headline case), and
+  authored siblings not added to the block dim with the reason beside
+  them — "once-only · used" (derived from the new id-keyed visit counts)
+  or the line's own failing condition ("gold > 20 = false", enriched from
+  source; a by-elimination catch-all). No new runtime seam beyond two
+  additive snapshot fields: `DebugChoice.def_id` and
+  `DebugState.visit_ids` — both `DefinitionId`-keyed, string-equal to the
+  HIR overlay projection's `def_id` (#3234's identity join, now verified
+  end to end on the studio compile road, including that the path-keyed
+  visit list genuinely drops anonymous choice bodies). The editor's
+  highlight seam gains the `rejected` kind with a `note` chip; degraded
+  still suppresses everything.
+- f236910: A choice's presented text keeps its interior whitespace runs verbatim, as
+  ink does (#3508): `* [a  0]` presents `a  0` (it presented `a 0`). Output
+  lines still collapse runs to one space. The line-table entries for choice
+  display text carry the verbatim text (visible in exported XLIFF for
+  choices whose text had runs); line identity hashes are unchanged.
+- e1111ab: New diagnostic tier, **compat-deny**: "inklecate rejects this; brink can run
+  it; you must opt in." Its first member, `E194`, catches a knot's `~ temp`
+  (native `~ let`) read from one of that knot's stitches — brink shares one
+  call frame across a knot and its stitches and plays such a program
+  correctly, but the official ink compiler rejects it outright
+  (`Unresolved variable`). Default severity is `Error`, matching inklecate's
+  own rejection — the Problems panel, and a plain `brink compile`, now refuse
+  this construct by default where they used to accept it silently (as a
+  warning-level `E193`, or not at all).
+
+  Unlike other `Error`-default codes, this tier is `[lints]`-overridable all
+  the way to `allow`, not just `warn` — a project that leans on the pattern
+  deliberately can turn it off (`[lints] E194 = "allow"` in `brink.toml`, or
+  `--allow E194` on the CLI); the diagnostic then disappears from the Problems
+  panel entirely, exactly like any other suppressed code, and the story still
+  plays.
+
+- deb671b: Continue runs to the next content line (2026-08-30 ruling, extending
+  #3321). The wasm sessions gain `debugRunToLine` — advance until a content
+  line COMMITS (running through the glue/commit boundary, so the crossed
+  line is in the outcome at the stop — no one-advance delivery lag), or a
+  breakpoint/choices/terminal stop comes first; needs no debug line info.
+  The Player's Continue and the reveal-while-paused click both route
+  through it and RESUME play on an ordinary stop (band back to live, chip
+  clears) — an author no longer grinds through `~` statements one click at
+  a time to reach content. Step Over/Into/Out stay statement-granular for
+  the programmer tier, and choosing while paused still stays paused (F7's
+  choice presentation), now delivering the consequence's content line in
+  the same gesture.
+- 127dee4: `currentPath()` answers inside a choice body, gather, or sequence branch with the knot or stitch that holds it, instead of `null` — so the first line after a choice is attributed to its knot.
+- 26c699e: `currentPath()` (#3389 follow-up): the knot or `knot.stitch` the story is
+  executing in — ink's `currentPathString` without weave indices — on
+  `StoryRunnerHandle`, `StorySessionHandle` and `FlowHandle`. As in ink it
+  is where the story IS, so read it before a continue to know where the
+  coming line is from. The studio's session provider now steps one line
+  per call on every road and stamps each transcript row with that path,
+  and the Player ends a speaker's run when consecutive rows come from
+  different knots or stitches — narration after a divert no longer reads
+  as the last speaker's lines.
+- 1bb9565: Debug info is on by default for studio compiles (W1/#3294, ruled
+  2026-08-29). A fresh `EditorSession` (and the studio store mirroring it)
+  now emits the `DebugInfo` section on every compile, so breakpoints bind
+  and positions resolve from the studio's own bytes with no toggle touched;
+  `setDebugInfoEnabled(false)` remains the opt-out, now surfaced as an
+  App-settings "Debugging" section ("Emit debug info in studio compiles")
+  persisted per machine. Release export and the CLI default are unchanged.
+- ef1ac8a: `debugRun`/`debugStep` outcomes gain a new stop reason,
+  `{ type: "awaitingExternal" }` (#3224): execution reached a bound
+  external function whose handler deferred. The `External` frame is left
+  intact — resolve it out-of-band (`resolveExternal`), then resume with
+  any debug verb. Synchronously resolved externals and in-story fallbacks
+  now step through cleanly instead of erroring `UnresolvedExternalCall`
+  mid-session, and step-into on an external call behaves like step-over
+  (spec §4 — there is no ink bytecode inside an external frame).
+- 3729f92: `@brink-lang/dialect` (RULED 2026-08-30, "Engines consume the RESOLVED dialect as a compile output"): the dialogue-dialect artifact, validator, `ResolvedDialect`, `DialectParser`, `extendDialect`, `detectCast` and the `runsOf` run rule move into a pure-TypeScript package with no runtime dependencies, so a game engine can read its project's conventions without depending on the editor. `@brink-lang/editor` re-exports the whole surface unchanged (its one editor-coupled helper is now `convertibleShapesOf`). `brink compile` writes the project's resolved dialect as `<story>.dialect.json` beside the compiled story when `brink.toml` declares `[dialogue]`, and the desktop app's Export Story does the same. Book: _Conventions for Your Engine_.
+- 7768032: Dialogue-convention diagnostics + preview (RULED 2026-08-30): a `brink.toml [dialogue]` declaration that fails to resolve (unknown preset, bad element shape, missing artifact) is now an **error row in the Problems panel** keyed to `brink.toml` — the session keeps the resolver's message as state (`getConfiguredDialogueError()`), so the row reflects the current truth rather than a one-shot warning; a malformed `brink.toml` is an error row too. The dialect's own `malformed` near-miss rules (a cue missing its terminator) surface as **warnings on story lines**, re-evaluated on every compile and config apply. A new **Settings → Conventions** section shows the project's resolved dialect and a paste-to-preview pane: how the editor classifies sample lines as source, and the speaker runs the Player would fold the same lines into as emitted text.
+- f20d4c2: Project-declared dialogue dialect (RULED 2026-08-30): `brink.toml` gains a `[dialogue]` table — `preset = "at-cue"` plus `[[dialogue.elements]]` overlays in the spec's affix sugar (`kind`, `prefix`/`suffix`/`glued`/`content-role`, or `pattern`/`template`), or `file = "path.json"` for a full artifact — resolved in the wasm session (`EditorSessionHandle.getConfiguredDialogueDialect()`) and pushed to every editor view by `DocumentSessions` (live on `brink.toml` edits via `ProjectSession`'s new `onProjectConfigApplied` hook and `DocumentSessions.refreshDialectFromProject`). **No dialect by default**: an absent `dialect` option now means plain lines with the screenplay layer's structural decorations kept (`setDialect(view, undefined)`); the `at-cue` preset is opt-in — the demo project opts in through its own `brink.toml`. An explicit `dialect: null` still tears the layer down for headless embedding. Also fixes a latent affix-sugar bug (a suffix-less prefix compiled to the invalid regex `[^]*`).
+- 2c10dd3: `run_ends_at` — the emitted-side run rule (RULED 2026-08-30): a chain rule now declares which kinds (plus the reserved `"choices"` turn boundary) END the active speaker's run in runtime-emitted text, where the source-side "blank always breaks" has no counterpart. Declared in `brink.toml` as `[dialogue] run-ends-at = [...]` (applied to every chain rule of the resolved dialect, validated like `after`/`becomes`) and applied through the new shared `runsOf(lines, dialect)` helper in `@brink-lang/editor`, so the studio Player and an engine importing the resolved dialect fold emitted lines into runs identically.
+- 4b96bf1: Drafts are editable in Settings, and each pattern shows what it matched
+
+  `[project] drafts` has been readable by the compiler since drafts landed and
+  editable nowhere — reaching it meant hand-editing `brink.toml`, and nothing
+  said whether the pattern worked. Settings ▸ General now lists the patterns
+  with add and remove, alongside the prose dictionary's shape.
+
+  Each row also reports what its pattern currently matches, because a bare list
+  of globs hides both of the ordinary mistakes. A pattern matching nothing — a
+  typo, or a renamed folder — looks exactly like one that is working, and now
+  says so. And a pattern matching a file the story still reaches produces no
+  draft at all (reachability wins), so those files are listed separately as
+  still in the story rather than silently counting for nothing.
+
+  `EditorSessionHandle.getDraftGlobReport()` exposes that per-pattern
+  attribution; draft status itself is still computed only in Rust.
+
+- 52881be: The E025 add-import quick fix now places a file's first `IMPORT` below its `INCLUDE` block when the file has a `#@module` header, instead of between the header and the `INCLUDE`s (#3448). Only the edit's insertion offset changes; the imported names are the same.
+- 272df89: `E092` (a redundant `#@public`/`#@private` directive restating the module's
+  own default) now has a `Safe` auto-fix: it deletes the directive line. The
+  fix is offered through the same `fixes_at`/`fixes_for` surfaces every other
+  fixer uses, so it shows up in the Problems panel's fix menu wherever `E092`
+  is diagnosed. No fix is offered for a native `.brink` file's equivalent
+  redundant `pub` keyword (no tag-line shape to remove) or when two
+  conflicting visibility directives are stacked on the same declaration.
+- 4dc8b89: `E095` (`#@was(name)` naming the definition's own current name — nothing
+  to migrate) now offers a `Safe` auto-fix: delete the stale `#@was(...)`
+  tag line. Reaches the Problems panel and the auto-fix batch road
+  (`docs/autofix-spec.md` §3/§5) via `brink-ide`'s `FIXERS` registry.
+- 706fe0b: `E110` (the deprecated `#@effects(…)` tag-channel spelling) now offers a
+  `Safe`, batchable auto-fix that rewrites the tag to the `@[effects(…)]`
+  annotation spelling — translating the argument list from the legacy colon
+  grammar to the annotation's paren-clause grammar, so the definition's
+  inferred effect row is unchanged. Available through the Problems panel and
+  `brink fix`. No fix is offered for a dynamic tag, a bare tag with no
+  argument list, or a tag whose argument list fails to parse.
+- dce2827: A whole-line inline conditional with no else arm (`{cond:then}` alone on its
+  line) now keeps its line's newline when the condition itself prints. The
+  normalization lift gives the then-arm a line clone plus an end-of-line, but
+  synthesized an else arm only when there was prefix or suffix text to carry —
+  so with the construct alone on its line, the all-false path emitted no
+  end-of-line at all, and a printing condition's output ran into the next line
+  (`{f():a}` with a printing, false `f` gave `ab` where ink gives `a` / `b`).
+
+  ink keeps a line's `\n` whichever arm ran, suppressing it only when the line
+  produced no content. A silent `{false:a}` therefore still emits nothing: the
+  runtime drops a newline with no content before it.
+
+- 3448c50: Internal: the observable-equivalence oracle ships (#3376,
+  `docs/observable-semantics-spec.md` §3/§3.1). The episode harness can now
+  compute the full host-facing trace of a run — output steps, choices by
+  order, external calls with their arguments, host-readable globals at every
+  turn boundary, host-invoked function results, terminal kind — and
+  `trace_diff(P, Q, runs)` replays the same runs on two compiled programs
+  (`.inkb` bytes) to report the first divergence. Tier 0's corpus
+  differential and tier 3a's mutation-sensitivity study run in CI.
+
+  No compiler or runtime behaviour changes: the story a host runs, and every
+  line and diagnostic it produces, are exactly what they were. This is the
+  mechanical checker that future "this transformation is safe" claims —
+  auto-fix's Safe tier, the optimizer — will have to pass.
+
+- d1265be: The live execution highlight (W6/#3299 — "play is stepping"). The wasm
+  sessions gain `resolveDebugLine(containerIdx, offset)` — the
+  position→source road: file, 0-based line, and the covering debug entry's
+  exact byte range (kept on the seam for future instruction-level
+  stepping). The editor gains `executionHighlightExtension`, a plural
+  highlight seam (a choice point or selected stack frame can light several
+  lines at once): a subtle full-line band per position — green while
+  playing, amber when paused (with a filled gutter arrow in the shared
+  play/breakpoint column), accent for a selected frame (hollow arrow). The
+  studio wires it end-to-end: the band follows every reveal, pausing
+  scrolls the editor to the stop (reveal-on-stop) and shows a
+  "Paused — file:line" chip in the Player, and degraded sessions suppress
+  the highlight rather than showing a stale one.
+- 93b6c4b: "Suppress a code in this file" now suppresses that code, not the whole file.
+
+  The Problems panel offered **Suppress E157 in this file** and wrote a bare
+  `// brink-disable-file`, which silences every diagnostic in the file. The
+  label and the effect disagreed, and `// brink-disable-file E157` — written
+  by hand, in the obvious analogy to the line-scoped form — matched no
+  directive at all and was dropped in silence.
+
+  - `// brink-disable-file E027 E035` suppresses those codes for the whole
+    file. Whitespace-separated, matching `// brink-disable E027 E035`.
+  - `// brink-disable-file-all` is the blanket gesture's new spelling.
+  - The Problems menu offers both as separate items, each labelled for what it
+    does.
+  - A `brink-disable`/`brink-expect` comment the parser cannot read is now
+    reported as **E192** instead of vanishing.
+
+  `// brink-disable-all` (project-wide) is unchanged.
+
+- 92e114b: `brink.toml`'s `[fix]` table now validates its code keys against the real
+  diagnostic-code set, mirroring `[lints]`'s existing unrecognized-code
+  warning: an entry like `[fix]\nE9999 = "auto"` now reports a `ConfigWarning`
+  ("`[fix]` `E9999` is not a recognized diagnostic code; ignored") instead of
+  being silently accepted and doing nothing. Surfaced through
+  `EditorSession::apply_project_config`'s returned warnings, the same channel
+  `[lints]` already used.
+- 0938a9d: The `ProjectConfig` fix-policy bridge (`Off`/`Auto`/`Ask`-elides-to-no-override)
+  that decides which fixes batch is now one shared mapping
+  (`brink_ide::fix::policy::FixMode::from_config`) instead of two
+  independently hand-rolled copies, closing a drift risk between the CLI
+  and the wasm batch surface the Problems panel and fix-on-save read. This
+  is a policy-bridge refactor only — `fix_all`'s `FixReportJs` (including
+  `cap_hit`) is unchanged. (`brink fix`'s `--diff`/`--dry-run` composition
+  and cap_hit-report fix is CLI-only and does not touch `@brink-lang/web`.)
+- 4a1d7df: A function whose output ends in a value that renders as whitespace — an
+  empty list, `""`, a `none` — no longer leaves a blank line behind: the
+  function-end trim now treats such a value as the whitespace ink already
+  sees there, and trims the newline behind it too (#3536).
+- 301925e: Whitespace between an inline construct and glue now renders the way ink
+  renders it (#3507). `{0} <>` followed by `world` prints `0 world` (it
+  printed `0world`); the same holds after an inline conditional or
+  sequence. When the construct renders empty, glue drops the space with the
+  newline it consumes, so `a` / `{false:x} <>` / `b` prints `ab` — the
+  runtime's glue resolution now trims whitespace-only output after a
+  consumed newline exactly as ink's does, which also changes the rare
+  whitespace-only-text-before-glue shape from `a b` to `ab`.
+- 88ef785: `.inkb` format v10: parameters are bound by the VM at entry
+
+  Codegen no longer emits the leading `DeclareTemp` prologue that bound a
+  parameterized container's arguments; the runtime binds them into the call
+  frame at every entry instead (`docs/compiler-spec.md` §"Parameter
+  binding"). Story behaviour is unchanged, but compiled bytecode is not: a
+  function, parameterized knot, tunnel, or thread starts at its first real
+  instruction now, so `EmitLine` and jump offsets shift and the program model
+  shows no `declare_temp` run at the top of those containers. Every `.inkb`
+  carries version 10, and a stored v9 artifact handed to `StoryRunner` or
+  `linesTableOf` is rejected with an unsupported-version error and must be
+  recompiled — deliberately, because a v9 prologue would otherwise decode
+  cleanly and re-bind parameters from an empty stack.
+
+- f90881f: `.inkb` format v7: the `EmitLineNl` superinstruction
+
+  The bytecode format gains `EmitLineNl` (opcode `0x6C`), the fused form of
+  `EmitLine` followed by `EmitNewline` that the post-compile optimizer
+  (`brink-opt`, `docs/optimizer-peephole.md`) emits. The compiler itself never
+  writes it, so artifacts produced by `compile` are unchanged in shape — but
+  every `.inkb` now carries version 7, and a stored v6 artifact handed to
+  `StoryRunner` or `linesTableOf` is rejected with an unsupported-version
+  error and must be recompiled. The program model renders the new opcode as
+  `emit_line_nl #idx slots`.
+
+- 8b9b045: `.inkb` format v8: the fused binary superinstructions
+
+  The bytecode format gains `BinaryImm` (`0x6D`), `BinaryJumpIfFalse` (`0x6E`)
+  and `BinaryImmJumpIfFalse` (`0x6F`), each carrying a `BinaryKind` operator
+  byte — the post-compile optimizer's fusion of a binary operator with the
+  `PushInt` immediate feeding it and/or the `JumpIfFalse` consuming it
+  (`docs/optimizer-peephole.md` §1). The compiler never writes them, so
+  `compile` output is unchanged in shape — but every `.inkb` now carries
+  version 8, and a stored v7 artifact handed to `StoryRunner` or
+  `linesTableOf` is rejected with an unsupported-version error and must be
+  recompiled. The program model renders the new opcodes as
+  `binary_imm kind=le 1`, `binary_jump_if_false kind=eq <rel>` and
+  `binary_imm_jump_if_false kind=le 1 <rel>`.
+
+- f77033b: `.inkb` format v9: the left-operand-fold superinstructions
+
+  The bytecode format gains `GetTempBinaryImm` (`0x70`),
+  `GetTempBinaryImmJumpIfFalse` (`0x71`) and `DuplicateBinaryImmJumpIfFalse`
+  (`0x74`) — the v8 fused binary forms with the instruction that produced
+  their left operand folded in (`docs/optimizer-peephole.md` §1). The
+  compiler never writes them, so `compile` output is unchanged in shape — but
+  every `.inkb` now carries version 9, and a stored v8 artifact handed to
+  `StoryRunner` or `linesTableOf` is rejected with an unsupported-version
+  error and must be recompiled. The program model renders them as
+  `get_temp_binary_imm <slot> kind=<op> <imm>`,
+  `get_temp_binary_imm_jump_if_false <slot> kind=<op> <imm> <rel>` and
+  `duplicate_binary_imm_jump_if_false kind=<op> <imm> <rel>`.
+
+- d05de1f: Fix a compile failure (`E060` duplicate `DefinitionId`) when three or more inline conditionals share one content line: lifting nests the line's constructs, and cloned branch ids were re-derived from the host branch index alone, so two lift levels could produce the same id. The derivation now mixes the lifting construct's own identity into the salt (#3386). Note: the ids of cloned stateless containers in a lift's branches 1.. change value as a result — those ids key nothing observable at runtime, but a save taken on a previous build that recorded visit counts for such a container will not match it after upgrading.
+- a960fc4: New warning-level diagnostic `E195`: a `*`/`+` choice with no divert (even
+  an empty `* ->`), no tag directly on the line, and no text in any of its
+  three same-line content regions — matching inklecate's own "Choice is
+  completely empty" warning. A `(label)` or `{condition}` guard does not
+  exempt a choice either, matching the reference. Ink surface only; the
+  Problems panel now surfaces it wherever the pipeline previously stayed
+  silent on the shape. `Warning`-tier and `[lints]`-overridable, like its
+  `E164`/`E188`/`E193` neighbours.
+- 0f7af5d: Lifting an inline conditional or sequence out of a content line now
+  evaluates every interpolation to its left first, in source order, into a
+  hidden compiler-minted temp, so the construct's condition (or a shuffle's
+  draw) runs after the prefix's side effects, where ink runs it (#3395).
+  `{bump()}{n == 1:yes|no}` prints `1yes` as the reference does (was `1no`),
+  and `{n}{bump() == 1:yes|no}` prints `0yes` (was `1yes`). A prefix call that
+  prints keeps its text inline. Debugger frames' `locals` entries carry a new
+  `synthetic: boolean`, `true` for those hidden temps (named `$liftN`); the
+  studio hides them.
+- f50c84a: A delivered line's `source` now spans every source line that contributed text to it (glue, a prose-dialect cue + aside + dialogue), and the editor's follow/hover bands cover all of those lines (`ExecutionHighlight.endLine`).
+- b0e2d3a: Line tables are deduplicated at emission
+
+  A line authored more than once within one scope (knot, stitch, or root)
+  is now a single line-table entry — one translation unit — instead of one
+  entry per occurrence site (`docs/intl-spec.md` §"Line-table
+  deduplication"). TheIntercept's `Lie`, previously 27 separate units, is
+  one. `linesTableOf` and `StoryRunner.linesTable` return the smaller
+  tables; `EmitLine` indices in the program model shift accordingly. Runtime
+  output is unchanged. Variant runs (line alternatives) are never merged.
+
+- 29dfd78: A content line whose inline stateful alternatives are all textual now
+  compiles them as SHARED alternatives — ink's documented semantics — instead
+  of cartesian clones with independent visit counts: `Line: {a|b} {x|y}`
+  produces `a x` / `b y` / `b y` across three views, where the second view
+  previously produced `b x` (#3271). The compiled artifact carries one
+  `LineVariantGroups` record per such line over whole-line variant entries
+  (each still its own translation unit and VO slot), and a labeled choice
+  inside an inline `{if …}` beside an alternative now compiles instead of
+  failing with an internal duplicate-container error (#3272). Lines whose
+  alternatives enumerate past 32 whole-line variants are refused with the new
+  worded E191.
+- fd34329: `list ? other` and `list !? other` now match ink when either operand
+  is empty: `l ? ()` is `false` and `l !? ()` is `true` (ink's
+  `InkList.Contains` returns false for an empty list on either side,
+  where brink answered the vacuous subset test) (#3531).
+- 11af92c: List values now carry origins the way ink does: a non-empty list's
+  origins are its items', an empty list's are whatever it was built with
+  (none for `^`, `LIST_MIN`/`MAX`/`ALL`/`INVERT` and `list + int`, the
+  left operand's for `+`/`-`, the input's for a non-empty `LIST_RANGE`),
+  and an empty list assigned to a global or an existing temp takes the
+  old value's origins. `LIST_ALL`/`LIST_INVERT`/`LIST_COUNT` over emptied
+  lists match ink (#3532).
+- 12ef8e9: LSP quickfix code actions and `source.fixAll.brink` (milestone 7 of the
+  auto-fix epic) now honor suppression the same way the Problems panel does:
+  a diagnostic dropped by an inline suppression directive or leveled to
+  `[lints] allow` no longer offers a quickfix that claims to discharge
+  something the client never displayed. `source.fixAll.brink`'s whole-file
+  batch also abandons cleanly instead of shipping a partial multi-file edit
+  when one changed file's path can't be represented in the `WorkspaceEdit`,
+  and the batch's whole-project scratch analysis is now skipped entirely
+  when no registered fixer can produce anything at the requested tier.
+- 221307b: Fix a divert (or `-> END` / `-> DONE`) at the end of a nested gather being silently dropped: when a choice body ended with a nested choice set, the inner gather's own terminator was overwritten by the exit to the outer gather, so `- -` followed by `-> target` printed the gather and then ran out of content. The inner gather now keeps its terminator and only receives the outer-gather exit when it has none (#3383).
+- 7be34d0: `EditorSession.passage_lines(path)` / `passageLines(path)` (#3408): the
+  content lines of a knot or stitch across the project — the source line
+  with weave scaffolding (`*`/`+`/`-`, `(label)`, leading `{condition}`
+  groups) and tags removed, tags carried separately, with the declaring
+  file, one-based line and origin (`line` / `choice` / `gather`). Headers,
+  logic, diverts, declarations, comments and tag-only lines are not lines.
+  This is what the Conventions editor's teach-by-example marking list pulls.
+- f38e85b: Player feedback round (RULED 2026-08-30): saves carry the STRUCTURAL transcript (the runtime's part stream as human-readable JSON — `WebSession.exportTranscript`/`renderTranscript`) and loads, forks, and hot-reload migrations re-render it against the CURRENT compile, so an edited line's restored row shows the edited prose; fast-forward is a one-shot ContinueMaximally (run to the next choice/stop, paced per settings, no sticky auto mode); Player toolbar sub-sections collapse one group at a time into a ⋯ overflow menu when the pane is too narrow, with hysteresis on re-expansion.
+- a8c4e13: Peek: hovering Continue or a choice card in the Player forks the live story (`StorySessionHandle.speculate()`, new, at the exact position), runs one continue call on the fork and highlights what it would hit in the editor with a dashed `peek` bar; `SpeculationHandle.currentPath()` reports the fork's knot. Execution highlights split into tint (state) and bar (attention) channels: `follow`/`hover`/`peek` are bar-only and stack on a tinted line, and the cursor's active line gets its own colour on a tinted line.
+- b92f124: The rebuilt Player (W7/#3300). Every delivered line now carries its
+  source (`Line.source` / `DebugOutputLine.source` — file + byte range,
+  from the line table's own locations), and the Player makes each
+  transcript row a provenance handle: full-width line rows with a subtle
+  alternating tint, hover shows `file:line`, click (or ⌘-click the row)
+  reveals the source in the editor. A tags toggle renders per-line tags as
+  muted mono chips (off by default, persisted). The status chip is the
+  single home of stop reasons — ready / playing / paused at file:line /
+  waiting on choice / ended / error / out-of-sync — and clicking it
+  reveals the current line. The story no longer auto-starts (RULED): the
+  Player opens idle with the toolbar live; Run compiles and starts.
+  Auto-reveal is paced by default (RULED, ~150 ms per line, Settings →
+  Player to switch to all-at-once); pausing or a breakpoint stops the run
+  instantly. Auto-scroll suspends while reading back. Narrow-tier layouts
+  regain the hamburger route to a closed player, and the reopen split
+  honors "when there is room" (#2795).
+- e8d75f2: Four output-order fixes for functions that print, found by the program
+  generator's functions tier and matched against the ink reference:
+  a function-end whitespace trim that now skips over glue (`{0} <>` at
+  the end of a function glues to the next line, #3522); a leading newline
+  on every multi-line conditional arm, `- else:` included (#3523); a
+  function's newline is dropped while the function has printed nothing,
+  so two calls on one line no longer break it (#3519); and a slot
+  expression that _contains_ a call (`{f() == "x"}`) composes the call's
+  output into the slot the way a bare `{f()}` does (#3525).
+- 1f1a500: Runner-free lines table, and per-scope byte sizes on the program model
+
+  Two thin surfaces for the Program Explorer redesign (#3339):
+
+  - `linesTableOf(storyBytes)` — the static mirror of
+    `StoryRunner.linesTable`, off raw `.inkb` bytes. The Line tables view
+    shows compiled output, which exists the moment a compile lands, with or
+    without a running story.
+  - `KnotNode.byte_size` / `container_count` — each scope's total bytecode
+    bytes and container count, anonymous children (gathers, choice targets)
+    included. Those children are deliberately not tree nodes, so this
+    rollup is the only place their bytes are visible to size accounting.
+
+- 1f1a500: The Program Explorer becomes one instrument with four views
+
+  Structure, Line tables, Disassembly and Size behind one segmented switch
+  (#3339), with a shared identity header and one execution thread through
+  all of them.
+
+  Structure: knot rows with size bars (bytecode + lines on a shared
+  scale), externals stating their contract (fallback vs host), totals in
+  the footer. Line tables: the compiled lines scoped as the compiler
+  scopes them, template slots and selects as chips reading like prose,
+  source cells as line-numbered links that convert byte offsets to the
+  editor's UTF-16 before revealing. Disassembly: every operand resolves —
+  emit_line to its line text (linking into the Line tables view), globals
+  to live values while paused, jumps to their landing offset, externals to
+  their binding contract — with per-instruction source provenance from the
+  DebugInfo section and stepi beside the code it steps. Size: a squarified
+  treemap of real on-disk section bytes, with an exact "shipping only"
+  re-flow showing what a release export strips.
+
+  New runner-free surfaces on `@brink-lang/web`: `linesTableOf`,
+  `sizeReportOf`, per-scope `byte_size`/`container_count` and anonymous
+  child containers (labeled by their real weave-label names) on the
+  program model, and per-instruction `src` provenance.
+
+- 4f70d28: Two new `Safe` auto-fixers for `E031` (ordinary call over-arity) and
+  `E176` (divert-with-args over-arity): trim an over-supplied call/divert
+  site's excess arguments. The trim removes the _leading_ excess arguments
+  and keeps the _trailing_ ones — the classic calling convention these two
+  diagnostics cover binds the trailing supplied argument to the callee's
+  declared parameter, not the leading one — and is withheld entirely when
+  any of the leading (dropped) arguments could carry a side effect (a
+  nested call, or on ink an `++`/`--` increment), when the call's own
+  return value isn't popped in isolation (nested inside a larger
+  expression rather than being the entire right-hand side of a `~`
+  assignment), or when the resolved target declares a `ref` parameter.
+  Offered fixes and `fix_all` results reaching `EditorSession` now include
+  these two codes.
+- 368d7fa: New `Safe` auto-fixer for `E014` ("logic line has no effect"): deletes a
+  bare `~` line — one with no statement and no expression at all — along
+  with its line break. The fixer re-derives effect-freedom from the source
+  itself rather than trusting the diagnostic, so it refuses the handful of
+  unrelated malformed-partial parses that share the `E014` code (a `~ temp`
+  or assignment missing a name, place, or value) and never fires on a
+  native file (native's own "nothing after `~`" shape raises `E015`
+  instead). Offered fixes and `fix_all` results reaching `EditorSession`
+  now include this code.
+- 5e67883: Runtime save/load — the idle-Player launcher (W14/#3307, RULED;
+  re-scopes #57's save half). The wasm session's `loadState` now RETURNS
+  the runtime's `LoadReport` (the session layer used to discard it) — a
+  stale load's drops surface inline, never silently. The idle Player body
+  becomes the launcher: "Run from the start" beside a typeahead over
+  knots/stitches (KNOT/STITCH chips + file context; plays from there via
+  the play-from-here start path), then the checkpoint stores as PROJECT
+  and THIS COMPUTER sections in the landing Recent-list style — TURN-count
+  chips, amber OLD for saves against an older compile, and hover
+  Load/Fork/delete. Load ATTACHES the session to the slot ("Save state" —
+  the new toolbar button — writes back); Fork starts from a copy and the
+  next save picks a new slot. The payload is the runtime's existing
+  `SaveState` boundary (no execution position — loading diverts to the
+  slot's recorded knot). Both stores are localStorage on the web;
+  `mountStudio`'s new `saveStores` option is the seam for desktop's
+  file-backed stores. Settings → Player picks the default target for new
+  saves.
+- a6b6f7f: Fix a stateful alternative drifting one view behind ink when it follows another inline construct on a line the variant model cannot claim — `{a|b}{true:p}{c|d|e}` or `{a|b}{c|d|e} <>` (#3401). Lifting the leading construct cloned `{c|d|e}` into each branch, and a clone inside a conditional- or glue-bearing branch used to get its own visit counter. Every clone now counts on the original's container while keeping its own whole-line renderings, matching the C# reference (`apc`, `bpd`, `bpe` — not `apc`, `bpc`, `bpd`). Line-table shape and translation units for these lines are unchanged. Two observable consequences: the visit count for such a line now lives under the original's container id only (a save from an older build that recorded counts on the per-branch copies will not match it), and a cloned `shuffle` alternative now draws its permutation from the original's seed at every site, so a shuffle order on one of these lines can differ from the previous build.
+- a343249: A shuffle sequence (`{~a|b|c}`, `{ shuffle: … }`) now removes each picked
+  alternative order-preservingly, matching the reference runtime's
+  `unpickedIndices.RemoveAt(chosen)`. brink used `swap_remove`, which moves
+  the last unpicked element into the hole and permutes the survivors, so from
+  the second draw of a loop onward it indexed a differently-ordered list and
+  picked a different alternative — while the first draw of each loop still
+  agreed, nothing having been removed yet.
+
+  Player-visible: a story's shuffles now come out in ink's order.
+  `tier2/conditional/shuffle` goes 0/1 → 1/1 and
+  `tier2/sequences/I107-shuffle-stack-muddying` 0/2 → 2/2 against the C#
+  oracle; the ratchet moves 5624 → 5627.
+
+  A second, independent shuffle divergence (#3538) remains open: brink's
+  container path for a sequence carries an implicit stitch level inklecate
+  does not emit, so the two seed some shuffles differently.
+
+- 4abd6c8: Source→program resolvers reach the wasm bridge (W2/#3295): new
+  `resolveSourceLine(file, line0)` (line-based breakpoint binding via the
+  DebugInfo line index — no source text needed), `resolveSourceRange`
+  (now wrapped in TS), `hasDebugInfo()` (the honest discriminator between
+  "no debug info" and "nothing on that line"), `sourceMatches(file, text)`
+  (per-file staleness, tri-state), and `resolvePathAddress(path)`
+  (name-based addressing over the container table), on both
+  `StorySessionHandle` and `StoryRunnerHandle`, returning the new
+  `ProgramAddress` type.
+- e680185: A stateful alternative on a line with an inline conditional now advances
+  once per line view, whichever branch renders (ink's documented
+  semantics): container ids are stamped before normalization, so the
+  conditional's cloned branches share the alternative's container instead
+  of each advancing a private copy.
+- c0ffbce: A tag-only line (`# tag` on a line of its own) no longer produces a
+  blank line: its tags attach to the next delivered line, as in ink
+  (#3534). Previously the tags were lost.
+- 4c142de: A `temp` read before its declaration runs now warns instead of breaking the story.
+
+  A `~ temp` lives in its knot's call frame, so a read from a sibling choice
+  branch, a gather, a stitch, or a line written above the declaration names the
+  same slot — but the declaring statement may not have run yet. The C# runtime
+  prints the line and warns; brink either faulted (`cannot apply Add to Null and
+Int`) or, for a read written ahead of the declaration, emitted a program that
+  died at its first step with `unresolved global`.
+
+  - **E193**, a new warning-level, `[lints]`-overridable diagnostic, names the
+    read and the declaration in the Problems panel — before the story is played.
+    It covers three shapes: a sibling choice branch, a gather reached from a
+    branch that did not declare it, and a read textually ahead of the
+    declaration. (A fourth shape — a stitch reading a temp declared at its
+    knot's root — turned out to be a different, stricter question: see the
+    companion compat-deny changeset.)
+  - Reads, writes, and `ref` arguments that precede the declaration now resolve
+    to the frame's own slot instead of a phantom global that could not link.
+  - An unset slot reads as ink's missing-variable default (`0`) with a runtime
+    warning, matching the reference runtime, so the story keeps playing.
+    `WebSession.takeRuntimeWarnings()` drains them.
+
+- d1cf91b: `<- thread` no longer pushes a call frame. A gather that spawns one thread
+  per option and is looped back into from each choice body — the standard ink
+  game-loop idiom — used to retain one frame per turn forever: the boundary
+  frame `<-` pushed was captured in the choice's thread fork, and selecting the
+  choice installs that fork wholesale, so the boundary rode into the main call
+  stack and was never released. Call-stack depth grew with the turn count and,
+  because every fork copies the stack, the per-turn cost grew with it. ink
+  pushes no frame for a thread divert at all (inklecate compiles `<- opt(1)` to
+  a bare divert), and now neither does brink: the fork re-points its own copy of
+  the innermost frame at the target, binding the target's parameters there as a
+  plain `-> target` divert's would, and `Thread::base_depth` marks where the
+  parent's frames end.
+
+  This also fixes an output divergence the retained frame caused: a temp
+  declared in the looping knot was read through the thread frame's slot space
+  instead of its own, so a counter ink walks up from 1 read `1` on every turn.
+
+  Measured on `benchmarks/stories/hanoi-10` (5,000 turns): maximum call-stack
+  depth 2,501 → 1, every frame pushed now released, and the transcript is
+  byte-identical to inkjs 2.4.0's. The oracle ratchet is unchanged.
+
+- a103f15: A temp written after `<- thread` now survives the next choice: the call
+  stack's fork-snapshot cache is invalidated by every mutable frame access,
+  so a choice's fork always sees the frames as they are (#3528).
+- e48d343: Fix: a `TODO:` line inside a multiline conditional's then-arm, `- else:`
+  arm, or a nested block (`{ cond: … - else: … }`) is now recognized as an
+  author note — it fires `E189` (Problems/TODO panel) like a weave-level
+  `TODO:` already did, and is no longer compiled as story prose printed to
+  the player at runtime.
+- 9d3f5fa: Play and debug are one loop (W5/#3298). `debugRun`/`debugStep` — and the
+  new `debugStepLine` (the author-tier source-line step, bounded by armed
+  breakpoints) — now return the emitted-lines delta, drained from the SAME
+  delivery cursor the journaled `continue` road hands lines out of, so a
+  line the production lookahead already completed surfaces exactly once
+  whichever loop advances past it. The studio Player routes reveals through
+  the debug verbs whenever breakpoints are armed or the session is paused;
+  `pause` is a first-class verb (Player transport: pause/continue + step
+  over/into/out with a "Paused — location" chip); choices stay journaled,
+  so restore/replay is unchanged.
+- 88d8352: Live value editing (W16, spec §F6 RULED): scalar globals and frame locals are click-to-edit in the Debugger panel while paused — inline mono input, Enter commits, Esc cancels, a parse/type-refused edit red-shakes with nothing written; edits can never change a value's type. Globals commit through the observed write path (`WebSession.debugEditGlobal`); locals through the new set-temp-in-frame debug seam (`debugEditTemp`), disabled at choice stops where choosing would restore the choice's captured thread over the edit. "Reveal in Program Explorer" now only appears in the editor's line menu while a session can actually resolve it (`canRevealInstructions` gate).
+- 2314f79: `Choice.index` now numbers the visible choices contiguously, matching
+  ink's `currentChoices` — an invisible fallback (`+ ->`) no longer occupies
+  an index even when it sits ahead of a visible choice (a thread's fallback
+  merged before the main flow's choices printed `0, 2` where ink prints
+  `0, 1`). `choose(index)` takes that same number, as before (#3527).
+
 ## 0.17.0
 
 ### Minor Changes

@@ -1,5 +1,309 @@
 # @brink-lang/editor
 
+## 0.18.0
+
+### Patch Changes
+
+- c0695b8: The code-actions menu (Ctrl-. / Cmd-.) now lists the auto-fixes for the
+  diagnostics under the cursor, above the structural entries. One click applies
+  one fix through the host's existing apply seam, and a `placeholder` fix moves
+  the caret into the hole it left.
+
+  `BrinkStudioOptions` gains `getFixes`, `applyFix` and `resolveFixCaret`;
+  `DocumentSessions` wires all three, so an embedder using it gets the fixes
+  with no change. A document handle gains `fixes(offset)` and `applyFix(fix)`.
+
+- 210bf1b: The plain-text editor context menu now offers the auto-fixes for the
+  diagnostic under the pointer (`docs/autofix-spec.md` §7), sharing the
+  code-actions menu's own `getFixes`/`applyFix` seams verbatim so a fix
+  offered by `Mod-.` and one offered by right-click are the same fix.
+
+  `TextMenuRequest` gains `fixActions?: FixMenuAction[]` and `FixMenuAction`
+  is newly exported (`label`, `code`, `tier`, `run`). `brinkStudio` now feeds
+  its own `getFixes`/`applyFix` options into the context-menu extension, so an
+  embedder already wiring those for the code-actions menu gets the entries
+  with no further change.
+
+- 11dc916: Source-anchored breakpoints with a shared-column editor gutter
+  (W4/#3297). The editor's play gutter now renders breakpoint dots (bound
+  solid / unbound hollow / disabled dimmed, plus a hover preview) in the
+  same column as the play ▶ — click a plain line to toggle, header lines
+  keep play-from-here with "Set breakpoint here" in the symbol context
+  menu. The store keeps `(file, line)` anchors as the identity (range-keyed
+  per the debugger spec's v1 ruling), derives the runtime breakpoint set by
+  re-binding through `resolveSourceLine` on every compile/session change,
+  snaps no-code clicks to the nearest following bindable line, maps anchors
+  through document edits, and persists them per project.
+- daaf25f: Choice-point visualization (W11/#3304, RULED). At a choice stop the
+  editor lights the whole choice point: every PRESENTED choice's line gets
+  the success band (the plural highlight seam's headline case), and
+  authored siblings not added to the block dim with the reason beside
+  them — "once-only · used" (derived from the new id-keyed visit counts)
+  or the line's own failing condition ("gold > 20 = false", enriched from
+  source; a by-elimination catch-all). No new runtime seam beyond two
+  additive snapshot fields: `DebugChoice.def_id` and
+  `DebugState.visit_ids` — both `DefinitionId`-keyed, string-equal to the
+  HIR overlay projection's `def_id` (#3234's identity join, now verified
+  end to end on the studio compile road, including that the path-keyed
+  visit list genuinely drops anonymous choice bodies). The editor's
+  highlight seam gains the `rejected` kind with a `note` chip; degraded
+  still suppresses everything.
+- 07359b2: Settings → Conventions is now the teach-by-example editor (#3411, ruled
+  2026-09-02): pull a passage through the Player launcher's knot/stitch
+  typeahead (or paste lines), mark each line — Cue, Dialogue, Action,
+  Narration, Aside — and the studio shows the rules it learned in plain
+  words with the lines that support each, what it could not settle, and
+  how the passage reads in the Player under those rules. "Use these rules"
+  writes the `[dialogue]` section of `brink.toml` (the `at-cue` recipe plus
+  your rows when that fits, otherwise a `dialect.json` the section points
+  at) and asks before replacing a section it did not write.
+
+  `@brink-lang/editor` re-exports the inference and `[dialogue]`-table
+  helpers from `@brink-lang/dialect` (`inferDialect`, `dialectFromConfig`,
+  `toDialogueConfig`, …).
+
+- 45e134d: `detachedGutters` no longer loses its layout compensation mid-session.
+  The gutter width it pays back as the content's `padding-left` was tracked
+  in a per-plugin accumulator, which drifted the moment CodeMirror rewrote
+  the content's inline style wholesale (`updateAttrs` applies a style
+  attribute with `dom.style.cssText = …`, so a `tabSize` reconfigure or any
+  `contentAttributes` style change erases the padding while the plugin
+  survives believing it is still applied). With the gutter width itself
+  unchanged, the plugin then wrote nothing at all: the text sat one gutter
+  width to the left, under the floating gutter overlay, with nothing
+  overflowing — so horizontal scrolling could not bring it back and only a
+  reload recovered.
+
+  Every measure pass now recomputes the target from the gutter's actual
+  measured width and the content's actual state, with the compensation
+  recorded as a custom property in the same inline declaration as the
+  padding it pays for (so the two can only be present or absent together),
+  and writes whenever the DOM does not already say exactly that. Any drift
+  self-heals on the next layout. The plugin also syncs on a reconfigure, so
+  the erasure is repaired in the same frame rather than at the next
+  keystroke. The gutters still stay out of the scroller's flex/sticky flow —
+  the WebKit layout win is untouched.
+
+- 3729f92: `@brink-lang/dialect` (RULED 2026-08-30, "Engines consume the RESOLVED dialect as a compile output"): the dialogue-dialect artifact, validator, `ResolvedDialect`, `DialectParser`, `extendDialect`, `detectCast` and the `runsOf` run rule move into a pure-TypeScript package with no runtime dependencies, so a game engine can read its project's conventions without depending on the editor. `@brink-lang/editor` re-exports the whole surface unchanged (its one editor-coupled helper is now `convertibleShapesOf`). `brink compile` writes the project's resolved dialect as `<story>.dialect.json` beside the compiled story when `brink.toml` declares `[dialogue]`, and the desktop app's Export Story does the same. Book: _Conventions for Your Engine_.
+- 7768032: Dialogue-convention diagnostics + preview (RULED 2026-08-30): a `brink.toml [dialogue]` declaration that fails to resolve (unknown preset, bad element shape, missing artifact) is now an **error row in the Problems panel** keyed to `brink.toml` — the session keeps the resolver's message as state (`getConfiguredDialogueError()`), so the row reflects the current truth rather than a one-shot warning; a malformed `brink.toml` is an error row too. The dialect's own `malformed` near-miss rules (a cue missing its terminator) surface as **warnings on story lines**, re-evaluated on every compile and config apply. A new **Settings → Conventions** section shows the project's resolved dialect and a paste-to-preview pane: how the editor classifies sample lines as source, and the speaker runs the Player would fold the same lines into as emitted text.
+- f20d4c2: Project-declared dialogue dialect (RULED 2026-08-30): `brink.toml` gains a `[dialogue]` table — `preset = "at-cue"` plus `[[dialogue.elements]]` overlays in the spec's affix sugar (`kind`, `prefix`/`suffix`/`glued`/`content-role`, or `pattern`/`template`), or `file = "path.json"` for a full artifact — resolved in the wasm session (`EditorSessionHandle.getConfiguredDialogueDialect()`) and pushed to every editor view by `DocumentSessions` (live on `brink.toml` edits via `ProjectSession`'s new `onProjectConfigApplied` hook and `DocumentSessions.refreshDialectFromProject`). **No dialect by default**: an absent `dialect` option now means plain lines with the screenplay layer's structural decorations kept (`setDialect(view, undefined)`); the `at-cue` preset is opt-in — the demo project opts in through its own `brink.toml`. An explicit `dialect: null` still tears the layer down for headless embedding. Also fixes a latent affix-sugar bug (a suffix-less prefix compiled to the invalid regex `[^]*`).
+- 2c10dd3: `run_ends_at` — the emitted-side run rule (RULED 2026-08-30): a chain rule now declares which kinds (plus the reserved `"choices"` turn boundary) END the active speaker's run in runtime-emitted text, where the source-side "blank always breaks" has no counterpart. Declared in `brink.toml` as `[dialogue] run-ends-at = [...]` (applied to every chain rule of the resolved dialect, validated like `after`/`becomes`) and applied through the new shared `runsOf(lines, dialect)` helper in `@brink-lang/editor`, so the studio Player and an engine importing the resolved dialect fold emitted lines into runs identically.
+- c179371: The editor's named actions are rebindable, and listed in Settings ▸ Keymap
+
+  Rename Symbol (F2), Find References (Shift-Alt-F), Code Actions (Mod-.),
+  Edit Arguments (Mod-Shift-A) and Insert Element (Alt-Enter) existed only
+  as chords hardcoded inside their CodeMirror extensions — invisible to the
+  keymap surface and unrebindable.
+
+  Each extension now provides its behaviour through a runner registry while
+  the chords live in one rebindable keymap
+  (`@brink-lang/editor`'s `EDITOR_ACTIONS` / `setEditorActionKeys` /
+  `runEditorAction`). The studio registers the five as ordinary commands, so
+  they appear in Settings ▸ Keymap and the palette, and a rebind flows back
+  into every open editor live — one source of truth, so the table can never
+  show a chord the editor disagrees with. Embedders that never touch keys
+  get exactly the bindings that shipped.
+
+- 2b9eb59: `DocumentSessions` refreshes mounted views from a known edit list instead of
+  a whole-document replace (#3496): `applyEditsToViews(path, edits)` dispatches
+  a minimal, sorted `changes` set in one transaction — selection maps through
+  the change set (CM6's default) and no `scrollIntoView` effect is added, so a
+  mounted view's caret and scroll position survive an edit elsewhere in the
+  file. `invalidateFile`'s own fallback (used whenever no precise edit list is
+  available — a structural op's whole-file `new_source`, undo, an external
+  change) now applies a minimal common-prefix/suffix diff rather than
+  `{ from: 0, to: doc.length, insert: content }`, which previously collapsed
+  every existing selection to the insertion point and forced the whole
+  viewport to re-lay out.
+- d1265be: The live execution highlight (W6/#3299 — "play is stepping"). The wasm
+  sessions gain `resolveDebugLine(containerIdx, offset)` — the
+  position→source road: file, 0-based line, and the covering debug entry's
+  exact byte range (kept on the seam for future instruction-level
+  stepping). The editor gains `executionHighlightExtension`, a plural
+  highlight seam (a choice point or selected stack frame can light several
+  lines at once): a subtle full-line band per position — green while
+  playing, amber when paused (with a filled gutter arrow in the shared
+  play/breakpoint column), accent for a selected frame (hollow arrow). The
+  studio wires it end-to-end: the band follows every reveal, pausing
+  scrolls the editor to the stop (reveal-on-stop) and shows a
+  "Paused — file:line" chip in the Player, and degraded sessions suppress
+  the highlight rather than showing a stale one.
+- ec4d573: The editor follows the Player (#3437, ruled 2026-09-02): a **Follow**
+  toggle in the Player toolbar (on by default, persisted with the Player
+  settings, also in Settings → Player). While the story plays, each
+  revealed line scrolls the editor to its source — opening the file as a
+  preview if needed, never taking focus — and bands it (accent, full
+  width). Editing the document pauses follow until Run/Restart or the
+  toggle. Hovering a transcript row bands its source line in the editor
+  with a neutral hover band. `@brink-lang/editor` gains
+  `DocumentSessions.scrollTo` (scroll without focus or selection) and the
+  `follow` / `hover` execution-highlight kinds.
+- 7bfa924: App setting to hide inlay hints (#3350). Settings ▸ Editor gets a "Show
+  inlay hints" toggle, persisted app-scope alongside the other editor
+  preferences and broadcast live to every open editor via
+  `DocumentSessions.setInlayHints` (the same `_documents?.setXxx(...)`
+  broadcast shape `setFormGlyph`/`setAutoOpenForm` already use) — matching
+  editors opened later too. Default stays ON (current behavior).
+- f50c84a: A delivered line's `source` now spans every source line that contributed text to it (glue, a prose-dialect cue + aside + dialogue), and the editor's follow/hover bands cover all of those lines (`ExecutionHighlight.endLine`).
+- e9c8b84: The play gutter reads its host hooks once per render instead of once per
+  visible line. `lineMarker` runs for every line in the viewport, and it was
+  calling `getExecutionHighlights` and `getBreakpoints` from inside that
+  callback — so a host whose hook is expensive paid for it ~40 times per
+  keystroke (measured: 36 reads for a 60-line document, one per line CodeMirror
+  had in view).
+
+  Both reads are now cached per `EditorState`, which is exactly one read per
+  render pass: host truth reaches the gutter only through
+  `refreshExecutionHighlight` / `refreshBreakpoints`, and each dispatches a
+  transaction, so a refreshed answer arrives on the very next render; mounting
+  a view re-dispatches both refreshes, so a tab backgrounded while the answer
+  changed (a session pausing, a breakpoint toggled elsewhere) still repaints on
+  return. No API change.
+
+- a8c4e13: Peek: hovering Continue or a choice card in the Player forks the live story (`StorySessionHandle.speculate()`, new, at the exact position), runs one continue call on the fork and highlights what it would hit in the editor with a dashed `peek` bar; `SpeculationHandle.currentPath()` reports the fork's knot. Execution highlights split into tint (state) and bar (attention) channels: `follow`/`hover`/`peek` are bar-only and stack on a tinted line, and the cursor's active line gets its own colour on a tinted line.
+- 17e6912: Program Explorer additions (W9/#3302). Instruction stepping (`stepi`
+  into/over/out) lives in the explorer's header — the granularity ladder's
+  programmer-assist tier, never in the Player toolbar. The
+  current-instruction highlight follows the Debugger panel's selected
+  stack frame, not just the top (degraded still suppresses). The editor's
+  line context menu gains "Reveal in Program Explorer" (the inverse of the
+  `.inkt` open): the line's instructions open, auto-expanded, scrolled to,
+  and flashed — with honest notices when no session is running or the line
+  compiles to nothing. The editor package exposes the
+  `onRevealInstructions` callback on its play-from-here options.
+- 0826a8c: Prose checking is measured: the debounced check now records a permanent
+  `prose.check` perf span, annotated with the document length. Prose
+  checking landed four days after the perf baseline was taken and had no
+  span of its own, so its cost showed up in a scenario run only as an
+  unattributed long task — 651 ms on a real 1,125-line file, 4.8 s p95 on
+  the 8k-line perf fixture (#3491).
+- e5ae131: Runtime-value hover (W12/#3305, RULED). While a session is live and
+  in-sync, hovering a variable in the editor appends its current runtime
+  value to the existing hover card — globals always, frame locals while
+  paused in the Debugger panel's selected frame's scope. Pairs with the
+  choice-point visualization: hover the failing condition's variable to
+  see exactly why it failed. No new wasm surface — the editor extracts
+  the identifier under the cursor and asks the host
+  (`getRuntimeValueNote`); the studio's policy suppresses under degraded
+  and outside a live session, never stale.
+- b923522: Keep a tab's scroll position across a switch away and back. The slot machinery snapshotted the scroller's pixel offset and re-applied the number on remount, which is not a stable address into the document — CodeMirror estimates the height of unmeasured lines, so the same offset lands elsewhere once a fresh view measures (measured on an 8k-line file: leave at 4,124 px, return at 5,177 px). It now records `view.scrollSnapshot()`, a document position, and re-applies that; the pixel offset stays only as the fallback for a slot restored across a reload, where nothing but JSON crosses the boundary (#3559). A document's last offset also outlives its slot in a bounded per-document memory, so closing a tab and reopening it lands where you left rather than at the top.
+- f186ac8: Suppressing a diagnostic project-wide now clears its squiggle immediately,
+  instead of leaving it until the file is edited or reopened.
+
+  Compile squiggles are published by the diagnostics extension's ViewPlugin,
+  which wakes on a document change. A compile that lands for some other reason
+  — a `brink.toml` edit changing `[lints]`, a suppression written into a
+  sibling file — has no document change in the view showing the diagnostic, so
+  nothing republished. The prose checker already had this seam
+  (`refreshProseEffect`); `refreshDiagnosticsEffect` is its compile-side twin,
+  dispatched wherever a compile is delivered.
+
+- 75cfdd3: Structural rails (#3501, ruled 2026-09-03): the rails gutter now mounts as
+  the RIGHTMOST gutter, directly adjacent to `.cm-content` (after line
+  numbers and the play/breakpoint/host gutters), via CodeMirror's own gutter
+  precedence (`Prec.lowest`) rather than CSS reordering. Hovering the column
+  at a line now shows ONE tooltip listing every container in that line's
+  stack, outermost first, instead of a tooltip per bar — the per-bar
+  `pointerenter`/`pointerleave` handlers are gone; the listener lives on the
+  gutter marker's wrapper. `RAIL_LANE_WIDTH_PX` shrinks from 7 to 5 to match
+  the bars packing with no gap between them.
+- f67b91a: Fix editor tooltips (hover cards, lint popups, autocomplete) rendering
+  clipped under the Player pane. CodeMirror mounted every tooltip inside the
+  editor's own `.cm-editor` element, so a sibling pane with its own stacking
+  context or `overflow` (the Player split, `z-index: 30`) could clip or paint
+  over it — a `position: fixed` tooltip escapes scroll clipping, not an
+  ancestor's stacking order or `overflow` box.
+
+  Tooltips now reparent (`tooltips({ parent })`) into a dedicated
+  `.brink-tooltip-layer` mount point the shell renders inside the real
+  `.brink-studio` theme root (found via the same `closest(".brink-studio")`
+  lookup `widget-popover.ts` already uses), so `--bs-*` design tokens keep
+  applying — a headless embed with no `.brink-studio` root, or a host that
+  doesn't render the layer, falls back to `document.body`, which still escapes
+  the clip. The layer is a dedicated mount rather than `.brink-studio` itself
+  because CM6's own tooltip container is `position: relative`, not
+  `fixed`/`absolute`; mounted directly on `.brink-studio` (a flex column) it
+  became an in-flow flex item that broke the shell's layout. `@brink-lang/studio`'s
+  tooltip CSS no longer requires a `.cm-editor` ancestor, since the reparented
+  node is no longer inside one.
+
+- 88d8352: Live value editing (W16, spec §F6 RULED): scalar globals and frame locals are click-to-edit in the Debugger panel while paused — inline mono input, Enter commits, Esc cancels, a parse/type-refused edit red-shakes with nothing written; edits can never change a value's type. Globals commit through the observed write path (`WebSession.debugEditGlobal`); locals through the new set-temp-in-frame debug seam (`debugEditTemp`), disabled at choice stops where choosing would restore the choice's captured thread over the edit. "Reveal in Program Explorer" now only appears in the editor's line menu while a session can actually resolve it (`canRevealInstructions` gate).
+- Updated dependencies [fc827ec]
+- Updated dependencies [d0acebb]
+- Updated dependencies [16072b0]
+- Updated dependencies [c0695b8]
+- Updated dependencies [ba08f3c]
+- Updated dependencies [94b8c37]
+- Updated dependencies [b9820be]
+- Updated dependencies [c0ffbce]
+- Updated dependencies [b0d3fce]
+- Updated dependencies [b82cb34]
+- Updated dependencies [d90a460]
+- Updated dependencies [daaf25f]
+- Updated dependencies [f236910]
+- Updated dependencies [e1111ab]
+- Updated dependencies [deb671b]
+- Updated dependencies [127dee4]
+- Updated dependencies [26c699e]
+- Updated dependencies [1bb9565]
+- Updated dependencies [ef1ac8a]
+- Updated dependencies [12f08ab]
+- Updated dependencies [3729f92]
+- Updated dependencies [7768032]
+- Updated dependencies [f20d4c2]
+- Updated dependencies [2c10dd3]
+- Updated dependencies [4b96bf1]
+- Updated dependencies [52881be]
+- Updated dependencies [272df89]
+- Updated dependencies [4dc8b89]
+- Updated dependencies [706fe0b]
+- Updated dependencies [dce2827]
+- Updated dependencies [3448c50]
+- Updated dependencies [d1265be]
+- Updated dependencies [93b6c4b]
+- Updated dependencies [92e114b]
+- Updated dependencies [0938a9d]
+- Updated dependencies [4a1d7df]
+- Updated dependencies [301925e]
+- Updated dependencies [88ef785]
+- Updated dependencies [f90881f]
+- Updated dependencies [8b9b045]
+- Updated dependencies [f77033b]
+- Updated dependencies [d05de1f]
+- Updated dependencies [a960fc4]
+- Updated dependencies [0f7af5d]
+- Updated dependencies [f50c84a]
+- Updated dependencies [b0e2d3a]
+- Updated dependencies [29dfd78]
+- Updated dependencies [fd34329]
+- Updated dependencies [11af92c]
+- Updated dependencies [12ef8e9]
+- Updated dependencies [221307b]
+- Updated dependencies [7be34d0]
+- Updated dependencies [f38e85b]
+- Updated dependencies [a8c4e13]
+- Updated dependencies [b92f124]
+- Updated dependencies [e8d75f2]
+- Updated dependencies [1f1a500]
+- Updated dependencies [1f1a500]
+- Updated dependencies [4f70d28]
+- Updated dependencies [368d7fa]
+- Updated dependencies [5e67883]
+- Updated dependencies [a6b6f7f]
+- Updated dependencies [a343249]
+- Updated dependencies [4abd6c8]
+- Updated dependencies [e680185]
+- Updated dependencies [c0ffbce]
+- Updated dependencies [4c142de]
+- Updated dependencies [d1cf91b]
+- Updated dependencies [a103f15]
+- Updated dependencies [e48d343]
+- Updated dependencies [9d3f5fa]
+- Updated dependencies [88d8352]
+- Updated dependencies [2314f79]
+  - @brink-lang/web@0.18.0
+  - @brink-lang/dialect@0.18.0
+
 ## 0.17.0
 
 ### Minor Changes
