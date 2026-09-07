@@ -29,8 +29,9 @@ use std::collections::VecDeque;
 
 use gpui::prelude::*;
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div, uniform_list,
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, Render, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle,
+    Window, div, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
@@ -150,6 +151,19 @@ pub struct Row {
     /// the moment you come back to the window and ask whether something
     /// happened just now or an hour ago.
     pub at: SharedString,
+    /// The file this row is ABOUT, when there is one — a failed save, a
+    /// config warning. Activating such a row opens it. `None` for a row
+    /// that names no place (a timing, "saved", a runtime error): a row
+    /// that looks clickable and does nothing is worse than a plain one.
+    pub opens: Option<String>,
+}
+
+/// Activating a log row that names a file. Raised rather than done here,
+/// for the same reason Problems raises its own: only the studio holds the
+/// tabs.
+#[derive(Debug, Clone)]
+pub struct OpenLogRow {
+    pub path: String,
 }
 
 /// The rows, and the rule for what earns one. Split from the view so the
@@ -188,6 +202,20 @@ impl Log {
         self.push_at(level, source, text, clock());
     }
 
+    /// The same, for a row that is about a file the studio can open.
+    pub fn push_about(
+        &mut self,
+        level: Level,
+        source: &str,
+        text: impl Into<SharedString>,
+        opens: impl Into<String>,
+    ) {
+        self.push_at(level, source, text, clock());
+        if let Some(row) = self.rows.back_mut() {
+            row.opens = Some(opens.into());
+        }
+    }
+
     /// The same, with the clock supplied — so a test can pin the format
     /// without pinning the moment it ran.
     pub fn push_at(
@@ -203,6 +231,7 @@ impl Log {
             text: text.into(),
             also: 0,
             at,
+            opens: None,
         });
         while self.rows.len() > CAP {
             self.rows.pop_front();
@@ -269,6 +298,7 @@ pub struct OutputLog {
 }
 
 impl EventEmitter<PanelEvent> for OutputLog {}
+impl EventEmitter<OpenLogRow> for OutputLog {}
 
 impl OutputLog {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
@@ -286,8 +316,20 @@ impl OutputLog {
                     // key that means nothing. They have no span, so
                     // Problems cannot hold them, and stderr is not a
                     // surface a windowed studio has.
+                    // A config warning is about `brink.toml`, so its row
+                    // opens it — the file the author has to edit to make
+                    // the warning go away.
+                    let config = project.config_path().map(str::to_owned);
                     for warning in project.warnings() {
-                        this.log.push(Level::Warning, "project", warning.clone());
+                        match &config {
+                            Some(path) => this.log.push_about(
+                                Level::Warning,
+                                "project",
+                                warning.clone(),
+                                path.clone(),
+                            ),
+                            None => this.log.push(Level::Warning, "project", warning.clone()),
+                        }
                     }
                 }
                 ProjectEvent::OpenFailed(message) => {
@@ -313,8 +355,12 @@ impl OutputLog {
                     this.log.push(Level::Info, "project", "saved");
                 }
                 ProjectEvent::SaveFailed { path, message } => {
-                    this.log
-                        .push(Level::Error, "project", format!("{path}: {message}"));
+                    this.log.push_about(
+                        Level::Error,
+                        "project",
+                        format!("{path}: {message}"),
+                        path.clone(),
+                    );
                 }
                 ProjectEvent::FilesChanged => {
                     this.log
@@ -451,10 +497,10 @@ impl OutputLog {
     }
 
     /// `slot` indexes the FILTERED list, not the log.
-    fn render_row(&self, slot: usize, visible: &[usize], cx: &App) -> impl IntoElement {
+    fn render_row(&self, slot: usize, visible: &[usize], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let Some(row) = visible.get(slot).and_then(|i| self.log.rows().get(*i)) else {
-            return div();
+            return div().into_any_element();
         };
         let colour = match row.level {
             Level::Info => theme.muted_foreground,
@@ -465,34 +511,48 @@ impl OutputLog {
             let n = row.also;
             format!("+{n} more").into()
         });
-        div().child(
-            h_flex()
-                .w_full()
-                .gap_2()
-                .px_2()
-                .py_0p5()
-                .child(
-                    // Wide enough for `hh:mm:ss` at this size — narrower and
-                    // the clock wraps onto two lines, which it did at 52px.
-                    div()
-                        .w(gpui::px(64.))
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .text_color(theme.muted_foreground)
-                        .child(row.at.clone()),
-                )
-                .child(
-                    div()
-                        .w(gpui::px(56.))
-                        .flex_none()
-                        .text_color(theme.muted_foreground)
-                        .child(row.source.clone()),
-                )
-                .child(div().flex_1().text_color(colour).child(row.text.clone()))
-                .children(
-                    tail.map(|t| div().text_color(theme.muted_foreground).text_xs().child(t)),
-                ),
-        )
+        // A row that names a file opens it; one that names no place is
+        // plain text, and looks it.
+        let opens = row.opens.clone();
+        let hover = theme.accent;
+        div()
+            .id(("output-row", slot))
+            .when_some(opens, |el, path| {
+                el.cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        cx.emit(OpenLogRow { path: path.clone() });
+                    }))
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .px_2()
+                    .py_0p5()
+                    .child(
+                        // Wide enough for `hh:mm:ss` at this size — narrower and
+                        // the clock wraps onto two lines, which it did at 52px.
+                        div()
+                            .w(gpui::px(64.))
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_color(theme.muted_foreground)
+                            .child(row.at.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(gpui::px(56.))
+                            .flex_none()
+                            .text_color(theme.muted_foreground)
+                            .child(row.source.clone()),
+                    )
+                    .child(div().flex_1().text_color(colour).child(row.text.clone()))
+                    .children(
+                        tail.map(|t| div().text_color(theme.muted_foreground).text_xs().child(t)),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
@@ -586,6 +646,25 @@ impl Render for OutputLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_row_that_names_a_file_carries_somewhere_to_open() {
+        let mut log = Log::default();
+        log.push(Level::Info, "project", "saved");
+        log.push_about(
+            Level::Error,
+            "project",
+            "scene.ink: permission denied",
+            "scene.ink",
+        );
+        log.push(Level::Error, "player", "external `roll` has no fallback");
+        let opens: Vec<Option<&str>> = log.rows().iter().map(|r| r.opens.as_deref()).collect();
+        assert_eq!(
+            opens,
+            [None, Some("scene.ink"), None],
+            "a timing, a save failure, a runtime error"
+        );
+    }
 
     #[test]
     fn the_first_analysis_is_always_logged() {

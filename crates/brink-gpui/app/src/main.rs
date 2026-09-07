@@ -655,6 +655,15 @@ impl Studio {
                 }
             },
         );
+        // An Output row that names a file opens it — a failed save, a
+        // config warning. A row that names no place is not clickable.
+        let on_log_row = cx.subscribe_in(
+            &output,
+            window,
+            |this, _, event: &crate::output_log::OpenLogRow, window, cx| {
+                this.open(&event.path, None, window, cx);
+            },
+        );
         let on_todo = cx.subscribe_in(&todos, window, |this, _, event: &OpenTodo, window, cx| {
             this.open(&event.path, Some(event.span.clone()), window, cx);
         });
@@ -721,6 +730,7 @@ impl Studio {
                 on_problem,
                 on_problem_menu,
                 on_todo,
+                on_log_row,
                 on_search,
                 on_code,
                 on_general,
