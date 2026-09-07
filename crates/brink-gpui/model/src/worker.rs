@@ -235,9 +235,41 @@ pub struct ConfigState {
     /// `[dialogue]` table might name — the config crate decides that, and
     /// a second guess here would drift from it.
     read_artifacts: BTreeSet<String>,
+    /// `[prose]` as applied: whether checking runs, in which English, and
+    /// the author's own word list. Kept beside the entry rather than read
+    /// back out of the text, so the check sees the config that is applied
+    /// and not one being typed.
+    prose: Option<ProseState>,
+}
+
+/// The `[prose]` table, as the checker needs it.
+#[derive(Debug, Clone, Default)]
+pub struct ProseState {
+    pub enable: bool,
+    pub dialect: Option<String>,
+    pub dictionary: Vec<String>,
 }
 
 impl ConfigState {
+    /// `[prose] enable`, defaulting to ON — a project that has said
+    /// nothing wants its prose checked.
+    #[must_use]
+    pub fn prose_enabled(&self) -> bool {
+        self.prose.as_ref().is_none_or(|p| p.enable)
+    }
+
+    /// `[prose] dialect` as written, or `None` for the default.
+    #[must_use]
+    pub fn prose_dialect(&self) -> Option<&str> {
+        self.prose.as_ref().and_then(|p| p.dialect.as_deref())
+    }
+
+    /// `[prose] dictionary` — the author's own word list.
+    #[must_use]
+    pub fn prose_dictionary(&self) -> &[String] {
+        self.prose.as_ref().map_or(&[], |p| p.dictionary.as_slice())
+    }
+
     #[must_use]
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
@@ -475,6 +507,19 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                 )))
+            } else if let QueryKind::Prose { path } = &kind {
+                // The config decides whether it runs at all, in which
+                // English, and which invented names are words.
+                if config.prose_enabled() {
+                    let dictionary =
+                        crate::prose::project_dictionary(&session, config.prose_dictionary());
+                    QueryResult::Prose(
+                        crate::prose::check(&session, path, &dictionary, config.prose_dialect())
+                            .unwrap_or_default(),
+                    )
+                } else {
+                    QueryResult::Prose(Vec::new())
+                }
             } else if matches!(kind, QueryKind::StoryGraph) {
                 // Same reason as `Program`: the entry and the file list
                 // live in this loop.
@@ -667,6 +712,13 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 &read_file,
             ));
             state.entry.clone_from(&config.entry);
+            state.prose = Some(ProseState {
+                // Unset means on: a project that has said nothing about
+                // prose still wants its prose checked.
+                enable: config.prose_enable.unwrap_or(true),
+                dialect: config.prose_dialect.map(|d| d.as_str().to_owned()),
+                dictionary: config.prose_dictionary.clone(),
+            });
             state.read_artifacts = asked.into_inner();
             state.warnings = warnings;
             state.error = None;

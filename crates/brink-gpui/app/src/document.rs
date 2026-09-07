@@ -416,6 +416,70 @@ impl Document {
         .detach();
     }
 
+    /// Ask for this file's prose lints and add them to the editor's
+    /// diagnostics.
+    ///
+    /// A separate pass from the analysis broadcast, and asked per OPEN
+    /// file rather than per project: the checker walks a dictionary and a
+    /// POS tagger, which is worth doing for the file someone is reading
+    /// and not for forty they are not.
+    ///
+    /// The lints are added on TOP of the compiler's diagnostics rather
+    /// than replacing them — a spelling mistake and an unresolved divert
+    /// are both true at once — and they come back as HINTs, the quietest
+    /// severity the editor draws: a misspelling in a draft is not an
+    /// error, and marking it like one is how a checker gets turned off.
+    fn refresh_prose(&mut self, cx: &mut Context<Self>) {
+        let query = self.project.read(cx).query(
+            QueryKind::Prose {
+                path: self.path.to_string(),
+            },
+            cx,
+        );
+        let editor = self.editor.clone();
+        cx.spawn(async move |_, cx| {
+            let Ok(QueryResult::Prose(lints)) = query.await else {
+                return;
+            };
+            editor.update(cx, |state, cx| {
+                let source = state.value().to_string();
+                let index = LineIndex::new(&source);
+                let at = |offset: u32| {
+                    let (line, character) = index.line_col(rowan::TextSize::from(offset));
+                    lsp::Position { line, character }
+                };
+                let diagnostics: Vec<lsp::Diagnostic> = lints
+                    .into_iter()
+                    // A lint whose range no longer fits the text is a
+                    // lint about text that has since changed: dropped,
+                    // not clamped onto whatever now sits there.
+                    .filter(|lint| lint.end as usize <= source.len() && lint.end > lint.start)
+                    .map(|lint| lsp::Diagnostic {
+                        range: lsp::Range {
+                            start: at(lint.start),
+                            end: at(lint.end),
+                        },
+                        severity: Some(lsp::DiagnosticSeverity::HINT),
+                        code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
+                        message: lint.message,
+                        ..Default::default()
+                    })
+                    .collect();
+                if diagnostics.is_empty() {
+                    return;
+                }
+                if let Some(set) = state.diagnostics_mut() {
+                    // `reset` is the analysis pass's; this one only adds,
+                    // or it would wipe the compiler's diagnostics every
+                    // time the checker answered second.
+                    set.extend(diagnostics);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Fold the analysis the worker just published into the editor.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (rope, source) = {
@@ -444,6 +508,7 @@ impl Document {
         });
 
         self.refresh_folds(cx);
+        self.refresh_prose(cx);
 
         // Inlays are a query rather than part of the analysis broadcast:
         // computing them for every file on every keystroke would be

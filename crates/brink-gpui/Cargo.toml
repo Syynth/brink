@@ -78,4 +78,10 @@ brink-fmt = { path = "../internal/brink-fmt" }
 brink-runtime = { path = "../brink-runtime" }
 brink-format = { path = "../internal/brink-format", features = ["inkt-write"] }
 brink-intl = { path = "../internal/brink-intl" }
+# The prose checker. The WEB keeps this out of `brink-web` because
+# harper-core is 6.15 MB gzipped as wasm against brink-web's 2.61 MB
+# (`docs/prose-checking.md`); a native desktop binary has no such budget
+# to blow, so the studio links it directly and the worker runs it in
+# process rather than shipping a second artifact nobody downloads.
+brink-prose = { path = "../brink-prose" }
 

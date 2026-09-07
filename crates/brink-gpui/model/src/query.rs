@@ -40,6 +40,11 @@ pub enum QueryKind {
     /// passage picker (ruled 2026-09-02: sample lines come from a
     /// knot/stitch selector).
     PassageIndex,
+    /// Spelling and light grammar over one file's prose. Answered in the
+    /// worker loop, which holds the `[prose]` config the check needs.
+    Prose {
+        path: String,
+    },
     /// The whole-project story graph — knots and stitches as nodes,
     /// diverts and choices as edges. Answered in the worker loop rather
     /// than in `answer`, since it needs the entry and the file list.
@@ -149,6 +154,7 @@ pub enum QueryResult {
     Formatted(Option<String>),
     Program(Box<crate::program::ProgramReport>),
     StoryGraph(Box<crate::graph::StoryGraphReport>),
+    Prose(Vec<crate::prose::ProseLint>),
     CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
 }
@@ -353,9 +359,10 @@ pub(crate) fn answer(
         // The worker loop answers these two before reaching here.
         // Answered in the worker loop, which holds the entry and the
         // file list; reaching here means something asked out of band.
-        QueryKind::Program | QueryKind::CompiledOutput | QueryKind::StoryGraph => {
-            QueryResult::Unavailable
-        }
+        QueryKind::Program
+        | QueryKind::CompiledOutput
+        | QueryKind::StoryGraph
+        | QueryKind::Prose { .. } => QueryResult::Unavailable,
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),

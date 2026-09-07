@@ -4,6 +4,7 @@ pub mod fixes;
 pub mod graph;
 pub mod play;
 pub mod program;
+pub mod prose;
 pub mod query;
 pub mod tokens;
 pub mod worker;
