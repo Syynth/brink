@@ -47,6 +47,26 @@ use gpui::WeakEntity;
 /// The most rows kept. Oldest first out — the unbounded-growth guard.
 pub const CAP: usize = 500;
 
+/// Local wall-clock as `hh:mm:ss`.
+///
+/// Computed from the Unix epoch rather than pulled from a date library:
+/// the log wants "when, roughly" within a session, and a dependency for
+/// three fields would be the larger cost. UTC, since the studio has no
+/// timezone of its own to be wrong about.
+#[must_use]
+pub fn clock() -> SharedString {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let day = secs % 86_400;
+    SharedString::from(format!(
+        "{:02}:{:02}:{:02}",
+        day / 3600,
+        (day % 3600) / 60,
+        day % 60
+    ))
+}
+
 /// An analysis at or over this is logged even when nothing else changed.
 pub const SLOW_MS: f64 = 50.0;
 
@@ -57,6 +77,65 @@ pub enum Level {
     Error,
 }
 
+/// The toggle a level belongs to.
+#[must_use]
+pub fn level_ix(level: Level) -> usize {
+    match level {
+        Level::Error => 0,
+        Level::Warning => 1,
+        Level::Info => 2,
+    }
+}
+
+/// The row indices `show` admits, oldest first. Split from the view so
+/// the filter can be tested without a window.
+#[must_use]
+pub fn visible_rows(log: &Log, show: &[bool; 3]) -> Vec<usize> {
+    log.rows()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| show[level_ix(r.level)])
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Counts per severity over every row, filtered or not — so a muted
+/// toggle still says what turning it back on would restore.
+#[must_use]
+pub fn counts_of(log: &Log) -> [usize; 3] {
+    let mut out = [0usize; 3];
+    for row in log.rows() {
+        out[level_ix(row.level)] += 1;
+    }
+    out
+}
+
+/// The visible rows as plain text, one per line — what Copy puts on the
+/// clipboard. The filter is honoured: what you copy is what you can see,
+/// which is the point of having muted a level in the first place.
+#[must_use]
+pub fn transcript(log: &Log, show: &[bool; 3]) -> String {
+    let mut out = String::new();
+    for i in visible_rows(log, show) {
+        let Some(row) = log.rows().get(i) else {
+            continue;
+        };
+        // `as_ref` matters: `SharedString`'s own `Display` writes through
+        // without honouring the width, so `{:<8}` pads only a `&str`.
+        out.push_str(&format!(
+            "{} {:<8} {}",
+            row.at,
+            row.source.as_ref(),
+            row.text
+        ));
+        if row.also > 0 {
+            out.push_str(&format!(" (+{} more)", row.also));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct Row {
     pub level: Level,
@@ -65,6 +144,12 @@ pub struct Row {
     pub text: SharedString,
     /// Quiet analyses folded into this row since it was written.
     pub also: usize,
+    /// Wall-clock `hh:mm:ss` when the row was written.
+    ///
+    /// Order alone is enough while you are watching; it stops being enough
+    /// the moment you come back to the window and ask whether something
+    /// happened just now or an hour ago.
+    pub at: SharedString,
 }
 
 /// The rows, and the rule for what earns one. Split from the view so the
@@ -100,11 +185,24 @@ impl Log {
     }
 
     pub fn push(&mut self, level: Level, source: &str, text: impl Into<SharedString>) {
+        self.push_at(level, source, text, clock());
+    }
+
+    /// The same, with the clock supplied — so a test can pin the format
+    /// without pinning the moment it ran.
+    pub fn push_at(
+        &mut self,
+        level: Level,
+        source: &str,
+        text: impl Into<SharedString>,
+        at: SharedString,
+    ) {
         self.rows.push_back(Row {
             level,
             source: SharedString::from(source.to_owned()),
             text: text.into(),
             also: 0,
+            at,
         });
         while self.rows.len() > CAP {
             self.rows.pop_front();
@@ -156,6 +254,10 @@ impl Log {
 pub struct OutputLog {
     project: Entity<Project>,
     log: Log,
+    /// Which severities are shown. Each toggle carries its count over the
+    /// UNFILTERED rows, so a muted one still says what turning it back on
+    /// would restore — the Problems panel's rule, and for the same reason.
+    show: [bool; 3],
     scroll: UniformListScrollHandle,
     /// Rows at the last render, so a row added since can be scrolled to.
     /// A log that does not follow its own tail makes you scroll to find
@@ -173,12 +275,20 @@ impl OutputLog {
         let on_project = cx.subscribe(&project, |this: &mut Self, project, event, cx| {
             match event {
                 ProjectEvent::Opened { elapsed_ms } => {
-                    let files = project.read(cx).files().len();
+                    let project = project.read(cx);
+                    let files = project.files().len();
                     this.log.push(
                         Level::Info,
                         "project",
                         format!("opened in {elapsed_ms:.1} ms · {files} file(s)"),
                     );
+                    // Load warnings — an unreadable file, a `brink.toml`
+                    // key that means nothing. They have no span, so
+                    // Problems cannot hold them, and stderr is not a
+                    // surface a windowed studio has.
+                    for warning in project.warnings() {
+                        this.log.push(Level::Warning, "project", warning.clone());
+                    }
                 }
                 ProjectEvent::OpenFailed(message) => {
                     this.log.push(Level::Error, "project", message.clone());
@@ -202,6 +312,10 @@ impl OutputLog {
                 ProjectEvent::Saved => {
                     this.log.push(Level::Info, "project", "saved");
                 }
+                ProjectEvent::SaveFailed { path, message } => {
+                    this.log
+                        .push(Level::Error, "project", format!("{path}: {message}"));
+                }
                 ProjectEvent::SourceChanged { .. } => return,
             }
             cx.notify();
@@ -209,6 +323,7 @@ impl OutputLog {
         Self {
             project,
             log: Log::default(),
+            show: [true; 3],
             scroll: UniformListScrollHandle::new(),
             shown_rows: 0,
             focus: cx.focus_handle(),
@@ -231,6 +346,54 @@ impl OutputLog {
         self._subscriptions.push(subscription);
     }
 
+    /// The row indices the filter admits, newest last.
+    fn visible(&self) -> Vec<usize> {
+        visible_rows(&self.log, &self.show)
+    }
+
+    /// Counts per severity over every row, filtered or not.
+    fn counts(&self) -> [usize; 3] {
+        counts_of(&self.log)
+    }
+
+    /// One toggle per severity, each showing its count over the unfiltered
+    /// rows.
+    fn toggles(
+        show: &[bool; 3],
+        counts: &[usize; 3],
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let theme = cx.theme();
+        let colours = [theme.danger, theme.warning, theme.muted_foreground];
+        let labels = ["errors", "warnings", "info"];
+        (0..3)
+            .map(|i| {
+                let on = show[i];
+                let colour = colours[i];
+                Button::new(("output-level", i))
+                    .ghost()
+                    .xsmall()
+                    .toggled(on)
+                    .tooltip(format!(
+                        "{} {}",
+                        if on { "Hide" } else { "Show" },
+                        labels[i]
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if on { colour } else { theme.muted_foreground })
+                            .child(format!("{}", counts[i])),
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.show[i] = !this.show[i];
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
@@ -249,6 +412,7 @@ impl OutputLog {
             .border_b_1()
             .border_color(border)
             .child(div().text_xs().text_color(muted).child(summary))
+            .children(Self::toggles(&self.show, &self.counts(), cx))
             .child(div().flex_1())
             .child(
                 Checkbox::new("output-verbose")
@@ -257,6 +421,17 @@ impl OutputLog {
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.log.verbose = *checked;
                         cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("output-copy")
+                    .ghost()
+                    .xsmall()
+                    .label("Copy")
+                    .tooltip("Copy the visible rows")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        let text = transcript(&this.log, &this.show);
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                     })),
             )
             .child(
@@ -271,9 +446,10 @@ impl OutputLog {
             )
     }
 
-    fn render_row(&self, index: usize, cx: &App) -> impl IntoElement {
+    /// `slot` indexes the FILTERED list, not the log.
+    fn render_row(&self, slot: usize, visible: &[usize], cx: &App) -> impl IntoElement {
         let theme = cx.theme();
-        let Some(row) = self.log.rows().get(index) else {
+        let Some(row) = visible.get(slot).and_then(|i| self.log.rows().get(*i)) else {
             return div();
         };
         let colour = match row.level {
@@ -292,8 +468,19 @@ impl OutputLog {
                 .px_2()
                 .py_0p5()
                 .child(
+                    // Wide enough for `hh:mm:ss` at this size — narrower and
+                    // the clock wraps onto two lines, which it did at 52px.
+                    div()
+                        .w(gpui::px(64.))
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_color(theme.muted_foreground)
+                        .child(row.at.clone()),
+                )
+                .child(
                     div()
                         .w(gpui::px(56.))
+                        .flex_none()
                         .text_color(theme.muted_foreground)
                         .child(row.source.clone()),
                 )
@@ -349,13 +536,15 @@ impl ToolWindow for OutputLog {
 impl Render for OutputLog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let count = self.log.rows().len();
+        let visible = self.visible();
+        let count = visible.len();
         // Follow the tail: a row arrived since the last frame, so show it.
         if count > self.shown_rows && count > 0 {
             self.scroll.scroll_to_item(count - 1, ScrollStrategy::Top);
         }
         self.shown_rows = count;
         let header = self.render_header(cx);
+        let total = self.log.rows().len();
         let _ = &self.project;
         v_flex()
             .id("output-log")
@@ -364,16 +553,21 @@ impl Render for OutputLog {
             .text_xs()
             .child(header)
             .when(count == 0, |el| {
-                el.child(div().p_3().text_color(muted).child("Nothing logged yet."))
+                el.child(div().p_3().text_color(muted).child(if total == 0 {
+                    "Nothing logged yet."
+                } else {
+                    "Every row is filtered out."
+                }))
             })
             .when(count > 0, |el| {
                 el.child(
                     uniform_list(
                         "output-rows",
                         count,
-                        cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            let visible = this.visible();
                             range
-                                .map(|i| this.render_row(i, cx).into_any_element())
+                                .map(|i| this.render_row(i, &visible, cx).into_any_element())
                                 .collect::<Vec<_>>()
                         }),
                     )
@@ -460,6 +654,85 @@ mod tests {
             log.rows()[0].text.as_ref(),
             "row 10",
             "oldest dropped first"
+        );
+    }
+
+    #[test]
+    fn the_clock_column_is_a_fixed_width_wall_clock() {
+        let at = clock();
+        let parts: Vec<&str> = at.split(':').collect();
+        assert_eq!(parts.len(), 3, "hh:mm:ss, got {at}");
+        for part in parts {
+            assert_eq!(part.len(), 2, "each field is padded to two: {at}");
+            assert!(part.chars().all(|c| c.is_ascii_digit()), "digits: {at}");
+        }
+    }
+
+    #[test]
+    fn a_row_carries_the_clock_it_was_written_at() {
+        let mut log = Log::default();
+        log.push_at(Level::Info, "test", "hello", SharedString::from("01:02:03"));
+        assert_eq!(log.rows()[0].at.as_ref(), "01:02:03");
+    }
+
+    #[test]
+    fn the_filter_hides_a_level_without_forgetting_it() {
+        let mut log = Log::default();
+        log.push(Level::Error, "test", "boom");
+        log.push(Level::Warning, "test", "hmm");
+        log.push(Level::Info, "test", "fyi");
+        log.push(Level::Info, "test", "also fyi");
+
+        assert_eq!(counts_of(&log), [1, 1, 2], "counts are over every row");
+        assert_eq!(visible_rows(&log, &[true; 3]).len(), 4, "nothing hidden");
+
+        // Info muted: the two info rows go, the counts do not.
+        let show = [true, true, false];
+        assert_eq!(visible_rows(&log, &show), vec![0, 1]);
+        assert_eq!(
+            counts_of(&log),
+            [1, 1, 2],
+            "a muted toggle still says what it would restore"
+        );
+
+        assert!(
+            visible_rows(&log, &[false; 3]).is_empty(),
+            "everything can be muted; the view says so rather than looking empty"
+        );
+    }
+
+    #[test]
+    fn copy_takes_the_visible_rows_and_only_those() {
+        let mut log = Log::default();
+        log.push_at(
+            Level::Error,
+            "player",
+            "boom",
+            SharedString::from("01:00:00"),
+        );
+        log.push_at(
+            Level::Info,
+            "project",
+            "saved",
+            SharedString::from("01:00:01"),
+        );
+        let all = transcript(&log, &[true; 3]);
+        assert!(all.contains("01:00:00 player   boom"), "got {all:?}");
+        assert_eq!(all.lines().count(), 2);
+
+        let errors_only = transcript(&log, &[true, true, false]);
+        assert_eq!(errors_only.lines().count(), 1, "muted rows are not copied");
+        assert!(errors_only.contains("boom"));
+    }
+
+    #[test]
+    fn a_folded_tail_is_copied_with_its_count() {
+        let mut log = Log::default();
+        log.analyzed(1.0, 0, 0, 0);
+        log.analyzed(1.0, 0, 0, 0);
+        assert!(
+            transcript(&log, &[true; 3]).contains("(+1 more)"),
+            "the fold is part of what the row says"
         );
     }
 

@@ -426,17 +426,18 @@ impl Studio {
             &project,
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
-                ProjectEvent::Opened { elapsed_ms } => {
-                    eprintln!("project opened in {elapsed_ms:.1} ms");
-                    for warning in this.project.read(cx).warnings() {
-                        eprintln!("warning: {warning}");
-                    }
+                // The open timing, the load warnings and an open failure
+                // all land in the Output log, which subscribes to the same
+                // events — this handler is only the window's own reaction.
+                ProjectEvent::Opened { .. } => {
                     this.open_initial(window, cx);
                     this.refresh_status(cx);
                 }
-                ProjectEvent::OpenFailed(message) => eprintln!("failed to open: {message}"),
                 ProjectEvent::Analyzed => this.refresh_status(cx),
-                ProjectEvent::SourceChanged { .. } | ProjectEvent::Saved => {}
+                ProjectEvent::OpenFailed(_)
+                | ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::Saved
+                | ProjectEvent::SaveFailed { .. } => {}
             },
         );
         let on_binder = cx.subscribe_in(
@@ -997,10 +998,11 @@ impl Studio {
 }
 
 fn write_all(project: &Entity<Project>, cx: &mut App) {
+    // `save_all` emits `ProjectEvent::SaveFailed` per failure, which the
+    // Output log turns into an error row — so a failed write is visible in
+    // the window rather than only on a stderr nobody is reading.
     project.update(cx, |project, cx| {
-        for (path, err) in project.save_all(cx) {
-            eprintln!("failed to save {path}: {err:#}");
-        }
+        let _ = project.save_all(cx);
     });
 }
 

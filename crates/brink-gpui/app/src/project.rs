@@ -41,6 +41,14 @@ pub enum ProjectEvent {
     },
     /// Dirty files were written to disk.
     Saved,
+    /// A dirty file could NOT be written. Nothing else reports this: the
+    /// editor keeps the text, so the only sign a save failed is this event
+    /// (and the Output row it becomes). It used to go to stderr, where a
+    /// windowed studio has no reader.
+    SaveFailed {
+        path: String,
+        message: String,
+    },
 }
 
 /// One contiguous replacement in a file's text — what a keystroke is, and
@@ -341,6 +349,12 @@ impl Project {
                 }
                 Err(err) => failures.push((path.clone(), err)),
             }
+        }
+        for (path, err) in &failures {
+            cx.emit(ProjectEvent::SaveFailed {
+                path: path.clone(),
+                message: format!("{err}"),
+            });
         }
         if wrote {
             cx.emit(ProjectEvent::Saved);

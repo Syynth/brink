@@ -81,11 +81,12 @@ In `.ink`-author order, the gaps that bite first:
 worker now holds:
 
 1. ~~**Compiled Output** and **Output / compile log**.~~ **Built
-   2026-09-06** (`model/src/compiled.rs`, `app/src/compiled_output.rs`,
-   `app/src/output_log.rs`). Residue: the log has no severity filter or
-   copy-all, no row opens anything, and nothing but the project and the
-   Player writes to it; Compiled Output has no find-in-dump of its own and
-   no jump from a dump row to its source.
+   2026-09-06**, filled in 2026-09-07 (`model/src/compiled.rs`,
+   `app/src/compiled_output.rs`, `app/src/output_log.rs`). The log now has
+   timestamps, a per-severity filter with unfiltered counts, Copy, and
+   save-failure/load-warning rows. Residue: no row opens anything, a
+   config write and a format run still say nothing, and Compiled Output
+   has no jump from a dump row to its source.
 2. ~~**An `.inkt` highlighter.**~~ **Built 2026-09-06**
    (`app/src/inkt_highlight.rs`): a hand-written lexer over the token
    shapes `inkt.pest` itself defines — head words, `$def_id`s, strings
@@ -126,7 +127,7 @@ Built: an inner `DockArea` of documents — tabs, drag between groups, splits
 
 | Left out | Kind | Note |
 |---|---|---|
-| Quick-open (`cmd-p`) | parity gap | spec §4.5 defers it. |
+| ~~Quick-open (`cmd-p`)~~ | built 2026-09-06 | `app/src/quick_open.rs`. |
 | Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | mostly built | the Player and Compiled Output dock as centre tabs (`CodeView::show_player`/`show_compiled`); Story Graph not started; the Settings tab is replaced by the modal by ruling. |
 
 ### Single File view (`app/src/single_view.rs`)
@@ -163,7 +164,7 @@ else. Everything below is listed against that directory.
 | ~~Folding: gutter chevrons~~ | built 2026-09-05 | `QueryKind::FoldingRanges` → the highlighter's `fold_ranges` → gutter chevrons on hover / the caret's line. (They were invisible only because no asset source was registered — HANDOFF #6.) |
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
 | ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. Extract actions and the gated structural moves are still out. |
-| Highlighting for `.inkt` | see below | the dump paints as plain text and wants a hand-written lexer (§0 item 2). `brink.toml` is highlighted as of 2026-09-06. Own subsection after this table. |
+| ~~Highlighting for `brink.toml` and `.inkt`~~ | built 2026-09-06 | TOML by enabling the grammar, `.inkt` by a hand-written lexer (`app/src/inkt_highlight.rs`). Own subsection after this table. |
 | ~~Find/replace panel inside a document~~ | built 2026-09-06 | `cmd-f` / `cmd-alt-f`. The panel is the TOOLKIT's — `EditorState::new` already sets `searchable`, so every brink editor carried it and only the key was missing; the kit's own `Search`/`Replace` actions are registered as commands rather than wrapped, so there is one implementation and both are in the palette. Case, regex, match count, prev/next, Replace and Replace All all come with it. |
 | Signature help | parity gap | `signature-help.ts`. |
 | Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
@@ -173,7 +174,7 @@ else. Everything below is listed against that directory.
 | Conflict view, breakage/boundary editing, element-type transitions | parity gap | `conflict-view.ts`, `breakage.ts`, `boundary.ts`, `element-type.ts`, `keybindings.ts`'s modal editing keys. |
 | Prose checker diagnostics in the editor | not wired | `crates/brink-prose` is Rust, but the worker does not link or run it; see Problems and Settings ▸ Prose. |
 | `.brink` incremental paint | **open ruling** (#3562), **`.brink` only** | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
-| Hover verified by hand | verification | typing, completions and save were driven headless; hover was not. |
+| ~~Hover verified by hand~~ | verified 2026-09-06 | driven headless: hovering a choice line shows its diagnostic in the popover. |
 
 ### Player (`model/src/play.rs`, `app/src/player.rs`)
 
@@ -190,7 +191,7 @@ on knots and stitches.
 | Placement in Continuous and Single File | **open ruling** | the Code-view tab is the one placement the parked direction settles (HANDOFF "Open, parked"). |
 | Hot-swapping a running story after an edit | deliberate | the module doc says why: the story keeps running on what it compiled from, the status says so, a restart picks the edit up. |
 | Waking an `await` park | not started | `Step::Suspended` is shown as a turn boundary; there is no `wake_check` affordance. |
-| Number keys for choices | parity gap | choices are buttons only. |
+| ~~Number keys for choices~~ | built 2026-09-06 | `1`-`9`, with Play/Restart focusing the panel so they work without a click. |
 | Execution highlight in the editor | not started | lines carry `source`, so the data is there; see also the Program Explorer's overlay. |
 | External-function binding | not started | `FallbackHandler` only — an external with no fallback body faults. |
 
@@ -245,8 +246,8 @@ Errors are reported in the buffer rather than leaving a stale dump up.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Syntax highlighting | parity gap | the dump paints as plain text; the web's tab has a minimal `.inkt` CM6 mode. See "Syntax highlighting outside `.ink`/`.brink`" above — it wants a hand-written lexer, not a grammar. |
-| A find-in-dump of its own | parity gap | the web's CM6 mode carries search; this has the editor's selection and scrolling only. |
+| ~~Syntax highlighting~~ | built 2026-09-06 | `app/src/inkt_highlight.rs`, a hand-written lexer over `inkt.pest`'s own primitives. |
+| ~~A find-in-dump of its own~~ | built 2026-09-06 | free with the `cmd-f` binding: the dump is an `EditorState`, so it carries the toolkit's find panel like every other editor. Verified on screen (`globals` → 1/1), and Replace correctly does not appear on a read-only buffer. |
 | A dump row jumping to its source | parity gap | the Program Explorer's disassembly rows do this; the dump does not. |
 | ~~Reached only from the palette~~ | built 2026-09-06 | the Program Explorer's `.inkt` button opens it too. |
 
@@ -262,10 +263,10 @@ oldest dropped, with the dropped count in the header. Follows its tail.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Severity filter, copy-all | parity gap | the header carries `Every analysis` and Clear only. |
+| ~~Severity filter, copy-all~~ | built 2026-09-07 | three toggles, each showing its count over the UNFILTERED rows so a muted one says what turning it back on restores (the Problems panel's rule). Copy takes the visible rows only — what you copy is what you can see. Filtering everything out says so rather than looking empty. |
+| ~~No timestamps~~ | built 2026-09-07 | `hh:mm:ss` UTC, computed from the epoch rather than pulling a date library in for three fields. `push_at` takes the clock so the format is testable without pinning the moment. |
+| ~~Only two writers~~ | mostly closed 2026-09-07 | a save failure is now `ProjectEvent::SaveFailed` → an error row, and the load warnings (which have no span, so Problems cannot hold them) land here at open. Both used to go to a stderr a windowed studio has no reader for. Still silent: a config write, a format run, a fix-all. |
 | A row opening anything | parity gap | a compile error names a code but does not navigate; Problems is where a span-carrying diagnostic goes. |
-| Only two writers | parity gap | the project and the Player. A save failure, a config write, a format run and a fix-all say nothing here; each is a call to `Log::push` away, and the notification service (§1, the frame) is the other half of that question. |
-| No timestamps | parity gap | rows are in order but undated, which is enough for one session and not for a long one. |
 
 ### Binder (`app/src/binder.rs`)
 
@@ -311,7 +312,7 @@ the summary strip, `cmd-shift-f`.
 | Left out | Kind | Note |
 |---|---|---|
 | ~~Replace / Replace All~~ | built 2026-09-06 | a disclosed replace row (VS Code's shape), a per-card Replace, and a Replace All gated by a confirmation naming the match and file counts. A hit whose bytes no longer read as what the search matched is skipped and its button hidden — cards are edit-mapped, so a hit can slide onto text the author never searched for. Replacement is literal; capture groups are not offered. |
-| References mode | worker query + port | see the editor's navigation row. |
+| ~~References mode~~ | built 2026-09-05 (#3580) | Shift-F12 fills the Search cards with the reference sites, each badged by kind. |
 | Context knob (lines above/below) | parity gap | the window is the ruled default and not tunable. |
 
 ### Commands — palette, menu, keymap (`shell/src/commands.rs`, `palette.rs`)
