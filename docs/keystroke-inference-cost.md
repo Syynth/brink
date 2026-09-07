@@ -195,16 +195,55 @@ What is left is **not** a dependency problem, with two exceptions:
   construction; the fix is the per-segment delta protocol the refined tokens
   already use, extended to spans/folds/hints/widgets (TS stashes keyed by
   segment identity + per-segment wasm queries). Host work.
-- *The compile link*: `lir_knot_chunk_query` re-lowers every knot because it
-  reads the whole-file `normalized_stamped_query`, and `chunk_lowering_ctx_query`
-  changes on every shift edit (it holds the range-keyed resolution lookup).
-  A per-segment normalize+stamp needs `normalize_file`'s synthetic-temp
-  counter (`$lift{n}`) to number per knot rather than per file — a
-  byte-level output change that wants a ruling. The stamp pass already
-  resets per knot/stitch. Measured breakdown of the 12–16 ms link: chunk
+- *The compile link*, which was ATTEMPTED and is not yet landed — what the
+  attempt established, so the next one starts from evidence:
+
+  **There are two independent coarse edges, and fixing either alone moves
+  nothing.** A same-length edit re-lowers every knot through the whole-file
+  `normalized_stamped_query`; a SHIFT edit additionally moves every
+  declaration range, re-executing `resolutions_index_query` and with it the
+  `no_eq` `chunk_lowering_ctx_query`, which holds the project's range-keyed
+  resolution lookup. Measured on the 3-knot fixture: the same-length edit
+  re-executes `lir_knot_chunk_query` 3 times with `chunk_lowering_ctx_query`
+  untouched; the shift edit re-executes both.
+
+  **The enabling half is landed and proven.** `normalize_file`'s `$lift`
+  counter is per-definition, so a knot normalizes and stamps identically
+  from its own fragment and from the whole file — pinned over the corpus by
+  `fragment_normalization_parity`, with the previous behaviour as its
+  negative control.
+
+  **Two things the attempt found the hard way.** A chunk is NOT
+  position-free: `Container`/`Stmt`/`Expr` all carry `Provenance` and the
+  debug line tables are built from it, so lowering must see absolute
+  positions (`brink-cli`'s `debug_cli` stepping tests catch this, not the
+  oracle). And a rebase is not a shift of every range — a node the passes
+  SYNTHESIZE carries the provenance-free `0..0`, which must stay `0..0`, so
+  the fragment has to be rebased BEFORE stamp+normalize, exactly as
+  `assemble_lowered_file` orders it.
+
+  **Where it stopped.** With the fragment rebased to absolute and lowered
+  against its segment's own resolutions (shifted to match), the execution
+  counts drop as intended — 3 → 1 for an in-knot edit, 3 → 0 for a `VAR`
+  edit of the same type — the oracle ratchet, tier1 goldens, optimizer
+  fence and `e0xx` diagnostics all hold, but four `tier1-brink` algorithm
+  stories fail at runtime with a value reading Null. The per-segment
+  resolutions are demonstrably NOT the gap: unioned they equal the
+  whole-file map exactly (130 of 130 on `alias-method`), and per segment
+  they cover every whole-file entry whose range falls inside them. Swapping
+  only that lookup for the whole-project one makes the failures disappear,
+  so the defect is in how the rebased fragment's ranges pair with those
+  entries, not in their content. That is where to resume: diff the compiled
+  containers for `tests/tier1-brink/algorithms/alias-method` between the two
+  lookups and find the first path whose `resolve_path` misses.
+
+  Measured breakdown of the 12–16 ms link, for sizing the prize: chunk
   lowering ~4 ms, whole-file normalize+stamp+clone ~2.9 ms, prelude decl
-  collection ~1.3 ms, chunk clones into the assembler, then codegen 2.8 ms
-  and effect rows 1.4 ms outside it.
+  collection ~1.3 ms, then codegen 2.8 ms and effect rows 1.4 ms outside
+  it. Note the ceiling: because a chunk carries absolute positions, even a
+  finished version re-lowers the edited knot AND every knot after it in
+  that file (never one before it, and never another file's). Getting to a
+  single knot needs a rebase over lowered LIR rather than over HIR.
 - *The main-thread lex*: `file_segments_query` re-lexes the whole file to
   find knot headers. An edit-aware segmenter (re-segment the edited
   segment's window from the header sync point, splice, shift offsets)
