@@ -142,6 +142,77 @@ consumers that want the whole-file tree" — the next candidate for the
 segment road. `codeActions` (16.6 ms, on demand, 76% a whole-document
 reformat) is unchanged and separate.
 
+## Round 2: which plane pays, and what still re-executes
+
+The "per keystroke" figures above are the **worker's** bill, not the typist's.
+Since W5c (`docs/editor-worker-spec.md`), a large document's keystroke runs
+on the main thread only the `ClassifierSession` path; every whole-document
+pull runs on the worker after the 120 ms quiet timer, and the compile 500 ms
+later. Measured on TheIntercept, one character typed into a prose line, with
+every plane warm (`perf_probe::what_a_keystroke_costs_on_the_main_thread`,
+`what_a_prose_edit_executes`):
+
+| plane | call | ms | salsa executions |
+|---|---|------:|---|
+| main thread | `apply_edits` | 0.23 | — |
+| main thread | `segment_manifest` | 1.77 | `file_segments_query` ×1 — a **whole-file lex** |
+| main thread | edited segment's classifier tokens + line contexts | 0.87 | that segment only |
+| worker, 120 ms | refined tokens | ~4 | `resolve_query`, `symbol_index_query` ×1; 33 cheap per-segment kind slices |
+| worker, 120 ms | `hir_spans_doc` | 2.5 | none — whole-document JSON of the projection |
+| worker, 120 ms | `folding_ranges_doc` | 3.3 | `projection_query` ×1 (assembly) + whole-HIR walks |
+| worker, 120 ms | `argument_widgets_doc` | 7.0 → **1.7** | was the diagnostics bundle; now four cheap metas queries |
+| worker, 120 ms | `inlay_hints_doc` | 3.4 | `signature_query` ×25 → **×1 knot + globals**, `infer_body` ×1 |
+| worker, 120 ms | whole-file `parse_query` (shared by hints, widgets, hover, completion) | 4.0 | ×1 |
+| worker, 500 ms | compile | 20.8 | `lir_knot_chunk_query` ×32, `normalized_stamped_query` ×1 (+ deep clone), `def_effect_atoms_query` 62 → **1** |
+
+The host also computes the manifest twice per keystroke (project session
+and classifier, `document-handle.ts:319` / `classifier-mirror.ts:97`), so
+the whole-file lex is paid twice — ~3.5 ms of a ~4.6 ms keystroke on a
+1686-line file, and the only part that scales with file size.
+
+Three dependencies fixed in this round, each pinned in
+`query_execution_counts.rs` with its negative control run:
+
+- **`def_effect_atoms_query`** read the assembled file HIR: 62 re-harvests
+  per prose edit, each a `collect_defs` over the file. On the segment road,
+  1; `EffectAtoms` is range-free, so every `effects_scc_query` /
+  `effects_query` backdates (0 executions).
+- **`signature_query`** read the assembled file HIR for every knot a hint
+  or hover asked about. On the segment road, the edited knot only.
+  `VAR`/`CONST` globals stay on the whole-file road on purpose:
+  `declared_fn_type` resolves a `#fn(target)` initializer through the
+  declaring file's knots, which a header fragment does not carry.
+- **`argument_widgets` / `inlay_hints`** took `&AnalysisResult` and read two
+  fields of it; the bundle's diagnostics half re-ran every per-file check
+  in the project on the worker refresh. They take a `brink_ide::SymbolView`
+  (index + `symbol_meta_query`) now; a prose edit executes no diagnostics
+  query on their account (`hints::tests`, negative control: four).
+
+What is left is **not** a dependency problem, with two exceptions:
+
+- *Whole-document assembly and serialisation* (`hir_spans_doc`, folds, the
+  refined-token join, the whole-file `parse_query`) — O(file) per refresh by
+  construction; the fix is the per-segment delta protocol the refined tokens
+  already use, extended to spans/folds/hints/widgets (TS stashes keyed by
+  segment identity + per-segment wasm queries). Host work.
+- *The compile link*: `lir_knot_chunk_query` re-lowers every knot because it
+  reads the whole-file `normalized_stamped_query`, and `chunk_lowering_ctx_query`
+  changes on every shift edit (it holds the range-keyed resolution lookup).
+  A per-segment normalize+stamp needs `normalize_file`'s synthetic-temp
+  counter (`$lift{n}`) to number per knot rather than per file — a
+  byte-level output change that wants a ruling. The stamp pass already
+  resets per knot/stitch. Measured breakdown of the 12–16 ms link: chunk
+  lowering ~4 ms, whole-file normalize+stamp+clone ~2.9 ms, prelude decl
+  collection ~1.3 ms, chunk clones into the assembler, then codegen 2.8 ms
+  and effect rows 1.4 ms outside it.
+- *The main-thread lex*: `file_segments_query` re-lexes the whole file to
+  find knot headers. An edit-aware segmenter (re-segment the edited
+  segment's window from the header sync point, splice, shift offsets)
+  needs the edit delta to reach the query — a `SourceFile` input field set
+  by the write path — which is a change to brink-db's input model and
+  wants a ruling. The TS duplicate (two manifests per keystroke) is a
+  separate host fix.
+
 ## Gates
 
 `cargo test --workspace --exclude bevy-brink --no-fail-fast`: 320 suites
