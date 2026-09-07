@@ -40,6 +40,11 @@ pub enum QueryKind {
     /// passage picker (ruled 2026-09-02: sample lines come from a
     /// knot/stitch selector).
     PassageIndex,
+    /// Every `hex_color` literal in a file, for the editor's colour
+    /// swatches. Cheap and per-file, like inlay hints.
+    DocumentColors {
+        path: String,
+    },
     /// Spelling and light grammar over one file's prose. Answered in the
     /// worker loop, which holds the `[prose]` config the check needs.
     Prose {
@@ -155,6 +160,8 @@ pub enum QueryResult {
     Program(Box<crate::program::ProgramReport>),
     StoryGraph(Box<crate::graph::StoryGraphReport>),
     Prose(Vec<crate::prose::ProseLint>),
+    /// `(start, end, "#RRGGBB")` per literal, in byte offsets.
+    DocumentColors(Vec<(u32, u32, String)>),
     CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
 }
@@ -331,6 +338,37 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// Every `hex_color` argument literal in a file — the swatch the editor
+/// draws beside it, and the value its picker edits.
+///
+/// Both surfaces, because both have the construct: `brink-ide` computes
+/// the ink hints from the ink CST and the native ones from the native
+/// CST, and a file is one or the other.
+fn document_colors(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+) -> Vec<(u32, u32, String)> {
+    let Some(id) = session.file_id(path) else {
+        return Vec::new();
+    };
+    let Some(analysis) = session.analysis() else {
+        return Vec::new();
+    };
+    let hints = if let Some(root) = session.syntax_root(id) {
+        let range = root.text_range();
+        brink_ide::color::color_hints(&root, analysis, range)
+    } else if let Some(root) = session.syntax_root_native(id) {
+        let range = root.text_range();
+        brink_ide::color::color_hints_native(&root, analysis, range)
+    } else {
+        Vec::new()
+    };
+    hints
+        .into_iter()
+        .map(|hint| (hint.start.into(), hint.end.into(), hint.value))
+        .collect()
+}
+
 pub(crate) fn answer(
     session: &mut brink_ide::session::IdeSession,
     kind: &QueryKind,
@@ -359,6 +397,9 @@ pub(crate) fn answer(
         // The worker loop answers these two before reaching here.
         // Answered in the worker loop, which holds the entry and the
         // file list; reaching here means something asked out of band.
+        QueryKind::DocumentColors { path } => {
+            QueryResult::DocumentColors(document_colors(session, path))
+        }
         QueryKind::Program
         | QueryKind::CompiledOutput
         | QueryKind::StoryGraph
@@ -850,7 +891,59 @@ fn convert(symbol: &brink_ide::document::DocumentSymbol) -> Symbol {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_offset;
+    use super::{clamp_offset, document_colors};
+
+    /// Whether a colour swatch can appear at all in this studio, and where
+    /// from. The answer decides whether the provider is dead plumbing.
+    #[test]
+    fn a_colour_swatch_needs_a_host_manifest_to_declare_the_type() {
+        use brink_ide::session::IdeSession;
+        let mut session = IdeSession::new();
+        session.update_source(
+            "main.ink",
+            "EXTERNAL tint(c)\n=== start ===\n~ tint(\"#ff0000\")\n-> DONE\n".to_owned(),
+        );
+        session.refresh_analysis();
+        // With no manifest, nothing says `c` is a colour — so there is no
+        // swatch to draw, however the literal is written.
+        assert!(document_colors(&session, "main.ink").is_empty());
+
+        // With one, the same call site carries a swatch. This is the whole
+        // dependency: colours come from a HOST's vocabulary, and the
+        // studio has no way to register one yet (`docs/studio-shell-spec.md`
+        // §8) — the provider is ready for the day it does.
+        session.set_host_manifest(brink_ir::host_manifest::HostManifest {
+            externals: vec![brink_ir::host_manifest::ManifestExternal {
+                name: "tint".to_owned(),
+                params: vec![brink_ir::host_manifest::ManifestParam {
+                    name: "c".to_owned(),
+                    ty: brink_ir::host_manifest::TypeRef("hex_color".to_owned()),
+                }],
+                returns: brink_ir::host_manifest::TypeRef::default(),
+                kind: brink_ir::host_manifest::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+            types: vec![brink_ir::host_manifest::SemanticTypeDef {
+                name: "hex_color".to_owned(),
+                base: brink_ir::host_manifest::BaseType::String,
+                constraint: None,
+                values: None,
+                widget: Some(brink_ir::host_manifest::WidgetDecl {
+                    kind: "color".to_owned(),
+                }),
+            }],
+            ..Default::default()
+        });
+        let colours = document_colors(&session, "main.ink");
+        assert_eq!(
+            colours.len(),
+            1,
+            "the literal carries a swatch: {colours:?}"
+        );
+        assert_eq!(colours[0].2, "#ff0000");
+    }
 
     #[test]
     fn an_offset_past_the_text_lands_on_its_end_at_a_char_boundary() {

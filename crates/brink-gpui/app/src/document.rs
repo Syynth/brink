@@ -164,6 +164,11 @@ impl Document {
                     path: path.clone(),
                     origin,
                 }));
+                lsp.document_color_provider = Some(Rc::new(BrinkColors {
+                    project: project.downgrade(),
+                    path: path.clone(),
+                    origin,
+                }));
                 // Navigation shows a target by raising an event: a tab is
                 // the host's to open, not the document's.
                 let me = this_document.clone();
@@ -951,6 +956,11 @@ pub(crate) fn install_language_providers(
     }));
     lsp.completion_provider = Some(Rc::new(BrinkCompletion {
         project: project.clone(),
+        path: path.clone(),
+        origin,
+    }));
+    lsp.document_color_provider = Some(Rc::new(BrinkColors {
+        project: project.clone(),
         path,
         origin,
     }));
@@ -974,6 +984,90 @@ struct BrinkHover {
     path: SharedString,
     /// The editor this provider belongs to — the origin of the seed edit.
     origin: gpui::EntityId,
+}
+
+/// The editor's colour swatches: every `hex_color` argument literal gets
+/// a chip beside it, and the kit's own picker edits it.
+///
+/// In-text chips were ruled good enough for this (the chip ruling), and
+/// the kit already draws and edits them — what was missing was a provider
+/// telling it where the colours are.
+pub(crate) struct BrinkColors {
+    project: WeakEntity<Project>,
+    path: SharedString,
+    origin: gpui::EntityId,
+}
+
+impl gpui_component::input::DocumentColorProvider for BrinkColors {
+    fn document_colors(
+        &self,
+        text: &Rope,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Vec<lsp::ColorInformation>>> {
+        let Some(project) = self.project.upgrade() else {
+            return Task::ready(Ok(Vec::new()));
+        };
+        seed_edit(&project, &self.path, text, self.origin, cx);
+        let source = text.to_string();
+        let query = project.read(cx).query(
+            QueryKind::DocumentColors {
+                path: self.path.to_string(),
+            },
+            cx,
+        );
+        cx.background_spawn(async move {
+            let QueryResult::DocumentColors(hints) = query.await? else {
+                return Ok(Vec::new());
+            };
+            let index = LineIndex::new(&source);
+            let at = |offset: u32| {
+                let (line, character) = index.line_col(rowan::TextSize::from(offset));
+                lsp::Position { line, character }
+            };
+            Ok(hints
+                .into_iter()
+                .filter_map(|(start, end, value)| {
+                    let colour = parse_hex(&value)?;
+                    Some(lsp::ColorInformation {
+                        range: lsp::Range {
+                            start: at(start),
+                            end: at(end),
+                        },
+                        color: colour,
+                    })
+                })
+                .collect())
+        })
+    }
+}
+
+/// `#RGB`, `#RRGGBB` or `#RRGGBBAA` to an LSP colour. Anything else is
+/// dropped: a swatch of the wrong colour is worse than no swatch.
+#[must_use]
+pub(crate) fn parse_hex(value: &str) -> Option<lsp::Color> {
+    let hex = value.trim().trim_start_matches('#');
+    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    let (r, g, b, a) = match hex.len() {
+        3 => {
+            let one = |at: usize| {
+                u8::from_str_radix(&hex[at..=at], 16)
+                    .ok()
+                    // `#abc` is `#aabbcc`, not `#0a0b0c`.
+                    .map(|v| v * 17)
+            };
+            (one(0)?, one(1)?, one(2)?, 255)
+        }
+        6 => (byte(0)?, byte(2)?, byte(4)?, 255),
+        8 => (byte(0)?, byte(2)?, byte(4)?, byte(6)?),
+        _ => return None,
+    };
+    Some(lsp::Color {
+        red: f32::from(r) / 255.,
+        green: f32::from(g) / 255.,
+        blue: f32::from(b) / 255.,
+        alpha: f32::from(a) / 255.,
+    })
 }
 
 impl HoverProvider for BrinkHover {
@@ -1224,6 +1318,34 @@ mod tests {
         // Two notes on one line collapse to one band.
         let twice = [notes()[0].clone(), notes()[0].clone()];
         assert_eq!(todo_lines(INK, &twice).len(), 1);
+    }
+
+    #[test]
+    fn a_hex_literal_becomes_a_colour_and_junk_becomes_nothing() {
+        let red = parse_hex("#FF0000").expect("six digits");
+        assert!((red.red - 1.0).abs() < 0.001 && red.green == 0. && red.blue == 0.);
+        assert!(
+            (red.alpha - 1.0).abs() < 0.001,
+            "opaque unless told otherwise"
+        );
+
+        // `#abc` is `#aabbcc` — the short form repeats each digit rather
+        // than padding it, which is the difference between a light blue
+        // and a nearly-black one.
+        let short = parse_hex("#abc").expect("three digits");
+        let long = parse_hex("#aabbcc").expect("six digits");
+        assert!((short.red - long.red).abs() < 0.001);
+        assert!((short.green - long.green).abs() < 0.001);
+        assert!((short.blue - long.blue).abs() < 0.001);
+
+        let alpha = parse_hex("#00000080").expect("eight digits");
+        assert!((alpha.alpha - 0.502).abs() < 0.01);
+
+        // A swatch of the WRONG colour is worse than no swatch.
+        assert!(parse_hex("#ff00").is_none());
+        assert!(parse_hex("#gggggg").is_none());
+        assert!(parse_hex("").is_none());
+        assert!(parse_hex("red").is_none());
     }
 
     #[test]
