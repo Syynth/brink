@@ -127,7 +127,9 @@ pub(crate) fn is_ink_file(db: &BrinkDatabase, file: SourceFile) -> bool {
 }
 
 pub(crate) use segments::{
-    FileSegment, file_segments_query, line_contexts_query, projection_query, semantic_tokens_query,
+    FileSegment, file_def_segments_query, file_segment_at_query, file_segments_query,
+    line_contexts_query, projection_query, segment_fragment_hir, segment_resolutions,
+    semantic_tokens_query,
 };
 
 pub use analysis::ResolvedProject;
@@ -160,10 +162,52 @@ pub(crate) struct BrinkDatabase {
 #[salsa::db]
 impl salsa::Database for BrinkDatabase {}
 
+/// Execution counter (`perf_probe`, #3585): per-query execution counts, fed by salsa's
+/// `WillExecute` event. Global (the callback must be `Send + Sync`);
+/// drained by `take_execution_counts()`. Counts only real executions —
+/// a memo that validates or backdates never fires `WillExecute`.
+pub(crate) static EXEC_COUNTS: std::sync::Mutex<BTreeMap<String, u64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Off by default: the callback below runs on EVERY query execution, and
+/// formatting a key on that path is instrumentation in the production
+/// path. One relaxed atomic load per execution while off.
+static EXEC_COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_execution_counting(on: bool) {
+    EXEC_COUNTING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "salsa's `event_callback` is `Box<dyn Fn(Event)>` — by value is the required shape"
+)]
+fn count_execution(event: salsa::Event) {
+    if !EXEC_COUNTING.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let salsa::EventKind::WillExecute { database_key } = &event.kind {
+        let key = format!("{database_key:?}");
+        let name = key.split('(').next().unwrap_or(&key).to_owned();
+        if let Ok(mut m) = EXEC_COUNTS.lock() {
+            *m.entry(name).or_insert(0) += 1;
+        }
+    }
+}
+
+pub fn take_execution_counts() -> BTreeMap<String, u64> {
+    std::mem::take(
+        &mut *EXEC_COUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+}
+
 impl Default for BrinkDatabase {
     fn default() -> Self {
         Self {
             storage: salsa::Storage::builder()
+                .event_callback(Box::new(count_execution))
                 // Inputs + interned keys.
                 .ingredient::<SourceFile>()
                 .ingredient::<ProjectInput>()
@@ -176,6 +220,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<FileSegment<'_>>()
                 .ingredient::<file_segments_query>()
                 .ingredient::<segments::segment_lowered_query>()
+                // Segment road, per-def (#3585): per-def readers on the segment road — a
+                // def's own segment, and that segment's own resolutions.
+                .ingredient::<segments::file_def_segments_query>()
+                .ingredient::<segments::file_segment_at_query>()
                 .ingredient::<resolved_dialect_query>()
                 .ingredient::<segments::segment_projection_query>()
                 .ingredient::<segments::projection_query>()
@@ -1476,6 +1524,10 @@ pub(crate) fn inference_index_query(
 /// own id.
 pub(crate) type SccId = DefinitionId;
 
+/// Segment road, per-def (#3585): per-member window for the strided range join inside
+/// `solve_scc_query` — disjoint 4 MiB windows, no `offset` read.
+const SCC_MEMBER_STRIDE: u32 = 1 << 22;
+
 /// The project's inferable (knot/stitch) def ids, sourced from the index
 /// alone (FG-2.1, issue #638, Ruling 2b — `inferable_defs_query`, the
 /// `inference_index_query` precedent applied to the "which defs have a
@@ -1517,10 +1569,63 @@ pub(crate) struct DefBody {
     pub native: bool,
 }
 
+/// Segment road, per-def (#3585): a per-def reader's whole input — the def's declaring
+/// `SourceFile`, its own `FileSegment`, and that segment's one-knot
+/// fragment HIR (segment-relative ranges). `None` for a def with no segment
+/// (native file, unknown id, synthetic root-content def).
+fn def_segment(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    def_id: DefinitionId,
+) -> Option<(SourceFile, FileSegment<'_>, HirFile)> {
+    let index = inference_index_query(db, project);
+    let declaring_file = index.symbols.get(&def_id)?.file;
+    let file = *project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)?;
+    if file_language(file.path(db)) == Language::Native {
+        return None;
+    }
+    let idx = *file_def_segments_query(db, project, file).get(&def_id)?;
+    // Through the per-index seam, NOT `file_segments_query(..)[idx]`:
+    // depend on THIS def's segment identity, not every segment in the file.
+    let seg = file_segment_at_query(db, file, idx)?;
+    Some((file, seg, segment_fragment_hir(db, file, seg)))
+}
+
+/// Segment road, per-def (#3585): the two range-bearing fields of a `BodyTypes`
+/// (`value_calls[].range`, `array_remove_calls`) mapped through `f`.
+/// Everything else in the struct is keyed by name.
+fn shift_body_types(
+    b: &mut brink_analyzer::BodyTypes,
+    f: impl Fn(rowan::TextRange) -> rowan::TextRange,
+) {
+    for c in &mut b.value_calls {
+        c.range = f(c.range);
+    }
+    for r in &mut b.array_remove_calls {
+        *r = f(*r);
+    }
+}
+
+/// Segment road, per-def (#3585): a segment-road def's real file offset — the same delta
+/// `assemble_lowered_file` rebases its segment by. `None` for a def on
+/// the fallback road (its ranges are already absolute).
+fn def_segment_offset(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    def_id: DefinitionId,
+) -> Option<rowan::TextSize> {
+    let (_sf, seg, _frag) = def_segment(db, project, def_id)?;
+    Some(rowan::TextSize::from(seg.offset(db)))
+}
+
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
 /// heap_size::def_body_heap_size`: one of the five #538 estimators — #537
 /// named `def_body` (holds a full HIR `Block` clone per def) one of the
 /// two dominant Arc-hidden-payload families.
+
 #[salsa::tracked(lru = 16384, heap_size = heap_size::def_body_heap_size)]
 pub(crate) fn def_body_query<'db>(
     db: &'db dyn salsa::Database,
@@ -1534,6 +1639,18 @@ pub(crate) fn def_body_query<'db>(
         .files(db)
         .iter()
         .find(|f| f.file_id(db) == declaring_file)?;
+    // Segment road, per-def (#3585): read the def's own segment, not the assembled file.
+    if let Some((_sf, _seg, frag)) = def_segment(db, project, def_id) {
+        let (params, return_annotation, body) =
+            brink_analyzer::def_body(def_id, &[(declaring_file, &frag)], index)?;
+        return Some(Arc::new(DefBody {
+            file: declaring_file,
+            params,
+            return_annotation,
+            body,
+            native: frag.native,
+        }));
+    }
     let hir = &lowered_query(db, project, *file).hir;
     let (params, return_annotation, body) =
         brink_analyzer::def_body(def_id, &[(declaring_file, hir)], index)?;
@@ -1580,6 +1697,17 @@ pub(crate) fn referenced_globals_query<'db>(
     else {
         return Arc::new(BTreeSet::new());
     };
+    // Segment road, per-def (#3585): the def's own segment + per-segment resolutions.
+    if let Some((sf, seg, frag)) = def_segment(db, project, def_id) {
+        let resolutions = segment_resolutions(db, project, sf, seg);
+        return Arc::new(brink_analyzer::referenced_globals(
+            def_id,
+            &[(declaring_file, &frag)],
+            index,
+            &resolutions,
+            None,
+        ));
+    }
     let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
     Arc::new(brink_analyzer::referenced_globals(
@@ -1629,9 +1757,21 @@ pub(crate) fn call_edges_query<'db>(
     else {
         return Arc::new(BTreeSet::new());
     };
+    let inferable = inferable_defs_query(db, project);
+    // Segment road, per-def (#3585): the def's own segment + per-segment resolutions.
+    if let Some((sf, seg, frag)) = def_segment(db, project, def_id) {
+        let resolutions = segment_resolutions(db, project, sf, seg);
+        return Arc::new(brink_analyzer::call_edges(
+            def_id,
+            &[(declaring_file, &frag)],
+            index,
+            &resolutions,
+            inferable,
+            None,
+        ));
+    }
     let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
-    let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::call_edges(
         def_id,
         &[(declaring_file, hir)],
@@ -1788,10 +1928,42 @@ pub(crate) fn solve_scc_query<'db>(
     // Per-def HIR projection (Ruling 2b): only this batch's own members'
     // bodies. `member_bodies` keeps the owned `Arc<DefBody>`s alive for the
     // `Def` borrows built from them below.
-    let member_bodies: BTreeMap<DefinitionId, Arc<DefBody>> = batch
-        .iter()
-        .filter_map(|&id| def_body_query(db, project, DefKey::new(db, id)).map(|b| (id, b)))
-        .collect();
+    // Segment road, per-def (#3585): a member whose body came from its own segment is in
+    // segment-relative coordinates, and so are that segment's resolutions.
+    // Two such members in one SCC (ping/pong) would collide in the
+    // by-file range map, so each member is rebased by its own synthetic
+    // stride — disjoint windows, and no read of the segment's `offset`
+    // (which would make every later SCC's solve shift-sensitive).
+    // `BodyTypes` carries no ranges, so the stride is invisible downstream.
+    let mut member_bodies: BTreeMap<DefinitionId, Arc<DefBody>> = BTreeMap::new();
+    let mut seg_resolutions = ResolutionMap::new();
+    let mut fallback_files: BTreeSet<FileId> = BTreeSet::new();
+    let mut strides: BTreeMap<DefinitionId, rowan::TextSize> = BTreeMap::new();
+    for (i, &id) in batch.iter().enumerate() {
+        let Some(body) = def_body_query(db, project, DefKey::new(db, id)) else {
+            continue;
+        };
+        if let Some((sf, seg, _frag)) = def_segment(db, project, id) {
+            use brink_ir::hir::rebase::Rebase as _;
+            let delta = rowan::TextSize::from(
+                SCC_MEMBER_STRIDE.saturating_mul(u32::try_from(i + 1).unwrap_or(1)),
+            );
+            let mut b = (*body).clone();
+            b.body.rebase(delta, body.file);
+            strides.insert(id, delta);
+            for r in segment_resolutions(db, project, sf, seg).iter() {
+                seg_resolutions.push(brink_ir::ResolvedRef {
+                    file: r.file,
+                    range: rowan::TextRange::new(r.range.start() + delta, r.range.end() + delta),
+                    target: r.target,
+                });
+            }
+            member_bodies.insert(id, Arc::new(b));
+        } else {
+            fallback_files.insert(body.file);
+            member_bodies.insert(id, body);
+        }
+    }
     let defs: Vec<brink_analyzer::Def<'_>> = member_bodies
         .iter()
         .map(|(&id, b)| brink_analyzer::Def {
@@ -1828,9 +2000,10 @@ pub(crate) fn solve_scc_query<'db>(
 
     // Narrowed resolutions (Ruling 2b): only this batch's own declaring
     // files' `resolve_query` results, deduplicated by file.
-    let mut resolutions = ResolutionMap::new();
-    let member_files: BTreeSet<FileId> = member_bodies.values().map(|b| b.file).collect();
-    for file_id in member_files {
+    // Whole-file (absolute) resolutions only for members that took the
+    // fallback road; segment-road members carry their own, strided.
+    let mut resolutions = seg_resolutions;
+    for file_id in fallback_files {
         if let Some(file) = project.files(db).iter().find(|f| f.file_id(db) == file_id) {
             let (file_map, _diags) = resolve_query(db, project, *file);
             resolutions.extend(file_map.iter().cloned());
@@ -1839,7 +2012,7 @@ pub(crate) fn solve_scc_query<'db>(
 
     let opts = project.analysis_options(db);
     let inline_docs = inline_docs_query(db, project);
-    let (signatures, bodies) = brink_analyzer::solve_scc(
+    let (signatures, mut bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
         index,
@@ -1850,6 +2023,15 @@ pub(crate) fn solve_scc_query<'db>(
         opts.host_manifest.as_ref(),
         inline_docs,
     );
+    // Un-stride: outputs leave this memo SEGMENT-RELATIVE (offset-free), and
+    // the consumer-facing seams (`infer_body_query`, `type_inference_query`)
+    // add each def's real offset — the same deferred-rebase shape
+    // `projection_query` uses for the segment road.
+    for (id, delta) in &strides {
+        if let Some(b) = bodies.get_mut(id) {
+            shift_body_types(b, |r| r - *delta);
+        }
+    }
     Arc::new(SolvedScc { signatures, bodies })
 }
 
@@ -2076,7 +2258,13 @@ pub(crate) fn type_inference_query(
         }
         let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
         signatures.extend(solved.signatures.iter().map(|(k, v)| (*k, v.clone())));
-        bodies.extend(solved.bodies.iter().map(|(k, v)| (*k, v.clone())));
+        bodies.extend(solved.bodies.iter().map(|(k, v)| {
+            let mut b = v.clone();
+            if let Some(off) = def_segment_offset(db, project, *k) {
+                shift_body_types(&mut b, |r| r + off);
+            }
+            (*k, b)
+        }));
     }
     signatures.extend(
         external_signatures_query(db, project)
@@ -2104,7 +2292,11 @@ pub(crate) fn infer_body_query<'db>(
     let membership = scc_membership_query(db, project);
     let scc_id = *membership.member_of.get(&def_id)?;
     let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
-    solved.bodies.get(&def_id).cloned().map(Arc::new)
+    let mut body = solved.bodies.get(&def_id).cloned()?;
+    if let Some(off) = def_segment_offset(db, project, def_id) {
+        shift_body_types(&mut body, |r| r + off);
+    }
+    Some(Arc::new(body))
 }
 
 /// Per-file type diagnostics (`type_diagnostics(FileId)`). **Advisory-only
