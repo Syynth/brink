@@ -602,13 +602,15 @@ impl Studio {
                         BinderEvent::RenameFile { path } => {
                             files::rename_file(this.project.clone(), path.clone(), window, cx);
                         }
-                        BinderEvent::DeleteFile { path } => {
-                            // Before the dialog: its editor would write the
-                            // file straight back on the next `cmd-s`.
+                        BinderEvent::DeleteFile { paths } => {
+                            // Before the dialog: their editors would write
+                            // the files straight back on the next `cmd-s`.
                             this.code.update(cx, |code, cx| {
-                                code.close_document(path, window, cx);
+                                for path in paths {
+                                    code.close_document(path, window, cx);
+                                }
                             });
-                            files::delete_file(this.project.clone(), path.clone(), window, cx);
+                            files::delete_files(this.project.clone(), paths.clone(), window, cx);
                         }
                         BinderEvent::NewKnot { path } => {
                             let reveal = this.reveal_fn(cx);

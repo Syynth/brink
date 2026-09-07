@@ -138,7 +138,10 @@ pub fn rename_file(project: Entity<Project>, path: String, window: &mut Window, 
     );
 }
 
-/// Confirm, then delete `path` from the project and from disk.
+/// Confirm, then delete every path in `paths` from the project and from
+/// disk. ONE confirmation, naming them: a multi-selection deletes
+/// together or not at all, and a dialog per file is a dialog nobody
+/// reads by the third one.
 ///
 /// An **alert** dialog, not the plain one the prompts use: a plain
 /// `Dialog` renders only what its content builder returns, so its
@@ -146,18 +149,43 @@ pub fn rename_file(project: Entity<Project>, path: String, window: &mut Window, 
 /// because Enter in its input is the confirm). A confirmation with no
 /// input has no such key, and a confirmation with no buttons is a dead
 /// end — which is exactly what the first version of this was on screen.
-pub fn delete_file(project: Entity<Project>, path: String, window: &mut Window, cx: &mut App) {
-    let title = format!("Delete {path}?");
+pub fn delete_files(
+    project: Entity<Project>,
+    paths: Vec<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    let title = match paths.as_slice() {
+        [only] => format!("Delete {only}?"),
+        many => format!("Delete {} files?", many.len()),
+    };
+    // Every name, so a selection is never deleted sight unseen; past a
+    // handful the list is the count plus what would fit.
+    let listed: String = if paths.len() == 1 {
+        String::new()
+    } else {
+        let shown: Vec<&str> = paths.iter().take(8).map(String::as_str).collect();
+        let more = paths.len().saturating_sub(shown.len());
+        let tail = if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        };
+        format!("{}{tail}\n\n", shown.join(", "))
+    };
     window.open_alert_dialog(cx, move |alert, _window, _cx| {
         let project = project.clone();
-        let path = path.clone();
+        let paths = paths.clone();
         alert
             .title(SharedString::from(title.clone()))
             // Said plainly: the studio has no undo for this, and
             // pretending otherwise would be the lie.
-            .description(
-                "The file is removed from the project and from disk. This cannot be undone here.",
-            )
+            .description(format!(
+                "{listed}Removed from the project and from disk. This cannot be undone here."
+            ))
             .show_cancel(true)
             .button_props(
                 DialogButtonProps::default()
@@ -166,18 +194,32 @@ pub fn delete_file(project: Entity<Project>, path: String, window: &mut Window, 
                     .show_cancel(true),
             )
             .on_ok(move |_, window, cx| {
-                let deleted = project.update(cx, |project, cx| project.delete_file(&path, cx));
-                match deleted {
-                    Ok(()) => notify(
+                let mut deleted = 0;
+                let mut failed: Vec<String> = Vec::new();
+                project.update(cx, |project, cx| {
+                    for path in &paths {
+                        match project.delete_file(path, cx) {
+                            Ok(()) => deleted += 1,
+                            Err(err) => failed.push(format!("{path}: {err}")),
+                        }
+                    }
+                });
+                if deleted > 0 {
+                    notify(
                         Severity::Success,
                         "files",
-                        format!("Deleted {path}."),
+                        match paths.as_slice() {
+                            [only] => format!("Deleted {only}."),
+                            _ => format!("Deleted {deleted} files."),
+                        },
                         window,
                         cx,
-                    ),
-                    Err(err) => {
-                        notify(Severity::Error, "files", format!("{err}"), window, cx);
-                    }
+                    );
+                }
+                // Each failure named: a partial delete that only said
+                // "some failed" leaves the author to work out which.
+                for message in failed {
+                    notify(Severity::Error, "files", message, window, cx);
                 }
                 true
             })

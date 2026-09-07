@@ -30,7 +30,7 @@
 //! Deliberately skipped (not what the spike is asking): the undo stack,
 //! the Library section, multi-select, and creating a knot inline.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
@@ -173,8 +173,10 @@ pub enum BinderEvent {
     RenameFile {
         path: String,
     },
+    /// Delete these files — the row's own, or the whole selection when
+    /// the row is part of one.
     DeleteFile {
-        path: String,
+        paths: Vec<String>,
     },
     /// Write a new knot at the end of `path`.
     NewKnot {
@@ -304,6 +306,42 @@ impl Row {
     }
 }
 
+/// The rows between two indices, the anchor left out — it is already
+/// selected, and holding it in both places would double-count it.
+#[must_use]
+fn marked_range(
+    rows: &[Row],
+    anchor: usize,
+    index: usize,
+    anchor_key: Option<&SharedString>,
+) -> BTreeSet<SharedString> {
+    let (lo, hi) = (anchor.min(index), anchor.max(index));
+    let Some(slice) = rows.get(lo..=hi) else {
+        return BTreeSet::new();
+    };
+    slice
+        .iter()
+        .map(|r| r.key.clone())
+        .filter(|key| Some(key) != anchor_key)
+        .collect()
+}
+
+/// Every selected FILE row's path, in row order. A folder row and a
+/// symbol row are not files and are left out — a delete acts on files.
+#[must_use]
+fn files_in(
+    rows: &[Row],
+    selected: Option<&SharedString>,
+    marked: &BTreeSet<SharedString>,
+) -> Vec<String> {
+    rows.iter()
+        .filter(|row| {
+            row.kind == RowKind::File && (selected == Some(&row.key) || marked.contains(&row.key))
+        })
+        .map(|row| row.path.clone())
+        .collect()
+}
+
 /// Which structural move a row offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Structural {
@@ -426,6 +464,11 @@ pub struct Binder {
     mode: Mode,
     collapsed: HashSet<SharedString>,
     selected: Option<SharedString>,
+    /// Rows selected ALONGSIDE `selected` — a shift-range or a
+    /// cmd-clicked scatter. `selected` stays the anchor a range extends
+    /// from and the row the keyboard moves; this is everything else that
+    /// is lit up, and it is what a delete acts on when it is not empty.
+    marked: BTreeSet<SharedString>,
     rows: Vec<Row>,
     filter: Entity<InputState>,
     filter_open: bool,
@@ -493,6 +536,7 @@ impl Binder {
             mode: Mode::Files,
             collapsed: HashSet::new(),
             selected: None,
+            marked: BTreeSet::new(),
             rows: Vec::new(),
             filter,
             filter_open: false,
@@ -817,10 +861,13 @@ impl Binder {
         self.rebuild(cx);
     }
 
+    /// A plain click: the anchor moves, the scatter is dropped, the row
+    /// opens.
     fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index).cloned() else {
             return;
         };
+        self.marked.clear();
         self.selected = Some(row.key.clone());
         if row.expandable {
             self.toggle(&row.key, cx);
@@ -834,6 +881,45 @@ impl Binder {
         cx.notify();
     }
 
+    /// A shift-click: everything from the anchor to here. With no anchor
+    /// it is a plain click, since a range needs two ends.
+    fn extend_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(anchor) = self.selected_index() else {
+            self.activate(index, cx);
+            return;
+        };
+        self.marked = marked_range(&self.rows, anchor, index, self.selected.as_ref());
+        cx.notify();
+    }
+
+    /// A cmd-click: this row joins or leaves the selection, and nothing
+    /// opens. Clicking the ANCHOR itself moves the anchor to another
+    /// marked row rather than leaving a selection with no anchor.
+    fn toggle_marked(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+        if self.selected.as_ref() == Some(&row.key) {
+            self.selected = self.marked.iter().next().cloned();
+            if let Some(next) = self.selected.clone() {
+                self.marked.remove(&next);
+            }
+        } else if !self.marked.remove(&row.key) {
+            if self.selected.is_none() {
+                self.selected = Some(row.key.clone());
+            } else {
+                self.marked.insert(row.key.clone());
+            }
+        }
+        cx.notify();
+    }
+
+    /// Every selected FILE, anchor included, in row order. Empty when the
+    /// selection holds no files — a folder or a symbol row is not one.
+    fn selected_files(&self) -> Vec<String> {
+        files_in(&self.rows, self.selected.as_ref(), &self.marked)
+    }
+
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
         self.rows.iter().position(|r| &r.key == selected)
@@ -841,6 +927,7 @@ impl Binder {
 
     fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.rows.get(index) {
+            self.marked.clear();
             self.selected = Some(row.key.clone());
             self.scroll.scroll_to_item(index, ScrollStrategy::Top);
             cx.notify();
@@ -1017,7 +1104,7 @@ impl Binder {
             return div().into_any_element();
         };
         let theme = cx.theme();
-        let selected = self.selected.as_ref() == Some(&row.key);
+        let selected = self.selected.as_ref() == Some(&row.key) || self.marked.contains(&row.key);
         let drop_into = self.drop == Some(DropTarget::Into(row.key.clone()));
         let line_before = self.drop
             == Some(DropTarget::Between {
@@ -1171,8 +1258,15 @@ impl Binder {
                         .bg(theme.primary),
                 )
             })
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.activate(index, cx);
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                let modifiers = event.modifiers();
+                if modifiers.shift {
+                    this.extend_to(index, cx);
+                } else if modifiers.secondary() {
+                    this.toggle_marked(index, cx);
+                } else {
+                    this.activate(index, cx);
+                }
             }))
             // GPUI's own drag system: a typed payload and a real preview
             // view. No `dataTransfer`, no `dragenter` contract to satisfy.
@@ -1519,10 +1613,15 @@ impl Render for Binder {
                     path: action.path.clone(),
                 });
             }))
-            .on_action(cx.listener(|_, action: &DeleteFile, _, cx| {
-                cx.emit(BinderEvent::DeleteFile {
-                    path: action.path.clone(),
-                });
+            .on_action(cx.listener(|this, action: &DeleteFile, _, cx| {
+                // A menu opened on a row that is part of a selection acts
+                // on the SELECTION: the rows are lit up, and deleting one
+                // of them while the rest stayed would be a surprise.
+                let mut paths = this.selected_files();
+                if !paths.contains(&action.path) {
+                    paths = vec![action.path.clone()];
+                }
+                cx.emit(BinderEvent::DeleteFile { paths });
             }))
             .on_action(cx.listener(|_, action: &NewKnot, _, cx| {
                 cx.emit(BinderEvent::NewKnot {
@@ -1675,5 +1774,75 @@ impl gpui_component::dock::BasePanel for Binder {
 impl gpui_component::dock::Panel for Binder {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Binder")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Marks, Row, RowKind, files_in, marked_range};
+    use gpui::SharedString;
+    use std::collections::BTreeSet;
+
+    fn row(key: &str, kind: RowKind) -> Row {
+        Row {
+            key: key.into(),
+            kind,
+            depth: 0,
+            label: key.into(),
+            path: key.to_owned(),
+            offset: None,
+            end: None,
+            expandable: false,
+            expanded: false,
+            entry: false,
+            draft: false,
+            dimmed: false,
+            is_function: false,
+            marks: Marks::default(),
+            parent: String::new(),
+        }
+    }
+
+    fn rows() -> Vec<Row> {
+        vec![
+            row("a.ink", RowKind::File),
+            row("acts", RowKind::Folder),
+            row("b.ink", RowKind::File),
+            row("c.ink", RowKind::File),
+        ]
+    }
+
+    #[test]
+    fn a_range_covers_both_ends_and_leaves_the_anchor_out_of_the_scatter() {
+        let rows = rows();
+        let anchor: SharedString = "a.ink".into();
+        let marked = marked_range(&rows, 0, 2, Some(&anchor));
+        assert_eq!(
+            marked
+                .iter()
+                .map(SharedString::to_string)
+                .collect::<Vec<_>>(),
+            ["acts", "b.ink"],
+            "the anchor is selected already; the range adds the rest"
+        );
+        // Dragging the range BACKWARDS covers the same rows.
+        assert_eq!(marked_range(&rows, 2, 0, Some(&anchor)), marked);
+        // An index past the end selects nothing rather than panicking.
+        assert!(marked_range(&rows, 0, 99, Some(&anchor)).is_empty());
+    }
+
+    #[test]
+    fn only_file_rows_are_what_a_delete_acts_on() {
+        let rows = rows();
+        let anchor: SharedString = "a.ink".into();
+        let marked: BTreeSet<SharedString> = ["acts".into(), "c.ink".into()].into_iter().collect();
+        assert_eq!(
+            files_in(&rows, Some(&anchor), &marked),
+            ["a.ink", "c.ink"],
+            "the folder is selected but is not a file"
+        );
+        // A selection of nothing but a folder deletes nothing.
+        let folder: SharedString = "acts".into();
+        assert!(files_in(&rows, Some(&folder), &BTreeSet::new()).is_empty());
     }
 }
