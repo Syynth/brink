@@ -109,6 +109,11 @@ pub struct Project {
     /// dirty per file, written by `save_all` — but never in `files`: it is
     /// not a source, and the manuscript and search read `files`.
     config: Option<String>,
+    /// Files the config points at — `dialect.json` and any sibling. Held
+    /// in `sources` like the config, listed in the Binder, and never in
+    /// `files`: the manuscript and Search read `files`, and an artifact
+    /// is not part of the story's text.
+    artifacts: Vec<String>,
     /// The canonical text of every file — what each editor over the file
     /// mirrors, and what is analysed, searched and saved. An editor pushes
     /// its text through [`Project::edit`]; the others hear the delta.
@@ -196,6 +201,7 @@ impl Project {
             root: PathBuf::new(),
             files: Vec::new(),
             binder_order: BinderOrder::default(),
+            artifacts: Vec::new(),
             config: None,
             sources: BTreeMap::new(),
             saved: BTreeMap::new(),
@@ -227,6 +233,10 @@ impl Project {
                     self.config = opened.config.as_ref().map(|c| c.path.clone());
                     if let Some(config) = opened.config {
                         self.sources.insert(config.path, config.text);
+                    }
+                    self.artifacts = opened.artifacts.iter().map(|(p, _)| p.clone()).collect();
+                    for (path, text) in opened.artifacts {
+                        self.sources.insert(path, text);
                     }
                     self.saved = self.sources.clone();
                     self.files = opened.files;
@@ -501,6 +511,13 @@ impl Project {
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
+    }
+
+    /// The config's artifacts, root-relative — openable and saveable, but
+    /// not sources.
+    #[must_use]
+    pub fn artifacts(&self) -> &[String] {
+        &self.artifacts
     }
 
     /// The authored Binder order.

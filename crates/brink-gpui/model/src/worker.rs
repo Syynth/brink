@@ -24,7 +24,8 @@
 //! the same file has no result anyone will ever see — that is declining to
 //! do dead work, not delaying live work.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -114,6 +115,12 @@ pub struct Opened {
     pub entry: Option<String>,
     /// Config-file warnings, already prefixed with their source.
     pub warnings: Vec<String>,
+    /// Files the config POINTS AT and the session never sees as
+    /// documents — `dialect.json` above all. Root-relative key and text,
+    /// read while the config was applied. The mirror holds them like the
+    /// config: editable, saveable, and listed in the Binder, but never in
+    /// `files`, because they are not sources.
+    pub artifacts: Vec<(String, String)>,
     /// The project's `brink.toml`, if it has one — a file the mirror holds
     /// in the shared buffer like any other, so Settings' Project sections
     /// and a raw editor over it are views of one text. Not in `files`: it
@@ -217,6 +224,11 @@ pub struct ConfigState {
     /// The current text's parse error, if it has one: its byte span in
     /// the text (when the parser knows one) and its message.
     error: Option<(Option<Range<usize>>, String)>,
+    /// Artifact keys the config's reader actually asked for, learned by
+    /// watching the reads rather than by re-deriving which keys a
+    /// `[dialogue]` table might name — the config crate decides that, and
+    /// a second guess here would drift from it.
+    read_artifacts: BTreeSet<String>,
 }
 
 impl ConfigState {
@@ -506,6 +518,20 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
     let (config, state) = load_config(session, &root, &files);
     session.refresh_analysis();
 
+    // What the config pointed at, so the mirror can hold it and the
+    // Binder can list it. Read from disk here rather than remembered from
+    // the reader: the reader may have served an unsaved edit, and on
+    // OPEN there is no such thing yet.
+    let artifacts: Vec<(String, String)> = state
+        .read_artifacts
+        .iter()
+        .filter_map(|key| {
+            std::fs::read_to_string(root.join(key))
+                .ok()
+                .map(|text| (key.clone(), text))
+        })
+        .collect();
+
     let warnings = state
         .error
         .iter()
@@ -520,6 +546,7 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
             sources,
             entry: state.entry.clone(),
             warnings,
+            artifacts,
             config,
             elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
         },
@@ -604,7 +631,9 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
             session.set_type_policy(brink_analyzer::resolve_type_policy(dialect, config.types));
             let root = state.root.clone();
             let artifacts = state.artifacts.clone();
+            let asked: RefCell<BTreeSet<String>> = RefCell::new(BTreeSet::new());
             let read_file = |key: &str| -> Option<String> {
+                asked.borrow_mut().insert(key.to_owned());
                 artifacts
                     .get(key)
                     .cloned()
@@ -618,6 +647,7 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 &read_file,
             ));
             state.entry.clone_from(&config.entry);
+            state.read_artifacts = asked.into_inner();
             state.warnings = warnings;
             state.error = None;
             set_compile_entry(session, state.entry.as_deref());
@@ -1779,6 +1809,51 @@ mod tests {
         let mut session = session_with_stdlib();
         let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
+    }
+
+    #[test]
+    fn a_config_that_points_at_a_file_reports_it_as_an_artifact() {
+        // `[dialogue] file = "dialect.json"` is what Settings ▸
+        // Conventions writes when a dialect will not fit the table. Until
+        // the artifact rode `Opened`, nothing in the studio could open the
+        // file it had just written.
+        let tree = Tree::new(
+            "artifact",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\n\n[dialogue]\nfile = \"dialect.json\"\n",
+                ),
+                ("start.ink", "Hello.\n-> DONE\n"),
+                ("dialect.json", "{\n  \"elements\": []\n}\n"),
+            ],
+        );
+        let (_session, opened, _state) = open_tree_with_config(&tree);
+        assert_eq!(
+            opened.artifacts,
+            vec![(
+                "dialect.json".to_owned(),
+                "{\n  \"elements\": []\n}\n".to_owned()
+            )],
+            "the config's own reader says which files it read"
+        );
+        assert!(
+            !opened.files.iter().any(|f| f == "dialect.json"),
+            "an artifact is not a source"
+        );
+    }
+
+    #[test]
+    fn a_config_with_no_artifacts_reports_none() {
+        let tree = Tree::new(
+            "no-artifact",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", "Hello.\n-> DONE\n"),
+            ],
+        );
+        let (_session, opened, _state) = open_tree_with_config(&tree);
+        assert!(opened.artifacts.is_empty());
     }
 
     #[test]

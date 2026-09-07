@@ -429,11 +429,12 @@ impl Binder {
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (sources, config, entry, closure, diagnostics, drafts) = {
+        let (sources, config, artifacts, entry, closure, diagnostics, drafts) = {
             let project = self.project.read(cx);
             (
                 project.files().to_vec(),
                 project.config_path().map(str::to_owned),
+                project.artifacts().to_vec(),
                 project.entry().map(str::to_owned),
                 project
                     .files()
@@ -463,6 +464,10 @@ impl Binder {
         if let Some(config) = &config {
             files.push(config.clone());
         }
+        // The config's artifacts (`dialect.json`) list beside it: the
+        // Conventions section writes one, and until now nothing in the
+        // studio could open what it had written.
+        files.extend(artifacts.iter().cloned());
 
         let mut file_marks: HashMap<&str, Marks> = HashMap::new();
         for (path, _, is_error) in &diagnostics {
@@ -867,7 +872,9 @@ impl Binder {
                 }
             }
             RowKind::File => {
-                if row.path.ends_with(".toml") {
+                // The config and its artifacts are documents ABOUT the
+                // story, not part of it — the ink drop is for story text.
+                if row.path.ends_with(".toml") || row.path.ends_with(".json") {
                     icons::DOC
                 } else if row.draft {
                     // Dashed, whether or not the row is selected: being a
