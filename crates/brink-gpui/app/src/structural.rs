@@ -22,10 +22,60 @@ use gpui::{App, Entity, SharedString, Window, div, px};
 use gpui_component::WindowExt as _;
 use gpui_component::button::ButtonVariant;
 use gpui_component::dialog::DialogButtonProps;
+use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::project::Project;
 use brink_gpui_shell::notify::{Severity, notify};
+
+/// Ask for a name, then lift `start..end` of `path` into a new knot (or
+/// function) and leave a call behind.
+pub fn extract(
+    project: Entity<Project>,
+    path: String,
+    span: std::ops::Range<usize>,
+    function: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let what = if function { "function" } else { "knot" };
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder("name"));
+    let confirm: crate::files::Confirm = Rc::new({
+        let project = project.clone();
+        let input = input.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let name = input.read(cx).value().trim().to_owned();
+            window.close_dialog(cx);
+            if name.is_empty() {
+                return;
+            }
+            if let Some(why) = crate::knots::name_error(&name) {
+                notify(Severity::Error, "refactor", why, window, cx);
+                return;
+            }
+            run(
+                project.clone(),
+                QueryKind::Extract {
+                    path: path.clone(),
+                    start: u32::try_from(span.start).unwrap_or(0),
+                    end: u32::try_from(span.end).unwrap_or(0),
+                    name,
+                    function,
+                },
+                window,
+                cx,
+            );
+        }
+    });
+    crate::files::prompt(
+        &format!("Extract to {what}"),
+        "Extract",
+        input,
+        confirm,
+        window,
+        cx,
+    );
+}
 
 /// Promote `knot.stitch` in `path` to a knot of its own.
 pub fn promote(

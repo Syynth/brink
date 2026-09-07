@@ -30,7 +30,7 @@ use brink_gpui_shell::notify::{Severity, notify};
 
 /// What a prompt does when it is confirmed. Shared by all three, which is
 /// why it has a name rather than being spelled out at each call.
-type Confirm = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type Confirm = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// The text a brand-new `.ink` file starts with: nothing.
 ///

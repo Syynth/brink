@@ -69,6 +69,17 @@ pub enum QueryKind {
         path: String,
         knot: String,
     },
+    /// Lift the selected lines into a new knot (or function), replacing
+    /// them with a call. `start`/`end` are byte offsets, snapped to whole
+    /// lines by the op itself.
+    Extract {
+        path: String,
+        start: u32,
+        end: u32,
+        name: String,
+        /// A `=== function name() ===` rather than a knot.
+        function: bool,
+    },
     /// Spelling and light grammar over one file's prose. Answered in the
     /// worker loop, which holds the `[prose]` config the check needs.
     Prose {
@@ -482,6 +493,13 @@ pub(crate) fn answer(
         QueryKind::DocumentColors { path } => {
             QueryResult::DocumentColors(document_colors(session, path))
         }
+        QueryKind::Extract {
+            path,
+            start,
+            end,
+            name,
+            function,
+        } => QueryResult::Structural(extract(session, path, *start, *end, name, *function)),
         QueryKind::Promote { path, knot, stitch } => {
             QueryResult::Structural(promote(session, path, knot, stitch))
         }
@@ -953,6 +971,37 @@ fn completions(
     Some(items)
 }
 
+/// Lift the selected lines into a new knot or function.
+fn extract(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    start: u32,
+    end: u32,
+    name: &str,
+    function: bool,
+) -> StructuralOutcome {
+    let (start, end) = (start as usize, end as usize);
+    let result = if function {
+        brink_ide::extract::extract_to_function(session, path, start, end, name)
+    } else {
+        brink_ide::extract::extract_to_knot(session, path, start, end, name)
+    };
+    let what = if function { "function" } else { "knot" };
+    match result {
+        // Extraction gates ITSELF (`extract::gated`), so `plan` finds the
+        // introduced list already filled and its own gate re-runs over the
+        // same source — same answer, one extra analysis. Cheap enough at
+        // author speed, and it keeps one packaging path.
+        Ok(result) => plan(
+            session,
+            path,
+            format!("Extracted `{name}` as a {what}"),
+            result,
+        ),
+        Err(e) => StructuralOutcome::Refused(format!("{e:?}")),
+    }
+}
+
 /// Lift `stitch` out of `knot` and make it a knot of its own.
 fn promote(
     session: &brink_ide::session::IdeSession,
@@ -1178,6 +1227,43 @@ mod tests {
             "the literal carries a swatch: {colours:?}"
         );
         assert_eq!(colours[0].2, "#ff0000");
+    }
+
+    #[test]
+    fn a_selection_extracts_into_a_knot_and_leaves_a_tunnel_call_behind() {
+        use super::{StructuralOutcome, extract};
+        use brink_ide::session::IdeSession;
+        let source = "=== shore ===\nThe tide.\nGulls argued.\n-> DONE\n";
+        let mut session = IdeSession::new();
+        session.update_source("main.ink", source.to_owned());
+        session.refresh_analysis();
+        // `Gulls argued.` — offsets inside the line; the op snaps to whole
+        // lines itself, which is what makes a partial selection usable.
+        let start = source.find("Gulls").expect("the line") as u32;
+        let end = start + 5;
+        let StructuralOutcome::Plan(plan) =
+            extract(&session, "main.ink", start, end, "gulls", false)
+        else {
+            panic!("extract refused");
+        };
+        assert!(
+            plan.new_source.contains("=== gulls ==="),
+            "{}",
+            plan.new_source
+        );
+        assert!(
+            plan.new_source.contains("-> gulls ->"),
+            "{}",
+            plan.new_source
+        );
+        assert_eq!(plan.summary, "Extracted `gulls` as a knot");
+
+        // A selection that crosses a knot header is refused rather than
+        // relocating the declaration.
+        let StructuralOutcome::Refused(_) = extract(&session, "main.ink", 0, end, "x", false)
+        else {
+            panic!("crossing a header must refuse");
+        };
     }
 
     #[test]

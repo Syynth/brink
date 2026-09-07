@@ -110,6 +110,10 @@ actions!(
         /// Advance one VM instruction — the other granularity, not a
         /// finer setting of the same one (RULED 2026-08-28).
         DebugStepInstruction,
+        /// Lift the selection into a new knot, leaving a tunnel call.
+        ExtractToKnot,
+        /// The same, as a function, leaving a call to it.
+        ExtractToFunction,
         /// Turn the caret's line into plain narrative, a choice, a sticky
         /// choice, a gather, or a choice body. The five structural
         /// element types a weave line can be.
@@ -424,6 +428,20 @@ impl Studio {
             );
             workspace.register_command("Line", "Make Gather", MakeGather, Some("alt-3"), cx);
             workspace.register_command("Line", "Make Choice Body", MakeChoiceBody, None, cx);
+            workspace.register_command(
+                "Refactor",
+                "Extract to Knot\u{2026}",
+                ExtractToKnot,
+                None,
+                cx,
+            );
+            workspace.register_command(
+                "Refactor",
+                "Extract to Function\u{2026}",
+                ExtractToFunction,
+                None,
+                cx,
+            );
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
             // The find panel is the TOOLKIT's, not ours: `EditorState::new`
@@ -1095,6 +1113,47 @@ impl Studio {
         );
     }
 
+    fn extract_to_knot(&mut self, _: &ExtractToKnot, window: &mut Window, cx: &mut Context<Self>) {
+        self.extract(false, window, cx);
+    }
+
+    fn extract_to_function(
+        &mut self,
+        _: &ExtractToFunction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extract(true, window, cx);
+    }
+
+    /// Lift the focused editor's SELECTION into a knot or a function. The
+    /// op snaps to whole lines itself, so a partial selection is fine; an
+    /// empty one is not, and says so rather than extracting nothing.
+    fn extract(&mut self, function: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let span: std::ops::Range<usize> = site.editor.read(cx).selected_range();
+        if span.is_empty() {
+            notify(
+                Severity::Info,
+                "refactor",
+                "Select the lines to extract first.",
+                window,
+                cx,
+            );
+            return;
+        }
+        structural::extract(
+            self.project.clone(),
+            site.path.to_string(),
+            span,
+            function,
+            window,
+            cx,
+        );
+    }
+
     fn make_narrative(&mut self, _: &MakeNarrative, window: &mut Window, cx: &mut Context<Self>) {
         self.convert_line(ConvertTarget::Narrative, window, cx);
     }
@@ -1671,6 +1730,8 @@ impl Render for Studio {
             .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(Self::fix_all_in_file))
             .on_action(cx.listener(Self::fix_all_in_project))
+            .on_action(cx.listener(Self::extract_to_knot))
+            .on_action(cx.listener(Self::extract_to_function))
             .on_action(cx.listener(Self::make_narrative))
             .on_action(cx.listener(Self::make_choice))
             .on_action(cx.listener(Self::make_sticky_choice))
