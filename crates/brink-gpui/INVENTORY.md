@@ -317,7 +317,8 @@ the summary strip, `cmd-shift-f`.
 |---|---|---|
 | ~~Replace / Replace All~~ | built 2026-09-06 | a disclosed replace row (VS Code's shape), a per-card Replace, and a Replace All gated by a confirmation naming the match and file counts. A hit whose bytes no longer read as what the search matched is skipped and its button hidden — cards are edit-mapped, so a hit can slide onto text the author never searched for. Replacement is literal; capture groups are not offered. |
 | ~~References mode~~ | built 2026-09-05 (#3580) | Shift-F12 fills the Search cards with the reference sites, each badged by kind. |
-| Context knob (lines above/below) | parity gap | the window is the ruled default and not tunable. |
+| ~~Context knob (lines above/below)~~ | built 2026-09-07 | a knob rather than two steppers: it cycles the ruled default (−1/+2), match-only, ±2/±4 and ±5/±8, and an unrecognised window falls back to the default so it can never stick outside its own list. Session-scoped like the search options beside it — a way of reading one result, not a preference about the app. A references list is rebuilt from its own sites, since re-running the query would throw the list away. |
+| ~~The options were unreachable in a side dock~~ | fixed 2026-09-07 | Aa / W / `.*` lived only in `title_suffix`, and a SIDE dock draws no title strip (`shell/src/skin.rs`) — so on the left rail, where Search opens, none of them rendered. Found by driving, not by reading. They are drawn under the query box now; the title-strip copy stays for a Search dragged to the bottom dock, which keeps its strip. |
 
 ### Commands — palette, menu, keymap (`shell/src/commands.rs`, `palette.rs`)
 

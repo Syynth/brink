@@ -76,6 +76,34 @@ pub const RESULT_CAP: usize = 1000;
 /// below.
 pub const CONTEXT: (usize, usize) = (1, 2);
 
+/// The context windows the knob cycles through, the ruled default first.
+///
+/// A knob rather than a number box: the useful range is small, and the
+/// asymmetric default (a match usually reads forwards) is not a value a
+/// pair of steppers would ever land on by accident.
+pub const CONTEXT_STEPS: [(usize, usize); 4] = [CONTEXT, (0, 0), (2, 4), (5, 8)];
+
+/// How a context window is written on the knob.
+#[must_use]
+pub fn context_label(context: (usize, usize)) -> String {
+    match context {
+        (0, 0) => "match only".to_owned(),
+        (a, b) if a == b => format!("±{a} lines"),
+        (a, b) => format!("−{a}/+{b} lines"),
+    }
+}
+
+/// The next window in the cycle — and back to the default from anywhere
+/// unrecognised, so the knob can never be stuck outside its own list.
+#[must_use]
+pub fn next_context(context: (usize, usize)) -> (usize, usize) {
+    let at = CONTEXT_STEPS.iter().position(|c| *c == context);
+    match at {
+        Some(i) => CONTEXT_STEPS[(i + 1) % CONTEXT_STEPS.len()],
+        None => CONTEXT_STEPS[0],
+    }
+}
+
 /// Activating a card opens its file with the match selected.
 #[derive(Debug, Clone)]
 pub enum SearchEvent {
@@ -504,6 +532,13 @@ pub struct SearchView {
     /// query box is left alone — typing in it runs a search and clears
     /// this, which is the right way out of a references list.
     references: Option<String>,
+    /// The reference sites behind a references list, kept so the cards can
+    /// be rebuilt when the context window changes. Cleared by a search.
+    reference_sites: Vec<brink_gpui_model::query::Reference>,
+    /// Lines shown around each match. Session-scoped, like the search
+    /// options beside it — not persisted, since it is a way of reading one
+    /// result rather than a preference about the app.
+    context: (usize, usize),
     /// A regex the author has not finished typing, shown under the input.
     error: Option<String>,
     /// The replacement text, and whether its row is disclosed. VS Code's
@@ -577,6 +612,8 @@ impl SearchView {
             options: SearchOptions::default(),
             snapshot: None,
             references: None,
+            reference_sites: Vec::new(),
+            context: CONTEXT,
             error: None,
             collapsed: BTreeSet::new(),
             editors: HashMap::new(),
@@ -620,11 +657,12 @@ impl SearchView {
         self.error = None;
         let snapshot = {
             let project = self.project.read(cx);
-            references_snapshot(|path| project.loaded_source(path), refs, CONTEXT)
+            references_snapshot(|path| project.loaded_source(path), refs, self.context)
         };
         let count = snapshot.matches.len();
         self.snapshot = Some(snapshot);
         self.references = Some(name);
+        self.reference_sites = refs.to_vec();
         self.list = ListState::new(count, ListAlignment::Top, px(300.));
         cx.notify();
     }
@@ -632,6 +670,7 @@ impl SearchView {
     fn run(&mut self, cx: &mut Context<Self>) {
         let query = self.query.read(cx).value().to_string();
         self.references = None;
+        self.reference_sites.clear();
         self.collapsed.clear();
         self.editors.clear();
         self.card_subs.clear();
@@ -646,7 +685,7 @@ impl SearchView {
                         .files()
                         .iter()
                         .filter_map(|path| project.loaded_source(path).map(|s| (path.as_str(), s)));
-                    self.snapshot = Some(search(files, &pattern, CONTEXT, RESULT_CAP));
+                    self.snapshot = Some(search(files, &pattern, self.context, RESULT_CAP));
                     self.error = None;
                 }
                 Err(error) => {
@@ -663,6 +702,20 @@ impl SearchView {
     fn toggle_option(&mut self, apply: impl FnOnce(&mut SearchOptions), cx: &mut Context<Self>) {
         apply(&mut self.options);
         self.run(cx);
+    }
+
+    /// Take the next context window and redraw the current result with it
+    /// — a references list is rebuilt from its own sites, since re-running
+    /// the query would throw the list away.
+    fn cycle_context(&mut self, cx: &mut Context<Self>) {
+        self.context = next_context(self.context);
+        match self.references.clone() {
+            Some(name) => {
+                let refs = std::mem::take(&mut self.reference_sites);
+                self.show_references(name, &refs, cx);
+            }
+            None => self.run(cx),
+        }
     }
 
     fn set_all_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -1355,45 +1408,73 @@ impl Panel for SearchView {
         SharedString::from("Search")
     }
 
-    /// The options, in the title strip.
+    /// The options, in the title strip — which a SIDE dock does not draw
+    /// (`shell/src/skin.rs`, ruled 2026-09-05). The panel draws them
+    /// beside its query box as well, and that copy is the one an author
+    /// on the left rail can actually reach; this one shows when Search is
+    /// dragged to the bottom dock, which keeps its strip.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        let o = self.options;
-        Some(
-            h_flex()
-                .gap_0p5()
-                .child(self.option_toggle(
-                    "search-case",
-                    "Aa",
-                    "Match case",
-                    o.case_sensitive,
-                    |o| o.case_sensitive = !o.case_sensitive,
-                    cx,
-                ))
-                .child(self.option_toggle(
-                    "search-word",
-                    "W",
-                    "Whole word",
-                    o.whole_word,
-                    |o| o.whole_word = !o.whole_word,
-                    cx,
-                ))
-                .child(self.option_toggle(
-                    "search-regex",
-                    ".*",
-                    "Regular expression",
-                    o.regex,
-                    |o| o.regex = !o.regex,
-                    cx,
-                )),
-        )
+        Some(self.render_options(cx))
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
         false
+    }
+}
+
+impl SearchView {
+    /// Case / whole-word / regex, and the context knob.
+    fn render_options(&self, cx: &mut Context<Self>) -> AnyElement {
+        let o = self.options;
+        (h_flex()
+            .gap_0p5()
+            .child(self.option_toggle(
+                "search-case",
+                "Aa",
+                "Match case",
+                o.case_sensitive,
+                |o| o.case_sensitive = !o.case_sensitive,
+                cx,
+            ))
+            .child(self.option_toggle(
+                "search-word",
+                "W",
+                "Whole word",
+                o.whole_word,
+                |o| o.whole_word = !o.whole_word,
+                cx,
+            ))
+            .child(self.option_toggle(
+                "search-regex",
+                ".*",
+                "Regular expression",
+                o.regex,
+                |o| o.regex = !o.regex,
+                cx,
+            ))
+            .child(
+                Button::new("search-context")
+                    .ghost()
+                    .compact()
+                    .tooltip(format!(
+                        "Context: {} (click for the next)",
+                        context_label(self.context)
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(context_label(self.context)),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.cycle_context(cx);
+                    })),
+            ))
+        .into_any_element()
     }
 }
 
@@ -1443,6 +1524,17 @@ impl Render for SearchView {
                                 cx.notify();
                             })),
                     ),
+            )
+            .child(
+                // Under the query, where they are reachable in a side dock
+                // — the title strip that also carries them is not drawn
+                // there.
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .px_2()
+                    .pb_1()
+                    .child(self.render_options(cx)),
             )
             .children(replace_row)
             .children(summary)
@@ -1521,6 +1613,51 @@ mod tests {
             None
         ));
         assert!(!SearchView::still_the_match(None, &(0..10), Some("x")));
+    }
+
+    #[test]
+    fn the_context_knob_cycles_and_recovers_from_anywhere() {
+        assert_eq!(next_context(CONTEXT), (0, 0));
+        assert_eq!(next_context((0, 0)), (2, 4));
+        assert_eq!(next_context((5, 8)), CONTEXT, "and round to the default");
+        // A window from somewhere else (a persisted value, a later build)
+        // must not leave the knob stuck outside its own list.
+        assert_eq!(next_context((7, 7)), CONTEXT);
+        // Every step is reachable, and the ruled default is the first.
+        assert_eq!(CONTEXT_STEPS[0], CONTEXT);
+        let mut seen = vec![CONTEXT];
+        let mut at = CONTEXT;
+        for _ in 1..CONTEXT_STEPS.len() {
+            at = next_context(at);
+            seen.push(at);
+        }
+        assert_eq!(seen, CONTEXT_STEPS.to_vec());
+    }
+
+    #[test]
+    fn a_context_window_says_what_it_shows() {
+        assert_eq!(context_label((0, 0)), "match only");
+        assert_eq!(context_label((2, 2)), "±2 lines");
+        assert_eq!(context_label(CONTEXT), "−1/+2 lines");
+    }
+
+    #[test]
+    fn a_wider_window_shows_more_of_the_file() {
+        let source = "a\nb\nc\nMATCH\ne\nf\ng\nh\n";
+        let p = build_pattern("MATCH", SearchOptions::default()).unwrap();
+        let narrow = search([("story.ink", source)], &p, (0, 0), RESULT_CAP);
+        let wide = search([("story.ink", source)], &p, (2, 4), RESULT_CAP);
+        let text = |s: &Snapshot| {
+            let m = &s.matches[0];
+            source[m.window.clone()].to_owned()
+        };
+        assert_eq!(text(&narrow), "MATCH", "match only is the match's line");
+        let wide = text(&wide);
+        assert!(wide.starts_with("b\nc\nMATCH"), "two above: {wide:?}");
+        assert!(
+            wide.ends_with("h"),
+            "four below, clamped to the file: {wide:?}"
+        );
     }
 
     fn opts(case: bool, word: bool, regex: bool) -> SearchOptions {
