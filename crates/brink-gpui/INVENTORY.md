@@ -341,7 +341,7 @@ in Code view (ruled 2026-09-05).
 
 | Left out | Kind | Note |
 |---|---|---|
-| App ▸ Editor (default view, fix-on-save) | parity gap | the web's `EditorViewSection` + `EditorSection`; font sizes and **Format on save** (built 2026-09-05, `brink-fmt` over every dirty `.ink`) live in Appearance here; fix-on-save is not built. |
+| ~~App ▸ Editor (default view, fix-on-save)~~ | built 2026-09-07 | `shell/src/settings_editor.rs`. **Open in** — Restore last (the default, and what the app did before there was a choice) or one of the three views, which then wins over the remembered one, since "always open in Continuous" is a preference about every launch and the last view used is only the memory it replaces. **Fix on save** — every Safe fix over the DIRTY files, before the formatter, so what is laid out is what the fixes wrote; `fixes::fix_all_quietly` is the same engine as Fix All with none of its talk, because a "Nothing to fix." toast on every `cmd-s` is noise about what did not happen. The type and gutter rows the web has here stay in Appearance, beside the font sizes they belong with. |
 | App ▸ Player (playback, debug info, external-function check) | parity gap | the Player exists now (§1), so this section has something to configure and nothing is drawn. |
 | Creating `brink.toml` for a project without one | parity gap | every Project section says so and stops; the worker would need to adopt a new config path. |
 | Formatting: tabs vs spaces | **open ruling** | the row is drawn disabled. |

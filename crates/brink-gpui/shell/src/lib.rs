@@ -11,6 +11,7 @@ pub mod rail;
 pub mod region;
 pub mod settings;
 pub mod settings_appearance;
+pub mod settings_editor;
 pub mod settings_keymap;
 pub mod settings_modal;
 pub mod settings_player;

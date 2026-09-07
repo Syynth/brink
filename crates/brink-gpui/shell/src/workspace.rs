@@ -28,6 +28,7 @@ use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
 use crate::settings_appearance::AppearanceSection;
+use crate::settings_editor::EditorSection;
 use crate::settings_keymap::KeymapSection;
 use crate::settings_modal::{
     MODAL_HEIGHT, MODAL_WIDTH, Scope, Section, SectionMeta, SettingsEvent, SettingsModal,
@@ -228,6 +229,16 @@ impl Workspace {
                 ],
             ),
             appearance,
+        ));
+        let editor = cx.new(EditorSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "editor",
+                Scope::App,
+                "Editor",
+                &["view", "open", "default", "fix", "save"],
+            ),
+            editor,
         ));
         let player = cx.new(PlayerSection::new);
         this.add_settings_section(Section::new(
@@ -538,7 +549,15 @@ impl Workspace {
                     .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
             }
         }
-        if let Some(key) = &layout.editor_view
+        // A chosen default view wins over the remembered one: "always
+        // open in Continuous" is a preference about every launch, and the
+        // last view used is only the memory it replaces.
+        let settings = AppSettings::get(cx);
+        let key = settings
+            .default_view
+            .as_ref()
+            .or(layout.editor_view.as_ref());
+        if let Some(key) = key
             && let Some(view) = EditorView::ALL.iter().find(|v| v.persistence_key() == key)
         {
             self.set_editor_view(*view, window, cx);

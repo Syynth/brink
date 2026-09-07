@@ -892,16 +892,43 @@ impl Studio {
     /// "Format on save" on, every dirty file is formatted first, so what is
     /// written is what the editors then show.
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        let format_first = brink_gpui_shell::settings::AppSettings::get(cx).format_on_save;
+        let settings = brink_gpui_shell::settings::AppSettings::get(cx);
         let project = self.project.clone();
-        if !format_first {
+        if !settings.format_on_save && !settings.fix_on_save {
             write_all(&project, cx);
             return;
         }
+        // Both are per-FILE and scoped to what is dirty: saving must not
+        // rewrite a file the author has not touched.
         let dirty = project.read(cx).dirty_paths();
-        let format = Self::format_files(&project, dirty, cx);
+        // Fixes first, then the formatter — so what is laid out is what
+        // the fixes wrote, rather than a fix landing on formatted text and
+        // leaving it unformatted again.
+        let fixes: Vec<gpui::Task<usize>> = if settings.fix_on_save {
+            dirty
+                .iter()
+                .map(|path| {
+                    fixes::fix_all_quietly(
+                        &project,
+                        brink_gpui_model::fixes::FixScope::File(path.clone()),
+                        cx,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let format_on_save = settings.format_on_save;
         cx.spawn_in(window, async move |_, cx| {
-            let _ = format.await;
+            for fix in fixes {
+                fix.await;
+            }
+            if format_on_save {
+                let format = cx.update(|_, cx| Self::format_files(&project, dirty, cx));
+                if let Ok(format) = format {
+                    format.await;
+                }
+            }
             let _ = cx.update(|_, cx| write_all(&project, cx));
         })
         .detach();

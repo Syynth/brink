@@ -72,6 +72,14 @@ pub struct AppSettings {
     /// means. This is the part with no such question in it, and it is most
     /// of what a person notices: the app opens looking like they left it.
     pub layout: Layout,
+    /// Run every Safe fix over the changed files before writing them —
+    /// the sibling of `format_on_save`, and applied before it, so what
+    /// the formatter lays out is what the fixes wrote.
+    pub fix_on_save: bool,
+    /// The view the studio opens in, by `EditorView::persistence_key`.
+    /// `None` restores the last one used, which is the default and what
+    /// the app did before there was a choice.
+    pub default_view: Option<String>,
     /// While a story plays, reveal each line's source in the editor.
     ///
     /// The web studio's "Follow in editor", on by default there and here:
@@ -206,6 +214,8 @@ impl Default for AppSettings {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            fix_on_save: false,
+            default_view: None,
             follow_in_editor: true,
             player_font_size: 0.,
             recents: Vec::new(),
@@ -261,6 +271,8 @@ impl AppSettings {
             "format_on_save": self.format_on_save,
             "keymap": Value::Object(keymap),
             "layout": self.layout.to_json(),
+            "fix_on_save": self.fix_on_save,
+            "default_view": self.default_view.clone(),
             "follow_in_editor": self.follow_in_editor,
             "player_font_size": self.player_font_size,
             "recents": self.recents.clone(),
@@ -322,6 +334,15 @@ impl AppSettings {
                 .get("layout")
                 .map(Layout::from_json)
                 .unwrap_or_default(),
+            fix_on_save: value
+                .get("fix_on_save")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.fix_on_save),
+            default_view: value
+                .get("default_view")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned),
             follow_in_editor: value
                 .get("follow_in_editor")
                 .and_then(Value::as_bool)
@@ -477,6 +498,8 @@ mod tests {
             format_on_save: false,
             keymap: BTreeMap::new(),
             layout: Layout::default(),
+            fix_on_save: true,
+            default_view: Some("continuous".to_owned()),
             follow_in_editor: false,
             player_font_size: 20.,
             recents: vec!["/home/me/harbour".to_owned()],
@@ -643,6 +666,31 @@ mod tests {
             AppSettings::from_json(&json!({ "recents": "not a list" })).recents,
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_default_view_round_trips_and_an_empty_one_is_no_choice() {
+        let s = AppSettings {
+            default_view: Some("continuous".to_owned()),
+            fix_on_save: true,
+            ..AppSettings::default()
+        };
+        let back = AppSettings::from_json(&s.to_json());
+        assert_eq!(back.default_view.as_deref(), Some("continuous"));
+        assert!(back.fix_on_save);
+
+        assert_eq!(
+            AppSettings::from_json(&json!({ "default_view": "" })).default_view,
+            None,
+            "an empty key is no choice, not a view called nothing"
+        );
+        assert_eq!(
+            AppSettings::from_json(&json!({ "default_view": 3 })).default_view,
+            None
+        );
+        let defaults = AppSettings::default();
+        assert_eq!(defaults.default_view, None, "restore the last view");
+        assert!(!defaults.fix_on_save, "and change nothing on save");
     }
 
     #[test]
