@@ -32,6 +32,7 @@ use std::time::Instant;
 
 use brink_ide::session::IdeSession;
 
+use crate::cues::CueLine;
 use crate::play::{Play, PlayCommand, PlayOutcome};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
@@ -169,6 +170,12 @@ pub struct Analyzed {
     /// costs *refinement* alone — an identifier not yet known to name a
     /// knot. Structure is decidable from syntax and never comes from here.
     pub kinds: BTreeMap<String, Kinds>,
+    /// Dialect-classified lines per file — the cue/parenthetical/dialogue
+    /// styling the studio paints (`brink_gpui_model::cues`). Empty for a
+    /// project with no `[dialogue]` dialect, which is the common case and
+    /// costs nothing: the classification only exists where a dialect
+    /// registered one.
+    pub cues: BTreeMap<String, Vec<CueLine>>,
     /// `[project] drafts` resolved against the compile closure.
     pub drafts: Vec<String>,
     /// The compile closure — the files the story actually reaches. A file
@@ -768,6 +775,25 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         }
     }
 
+    // Dialect-classified lines. Guarded on a registered dialect rather
+    // than computed and found empty: `line_contexts` is a real pass per
+    // file, and a project with no `[dialogue]` has nothing for it to find.
+    let mut cues: BTreeMap<String, Vec<CueLine>> = BTreeMap::new();
+    if session.dialect().is_some() {
+        for id in session.db().file_ids().collect::<Vec<_>>() {
+            if session.is_mounted_std(id) {
+                continue;
+            }
+            let Some(path) = session.db().file_path(id).map(str::to_owned) else {
+                continue;
+            };
+            let lines = crate::cues::cue_lines(session, id);
+            if !lines.is_empty() {
+                cues.insert(path, lines);
+            }
+        }
+    }
+
     let types = session.type_policy();
     let lints = session.lint_policy().clone();
     let mut diagnostics: BTreeMap<String, Vec<Diagnostic>> = BTreeMap::new();
@@ -828,6 +854,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         revision,
         diagnostics,
         kinds,
+        cues,
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
@@ -1957,6 +1984,65 @@ mod tests {
         assert!(
             !opened.files.iter().any(|f| f == "dialect.json"),
             "an artifact is not a source"
+        );
+    }
+
+    #[test]
+    fn a_dialogue_dialect_classifies_the_cue_lines_analysis_ships() {
+        // The `at-cue` preset is what `[dialogue] preset = "at-cue"`
+        // resolves to: `@Name:` opens a run, `(aside)` is a parenthetical,
+        // and the lines under a cue chain as dialogue. Without a dialect
+        // the same source ships nothing, which is the other half of the
+        // guard in `analyze`.
+        let source = "@Alice:<>\nWhere have you been?\n(quietly)<>\nI waited.\n-> DONE\n";
+        let plain = Tree::new(
+            "no-dialect",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&plain);
+        assert!(
+            analyze(&mut session, &state, 1).cues.is_empty(),
+            "no dialect, no cue lines"
+        );
+
+        let tree = Tree::new(
+            "dialect",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\n\n[dialogue]\npreset = \"at-cue\"\n",
+                ),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&tree);
+        let cues = analyze(&mut session, &state, 1).cues;
+        let lines = cues.get("start.ink").expect("the file has cue lines");
+        let kinds: Vec<&str> = lines.iter().map(|l| l.kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"character") && kinds.contains(&"parenthetical"),
+            "{kinds:?}"
+        );
+        // Every span is a real slice of the source, and the cue's sigils
+        // sit inside its own line.
+        for line in lines {
+            let text = &source[line.start as usize..line.end as usize];
+            assert!(!text.contains('\n'), "a cue line is one line: {text:?}");
+            for (s, e) in &line.hidden {
+                assert!(*s >= line.start && *e <= line.end, "{line:?}");
+            }
+        }
+        let cue = lines
+            .iter()
+            .find(|l| l.kind == "character")
+            .expect("a character cue");
+        assert_eq!(&source[cue.start as usize..cue.end as usize], "@Alice:<>");
+        assert!(
+            !cue.hidden.is_empty(),
+            "the `@` and `:` are hidden geometry"
         );
     }
 

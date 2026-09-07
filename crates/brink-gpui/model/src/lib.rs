@@ -1,5 +1,6 @@
 pub mod binder_order;
 pub mod compiled;
+pub mod cues;
 pub mod fixes;
 pub mod graph;
 pub mod play;

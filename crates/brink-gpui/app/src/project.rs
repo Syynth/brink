@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use brink_gpui_model::binder_order::{self, BinderOrder};
+use brink_gpui_model::cues::CueLine;
 use brink_gpui_model::play::{PlayCommand, PlayOutcome};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
@@ -133,6 +134,10 @@ pub struct Project {
     closure: BTreeSet<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
+    /// Dialect-classified lines per file, from the last analysis — what
+    /// the highlighter paints a cue, a parenthetical and a dialogue run
+    /// from. Empty for a project with no `[dialogue]` dialect.
+    cues: BTreeMap<String, Vec<CueLine>>,
     warnings: Vec<String>,
     /// Whether any analysis has landed. Distinct from the closure being
     /// non-empty, which stays false whenever `brink.toml` names no entry
@@ -214,6 +219,7 @@ impl Project {
             closure: BTreeSet::new(),
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
+            cues: BTreeMap::new(),
             warnings: Vec::new(),
             analyzed: false,
             revision: 0,
@@ -250,6 +256,7 @@ impl Project {
                     // A new project invalidates everything keyed by path.
                     self.diagnostics.clear();
                     self.kinds.clear();
+                    self.cues.clear();
                     self.drafts.clear();
                     self.draft_globs.clear();
                     self.drafts_known = false;
@@ -264,6 +271,7 @@ impl Project {
             Response::Analyzed(analyzed) => {
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;
+                self.cues = analyzed.cues;
                 self.drafts = analyzed.drafts.into_iter().collect();
                 self.draft_globs = analyzed.draft_globs;
                 self.drafts_known = analyzed.drafts_known;
@@ -738,6 +746,14 @@ impl Project {
     #[must_use]
     pub fn kinds_for(&self, path: &str) -> &Kinds {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
+    }
+
+    /// The file's dialect-classified lines. Like `kinds_for`, this lags by
+    /// at most one analysis — a cue typed a keystroke ago paints as prose
+    /// until the next pass lands, which is refinement, not error.
+    #[must_use]
+    pub fn cues_for(&self, path: &str) -> &[CueLine] {
+        self.cues.get(path).map_or(&[], Vec::as_slice)
     }
 
     #[must_use]

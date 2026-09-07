@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use anyhow::Result;
+use brink_gpui_model::cues::CueLine;
 use brink_gpui_model::query::{Completion, CompletionKind, QueryKind, QueryResult};
 use brink_gpui_model::tokens::TokenCache;
 use brink_ir::LineIndex;
@@ -614,12 +615,61 @@ pub struct BrinkHighlighter {
     /// Lines faded rather than painted at full strength: `INCLUDE` /
     /// `EXTERNAL` and whole-line comments (`muted_lines`).
     muted_lines: Vec<Range<usize>>,
+    /// The dialect-classified lines the last analysis found, with the
+    /// theme's cue colour and weight resolved for them.
+    cue_lines: Vec<CueLine>,
+    cue_style: CueStyle,
     band: (gpui::Hsla, gpui::Hsla),
 }
 
-/// How far a muted line's colour is faded. Enough to fall behind the
-/// prose, not so far that it cannot be read when looked at.
+/// What a dialect-classified line is painted with. Mirrors the studio's
+/// `editor.css` rules for `.brink-character` / `.brink-parenthetical` —
+/// theme-tunable cue colour and weight (ruling 2026-08-25: Manuscript
+/// renders a cue as plain prose), an italic muted parenthetical, and
+/// nothing of its own for `dialogue`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CueStyle {
+    pub cue: gpui::Hsla,
+    pub cue_weight: gpui::FontWeight,
+    pub muted: gpui::Hsla,
+    /// The editor's own background — what a hidden sigil fades toward.
+    pub bg: gpui::Hsla,
+}
+
+/// How far a hidden sigil is faded. The web studio removes `@` and `:<>`
+/// from the flow outright (`.brink-hidden-sigil`, `font-size: 0`); a gpui
+/// highlighter styles ranges and cannot replace text, so the sigils stay
+/// where the author typed them and recede instead. The cue still reads as
+/// a name, and — unlike the web — what is on screen is what is in the
+/// file, which the "literal whitespace" ruling already prefers elsewhere.
+pub(crate) const SIGIL_FADE: f32 = 0.3;
+
+/// How much of a muted line's own colour survives the fade. Enough to
+/// fall behind the prose, not so far that it cannot be read when looked
+/// at.
 pub(crate) const MUTED_FADE: f32 = 0.55;
+
+/// Fade `colour` toward `bg`, keeping `keep` of it, and return an OPAQUE
+/// colour.
+///
+/// Not `Hsla::opacity`: gpui composites a highlight colour over the run's
+/// base text colour rather than over the background, so cutting the alpha
+/// pulls a colour toward the FOREGROUND — it brightens a comment instead
+/// of dimming it, which is the opposite of a fade. Measured on the
+/// headless rig at alphas 0.3 and 0.0: the glyphs got *brighter* as the
+/// alpha fell. Blending toward the background here says what was meant
+/// and leaves nothing for the renderer to interpret.
+pub(crate) fn fade(colour: gpui::Hsla, bg: gpui::Hsla, keep: f32) -> gpui::Hsla {
+    let keep = keep.clamp(0.0, 1.0);
+    let (fg, bg) = (gpui::Rgba::from(colour), gpui::Rgba::from(bg));
+    let mix = |a: f32, b: f32| b + (a - b) * keep;
+    gpui::Hsla::from(gpui::Rgba {
+        r: mix(fg.r, bg.r),
+        g: mix(fg.g, bg.g),
+        b: mix(fg.b, bg.b),
+        a: 1.0,
+    })
+}
 
 /// One `TODO:` line: its full extent and its `TODO:` keyword.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -737,7 +787,8 @@ pub(crate) fn muted_lines(source: &str) -> Vec<Range<usize>> {
 pub(crate) fn overlay_muted(
     runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
     muted: &[Range<usize>],
-    fade: f32,
+    bg: gpui::Hsla,
+    keep: f32,
 ) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
     if muted.is_empty() {
         return runs;
@@ -748,7 +799,7 @@ pub(crate) fn overlay_muted(
                 .iter()
                 .any(|line| line.start <= range.start && range.end <= line.end);
             if on && let Some(colour) = style.color {
-                style.color = Some(colour.opacity(fade));
+                style.color = Some(fade(colour, bg, keep));
             }
             (range, style)
         })
@@ -798,6 +849,73 @@ pub(crate) fn overlay_todo(
     out
 }
 
+/// Lay the dialect's per-line styling over already-styled runs: a cue
+/// takes the theme's cue colour and weight, a parenthetical goes italic
+/// and muted, a sigil inside either fades. A `dialogue` line — and any
+/// kind a project's own dialect declares that the studio has no rule for —
+/// is left exactly as the syntax painted it, which is what the web does
+/// too (`.brink-dialogue` carries no declarations).
+///
+/// Runs are split at every line and sigil edge, so a token that straddles
+/// one is not styled whole.
+pub(crate) fn overlay_cues(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    cues: &[CueLine],
+    style: CueStyle,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if cues.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    for (range, base) in runs {
+        let mut cuts: Vec<usize> = vec![range.start, range.end];
+        for cue in cues {
+            let edges = [cue.start as usize, cue.end as usize];
+            for at in edges.into_iter().chain(
+                cue.hidden
+                    .iter()
+                    .flat_map(|(s, e)| [*s as usize, *e as usize]),
+            ) {
+                if at > range.start && at < range.end {
+                    cuts.push(at);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let piece = pair[0]..pair[1];
+            let mut styled = base;
+            if let Some(cue) = cues
+                .iter()
+                .find(|c| c.start as usize <= piece.start && piece.end <= c.end as usize)
+            {
+                match cue.kind.as_str() {
+                    "character" => {
+                        styled.color = Some(style.cue);
+                        styled.font_weight = Some(style.cue_weight);
+                    }
+                    "parenthetical" => {
+                        styled.color = Some(style.muted);
+                        styled.font_style = Some(gpui::FontStyle::Italic);
+                    }
+                    _ => {}
+                }
+                let hidden = cue
+                    .hidden
+                    .iter()
+                    .any(|(s, e)| *s as usize <= piece.start && piece.end <= *e as usize);
+                if hidden {
+                    let colour = styled.color.unwrap_or(style.cue);
+                    styled.color = Some(fade(colour, style.bg, SIGIL_FADE));
+                }
+            }
+            out.push((piece, styled));
+        }
+    }
+    out
+}
+
 impl BrinkHighlighter {
     /// One highlighter per open view of a file. The Continuous view builds
     /// its own per section, which is why this is not private: every section
@@ -813,6 +931,13 @@ impl BrinkHighlighter {
             runs: Vec::new(),
             todo_lines: Vec::new(),
             muted_lines: Vec::new(),
+            cue_lines: Vec::new(),
+            cue_style: CueStyle {
+                cue: gpui::Hsla::default(),
+                cue_weight: gpui::FontWeight::BOLD,
+                muted: gpui::Hsla::default(),
+                bg: gpui::Hsla::default(),
+            },
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
         }
     }
@@ -847,7 +972,14 @@ impl InputHighlighter for BrinkHighlighter {
         };
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
         self.muted_lines = muted_lines(&source);
+        self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        self.cue_style = CueStyle {
+            cue: brink_gpui_shell::theme::hsla(tokens.cue.unwrap_or(tokens.accent)),
+            cue_weight: gpui::FontWeight(f32::from(tokens.cue_weight)),
+            muted: brink_gpui_shell::theme::hsla(tokens.fg_muted),
+            bg: brink_gpui_shell::theme::hsla(tokens.editor_bg),
+        };
         self.band = (
             brink_gpui_shell::theme::hsla(tokens.todo_band),
             brink_gpui_shell::theme::hsla(tokens.todo_ink),
@@ -913,7 +1045,10 @@ impl InputHighlighter for BrinkHighlighter {
         }
         // Muting first, the band second: a TODO line is never muted, and
         // the band must win on every word it covers.
-        let out = overlay_muted(out, &self.muted_lines, MUTED_FADE);
+        let out = overlay_muted(out, &self.muted_lines, self.cue_style.bg, MUTED_FADE);
+        // The dialect before the band: a TODO note inside a dialogue run
+        // is still a note, and the band must win on every word it covers.
+        let out = overlay_cues(out, &self.cue_lines, self.cue_style);
         overlay_todo(out, &self.todo_lines, self.band)
     }
 
@@ -1348,6 +1483,95 @@ mod tests {
         assert!(parse_hex("red").is_none());
     }
 
+    fn cue_style() -> super::CueStyle {
+        super::CueStyle {
+            cue: gpui::hsla(0.1, 1.0, 0.5, 1.0),
+            cue_weight: gpui::FontWeight(700.0),
+            muted: gpui::hsla(0.5, 0.1, 0.5, 1.0),
+            bg: gpui::hsla(0.0, 0.0, 0.1, 1.0),
+        }
+    }
+
+    #[test]
+    fn a_cue_takes_the_themes_colour_and_weight_and_its_sigils_recede() {
+        // `@Alice:<>` on line one (bytes 0..9), `hello` on line two.
+        let cue = CueLine {
+            start: 0,
+            end: 9,
+            kind: "character".to_owned(),
+            hidden: vec![(0, 1), (6, 9)],
+        };
+        let runs = vec![
+            (0..9, gpui::HighlightStyle::default()),
+            (10..15, gpui::HighlightStyle::default()),
+        ];
+        let out = super::overlay_cues(runs, &[cue], cue_style());
+        // The name, the two sigils, and the untouched line beyond.
+        let name = out
+            .iter()
+            .find(|(r, _)| *r == (1..6))
+            .expect("the speaker's own run");
+        assert_eq!(name.1.color, Some(cue_style().cue));
+        assert_eq!(name.1.font_weight, Some(gpui::FontWeight(700.0)));
+        let style = cue_style();
+        for sigil in [0..1, 6..9] {
+            let piece = out
+                .iter()
+                .find(|(r, _)| *r == sigil)
+                .unwrap_or_else(|| panic!("a run for {sigil:?} in {out:?}"));
+            let faded = piece.1.color.expect("a sigil is coloured then faded");
+            assert!(
+                faded.l < style.cue.l && faded.l > style.bg.l,
+                "{sigil:?} recedes toward the page: {faded:?}"
+            );
+        }
+        let after = out.iter().find(|(r, _)| *r == (10..15)).expect("line two");
+        assert_eq!(after.1.color, None, "nothing outside a cue line is touched");
+    }
+
+    #[test]
+    fn a_parenthetical_is_italic_and_muted_and_a_dialogue_line_is_left_alone() {
+        let paren = CueLine {
+            start: 0,
+            end: 5,
+            kind: "parenthetical".to_owned(),
+            hidden: vec![],
+        };
+        let dialogue = CueLine {
+            start: 6,
+            end: 10,
+            kind: "dialogue".to_owned(),
+            hidden: vec![],
+        };
+        let unknown = CueLine {
+            start: 11,
+            end: 15,
+            kind: "scene_heading".to_owned(),
+            hidden: vec![],
+        };
+        let runs = vec![
+            (0..5, gpui::HighlightStyle::default()),
+            (6..10, gpui::HighlightStyle::default()),
+            (11..15, gpui::HighlightStyle::default()),
+        ];
+        let out = super::overlay_cues(runs, &[paren, dialogue, unknown], cue_style());
+        assert_eq!(out[0].1.color, Some(cue_style().muted));
+        assert_eq!(out[0].1.font_style, Some(gpui::FontStyle::Italic));
+        // `dialogue` and a kind the studio has no rule for are both left
+        // exactly as the syntax painted them — the web's `.brink-dialogue`
+        // and `brink-<kind>` carry no declarations either.
+        assert_eq!(out[1].1.color, None);
+        assert_eq!(out[1].1.font_style, None);
+        assert_eq!(out[2].1.color, None);
+        assert_eq!(out[2].1.font_style, None);
+    }
+
+    #[test]
+    fn no_cue_lines_leaves_every_run_untouched() {
+        let runs = vec![(0..5, gpui::HighlightStyle::default())];
+        assert_eq!(super::overlay_cues(runs.clone(), &[], cue_style()), runs);
+    }
+
     #[test]
     fn plumbing_and_whole_line_comments_are_the_muted_lines() {
         let source = "INCLUDE harbour.ink\n// a note\nThe tide was out.\nEXTERNAL ring(x)\n\n  // indented\nAn INCLUDE inside prose is not one.\n";
@@ -1366,29 +1590,45 @@ mod tests {
     }
 
     #[test]
+    fn a_fade_moves_a_colour_toward_the_background_and_stays_opaque() {
+        // The renderer composites a highlight colour over the run's base
+        // TEXT colour, so cutting the alpha brightens rather than dims —
+        // a fade has to be computed, not asked for.
+        let bg = gpui::hsla(0.0, 0.0, 0.1, 1.0);
+        let fg = gpui::hsla(0.6, 0.8, 0.7, 1.0);
+        let half = super::fade(fg, bg, 0.5);
+        assert!((half.a - 1.0).abs() < 0.001, "a faded colour is opaque");
+        assert!(half.l < fg.l && half.l > bg.l, "{half:?} sits between");
+        assert_eq!(super::fade(fg, bg, 1.0), fg, "keeping all of it is a no-op");
+        let gone = super::fade(fg, bg, 0.0);
+        assert!(
+            (gone.l - bg.l).abs() < 0.01,
+            "keeping none of it is the background: {gone:?}"
+        );
+    }
+
+    #[test]
     fn muting_fades_a_colour_and_leaves_everything_else_alone() {
         let source = "INCLUDE a.ink\nHello.\n";
         let muted = muted_lines(source);
         let colour = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+        let bg = gpui::hsla(0.0, 0.0, 0.1, 1.0);
         let style = |color| gpui::HighlightStyle {
             color: Some(color),
             ..gpui::HighlightStyle::default()
         };
         let runs = vec![(0..7, style(colour)), (14..19, style(colour))];
-        let out = overlay_muted(runs, &muted, MUTED_FADE);
+        let out = overlay_muted(runs, &muted, bg, MUTED_FADE);
+        let faded = out[0].1.color.unwrap();
         assert!(
-            (out[0].1.color.unwrap().a - MUTED_FADE).abs() < 0.001,
-            "the INCLUDE keyword fades"
+            faded.l < colour.l && faded.l > bg.l,
+            "the INCLUDE keyword falls back toward the page: {faded:?}"
         );
-        assert_eq!(
-            out[0].1.color.unwrap().h,
-            colour.h,
+        assert!(
+            (faded.h - colour.h).abs() < 0.02,
             "and keeps its own colour: a comment stays comment-coloured"
         );
-        assert!(
-            (out[1].1.color.unwrap().a - 1.0).abs() < 0.001,
-            "the prose is untouched"
-        );
+        assert_eq!(out[1].1.color.unwrap(), colour, "the prose is untouched");
     }
 
     #[test]
