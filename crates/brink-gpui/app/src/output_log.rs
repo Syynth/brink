@@ -367,7 +367,9 @@ impl OutputLog {
                         .push(Level::Info, "project", "the file set changed");
                 }
                 // Neither is news for a log.
-                ProjectEvent::SourceChanged { .. } | ProjectEvent::BreakpointsChanged => return,
+                ProjectEvent::SourceChanged { .. }
+                | ProjectEvent::BreakpointsChanged
+                | ProjectEvent::ProseChanged => return,
             }
             cx.notify();
         });

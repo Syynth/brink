@@ -302,7 +302,7 @@ click-to-reveal, rail badge, status-bar cell, `CONFIG` rows for a broken
 
 | Left out | Kind | Note |
 |---|---|---|
-| Prose bucket | not wired | the worker RUNS the checker as of 2026-09-07, but its lints go to the open editor only (`QueryKind::Prose`, per open file). Problems reads the analysis broadcast, which is per project — putting prose in it means deciding whether a file nobody has open is checked at all, which is a cost question, not a plumbing one. |
+| ~~Prose bucket~~ | built 2026-09-07 | a fifth bucket beside errors/warnings/info/TODO, **off by default** and labelled "prose lints (open files)". The cost question is answered by not spending anything: the checker already runs per OPEN file (`QueryKind::Prose`), and the document that ran it now reports the result to the Project (`set_prose`) so Problems can list it beside the compiler's. Nothing new is computed, and no file nobody has open is checked. Off by default for two reasons — a list that grew and shrank as tabs opened would read as the project changing, and a character's name is a spelling mistake to a dictionary. A lint is told from a compiler diagnostic by its `prose.<kind>` CODE, not by severity: it is a Hint, and so are several compiler diagnostics, so severity could not express the bucket at all. Kept apart from `diagnostics` in the Project, so the editor does not double-mark and "N problems" still counts compiler problems. |
 | ~~Fix buttons~~ | built 2026-09-05 | per-row **Fix** (the row's first offer) and **Fix all safe (N)**, `N` from `collect()`. The row's context menu listing every offer is not built. |
 | ~~Suppressions never applied at all~~ | fixed 2026-09-06 | the worker read `db().diagnostics` RAW and never called `apply_suppressions`, so `// brink-disable`, `// brink-disable-file`, `brink-expect` and `@[allow(…)]` did nothing in this studio — in the panel or in the editor's squiggles. Found by building the suppress menu and watching the count not move. Suppressions now run before `effective_severity`, which is the order every other surface uses. |
 | ~~Suppress context menu (#3148)~~ | built 2026-09-06 | right-click a row: suppress the code on its line or in its file, or open Settings ▸ Diagnostics. Offered for anything but an error — warnings and Info notes alike, since the channel's test is `!= Error` — so an `E189` author note can be silenced like any other code, and offering it for an error would be a silent no-op. |
@@ -360,7 +360,7 @@ Zed's names, per-theme commands, persistence.
 | Left out | Kind | Note |
 |---|---|---|
 | ~~Per-line styles from `editor.css`~~ | built 2026-09-07 | the cue/parenthetical/dialogue rules, from the theme's own `cue`/`cue_weight` tokens (which the shell already carried for them). See the editor row. |
-| A theme switch does not repaint bands already laid in manuscript sections and Search cards | cosmetic | they follow at their next edit. |
+| ~~A theme switch does not repaint bands in manuscript sections and Search cards~~ | not reproducible 2026-09-07 | driven on the rig: a TODO band in a Continuous section and in a Search card both repaint on a switch (Mocha → Latte → Mocha), band, ink and bold together. Both surfaces observe the theme and discard their editors (`ContinuousView::reload`, `SearchView::restyle`), which rebuilds each highlighter against the new tokens — the row predates those handlers. |
 
 ### The shared buffer and the mirror (`app/src/project.rs`)
 

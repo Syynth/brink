@@ -537,6 +537,7 @@ impl Studio {
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
+                | ProjectEvent::ProseChanged
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             },

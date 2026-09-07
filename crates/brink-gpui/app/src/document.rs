@@ -441,10 +441,32 @@ impl Document {
             cx,
         );
         let editor = self.editor.clone();
+        let project = self.project.clone();
+        let path = self.path.to_string();
         cx.spawn(async move |_, cx| {
             let Ok(QueryResult::Prose(lints)) = query.await else {
                 return;
             };
+            // Problems lists them beside the compiler's, so the panel is
+            // told as well as the editor. Reported by PATH rather than
+            // held here, because a file can be open in three editors at
+            // once and one list of its lints is what a panel wants.
+            let reported: Vec<brink_gpui_model::worker::Diagnostic> = lints
+                .iter()
+                .map(|lint| brink_gpui_model::worker::Diagnostic {
+                    start: lint.start,
+                    end: lint.end,
+                    severity: brink_ir::Severity::Hint,
+                    // The same `prose.<kind>` code the editor's own
+                    // squiggle carries, which is how Problems tells a
+                    // prose lint from a compiler diagnostic.
+                    code: format!("prose.{}", lint.kind),
+                    message: lint.message.clone(),
+                })
+                .collect();
+            project.update(cx, |project, cx| {
+                project.set_prose(&path, reported, cx);
+            });
             editor.update(cx, |state, cx| {
                 let source = state.value().to_string();
                 let index = LineIndex::new(&source);

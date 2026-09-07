@@ -41,6 +41,8 @@ pub enum ProjectEvent {
         origin: Option<EntityId>,
         delta: SourceDelta,
     },
+    /// A file's prose lints moved. Problems lists them; nothing else does.
+    ProseChanged,
     /// A breakpoint was marked, cleared, or found to bind to nothing.
     /// Every editor over the file repaints its marks.
     BreakpointsChanged,
@@ -141,6 +143,12 @@ pub struct Project {
     /// the highlighter paints a cue, a parenthetical and a dialogue run
     /// from. Empty for a project with no `[dialogue]` dialect.
     cues: BTreeMap<String, Vec<CueLine>>,
+    /// Prose lints per OPEN file, reported by the document that computed
+    /// them. Kept apart from `diagnostics`, which is the analysis's:
+    /// merging them would double-mark the editor (which lays its own) and
+    /// would count prose in the "N problems" the status bar means by
+    /// compiler problems.
+    prose: BTreeMap<String, Vec<Diagnostic>>,
     /// The breakpoints the author has marked, as `(path, 1-based line)`.
     /// The PROJECT owns them, not any one editor: the marks outlive a
     /// closed tab and a restarted session, and the worker arms whatever
@@ -232,6 +240,7 @@ impl Project {
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
             cues: BTreeMap::new(),
+            prose: BTreeMap::new(),
             breakpoints: BTreeSet::new(),
             unbound: BTreeSet::new(),
             warnings: Vec::new(),
@@ -271,6 +280,7 @@ impl Project {
                     self.diagnostics.clear();
                     self.kinds.clear();
                     self.cues.clear();
+                    self.prose.clear();
                     self.drafts.clear();
                     self.draft_globs.clear();
                     self.drafts_known = false;
@@ -760,6 +770,26 @@ impl Project {
     #[must_use]
     pub fn kinds_for(&self, path: &str) -> &Kinds {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
+    }
+
+    /// Record a file's prose lints — the document that ran the check
+    /// reports them here so Problems can list them beside the compiler's.
+    /// Only OPEN files have any: nothing else runs the checker.
+    pub fn set_prose(&mut self, path: &str, lints: Vec<Diagnostic>, cx: &mut Context<Self>) {
+        let changed = if lints.is_empty() {
+            self.prose.remove(path).is_some()
+        } else {
+            self.prose.insert(path.to_owned(), lints) != self.prose.get(path).cloned()
+        };
+        if changed {
+            cx.emit(ProjectEvent::ProseChanged);
+            cx.notify();
+        }
+    }
+
+    /// Every file's prose lints, by path.
+    pub fn all_prose(&self) -> impl Iterator<Item = (&String, &Vec<Diagnostic>)> {
+        self.prose.iter()
     }
 
     /// Toggle the breakpoint on `path`'s 1-based `line`, then tell the

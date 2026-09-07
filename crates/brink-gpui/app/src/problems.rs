@@ -130,10 +130,25 @@ pub enum Bucket {
     /// Info and Hint together: the rows render them identically.
     Info,
     Todo,
+    /// A prose lint (`brink-prose`). Its own bucket for the same reason
+    /// TODO notes have one — it is a different KIND of remark, and one an
+    /// author writing fiction will want off as often as on, since a
+    /// character's name is a spelling mistake to a dictionary.
+    Prose,
 }
 
 impl Bucket {
-    pub const ALL: [Self; 4] = [Self::Error, Self::Warning, Self::Info, Self::Todo];
+    pub const ALL: [Self; 5] = [
+        Self::Error,
+        Self::Warning,
+        Self::Info,
+        Self::Todo,
+        Self::Prose,
+    ];
+
+    /// The code prefix every prose lint carries, from the checker's rule
+    /// category — the same code the editor's own squiggle uses.
+    pub const PROSE_PREFIX: &'static str = "prose.";
 
     /// Source before severity: a TODO note is Info-severity, and letting it
     /// fall through to the `Info` bucket would make "off by default"
@@ -141,6 +156,9 @@ impl Bucket {
     fn of(d: &Diagnostic) -> Self {
         if d.code == TODO_CODE {
             return Self::Todo;
+        }
+        if d.code.starts_with(Self::PROSE_PREFIX) {
+            return Self::Prose;
         }
         match d.severity {
             Severity::Error => Self::Error,
@@ -155,6 +173,7 @@ impl Bucket {
             Self::Warning => 1,
             Self::Info => 2,
             Self::Todo => 3,
+            Self::Prose => 4,
         }
     }
 
@@ -166,6 +185,7 @@ impl Bucket {
             Self::Warning => "\u{25B2}",
             Self::Info => "\u{2139}",
             Self::Todo => "\u{2611}",
+            Self::Prose => "\u{270E}",
         }
     }
 
@@ -175,12 +195,17 @@ impl Bucket {
             Self::Warning => "warnings",
             Self::Info => "info and hints",
             Self::Todo => "TODO notes",
+            Self::Prose => "prose lints (open files)",
         }
     }
 
     /// Off by default for TODO notes only — see the module doc.
+    /// TODO notes and prose lints are off until asked for. A TODO is an
+    /// author's own note rather than a problem; a prose lint exists only
+    /// for the files that happen to be OPEN, and a list that grew and
+    /// shrank as tabs opened would read as the project changing.
     const fn on_by_default(self) -> bool {
-        !matches!(self, Self::Todo)
+        !matches!(self, Self::Todo | Self::Prose)
     }
 
     /// Errors first at one offset.
@@ -190,6 +215,7 @@ impl Bucket {
             Self::Warning => 1,
             Self::Info => 2,
             Self::Todo => 3,
+            Self::Prose => 4,
         }
     }
 }
@@ -256,8 +282,8 @@ pub fn build_rows<'a>(
 }
 
 /// Per-bucket totals, indexed by [`Bucket::index`].
-pub fn count_by_bucket<'a>(rows: impl IntoIterator<Item = &'a Row>) -> [usize; 4] {
-    let mut counts = [0; 4];
+pub fn count_by_bucket<'a>(rows: impl IntoIterator<Item = &'a Row>) -> [usize; 5] {
+    let mut counts = [0; 5];
     for row in rows {
         counts[row.bucket.index()] += 1;
     }
@@ -273,14 +299,14 @@ pub fn matches_filter(row: &Row, query: &str) -> bool {
 }
 
 /// The toggles and the filter applied, order preserved.
-pub fn visible_rows<'a>(rows: &'a [Row], enabled: &[bool; 4], query: &str) -> Vec<&'a Row> {
+pub fn visible_rows<'a>(rows: &'a [Row], enabled: &[bool; 5], query: &str) -> Vec<&'a Row> {
     rows.iter()
         .filter(|row| enabled[row.bucket.index()] && matches_filter(row, query))
         .collect()
 }
 
 /// "2 errors · 1 warning · 1 info · 1 todo", omitting empty buckets.
-pub fn summarize(counts: &[usize; 4]) -> String {
+pub fn summarize(counts: &[usize; 5]) -> String {
     let mut parts = Vec::new();
     let plural = |n: usize, one: &str, many: &str| {
         if n == 1 {
@@ -300,6 +326,9 @@ pub fn summarize(counts: &[usize; 4]) -> String {
     }
     if counts[3] > 0 {
         parts.push(format!("{} todo", counts[3]));
+    }
+    if counts[4] > 0 {
+        parts.push(format!("{} prose", counts[4]));
     }
     parts.join(" \u{B7} ")
 }
@@ -371,10 +400,10 @@ pub struct Problems {
     /// Every diagnostic, canonical order, rebuilt when an analysis lands.
     rows: Vec<Row>,
     /// Totals over `rows`, for the toggles.
-    counts: [usize; 4],
+    counts: [usize; 5],
     /// What the list draws — `rows` after the toggles, filter and grouping.
     items: Vec<Item>,
-    enabled: [bool; 4],
+    enabled: [bool; 5],
     grouped: bool,
     collapsed: BTreeSet<String>,
     filter: Entity<InputState>,
@@ -422,7 +451,10 @@ impl Problems {
             }
         });
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
-            if matches!(event, ProjectEvent::Analyzed) {
+            // Prose moves on its own schedule — per open file, as the
+            // checker answers — so it is its own event, and this panel is
+            // the only thing that lists it.
+            if matches!(event, ProjectEvent::Analyzed | ProjectEvent::ProseChanged) {
                 this.rebuild(cx);
             }
         });
@@ -430,13 +462,14 @@ impl Problems {
             project,
             focus: cx.focus_handle(),
             rows: Vec::new(),
-            counts: [0; 4],
+            counts: [0; 5],
             items: Vec::new(),
             enabled: [
                 Bucket::Error.on_by_default(),
                 Bucket::Warning.on_by_default(),
                 Bucket::Info.on_by_default(),
                 Bucket::Todo.on_by_default(),
+                Bucket::Prose.on_by_default(),
             ],
             grouped: true,
             collapsed: BTreeSet::new(),
@@ -460,9 +493,14 @@ impl Problems {
     /// rather than on every frame.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let project = self.project.read(cx);
-        self.rows = build_rows(project.all_diagnostics(), |path| {
-            project.loaded_source(path).map(str::to_owned)
-        });
+        // The compiler's diagnostics and the prose checker's, in one list.
+        // They arrive separately because they are computed separately —
+        // one per analysis over the whole project, one per OPEN file —
+        // and `build_rows` is happy to be handed both.
+        self.rows = build_rows(
+            project.all_diagnostics().chain(project.all_prose()),
+            |path| project.loaded_source(path).map(str::to_owned),
+        );
         self.counts = count_by_bucket(&self.rows);
         self.relayout(cx);
         self.refresh_offers(cx);
@@ -1024,8 +1062,8 @@ mod tests {
     #[test]
     fn todo_notes_are_their_own_bucket_and_off_by_default() {
         let rows = rows();
-        assert_eq!(count_by_bucket(&rows), [1, 1, 1, 1]);
-        let defaults = [true, true, true, false];
+        assert_eq!(count_by_bucket(&rows), [1, 1, 1, 1, 0]);
+        let defaults = [true, true, true, false, false];
         let visible = visible_rows(&rows, &defaults, "");
         assert!(visible.iter().all(|r| r.bucket != Bucket::Todo));
         assert_eq!(visible.len(), 3);
@@ -1034,7 +1072,7 @@ mod tests {
     #[test]
     fn the_filter_matches_message_or_location() {
         let rows = rows();
-        let all = [true; 4];
+        let all = [true; 5];
         assert_eq!(visible_rows(&rows, &all, "EARLY").len(), 1);
         assert_eq!(visible_rows(&rows, &all, "b.ink").len(), 1);
         assert_eq!(visible_rows(&rows, &all, "2:2").len(), 2);
@@ -1044,7 +1082,7 @@ mod tests {
     #[test]
     fn grouping_makes_headings_with_summaries_and_collapses() {
         let rows = rows();
-        let all = [true; 4];
+        let all = [true; 5];
         let visible = visible_rows(&rows, &all, "");
         let items = layout(&rows, &visible, true, &BTreeSet::new());
         assert!(matches!(
@@ -1162,12 +1200,44 @@ mod tests {
     }
 
     #[test]
-    fn summaries_pluralise_and_omit_empty_buckets() {
-        assert_eq!(summarize(&[2, 1, 0, 0]), "2 errors \u{B7} 1 warning");
+    fn a_prose_lint_is_its_own_bucket_and_is_off_by_default() {
+        // The code prefix is the whole test: a prose lint is a Hint like
+        // several compiler diagnostics, so severity cannot tell them
+        // apart and the bucket would be unexpressible.
+        let lint = diag(0, Severity::Hint, "prose.Spelling", "\"teh\" is a typo");
+        let hint = diag(4, Severity::Hint, "E200", "an ordinary hint");
+        assert_eq!(Bucket::of(&lint), Bucket::Prose);
+        assert_eq!(Bucket::of(&hint), Bucket::Info);
+        assert!(!Bucket::Prose.on_by_default());
+
+        let rows = build_rows([(&"a.ink".to_owned(), &vec![lint, hint])], |_| {
+            Some("hello world\n".to_owned())
+        });
+        assert_eq!(count_by_bucket(&rows), [0, 0, 1, 0, 1]);
+        let defaults = [
+            Bucket::Error.on_by_default(),
+            Bucket::Warning.on_by_default(),
+            Bucket::Info.on_by_default(),
+            Bucket::Todo.on_by_default(),
+            Bucket::Prose.on_by_default(),
+        ];
+        let visible = visible_rows(&rows, &defaults, "");
+        assert_eq!(visible.len(), 1, "the prose row is filtered out");
+        assert_eq!(visible[0].code, "E200");
         assert_eq!(
-            summarize(&[1, 0, 3, 1]),
-            "1 error \u{B7} 3 info \u{B7} 1 todo"
+            visible_rows(&rows, &[true; 5], "").len(),
+            2,
+            "until asked for"
         );
-        assert_eq!(summarize(&[0; 4]), "");
+    }
+
+    #[test]
+    fn summaries_pluralise_and_omit_empty_buckets() {
+        assert_eq!(summarize(&[2, 1, 0, 0, 0]), "2 errors \u{B7} 1 warning");
+        assert_eq!(
+            summarize(&[1, 0, 3, 1, 2]),
+            "1 error \u{B7} 3 info \u{B7} 1 todo \u{B7} 2 prose"
+        );
+        assert_eq!(summarize(&[0; 5]), "");
     }
 }
