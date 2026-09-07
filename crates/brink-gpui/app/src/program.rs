@@ -901,7 +901,7 @@ impl ProgramExplorer {
                                 format!("{offset:04x}")
                             }),
                     )
-                    .child(div().flex_1().text_color(fg).truncate().child(text.clone()))
+                    .child(div().flex_1().truncate().child(opcode_spans(text, fg, cx)))
                     // The chip is its own click target, so the row keeps
                     // meaning "open the source" and the cross-reference
                     // does not have to fight it for the same gesture.
@@ -1359,6 +1359,35 @@ fn push_instrs(
             }),
         });
     }
+}
+
+/// One instruction's text, coloured by the same lexer Compiled Output's
+/// `.inkt` tab uses (`inkt_highlight::lex_opcode`) and the same theme
+/// tokens, so an opcode reads the same in both places. Whitespace and
+/// anything the lexer does not claim are drawn in `fg`.
+fn opcode_spans(text: &str, fg: gpui::Hsla, cx: &App) -> AnyElement {
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    let mut row = h_flex().whitespace_nowrap();
+    let mut at = 0usize;
+    for (range, key) in crate::inkt_highlight::lex_opcode(text) {
+        if range.start > at
+            && let Some(gap) = text.get(at..range.start)
+        {
+            row = row.child(div().text_color(fg).child(gap.to_owned()));
+        }
+        let Some(piece) = text.get(range.clone()) else {
+            continue;
+        };
+        let colour = brink_gpui_shell::theme::syntax_colour(key, &tokens).unwrap_or(fg);
+        row = row.child(div().text_color(colour).child(piece.to_owned()));
+        at = range.end;
+    }
+    if let Some(tail) = text.get(at..)
+        && !tail.is_empty()
+    {
+        row = row.child(div().text_color(fg).child(tail.to_owned()));
+    }
+    row.into_any_element()
 }
 
 /// The line index an `emit_line #N …` instruction emits.

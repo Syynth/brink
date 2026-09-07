@@ -61,13 +61,28 @@ mod role {
 /// is noise rather than information.
 #[must_use]
 pub fn lex(text: &str) -> Vec<(Range<usize>, &'static str)> {
+    lex_from(text, false)
+}
+
+/// The same lexer over ONE disassembled instruction (`emit_line #3`,
+/// `divert shore`), which is not `.inkt` s-expression text: it has no
+/// parens, so its opcode would otherwise lex as an ordinary word. Told
+/// to expect a head, the first word is the opcode and everything after
+/// it — numbers, strings, `->`, `argc=` — lexes exactly as it does
+/// inside a form, which is where the same operands appear.
+#[must_use]
+pub fn lex_opcode(text: &str) -> Vec<(Range<usize>, &'static str)> {
+    lex_from(text, true)
+}
+
+fn lex_from(text: &str, head: bool) -> Vec<(Range<usize>, &'static str)> {
     let bytes = text.as_bytes();
     let mut out: Vec<(Range<usize>, &'static str)> = Vec::new();
     let mut i = 0usize;
     // Set by `(`, cleared by the word that follows it: the head of a form
     // is a head only in that position. `(name 0)` and a bare `name=` are
     // different tokens, and this one bit is the whole difference.
-    let mut expect_head = false;
+    let mut expect_head = head;
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -295,6 +310,27 @@ mod tests {
             .into_iter()
             .map(|(r, role)| (&text[r], role))
             .collect()
+    }
+
+    #[test]
+    fn an_instruction_leads_with_its_opcode_as_a_head() {
+        // A disassembled instruction has no parens, so without being told
+        // to expect one the opcode lexes as an ordinary word — which is
+        // what `lex` does, and why the two entry points differ.
+        let painted: Vec<(&str, &'static str)> = {
+            let text = "emit_line_nl #4";
+            super::lex_opcode(text)
+                .into_iter()
+                .map(|(r, role)| (&text[r], role))
+                .collect()
+        };
+        assert_eq!(
+            painted,
+            [("emit_line_nl", role::HEAD), ("4", role::NUMBER)],
+            "the opcode is the head; `#4` is an operand"
+        );
+        // The plain entry point still reads it as a word, unchanged.
+        assert_eq!(super::lex("emit_line_nl #4")[0].1, role::CONSTANT);
     }
 
     #[test]

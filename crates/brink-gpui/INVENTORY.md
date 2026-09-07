@@ -97,8 +97,15 @@ worker now holds:
    shapes `inkt.pest` itself defines — head words, `$def_id`s, strings
    with escapes, integers/floats/`0x`, `:type`, `key=` attributes, `->`
    and `+`, and `;` comments for Compiled Output's own error text.
-   Residue: the Program Explorer's Disasm view still draws its own rows
-   and does not share it.
+   ~~Residue: the Program Explorer's Disasm view still draws its own rows
+   and does not share it.~~ **Shared 2026-09-07**: a disassembled
+   instruction is not `.inkt` s-expression text — it has no parens, so
+   its opcode would lex as an ordinary word — so `lex_opcode` runs the
+   same lexer told to expect a head. The operands after it (numbers,
+   strings, `->`, `argc=`) are the same tokens that appear inside a form
+   and need nothing new. Colours come from `theme::syntax_colour`, a
+   key→token lookup for surfaces that paint syntax without an editor's
+   resolver, so the panel and the `.inkt` tab agree.
 3. **State View** (the debugger) — what the Program Explorer's executing-
    instruction overlay and `stepi` are both waiting on, with the Player's
    session as the base. The engine work (exposing state off a running
