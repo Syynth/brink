@@ -31,6 +31,7 @@ mod settings_general;
 mod settings_prose;
 mod single_view;
 mod todos;
+mod treemap;
 
 use std::ops::Range;
 use std::path::PathBuf;

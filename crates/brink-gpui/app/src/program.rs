@@ -417,6 +417,106 @@ impl ProgramExplorer {
 
     // ── Rendering ────────────────────────────────────────────────────
 
+    /// The bytecode-by-knot treemap, above the list in the Size view.
+    ///
+    /// A treemap rather than a row of bars (the web's Size view, #3339):
+    /// with forty knots a bar chart says which is biggest and almost
+    /// nothing about the shape of the whole, while area is comparable at
+    /// a glance across the map. Laid out in a normalised 1×1 box and
+    /// placed with relative lengths, so it fills whatever width the dock
+    /// happens to give it without the panel measuring itself.
+    fn render_treemap(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let program = self.program()?;
+        let knots = &program.model.knots;
+        let values: Vec<(String, f64)> = knots
+            .iter()
+            .map(|k| (k.path.clone(), f64::from(subtree_bytes(k))))
+            .collect();
+        let tiles = crate::treemap::squarify(&values, 0., 0., 1., 1.);
+        if tiles.is_empty() {
+            return None;
+        }
+        let bytes: std::collections::HashMap<&str, u32> = knots
+            .iter()
+            .map(|k| (k.path.as_str(), subtree_bytes(k)))
+            .collect();
+        let theme = cx.theme();
+        let (primary, muted, border) = (theme.primary, theme.muted_foreground, theme.border);
+        let blocks: Vec<AnyElement> = tiles
+            .iter()
+            .enumerate()
+            .map(|(i, tile)| {
+                let size = bytes.get(tile.key.as_str()).copied().unwrap_or(0) as usize;
+                let share = f64::from(tile.w) * f64::from(tile.h);
+                // Bigger blocks read stronger; the scale is the block's
+                // own share of the map, so the colour says the same thing
+                // the area does rather than a second, different thing.
+                let fill = primary.opacity((0.22 + share * 1.6).min(0.85) as f32);
+                let jump = Jump::Knot {
+                    path: tile.key.clone(),
+                };
+                let label = tile.key.clone();
+                // A label only where it fits: a name clipped to two
+                // letters is noise, and the tooltip carries it anyway.
+                let roomy = tile.w > 0.18 && tile.h > 0.16;
+                div()
+                    .id(("treemap-tile", i))
+                    .absolute()
+                    .left(relative(tile.x))
+                    .top(relative(tile.y))
+                    .w(relative(tile.w))
+                    .h(relative(tile.h))
+                    .p_0p5()
+                    .child(
+                        div()
+                            .size_full()
+                            .rounded_sm()
+                            .bg(fill)
+                            .border_1()
+                            .border_color(border)
+                            .overflow_hidden()
+                            .px_1()
+                            .when(roomy, |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.foreground)
+                                        .truncate()
+                                        .child(label.clone()),
+                                )
+                                .child(div().text_xs().text_color(muted).child(fmt_bytes(size)))
+                            }),
+                    )
+                    .tooltip({
+                        let text = format!("{} · {}", tile.key, fmt_bytes(size));
+                        move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+                        }
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.jump(&jump, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            v_flex()
+                .w_full()
+                .px_2()
+                .py_1()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("Bytecode by knot ({})", knots.len())),
+                )
+                .child(div().relative().w_full().h(px(180.)).children(blocks))
+                .into_any_element(),
+        )
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, warn, primary) = (theme.muted_foreground, theme.warning, theme.primary);
@@ -1404,28 +1504,9 @@ fn layout_size(program: &Program, collapsed: &BTreeSet<String>) -> Vec<Item> {
         }
     }
 
-    let knots = &program.model.knots;
-    let (header, folded) = section(
-        "knot-bytes",
-        format!("Bytecode by knot ({})", knots.len()),
-        collapsed,
-    );
-    items.push(header);
-    if !folded {
-        let max = knots.iter().map(subtree_bytes).max().unwrap_or(1).max(1);
-        for k in knots {
-            let bytes = subtree_bytes(k);
-            items.push(Item::Size {
-                label: k.path.clone().into(),
-                bytes: bytes as usize,
-                ratio: bytes as f32 / max as f32,
-                indent: 1,
-                jump: Some(Jump::Knot {
-                    path: k.path.clone(),
-                }),
-            });
-        }
-    }
+    // "Bytecode by knot" is the treemap, drawn above the list by
+    // `render_treemap` — a uniform list gives every row the same height,
+    // and a map is a block, not a row. Nothing for it is emitted here.
     items
 }
 
@@ -1490,6 +1571,11 @@ impl Render for ProgramExplorer {
         }
         let muted = cx.theme().muted_foreground;
         let header = self.render_header(cx);
+        // The Size view's map goes between the header and the rows: the
+        // sections and line tables stay rows, the knots become a map.
+        let treemap = (self.view == View::Size)
+            .then(|| self.render_treemap(cx))
+            .flatten();
         let footer = self.render_footer(cx);
         let count = self.items.len();
         let empty: Option<SharedString> = if self.report.is_none() {
@@ -1507,6 +1593,7 @@ impl Render for ProgramExplorer {
             .size_full()
             .text_xs()
             .child(header)
+            .children(treemap)
             .when_some(empty, |el, text| {
                 el.child(div().p_3().text_color(muted).child(text))
             })
