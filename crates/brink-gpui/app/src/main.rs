@@ -46,7 +46,6 @@ use gpui::{
     App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement,
     Render, Subscription, Task, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
-use gpui_component::WindowExt as _;
 use gpui_component::{Root, TitleBar};
 
 use crate::binder::{Binder, BinderEvent};
@@ -68,6 +67,7 @@ use crate::settings_general::{GeneralSection, OpenConfig};
 use crate::settings_prose::ProseSection;
 use crate::single_view::SingleFileView;
 use crate::todos::{OpenTodo, Todos};
+use brink_gpui_shell::notify::{Severity, notify};
 
 actions!(
     brink,
@@ -565,10 +565,11 @@ impl Studio {
                     this.show(path, span.clone(), window, cx);
                 }
                 CompiledOutputEvent::NoSource => {
-                    window.push_notification(
-                        gpui_component::notification::Notification::info(
-                            "That row carries no source location.",
-                        ),
+                    notify(
+                        Severity::Info,
+                        "studio",
+                        "That row carries no source location.",
+                        window,
                         cx,
                     );
                 }
@@ -783,10 +784,11 @@ impl Studio {
         cx.spawn_in(window, async move |this, cx| {
             let Some(loc) = found.await else {
                 let _ = cx.update(|window, cx| {
-                    window.push_notification(
-                        gpui_component::notification::Notification::info(
-                            "No definition for the symbol under the caret.",
-                        ),
+                    notify(
+                        Severity::Info,
+                        "studio",
+                        "No definition for the symbol under the caret.",
+                        window,
                         cx,
                     );
                 });
@@ -809,10 +811,11 @@ impl Studio {
         cx.spawn_in(window, async move |_, cx| {
             let Some((name, refs)) = found.await else {
                 let _ = cx.update(|window, cx| {
-                    window.push_notification(
-                        gpui_component::notification::Notification::info(
-                            "No references for the symbol under the caret.",
-                        ),
+                    notify(
+                        Severity::Info,
+                        "studio",
+                        "No references for the symbol under the caret.",
+                        window,
                         cx,
                     );
                 });
@@ -837,10 +840,11 @@ impl Studio {
             let prepared = prepared.await;
             let Some((range, current)) = prepared else {
                 let _ = cx.update(|window, cx| {
-                    window.push_notification(
-                        gpui_component::notification::Notification::info(
-                            "Nothing renameable under the caret.",
-                        ),
+                    notify(
+                        Severity::Info,
+                        "studio",
+                        "Nothing renameable under the caret.",
+                        window,
                         cx,
                     );
                 });
@@ -889,10 +893,7 @@ impl Studio {
             let formatted = format.await;
             let _ = cx.update(|window, cx| {
                 if formatted == 0 {
-                    window.push_notification(
-                        gpui_component::notification::Notification::info("Already formatted."),
-                        cx,
-                    );
+                    notify(Severity::Info, "studio", "Already formatted.", window, cx);
                 }
             });
         })
@@ -1117,10 +1118,11 @@ impl Studio {
                 // always there (a bare X session, a container). Saying so
                 // beats a menu entry that silently does nothing.
                 Ok(Err(err)) => {
-                    window.push_notification(
-                        gpui_component::notification::Notification::error(format!(
-                            "Could not open the folder picker: {err}"
-                        )),
+                    notify(
+                        Severity::Error,
+                        "studio",
+                        format!("Could not open the folder picker: {err}"),
+                        window,
                         cx,
                     );
                 }
@@ -1140,11 +1142,11 @@ impl Studio {
         if !root.is_dir() {
             // A recent outlives the folder it names. Say so and drop it,
             // rather than opening a window onto nothing.
-            window.push_notification(
-                gpui_component::notification::Notification::error(format!(
-                    "{} is no longer there.",
-                    action.path
-                )),
+            notify(
+                Severity::Error,
+                "studio",
+                format!("{} is no longer there.", action.path),
+                window,
                 cx,
             );
             let gone = action.path.clone();

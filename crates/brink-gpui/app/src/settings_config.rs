@@ -11,12 +11,11 @@
 use brink_project_config::edit::{ConfigDocument, EditError};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Entity, div};
-use gpui_component::WindowExt as _;
 use gpui_component::button::Button;
-use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, v_flex};
 
 use crate::project::Project;
+use brink_gpui_shell::notify::{Severity, notify};
 
 /// The config's path and current text, or `None` for a project without one.
 pub fn config_text(project: &Entity<Project>, cx: &App) -> Option<(String, String)> {
@@ -99,12 +98,15 @@ pub fn no_config(project: &Entity<Project>, what: &str, cx: &mut App) -> AnyElem
                 .on_click(move |_, window, cx| {
                     let created = project.update(cx, |project, cx| project.create_config(cx));
                     match created {
-                        Ok(()) => window.push_notification(
-                            Notification::success("Created brink.toml, pointing at the entry."),
+                        Ok(()) => notify(
+                            Severity::Success,
+                            "settings",
+                            "Created brink.toml, pointing at the entry.",
+                            window,
                             cx,
                         ),
                         Err(err) => {
-                            window.push_notification(Notification::error(format!("{err}")), cx);
+                            notify(Severity::Error, "settings", format!("{err}"), window, cx);
                         }
                     }
                 }),

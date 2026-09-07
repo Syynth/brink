@@ -19,13 +19,12 @@ use anyhow::Result;
 use brink_gpui_model::fixes::{FixAllReport, FixPlan, FixScope, Refactor, Tier};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use gpui::{App, Entity, EntityId, SharedString, Task, WeakEntity, Window};
-use gpui_component::WindowExt as _;
 use gpui_component::input::{CodeActionProvider, EditorState, RopeExt as _};
-use gpui_component::notification::Notification;
 use lsp_types as lsp;
 
 use crate::document::seed_edit;
 use crate::project::Project;
+use brink_gpui_shell::notify::{Severity, notify};
 
 /// What one menu entry does when chosen — the action's `data`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -179,8 +178,11 @@ pub fn apply_fix(
 ) {
     let files = project.update(cx, |project, cx| project.apply_edits(&plan.edits, cx));
     if files == 0 {
-        window.push_notification(
-            Notification::warning(format!("`{}` no longer applies.", plan.title)),
+        notify(
+            Severity::Warning,
+            "fixes",
+            format!("`{}` no longer applies.", plan.title),
+            window,
             cx,
         );
         return;
@@ -245,7 +247,7 @@ fn write_report(
     cx: &mut App,
 ) {
     if report.files.is_empty() {
-        window.push_notification(Notification::info("Nothing to fix."), cx);
+        notify(Severity::Info, "fixes", "Nothing to fix.", window, cx);
         return;
     }
     let files = report.files.len();
@@ -266,5 +268,5 @@ fn write_report(
             report.remaining, report.rounds
         ));
     }
-    window.push_notification(Notification::success(message), cx);
+    notify(Severity::Success, "fixes", message, window, cx);
 }

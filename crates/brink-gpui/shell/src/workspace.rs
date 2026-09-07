@@ -117,6 +117,8 @@ pub struct Workspace {
     settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
     /// The registered settings sections (`crate::settings_modal`).
     sections: Vec<Section>,
+    /// Whether the notification history popover is open (§7.5's bell).
+    notices_open: bool,
     /// Which docks were open before the editor was maximized, so
     /// un-maximizing puts back what was there and not a guess at it.
     /// `None` when not maximized.
@@ -174,6 +176,7 @@ impl Workspace {
             overlay: None,
             settings: None,
             sections: Vec::new(),
+            notices_open: false,
             unmaximized: None,
             focus: cx.focus_handle(),
         };
@@ -880,7 +883,141 @@ impl Workspace {
             // (§7.3) rather than drifting with the left group's width.
             .child(div().flex_1())
             .child(h_flex().gap_4().items_center().children(end))
+            .child(self.render_bell(cx))
             .into_any_element()
+    }
+
+    /// The notification bell — §7.5's history, at the far end of the
+    /// right group. A toast is gone in seconds; this is what lets an
+    /// author come back and ask what the red thing said.
+    fn render_bell(&self, cx: &mut Context<Self>) -> AnyElement {
+        let unread = crate::notify::Notifications::unread(cx);
+        let (accent, muted) = (cx.theme().primary, cx.theme().muted_foreground);
+        h_flex()
+            .id("status-bell")
+            .gap_1()
+            .px_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|s| s.bg(cx.theme().muted.opacity(0.6)))
+            .child(
+                div()
+                    .text_color(if unread > 0 { accent } else { muted })
+                    .child("\u{1F514}"),
+            )
+            .when(unread > 0, |el| {
+                el.child(div().text_color(accent).child(format!("{unread}")))
+            })
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.notices_open = !this.notices_open;
+                if this.notices_open {
+                    // Opening IS reading: the badge is about what arrived
+                    // while you were not looking.
+                    crate::notify::Notifications::mark_read(cx);
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The history popover: newest first, capped, with what it dropped.
+    fn render_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.notices_open {
+            return None;
+        }
+        let notices = crate::notify::Notifications::get(cx);
+        let dropped = crate::notify::Notifications::dropped(cx);
+        let theme = cx.theme();
+        let (muted, border, popover) = (theme.muted_foreground, theme.border, theme.popover);
+        let colour = |severity: crate::notify::Severity| match severity {
+            crate::notify::Severity::Error => theme.danger,
+            crate::notify::Severity::Warning => theme.warning,
+            crate::notify::Severity::Success => theme.primary,
+            crate::notify::Severity::Info => theme.muted_foreground,
+        };
+        let rows: Vec<AnyElement> = notices
+            .iter()
+            .rev()
+            .map(|notice| {
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_start()
+                    .py_0p5()
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .flex_none()
+                            .text_color(muted)
+                            .child(notice.at.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(52.))
+                            .flex_none()
+                            .text_color(colour(notice.severity))
+                            .child(notice.severity.label()),
+                    )
+                    .child(div().flex_1().child(notice.message.clone()))
+                    .child(div().text_color(muted).child(notice.source.clone()))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            v_flex()
+                .absolute()
+                .right(px(8.))
+                .bottom(px(28.))
+                .w(px(480.))
+                .max_h(px(320.))
+                .p_2()
+                .gap_1()
+                .rounded_md()
+                .bg(popover)
+                .border_1()
+                .border_color(border)
+                .text_xs()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(div().flex_1().text_color(muted).child({
+                            let n = rows.len();
+                            let plural = if n == 1 { "notice" } else { "notices" };
+                            if dropped > 0 {
+                                format!("{n} {plural} · {dropped} older dropped")
+                            } else {
+                                format!("{n} {plural}")
+                            }
+                        }))
+                        .child(
+                            Button::new("notices-clear")
+                                .ghost()
+                                .compact()
+                                .label("Clear")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    crate::notify::Notifications::clear(cx);
+                                    this.notices_open = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .p_2()
+                            .text_color(muted)
+                            .child("Nothing has been reported."),
+                    )
+                })
+                .child(
+                    v_flex()
+                        .id("notices-list")
+                        .overflow_y_scroll()
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The view switcher: three toggles, in the title bar. The studio has no
@@ -943,6 +1080,7 @@ impl Render for Workspace {
         };
         let switcher = self.view_switcher(cx);
         let status = self.render_status(cx);
+        let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window, cx);
         let settings_window = self.render_settings(window, cx);
         // Studio §6: the hamburger at the top of the left strip, opening the
@@ -961,6 +1099,10 @@ impl Render for Workspace {
         v_flex()
             .id("workspace")
             .size_full()
+            // The notifications popover places itself against this box's
+            // bottom-right; without `relative` it would resolve against
+            // the window and land wherever.
+            .relative()
             .bg(theme.background)
             .text_color(theme.foreground)
             // The shell's actions dispatch from wherever focus is; this is
@@ -1023,6 +1165,9 @@ impl Render for Workspace {
                     .child(rail(RailEdge::Right, &buttons, None, click, window, cx)),
             )
             .child(status)
+            // Above the status bar, as §7.5 places it, and after the docks
+            // so it paints over them.
+            .children(notices)
             .children(overlay)
             .children(settings_window)
     }

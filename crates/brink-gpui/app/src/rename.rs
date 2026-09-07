@@ -19,11 +19,11 @@ use gpui_component::WindowExt as _;
 use gpui_component::button::ButtonVariant;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::navigation::{EditorSite, rename};
 use crate::project::Project;
+use brink_gpui_shell::notify::{Severity, notify};
 
 /// Ask for a new name for the symbol at `offset`, currently `current`.
 pub fn prompt(site: EditorSite, offset: usize, current: String, window: &mut Window, cx: &mut App) {
@@ -91,7 +91,13 @@ fn run(site: &EditorSite, offset: usize, new_name: String, window: &mut Window, 
         .spawn(cx, async move |cx| {
             let Some(plan) = plan.await else {
                 let _ = cx.update(|window, cx| {
-                    window.push_notification(Notification::warning("Nothing to rename here."), cx);
+                    notify(
+                        Severity::Warning,
+                        "rename",
+                        "Nothing to rename here.",
+                        window,
+                        cx,
+                    );
                 });
                 return;
             };
@@ -116,15 +122,18 @@ fn apply(project: &Entity<Project>, plan: &RenamePlan, window: &mut Window, cx: 
         if places == 1 { "" } else { "s" },
         if files == 1 { "" } else { "s" }
     );
-    window.push_notification(Notification::success(message), cx);
+    notify(Severity::Success, "rename", message, window, cx);
     // Force never hides what it broke.
     if !plan.introduced.is_empty() {
         let n = plan.introduced.len();
-        window.push_notification(
-            Notification::warning(format!(
+        notify(
+            Severity::Warning,
+            "rename",
+            format!(
                 "That rename introduced {n} diagnostic{} — see Problems.",
                 if n == 1 { "" } else { "s" }
-            )),
+            ),
+            window,
             cx,
         );
     }

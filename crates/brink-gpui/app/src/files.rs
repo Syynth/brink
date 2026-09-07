@@ -24,9 +24,9 @@ use gpui_component::WindowExt as _;
 use gpui_component::button::ButtonVariant;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::notification::Notification;
 
 use crate::project::Project;
+use brink_gpui_shell::notify::{Severity, notify};
 
 /// What a prompt does when it is confirmed. Shared by all three, which is
 /// why it has a name rather than being spelled out at each call.
@@ -70,10 +70,14 @@ pub fn new_file(project: Entity<Project>, folder: String, window: &mut Window, c
                 project.create_file(&path, NEW_FILE_TEMPLATE, cx)
             });
             match created {
-                Ok(()) => {
-                    window.push_notification(Notification::success(format!("Created {path}.")), cx)
-                }
-                Err(err) => window.push_notification(Notification::error(format!("{err}")), cx),
+                Ok(()) => notify(
+                    Severity::Success,
+                    "files",
+                    format!("Created {path}."),
+                    window,
+                    cx,
+                ),
+                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
             }
         }
     });
@@ -113,9 +117,14 @@ pub fn rename_file(project: Entity<Project>, path: String, window: &mut Window, 
             let to = with_ink_suffix(&to);
             let moved = project.update(cx, |project, cx| project.rename_file(&from, &to, cx));
             match moved {
-                Ok(()) => window
-                    .push_notification(Notification::success(format!("Moved {from} to {to}.")), cx),
-                Err(err) => window.push_notification(Notification::error(format!("{err}")), cx),
+                Ok(()) => notify(
+                    Severity::Success,
+                    "files",
+                    format!("Moved {from} to {to}."),
+                    window,
+                    cx,
+                ),
+                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
             }
         }
     });
@@ -159,10 +168,15 @@ pub fn delete_file(project: Entity<Project>, path: String, window: &mut Window, 
             .on_ok(move |_, window, cx| {
                 let deleted = project.update(cx, |project, cx| project.delete_file(&path, cx));
                 match deleted {
-                    Ok(()) => window
-                        .push_notification(Notification::success(format!("Deleted {path}.")), cx),
+                    Ok(()) => notify(
+                        Severity::Success,
+                        "files",
+                        format!("Deleted {path}."),
+                        window,
+                        cx,
+                    ),
                     Err(err) => {
-                        window.push_notification(Notification::error(format!("{err}")), cx);
+                        notify(Severity::Error, "files", format!("{err}"), window, cx);
                     }
                 }
                 true
