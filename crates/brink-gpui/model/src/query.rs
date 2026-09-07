@@ -45,6 +45,16 @@ pub enum QueryKind {
     DocumentColors {
         path: String,
     },
+    /// Turn the line at `offset` into another structural element — a
+    /// choice, a gather, plain narrative, a choice body. The sigil
+    /// arithmetic is `brink-ide`'s (`line_convert::convert_element`),
+    /// which reads the line's real structural context rather than
+    /// sniffing its text.
+    ConvertLine {
+        path: String,
+        offset: u32,
+        target: ConvertTarget,
+    },
     /// Spelling and light grammar over one file's prose. Answered in the
     /// worker loop, which holds the `[prose]` config the check needs.
     Prose {
@@ -162,8 +172,32 @@ pub enum QueryResult {
     Prose(Vec<crate::prose::ProseLint>),
     /// `(start, end, "#RRGGBB")` per literal, in byte offsets.
     DocumentColors(Vec<(u32, u32, String)>),
+    /// A single text edit, or `None` when the conversion makes no sense
+    /// for the line asked about (a knot header, or the type it already
+    /// is).
+    LineEdit(Option<LineEdit>),
     CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
+}
+
+/// What a line is being turned into. A plain mirror of
+/// `brink_ide::line_convert::ConvertTarget`, so nothing of the engine
+/// crosses to the main thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertTarget {
+    Narrative,
+    Choice { sticky: bool },
+    Gather,
+    ChoiceBody,
+}
+
+/// Replace `from..to` with `insert`, in bytes of one file. Distinct from
+/// [`TextEdit`], which is a rename's per-file edit and carries the path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineEdit {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
 }
 
 /// A place in the project, in bytes of that file.
@@ -400,6 +434,11 @@ pub(crate) fn answer(
         QueryKind::DocumentColors { path } => {
             QueryResult::DocumentColors(document_colors(session, path))
         }
+        QueryKind::ConvertLine {
+            path,
+            offset,
+            target,
+        } => QueryResult::LineEdit(convert_line(session, path, *offset, *target)),
         QueryKind::Program
         | QueryKind::CompiledOutput
         | QueryKind::StoryGraph
@@ -862,6 +901,34 @@ fn completions(
     Some(items)
 }
 
+/// One line's conversion, as a text edit. `None` for a line that cannot
+/// be converted (a knot header, an `INCLUDE`) or is already the target.
+fn convert_line(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    offset: u32,
+    target: ConvertTarget,
+) -> Option<LineEdit> {
+    let id = session.file_id(path)?;
+    let hir = session.hir(id)?;
+    let source = session.source(id)?;
+    let root = session.syntax_root(id)?;
+    let target = match target {
+        ConvertTarget::Narrative => brink_ide::line_convert::ConvertTarget::Narrative,
+        ConvertTarget::Choice { sticky } => {
+            brink_ide::line_convert::ConvertTarget::Choice { sticky }
+        }
+        ConvertTarget::Gather => brink_ide::line_convert::ConvertTarget::Gather,
+        ConvertTarget::ChoiceBody => brink_ide::line_convert::ConvertTarget::ChoiceBody,
+    };
+    let edit = brink_ide::line_convert::convert_element(source, hir, &root, offset, target)?;
+    Some(LineEdit {
+        from: edit.from,
+        to: edit.to,
+        insert: edit.insert,
+    })
+}
+
 fn symbols(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<Symbol>> {
     let id = session.file_id(path)?;
     let hir = session.hir(id)?;
@@ -943,6 +1010,42 @@ mod tests {
             "the literal carries a swatch: {colours:?}"
         );
         assert_eq!(colours[0].2, "#ff0000");
+    }
+
+    #[test]
+    fn a_line_converts_between_narrative_choice_and_gather() {
+        use super::{ConvertTarget, convert_line};
+        use brink_ide::session::IdeSession;
+        let source = "=== shore ===\nThe tide was out.\n-> DONE\n";
+        let mut session = IdeSession::new();
+        session.update_source("main.ink", source.to_owned());
+        session.refresh_analysis();
+        // Byte 14 is the start of `The tide was out.`
+        let at = 14;
+        let edit = convert_line(
+            &session,
+            "main.ink",
+            at,
+            ConvertTarget::Choice { sticky: false },
+        )
+        .expect("narrative converts to a choice");
+        let out = format!(
+            "{}{}{}",
+            &source[..edit.from as usize],
+            edit.insert,
+            &source[edit.to as usize..]
+        );
+        assert_eq!(out, "=== shore ===\n* The tide was out.\n-> DONE\n");
+
+        let gather =
+            convert_line(&session, "main.ink", at, ConvertTarget::Gather).expect("and to a gather");
+        assert!(gather.insert.starts_with('-'), "{gather:?}");
+
+        // A knot header is not a weave element and converts to nothing —
+        // returned as `None` rather than as an edit that mangles it.
+        assert!(convert_line(&session, "main.ink", 0, ConvertTarget::Gather).is_none());
+        // Neither does a file the project does not hold.
+        assert!(convert_line(&session, "nope.ink", 0, ConvertTarget::Gather).is_none());
     }
 
     #[test]

@@ -41,7 +41,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use brink_gpui_model::play::PlayCommand;
-use brink_gpui_model::query::{QueryKind, QueryResult};
+use brink_gpui_model::query::{ConvertTarget, QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
@@ -51,6 +51,7 @@ use gpui::{
     App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement,
     Render, Subscription, Task, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
+use gpui_component::input::RopeExt as _;
 use gpui_component::{Root, TitleBar};
 
 use crate::binder::{Binder, BinderEvent};
@@ -108,6 +109,14 @@ actions!(
         /// Advance one VM instruction — the other granularity, not a
         /// finer setting of the same one (RULED 2026-08-28).
         DebugStepInstruction,
+        /// Turn the caret's line into plain narrative, a choice, a sticky
+        /// choice, a gather, or a choice body. The five structural
+        /// element types a weave line can be.
+        MakeNarrative,
+        MakeChoice,
+        MakeStickyChoice,
+        MakeGather,
+        MakeChoiceBody,
         /// The compiled story's `.inkt` dump, as a read-only tab.
         OpenCompiledOutput,
         /// The story graph — knots and diverts as a picture.
@@ -400,6 +409,20 @@ impl Studio {
                 Some("alt-shift-f"),
                 cx,
             );
+            // Structural line conversion. Under "Line" rather than
+            // "Refactor": these change what a line IS, and an author
+            // reaches for them while writing, not while tidying.
+            workspace.register_command("Line", "Make Narrative", MakeNarrative, None, cx);
+            workspace.register_command("Line", "Make Choice", MakeChoice, Some("alt-1"), cx);
+            workspace.register_command(
+                "Line",
+                "Make Sticky Choice",
+                MakeStickyChoice,
+                Some("alt-2"),
+                cx,
+            );
+            workspace.register_command("Line", "Make Gather", MakeGather, Some("alt-3"), cx);
+            workspace.register_command("Line", "Make Choice Body", MakeChoiceBody, None, cx);
             workspace.register_command("Fix", "Fix All Safe in File", FixAllInFile, None, cx);
             workspace.register_command("Fix", "Fix All Safe in Project", FixAllInProject, None, cx);
             // The find panel is the TOOLKIT's, not ours: `EditorState::new`
@@ -1052,6 +1075,90 @@ impl Studio {
         );
     }
 
+    fn make_narrative(&mut self, _: &MakeNarrative, window: &mut Window, cx: &mut Context<Self>) {
+        self.convert_line(ConvertTarget::Narrative, window, cx);
+    }
+
+    fn make_choice(&mut self, _: &MakeChoice, window: &mut Window, cx: &mut Context<Self>) {
+        self.convert_line(ConvertTarget::Choice { sticky: false }, window, cx);
+    }
+
+    fn make_sticky_choice(
+        &mut self,
+        _: &MakeStickyChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.convert_line(ConvertTarget::Choice { sticky: true }, window, cx);
+    }
+
+    fn make_gather(&mut self, _: &MakeGather, window: &mut Window, cx: &mut Context<Self>) {
+        self.convert_line(ConvertTarget::Gather, window, cx);
+    }
+
+    fn make_choice_body(
+        &mut self,
+        _: &MakeChoiceBody,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.convert_line(ConvertTarget::ChoiceBody, window, cx);
+    }
+
+    /// Turn the focused editor's caret line into `target`. The sigil
+    /// arithmetic is the worker's (`brink-ide`'s `convert_element`), which
+    /// reads the line's real structural context; this only asks, applies
+    /// and reports.
+    fn convert_line(&mut self, target: ConvertTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let path = site.path.to_string();
+        let offset = {
+            let state = site.editor.read(cx);
+            let position = state.cursor_position();
+            u32::try_from(state.text().position_to_offset(&position)).unwrap_or(0)
+        };
+        let query = self.project.read(cx).query(
+            QueryKind::ConvertLine {
+                path: path.clone(),
+                offset,
+                target,
+            },
+            cx,
+        );
+        let project = self.project.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let edit = match query.await {
+                Ok(QueryResult::LineEdit(Some(edit))) => edit,
+                _ => {
+                    let _ = cx.update(|window, cx| {
+                        notify(
+                            Severity::Info,
+                            "studio",
+                            "This line cannot become that.",
+                            window,
+                            cx,
+                        );
+                    });
+                    return;
+                }
+            };
+            let _ = cx.update(|_window, cx| {
+                project.update(cx, |project, cx| {
+                    let Some(source) = project.loaded_source(&path).map(str::to_owned) else {
+                        return;
+                    };
+                    let from = (edit.from as usize).min(source.len());
+                    let to = (edit.to as usize).clamp(from, source.len());
+                    let next = format!("{}{}{}", &source[..from], edit.insert, &source[to..]);
+                    project.edit(&path, next, None, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
     fn format_document(&mut self, _: &FormatDocument, window: &mut Window, cx: &mut Context<Self>) {
         let Some(site) = self.focused_site(window, cx) else {
             return;
@@ -1544,6 +1651,11 @@ impl Render for Studio {
             .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(Self::fix_all_in_file))
             .on_action(cx.listener(Self::fix_all_in_project))
+            .on_action(cx.listener(Self::make_narrative))
+            .on_action(cx.listener(Self::make_choice))
+            .on_action(cx.listener(Self::make_sticky_choice))
+            .on_action(cx.listener(Self::make_gather))
+            .on_action(cx.listener(Self::make_choice_body))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_breakpoint))
             .on_action(cx.listener(Self::clear_breakpoints))
