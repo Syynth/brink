@@ -680,6 +680,25 @@ impl IdeSession {
         Some(self.db.analysis())
     }
 
+    /// The project-wide symbol index — the ranged one, straight from the db.
+    #[must_use]
+    pub fn symbol_index(&self) -> Arc<brink_ir::SymbolIndex> {
+        self.db.symbol_index()
+    }
+
+    /// Every symbol's presentational metadata with no diagnostics attached
+    /// (`ProjectDb::symbol_meta`). With [`symbol_index`](Self::symbol_index)
+    /// this is what a [`crate::SymbolView`] is built from on a recurring
+    /// path — never [`analysis`](Self::analysis), whose diagnostics half
+    /// re-runs every per-file check in the project on any edit.
+    #[must_use]
+    pub fn symbol_meta(
+        &self,
+    ) -> Arc<std::collections::BTreeMap<brink_format::DefinitionId, brink_analyzer::SymbolMeta>>
+    {
+        self.db.symbol_meta()
+    }
+
     /// Re-analyze the project with `overlay` (project-relative path → source)
     /// replacing the on-disk content of matching files, **without mutating this
     /// session**. Files absent from the overlay keep their current source.

@@ -22,7 +22,7 @@ use crate::queries::{
     inferred_signature_query, is_source_file, lir_knot_chunk_query, lir_prelude_decls_query,
     lir_query, local_signature_query, lowered_query, module_map_query, parse_native_query,
     parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query, symbol_meta_query,
     type_diagnostics_query, type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
@@ -932,6 +932,16 @@ impl ProjectDb {
     pub fn file_value_meta(&self, id: FileId) -> Option<Arc<BTreeMap<DefinitionId, SymbolMeta>>> {
         let file = *self.files.get(&id)?;
         Some(value_meta_query(&self.salsa, self.project, file))
+    }
+
+    /// Every symbol's presentational metadata, project-wide, with NO
+    /// diagnostics attached — the `symbol_meta` half of
+    /// [`analysis`](Self::analysis) as its own memo. The presentation
+    /// collectors (`brink_ide::SymbolView`) read this plus
+    /// [`symbol_index`](Self::symbol_index) instead of the analysis bundle,
+    /// so a body edit re-runs no per-file diagnostic check on their account.
+    pub fn symbol_meta(&self) -> Arc<BTreeMap<DefinitionId, SymbolMeta>> {
+        Arc::clone(symbol_meta_query(&self.salsa, self.project))
     }
 
     /// One file's external call-site literal checks (`E041`/`E042`, issue

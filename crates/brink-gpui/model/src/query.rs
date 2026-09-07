@@ -846,10 +846,24 @@ fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<V
     // the native query would silently reproduce #2280.
     let hints = if session.is_native(id) {
         let root = session.syntax_root_native(id)?;
-        brink_ide::inlay_hints::inlay_hints_native(&root, analysis, session.db(), id, whole, None)
+        brink_ide::inlay_hints::inlay_hints_native(
+            &root,
+            &brink_ide::SymbolView::from(analysis),
+            session.db(),
+            id,
+            whole,
+            None,
+        )
     } else {
         let root = session.syntax_root(id)?;
-        brink_ide::inlay_hints::inlay_hints(&root, analysis, session.db(), id, whole, None)
+        brink_ide::inlay_hints::inlay_hints(
+            &root,
+            &brink_ide::SymbolView::from(analysis),
+            session.db(),
+            id,
+            whole,
+            None,
+        )
     };
     Some(
         hints

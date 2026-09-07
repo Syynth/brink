@@ -140,7 +140,7 @@ pub(crate) use analysis::{
     conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_claim_handlers_query, external_meta_query,
     has_errors_in_closure_query, has_errors_query, import_closure_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, subset_analysis_query,
+    per_file_diagnostics_query, resolutions_index_query, subset_analysis_query, symbol_meta_query,
     ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
 };
 
@@ -327,6 +327,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<external_meta_query>()
                 .ingredient::<call_site_metas_query>()
                 .ingredient::<value_meta_query>()
+                .ingredient::<symbol_meta_query>()
                 .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
                 // B3a UFCS (issue #1506): the verdict table, shared by

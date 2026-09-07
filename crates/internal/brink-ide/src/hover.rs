@@ -294,7 +294,7 @@ fn inferred_local_type_str(
         .and_then(|sig| sig.value_ty.clone());
     declared
         .or_else(|| {
-            enclosing_callable(analysis, info)
+            enclosing_callable(&analysis.index, info)
                 .and_then(|def| db.infer_body(def))
                 .and_then(|body| body.locals.get(&info.name).cloned())
                 .filter(|ty| !ty.is_unknown())

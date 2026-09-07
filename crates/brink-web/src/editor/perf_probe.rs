@@ -961,7 +961,7 @@ fn what_a_prose_edit_executes() {
     let src = read(LARGE);
     let doc_len = u32::try_from(src.len()).expect("len fits");
     // A prose line deep inside a knot: change one word.
-    let needle = "The night is cold.";
+    let needle = "The night is cold";
     let at = src
         .find(needle)
         .map_or(doc_len / 2, |i| u32::try_from(i).unwrap_or(0));
@@ -1005,10 +1005,90 @@ fn what_a_prose_edit_executes() {
     timed!("semanticTokens", session.semantic_tokens_doc(doc));
     timed!("foldingRanges", session.folding_ranges_doc(doc));
     timed!("hirSpans", session.hir_spans_doc(doc));
+    let file_id = session.session.file_id("story.ink").expect("file id");
+    timed!("  (syntax_root)", session.session.syntax_root(file_id));
     timed!(
         "argumentWidgets",
         session.argument_widgets_doc(doc, 0, doc_len)
     );
     timed!("inlayHints", session.inlay_hints_doc(doc, 0, doc_len));
     timed!("(compile, 500ms)", session.compile_project("story.ink"));
+}
+
+/// The segment keys of a `segment_manifest_doc` JSON payload, in order.
+fn manifest_keys(manifest: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(manifest).expect("manifest json");
+    v["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .map(|s| s["key"].as_str().expect("key").to_owned())
+        .collect()
+}
+
+/// The MAIN-THREAD keystroke path as the host actually runs it on a large
+/// document (`docs/editor-worker-spec.md` §4): the `ClassifierSession`
+/// applies the edit, re-reads the segment manifest, and pulls the edited
+/// segment's classifier tokens and line contexts. Everything else — refined
+/// tokens, overlay, hints, widgets, folds, the compile — runs on the worker
+/// after the quiet timer, which is what `what_a_prose_edit_executes`
+/// measures.
+#[test]
+#[ignore = "measurement probe — run with --ignored --nocapture"]
+fn what_a_keystroke_costs_on_the_main_thread() {
+    let src = read(LARGE);
+    let needle = "The night is cold";
+    let at = src.find(needle).expect("needle in TheIntercept");
+    let mut cs = crate::classifier::ClassifierSession::new();
+    assert!(cs.open("story.ink", &src));
+    let keys = manifest_keys;
+
+    // Warm every slice the host caches, so only post-edit work is measured.
+    let before = keys(&cs.segment_manifest());
+    for k in &before {
+        let _ = cs.segment_semantic_tokens_fast(k);
+        let _ = cs.segment_line_contexts(k);
+    }
+
+    let report = |name: &str, counts: &std::collections::BTreeMap<String, u64>, ms: f64| {
+        let mut rows: Vec<(&String, &u64)> = counts.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let list: Vec<String> = rows.iter().map(|(q, n)| format!("{q}×{n}")).collect();
+        println!("{name:<28} {ms:>8.3}  {}", list.join(", "));
+    };
+    println!(
+        "\nTheIntercept, one character typed into a prose line — MAIN THREAD (ClassifierSession):"
+    );
+    println!("{:<28} {:>8}  salsa executions caused", "call", "ms");
+
+    let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+    let t0 = crate::perf::now_ms();
+    let (ok, c) = brink_db::count_executions(|| cs.apply_edits(&edits));
+    report("applyEdits", &c, crate::perf::now_ms() - t0);
+    assert!(ok);
+
+    let t0 = crate::perf::now_ms();
+    let (after, c) = brink_db::count_executions(|| keys(&cs.segment_manifest()));
+    report("segmentManifest", &c, crate::perf::now_ms() - t0);
+    let changed: Vec<&String> = after.iter().filter(|k| !before.contains(k)).collect();
+    println!(
+        "  {} segments, {} changed key(s): {:?}",
+        after.len(),
+        changed.len(),
+        changed
+    );
+
+    for k in changed {
+        let t0 = crate::perf::now_ms();
+        let (tok, c) = brink_db::count_executions(|| cs.segment_semantic_tokens_fast(k));
+        report("segmentSemanticTokensFast", &c, crate::perf::now_ms() - t0);
+        let t0 = crate::perf::now_ms();
+        let (lc, c) = brink_db::count_executions(|| cs.segment_line_contexts(k));
+        report("segmentLineContexts", &c, crate::perf::now_ms() - t0);
+        println!(
+            "  payload bytes: tokens {} / contexts {}",
+            tok.len(),
+            lc.len()
+        );
+    }
 }

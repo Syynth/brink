@@ -2891,7 +2891,7 @@ impl LanguageServer for Backend {
             let root = parse.syntax();
             brink_ide::inlay_hints::inlay_hints_native(
                 &root,
-                &snap.analysis,
+                &brink_ide::SymbolView::from(&*snap.analysis),
                 db,
                 file_id,
                 request_range,
@@ -2904,7 +2904,7 @@ impl LanguageServer for Backend {
             let root = parse.tree();
             brink_ide::inlay_hints::inlay_hints(
                 root.syntax(),
-                &snap.analysis,
+                &brink_ide::SymbolView::from(&*snap.analysis),
                 db,
                 file_id,
                 request_range,

@@ -8,7 +8,7 @@
 //! `Expr` (a non-literal — leave alone). Reuses the same call-site →
 //! semantic-type join as inlay hints; tooling-only, never touches the program.
 
-use brink_analyzer::AnalysisResult;
+use crate::SymbolView;
 use brink_syntax::SyntaxNode;
 use brink_syntax::ast::AstNode;
 use rowan::TextSize;
@@ -130,7 +130,7 @@ pub enum SlotState {
 #[must_use]
 pub fn argument_widgets(
     root: &SyntaxNode,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     range: rowan::TextRange,
     host_values: Option<&crate::HostValues>,
 ) -> Vec<CallWidgetSite> {
@@ -148,7 +148,7 @@ pub fn argument_widgets(
                     id.syntax().text_range(),
                     arg_spans(call.arg_list()),
                     open_paren_inside(&node),
-                    analysis,
+                    symbols,
                     host_values,
                 )
             {
@@ -163,7 +163,7 @@ pub fn argument_widgets(
                 path_node.syntax().text_range(),
                 arg_spans(target.arg_list()),
                 open_paren_inside(&node),
-                analysis,
+                symbols,
                 host_values,
             ) {
                 sites.push(site);
@@ -182,7 +182,7 @@ pub fn argument_widgets(
 #[must_use]
 pub fn argument_widgets_native(
     root: &brink_syntax_native::SyntaxNode,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     range: rowan::TextRange,
     host_values: Option<&crate::HostValues>,
 ) -> Vec<CallWidgetSite> {
@@ -200,7 +200,7 @@ pub fn argument_widgets_native(
                     callee.syntax().text_range(),
                     arg_spans_native(call.arg_list()),
                     open_paren_inside_native(&node),
-                    analysis,
+                    symbols,
                     host_values,
                 )
             {
@@ -215,7 +215,7 @@ pub fn argument_widgets_native(
                 path_node.syntax().text_range(),
                 arg_spans_native(target.call_args()),
                 open_paren_inside_native(&node),
-                analysis,
+                symbols,
                 host_values,
             ) {
                 sites.push(site);
@@ -305,15 +305,15 @@ fn collect(
     name_range: rowan::TextRange,
     (args, arg_list_inner): (Vec<ArgSpan>, Option<TextSize>),
     open_paren_fallback: Option<TextSize>,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     host_values: Option<&crate::HostValues>,
 ) -> Option<CallWidgetSite> {
     // Resolve the callee symbol by name (the most-params callable wins, so a
     // partially-typed call still maps onto the full signature).
-    let ids = analysis.index.by_name.get(callee_name)?;
+    let ids = symbols.index.by_name.get(callee_name)?;
     let info = ids
         .iter()
-        .filter_map(|id| analysis.index.symbols.get(id))
+        .filter_map(|id| symbols.index.symbols.get(id))
         .filter(|info| {
             matches!(
                 info.kind,
@@ -326,7 +326,7 @@ fn collect(
     if info.params.is_empty() {
         return None;
     }
-    let meta = analysis.symbol_meta.get(&info.id);
+    let meta = symbols.symbol_meta.get(&info.id);
 
     // The append point for trailing-empty slots: after the last arg, or just
     // inside `(` when the call has no arguments yet. Empty parens produce no
@@ -692,6 +692,7 @@ mod tests {
         session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(manifest());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
         let parsed = brink_syntax::parse(src);
         argument_widgets(
             &parsed.syntax(),
@@ -827,6 +828,7 @@ mod tests {
         session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(manifest());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
         let parsed = brink_syntax::parse(src);
         let range = rowan::TextRange::new(0.into(), rowan::TextSize::of(src));
         let host_values: crate::HostValues = std::collections::HashMap::from([(
@@ -888,6 +890,7 @@ mod tests {
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
         let parsed = brink_syntax::parse(src);
         let sites = argument_widgets(
             &parsed.syntax(),
@@ -941,6 +944,7 @@ mod tests {
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
         let parsed = brink_syntax::parse(src);
         let sites = argument_widgets(
             &parsed.syntax(),
@@ -980,6 +984,7 @@ mod tests {
         session.update_and_analyze("test.brink", src.to_string());
         session.set_host_manifest(manifest());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
         let parsed = brink_syntax_native::parse(src);
         argument_widgets_native(
             &parsed.syntax(),

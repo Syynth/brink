@@ -1,4 +1,4 @@
-use brink_analyzer::AnalysisResult;
+use crate::SymbolView;
 use brink_db::ProjectDb;
 use brink_ir::FileId;
 use brink_syntax::SyntaxNode;
@@ -38,7 +38,7 @@ pub struct InlayHint {
 /// `db` is the same `ProjectDb` `analysis` was computed from/against.
 pub fn inlay_hints(
     root: &SyntaxNode,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     db: &ProjectDb,
     file_id: FileId,
     range: TextRange,
@@ -55,15 +55,15 @@ pub fn inlay_hints(
 
         if let Some(call) = brink_syntax::ast::FunctionCall::cast(node.clone()) {
             if let Some(name) = call.name() {
-                collect_param_hints(&name, call.arg_list(), analysis, host_values, &mut hints);
+                collect_param_hints(&name, call.arg_list(), symbols, host_values, &mut hints);
             }
         } else if let Some(target) = brink_syntax::ast::DivertTargetWithArgs::cast(node.clone())
             && let Some(path_node) = target.path()
         {
             let name = path_node.full_name();
-            collect_param_hints(&name, target.arg_list(), analysis, host_values, &mut hints);
+            collect_param_hints(&name, target.arg_list(), symbols, host_values, &mut hints);
         } else if let Some(temp_decl) = brink_syntax::ast::TempDecl::cast(node.clone()) {
-            collect_inferred_type_hint(&temp_decl, analysis, db, file_id, &mut hints);
+            collect_inferred_type_hint(&temp_decl, symbols, db, file_id, &mut hints);
         }
     }
 
@@ -80,7 +80,7 @@ pub fn inlay_hints(
 /// use [`crate::session::IdeSession::syntax_root_native`].
 pub fn inlay_hints_native(
     root: &brink_syntax_native::SyntaxNode,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     db: &ProjectDb,
     file_id: FileId,
     range: TextRange,
@@ -100,7 +100,7 @@ pub fn inlay_hints_native(
                 collect_param_hints_native(
                     &crate::color::native_path_name(&callee),
                     call.arg_list(),
-                    analysis,
+                    symbols,
                     host_values,
                     &mut hints,
                 );
@@ -111,12 +111,12 @@ pub fn inlay_hints_native(
             collect_param_hints_native(
                 &crate::color::native_path_name(&path_node),
                 target.call_args(),
-                analysis,
+                symbols,
                 host_values,
                 &mut hints,
             );
         } else if let Some(let_stmt) = brink_syntax_native::ast::LetStmt::cast(node.clone()) {
-            collect_inferred_type_hint_native(&let_stmt, analysis, db, file_id, &mut hints);
+            collect_inferred_type_hint_native(&let_stmt, symbols, db, file_id, &mut hints);
         }
     }
 
@@ -131,7 +131,7 @@ pub fn inlay_hints_native(
 /// (`Unknown` — showing that would be noise, not information).
 fn collect_inferred_type_hint(
     temp_decl: &brink_syntax::ast::TempDecl,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     db: &ProjectDb,
     file_id: FileId,
     hints: &mut Vec<InlayHint>,
@@ -149,13 +149,13 @@ fn collect_inferred_type_hint(
 
     // Resolve to this temp's own declaration-site `SymbolInfo` so its
     // `Scope` gives us the enclosing knot/stitch to key `infer_body` by.
-    let Some(info) = analysis.index.symbols.values().find(|info| {
+    let Some(info) = symbols.index.symbols.values().find(|info| {
         info.file == file_id && info.kind == brink_ir::SymbolKind::Temp && info.range == ident_range
     }) else {
         return;
     };
 
-    let Some(ty) = enclosing_callable(analysis, info)
+    let Some(ty) = enclosing_callable(symbols.index, info)
         .and_then(|def| db.infer_body(def))
         .and_then(|body| body.locals.get(&name).cloned())
         .filter(|ty| !ty.is_unknown())
@@ -180,7 +180,7 @@ fn collect_inferred_type_hint(
 /// only the syntax accessors differ.
 fn collect_inferred_type_hint_native(
     let_stmt: &brink_syntax_native::ast::LetStmt,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     db: &ProjectDb,
     file_id: FileId,
     hints: &mut Vec<InlayHint>,
@@ -196,13 +196,13 @@ fn collect_inferred_type_hint_native(
 
     // Resolve to this temp's own declaration-site `SymbolInfo` so its
     // `Scope` gives us the enclosing knot/stitch to key `infer_body` by.
-    let Some(info) = analysis.index.symbols.values().find(|info| {
+    let Some(info) = symbols.index.symbols.values().find(|info| {
         info.file == file_id && info.kind == brink_ir::SymbolKind::Temp && info.range == ident_range
     }) else {
         return;
     };
 
-    let Some(ty) = enclosing_callable(analysis, info)
+    let Some(ty) = enclosing_callable(symbols.index, info)
         .and_then(|def| db.infer_body(def))
         .and_then(|body| body.locals.get(&name).cloned())
         .filter(|ty| !ty.is_unknown())
@@ -222,7 +222,7 @@ fn collect_inferred_type_hint_native(
 fn collect_param_hints(
     callee_name: &str,
     arg_list: Option<brink_syntax::ast::ArgList>,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     host_values: Option<&crate::HostValues>,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -235,7 +235,7 @@ fn collect_param_hints(
             end: a.syntax().text_range().end(),
         })
         .collect();
-    build_param_hints(callee_name, &spans, analysis, host_values, hints);
+    build_param_hints(callee_name, &spans, symbols, host_values, hints);
 }
 
 /// The native (`.brink`) sibling of [`collect_param_hints`] — same join,
@@ -246,7 +246,7 @@ fn collect_param_hints(
 fn collect_param_hints_native(
     callee_name: &str,
     arg_list: Option<brink_syntax_native::ast::ArgList>,
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     host_values: Option<&crate::HostValues>,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -261,7 +261,7 @@ fn collect_param_hints_native(
             end: a.text_range().end(),
         })
         .collect();
-    build_param_hints(callee_name, &spans, analysis, host_values, hints);
+    build_param_hints(callee_name, &spans, symbols, host_values, hints);
 }
 
 /// One argument's source text and span — the frontend-agnostic shape
@@ -278,7 +278,7 @@ struct ArgSpan {
 fn build_param_hints(
     callee_name: &str,
     args: &[ArgSpan],
-    analysis: &AnalysisResult,
+    symbols: &SymbolView<'_>,
     host_values: Option<&crate::HostValues>,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -287,14 +287,14 @@ fn build_param_hints(
     }
 
     // Look up the callee in the symbol index
-    let Some(ids) = analysis.index.by_name.get(callee_name) else {
+    let Some(ids) = symbols.index.by_name.get(callee_name) else {
         return;
     };
 
     // Find a matching symbol with params. Prefer one whose param count matches.
     let info = ids
         .iter()
-        .filter_map(|id| analysis.index.symbols.get(id))
+        .filter_map(|id| symbols.index.symbols.get(id))
         .find(|info| {
             matches!(
                 info.kind,
@@ -306,7 +306,7 @@ fn build_param_hints(
         .or_else(|| {
             // Fallback: any callable with params
             ids.iter()
-                .filter_map(|id| analysis.index.symbols.get(id))
+                .filter_map(|id| symbols.index.symbols.get(id))
                 .find(|info| {
                     matches!(
                         info.kind,
@@ -321,7 +321,7 @@ fn build_param_hints(
 
     // Typed params (from `///` doc tags or the host manifest) render as
     // `name: type`; untyped params keep the bare `name:` form.
-    let meta = analysis.symbol_meta.get(&info.id);
+    let meta = symbols.symbol_meta.get(&info.id);
 
     for (i, (arg, param)) in args.iter().zip(&info.params).enumerate() {
         // Skip hint if the argument text already matches the parameter name
@@ -417,6 +417,7 @@ mod tests {
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -470,6 +471,7 @@ mod tests {
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -538,6 +540,7 @@ EXTERNAL set_switch(id, on)
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -605,6 +608,7 @@ EXTERNAL set_switch(id, on)
             }],
         )]));
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let range = TextRange::new(TextSize::new(0), TextSize::of(src));
@@ -668,6 +672,7 @@ EXTERNAL set_switch(id, on)
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -722,6 +727,7 @@ EXTERNAL set_switch(id, on)
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -750,6 +756,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -783,6 +790,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -811,6 +819,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
@@ -857,6 +866,7 @@ flow main() {
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.brink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax_native::parse(src);
         let hints = inlay_hints_native(
@@ -908,6 +918,7 @@ flow main() {
             }],
         });
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax_native::parse(src);
         let hints = inlay_hints_native(
@@ -929,6 +940,7 @@ flow main() {
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.brink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax_native::parse(src);
         let hints = inlay_hints_native(
@@ -961,6 +973,7 @@ flow main() {
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.brink", src.to_string());
         let analysis = session.analysis().expect("analysis");
+        let analysis = &crate::SymbolView::from(analysis);
 
         let parsed = brink_syntax_native::parse(src);
         let hints = inlay_hints_native(

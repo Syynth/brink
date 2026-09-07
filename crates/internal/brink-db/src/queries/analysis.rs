@@ -1043,6 +1043,32 @@ fn for_each_source_file(
     }
 }
 
+/// Every symbol's presentational metadata, project-wide, with no diagnostics
+/// attached: [`external_meta_query`]'s externals/callables enrichment plus
+/// every source file's [`value_meta_query`] entries, merged in file order —
+/// byte-identical to the `symbol_meta` half of
+/// [`whole_project_diagnostics_query`] (which now reads this). Its own memo
+/// so the presentation collectors (inlay hints, argument widgets — via
+/// `brink_ide::SymbolView`) can read the metas without pulling the
+/// diagnostics bundle: a prose keystroke used to re-run every per-file
+/// check in the project just to label a call's parameters.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn symbol_meta_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<BTreeMap<DefinitionId, SymbolMeta>> {
+    let ext = external_meta_query(db, project);
+    let mut symbol_meta = ext.symbol_meta.clone();
+    for_each_source_file(db, project, |file| {
+        symbol_meta.extend(
+            value_meta_query(db, project, file)
+                .iter()
+                .map(|(k, v)| (*k, v.clone())),
+        );
+    });
+    Arc::new(symbol_meta)
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn whole_project_diagnostics_query(
     db: &dyn salsa::Database,
@@ -1113,19 +1139,15 @@ pub(crate) fn whole_project_diagnostics_query(
     // own composition order.
     let ext = external_meta_query(db, project);
     diagnostics.extend(ext.diagnostics.iter().cloned());
-    let mut symbol_meta = ext.symbol_meta.clone();
+    // The same merge [`symbol_meta_query`] memoizes on its own, so the
+    // presentation collectors can read it WITHOUT this bundle.
+    let symbol_meta: BTreeMap<DefinitionId, SymbolMeta> =
+        (**symbol_meta_query(db, project)).clone();
 
     // Every per-file pass below runs through `for_each_source_file`
     // (issue #2329): a non-source document never contributes a value-meta
     // entry, a call-site check, or any lazy effect/comparator/conventions
     // pass.
-    for_each_source_file(db, project, |file| {
-        symbol_meta.extend(
-            value_meta_query(db, project, file)
-                .iter()
-                .map(|(k, v)| (*k, v.clone())),
-        );
-    });
     for_each_source_file(db, project, |file| {
         diagnostics.extend(
             call_site_diagnostics_query(db, project, file)
