@@ -1418,6 +1418,181 @@ Hi.
 // ─── Anonymous-id join (#3234) ───────────────────────────────────────
 
 #[cfg(test)]
+mod fragment_normalization_parity {
+    //! The invariant the per-knot LIR chunk seam rests on (#3586): a
+    //! knot's normalized + stamped HIR is the SAME whether it came from
+    //! the whole file or from that knot's own segment fragment.
+    //!
+    //! `lir_knot_chunk_query` re-lowers every knot in a file on every
+    //! edit because it reads the whole-file `normalized_stamped_query`.
+    //! Reading the knot's own segment instead is what lets an untouched
+    //! knot keep its chunk — but only if the two roads agree exactly.
+    //! Two passes had to line up for that: `stamp_container_ids` already
+    //! resets its sequence counter per knot, and `normalize_file`'s
+    //! `$lift` counter was made per-definition for this.
+    //!
+    //! Checked over the real corpus, not fixtures: the shapes that break
+    //! this are the ones nobody thinks to write down.
+
+    use std::path::{Path, PathBuf};
+
+    use brink_ir::hir::{HirFile, Knot};
+
+    use super::{fragment_hir, segment_lowered_query};
+    use crate::ProjectDb;
+
+    fn corpus_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests")
+    }
+
+    fn ink_sources(root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                ink_sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "ink") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Normalize + stamp exactly as `normalized_stamped_query` does. The
+    /// same function runs for both roads, so any difference is the input
+    /// HIR's, never the passes'.
+    fn normalize_and_stamp(
+        hir: HirFile,
+        file_id: brink_ir::FileId,
+        index: &brink_ir::SymbolIndex,
+        paths: &crate::determinism::LookupMap<brink_ir::FileId, String>,
+    ) -> HirFile {
+        let mut slice = [(file_id, hir)];
+        brink_ir::stamp_container_ids(&mut slice, index, paths);
+        brink_ir::normalize_file(&mut slice[0].1);
+        let [(_, out)] = slice;
+        out
+    }
+
+    /// Positions are the ONE thing the two roads are expected to differ
+    /// on: a fragment is parsed in isolation, so its ranges are
+    /// segment-relative while the whole file's are absolute. They are
+    /// excluded rather than rebased because a rebase is not a shift of
+    /// every range — a node the passes SYNTHESIZE (a lifted temp) carries
+    /// the provenance-free `0..0`, which must stay `0..0` on both roads,
+    /// so no single delta reconciles them.
+    ///
+    /// Excluding them costs nothing for the consumer this invariant
+    /// exists for: LIR carries no source ranges at all (only its
+    /// diagnostics do), so what a knot's chunk is built from is exactly
+    /// what is compared here — container ids, synthetic names, statement
+    /// shape.
+    fn is_range_line(line: &str) -> bool {
+        let t = line.trim_start();
+        t.starts_with("range: ") || t.starts_with("file: ")
+    }
+
+    fn by_name(hir: &HirFile) -> Vec<(String, Knot)> {
+        hir.knots
+            .iter()
+            .map(|k| (k.name.text.clone(), k.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_knot_normalizes_the_same_from_its_fragment_as_from_the_whole_file() {
+        let mut files = Vec::new();
+        ink_sources(&corpus_root(), &mut files);
+        assert!(
+            files.len() > 100,
+            "corpus should be substantial, found {}",
+            files.len()
+        );
+
+        let mut compared = 0usize;
+        let mut files_checked = 0usize;
+        for path in &files {
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            // One file, one project: the index and file paths are shared
+            // by both roads, so only the HIR input differs.
+            let mut db = ProjectDb::new();
+            db.set_file("main.ink", source);
+            if db.set_entry("main.ink").is_none() {
+                continue;
+            }
+            files_checked += 1;
+
+            let salsa = db.test_salsa();
+            let project = db.test_project();
+            let file_id = db.file_id("main.ink").expect("file is loaded");
+            let file = db.test_source_file(file_id).expect("source file exists");
+            let index = super::super::inference_index_query(salsa, project);
+            let paths: crate::determinism::LookupMap<brink_ir::FileId, String> =
+                std::iter::once((file_id, "main.ink".to_owned())).collect();
+
+            let whole = normalize_and_stamp(
+                super::super::lowered_query(salsa, project, file)
+                    .hir
+                    .clone(),
+                file_id,
+                index,
+                &paths,
+            );
+
+            // The fragment road: each segment's own knots, normalized and
+            // stamped in isolation, concatenated in segment order.
+            let mut fragments: Vec<(String, Knot)> = Vec::new();
+            for seg in super::file_segments_query(salsa, file) {
+                let frag = fragment_hir(segment_lowered_query(salsa, file, *seg));
+                if frag.knots.is_empty() {
+                    continue;
+                }
+                let stamped = normalize_and_stamp(frag, file_id, index, &paths);
+                fragments.extend(by_name(&stamped));
+            }
+
+            let whole_knots = by_name(&whole);
+            assert_eq!(
+                whole_knots.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                fragments.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                "{}: the two roads disagree about which knots exist",
+                path.display()
+            );
+            for ((name, w), (_, f)) in whole_knots.iter().zip(fragments.iter()) {
+                let (a, b) = (format!("{w:#?}"), format!("{f:#?}"));
+                let diff: Vec<String> = a
+                    .lines()
+                    .zip(b.lines())
+                    .enumerate()
+                    .filter(|(_, (x, y))| x != y && !is_range_line(x))
+                    .take(6)
+                    .map(|(i, (x, y))| format!("    line {i}: whole `{x}` frag `{y}`"))
+                    .collect();
+                assert!(
+                    diff.is_empty() && a.lines().count() == b.lines().count(),
+                    "{}: knot `{name}` differs between the whole-file and \
+                     fragment roads (whole {} lines, frag {} lines)\n{}",
+                    path.display(),
+                    a.lines().count(),
+                    b.lines().count(),
+                    diff.join("\n")
+                );
+                compared += 1;
+            }
+        }
+
+        assert!(
+            compared > 500,
+            "expected many knots, compared {compared} across {files_checked} files"
+        );
+    }
+}
+
+#[cfg(test)]
 mod anon_id_tests {
     use crate::ProjectDb;
     use brink_ir::hir::projection::SpanKind;

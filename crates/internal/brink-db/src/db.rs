@@ -458,6 +458,12 @@ impl ProjectDb {
         self.files.get(&id).copied()
     }
 
+    /// Test-only project input — see [`test_salsa`](Self::test_salsa).
+    #[cfg(test)]
+    pub(crate) fn test_project(&self) -> crate::queries::ProjectInput {
+        self.project
+    }
+
     /// Look up a file's path by ID.
     pub fn file_path(&self, id: FileId) -> Option<&str> {
         self.id_to_path.get(&id).map(String::as_str)
