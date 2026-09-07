@@ -55,6 +55,20 @@ pub enum QueryKind {
         offset: u32,
         target: ConvertTarget,
     },
+    /// Lift a stitch out of its knot and make it a knot of its own.
+    Promote {
+        path: String,
+        knot: String,
+        stitch: String,
+    },
+    /// Fold a knot into the knot ABOVE it as a stitch. The destination is
+    /// the preceding knot in the file — the place a demoted knot lands
+    /// when a file is read top to bottom — and the worker resolves it,
+    /// since the panel has no reason to know the file's order.
+    Demote {
+        path: String,
+        knot: String,
+    },
     /// Spelling and light grammar over one file's prose. Answered in the
     /// worker loop, which holds the `[prose]` config the check needs.
     Prose {
@@ -172,12 +186,46 @@ pub enum QueryResult {
     Prose(Vec<crate::prose::ProseLint>),
     /// `(start, end, "#RRGGBB")` per literal, in byte offsets.
     DocumentColors(Vec<(u32, u32, String)>),
+    /// A structural move — promote or demote — as a plan the studio
+    /// applies, or a refusal with the reason.
+    Structural(StructuralOutcome),
     /// A single text edit, or `None` when the conversion makes no sense
     /// for the line asked about (a knot header, or the type it already
     /// is).
     LineEdit(Option<LineEdit>),
     CompiledOutput(Box<crate::compiled::CompiledOutput>),
     Unavailable,
+}
+
+/// What a structural move came back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuralOutcome {
+    Plan(Box<StructuralPlan>),
+    /// The op cannot be done, and why — a name collision, a knot with
+    /// stitches of its own, nothing above it to demote into. Said rather
+    /// than silently skipped: an author who asked deserves the reason.
+    Refused(String),
+}
+
+/// A structural move, ready to apply. `new_source` replaces the primary
+/// file wholesale; `edits` are the reference rewrites that land in OTHER
+/// files. `introduced` empty means safe — anything else is the breakage
+/// report's content, and applying it is the author's call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralPlan {
+    /// What happened, for the notice: "Promoted `linger` to a knot".
+    pub summary: String,
+    pub path: String,
+    pub new_source: String,
+    pub edits: Vec<TextEdit>,
+    pub introduced: Vec<Introduced>,
+}
+
+impl StructuralPlan {
+    #[must_use]
+    pub fn is_safe(&self) -> bool {
+        self.introduced.is_empty()
+    }
 }
 
 /// What a line is being turned into. A plain mirror of
@@ -434,6 +482,10 @@ pub(crate) fn answer(
         QueryKind::DocumentColors { path } => {
             QueryResult::DocumentColors(document_colors(session, path))
         }
+        QueryKind::Promote { path, knot, stitch } => {
+            QueryResult::Structural(promote(session, path, knot, stitch))
+        }
+        QueryKind::Demote { path, knot } => QueryResult::Structural(demote(session, path, knot)),
         QueryKind::ConvertLine {
             path,
             offset,
@@ -901,6 +953,122 @@ fn completions(
     Some(items)
 }
 
+/// Lift `stitch` out of `knot` and make it a knot of its own.
+fn promote(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    knot: &str,
+    stitch: &str,
+) -> StructuralOutcome {
+    let Some((id, source, analysis)) = structural_parts(session, path) else {
+        return StructuralOutcome::Refused(format!("{path} is not in this project."));
+    };
+    match brink_ide::structural_move::promote_stitch_to_knot(&source, analysis, id, knot, stitch) {
+        Ok(result) => plan(
+            session,
+            path,
+            format!("Promoted `{stitch}` to a knot"),
+            result,
+        ),
+        Err(e) => StructuralOutcome::Refused(format!("{e:?}")),
+    }
+}
+
+/// Fold `knot` into the knot above it. The destination is resolved here.
+fn demote(session: &brink_ide::session::IdeSession, path: &str, knot: &str) -> StructuralOutcome {
+    let Some((id, source, analysis)) = structural_parts(session, path) else {
+        return StructuralOutcome::Refused(format!("{path} is not in this project."));
+    };
+    let Some(dest) = preceding_knot(&source, knot) else {
+        return StructuralOutcome::Refused(format!(
+            "`{knot}` is the first knot in {path} — there is nothing above it to demote into."
+        ));
+    };
+    match brink_ide::structural_move::demote_knot_to_stitch(&source, analysis, id, knot, &dest) {
+        Ok(result) => plan(
+            session,
+            path,
+            format!("Demoted `{knot}` into `{dest}`"),
+            result,
+        ),
+        Err(e) => StructuralOutcome::Refused(format!("{e:?}")),
+    }
+}
+
+/// The knot declared immediately before `knot` in `source`, by the file's
+/// own order.
+fn preceding_knot(source: &str, knot: &str) -> Option<String> {
+    let parse = brink_syntax::parse(source);
+    let names: Vec<String> = parse
+        .tree()
+        .knots()
+        .filter_map(|k| k.header().and_then(|h| h.name()))
+        .collect();
+    let at = names.iter().position(|n| n == knot)?;
+    at.checked_sub(1).map(|before| names[before].clone())
+}
+
+fn structural_parts<'a>(
+    session: &'a brink_ide::session::IdeSession,
+    path: &str,
+) -> Option<(brink_ir::FileId, String, &'a brink_analyzer::AnalysisResult)> {
+    let id = session.file_id(path)?;
+    let source = session.source(id)?.to_owned();
+    let analysis = session.analysis()?;
+    Some((id, source, analysis))
+}
+
+/// Run the safe-by-default gate over a structural result and package it.
+fn plan(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    summary: String,
+    result: brink_ide::structural_result::StructuralResult,
+) -> StructuralOutcome {
+    let Some(new_source) = result.new_source else {
+        return StructuralOutcome::Refused("that move produced no text".to_owned());
+    };
+    let edits: Vec<TextEdit> = result
+        .cross_file_edits
+        .iter()
+        .filter_map(|e| {
+            Some(TextEdit {
+                path: session.db().file_path(e.file)?.to_owned(),
+                start: e.range.start().into(),
+                end: e.range.end().into(),
+                new_text: e.new_text.clone(),
+            })
+        })
+        .collect();
+    // The op does NOT gate itself — `move_result` returns `safe: true`
+    // with nothing introduced, because the gate needs the session and the
+    // op has only the text. So it is run here, on the whole-source shape
+    // (`gate_with_source`), which is what a structural move produces.
+    let introduced = brink_ide::structural_result::gate_with_source(
+        session,
+        path,
+        &new_source,
+        &result.cross_file_edits,
+    )
+    .into_iter()
+    .map(|d| Introduced {
+        severity: d.severity,
+        code: d.code.as_str().to_owned(),
+        message: d.message,
+        path: d.path,
+        line: d.line,
+        col: d.col,
+    })
+    .collect();
+    StructuralOutcome::Plan(Box::new(StructuralPlan {
+        summary,
+        path: path.to_owned(),
+        new_source,
+        edits,
+        introduced,
+    }))
+}
+
 /// One line's conversion, as a text edit. `None` for a line that cannot
 /// be converted (a knot header, an `INCLUDE`) or is already the target.
 fn convert_line(
@@ -1010,6 +1178,44 @@ mod tests {
             "the literal carries a swatch: {colours:?}"
         );
         assert_eq!(colours[0].2, "#ff0000");
+    }
+
+    #[test]
+    fn a_stitch_promotes_to_a_knot_and_a_knot_demotes_into_the_one_above_it() {
+        use super::{StructuralOutcome, demote, promote};
+        use brink_ide::session::IdeSession;
+        let source = "=== shore ===\nThe tide.\n= linger\nGulls.\n\n\
+                      === lighthouse ===\nThe door.\n-> DONE\n";
+        let mut session = IdeSession::new();
+        session.update_source("main.ink", source.to_owned());
+        session.refresh_analysis();
+
+        let StructuralOutcome::Plan(plan) = promote(&session, "main.ink", "shore", "linger") else {
+            panic!("promote refused");
+        };
+        assert!(
+            plan.new_source.contains("=== linger ==="),
+            "{}",
+            plan.new_source
+        );
+        assert_eq!(plan.summary, "Promoted `linger` to a knot");
+
+        let StructuralOutcome::Plan(plan) = demote(&session, "main.ink", "lighthouse") else {
+            panic!("demote refused");
+        };
+        assert!(
+            plan.new_source.contains("= lighthouse"),
+            "{}",
+            plan.new_source
+        );
+        assert_eq!(plan.summary, "Demoted `lighthouse` into `shore`");
+
+        // The FIRST knot has nothing above it, and is told so rather than
+        // silently doing nothing.
+        let StructuralOutcome::Refused(why) = demote(&session, "main.ink", "shore") else {
+            panic!("the first knot must refuse");
+        };
+        assert!(why.contains("nothing above it"), "{why}");
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod settings_prose;
 mod single_view;
 mod state_view;
 mod story_graph;
+mod structural;
 mod todos;
 mod treemap;
 
@@ -602,6 +603,25 @@ impl Studio {
                                 path.clone(),
                                 *full_end,
                                 reveal,
+                                window,
+                                cx,
+                            );
+                        }
+                        BinderEvent::Promote { path, knot, stitch } => {
+                            structural::promote(
+                                this.project.clone(),
+                                path.clone(),
+                                knot.clone(),
+                                stitch.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                        BinderEvent::Demote { path, knot } => {
+                            structural::demote(
+                                this.project.clone(),
+                                path.clone(),
+                                knot.clone(),
                                 window,
                                 cx,
                             );

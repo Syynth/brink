@@ -185,6 +185,17 @@ pub enum BinderEvent {
         path: String,
         full_end: usize,
     },
+    /// Lift a stitch out of its knot and make it a knot of its own.
+    Promote {
+        path: String,
+        knot: String,
+        stitch: String,
+    },
+    /// Fold a knot into the knot above it, as a stitch.
+    Demote {
+        path: String,
+        knot: String,
+    },
 }
 
 /// The row menu's "Play from here": the knot or `knot.stitch` path, as the
@@ -238,6 +249,23 @@ pub struct NewStitch {
     pub full_end: usize,
 }
 
+/// Promote the stitch a row names to a knot of its own.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct PromoteStitch {
+    pub path: String,
+    pub knot: String,
+    pub stitch: String,
+}
+
+/// Demote the knot a row names into the knot above it.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct DemoteKnot {
+    pub path: String,
+    pub knot: String,
+}
+
 /// The folder a path sits in, root-relative and possibly empty — where a
 /// new file made from this row's menu goes.
 fn folder_of(path: &str) -> String {
@@ -258,6 +286,29 @@ impl Row {
             RowKind::Folder | RowKind::File => None,
         }
     }
+
+    /// What a structural move would act on, read off the row's key
+    /// (`file::knot[::stitch]`). `None` for a file or a folder, which have
+    /// no shape to change.
+    fn structural(&self) -> Option<Structural> {
+        let mut parts = self.key.split("::").skip(1);
+        let knot = parts.next()?.to_owned();
+        match (self.kind, parts.next()) {
+            (RowKind::Stitch, Some(stitch)) => Some(Structural::Stitch {
+                knot,
+                stitch: stitch.to_owned(),
+            }),
+            (RowKind::Knot, None) => Some(Structural::Knot { knot }),
+            _ => None,
+        }
+    }
+}
+
+/// Which structural move a row offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Structural {
+    Knot { knot: String },
+    Stitch { knot: String, stitch: String },
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -1005,6 +1056,7 @@ impl Binder {
             .then_some(row.end)
             .flatten();
         let kind_for_move = row.kind;
+        let structural = row.structural();
 
         // Indent guides: one hairline under each ancestor's icon column.
         let guides = (0..row.depth).map(|_| {
@@ -1195,6 +1247,28 @@ impl Binder {
                         }),
                     ),
                     (false, None) => menu,
+                };
+                // The structural moves, on the row whose shape they change:
+                // a stitch can become a knot, a knot can fold into the one
+                // above it. Both go through the safe-by-default gate, so
+                // the menu offers them and the report decides.
+                let menu = match &structural {
+                    Some(Structural::Stitch { knot, stitch }) => menu.separator().menu(
+                        "Promote to Knot\u{2026}",
+                        Box::new(PromoteStitch {
+                            path: file_path.clone(),
+                            knot: knot.clone(),
+                            stitch: stitch.clone(),
+                        }),
+                    ),
+                    Some(Structural::Knot { knot }) => menu.separator().menu(
+                        "Demote to Stitch\u{2026}",
+                        Box::new(DemoteKnot {
+                            path: file_path.clone(),
+                            knot: knot.clone(),
+                        }),
+                    ),
+                    None => menu,
                 };
                 // Rename and Delete are FILE operations. On a symbol row
                 // they would have to mean something else — renaming a knot
@@ -1459,6 +1533,19 @@ impl Render for Binder {
                 cx.emit(BinderEvent::NewStitch {
                     path: action.path.clone(),
                     full_end: action.full_end,
+                });
+            }))
+            .on_action(cx.listener(|_, action: &PromoteStitch, _, cx| {
+                cx.emit(BinderEvent::Promote {
+                    path: action.path.clone(),
+                    knot: action.knot.clone(),
+                    stitch: action.stitch.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &DemoteKnot, _, cx| {
+                cx.emit(BinderEvent::Demote {
+                    path: action.path.clone(),
+                    knot: action.knot.clone(),
                 });
             }))
             .size_full()
