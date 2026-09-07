@@ -135,9 +135,18 @@ enum Item {
         facts: SharedString,
         depth: usize,
         expanded: bool,
+        /// The container the running story is inside. Marked on the
+        /// GROUP as well as the instruction, because a story at rest is
+        /// parked one past its container's last instruction — the row
+        /// the position names does not exist — while "the story is in
+        /// here" is true and useful at every yield point.
+        current: bool,
     },
     /// One instruction.
     Instr {
+        /// The container this instruction belongs to, so a running
+        /// position can be matched against the row.
+        container: u32,
         offset: u32,
         text: SharedString,
         src: Option<Src>,
@@ -194,6 +203,10 @@ pub struct ProgramExplorer {
     shown: bool,
     /// An analysis landed while the panel was not shown.
     stale: bool,
+    /// The instruction the running story is about to execute, as
+    /// `(container_idx, offset)` — the Program Explorer's half of the
+    /// debugger, keyed the way the model's rows are.
+    executing: Option<(u32, usize)>,
     /// A story is running on a program older than this one (the web's
     /// `sessionDegraded`). Read from the Player, which is the only thing
     /// that knows a session exists: what it compiled from is gone from
@@ -228,6 +241,7 @@ impl ProgramExplorer {
             scroll: UniformListScrollHandle::new(),
             shown: false,
             stale: true,
+            executing: None,
             session_degraded: false,
             busy: false,
             generation: 0,
@@ -321,8 +335,38 @@ impl ProgramExplorer {
                 this.session_degraded = degraded;
                 cx.notify();
             }
+            this.read_position(cx);
         });
         self._subscriptions.push(subscription);
+    }
+
+    /// The container the running story is inside, if any.
+    fn executing_container(&self) -> Option<u32> {
+        self.executing.map(|(container, _)| container)
+    }
+
+    /// Ask the play session where it is. Cheap (it advances nothing), and
+    /// asked only when the Player moves — a story waiting for a choice is
+    /// not going anywhere, so nothing polls.
+    fn read_position(&mut self, cx: &mut Context<Self>) {
+        let query = self
+            .project
+            .read(cx)
+            .play(brink_gpui_model::play::PlayCommand::Snapshot, cx);
+        cx.spawn(async move |this, cx| {
+            let outcome = query.await;
+            let _ = this.update(cx, |this, cx| {
+                let next = outcome.ok().and_then(|o| o.state).and_then(|s| s.position);
+                if this.executing != next {
+                    this.executing = next;
+                    // The marks are laid at layout time, so the rows have
+                    // to be rebuilt for the new position to show.
+                    this.relayout();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Take a row's cross-reference: switch to the view that holds it,
@@ -409,7 +453,9 @@ impl ProgramExplorer {
             }) => match self.view {
                 View::Structure => layout_structure(program, &self.collapsed, &self.expanded),
                 View::Lines => layout_lines(&program.lines, &self.expanded),
-                View::Disasm => layout_disasm(&program.model, &self.expanded),
+                View::Disasm => {
+                    layout_disasm(&program.model, &self.expanded, self.executing_container())
+                }
                 View::Size => layout_size(program, &self.collapsed),
             },
         };
@@ -802,34 +848,58 @@ impl ProgramExplorer {
                 facts,
                 depth,
                 expanded,
+                current,
             } => {
                 let key = key.clone();
                 row(ix)
                     .pl(px(8. + *depth as f32 * 12.))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
+                    .when(*current, |el| el.bg(primary.opacity(0.14)))
                     .child(chevron(*expanded))
-                    .child(div().text_color(fg).child(label.clone()))
+                    .child(
+                        div()
+                            .text_color(if *current { primary } else { fg })
+                            .child(label.clone()),
+                    )
                     .child(div().text_color(muted).child(facts.clone()))
+                    // "The story is in here" — true at every yield point,
+                    // unlike the instruction marker, which names a
+                    // position one past the container's last row while a
+                    // story waits.
+                    .when(*current, |el| {
+                        el.child(div().text_color(primary).child("\u{25B8} here"))
+                    })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.toggle_expanded(&key, cx);
                     }))
                     .into_any_element()
             }
             Item::Instr {
+                container,
                 offset,
                 text,
                 src,
                 line_ref,
             } => {
+                // The instruction the running story is about to execute
+                // (D9/#3187): a caret in the offset column and the row in
+                // the accent. Nothing marks it when no story is running,
+                // which is most of the time.
+                let executing = self.executing == Some((*container, *offset as usize));
                 let el = row(ix)
+                    .when(executing, |el| el.bg(primary.opacity(0.18)))
                     .pl(px(28.))
                     .font_family("monospace")
                     .child(
                         div()
                             .w(px(40.))
-                            .text_color(muted)
-                            .child(format!("{offset:04x}")),
+                            .text_color(if executing { primary } else { muted })
+                            .child(if executing {
+                                format!("\u{25B8}{offset:03x}")
+                            } else {
+                                format!("{offset:04x}")
+                            }),
                     )
                     .child(div().flex_1().text_color(fg).truncate().child(text.clone()))
                     // The chip is its own click target, so the row keeps
@@ -1161,8 +1231,18 @@ fn push_knot(
     }
 }
 
-fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item> {
-    fn push(items: &mut Vec<Item>, node: &KnotNodeJs, depth: usize, expanded: &BTreeSet<String>) {
+fn layout_disasm(
+    model: &ProgramModel,
+    expanded: &BTreeSet<String>,
+    executing: Option<u32>,
+) -> Vec<Item> {
+    fn push(
+        items: &mut Vec<Item>,
+        node: &KnotNodeJs,
+        depth: usize,
+        expanded: &BTreeSet<String>,
+        executing: Option<u32>,
+    ) {
         let key = format!("disasm:{}", node.path);
         let is_expanded = expanded.contains(&key);
         items.push(Item::Group {
@@ -1181,9 +1261,10 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
             .into(),
             depth,
             expanded: is_expanded,
+            current: executing == Some(node.container_idx),
         });
         if is_expanded {
-            push_instrs(items, &node.disasm, &node.path);
+            push_instrs(items, &node.disasm, &node.path, node.container_idx);
         }
         for anon in &node.anon {
             let key = format!("disasm:{}.{}", node.path, anon.label);
@@ -1199,15 +1280,16 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
                 .into(),
                 depth: depth + 1,
                 expanded: is_expanded,
+                current: executing == Some(anon.container_idx),
             });
             if is_expanded {
                 // An anonymous container's lines belong to the scope that
                 // owns it, which is the knot this container hangs under.
-                push_instrs(items, &anon.disasm, &node.path);
+                push_instrs(items, &anon.disasm, &node.path, anon.container_idx);
             }
         }
         for child in &node.children {
-            push(items, child, depth + 1, expanded);
+            push(items, child, depth + 1, expanded, executing);
         }
     }
     let mut items = Vec::new();
@@ -1219,7 +1301,7 @@ fn layout_disasm(model: &ProgramModel, expanded: &BTreeSet<String>) -> Vec<Item>
         });
     }
     for knot in &model.knots {
-        push(&mut items, knot, 0, expanded);
+        push(&mut items, knot, 0, expanded, executing);
     }
     items
 }
@@ -1259,9 +1341,11 @@ fn push_instrs(
     items: &mut Vec<Item>,
     disasm: &[brink_ide::program_model::DisasmLineJs],
     scope: &str,
+    container: u32,
 ) {
     for line in disasm {
         items.push(Item::Instr {
+            container,
             offset: line.offset,
             text: line.text.clone().into(),
             src: line.src.as_ref().map(|s| Src {
@@ -1406,6 +1490,7 @@ fn layout_lines(lines: &LinesJson, expanded: &BTreeSet<String>) -> Vec<Item> {
             facts: facts.into(),
             depth,
             expanded: is_expanded,
+            current: false,
         });
         if !is_expanded {
             continue;
@@ -1646,6 +1731,7 @@ mod tests {
                 facts: SharedString::default(),
                 depth: 0,
                 expanded: true,
+                current: false,
             },
             Item::Line {
                 index: 0,

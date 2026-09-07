@@ -172,6 +172,19 @@ impl StateView {
                 accent: false,
             });
             rows.push(Row::Pair {
+                key: "position".into(),
+                // The same `(container, offset)` the Program Explorer
+                // marks in its disassembly — said here in the numbers, so
+                // the two panels can be checked against each other.
+                value: match state.position {
+                    Some((container, offset)) => {
+                        format!("container {container} · {offset:#06x}").into()
+                    }
+                    None => SharedString::from("(no open container)"),
+                },
+                accent: false,
+            });
+            rows.push(Row::Pair {
                 key: "rng".into(),
                 // Both halves: a seed alone does not say how far the
                 // story has drawn from it, and a divergence hunt needs

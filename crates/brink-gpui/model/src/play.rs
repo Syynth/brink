@@ -61,6 +61,12 @@ pub struct PlayState {
     pub choices: Vec<String>,
     /// The story RNG, as the runtime reports it: `(seed, previous)`.
     pub rng: (i32, i32),
+    /// The instruction about to run: `(container_idx, offset)`, keyed the
+    /// way the Program Explorer's disassembly rows are (D9/#3187, which
+    /// put `container_idx` on the model for exactly this). `None` when
+    /// the innermost frame has no open container — an exhausted flow, or
+    /// one parked on a deferred external.
+    pub position: Option<(u32, usize)>,
 }
 
 /// One step of story output, the runtime's [`Step`] with only what a
@@ -307,6 +313,7 @@ fn snapshot(story: &Story<FastRng>) -> PlayState {
             .collect(),
         choices: snap.pending_choices.into_iter().map(|c| c.text).collect(),
         rng: (snap.rng.seed, snap.rng.previous),
+        position: snap.position.map(|p| (p.container_idx, p.offset)),
     }
 }
 
