@@ -15,6 +15,7 @@ mod fixes;
 mod graph_layout;
 mod icons;
 mod inkt_highlight;
+mod knots;
 mod navigation;
 mod output_log;
 mod player;
@@ -530,6 +531,21 @@ impl Studio {
                             });
                             files::delete_file(this.project.clone(), path.clone(), window, cx);
                         }
+                        BinderEvent::NewKnot { path } => {
+                            let reveal = this.reveal_fn(cx);
+                            knots::new_knot(this.project.clone(), path.clone(), reveal, window, cx);
+                        }
+                        BinderEvent::NewStitch { path, full_end } => {
+                            let reveal = this.reveal_fn(cx);
+                            knots::new_stitch(
+                                this.project.clone(),
+                                path.clone(),
+                                *full_end,
+                                reveal,
+                                window,
+                                cx,
+                            );
+                        }
                         BinderEvent::Open { .. } => {}
                     }
                     return;
@@ -731,6 +747,21 @@ impl Studio {
     /// document like any other here (unlike the web studio, which routes
     /// it to Settings — the maintainer's call for the native one,
     /// 2026-09-05); its form lives in Settings ▸ General.
+    /// `Studio::open`, packaged for a module that writes text and then
+    /// wants the author looking at it — `knots`, today. The studio owns
+    /// how a document is opened; the writer owns what was written.
+    fn reveal_fn(&self, cx: &mut Context<Self>) -> knots::Reveal {
+        let studio = cx.entity();
+        std::rc::Rc::new(
+            move |path: &str, at: usize, window: &mut Window, cx: &mut App| {
+                let path = path.to_owned();
+                studio.update(cx, |this, cx| {
+                    this.open(&path, Some(at..at), window, cx);
+                });
+            },
+        )
+    }
+
     fn open(
         &mut self,
         path: &str,

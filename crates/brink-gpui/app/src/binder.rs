@@ -119,6 +119,9 @@ pub struct Row {
     pub path: String,
     /// Byte offset to reveal when the row is opened (symbol rows only).
     pub offset: Option<usize>,
+    /// Where a symbol row's own content stops (`full_end`) — where a new
+    /// stitch goes. `None` on file and folder rows.
+    pub end: Option<usize>,
     pub expandable: bool,
     pub expanded: bool,
     pub entry: bool,
@@ -173,6 +176,15 @@ pub enum BinderEvent {
     DeleteFile {
         path: String,
     },
+    /// Write a new knot at the end of `path`.
+    NewKnot {
+        path: String,
+    },
+    /// Write a new stitch at the end of the knot ending at `full_end`.
+    NewStitch {
+        path: String,
+        full_end: usize,
+    },
 }
 
 /// The row menu's "Play from here": the knot or `knot.stitch` path, as the
@@ -207,6 +219,23 @@ pub struct DeleteFile {
 pub struct NewFile {
     /// Root-relative, and empty for the project root.
     pub folder: String,
+}
+
+/// Create a knot at the end of a file, from a file row's menu.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewKnot {
+    pub path: String,
+}
+
+/// Create a stitch at the end of the knot a symbol row belongs to. Offered
+/// on a knot row and on a stitch row alike: a stitch's sibling goes in the
+/// same place its own knot ends, which is what `full_end` carries.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewStitch {
+    pub path: String,
+    pub full_end: usize,
 }
 
 /// The folder a path sits in, root-relative and possibly empty — where a
@@ -571,6 +600,7 @@ impl Binder {
                         label: name.clone().into(),
                         path: key.clone(),
                         offset: None,
+                        end: None,
                         expandable: true,
                         expanded,
                         entry: false,
@@ -618,6 +648,7 @@ impl Binder {
                         label: name.into(),
                         path: path.clone(),
                         offset: None,
+                        end: None,
                         expandable: structure && !file_symbols.is_empty(),
                         expanded,
                         entry: Some(path.as_str()) == entry,
@@ -648,6 +679,7 @@ impl Binder {
                             label: knot.name.clone().into(),
                             path: path.clone(),
                             offset: Some(knot.start),
+                            end: Some(knot.full_end),
                             expandable: !knot.children.is_empty(),
                             expanded: knot_expanded,
                             entry: false,
@@ -671,6 +703,7 @@ impl Binder {
                                 label: stitch.name.clone().into(),
                                 path: path.clone(),
                                 offset: Some(stitch.start),
+                                end: Some(knot.full_end),
                                 expandable: false,
                                 expanded: false,
                                 entry: false,
@@ -965,6 +998,10 @@ impl Binder {
         // it too — it is not in the mirror — but a menu item that only
         // ever reports an error is a menu item that should not be there.)
         let is_file = row.kind == RowKind::File && !self.project.read(cx).is_library(&row.path);
+        // A library file's symbols are not the author's to add to either.
+        let row_end = (!self.project.read(cx).is_library(&row.path))
+            .then_some(row.end)
+            .flatten();
         let kind_for_move = row.kind;
 
         // Indent guides: one hairline under each ancestor's icon column.
@@ -1138,6 +1175,25 @@ impl Binder {
                         folder: folder_of(&file_path),
                     }),
                 );
+                // Structural creation, from the row it belongs under: a
+                // file makes a knot, a knot or one of its stitches makes a
+                // stitch. A folder row is neither and is offered neither.
+                let menu = match (is_file, row_end) {
+                    (true, _) => menu.menu(
+                        "New Knot…",
+                        Box::new(NewKnot {
+                            path: file_path.clone(),
+                        }),
+                    ),
+                    (false, Some(full_end)) => menu.menu(
+                        "New Stitch…",
+                        Box::new(NewStitch {
+                            path: file_path.clone(),
+                            full_end,
+                        }),
+                    ),
+                    (false, None) => menu,
+                };
                 // Rename and Delete are FILE operations. On a symbol row
                 // they would have to mean something else — renaming a knot
                 // is `f2`'s cross-file, safe-by-default job — so they are
@@ -1390,6 +1446,17 @@ impl Render for Binder {
             .on_action(cx.listener(|_, action: &DeleteFile, _, cx| {
                 cx.emit(BinderEvent::DeleteFile {
                     path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &NewKnot, _, cx| {
+                cx.emit(BinderEvent::NewKnot {
+                    path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &NewStitch, _, cx| {
+                cx.emit(BinderEvent::NewStitch {
+                    path: action.path.clone(),
+                    full_end: action.full_end,
                 });
             }))
             .size_full()

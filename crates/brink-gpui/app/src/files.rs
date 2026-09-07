@@ -188,7 +188,7 @@ pub fn delete_file(project: Entity<Project>, path: String, window: &mut Window, 
 /// prompt's shape (`crate::rename`), which exists for the same reason: a
 /// dialog's Confirm does not reach an input that holds focus, and a
 /// prompt you have to click is a prompt nobody uses.
-fn prompt(
+pub(crate) fn prompt(
     title: &str,
     ok: &'static str,
     input: Entity<InputState>,
