@@ -809,3 +809,144 @@ fn within_one_file_how_does_invalidation_scale() {
         );
     }
 }
+
+/// Does the invalidation cost depend on WHERE the edit lands? Every earlier
+/// probe appended at end-of-file — the no-shift best case, where nothing
+/// after the edit moves. A mid-file edit shifts every later range. The
+/// inference-side index is range-stripped (`inference_index_query`), but
+/// `resolve_query(file)` returns range-bearing `ResolvedRef`s, so a shift
+/// may re-execute more than an append does. Baseline for the per-segment
+/// prototype: single 240-knot file, and 16 files editing one.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn does_edit_position_matter() {
+    const KNOTS: usize = 240;
+    const N: usize = 10;
+    fn knot(i: usize) -> String {
+        format!(
+            "=== knot_{i} ===\n\
+             ~ temp local_{i} = {i}\n\
+             The value is {{local_{i}}}.\n\
+             {{ local_{i} > 0: -> knot_{next} | -> DONE }}\n",
+            next = i + 1
+        )
+    }
+    #[expect(clippy::cast_precision_loss, reason = "10 iterations")]
+    let n = N as f64;
+
+    println!("\n{KNOTS} knots; edit at END (no shift) vs INSIDE knot_0 (shifts everything after):");
+    println!("{:>7} {:>14} {:>14}", "files", "append", "mid-knot");
+    for files in [1_usize, 16] {
+        let per_file = KNOTS / files;
+        let mut totals = [0.0_f64; 2];
+        for (which, mid) in [false, true].into_iter().enumerate() {
+            let mut session = EditorSession::new();
+            session.set_perf_enabled(true);
+            let mut entry = String::new();
+            for f in 0..files {
+                let _ = writeln!(entry, "INCLUDE part{f}.ink");
+            }
+            entry.push_str("-> knot_0\n");
+            for f in 0..files {
+                let mut text = String::new();
+                for k in (f * per_file)..((f + 1) * per_file) {
+                    text.push_str(&knot(k));
+                }
+                session.update_file(&format!("part{f}.ink"), &text);
+            }
+            session.update_file("main.ink", &entry);
+            assert!(session.set_active_file("main.ink"));
+            let _ = session.session.db().type_inference();
+
+            let base = session
+                .session
+                .file_id("part0.ink")
+                .and_then(|id| session.session.source(id).map(str::to_owned))
+                .unwrap_or_default();
+            // Insert point: inside knot_0's prose line, before any later knot.
+            let at = base.find("The value is").unwrap_or(0);
+            for i in 0..N {
+                let mut edited = base.clone();
+                if mid {
+                    edited.insert_str(at, &"x".repeat(i + 1));
+                } else {
+                    let _ = writeln!(edited, "// {}", "x".repeat(i + 1));
+                }
+                session.update_file("part0.ink", &edited);
+                let t0 = crate::perf::now_ms();
+                std::hint::black_box(session.session.db().type_inference());
+                totals[which] += crate::perf::now_ms() - t0;
+            }
+        }
+        println!(
+            "{files:>7} {:>11.2} ms {:>11.2} ms",
+            totals[0] / n,
+            totals[1] / n
+        );
+    }
+}
+
+/// The instrument this investigation lacked: WHICH queries actually
+/// re-execute after one edit, and how many times. Fed by salsa's
+/// `WillExecute` event (a memo that validates or backdates never fires
+/// it), so this is a count of real work, not of pulls.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn which_queries_reexecute_after_one_edit() {
+    const KNOTS: usize = 240;
+    fn knot(i: usize) -> String {
+        format!(
+            "=== knot_{i} ===\n\
+             ~ temp local_{i} = {i}\n\
+             The value is {{local_{i}}}.\n\
+             {{ local_{i} > 0: -> knot_{next} | -> DONE }}\n",
+            next = i + 1
+        )
+    }
+    for files in [1_usize, 16] {
+        let per_file = KNOTS / files;
+        let mut session = EditorSession::new();
+        session.set_perf_enabled(true);
+        let mut entry = String::new();
+        for f in 0..files {
+            let _ = writeln!(entry, "INCLUDE part{f}.ink");
+        }
+        entry.push_str("-> knot_0\n");
+        for f in 0..files {
+            let mut text = String::new();
+            for k in (f * per_file)..((f + 1) * per_file) {
+                text.push_str(&knot(k));
+            }
+            session.update_file(&format!("part{f}.ink"), &text);
+        }
+        session.update_file("main.ink", &entry);
+        assert!(session.set_active_file("main.ink"));
+        let _ = session.session.db().type_inference();
+        brink_db::set_execution_counting(true);
+        let _ = brink_db::take_execution_counts(); // discard anything queued
+
+        let base = session
+            .session
+            .file_id("part0.ink")
+            .and_then(|id| session.session.source(id).map(str::to_owned))
+            .unwrap_or_default();
+        let mut edited = base.clone();
+        let _ = writeln!(edited, "// x");
+        session.update_file("part0.ink", &edited);
+        let t0 = crate::perf::now_ms();
+        let _ = session.session.db().type_inference();
+        let ms = crate::perf::now_ms() - t0;
+
+        let counts = brink_db::take_execution_counts();
+        brink_db::set_execution_counting(false);
+        let mut rows: Vec<(String, u64)> = counts.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        println!(
+            "\n{KNOTS} knots over {files} file(s); ONE append edit to part0.ink; \
+             type_inference {ms:.2} ms — executions:"
+        );
+        for (name, n) in rows.iter().take(24) {
+            println!("{n:>7}  {name}");
+        }
+    }
+}
