@@ -2112,9 +2112,25 @@ pub(crate) fn def_effect_atoms_query<'db>(
     else {
         return Arc::new(brink_analyzer::EffectAtoms::default());
     };
+    let inferable = inferable_defs_query(db, project);
+    // Segment road, per-def (#3585 follow-up): the def's own segment + its
+    // per-segment resolutions, exactly like [`call_edges_query`]. `EffectAtoms`
+    // is range-free, so no rebase is needed and the `Eq` cutoff holds across
+    // shift edits: a prose edit in one knot re-harvests that knot's atoms only,
+    // and every other def's `effects_scc_query`/`effects_query` backdate.
+    if let Some((sf, seg, frag)) = def_segment(db, project, def_id) {
+        let resolutions = segment_resolutions(db, project, sf, seg);
+        return Arc::new(brink_analyzer::def_effect_atoms(
+            def_id,
+            &[(declaring_file, &frag)],
+            index,
+            &resolutions,
+            inferable,
+            None,
+        ));
+    }
     let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
-    let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::def_effect_atoms(
         def_id,
         &[(declaring_file, hir)],

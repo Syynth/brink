@@ -41,6 +41,12 @@ const WATCHED: &[&str] = &[
     "call_graph_query",
     "scc_membership_query",
     "type_inference_query",
+    // The effects family (T2-1) and the per-knot LIR chunks, pulled through
+    // `story_data()` — the compile the host debounces behind every keystroke.
+    "def_effect_atoms_query",
+    "effects_scc_query",
+    "effects_query",
+    "lir_knot_chunk_query",
 ];
 
 fn knot(name: &str, next: Option<&str>, value: u32) -> String {
@@ -62,14 +68,22 @@ fn three_knots(beta_value: u32) -> String {
 fn warm(db: &mut ProjectDb, text: &str) {
     db.set_file("main.ink", text.to_owned());
     db.set_entry("main.ink").expect("entry");
-    let _ = db.type_inference();
+    pull(db);
 }
 
-/// Apply `edit`, pull inference, and return what executed.
+/// The two pulls a keystroke ends in: the editor's inference (hints,
+/// widgets) and the debounced compile (`story_data`, which pulls every
+/// inferable def's effect row and every knot's LIR chunk).
+fn pull(db: &ProjectDb) {
+    let _ = db.type_inference();
+    let _ = db.story_data();
+}
+
+/// Apply `edit`, pull, and return what executed.
 fn executions(db: &mut ProjectDb, edit: impl FnOnce(&mut ProjectDb)) -> BTreeMap<String, u64> {
     let ((), counts) = count_executions(|| {
         edit(db);
-        let _ = db.type_inference();
+        pull(db);
     });
     counts
 }
@@ -104,7 +118,7 @@ fn the_counter_is_live_a_cold_build_executes_each_per_def_query_per_knot() {
     db.set_file("main.ink", three_knots(2));
     db.set_entry("main.ink").expect("entry");
     let ((), counts) = count_executions(|| {
-        let _ = db.type_inference();
+        pull(&db);
     });
     assert_watched(
         &counts,
@@ -119,6 +133,10 @@ fn the_counter_is_live_a_cold_build_executes_each_per_def_query_per_knot() {
             ("call_graph_query", 1),
             ("scc_membership_query", 1),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 3),
+            ("effects_scc_query", 3),
+            ("effects_query", 3),
+            ("lir_knot_chunk_query", 3),
         ],
     );
 }
@@ -145,6 +163,10 @@ fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 3),
         ],
     );
 }
@@ -169,6 +191,10 @@ fn appending_at_end_of_file_reexecutes_the_last_knots_defs_only() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 3),
         ],
     );
 }
@@ -198,6 +224,10 @@ fn editing_a_var_initializer_of_the_same_type_reexecutes_no_def() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 0),
+            ("def_effect_atoms_query", 0),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 3),
         ],
     );
 }
@@ -221,7 +251,7 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
         ),
     );
     db.set_entry("main.ink").expect("entry");
-    let _ = db.type_inference();
+    pull(&db);
     let counts = executions(&mut db, |db| {
         db.update_file(
             "b.ink",
@@ -245,6 +275,10 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 3),
         ],
     );
 }
@@ -285,6 +319,10 @@ fn inserting_a_knot_reexecutes_the_knots_after_it() {
             ("call_graph_query", 1),
             ("scc_membership_query", 1),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 4),
+            ("effects_scc_query", 4),
+            ("effects_query", 4),
+            ("lir_knot_chunk_query", 4),
         ],
     );
 }

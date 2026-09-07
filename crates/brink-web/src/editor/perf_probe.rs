@@ -973,6 +973,7 @@ fn what_a_prose_edit_executes() {
     // Warm every query once so only post-edit work is measured.
     keystroke_sweep(&session, doc, doc_len);
     let _ = session.inlay_hints_doc(doc, 0, doc_len);
+    let _ = session.compile_project("story.ink");
 
     // One character inserted into the prose line, through the host's path.
     let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
