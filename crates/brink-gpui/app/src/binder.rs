@@ -22,10 +22,13 @@
 //! - Filter box, collapse/expand all, keyboard navigation, hover row
 //!   actions, right-click menu.
 //!
-//! Deliberately skipped (not what the spike is asking): the undo stack, the
-//! Library section, multi-select, inline create, and persistence of the
-//! drag order to a `.binder.json` sidecar — reordering here lives in
-//! memory, which is enough to feel it.
+//! The drag order persists to the `.binder.json` sidecar
+//! (`brink_gpui_model::binder_order`), which the PROJECT owns — it owns
+//! the disk, so a rename re-keys the arrangement and a delete drops it
+//! however the operation was asked for. This panel only says what moved.
+//!
+//! Deliberately skipped (not what the spike is asking): the undo stack,
+//! the Library section, multi-select, and creating a knot inline.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -261,7 +264,7 @@ fn ordered_children(
     folder: &Folder,
     parent_key: &str,
     entry: Option<&str>,
-    order: &HashMap<String, Vec<String>>,
+    order: &BTreeMap<String, Vec<String>>,
 ) -> Vec<Child> {
     let mut children: Vec<Child> = Vec::new();
     for (name, sub) in &folder.folders {
@@ -342,7 +345,6 @@ pub struct Binder {
     pending_symbols: HashSet<String>,
     mode: Mode,
     collapsed: HashSet<SharedString>,
-    order: HashMap<String, Vec<String>>,
     selected: Option<SharedString>,
     rows: Vec<Row>,
     filter: Entity<InputState>,
@@ -408,7 +410,6 @@ impl Binder {
             pending_symbols: HashSet::new(),
             mode: Mode::Files,
             collapsed: HashSet::new(),
-            order: HashMap::new(),
             selected: None,
             rows: Vec::new(),
             filter,
@@ -480,6 +481,9 @@ impl Binder {
                 || path.to_lowercase().contains(&filter)
         };
 
+        // Read once per rebuild: the authored order lives in the project,
+        // which owns the sidecar on disk.
+        let order = self.project.read(cx).binder_order().order.clone();
         let tree = build_folder_tree(&files);
         let mut rows = Vec::new();
         self.walk(
@@ -493,6 +497,7 @@ impl Binder {
             &symbols,
             &diagnostics,
             &matches,
+            &order,
             &mut rows,
         );
 
@@ -536,9 +541,11 @@ impl Binder {
         symbols: &HashMap<String, Vec<SymbolNode>>,
         diagnostics: &[(String, usize, bool)],
         matches: &dyn Fn(&str, &str) -> bool,
+        // The authored order, from the project's `.binder.json`.
+        order: &BTreeMap<String, Vec<String>>,
         out: &mut Vec<Row>,
     ) {
-        for child in ordered_children(folder, parent_key, entry, &self.order) {
+        for child in ordered_children(folder, parent_key, entry, order) {
             match child {
                 Child::Folder { key, name } => {
                     let Some(sub) = folder.folders.get(&name) else {
@@ -574,6 +581,7 @@ impl Binder {
                             symbols,
                             diagnostics,
                             matches,
+                            order,
                             out,
                         );
                     }
@@ -819,7 +827,9 @@ impl Binder {
                     .position(|k| k.as_str() == key.as_ref())
                     .map_or(siblings.len(), |i| if after { i + 1 } else { i });
                 siblings.insert(at, dragged.key.to_string());
-                self.order.insert(parent, siblings);
+                self.project.update(cx, |project, cx| {
+                    project.reorder_binder(&parent, siblings, cx)
+                });
             }
             DropTarget::Into(key) => {
                 let mut siblings: Vec<String> = self
@@ -830,7 +840,9 @@ impl Binder {
                     .collect();
                 siblings.retain(|k| k != dragged.key.as_ref());
                 siblings.push(dragged.key.to_string());
-                self.order.insert(key.to_string(), siblings);
+                self.project.update(cx, |project, cx| {
+                    project.reorder_binder(key.as_ref(), siblings, cx);
+                });
                 self.collapsed.remove(&key);
             }
         }

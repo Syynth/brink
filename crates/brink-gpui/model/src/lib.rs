@@ -1,3 +1,4 @@
+pub mod binder_order;
 pub mod compiled;
 pub mod fixes;
 pub mod play;

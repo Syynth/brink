@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use brink_gpui_model::binder_order::{self, BinderOrder};
 use brink_gpui_model::play::{PlayCommand, PlayOutcome};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
@@ -136,6 +137,11 @@ pub struct Project {
     revision: u64,
     last_analyze_ms: f64,
     worst_analyze_ms: f64,
+    /// The authored Binder order, from `.binder.json` beside the project
+    /// (`brink_gpui_model::binder_order`). The Project owns it because
+    /// the Project owns the disk: a rename has to re-key it and a delete
+    /// has to drop it, wherever the operation was asked for.
+    binder_order: BinderOrder,
     /// The pump draining the worker's responses. Dropping it stops the pump,
     /// so it is held for its lifetime, not its value.
     _pump: Task<()>,
@@ -189,6 +195,7 @@ impl Project {
             worker,
             root: PathBuf::new(),
             files: Vec::new(),
+            binder_order: BinderOrder::default(),
             config: None,
             sources: BTreeMap::new(),
             saved: BTreeMap::new(),
@@ -224,6 +231,11 @@ impl Project {
                     self.saved = self.sources.clone();
                     self.files = opened.files;
                     self.entry = opened.entry;
+                    // Read beside the project, never through the session:
+                    // `.json` is not a source, and this is presentation.
+                    self.binder_order = std::fs::read_to_string(self.root.join(binder_order::PATH))
+                        .map(|text| binder_order::parse(&text))
+                        .unwrap_or_default();
                     self.warnings = opened.warnings;
                     // A new project invalidates everything keyed by path.
                     self.diagnostics.clear();
@@ -459,6 +471,10 @@ impl Project {
             // so. Moving the entry is the author's to decide.
             self.entry = None;
         }
+        // The arrangement follows the file, so a move does not shuffle
+        // the manuscript back to its fallback order.
+        self.binder_order = binder_order::rekey(&self.binder_order, from, &to);
+        self.write_binder_order(cx);
         self.worker.send(Request::RemoveFile {
             path: from.to_owned(),
         });
@@ -477,12 +493,44 @@ impl Project {
         self.sources.remove(path);
         self.saved.remove(path);
         self.files.retain(|f| f != path);
+        self.binder_order = binder_order::remove(&self.binder_order, path);
+        self.write_binder_order(cx);
         self.worker.send(Request::RemoveFile {
             path: path.to_owned(),
         });
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
+    }
+
+    /// The authored Binder order.
+    #[must_use]
+    pub fn binder_order(&self) -> &BinderOrder {
+        &self.binder_order
+    }
+
+    /// Record one container's children in their new order, and write the
+    /// sidecar. A failed write is reported, not swallowed: an arrangement
+    /// that silently does not persist is worse than one that says so.
+    pub fn reorder_binder(
+        &mut self,
+        container: &str,
+        ordered: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        binder_order::apply_reorder(&mut self.binder_order, container, ordered);
+        self.write_binder_order(cx);
+    }
+
+    fn write_binder_order(&mut self, cx: &mut Context<Self>) {
+        let path = self.root.join(binder_order::PATH);
+        let text = binder_order::serialize(&self.binder_order);
+        if let Err(err) = std::fs::write(&path, text) {
+            cx.emit(ProjectEvent::SaveFailed {
+                path: binder_order::PATH.to_owned(),
+                message: format!("{err}"),
+            });
+        }
     }
 
     /// Ask the worker a question. The returned task resolves when the worker
