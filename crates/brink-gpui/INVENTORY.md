@@ -70,11 +70,10 @@ In `.ink`-author order, the gaps that bite first:
    with a per-card Replace and a confirmed Replace All.
 5. ~~**Quick-open**~~ **built 2026-09-06** (`app/src/quick_open.rs`,
    `cmd-p`) — files and every knot/stitch, fuzzy-ranked, Enter revealing
-   the declaration. `Escape` back to the editor is still open, and is
-   **not** the small binding it looks like: the command registry models a
-   keystroke but not a key CONTEXT, so a global `Escape` would compete
-   with every overlay's own dismissal (the palette, the find panel, the
-   `cmd-.` menu). It needs a context on the binding first.
+   the declaration. ~~`Escape` back to the editor is still open~~ —
+   **built 2026-09-07** by giving the registry the key context it lacked
+   (`register_in`), so `escape` belongs to the tool windows without being
+   taken from the palette, the find panel or the `cmd-.` menu.
 6. ~~**Layout persistence**~~ (the docks and the view, 2026-09-06 — not
    the panel tree, see §1) and ~~an open-project dialog~~ (2026-09-07:
    `cmd-shift-o` plus per-project `Open Recent` commands; see §1, the
@@ -343,7 +342,7 @@ toggles, view switching, per-theme commands, overrides from settings.
 
 | Left out | Kind | Note |
 |---|---|---|
-| `Escape` from a tool window back to the editor | parity gap | spec §4.5 defers it. |
+| ~~`Escape` from a tool window back to the editor~~ | built 2026-09-07 | the blocker was real and is gone: the command registry modelled a keystroke but not a key CONTEXT, so a global `escape` would have competed with every overlay's own dismissal. `CommandRegistry::register_in` / `Workspace::register_command_in` now carry one, every tool window's root sets `TOOL_WINDOW_CONTEXT`, and **Go ▸ Back to the Editor** is bound to `escape` there and nowhere else. It focuses the active document, or the editor region when nothing is open — a tool window that swallowed the key and focused nothing would be worse than no binding. The palette's own `escape` still dismisses the palette. |
 | ~~Quick-open~~ | built 2026-09-06 | `cmd-p`; `app/src/quick_open.rs`. |
 | `cmd-shift-<digit>` chords | platform | cannot match on Linux — do not bind them (HANDOFF). |
 

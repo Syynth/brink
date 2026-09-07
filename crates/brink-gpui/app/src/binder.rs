@@ -1599,6 +1599,7 @@ impl Render for Binder {
         v_flex()
             .id("binder")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .on_action(cx.listener(|_, action: &PlayFromHere, _, cx| {
                 cx.emit(BinderEvent::Play {
                     path: action.path.clone(),

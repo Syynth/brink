@@ -702,6 +702,7 @@ impl Render for Todos {
         v_flex()
             .id("todos")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .size_full()
             .text_xs()
             .when(self.filter_open, |el| {

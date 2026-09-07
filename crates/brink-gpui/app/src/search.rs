@@ -1501,6 +1501,7 @@ impl Render for SearchView {
         let is_error = self.error.is_some();
         v_flex()
             .id("search")
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .size_full()
             .text_xs()
             .child(

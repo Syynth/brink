@@ -133,6 +133,10 @@ actions!(
         OpenProject,
         /// Give the editor the whole window, and give it back.
         MaximizeEditor,
+        /// Leave a tool window and put the keyboard back in the editor.
+        /// Bound to `escape` INSIDE a tool window only — every overlay
+        /// means something by that key too, and each has its own context.
+        FocusEditor,
         /// Close the studio, saving the window's shape on the way out.
         Quit,
     ]
@@ -526,6 +530,14 @@ impl Studio {
                 let title = format!("Open Recent: {}", recent_label(&path));
                 workspace.register_command("File", title, OpenRecentProject { path }, None, cx);
             }
+            workspace.register_command_in(
+                "Go",
+                "Back to the Editor",
+                FocusEditor,
+                Some("escape"),
+                Some(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT),
+                cx,
+            );
             workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
             // After every tool window is registered: their `open()`
             // defaults decide the first run, and a saved shape overrides
@@ -1585,6 +1597,25 @@ impl Studio {
             .update(cx, |code, cx| code.show_graph(&graph, window, cx));
     }
 
+    /// Put the keyboard back where the writing happens. The active
+    /// document if there is one, and the editor region itself if there is
+    /// not — a tool window that swallowed `escape` and gave focus to
+    /// nothing would be worse than not binding it.
+    fn focus_editor(&mut self, _: &FocusEditor, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(document) = self.code.read(cx).active_document().cloned() {
+            let handle = document.read(cx).editor().read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
+        let handle = self
+            .workspace
+            .read(cx)
+            .editor_root()
+            .read(cx)
+            .focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         // `on_app_quit` does the saving; this is the door to it.
         cx.quit();
@@ -1800,6 +1831,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_project))
             .on_action(cx.listener(Self::maximize_editor))
             .on_action(cx.listener(Self::open_recent))
+            .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a

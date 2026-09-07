@@ -656,6 +656,7 @@ impl Render for OutputLog {
         v_flex()
             .id("output-log")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .size_full()
             .text_xs()
             .child(header)

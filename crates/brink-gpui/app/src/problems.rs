@@ -911,6 +911,7 @@ impl Render for Problems {
         v_flex()
             .id("problems")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .on_action(cx.listener(Self::on_suppress))
             .on_action(cx.listener(Self::on_configure))
             .size_full()

@@ -408,7 +408,24 @@ impl Workspace {
         keystroke: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        let ix = self.commands.register(group, title, action, keystroke);
+        self.register_command_in(group, title, action, keystroke, None, cx);
+    }
+
+    /// The same, bound only inside `context` — see
+    /// [`CommandRegistry::register_in`]. The command is in the palette
+    /// like any other; only its KEY is scoped.
+    pub fn register_command_in(
+        &mut self,
+        group: impl Into<SharedString>,
+        title: impl Into<SharedString>,
+        action: impl Action + Clone,
+        keystroke: Option<&str>,
+        context: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        let ix = self
+            .commands
+            .register_in(group, title, action, keystroke, context);
         // Bound through the overrides, so a persisted rebinding holds from
         // the first frame.
         let overrides = AppSettings::get(cx).keymap;
