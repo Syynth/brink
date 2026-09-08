@@ -835,35 +835,48 @@ fn passage(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<P
 
 fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<InlayHint>> {
     let id = session.file_id(path)?;
-    let analysis = session.analysis()?;
     let source = session.source(id)?;
     let whole = rowan::TextRange::new(
         rowan::TextSize::from(0),
         rowan::TextSize::from(u32::try_from(source.len()).unwrap_or(u32::MAX)),
     );
+    // The narrow symbol view, NEVER `session.analysis()`. The collector
+    // reads the index and the metas only, but the analysis bundle also
+    // carries a diagnostics half that re-runs every per-file check in the
+    // project on any edit — so building the view from the bundle charges
+    // this query for work it never looks at.
+    //
+    // Measured on TheIntercept (100 KB, 1686 lines), release, one mid-file
+    // edit, identical 34 hints out, with `analysis()` ALREADY WARM in both
+    // arms — the worker calls `analyze()` on every `Request::Edit` before it
+    // serves any query, so charging the hints for that pull would overstate
+    // the win: from the bundle 30.58 ms, from the index + metas 3.50 ms.
+    // Same fix brink-web made for its own hints and argument widgets.
+    //
+    // This no longer early-returns when `session.analysis()` is None. It
+    // does not need to: `symbol_index`/`symbol_meta` are self-sufficient
+    // salsa queries that do not require `analyze()` to have run, and
+    // `file_id`/`syntax_root` above still guard the file-not-loaded case.
+    // brink-web's hints road makes the same trade.
+    //
+    // The on-demand queries above (hover, go-to-definition, rename) keep
+    // taking `session.analysis()`: they genuinely need the bundle, and they
+    // run on a keypress the author chose rather than on every character.
+    let index = session.db().symbol_index();
+    let symbol_meta = session.db().symbol_meta();
+    let symbols = brink_ide::SymbolView {
+        index: &index,
+        symbol_meta: &symbol_meta,
+    };
     // The native and ink frontends are distinct nominal trees, so the
     // dispatch is on the file's own language — feeding an ink-parsed root to
     // the native query would silently reproduce #2280.
     let hints = if session.is_native(id) {
         let root = session.syntax_root_native(id)?;
-        brink_ide::inlay_hints::inlay_hints_native(
-            &root,
-            &brink_ide::SymbolView::from(analysis),
-            session.db(),
-            id,
-            whole,
-            None,
-        )
+        brink_ide::inlay_hints::inlay_hints_native(&root, &symbols, session.db(), id, whole, None)
     } else {
         let root = session.syntax_root(id)?;
-        brink_ide::inlay_hints::inlay_hints(
-            &root,
-            &brink_ide::SymbolView::from(analysis),
-            session.db(),
-            id,
-            whole,
-            None,
-        )
+        brink_ide::inlay_hints::inlay_hints(&root, &symbols, session.db(), id, whole, None)
     };
     Some(
         hints
