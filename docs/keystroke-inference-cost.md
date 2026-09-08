@@ -222,12 +222,33 @@ What is left is **not** a dependency problem, with two exceptions:
   the fragment has to be rebased BEFORE stamp+normalize, exactly as
   `assemble_lowered_file` orders it.
 
-  **Where it stopped.** With the fragment rebased to absolute and lowered
-  against its segment's own resolutions (shifted to match), the execution
-  counts drop as intended — 3 → 1 for an in-knot edit, 3 → 0 for a `VAR`
-  edit of the same type — the oracle ratchet, tier1 goldens, optimizer
-  fence and `e0xx` diagnostics all hold, but four `tier1-brink` algorithm
-  stories fail at runtime with a value reading Null. The per-segment
+  **Where it stopped, and WHICH surface.** With the fragment rebased to
+  absolute and lowered against its segment's own resolutions (shifted to
+  match), the execution counts drop as intended — 3 → 1 for an in-knot
+  edit, 3 → 0 for a `VAR` edit of the same type — but five cases fail at
+  runtime with a value reading Null: four `tier1-brink` algorithm stories
+  (`alias-method`, `bsp-dungeon`, `pcg-rng`, `weighted-loot-table`) and
+  `tier1_brink`'s `fn_value_inside_a_map_save_load_invoke_equals_direct_invoke`.
+
+  Read the surface split carefully, because the directory names invite
+  exactly the wrong reading. `tests/tier1-brink/` is 79 **`.ink`** files —
+  the brink DIALECT written in the ink surface; `tests/tier1-native/` is
+  the 29 `.brink` files. The road is gated on `Language::Ink`, so:
+
+  | corpus | on the segment road? | result |
+  |---|---|---|
+  | `.brink` native (29) | no — gated out | green proves NOTHING here |
+  | plain `.ink` (oracle ratchet, tiers 1–3, 330 opt-fence artifacts) | yes | all green |
+  | brink-dialect `.ink` (tier1-brink, 79) | yes | 5 failures |
+
+  So a change scoped to `.ink` broke the brink-dialect subset of `.ink` and
+  left the native surface UNEXERCISED rather than verified. The failing
+  shapes — a fn value in a map, struct-and-table-heavy algorithm code — are
+  ones the plain-ink corpus never produces, which is why the ratchet stayed
+  green. That is the narrowing to start from: what the dialect resolves
+  that plain ink does not. `ChunkLoweringCtx` carries the struct shape
+  tables and `type_mode`, but those go by `DefinitionId`, not by range —
+  untested hypothesis, not a finding. The per-segment
   resolutions are demonstrably NOT the gap: unioned they equal the
   whole-file map exactly (130 of 130 on `alias-method`), and per segment
   they cover every whole-file entry whose range falls inside them. Swapping
