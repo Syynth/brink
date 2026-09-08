@@ -966,6 +966,10 @@ impl Rebase for StructLiteral {
     fn rebase(&mut self, delta: TextSize, file: FileId) {
         self.ptr.rebase(delta, file);
         self.shape.rebase(delta, file);
+        for (name, value) in &mut *self.fields {
+            name.rebase(delta, file);
+            value.rebase(delta, file);
+        }
     }
 }
 
@@ -989,6 +993,10 @@ impl Rebase for ArrayLiteral {
 impl Rebase for MapLiteral {
     fn rebase(&mut self, delta: TextSize, file: FileId) {
         self.ptr.rebase(delta, file);
+        for (k, v) in &mut *self.entries {
+            k.rebase(delta, file);
+            v.rebase(delta, file);
+        }
     }
 }
 
