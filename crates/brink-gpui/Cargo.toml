@@ -37,7 +37,7 @@ publish = false
 # `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "75049177aab57ffa4982a1c179d9d3c156659c0d", features = ["tree-sitter"] }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "75049177aab57ffa4982a1c179d9d3c156659c0d", features = ["tree-sitter", "tree-sitter-toml"] }
 # The foundation under the kit, for the one renderer-trait type the kit does
 # not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
 # is the same crate the kit is built against.
@@ -49,6 +49,10 @@ gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "75049177aab57ffa4982a1c179d9d3c156659c0d" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
+# Watching the project on disk (`app/src/watch.rs`). The same crate the
+# Tauri desktop shell already depends on, so it is not a new one for the
+# project — only for this workspace, which has its own lockfile.
+notify = "8"
 anyhow = "1"
 # The search engine's pattern (`app/src/search.rs`); the root pins "1" too.
 regex = "1"
@@ -76,6 +80,12 @@ brink-project-config = { path = "../internal/brink-project-config" }
 brink-environment = { path = "../internal/brink-environment" }
 brink-fmt = { path = "../internal/brink-fmt" }
 brink-runtime = { path = "../brink-runtime" }
-brink-format = { path = "../internal/brink-format" }
+brink-format = { path = "../internal/brink-format", features = ["inkt-write"] }
 brink-intl = { path = "../internal/brink-intl" }
+# The prose checker. The WEB keeps this out of `brink-web` because
+# harper-core is 6.15 MB gzipped as wasm against brink-web's 2.61 MB
+# (`docs/prose-checking.md`); a native desktop binary has no such budget
+# to blow, so the studio links it directly and the worker runs it in
+# process rather than shipping a second artifact nobody downloads.
+brink-prose = { path = "../brink-prose" }
 

@@ -417,6 +417,36 @@ pub fn syntax_key(role: &str) -> Option<&'static str> {
     })
 }
 
+/// The colour a THEME-KEY names, for a surface that paints syntax
+/// without an editor's `HighlightStyleResolver` — the Program Explorer's
+/// disassembly, today. Keys are the ones [`syntax_key`] maps ONTO, so a
+/// panel and an editor colour the same role the same way.
+///
+/// `None` for a key this theme has no token for, which the caller draws
+/// in its own foreground rather than guessing.
+#[must_use]
+pub fn syntax_colour(key: &str, tokens: &Tokens) -> Option<gpui::Hsla> {
+    let hex = match key {
+        "keyword" => tokens.syn_keyword,
+        "string" => tokens.syn_string,
+        "number" => tokens.syn_number,
+        "comment" => tokens.syn_comment,
+        "variable" => tokens.syn_variable,
+        "property" => tokens.syn_property,
+        "type" => tokens.syn_namespace,
+        "function" => tokens.syn_function,
+        "enum" => tokens.syn_enum,
+        "attribute" => tokens.syn_decorator,
+        "label" => tokens.syn_label,
+        "operator" => tokens.syn_operator,
+        "punctuation.special" => tokens.divert(),
+        "punctuation.list_marker" => tokens.marker(),
+        "constant" => tokens.halt(),
+        _ => return None,
+    };
+    Some(hsla(hex))
+}
+
 impl Tokens {
     /// The marker colour after the CSS fallback (`--bs-syn-marker,
     /// var(--bs-syn-operator)`).

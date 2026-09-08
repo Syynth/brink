@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use anyhow::Result;
+use brink_gpui_model::cues::CueLine;
 use brink_gpui_model::query::{Completion, CompletionKind, QueryKind, QueryResult};
 use brink_gpui_model::tokens::TokenCache;
 use brink_ir::LineIndex;
@@ -87,6 +88,31 @@ pub struct Document {
 
 impl EventEmitter<DocumentEvent> for Document {}
 
+/// The language name for brink's own files — the one the [`BrinkHighlighter`]
+/// answers to, and the only one with providers behind it.
+pub const BRINK: &str = "brink";
+
+/// Which highlighter paints a file, by extension.
+///
+/// **A language name is only half the wiring**: the kit resolves it against
+/// the tree-sitter grammars compiled into the binary, and an unresolved name
+/// is SILENT — the editor paints plain text and says nothing. So a name
+/// added here needs its grammar enabled in `crates/brink-gpui/Cargo.toml`'s
+/// `gpui-component` features too. `brink.toml` read as unhighlighted for
+/// exactly that reason until 2026-09-06.
+///
+/// Anything not listed is brink's own surface: `.ink` and `.brink` are the
+/// only extensions the worker collects as sources, so the fallback is the
+/// common case rather than a guess.
+#[must_use]
+pub fn language_of(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("toml") => "toml",
+        Some("json") => "json",
+        _ => BRINK,
+    }
+}
+
 impl Document {
     pub fn new(
         project: Entity<Project>,
@@ -102,19 +128,20 @@ impl Document {
         // worker re-applying the config on each edit. What differs is the
         // language: it is TOML, so the kit's own highlighter paints it and
         // brink's hover, completion and inlays stay out of it.
-        let config = project.read(cx).is_config(&path);
+        let language = language_of(&path);
+        let brink = language == BRINK;
         let folds: FoldCell = Rc::default();
-        let factory = (!config).then(|| {
+        let factory = brink.then(|| {
             highlighter_factory_with_folds(project.downgrade(), path.clone(), Some(folds.clone()))
         });
         let this_document = cx.weak_entity();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
-                .language(if config { "toml" } else { "brink" })
+                .language(language)
                 // Structural folds land in the gutter from `refresh_folds`;
                 // explicit rather than trusting the layout mode's default.
-                .folding(!config)
+                .folding(brink)
                 // Prose wraps (maintainer, 2026-09-05): a line of narrative
                 // is a paragraph, and scrolling sideways to read one is
                 // wrong in every view.
@@ -134,6 +161,11 @@ impl Document {
                     origin,
                 }));
                 lsp.completion_provider = Some(Rc::new(BrinkCompletion {
+                    project: project.downgrade(),
+                    path: path.clone(),
+                    origin,
+                }));
+                lsp.document_color_provider = Some(Rc::new(BrinkColors {
                     project: project.downgrade(),
                     path: path.clone(),
                     origin,
@@ -169,6 +201,9 @@ impl Document {
                 // arrive with the analysis rather than being pulled on a
                 // timer.
                 ProjectEvent::Analyzed => this.refresh(cx),
+                // A mark is drawn by the highlighter, and the highlighter
+                // only runs on an edit — so a toggle has to ask for one.
+                ProjectEvent::BreakpointsChanged => this.reinstall_highlighter(cx),
                 // Another editor over this file moved the text; follow it.
                 ProjectEvent::SourceChanged {
                     path,
@@ -197,12 +232,7 @@ impl Document {
         // updates, so a theme switch reinstalls it (one reparse of the file,
         // on a switch — nothing per keystroke).
         let on_theme = cx.observe_global::<gpui_component::Theme>(|this, cx| {
-            let Some(factory) = this.factory.clone() else {
-                return;
-            };
-            this.editor.update(cx, |state, cx| {
-                state.set_highlighter_factory(factory, cx);
-            });
+            this.reinstall_highlighter(cx);
         });
 
         // The gutter and inlay toggles are settings; every open editor
@@ -248,6 +278,39 @@ impl Document {
     #[must_use]
     pub fn path(&self) -> &SharedString {
         &self.path
+    }
+
+    /// The editor behind this document. Handed out so a host can OBSERVE
+    /// it — the caret has no event of its own (the kit's `InputEvent` is
+    /// Change/Enter/Focus/Blur), but moving it notifies, which is what the
+    /// status bar's cursor cell rides on.
+    #[must_use]
+    pub fn editor(&self) -> &Entity<EditorState> {
+        &self.editor
+    }
+
+    /// How far this document is scrolled, in logical pixels from the top.
+    /// Negative in the toolkit's convention; kept as it comes so a restore
+    /// is a straight put-back rather than a sign to get right twice.
+    #[must_use]
+    pub fn scroll_top(&self, cx: &App) -> f32 {
+        f32::from(self.editor.read(cx).scroll_offset().y)
+    }
+
+    /// Put a remembered scroll back.
+    pub fn set_scroll_top(&self, top: f32, cx: &mut App) {
+        self.editor.update(cx, |state, cx| {
+            let mut offset = state.scroll_offset();
+            offset.y = gpui::px(top);
+            state.set_scroll_offset(offset, cx);
+        });
+    }
+
+    /// The caret as 1-based line and column, for the status bar.
+    #[must_use]
+    pub fn cursor_line_column(&self, cx: &App) -> (usize, usize) {
+        let position = self.editor.read(cx).cursor_position();
+        (position.line as usize + 1, position.character as usize + 1)
     }
 
     /// Whether the file differs from disk — a fact about the file, read from
@@ -357,7 +420,107 @@ impl Document {
         .detach();
     }
 
+    /// Ask for this file's prose lints and add them to the editor's
+    /// diagnostics.
+    ///
+    /// A separate pass from the analysis broadcast, and asked per OPEN
+    /// file rather than per project: the checker walks a dictionary and a
+    /// POS tagger, which is worth doing for the file someone is reading
+    /// and not for forty they are not.
+    ///
+    /// The lints are added on TOP of the compiler's diagnostics rather
+    /// than replacing them — a spelling mistake and an unresolved divert
+    /// are both true at once — and they come back as HINTs, the quietest
+    /// severity the editor draws: a misspelling in a draft is not an
+    /// error, and marking it like one is how a checker gets turned off.
+    fn refresh_prose(&mut self, cx: &mut Context<Self>) {
+        let query = self.project.read(cx).query(
+            QueryKind::Prose {
+                path: self.path.to_string(),
+            },
+            cx,
+        );
+        let editor = self.editor.clone();
+        let project = self.project.clone();
+        let path = self.path.to_string();
+        cx.spawn(async move |_, cx| {
+            let Ok(QueryResult::Prose(lints)) = query.await else {
+                return;
+            };
+            // Problems lists them beside the compiler's, so the panel is
+            // told as well as the editor. Reported by PATH rather than
+            // held here, because a file can be open in three editors at
+            // once and one list of its lints is what a panel wants.
+            let reported: Vec<brink_gpui_model::worker::Diagnostic> = lints
+                .iter()
+                .map(|lint| brink_gpui_model::worker::Diagnostic {
+                    start: lint.start,
+                    end: lint.end,
+                    severity: brink_ir::Severity::Hint,
+                    // The same `prose.<kind>` code the editor's own
+                    // squiggle carries, which is how Problems tells a
+                    // prose lint from a compiler diagnostic.
+                    code: format!("prose.{}", lint.kind),
+                    message: lint.message.clone(),
+                })
+                .collect();
+            project.update(cx, |project, cx| {
+                project.set_prose(&path, reported, cx);
+            });
+            editor.update(cx, |state, cx| {
+                let source = state.value().to_string();
+                let index = LineIndex::new(&source);
+                let at = |offset: u32| {
+                    let (line, character) = index.line_col(rowan::TextSize::from(offset));
+                    lsp::Position { line, character }
+                };
+                let diagnostics: Vec<lsp::Diagnostic> = lints
+                    .into_iter()
+                    // A lint whose range no longer fits the text is a
+                    // lint about text that has since changed: dropped,
+                    // not clamped onto whatever now sits there.
+                    .filter(|lint| lint.end as usize <= source.len() && lint.end > lint.start)
+                    .map(|lint| lsp::Diagnostic {
+                        range: lsp::Range {
+                            start: at(lint.start),
+                            end: at(lint.end),
+                        },
+                        severity: Some(lsp::DiagnosticSeverity::HINT),
+                        code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
+                        message: lint.message,
+                        ..Default::default()
+                    })
+                    .collect();
+                if diagnostics.is_empty() {
+                    return;
+                }
+                if let Some(set) = state.diagnostics_mut() {
+                    // `reset` is the analysis pass's; this one only adds,
+                    // or it would wipe the compiler's diagnostics every
+                    // time the checker answered second.
+                    set.extend(diagnostics);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Fold the analysis the worker just published into the editor.
+    /// Rebuild the highlighter from its factory, which is how anything it
+    /// SNAPSHOTS — the theme's band colours, the breakpoint marks — gets
+    /// redrawn without an edit. Installing a factory clears the existing
+    /// highlighter, so the next paint builds a fresh one and its `update`
+    /// re-reads everything.
+    fn reinstall_highlighter(&mut self, cx: &mut Context<Self>) {
+        let Some(factory) = self.factory.clone() else {
+            return;
+        };
+        self.editor.update(cx, |state, cx| {
+            state.set_highlighter_factory(factory, cx);
+        });
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (rope, source) = {
             let state = self.editor.read(cx);
@@ -385,6 +548,7 @@ impl Document {
         });
 
         self.refresh_folds(cx);
+        self.refresh_prose(cx);
 
         // Inlays are a query rather than part of the analysis broadcast:
         // computing them for every file on every keystroke would be
@@ -482,7 +646,69 @@ pub struct BrinkHighlighter {
     /// editor composes decoration and syntax colours through an unordered
     /// set, and the band must win on every word.
     todo_lines: Vec<TodoLine>,
+    /// Lines faded rather than painted at full strength: `INCLUDE` /
+    /// `EXTERNAL` and whole-line comments (`muted_lines`).
+    muted_lines: Vec<Range<usize>>,
+    /// The dialect-classified lines the last analysis found, with the
+    /// theme's cue colour and weight resolved for them.
+    cue_lines: Vec<CueLine>,
+    cue_style: CueStyle,
+    /// Byte ranges of the lines carrying a breakpoint, with whether the
+    /// mark bound to any code.
+    breakpoints: Vec<(Range<usize>, bool)>,
+    /// The colours a mark is drawn in: an armed one, and one that bound
+    /// to nothing.
+    mark: (gpui::Hsla, gpui::Hsla),
     band: (gpui::Hsla, gpui::Hsla),
+}
+
+/// What a dialect-classified line is painted with. Mirrors the studio's
+/// `editor.css` rules for `.brink-character` / `.brink-parenthetical` —
+/// theme-tunable cue colour and weight (ruling 2026-08-25: Manuscript
+/// renders a cue as plain prose), an italic muted parenthetical, and
+/// nothing of its own for `dialogue`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CueStyle {
+    pub cue: gpui::Hsla,
+    pub cue_weight: gpui::FontWeight,
+    pub muted: gpui::Hsla,
+    /// The editor's own background — what a hidden sigil fades toward.
+    pub bg: gpui::Hsla,
+}
+
+/// How far a hidden sigil is faded. The web studio removes `@` and `:<>`
+/// from the flow outright (`.brink-hidden-sigil`, `font-size: 0`); a gpui
+/// highlighter styles ranges and cannot replace text, so the sigils stay
+/// where the author typed them and recede instead. The cue still reads as
+/// a name, and — unlike the web — what is on screen is what is in the
+/// file, which the "literal whitespace" ruling already prefers elsewhere.
+pub(crate) const SIGIL_FADE: f32 = 0.3;
+
+/// How much of a muted line's own colour survives the fade. Enough to
+/// fall behind the prose, not so far that it cannot be read when looked
+/// at.
+pub(crate) const MUTED_FADE: f32 = 0.55;
+
+/// Fade `colour` toward `bg`, keeping `keep` of it, and return an OPAQUE
+/// colour.
+///
+/// Not `Hsla::opacity`: gpui composites a highlight colour over the run's
+/// base text colour rather than over the background, so cutting the alpha
+/// pulls a colour toward the FOREGROUND — it brightens a comment instead
+/// of dimming it, which is the opposite of a fade. Measured on the
+/// headless rig at alphas 0.3 and 0.0: the glyphs got *brighter* as the
+/// alpha fell. Blending toward the background here says what was meant
+/// and leaves nothing for the renderer to interpret.
+pub(crate) fn fade(colour: gpui::Hsla, bg: gpui::Hsla, keep: f32) -> gpui::Hsla {
+    let keep = keep.clamp(0.0, 1.0);
+    let (fg, bg) = (gpui::Rgba::from(colour), gpui::Rgba::from(bg));
+    let mix = |a: f32, b: f32| b + (a - b) * keep;
+    gpui::Hsla::from(gpui::Rgba {
+        r: mix(fg.r, bg.r),
+        g: mix(fg.g, bg.g),
+        b: mix(fg.b, bg.b),
+        a: 1.0,
+    })
 }
 
 /// One `TODO:` line: its full extent and its `TODO:` keyword.
@@ -562,6 +788,64 @@ pub(crate) fn todo_lines(source: &str, notes: &[Range<usize>]) -> Vec<TodoLine> 
     out
 }
 
+/// The lines a manuscript reads past rather than reads: an `INCLUDE`
+/// (structure, not story) and a line that is only a comment.
+///
+/// Derived from the SOURCE with the parse's own line boundaries rather
+/// than from the analysis: both shapes are decidable from the text, and a
+/// worker round-trip would make the paint lag the keystroke. The dialect
+/// classifications the studio also styles per line — cue, dialogue,
+/// action — are NOT decidable here: they need the analysis, and they are
+/// left out rather than guessed at (`INVENTORY.md`, per-LINE styles).
+#[must_use]
+pub(crate) fn muted_lines(source: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for line in source.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let end = start + line.trim_end_matches(['\n', '\r']).len();
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // `INCLUDE x` and `EXTERNAL f(...)`: the file's plumbing. A line
+        // that merely CONTAINS the word is not one — the keyword opens
+        // the line or it is prose about including something.
+        let plumbing = text.starts_with("INCLUDE ") || text.starts_with("EXTERNAL ");
+        let comment = text.starts_with("//") || text.starts_with("/*");
+        if plumbing || comment {
+            out.push(start..end);
+        }
+    }
+    out
+}
+
+/// Fade every run on a muted line. The colour is kept and its alpha cut,
+/// so a comment stays comment-coloured and an `INCLUDE` stays a keyword —
+/// they simply stop competing with the prose beside them.
+pub(crate) fn overlay_muted(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    muted: &[Range<usize>],
+    bg: gpui::Hsla,
+    keep: f32,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if muted.is_empty() {
+        return runs;
+    }
+    runs.into_iter()
+        .map(|(range, mut style)| {
+            let on = muted
+                .iter()
+                .any(|line| line.start <= range.start && range.end <= line.end);
+            if on && let Some(colour) = style.color {
+                style.color = Some(fade(colour, bg, keep));
+            }
+            (range, style)
+        })
+        .collect()
+}
+
 /// Lay the band over already-styled runs: inside a TODO line every run
 /// takes the ink colour on the band background, and the keyword goes bold.
 /// Runs are split at the band's and the keyword's edges; nothing outside
@@ -605,6 +889,144 @@ pub(crate) fn overlay_todo(
     out
 }
 
+/// The byte range of each marked line, paired with whether the mark bound
+/// to any code. A line number past the end of the file is dropped rather
+/// than clamped: the file has been edited under the mark, and painting
+/// the last line instead would put the mark somewhere it was never set.
+#[must_use]
+pub(crate) fn breakpoint_lines(source: &str, marks: &[(u32, bool)]) -> Vec<(Range<usize>, bool)> {
+    if marks.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for (i, line) in source.split_inclusive('\n').enumerate() {
+        let start = at;
+        at += line.len();
+        let end = start + line.trim_end_matches(['\n', '\r']).len();
+        // Marks are 1-based, as every editor's gutter is.
+        let number = u32::try_from(i + 1).unwrap_or(u32::MAX);
+        if let Some((_, bound)) = marks.iter().find(|(l, _)| *l == number) {
+            out.push((start..end, *bound));
+        }
+    }
+    out
+}
+
+/// Draw the marked lines. An armed mark takes the error colour's tint
+/// behind the whole line; one that bound to NOTHING is drawn muted and
+/// struck through, because a breakpoint that can never hit must not look
+/// like one that will.
+pub(crate) fn overlay_breakpoints(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    marks: &[(Range<usize>, bool)],
+    (armed, unbound): (gpui::Hsla, gpui::Hsla),
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if marks.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    for (range, base) in runs {
+        let mut cuts: Vec<usize> = vec![range.start, range.end];
+        for (line, _) in marks {
+            for at in [line.start, line.end] {
+                if at > range.start && at < range.end {
+                    cuts.push(at);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let piece = pair[0]..pair[1];
+            let mut style = base;
+            if let Some((_, bound)) = marks
+                .iter()
+                .find(|(line, _)| line.start <= piece.start && piece.end <= line.end)
+            {
+                if *bound {
+                    style.background_color = Some(armed.opacity(0.22));
+                } else {
+                    style.background_color = Some(unbound.opacity(0.15));
+                    style.strikethrough = Some(gpui::StrikethroughStyle {
+                        thickness: gpui::px(1.),
+                        color: Some(unbound),
+                    });
+                }
+            }
+            out.push((piece, style));
+        }
+    }
+    out
+}
+
+/// Lay the dialect's per-line styling over already-styled runs: a cue
+/// takes the theme's cue colour and weight, a parenthetical goes italic
+/// and muted, a sigil inside either fades. A `dialogue` line — and any
+/// kind a project's own dialect declares that the studio has no rule for —
+/// is left exactly as the syntax painted it, which is what the web does
+/// too (`.brink-dialogue` carries no declarations).
+///
+/// Runs are split at every line and sigil edge, so a token that straddles
+/// one is not styled whole.
+pub(crate) fn overlay_cues(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    cues: &[CueLine],
+    style: CueStyle,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if cues.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    for (range, base) in runs {
+        let mut cuts: Vec<usize> = vec![range.start, range.end];
+        for cue in cues {
+            let edges = [cue.start as usize, cue.end as usize];
+            for at in edges.into_iter().chain(
+                cue.hidden
+                    .iter()
+                    .flat_map(|(s, e)| [*s as usize, *e as usize]),
+            ) {
+                if at > range.start && at < range.end {
+                    cuts.push(at);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let piece = pair[0]..pair[1];
+            let mut styled = base;
+            if let Some(cue) = cues
+                .iter()
+                .find(|c| c.start as usize <= piece.start && piece.end <= c.end as usize)
+            {
+                match cue.kind.as_str() {
+                    "character" => {
+                        styled.color = Some(style.cue);
+                        styled.font_weight = Some(style.cue_weight);
+                    }
+                    "parenthetical" => {
+                        styled.color = Some(style.muted);
+                        styled.font_style = Some(gpui::FontStyle::Italic);
+                    }
+                    _ => {}
+                }
+                let hidden = cue
+                    .hidden
+                    .iter()
+                    .any(|(s, e)| *s as usize <= piece.start && piece.end <= *e as usize);
+                if hidden {
+                    let colour = styled.color.unwrap_or(style.cue);
+                    styled.color = Some(fade(colour, style.bg, SIGIL_FADE));
+                }
+            }
+            out.push((piece, styled));
+        }
+    }
+    out
+}
+
 impl BrinkHighlighter {
     /// One highlighter per open view of a file. The Continuous view builds
     /// its own per section, which is why this is not private: every section
@@ -619,6 +1041,16 @@ impl BrinkHighlighter {
             folds,
             runs: Vec::new(),
             todo_lines: Vec::new(),
+            muted_lines: Vec::new(),
+            cue_lines: Vec::new(),
+            breakpoints: Vec::new(),
+            mark: (gpui::Hsla::default(), gpui::Hsla::default()),
+            cue_style: CueStyle {
+                cue: gpui::Hsla::default(),
+                cue_weight: gpui::FontWeight::BOLD,
+                muted: gpui::Hsla::default(),
+                bg: gpui::Hsla::default(),
+            },
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
         }
     }
@@ -652,7 +1084,20 @@ impl InputHighlighter for BrinkHighlighter {
             self.cache.update(&source, project.kinds_for(&self.path))
         };
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
+        self.muted_lines = muted_lines(&source);
+        self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
+        self.breakpoints = breakpoint_lines(&source, &project.read(cx).breakpoints_in(&self.path));
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        self.mark = (
+            brink_gpui_shell::theme::hsla(tokens.error),
+            brink_gpui_shell::theme::hsla(tokens.fg_muted),
+        );
+        self.cue_style = CueStyle {
+            cue: brink_gpui_shell::theme::hsla(tokens.cue.unwrap_or(tokens.accent)),
+            cue_weight: gpui::FontWeight(f32::from(tokens.cue_weight)),
+            muted: brink_gpui_shell::theme::hsla(tokens.fg_muted),
+            bg: brink_gpui_shell::theme::hsla(tokens.editor_bg),
+        };
         self.band = (
             brink_gpui_shell::theme::hsla(tokens.todo_band),
             brink_gpui_shell::theme::hsla(tokens.todo_ink),
@@ -716,7 +1161,16 @@ impl InputHighlighter for BrinkHighlighter {
         if cursor < range.end {
             out.push((cursor..range.end, gpui::HighlightStyle::default()));
         }
-        overlay_todo(out, &self.todo_lines, self.band)
+        // Muting first, the band second: a TODO line is never muted, and
+        // the band must win on every word it covers.
+        let out = overlay_muted(out, &self.muted_lines, self.cue_style.bg, MUTED_FADE);
+        // The dialect before the band: a TODO note inside a dialogue run
+        // is still a note, and the band must win on every word it covers.
+        let out = overlay_cues(out, &self.cue_lines, self.cue_style);
+        let out = overlay_todo(out, &self.todo_lines, self.band);
+        // Last, over everything: a marked line has to be legible as
+        // marked whatever else is on it.
+        overlay_breakpoints(out, &self.breakpoints, self.mark)
     }
 
     fn fold_ranges(&self, _text: &Rope) -> Vec<gpui_component::input::FoldRange> {
@@ -758,6 +1212,11 @@ pub(crate) fn install_language_providers(
     }));
     lsp.completion_provider = Some(Rc::new(BrinkCompletion {
         project: project.clone(),
+        path: path.clone(),
+        origin,
+    }));
+    lsp.document_color_provider = Some(Rc::new(BrinkColors {
+        project: project.clone(),
         path,
         origin,
     }));
@@ -781,6 +1240,90 @@ struct BrinkHover {
     path: SharedString,
     /// The editor this provider belongs to — the origin of the seed edit.
     origin: gpui::EntityId,
+}
+
+/// The editor's colour swatches: every `hex_color` argument literal gets
+/// a chip beside it, and the kit's own picker edits it.
+///
+/// In-text chips were ruled good enough for this (the chip ruling), and
+/// the kit already draws and edits them — what was missing was a provider
+/// telling it where the colours are.
+pub(crate) struct BrinkColors {
+    project: WeakEntity<Project>,
+    path: SharedString,
+    origin: gpui::EntityId,
+}
+
+impl gpui_component::input::DocumentColorProvider for BrinkColors {
+    fn document_colors(
+        &self,
+        text: &Rope,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Vec<lsp::ColorInformation>>> {
+        let Some(project) = self.project.upgrade() else {
+            return Task::ready(Ok(Vec::new()));
+        };
+        seed_edit(&project, &self.path, text, self.origin, cx);
+        let source = text.to_string();
+        let query = project.read(cx).query(
+            QueryKind::DocumentColors {
+                path: self.path.to_string(),
+            },
+            cx,
+        );
+        cx.background_spawn(async move {
+            let QueryResult::DocumentColors(hints) = query.await? else {
+                return Ok(Vec::new());
+            };
+            let index = LineIndex::new(&source);
+            let at = |offset: u32| {
+                let (line, character) = index.line_col(rowan::TextSize::from(offset));
+                lsp::Position { line, character }
+            };
+            Ok(hints
+                .into_iter()
+                .filter_map(|(start, end, value)| {
+                    let colour = parse_hex(&value)?;
+                    Some(lsp::ColorInformation {
+                        range: lsp::Range {
+                            start: at(start),
+                            end: at(end),
+                        },
+                        color: colour,
+                    })
+                })
+                .collect())
+        })
+    }
+}
+
+/// `#RGB`, `#RRGGBB` or `#RRGGBBAA` to an LSP colour. Anything else is
+/// dropped: a swatch of the wrong colour is worse than no swatch.
+#[must_use]
+pub(crate) fn parse_hex(value: &str) -> Option<lsp::Color> {
+    let hex = value.trim().trim_start_matches('#');
+    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    let (r, g, b, a) = match hex.len() {
+        3 => {
+            let one = |at: usize| {
+                u8::from_str_radix(&hex[at..=at], 16)
+                    .ok()
+                    // `#abc` is `#aabbcc`, not `#0a0b0c`.
+                    .map(|v| v * 17)
+            };
+            (one(0)?, one(1)?, one(2)?, 255)
+        }
+        6 => (byte(0)?, byte(2)?, byte(4)?, 255),
+        8 => (byte(0)?, byte(2)?, byte(4)?, byte(6)?),
+        _ => return None,
+    };
+    Some(lsp::Color {
+        red: f32::from(r) / 255.,
+        green: f32::from(g) / 255.,
+        blue: f32::from(b) / 255.,
+        alpha: f32::from(a) / 255.,
+    })
 }
 
 impl HoverProvider for BrinkHover {
@@ -966,9 +1509,15 @@ impl gpui_component::dock::Panel for Document {
 }
 
 impl gpui::Render for Document {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // A mounted library file is not the author's to change. Read-only
+        // belongs on the ELEMENT (the `Editor` pushes its own flag into
+        // the state every render — see `compiled_output.rs`, where a
+        // construction-time flag was overwritten on the first frame).
+        let readonly = self.project.read(cx).is_library(&self.path);
         gpui_component::v_flex().size_full().child(
             gpui_component::input::Editor::new(&self.editor)
+                .readonly(readonly)
                 .flex_1()
                 .bordered(false),
         )
@@ -980,6 +1529,20 @@ mod tests {
     use super::*;
 
     const INK: &str = "TODO: at the top\n=== k ===\nHello.\n  TODO (art) sketch\nTODO\n-> DONE\n";
+
+    #[test]
+    fn a_file_is_painted_by_its_extension() {
+        assert_eq!(language_of("story.ink"), BRINK);
+        assert_eq!(language_of("scenes/act1.brink"), BRINK);
+        assert_eq!(language_of("brink.toml"), "toml");
+        assert_eq!(language_of("dialect.json"), "json");
+        // Not by name: a config is a config wherever it sits, and a file
+        // with no extension is brink's rather than unpainted.
+        assert_eq!(language_of("nested/dir/brink.toml"), "toml");
+        assert_eq!(language_of("README"), BRINK);
+        // The dot has to be in the last segment, not the directory.
+        assert_eq!(language_of("v1.0/story"), BRINK);
+    }
 
     fn notes() -> Vec<Range<usize>> {
         ["TODO: at the top", "TODO (art) sketch", "TODO\n"]
@@ -1011,6 +1574,220 @@ mod tests {
         // Two notes on one line collapse to one band.
         let twice = [notes()[0].clone(), notes()[0].clone()];
         assert_eq!(todo_lines(INK, &twice).len(), 1);
+    }
+
+    #[test]
+    fn a_hex_literal_becomes_a_colour_and_junk_becomes_nothing() {
+        let red = parse_hex("#FF0000").expect("six digits");
+        assert!((red.red - 1.0).abs() < 0.001 && red.green == 0. && red.blue == 0.);
+        assert!(
+            (red.alpha - 1.0).abs() < 0.001,
+            "opaque unless told otherwise"
+        );
+
+        // `#abc` is `#aabbcc` — the short form repeats each digit rather
+        // than padding it, which is the difference between a light blue
+        // and a nearly-black one.
+        let short = parse_hex("#abc").expect("three digits");
+        let long = parse_hex("#aabbcc").expect("six digits");
+        assert!((short.red - long.red).abs() < 0.001);
+        assert!((short.green - long.green).abs() < 0.001);
+        assert!((short.blue - long.blue).abs() < 0.001);
+
+        let alpha = parse_hex("#00000080").expect("eight digits");
+        assert!((alpha.alpha - 0.502).abs() < 0.01);
+
+        // A swatch of the WRONG colour is worse than no swatch.
+        assert!(parse_hex("#ff00").is_none());
+        assert!(parse_hex("#gggggg").is_none());
+        assert!(parse_hex("").is_none());
+        assert!(parse_hex("red").is_none());
+    }
+
+    fn cue_style() -> super::CueStyle {
+        super::CueStyle {
+            cue: gpui::hsla(0.1, 1.0, 0.5, 1.0),
+            cue_weight: gpui::FontWeight(700.0),
+            muted: gpui::hsla(0.5, 0.1, 0.5, 1.0),
+            bg: gpui::hsla(0.0, 0.0, 0.1, 1.0),
+        }
+    }
+
+    #[test]
+    fn a_cue_takes_the_themes_colour_and_weight_and_its_sigils_recede() {
+        // `@Alice:<>` on line one (bytes 0..9), `hello` on line two.
+        let cue = CueLine {
+            start: 0,
+            end: 9,
+            kind: "character".to_owned(),
+            hidden: vec![(0, 1), (6, 9)],
+        };
+        let runs = vec![
+            (0..9, gpui::HighlightStyle::default()),
+            (10..15, gpui::HighlightStyle::default()),
+        ];
+        let out = super::overlay_cues(runs, &[cue], cue_style());
+        // The name, the two sigils, and the untouched line beyond.
+        let name = out
+            .iter()
+            .find(|(r, _)| *r == (1..6))
+            .expect("the speaker's own run");
+        assert_eq!(name.1.color, Some(cue_style().cue));
+        assert_eq!(name.1.font_weight, Some(gpui::FontWeight(700.0)));
+        let style = cue_style();
+        for sigil in [0..1, 6..9] {
+            let piece = out
+                .iter()
+                .find(|(r, _)| *r == sigil)
+                .unwrap_or_else(|| panic!("a run for {sigil:?} in {out:?}"));
+            let faded = piece.1.color.expect("a sigil is coloured then faded");
+            assert!(
+                faded.l < style.cue.l && faded.l > style.bg.l,
+                "{sigil:?} recedes toward the page: {faded:?}"
+            );
+        }
+        let after = out.iter().find(|(r, _)| *r == (10..15)).expect("line two");
+        assert_eq!(after.1.color, None, "nothing outside a cue line is touched");
+    }
+
+    #[test]
+    fn a_parenthetical_is_italic_and_muted_and_a_dialogue_line_is_left_alone() {
+        let paren = CueLine {
+            start: 0,
+            end: 5,
+            kind: "parenthetical".to_owned(),
+            hidden: vec![],
+        };
+        let dialogue = CueLine {
+            start: 6,
+            end: 10,
+            kind: "dialogue".to_owned(),
+            hidden: vec![],
+        };
+        let unknown = CueLine {
+            start: 11,
+            end: 15,
+            kind: "scene_heading".to_owned(),
+            hidden: vec![],
+        };
+        let runs = vec![
+            (0..5, gpui::HighlightStyle::default()),
+            (6..10, gpui::HighlightStyle::default()),
+            (11..15, gpui::HighlightStyle::default()),
+        ];
+        let out = super::overlay_cues(runs, &[paren, dialogue, unknown], cue_style());
+        assert_eq!(out[0].1.color, Some(cue_style().muted));
+        assert_eq!(out[0].1.font_style, Some(gpui::FontStyle::Italic));
+        // `dialogue` and a kind the studio has no rule for are both left
+        // exactly as the syntax painted them — the web's `.brink-dialogue`
+        // and `brink-<kind>` carry no declarations either.
+        assert_eq!(out[1].1.color, None);
+        assert_eq!(out[1].1.font_style, None);
+        assert_eq!(out[2].1.color, None);
+        assert_eq!(out[2].1.font_style, None);
+    }
+
+    #[test]
+    fn no_cue_lines_leaves_every_run_untouched() {
+        let runs = vec![(0..5, gpui::HighlightStyle::default())];
+        assert_eq!(super::overlay_cues(runs.clone(), &[], cue_style()), runs);
+    }
+
+    #[test]
+    fn plumbing_and_whole_line_comments_are_the_muted_lines() {
+        let source = "INCLUDE harbour.ink\n// a note\nThe tide was out.\nEXTERNAL ring(x)\n\n  // indented\nAn INCLUDE inside prose is not one.\n";
+        let muted = muted_lines(source);
+        let text: Vec<&str> = muted.iter().map(|r| &source[r.clone()]).collect();
+        assert_eq!(
+            text,
+            vec![
+                "INCLUDE harbour.ink",
+                "// a note",
+                "EXTERNAL ring(x)",
+                "  // indented",
+            ],
+            "prose that merely mentions INCLUDE is prose"
+        );
+    }
+
+    #[test]
+    fn a_marked_line_becomes_its_own_byte_range_and_a_stale_mark_is_dropped() {
+        let source = "one\ntwo\nthree\n";
+        let marks = [(2, true), (9, true)];
+        let lines = super::breakpoint_lines(source, &marks);
+        assert_eq!(
+            lines,
+            vec![(4..7, true)],
+            "line 2 is `two`; line 9 is past the end and is not painted \
+             somewhere it was never set"
+        );
+        assert_eq!(&source[4..7], "two");
+        assert!(super::breakpoint_lines(source, &[]).is_empty());
+    }
+
+    #[test]
+    fn an_armed_mark_is_banded_and_one_that_bound_to_nothing_is_struck_through() {
+        let armed = gpui::hsla(0.0, 0.8, 0.5, 1.0);
+        let unbound = gpui::hsla(0.6, 0.1, 0.5, 1.0);
+        let runs = vec![
+            (0..3, gpui::HighlightStyle::default()),
+            (4..7, gpui::HighlightStyle::default()),
+            (8..13, gpui::HighlightStyle::default()),
+        ];
+        let out =
+            super::overlay_breakpoints(runs, &[(0..3, true), (4..7, false)], (armed, unbound));
+        assert!(
+            out[0].1.background_color.is_some(),
+            "an armed line is banded"
+        );
+        assert!(out[0].1.strikethrough.is_none());
+        assert!(
+            out[1].1.strikethrough.is_some(),
+            "a mark that can never hit must not look like one that will"
+        );
+        assert_eq!(out[2].1.background_color, None, "nothing else is touched");
+    }
+
+    #[test]
+    fn a_fade_moves_a_colour_toward_the_background_and_stays_opaque() {
+        // The renderer composites a highlight colour over the run's base
+        // TEXT colour, so cutting the alpha brightens rather than dims —
+        // a fade has to be computed, not asked for.
+        let bg = gpui::hsla(0.0, 0.0, 0.1, 1.0);
+        let fg = gpui::hsla(0.6, 0.8, 0.7, 1.0);
+        let half = super::fade(fg, bg, 0.5);
+        assert!((half.a - 1.0).abs() < 0.001, "a faded colour is opaque");
+        assert!(half.l < fg.l && half.l > bg.l, "{half:?} sits between");
+        assert_eq!(super::fade(fg, bg, 1.0), fg, "keeping all of it is a no-op");
+        let gone = super::fade(fg, bg, 0.0);
+        assert!(
+            (gone.l - bg.l).abs() < 0.01,
+            "keeping none of it is the background: {gone:?}"
+        );
+    }
+
+    #[test]
+    fn muting_fades_a_colour_and_leaves_everything_else_alone() {
+        let source = "INCLUDE a.ink\nHello.\n";
+        let muted = muted_lines(source);
+        let colour = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+        let bg = gpui::hsla(0.0, 0.0, 0.1, 1.0);
+        let style = |color| gpui::HighlightStyle {
+            color: Some(color),
+            ..gpui::HighlightStyle::default()
+        };
+        let runs = vec![(0..7, style(colour)), (14..19, style(colour))];
+        let out = overlay_muted(runs, &muted, bg, MUTED_FADE);
+        let faded = out[0].1.color.unwrap();
+        assert!(
+            faded.l < colour.l && faded.l > bg.l,
+            "the INCLUDE keyword falls back toward the page: {faded:?}"
+        );
+        assert!(
+            (faded.h - colour.h).abs() < 0.02,
+            "and keeps its own colour: a comment stays comment-coloured"
+        );
+        assert_eq!(out[1].1.color.unwrap(), colour, "the prose is untouched");
     }
 
     #[test]

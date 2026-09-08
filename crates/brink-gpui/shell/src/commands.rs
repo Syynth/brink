@@ -251,10 +251,25 @@ impl CommandRegistry {
         action: A,
         keystroke: Option<&str>,
     ) -> usize {
+        self.register_in(group, title, action, keystroke, None)
+    }
+
+    /// The same, bound only where `context` is in the focused element's
+    /// chain (`div().key_context(…)`). This is how a key every overlay
+    /// already means something by — `escape`, above all — can belong to
+    /// one surface without being taken away from the others.
+    pub fn register_in<A: Action + Clone>(
+        &mut self,
+        group: impl Into<SharedString>,
+        title: impl Into<SharedString>,
+        action: A,
+        keystroke: Option<&str>,
+        context: Option<&'static str>,
+    ) -> usize {
         // The registry keeps a boxed copy; the binder keeps the typed one,
         // since `KeyBinding::new` wants a concrete action.
         let boxed = action.boxed_clone();
-        let binder: Binder = Rc::new(move |keys| KeyBinding::new(keys, action.clone(), None));
+        let binder: Binder = Rc::new(move |keys| KeyBinding::new(keys, action.clone(), context));
         self.commands.push(Command {
             group: group.into(),
             title: title.into(),

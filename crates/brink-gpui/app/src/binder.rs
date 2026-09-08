@@ -22,12 +22,18 @@
 //! - Filter box, collapse/expand all, keyboard navigation, hover row
 //!   actions, right-click menu.
 //!
-//! Deliberately skipped (not what the spike is asking): the undo stack, the
-//! Library section, multi-select, inline create, and persistence of the
-//! drag order to a `.binder.json` sidecar — reordering here lives in
-//! memory, which is enough to feel it.
+//! The drag order persists to the `.binder.json` sidecar
+//! (`brink_gpui_model::binder_order`), which the PROJECT owns — it owns
+//! the disk, so a rename re-keys the arrangement and a delete drops it
+//! however the operation was asked for. This panel only says what moved.
+//!
+//! Everything the spike deliberately skipped has since landed: the
+//! Library section, multi-select, creating a knot inline, and the undo
+//! stack (`Project::undo_file_op`, reached from File ▸ Undo File
+//! Operation — the operations are the Project's, since the Project owns
+//! the disk).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
@@ -116,6 +122,9 @@ pub struct Row {
     pub path: String,
     /// Byte offset to reveal when the row is opened (symbol rows only).
     pub offset: Option<usize>,
+    /// Where a symbol row's own content stops (`full_end`) — where a new
+    /// stitch goes. `None` on file and folder rows.
+    pub end: Option<usize>,
     pub expandable: bool,
     pub expanded: bool,
     pub entry: bool,
@@ -151,9 +160,47 @@ struct DraggedRow {
 
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
-    Open { path: String, offset: Option<usize> },
+    Open {
+        path: String,
+        offset: Option<usize>,
+    },
     /// Start the story at a knot or `knot.stitch`.
-    Play { path: String },
+    Play {
+        path: String,
+    },
+    /// A file operation the studio runs: it owns the prompts and the
+    /// dialogs, and the panel owns only the rows they were asked from.
+    NewFile {
+        folder: String,
+    },
+    RenameFile {
+        path: String,
+    },
+    /// Delete these files — the row's own, or the whole selection when
+    /// the row is part of one.
+    DeleteFile {
+        paths: Vec<String>,
+    },
+    /// Write a new knot at the end of `path`.
+    NewKnot {
+        path: String,
+    },
+    /// Write a new stitch at the end of the knot ending at `full_end`.
+    NewStitch {
+        path: String,
+        full_end: usize,
+    },
+    /// Lift a stitch out of its knot and make it a knot of its own.
+    Promote {
+        path: String,
+        knot: String,
+        stitch: String,
+    },
+    /// Fold a knot into the knot above it, as a stitch.
+    Demote {
+        path: String,
+        knot: String,
+    },
 }
 
 /// The row menu's "Play from here": the knot or `knot.stitch` path, as the
@@ -163,6 +210,74 @@ pub enum BinderEvent {
 #[action(namespace = binder, no_json)]
 pub struct PlayFromHere {
     pub path: String,
+}
+
+/// Rename a file from the Binder's menu. Files only: a knot's name is
+/// `f2`'s business, which is cross-file and safe-by-default, and a menu
+/// item that renamed one by text alone would quietly break its diverts.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct RenameFile {
+    pub path: String,
+}
+
+/// Delete a file from the Binder's menu, after a confirmation naming it.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct DeleteFile {
+    pub path: String,
+}
+
+/// Create a file in `folder` — the folder of the row the menu was opened
+/// on, so a new file lands beside the one you were looking at.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewFile {
+    /// Root-relative, and empty for the project root.
+    pub folder: String,
+}
+
+/// Create a knot at the end of a file, from a file row's menu.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewKnot {
+    pub path: String,
+}
+
+/// Create a stitch at the end of the knot a symbol row belongs to. Offered
+/// on a knot row and on a stitch row alike: a stitch's sibling goes in the
+/// same place its own knot ends, which is what `full_end` carries.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct NewStitch {
+    pub path: String,
+    pub full_end: usize,
+}
+
+/// Promote the stitch a row names to a knot of its own.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct PromoteStitch {
+    pub path: String,
+    pub knot: String,
+    pub stitch: String,
+}
+
+/// Demote the knot a row names into the knot above it.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = binder, no_json)]
+pub struct DemoteKnot {
+    pub path: String,
+    pub knot: String,
+}
+
+/// The folder a path sits in, root-relative and possibly empty — where a
+/// new file made from this row's menu goes.
+fn folder_of(path: &str) -> String {
+    match path.rfind('/') {
+        Some(at) => path[..at].to_owned(),
+        None => String::new(),
+    }
 }
 
 impl Row {
@@ -176,6 +291,65 @@ impl Row {
             RowKind::Folder | RowKind::File => None,
         }
     }
+
+    /// What a structural move would act on, read off the row's key
+    /// (`file::knot[::stitch]`). `None` for a file or a folder, which have
+    /// no shape to change.
+    fn structural(&self) -> Option<Structural> {
+        let mut parts = self.key.split("::").skip(1);
+        let knot = parts.next()?.to_owned();
+        match (self.kind, parts.next()) {
+            (RowKind::Stitch, Some(stitch)) => Some(Structural::Stitch {
+                knot,
+                stitch: stitch.to_owned(),
+            }),
+            (RowKind::Knot, None) => Some(Structural::Knot { knot }),
+            _ => None,
+        }
+    }
+}
+
+/// The rows between two indices, the anchor left out — it is already
+/// selected, and holding it in both places would double-count it.
+#[must_use]
+fn marked_range(
+    rows: &[Row],
+    anchor: usize,
+    index: usize,
+    anchor_key: Option<&SharedString>,
+) -> BTreeSet<SharedString> {
+    let (lo, hi) = (anchor.min(index), anchor.max(index));
+    let Some(slice) = rows.get(lo..=hi) else {
+        return BTreeSet::new();
+    };
+    slice
+        .iter()
+        .map(|r| r.key.clone())
+        .filter(|key| Some(key) != anchor_key)
+        .collect()
+}
+
+/// Every selected FILE row's path, in row order. A folder row and a
+/// symbol row are not files and are left out — a delete acts on files.
+#[must_use]
+fn files_in(
+    rows: &[Row],
+    selected: Option<&SharedString>,
+    marked: &BTreeSet<SharedString>,
+) -> Vec<String> {
+    rows.iter()
+        .filter(|row| {
+            row.kind == RowKind::File && (selected == Some(&row.key) || marked.contains(&row.key))
+        })
+        .map(|row| row.path.clone())
+        .collect()
+}
+
+/// Which structural move a row offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Structural {
+    Knot { knot: String },
+    Stitch { knot: String, stitch: String },
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -211,7 +385,7 @@ fn ordered_children(
     folder: &Folder,
     parent_key: &str,
     entry: Option<&str>,
-    order: &HashMap<String, Vec<String>>,
+    order: &BTreeMap<String, Vec<String>>,
 ) -> Vec<Child> {
     let mut children: Vec<Child> = Vec::new();
     for (name, sub) in &folder.folders {
@@ -292,8 +466,12 @@ pub struct Binder {
     pending_symbols: HashSet<String>,
     mode: Mode,
     collapsed: HashSet<SharedString>,
-    order: HashMap<String, Vec<String>>,
     selected: Option<SharedString>,
+    /// Rows selected ALONGSIDE `selected` — a shift-range or a
+    /// cmd-clicked scatter. `selected` stays the anchor a range extends
+    /// from and the row the keyboard moves; this is everything else that
+    /// is lit up, and it is what a delete acts on when it is not empty.
+    marked: BTreeSet<SharedString>,
     rows: Vec<Row>,
     filter: Entity<InputState>,
     filter_open: bool,
@@ -331,6 +509,13 @@ impl Binder {
                     this.pending_symbols.clear();
                     this.rebuild(cx);
                 }
+                // A file was created, renamed or deleted: the tree is a
+                // different tree now.
+                ProjectEvent::FilesChanged => {
+                    this.symbols.clear();
+                    this.pending_symbols.clear();
+                    this.rebuild(cx);
+                }
                 ProjectEvent::Analyzed => {
                     // Structure is derived from the analysis that just
                     // moved, so what is cached is now stale by definition.
@@ -341,7 +526,11 @@ impl Binder {
                 // no row either.
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
-                | ProjectEvent::Saved => {}
+                | ProjectEvent::BreakpointsChanged
+                | ProjectEvent::ProseChanged
+                | ProjectEvent::DiskChanged(_)
+                | ProjectEvent::Saved
+                | ProjectEvent::SaveFailed { .. } => {}
             }
         });
         let mut this = Self {
@@ -350,8 +539,8 @@ impl Binder {
             pending_symbols: HashSet::new(),
             mode: Mode::Files,
             collapsed: HashSet::new(),
-            order: HashMap::new(),
             selected: None,
+            marked: BTreeSet::new(),
             rows: Vec::new(),
             filter,
             filter_open: false,
@@ -370,11 +559,13 @@ impl Binder {
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (sources, config, entry, closure, diagnostics, drafts) = {
+        let (sources, config, artifacts, library, entry, closure, diagnostics, drafts) = {
             let project = self.project.read(cx);
             (
                 project.files().to_vec(),
                 project.config_path().map(str::to_owned),
+                project.artifacts().to_vec(),
+                project.library(),
                 project.entry().map(str::to_owned),
                 project
                     .files()
@@ -404,6 +595,15 @@ impl Binder {
         if let Some(config) = &config {
             files.push(config.clone());
         }
+        // The config's artifacts (`dialect.json`) list beside it: the
+        // Conventions section writes one, and until now nothing in the
+        // studio could open what it had written.
+        files.extend(artifacts.iter().cloned());
+        // The Library — the mounted stdlib (ruled 2026-08-06). Listed
+        // last and under its own folder, since `std/` is the key prefix
+        // the session mounts them at, so the tree builder puts them in a
+        // folder of that name with no special case here.
+        files.extend(library.iter().map(|(key, _)| (*key).to_owned()));
 
         let mut file_marks: HashMap<&str, Marks> = HashMap::new();
         for (path, _, is_error) in &diagnostics {
@@ -422,6 +622,9 @@ impl Binder {
                 || path.to_lowercase().contains(&filter)
         };
 
+        // Read once per rebuild: the authored order lives in the project,
+        // which owns the sidecar on disk.
+        let order = self.project.read(cx).binder_order().order.clone();
         let tree = build_folder_tree(&files);
         let mut rows = Vec::new();
         self.walk(
@@ -435,6 +638,7 @@ impl Binder {
             &symbols,
             &diagnostics,
             &matches,
+            &order,
             &mut rows,
         );
 
@@ -478,9 +682,11 @@ impl Binder {
         symbols: &HashMap<String, Vec<SymbolNode>>,
         diagnostics: &[(String, usize, bool)],
         matches: &dyn Fn(&str, &str) -> bool,
+        // The authored order, from the project's `.binder.json`.
+        order: &BTreeMap<String, Vec<String>>,
         out: &mut Vec<Row>,
     ) {
-        for child in ordered_children(folder, parent_key, entry, &self.order) {
+        for child in ordered_children(folder, parent_key, entry, order) {
             match child {
                 Child::Folder { key, name } => {
                     let Some(sub) = folder.folders.get(&name) else {
@@ -495,6 +701,7 @@ impl Binder {
                         label: name.clone().into(),
                         path: key.clone(),
                         offset: None,
+                        end: None,
                         expandable: true,
                         expanded,
                         entry: false,
@@ -516,6 +723,7 @@ impl Binder {
                             symbols,
                             diagnostics,
                             matches,
+                            order,
                             out,
                         );
                     }
@@ -541,6 +749,7 @@ impl Binder {
                         label: name.into(),
                         path: path.clone(),
                         offset: None,
+                        end: None,
                         expandable: structure && !file_symbols.is_empty(),
                         expanded,
                         entry: Some(path.as_str()) == entry,
@@ -571,6 +780,7 @@ impl Binder {
                             label: knot.name.clone().into(),
                             path: path.clone(),
                             offset: Some(knot.start),
+                            end: Some(knot.full_end),
                             expandable: !knot.children.is_empty(),
                             expanded: knot_expanded,
                             entry: false,
@@ -594,6 +804,7 @@ impl Binder {
                                 label: stitch.name.clone().into(),
                                 path: path.clone(),
                                 offset: Some(stitch.start),
+                                end: Some(knot.full_end),
                                 expandable: false,
                                 expanded: false,
                                 entry: false,
@@ -654,10 +865,13 @@ impl Binder {
         self.rebuild(cx);
     }
 
+    /// A plain click: the anchor moves, the scatter is dropped, the row
+    /// opens.
     fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index).cloned() else {
             return;
         };
+        self.marked.clear();
         self.selected = Some(row.key.clone());
         if row.expandable {
             self.toggle(&row.key, cx);
@@ -671,6 +885,45 @@ impl Binder {
         cx.notify();
     }
 
+    /// A shift-click: everything from the anchor to here. With no anchor
+    /// it is a plain click, since a range needs two ends.
+    fn extend_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(anchor) = self.selected_index() else {
+            self.activate(index, cx);
+            return;
+        };
+        self.marked = marked_range(&self.rows, anchor, index, self.selected.as_ref());
+        cx.notify();
+    }
+
+    /// A cmd-click: this row joins or leaves the selection, and nothing
+    /// opens. Clicking the ANCHOR itself moves the anchor to another
+    /// marked row rather than leaving a selection with no anchor.
+    fn toggle_marked(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+        if self.selected.as_ref() == Some(&row.key) {
+            self.selected = self.marked.iter().next().cloned();
+            if let Some(next) = self.selected.clone() {
+                self.marked.remove(&next);
+            }
+        } else if !self.marked.remove(&row.key) {
+            if self.selected.is_none() {
+                self.selected = Some(row.key.clone());
+            } else {
+                self.marked.insert(row.key.clone());
+            }
+        }
+        cx.notify();
+    }
+
+    /// Every selected FILE, anchor included, in row order. Empty when the
+    /// selection holds no files — a folder or a symbol row is not one.
+    fn selected_files(&self) -> Vec<String> {
+        files_in(&self.rows, self.selected.as_ref(), &self.marked)
+    }
+
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
         self.rows.iter().position(|r| &r.key == selected)
@@ -678,6 +931,7 @@ impl Binder {
 
     fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.rows.get(index) {
+            self.marked.clear();
             self.selected = Some(row.key.clone());
             self.scroll.scroll_to_item(index, ScrollStrategy::Top);
             cx.notify();
@@ -761,7 +1015,9 @@ impl Binder {
                     .position(|k| k.as_str() == key.as_ref())
                     .map_or(siblings.len(), |i| if after { i + 1 } else { i });
                 siblings.insert(at, dragged.key.to_string());
-                self.order.insert(parent, siblings);
+                self.project.update(cx, |project, cx| {
+                    project.reorder_binder(&parent, siblings, cx)
+                });
             }
             DropTarget::Into(key) => {
                 let mut siblings: Vec<String> = self
@@ -772,7 +1028,9 @@ impl Binder {
                     .collect();
                 siblings.retain(|k| k != dragged.key.as_ref());
                 siblings.push(dragged.key.to_string());
-                self.order.insert(key.to_string(), siblings);
+                self.project.update(cx, |project, cx| {
+                    project.reorder_binder(key.as_ref(), siblings, cx);
+                });
                 self.collapsed.remove(&key);
             }
         }
@@ -797,7 +1055,9 @@ impl Binder {
                 }
             }
             RowKind::File => {
-                if row.path.ends_with(".toml") {
+                // The config and its artifacts are documents ABOUT the
+                // story, not part of it — the ink drop is for story text.
+                if row.path.ends_with(".toml") || row.path.ends_with(".json") {
                     icons::DOC
                 } else if row.draft {
                     // Dashed, whether or not the row is selected: being a
@@ -848,7 +1108,7 @@ impl Binder {
             return div().into_any_element();
         };
         let theme = cx.theme();
-        let selected = self.selected.as_ref() == Some(&row.key);
+        let selected = self.selected.as_ref() == Some(&row.key) || self.marked.contains(&row.key);
         let drop_into = self.drop == Some(DropTarget::Into(row.key.clone()));
         let line_before = self.drop
             == Some(DropTarget::Between {
@@ -876,7 +1136,18 @@ impl Binder {
         let menu_key = row.key.clone();
         let menu_focus = self.focus.clone();
         let play_path = row.play_path();
+        let file_path = row.path.clone();
+        // A library file is a FILE row, but not the author's: renaming or
+        // deleting one is not offered. (`Project`'s own operations refuse
+        // it too — it is not in the mirror — but a menu item that only
+        // ever reports an error is a menu item that should not be there.)
+        let is_file = row.kind == RowKind::File && !self.project.read(cx).is_library(&row.path);
+        // A library file's symbols are not the author's to add to either.
+        let row_end = (!self.project.read(cx).is_library(&row.path))
+            .then_some(row.end)
+            .flatten();
         let kind_for_move = row.kind;
+        let structural = row.structural();
 
         // Indent guides: one hairline under each ancestor's icon column.
         let guides = (0..row.depth).map(|_| {
@@ -991,8 +1262,15 @@ impl Binder {
                         .bg(theme.primary),
                 )
             })
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.activate(index, cx);
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                let modifiers = event.modifiers();
+                if modifiers.shift {
+                    this.extend_to(index, cx);
+                } else if modifiers.secondary() {
+                    this.toggle_marked(index, cx);
+                } else {
+                    this.activate(index, cx);
+                }
             }))
             // GPUI's own drag system: a typed payload and a real preview
             // view. No `dataTransfer`, no `dragenter` contract to satisfy.
@@ -1043,9 +1321,73 @@ impl Binder {
                     Some(path) => menu.menu("Play from here", Box::new(PlayFromHere { path })),
                     None => menu,
                 };
+                let menu = menu.separator().menu(
+                    "New File…",
+                    Box::new(NewFile {
+                        folder: folder_of(&file_path),
+                    }),
+                );
+                // Structural creation, from the row it belongs under: a
+                // file makes a knot, a knot or one of its stitches makes a
+                // stitch. A folder row is neither and is offered neither.
+                let menu = match (is_file, row_end) {
+                    (true, _) => menu.menu(
+                        "New Knot…",
+                        Box::new(NewKnot {
+                            path: file_path.clone(),
+                        }),
+                    ),
+                    (false, Some(full_end)) => menu.menu(
+                        "New Stitch…",
+                        Box::new(NewStitch {
+                            path: file_path.clone(),
+                            full_end,
+                        }),
+                    ),
+                    (false, None) => menu,
+                };
+                // The structural moves, on the row whose shape they change:
+                // a stitch can become a knot, a knot can fold into the one
+                // above it. Both go through the safe-by-default gate, so
+                // the menu offers them and the report decides.
+                let menu = match &structural {
+                    Some(Structural::Stitch { knot, stitch }) => menu.separator().menu(
+                        "Promote to Knot\u{2026}",
+                        Box::new(PromoteStitch {
+                            path: file_path.clone(),
+                            knot: knot.clone(),
+                            stitch: stitch.clone(),
+                        }),
+                    ),
+                    Some(Structural::Knot { knot }) => menu.separator().menu(
+                        "Demote to Stitch\u{2026}",
+                        Box::new(DemoteKnot {
+                            path: file_path.clone(),
+                            knot: knot.clone(),
+                        }),
+                    ),
+                    None => menu,
+                };
+                // Rename and Delete are FILE operations. On a symbol row
+                // they would have to mean something else — renaming a knot
+                // is `f2`'s cross-file, safe-by-default job — so they are
+                // not offered there rather than offered and wrong.
+                if !is_file {
+                    return menu;
+                }
                 menu.separator()
-                    .menu("Rename…", Box::new(NoopAction))
-                    .menu("Delete", Box::new(NoopAction))
+                    .menu(
+                        "Rename…",
+                        Box::new(RenameFile {
+                            path: file_path.clone(),
+                        }),
+                    )
+                    .menu(
+                        "Delete…",
+                        Box::new(DeleteFile {
+                            path: file_path.clone(),
+                        }),
+                    )
             })
             .into_any_element()
     }
@@ -1100,6 +1442,20 @@ impl Binder {
                     .text_color(theme.muted_foreground)
                     .child("BINDER"),
             )
+            .child(Self::tool(
+                "new-file",
+                icons::PLUS,
+                false,
+                cx,
+                |_, _, cx| {
+                    // At the root: the header belongs to the whole tree,
+                    // and a row's own menu is where "beside this one"
+                    // lives.
+                    cx.emit(BinderEvent::NewFile {
+                        folder: String::new(),
+                    });
+                },
+            ))
             .child(Self::tool(
                 "mode-files",
                 icons::DOC,
@@ -1246,9 +1602,54 @@ impl Render for Binder {
         v_flex()
             .id("binder")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .on_action(cx.listener(|_, action: &PlayFromHere, _, cx| {
                 cx.emit(BinderEvent::Play {
                     path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &NewFile, _, cx| {
+                cx.emit(BinderEvent::NewFile {
+                    folder: action.folder.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &RenameFile, _, cx| {
+                cx.emit(BinderEvent::RenameFile {
+                    path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|this, action: &DeleteFile, _, cx| {
+                // A menu opened on a row that is part of a selection acts
+                // on the SELECTION: the rows are lit up, and deleting one
+                // of them while the rest stayed would be a surprise.
+                let mut paths = this.selected_files();
+                if !paths.contains(&action.path) {
+                    paths = vec![action.path.clone()];
+                }
+                cx.emit(BinderEvent::DeleteFile { paths });
+            }))
+            .on_action(cx.listener(|_, action: &NewKnot, _, cx| {
+                cx.emit(BinderEvent::NewKnot {
+                    path: action.path.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &NewStitch, _, cx| {
+                cx.emit(BinderEvent::NewStitch {
+                    path: action.path.clone(),
+                    full_end: action.full_end,
+                });
+            }))
+            .on_action(cx.listener(|_, action: &PromoteStitch, _, cx| {
+                cx.emit(BinderEvent::Promote {
+                    path: action.path.clone(),
+                    knot: action.knot.clone(),
+                    stitch: action.stitch.clone(),
+                });
+            }))
+            .on_action(cx.listener(|_, action: &DemoteKnot, _, cx| {
+                cx.emit(BinderEvent::Demote {
+                    path: action.path.clone(),
+                    knot: action.knot.clone(),
                 });
             }))
             .size_full()
@@ -1378,5 +1779,75 @@ impl gpui_component::dock::BasePanel for Binder {
 impl gpui_component::dock::Panel for Binder {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Binder")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Marks, Row, RowKind, files_in, marked_range};
+    use gpui::SharedString;
+    use std::collections::BTreeSet;
+
+    fn row(key: &str, kind: RowKind) -> Row {
+        Row {
+            key: key.into(),
+            kind,
+            depth: 0,
+            label: key.into(),
+            path: key.to_owned(),
+            offset: None,
+            end: None,
+            expandable: false,
+            expanded: false,
+            entry: false,
+            draft: false,
+            dimmed: false,
+            is_function: false,
+            marks: Marks::default(),
+            parent: String::new(),
+        }
+    }
+
+    fn rows() -> Vec<Row> {
+        vec![
+            row("a.ink", RowKind::File),
+            row("acts", RowKind::Folder),
+            row("b.ink", RowKind::File),
+            row("c.ink", RowKind::File),
+        ]
+    }
+
+    #[test]
+    fn a_range_covers_both_ends_and_leaves_the_anchor_out_of_the_scatter() {
+        let rows = rows();
+        let anchor: SharedString = "a.ink".into();
+        let marked = marked_range(&rows, 0, 2, Some(&anchor));
+        assert_eq!(
+            marked
+                .iter()
+                .map(SharedString::to_string)
+                .collect::<Vec<_>>(),
+            ["acts", "b.ink"],
+            "the anchor is selected already; the range adds the rest"
+        );
+        // Dragging the range BACKWARDS covers the same rows.
+        assert_eq!(marked_range(&rows, 2, 0, Some(&anchor)), marked);
+        // An index past the end selects nothing rather than panicking.
+        assert!(marked_range(&rows, 0, 99, Some(&anchor)).is_empty());
+    }
+
+    #[test]
+    fn only_file_rows_are_what_a_delete_acts_on() {
+        let rows = rows();
+        let anchor: SharedString = "a.ink".into();
+        let marked: BTreeSet<SharedString> = ["acts".into(), "c.ink".into()].into_iter().collect();
+        assert_eq!(
+            files_in(&rows, Some(&anchor), &marked),
+            ["a.ink", "c.ink"],
+            "the folder is selected but is not a file"
+        );
+        // A selection of nothing but a folder deletes nothing.
+        let folder: SharedString = "acts".into();
+        assert!(files_in(&rows, Some(&folder), &BTreeSet::new()).is_empty());
     }
 }

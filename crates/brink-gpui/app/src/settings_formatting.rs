@@ -95,7 +95,7 @@ impl Render for FormattingSection {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         let Some((_, text)) = config_text(&self.project, cx) else {
-            return no_config("formatting settings", cx);
+            return no_config(&self.project, "formatting settings", cx);
         };
         let doc = match ConfigDocument::parse(&text) {
             Ok(doc) => doc,

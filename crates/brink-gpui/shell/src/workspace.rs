@@ -26,10 +26,12 @@ use crate::rail::{RAIL_WIDTH, RailButton, rail};
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
 use crate::settings_appearance::AppearanceSection;
+use crate::settings_editor::EditorSection;
 use crate::settings_keymap::KeymapSection;
 use crate::settings_modal::{
     MODAL_HEIGHT, MODAL_WIDTH, Scope, Section, SectionMeta, SettingsEvent, SettingsModal,
 };
+use crate::settings_player::PlayerSection;
 use crate::skin::StudioSkin;
 use crate::theme::{self, SelectTheme};
 use crate::tool_window::{Badge, TabSlot, ToolWindow, ToolWindowSpec, select_tab};
@@ -54,10 +56,16 @@ struct Registered {
 
 /// One cell of the status bar. A cell that `opens` a tool window is drawn
 /// as a button — the spec's "N errors — click → Problems" (§4 status bar).
+///
+/// `docs/studio-shell-spec.md` §7.3 puts the bar in two groups: what the
+/// PROJECT is doing on the left, what the CARET is doing on the right. A
+/// cell says which end it belongs to rather than the bar keeping two
+/// lists, so a caller builds one vector in the order it thinks in.
 #[derive(Debug, Clone)]
 pub struct StatusCell {
     pub text: SharedString,
     pub opens: Option<SharedString>,
+    pub align_end: bool,
 }
 
 impl StatusCell {
@@ -66,7 +74,15 @@ impl StatusCell {
         Self {
             text: text.into(),
             opens: None,
+            align_end: false,
         }
+    }
+
+    /// Put this cell in the right-hand group.
+    #[must_use]
+    pub fn align_end(mut self) -> Self {
+        self.align_end = true;
+        self
     }
 
     /// Clicking the cell opens the tool window with this id.
@@ -74,6 +90,50 @@ impl StatusCell {
     pub fn opens(mut self, tool_window: impl Into<SharedString>) -> Self {
         self.opens = Some(tool_window.into());
         self
+    }
+}
+
+/// How much room the window has (`docs/studio-shell-spec.md` §5.3).
+///
+/// Only the width matters: the docks that give way are the side ones, and
+/// what a narrow window cannot afford is columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Everything fits.
+    Wide,
+    /// One side dock gives way — the right, which holds inspectors
+    /// rather than the file you are working in.
+    Medium,
+    /// Both side docks give way; the editor keeps the window.
+    Narrow,
+}
+
+impl Tier {
+    /// The tier for a viewport width. The thresholds are the width at
+    /// which the editor stops having room to read in, not round numbers:
+    /// two 260px side docks plus a 600px editor is ~1120, and one dock
+    /// plus that editor is ~860.
+    #[must_use]
+    pub fn of(width: f32) -> Self {
+        if width >= 1120. {
+            Self::Wide
+        } else if width >= 860. {
+            Self::Medium
+        } else {
+            Self::Narrow
+        }
+    }
+
+    /// Which docks this tier can afford, by placement name.
+    #[must_use]
+    pub fn allows(self, dock: &str) -> bool {
+        match self {
+            Self::Wide => true,
+            Self::Medium => dock != "right",
+            // The bottom dock is a strip, not a column: Problems still
+            // fits when nothing beside the editor does.
+            Self::Narrow => dock == "bottom",
+        }
     }
 }
 
@@ -99,6 +159,18 @@ pub struct Workspace {
     settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
     /// The registered settings sections (`crate::settings_modal`).
     sections: Vec<Section>,
+    /// The width tier the window was last laid out at
+    /// (`docs/studio-shell-spec.md` §5.3), and the docks that were open
+    /// before it narrowed — so widening puts back what the author had,
+    /// not a guess at it.
+    tier: Tier,
+    pre_narrow: Option<Vec<(&'static str, bool)>>,
+    /// Whether the notification history popover is open (§7.5's bell).
+    notices_open: bool,
+    /// Which docks were open before the editor was maximized, so
+    /// un-maximizing puts back what was there and not a guess at it.
+    /// `None` when not maximized.
+    unmaximized: Option<Vec<(&'static str, bool)>>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -152,6 +224,10 @@ impl Workspace {
             overlay: None,
             settings: None,
             sections: Vec::new(),
+            tier: Tier::Wide,
+            pre_narrow: None,
+            notices_open: false,
+            unmaximized: None,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -211,6 +287,26 @@ impl Workspace {
                 ],
             ),
             appearance,
+        ));
+        let editor = cx.new(EditorSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "editor",
+                Scope::App,
+                "Editor",
+                &["view", "open", "default", "fix", "save"],
+            ),
+            editor,
+        ));
+        let player = cx.new(PlayerSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "player",
+                Scope::App,
+                "Player",
+                &["play", "player", "follow", "transcript", "font", "size"],
+            ),
+            player,
         ));
         let keymap = cx.new(|cx| KeymapSection::new(me, window, cx));
         this.add_settings_section(Section::new(
@@ -312,7 +408,24 @@ impl Workspace {
         keystroke: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        let ix = self.commands.register(group, title, action, keystroke);
+        self.register_command_in(group, title, action, keystroke, None, cx);
+    }
+
+    /// The same, bound only inside `context` — see
+    /// [`CommandRegistry::register_in`]. The command is in the palette
+    /// like any other; only its KEY is scoped.
+    pub fn register_command_in(
+        &mut self,
+        group: impl Into<SharedString>,
+        title: impl Into<SharedString>,
+        action: impl Action + Clone,
+        keystroke: Option<&str>,
+        context: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        let ix = self
+            .commands
+            .register_in(group, title, action, keystroke, context);
         // Bound through the overrides, so a persisted rebinding holds from
         // the first frame.
         let overrides = AppSettings::get(cx).keymap;
@@ -446,12 +559,114 @@ impl Workspace {
             root.occupant_focus()
         });
         window.focus(&focus.unwrap_or_else(|| self.focus.clone()), cx);
+        self.persist_layout(cx);
         cx.notify();
     }
 
     #[must_use]
     pub fn editor_view(&self, cx: &App) -> EditorView {
         self.editor_root.read(cx).view()
+    }
+
+    /// The window's current shape, for the settings.
+    ///
+    /// Only the three docks and the editor view: the panel TREE is not
+    /// persisted (see `settings::Layout`), so nothing here has to survive
+    /// a panel that no longer exists.
+    #[must_use]
+    pub fn layout(&self, cx: &App) -> crate::settings::Layout {
+        let area = self.dock_area.read(cx);
+        let docks = DOCKS
+            .iter()
+            .map(|(name, placement)| {
+                (
+                    (*name).to_owned(),
+                    crate::settings::DockShape {
+                        open: area.is_dock_open(*placement),
+                        size: area.dock_size(*placement).map(f32::from),
+                    },
+                )
+            })
+            .collect();
+        // The scroll and open-document halves belong to whoever owns the
+        // documents, not to the shell — so they are carried through from
+        // what is already saved rather than blanked.
+        // `Workspace::save_layout` is the app's door for replacing them.
+        let saved = crate::settings::AppSettings::get(cx).layout;
+        crate::settings::Layout {
+            docks,
+            editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
+            scroll_root: saved.scroll_root,
+            scroll: saved.scroll,
+            open_files: saved.open_files,
+            active_file: saved.active_file,
+        }
+    }
+
+    /// Put a persisted shape back. Called once, after the tool windows are
+    /// registered — their `ToolWindowSpec::open()` defaults decide the
+    /// first run, and this overrides them when there is something saved.
+    pub fn apply_layout(
+        &mut self,
+        layout: &crate::settings::Layout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (name, placement) in DOCKS {
+            let Some(shape) = layout.docks.get(*name) else {
+                continue;
+            };
+            if let Some(size) = shape.size {
+                self.dock_area.update(cx, |area, cx| {
+                    area.set_dock_size(*placement, px(size), window, cx)
+                });
+            }
+            if self.dock_area.read(cx).is_dock_open(*placement) != shape.open {
+                self.dock_area
+                    .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+            }
+        }
+        // A chosen default view wins over the remembered one: "always
+        // open in Continuous" is a preference about every launch, and the
+        // last view used is only the memory it replaces.
+        let settings = AppSettings::get(cx);
+        let key = settings
+            .default_view
+            .as_ref()
+            .or(layout.editor_view.as_ref());
+        if let Some(key) = key
+            && let Some(view) = EditorView::ALL.iter().find(|v| v.persistence_key() == key)
+        {
+            self.set_editor_view(*view, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Write the current shape into the settings. Cheap and idempotent —
+    /// `settings::update` compares before writing — so a caller may say
+    /// this whenever the layout might have moved.
+    pub fn save_layout(
+        this: &Entity<Self>,
+        documents: Option<crate::settings::Documents>,
+        cx: &mut App,
+    ) {
+        let mut layout = this.read(cx).layout(cx);
+        if let Some(documents) = documents {
+            layout.scroll_root = Some(documents.root);
+            layout.scroll = documents.scroll;
+            layout.open_files = documents.open;
+            layout.active_file = documents.active;
+        }
+        crate::settings::update(cx, |settings| settings.layout = layout);
+    }
+
+    /// The same, from inside a method. Called after every discrete change
+    /// a person makes — a dock toggled, a view switched — so the shape
+    /// survives a kill as well as a clean quit; `on_app_quit` alone would
+    /// lose it to a crash, and SIGTERM does not run it either.
+    fn persist_layout(&self, cx: &mut Context<Self>) {
+        let layout = self.layout(cx);
+        crate::settings::update(cx, |settings| settings.layout = layout);
     }
 
     /// The rail-button gesture. Tab-level: a closed dock opens showing this
@@ -474,6 +689,7 @@ impl Workspace {
             }
             (tool.select)(window, cx);
         }
+        self.persist_layout(cx);
         cx.notify();
     }
 
@@ -490,10 +706,107 @@ impl Workspace {
                 .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
         }
         (tool.select)(window, cx);
+        self.persist_layout(cx);
         cx.notify();
     }
 
     /// Replace the status-bar cells, left to right.
+    /// Re-lay the window for its current width (§5.3). Closing is
+    /// automatic; REOPENING only ever puts back what was open before the
+    /// window narrowed, so a dock the author closed themselves stays
+    /// closed.
+    fn apply_tier(&mut self, width: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let tier = Tier::of(width);
+        if tier == self.tier {
+            return;
+        }
+        let widening = self.tier != Tier::Wide && tier == Tier::Wide;
+        // Maximized is the author's own "no docks": leave it alone.
+        if self.unmaximized.is_some() {
+            self.tier = tier;
+            return;
+        }
+        if self.pre_narrow.is_none() && tier != Tier::Wide {
+            self.pre_narrow = Some(
+                DOCKS
+                    .iter()
+                    .map(|(name, placement)| {
+                        (*name, self.dock_area.read(cx).is_dock_open(*placement))
+                    })
+                    .collect(),
+            );
+        }
+        for (name, placement) in DOCKS {
+            let open = self.dock_area.read(cx).is_dock_open(*placement);
+            let want = if widening {
+                self.pre_narrow
+                    .as_ref()
+                    .and_then(|before| before.iter().find(|(n, _)| n == name))
+                    .is_some_and(|(_, open)| *open)
+            } else {
+                open && tier.allows(name)
+            };
+            if open != want {
+                self.dock_area
+                    .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+            }
+        }
+        if widening {
+            self.pre_narrow = None;
+        }
+        self.tier = tier;
+        cx.notify();
+    }
+
+    /// Whether the editor is maximized — every dock hidden.
+    #[must_use]
+    pub fn is_maximized(&self) -> bool {
+        self.unmaximized.is_some()
+    }
+
+    /// Give the editor the whole window, and give it back
+    /// (`docs/studio-shell-spec.md` §5.4).
+    ///
+    /// Restoring puts back exactly the docks that were open, rather than
+    /// opening all three: a writer who works with the Binder closed does
+    /// not want it back for having read one scene full-width.
+    pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.unmaximized.take() {
+            Some(before) => {
+                for (name, open) in before {
+                    let Some((_, placement)) = DOCKS.iter().find(|(n, _)| *n == name) else {
+                        continue;
+                    };
+                    if self.dock_area.read(cx).is_dock_open(*placement) != open {
+                        self.dock_area
+                            .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+                    }
+                }
+            }
+            None => {
+                let before: Vec<(&'static str, bool)> = DOCKS
+                    .iter()
+                    .map(|(name, placement)| {
+                        (*name, self.dock_area.read(cx).is_dock_open(*placement))
+                    })
+                    .collect();
+                // Nothing open is already maximized; toggling then would
+                // record "all closed" and lose the way back.
+                if before.iter().all(|(_, open)| !open) {
+                    return;
+                }
+                for (_, placement) in DOCKS {
+                    if self.dock_area.read(cx).is_dock_open(*placement) {
+                        self.dock_area
+                            .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
+                    }
+                }
+                self.unmaximized = Some(before);
+            }
+        }
+        cx.notify();
+    }
+
     pub fn set_status(&mut self, cells: Vec<StatusCell>, cx: &mut Context<Self>) {
         self.status = cells;
         cx.notify();
@@ -633,13 +946,18 @@ impl Workspace {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (hover, fg) = (theme.muted.opacity(0.6), theme.foreground);
-        let cells: Vec<AnyElement> = self
-            .status
-            .iter()
-            .enumerate()
-            .map(|(ix, cell)| match &cell.opens {
+        // Copied out before the cells are built: `render` takes `cx`
+        // mutably, so a live `cx.theme()` borrow would outlive it.
+        let (sidebar, border, muted) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.border, theme.muted_foreground)
+        };
+        let (hover, fg) = {
+            let theme = cx.theme();
+            (theme.muted.opacity(0.6), theme.foreground)
+        };
+        let render = |ix: usize, cell: &StatusCell, cx: &mut Context<Self>| -> AnyElement {
+            match &cell.opens {
                 None => div().child(cell.text.clone()).into_any_element(),
                 Some(tool) => {
                     let tool = tool.clone();
@@ -655,20 +973,169 @@ impl Workspace {
                         }))
                         .into_any_element()
                 }
-            })
-            .collect();
+            }
+        };
+        let mut start: Vec<AnyElement> = Vec::new();
+        let mut end: Vec<AnyElement> = Vec::new();
+        for (ix, cell) in self.status.iter().enumerate() {
+            let element = render(ix, cell, cx);
+            if cell.align_end {
+                end.push(element);
+            } else {
+                start.push(element);
+            }
+        }
         h_flex()
             .h(px(24.))
             .px_3()
             .gap_4()
             .items_center()
-            .bg(theme.sidebar)
+            .bg(sidebar)
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(border)
             .text_xs()
-            .text_color(theme.muted_foreground)
-            .children(cells)
+            .text_color(muted)
+            .children(start)
+            // The two groups, held apart: what the project is doing stays
+            // at the start, what the caret is doing sits at the far end
+            // (§7.3) rather than drifting with the left group's width.
+            .child(div().flex_1())
+            .child(h_flex().gap_4().items_center().children(end))
+            .child(self.render_bell(cx))
             .into_any_element()
+    }
+
+    /// The notification bell — §7.5's history, at the far end of the
+    /// right group. A toast is gone in seconds; this is what lets an
+    /// author come back and ask what the red thing said.
+    fn render_bell(&self, cx: &mut Context<Self>) -> AnyElement {
+        let unread = crate::notify::Notifications::unread(cx);
+        let (accent, muted) = (cx.theme().primary, cx.theme().muted_foreground);
+        h_flex()
+            .id("status-bell")
+            .gap_1()
+            .px_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|s| s.bg(cx.theme().muted.opacity(0.6)))
+            .child(
+                div()
+                    .text_color(if unread > 0 { accent } else { muted })
+                    .child("\u{1F514}"),
+            )
+            .when(unread > 0, |el| {
+                el.child(div().text_color(accent).child(format!("{unread}")))
+            })
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.notices_open = !this.notices_open;
+                if this.notices_open {
+                    // Opening IS reading: the badge is about what arrived
+                    // while you were not looking.
+                    crate::notify::Notifications::mark_read(cx);
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The history popover: newest first, capped, with what it dropped.
+    fn render_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.notices_open {
+            return None;
+        }
+        let notices = crate::notify::Notifications::get(cx);
+        let dropped = crate::notify::Notifications::dropped(cx);
+        let theme = cx.theme();
+        let (muted, border, popover) = (theme.muted_foreground, theme.border, theme.popover);
+        let colour = |severity: crate::notify::Severity| match severity {
+            crate::notify::Severity::Error => theme.danger,
+            crate::notify::Severity::Warning => theme.warning,
+            crate::notify::Severity::Success => theme.primary,
+            crate::notify::Severity::Info => theme.muted_foreground,
+        };
+        let rows: Vec<AnyElement> = notices
+            .iter()
+            .rev()
+            .map(|notice| {
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_start()
+                    .py_0p5()
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .flex_none()
+                            .text_color(muted)
+                            .child(notice.at.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(52.))
+                            .flex_none()
+                            .text_color(colour(notice.severity))
+                            .child(notice.severity.label()),
+                    )
+                    .child(div().flex_1().child(notice.message.clone()))
+                    .child(div().text_color(muted).child(notice.source.clone()))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            v_flex()
+                .absolute()
+                .right(px(8.))
+                .bottom(px(28.))
+                .w(px(480.))
+                .max_h(px(320.))
+                .p_2()
+                .gap_1()
+                .rounded_md()
+                .bg(popover)
+                .border_1()
+                .border_color(border)
+                .text_xs()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(div().flex_1().text_color(muted).child({
+                            let n = rows.len();
+                            let plural = if n == 1 { "notice" } else { "notices" };
+                            if dropped > 0 {
+                                format!("{n} {plural} · {dropped} older dropped")
+                            } else {
+                                format!("{n} {plural}")
+                            }
+                        }))
+                        .child(
+                            Button::new("notices-clear")
+                                .ghost()
+                                .compact()
+                                .label("Clear")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    crate::notify::Notifications::clear(cx);
+                                    this.notices_open = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .p_2()
+                            .text_color(muted)
+                            .child("Nothing has been reported."),
+                    )
+                })
+                .child(
+                    v_flex()
+                        .id("notices-list")
+                        .overflow_y_scroll()
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The view switcher: three toggles, in the title bar. The studio has no
@@ -697,6 +1164,13 @@ impl Workspace {
     }
 }
 
+/// The three docks, by the name their shape is persisted under.
+const DOCKS: &[(&str, DockPlacement)] = &[
+    ("left", DockPlacement::Left),
+    ("right", DockPlacement::Right),
+    ("bottom", DockPlacement::Bottom),
+];
+
 impl ToolWindowSpec {
     fn dock_placement(&self) -> DockPlacement {
         self.slot.dock()
@@ -711,6 +1185,11 @@ impl gpui::Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // §5.3: the window is laid out for the room it has. Checked here
+        // rather than on a resize event, which gpui does not raise for a
+        // view — a render IS the resize notification.
+        let width = f32::from(window.viewport_size().width);
+        self.apply_tier(width, window, cx);
         let buttons = self.buttons(cx);
         let this = cx.entity();
         let click = {
@@ -724,6 +1203,7 @@ impl Render for Workspace {
         };
         let switcher = self.view_switcher(cx);
         let status = self.render_status(cx);
+        let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window, cx);
         let settings_window = self.render_settings(window, cx);
         // Studio §6: the hamburger at the top of the left strip, opening the
@@ -742,6 +1222,10 @@ impl Render for Workspace {
         v_flex()
             .id("workspace")
             .size_full()
+            // The notifications popover places itself against this box's
+            // bottom-right; without `relative` it would resolve against
+            // the window and land wherever.
+            .relative()
             .bg(theme.background)
             .text_color(theme.foreground)
             // The shell's actions dispatch from wherever focus is; this is
@@ -804,6 +1288,9 @@ impl Render for Workspace {
                     .child(rail(RailEdge::Right, &buttons, None, click, window, cx)),
             )
             .child(status)
+            // Above the status bar, as §7.5 places it, and after the docks
+            // so it paints over them.
+            .children(notices)
             .children(overlay)
             .children(settings_window)
     }
@@ -811,6 +1298,30 @@ impl Render for Workspace {
 
 #[cfg(test)]
 mod tests {
+    use super::Tier;
+
+    #[test]
+    fn the_tier_follows_the_width_and_says_what_fits() {
+        assert_eq!(Tier::of(1440.), Tier::Wide);
+        assert_eq!(Tier::of(1120.), Tier::Wide, "the boundary is inclusive");
+        assert_eq!(Tier::of(1000.), Tier::Medium);
+        assert_eq!(Tier::of(860.), Tier::Medium);
+        assert_eq!(Tier::of(700.), Tier::Narrow);
+
+        // Wide affords everything; medium gives up the right dock, which
+        // holds inspectors rather than the file you are working in;
+        // narrow keeps only the bottom strip.
+        for dock in ["left", "right", "bottom"] {
+            assert!(Tier::Wide.allows(dock));
+        }
+        assert!(Tier::Medium.allows("left"));
+        assert!(Tier::Medium.allows("bottom"));
+        assert!(!Tier::Medium.allows("right"));
+        assert!(!Tier::Narrow.allows("left"));
+        assert!(!Tier::Narrow.allows("right"));
+        assert!(Tier::Narrow.allows("bottom"), "a strip is not a column");
+    }
+
     use super::*;
     use crate::region::RailSlot;
 

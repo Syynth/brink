@@ -363,9 +363,19 @@ pub(crate) fn refactors(session: &IdeSession, path: &str, offset: u32) -> Option
         brink_ide::code_actions::code_actions(source, at)
             .into_iter()
             .filter(|a| {
-                // Only the whole-source ones: the moves (promote, demote,
-                // move stitch) need the breakage gate a rename gets, and are
-                // not offered here until they get it.
+                // Only the whole-source ones. The moves rewrite the file
+                // AND its references, so they need the gate a rename gets
+                // — which the Binder's own Promote/Demote now go through
+                // (`app/src/structural.rs`). This filter is belt and
+                // braces rather than the reason they are absent: checked
+                // 2026-09-07, `brink_ide::code_actions::code_actions`
+                // never EMITS these three variants at all — nothing
+                // constructs a `MoveStitch`/`PromoteStitch`/`DemoteKnot`
+                // offer — so removing it changes nothing until the engine
+                // starts offering them, at which point they must be
+                // routed to the gated road rather than to
+                // `ResolveRefactor`, which writes a new source with no
+                // gate at all.
                 !matches!(
                     a.data,
                     brink_ide::code_actions::CodeActionData::MoveStitch { .. }

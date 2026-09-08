@@ -242,7 +242,7 @@ impl ProseSection {
 impl Render for ProseSection {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some((_, text)) = config_text(&self.project, cx) else {
-            return no_config("prose settings", cx);
+            return no_config(&self.project, "prose settings", cx);
         };
         let doc = match ConfigDocument::parse(&text) {
             Ok(doc) => doc,

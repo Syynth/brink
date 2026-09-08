@@ -18,11 +18,17 @@
 //! [`crate::HirFile::allow_scopes`]. Both meet here, in
 //! [`apply_suppressions`], so every consumer applies them identically.
 //!
-//! # Only warnings are suppressible
+//! # Errors are not suppressible; everything else is
 //!
 //! `@[allow(…)]` refuses any code whose default severity is `Error` (`E154`,
 //! at lowering time) — an error means no correct artifact can be produced, so
-//! silencing one would be a way to ship broken code. This deliberately
+//! silencing one would be a way to ship broken code. **Warnings and `Info`
+//! notes are both suppressible**: the test is `!= Error`, not `== Warning`,
+//! so an author can silence an `E189` author note like any other code. This
+//! heading used to read "only warnings are suppressible", which is the
+//! narrower claim the code has never made — and a consumer that believed it
+//! would withhold suppression from every Info note (the native studio's
+//! Problems menu did, briefly). This deliberately
 //! matches the `[lints]` table's hard-error exemption (issue #1160). The B0.3
 //! admission-validator diagnostics are exempt twice over: they are all
 //! `Error`-severity *and* they never route through this function at all

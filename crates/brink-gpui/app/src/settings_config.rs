@@ -11,9 +11,11 @@
 use brink_project_config::edit::{ConfigDocument, EditError};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Entity, div};
+use gpui_component::button::Button;
 use gpui_component::{ActiveTheme as _, v_flex};
 
 use crate::project::Project;
+use brink_gpui_shell::notify::{Severity, notify};
 
 /// The config's path and current text, or `None` for a project without one.
 pub fn config_text(project: &Entity<Project>, cx: &App) -> Option<(String, String)> {
@@ -74,7 +76,8 @@ pub fn set_or_remove(
 
 /// The section body for a project with no `brink.toml`: says so, and what
 /// would be written where.
-pub fn no_config(what: &str, cx: &App) -> AnyElement {
+pub fn no_config(project: &Entity<Project>, what: &str, cx: &mut App) -> AnyElement {
+    let project = project.clone();
     v_flex()
         .w_full()
         .gap_2()
@@ -83,8 +86,30 @@ pub fn no_config(what: &str, cx: &App) -> AnyElement {
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(format!(
-                    "This project has no brink.toml, so there is nothing to write {what} to yet. Add one beside the entry file and reopen the project."
+                    "This project has no brink.toml, so there is nothing to write {what} to yet."
                 )),
+        )
+        .child(
+            // Making one used to be "add a file beside the entry and
+            // reopen the project", which is a studio telling an author to
+            // go and use a text editor.
+            Button::new("create-brink-toml")
+                .label("Create brink.toml")
+                .on_click(move |_, window, cx| {
+                    let created = project.update(cx, |project, cx| project.create_config(cx));
+                    match created {
+                        Ok(()) => notify(
+                            Severity::Success,
+                            "settings",
+                            "Created brink.toml, pointing at the entry.",
+                            window,
+                            cx,
+                        ),
+                        Err(err) => {
+                            notify(Severity::Error, "settings", format!("{err}"), window, cx);
+                        }
+                    }
+                }),
         )
         .into_any_element()
 }

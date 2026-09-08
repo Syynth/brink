@@ -11,6 +11,17 @@ use gpui_component::dock::{Panel, PanelId, TabGroup};
 
 use crate::region::RailSlot;
 
+/// The key context every tool window's root carries
+/// (`div().key_context(TOOL_WINDOW_CONTEXT)`).
+///
+/// It exists so a key that already means something everywhere else can
+/// mean one more thing HERE without being taken away: `escape` dismisses
+/// the palette, closes the find panel and cancels the code-action menu,
+/// and each of those has its own context deeper in the tree, so each
+/// still wins where it applies. Bound at this level it is "leave the tool
+/// window", which is what `escape` means when nothing else has claimed it.
+pub const TOOL_WINDOW_CONTEXT: &str = "ToolWindow";
+
 /// Where a tool window sits in its dock: the tab group the dock placed it
 /// in. A panel records it from `on_added_to` and clears it in `on_removed`;
 /// the shell reads it to select the tab, since the toolkit exposes no way

@@ -569,7 +569,7 @@ impl Render for DiagnosticsSection {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let Some((path, text)) = config_text(&self.project, cx) else {
-            return no_config("diagnostics settings", cx);
+            return no_config(&self.project, "diagnostics settings", cx);
         };
         let doc = match ConfigDocument::parse(&text) {
             Ok(doc) => doc,

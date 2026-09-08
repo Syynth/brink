@@ -111,6 +111,9 @@ pub const TODO: &str =
 pub const GROUP_BY_FILE: &str =
     stroke_icon!(r##"<path d="M4 6h16M4 12h10M4 18h13"/><path d="M17 10l3 2-3 2"/>"##);
 
+/// A plus — "new file", in the Binder's header.
+pub const PLUS: &str = stroke_icon!(r##"<path d="M12 5v14M5 12h14"/>"##);
+
 pub const DOTS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>"##;
 
 pub const EXPAND_ALL: &str =

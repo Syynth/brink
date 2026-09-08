@@ -52,8 +52,10 @@ In `.ink`-author order, the gaps that bite first:
    that open their source; `Play` (cmd-r), `Restart` (cmd-shift-r), and
    the Binder's "Play from here" on knots and stitches. Residue: only the
    Code-view placement (the other two views' placement is still the open
-   ruling), no execution highlight, no wake for `await` parks, no number
-   keys for choices.
+   ruling) and no wake for `await` parks; follow-in-editor landed
+   2026-09-07 (§1, the Player). (Number
+   keys landed 2026-09-06: `1`-`9` take a choice, and Play/Restart focus
+   the panel so they work without a click first.)
 3. ~~**Fixes** — code actions in the editor, Fix buttons in Problems.~~
    **Built 2026-09-05** (`model/src/fixes.rs`, `app/src/fixes.rs`): the
    `cmd-.` menu (fixes every tier + whole-source refactors), Problems' per-row
@@ -62,23 +64,52 @@ In `.ink`-author order, the gaps that bite first:
    not in the native studio), the structural moves (promote/demote/move
    stitch) stay off the menu until they get the breakage gate, and the
    context-menu fix entries the web has.
-4. **Find/replace inside a document**, and Search's Replace.
-5. **Quick-open** and `Escape` back to the editor.
-6. **Layout persistence** and an open-project dialog.
+4. ~~**Find/replace inside a document**, and Search's Replace.~~ **Built
+   2026-09-06** — `cmd-f`/`cmd-alt-f` in any editor (the toolkit's own
+   panel, which every editor already carried), and Search's replace row
+   with a per-card Replace and a confirmed Replace All.
+5. ~~**Quick-open**~~ **built 2026-09-06** (`app/src/quick_open.rs`,
+   `cmd-p`) — files and every knot/stitch, fuzzy-ranked, Enter revealing
+   the declaration. ~~`Escape` back to the editor is still open~~ —
+   **built 2026-09-07** by giving the registry the key context it lacked
+   (`register_in`), so `escape` belongs to the tool windows without being
+   taken from the palette, the find panel or the `cmd-.` menu.
+6. ~~**Layout persistence**~~ (the docks and the view, 2026-09-06 — not
+   the panel tree, see §1) and ~~an open-project dialog~~ (2026-09-07:
+   `cmd-shift-o` plus per-project `Open Recent` commands; see §1, the
+   frame).
 
 **Suggested next order (2026-09-06)**, cheapest-first against what the
 worker now holds:
 
-1. **Compiled Output** and **Output / compile log** — both are a day's work
-   on the compile that already exists (`model/src/program.rs` runs it,
-   `brink_format::write_inkt` writes the dump, the worker already times
-   analysis and the play session already drains runtime warnings). Neither
-   needs a ruling.
-2. **State View** (the debugger) — what the Program Explorer's executing-
+1. ~~**Compiled Output** and **Output / compile log**.~~ **Built
+   2026-09-06**, filled in 2026-09-07 (`model/src/compiled.rs`,
+   `app/src/compiled_output.rs`, `app/src/output_log.rs`). The log now has
+   timestamps, a per-severity filter with unfiltered counts, Copy, and
+   save-failure/load-warning rows. Residue: no row opens anything, a
+   config write and a format run still say nothing, and Compiled Output
+   has ~~no jump from a dump row to its source~~ (2026-09-07: F12 /
+   Go to Source, reading both the `(source …)` clause and the debug-info
+   `(entry …)` rows).
+2. ~~**An `.inkt` highlighter.**~~ **Built 2026-09-06**
+   (`app/src/inkt_highlight.rs`): a hand-written lexer over the token
+   shapes `inkt.pest` itself defines — head words, `$def_id`s, strings
+   with escapes, integers/floats/`0x`, `:type`, `key=` attributes, `->`
+   and `+`, and `;` comments for Compiled Output's own error text.
+   ~~Residue: the Program Explorer's Disasm view still draws its own rows
+   and does not share it.~~ **Shared 2026-09-07**: a disassembled
+   instruction is not `.inkt` s-expression text — it has no parens, so
+   its opcode would lex as an ordinary word — so `lex_opcode` runs the
+   same lexer told to expect a head. The operands after it (numbers,
+   strings, `->`, `argc=`) are the same tokens that appear inside a form
+   and need nothing new. Colours come from `theme::syntax_colour`, a
+   key→token lookup for surfaces that paint syntax without an editor's
+   resolver, so the panel and the `.inkt` tab agree.
+3. **State View** (the debugger) — what the Program Explorer's executing-
    instruction overlay and `stepi` are both waiting on, with the Player's
    session as the base. The engine work (exposing state off a running
    `Story`) goes below `IdeSession`, per the layering ruling.
-3. **Story Graph** — the largest remaining piece: a story-graph query in
+4. **Story Graph** — the largest remaining piece: a story-graph query in
    the worker plus a pan/zoom canvas.
 
 ## 1. Surfaces built, and what each leaves out
@@ -91,14 +122,15 @@ groups per dock (`TabSlot`), badges with tones, the status bar's left cells
 
 | Left out | Kind | Note |
 |---|---|---|
-| Layout persistence | parity gap | `DockAreaState::dump/load` and `RailSlot::persistence_key` exist; nothing calls them (HANDOFF "Known broken" 5). |
+| Layout persistence | partly built | **2026-09-06**: the three docks' open state and width, the editor view, and each file's SCROLL position ride `AppSettings` (`Workspace::layout`/`apply_layout`), written on every discrete change and on quit (`cmd-q`, which also landed — there was no Quit command). Scrolls are kept for one project at a time, guarded by `scroll_root`: a path means a different place in a different tree, and one project's worth is what stops the map growing without bound. **The open documents landed 2026-09-07**: `Layout.open_files`/`active_file`, written on every tab change as well as on quit (`settings::update` compares before writing, so saying it often is cheap), restored under the same one-project `scroll_root` rule the scrolls use — so a path from another tree is never opened here. A remembered file that no longer exists is SKIPPED, not opened empty; with nothing left to restore the entry opens as it always did. The active tab is reopened last, because opening a tab selects it. What is still not persisted is the panel ARRANGEMENT — a split, or which group a tab is in — which is the toolkit's `PanelRegistry` to rebuild, not a path list. |
 | Strip drag to re-dock | parity gap | studio-shell-spec §5.1; Phase 3 in the web too. |
-| Tool-window / editor-group maximize | parity gap | studio-shell-spec §5.4. |
-| Responsive tiers (wide/medium/narrow) | parity gap | studio-shell-spec §5.3; the window is one tier. |
-| Status bar right segment | parity gap | cursor position, element type + the conversion dropdown, key hints (§7.3). Only the left group exists. |
-| Notification service / toasts | partly built | `Root::render_notification_layer`/`render_dialog_layer` are composed by the app root (`app/src/main.rs`), so `window.push_notification` and `open_dialog` work — rename, fix-all and failed navigation all use them. Missing is §7.5's *service*: no registry, no severities, no dismissal policy, and no one place errors are routed to. |
-| Open-project dialog, recents | parity gap | the project is a CLI argument (HANDOFF 4). |
-| Binder draws two headers | cosmetic | the dock's title strip and its own "BINDER" header both render (HANDOFF, "Two things noticed"). |
+| ~~Editor maximize~~ | built 2026-09-07 | `View ▸ Maximize Editor` (`cmd-shift-e`) hides every dock and gives the editor the window; pressing it again puts back exactly the docks that were open, not all three — a writer who works with the Binder closed does not want it back for having read one scene full-width. Nothing open is already maximized, so the toggle does nothing there rather than recording "all closed" and losing the way back. Per-TOOL-WINDOW maximize (a single panel filling the frame) is still a gap. |
+| ~~Responsive tiers (wide/medium/narrow)~~ | built 2026-09-07 | `Tier::of(width)` — wide at 1120+, medium at 860+, narrow below; the thresholds are the width at which the editor stops having room to read in (two 260px side docks plus a 600px editor is ~1120), not round numbers. Medium gives up the RIGHT dock (inspectors, not the file you are working in); narrow gives up both side docks and keeps the bottom strip, which is a strip and not a column. Closing is automatic; REOPENING only ever restores what was open before the window narrowed, so a dock the author closed themselves stays closed — and a maximized editor (`cmd-shift-e`) is left alone entirely, since that is the author's own "no docks". Checked in `render`, because gpui raises no resize event for a view: a render IS the notification. |
+| Status bar right segment | partly built | **2026-09-06**: the group exists (`StatusCell::align_end`, held apart by a spacer) and carries the active file and `Ln x, Col y`, live — the caret has no event, so the studio OBSERVES the active editor and re-observes when the active document changes. Still missing from §7.3: the element type + its conversion dropdown (an **engine gap** — no claim handler classifies its own `kind` yet, #1683), and key hints. |
+| ~~Status bar story state~~ | built 2026-09-07 | §7.3's left group asks for "idle / running / awaiting choice"; the cell says `running…`, `awaiting a choice`, `running` or `story over`, and nothing at all while idle. It comes from `Player::state()` and the studio OBSERVES the Player, which changes state without an event of its own. |
+| ~~Notification service~~ | built 2026-09-07 | `shell/src/notify.rs`. The toasts were never the missing part — the kit draws those. The service is: **severities with their own dismissal rule** (an error is sticky, everything else fades — the one notice you must not miss is the one saying something failed), a **source** on every notice, a **capped history** (`CAP` = 100, oldest dropped, the count of what went), and **one door every producer uses** (`notify`), so a failure cannot be mistaken for a success. The status bar's far end carries the **bell** with an unread badge; clicking it opens the history above the status bar and marks it read. All 22 `push_notification` call sites across `files`, `fixes`, `rename`, `settings` and the studio now go through it. Not built, and stated rather than implied: §7.5's notification ACTIONS ("actions dispatch commands only") — nothing in the studio has an undoable operation to offer yet, so the button would have nothing to dispatch. |
+| ~~Open-project dialog, recents~~ | built 2026-09-07 | `File ▸ Open Project…` (`cmd-shift-o`) asks the platform for a folder and opens it in a NEW window — every panel here is built around one root, so swapping it would mean tearing all of them down, which is what a window does anyway. Recents ride `AppSettings` (newest first, listed once, capped at `MAX_RECENTS`), and each is registered as its own `File ▸ Open Recent: name (parent)` command, since the palette models commands and not submenus. A window never offers to reopen itself (the root is remembered AFTER its commands are registered), and a recent whose folder has gone says so and drops itself. On Linux the picker is the desktop portal, which a bare X session or a container does not have — that failure raises a notification rather than a menu entry that does nothing (verified: it reports the D-Bus address it could not reach). |
+| ~~Binder draws two headers~~ | not a gap since the barless skin | the side docks draw no tab bar (`shell/src/skin.rs`, ruled 2026-09-05), so the panel's own "BINDER" + toolbar row is the only header. Confirmed on screen 2026-09-07; the note in HANDOFF predated the skin. |
 
 ### Code view (`app/src/code_view.rs`, `document.rs`)
 
@@ -107,8 +139,8 @@ Built: an inner `DockArea` of documents — tabs, drag between groups, splits
 
 | Left out | Kind | Note |
 |---|---|---|
-| Quick-open (`cmd-p`) | parity gap | spec §4.5 defers it. |
-| Session documents (Player, Compiled Output, Story Graph, Settings-as-tab) | Player built | the Player docks as a centre tab (`CodeView::show_player`); Compiled Output and Story Graph not started; the Settings tab is replaced by the modal by ruling. |
+| ~~Quick-open (`cmd-p`)~~ | built 2026-09-06 | `app/src/quick_open.rs`. |
+| ~~Session documents (Player, Compiled Output, Story Graph, Settings-as-tab)~~ | built | the Player, Compiled Output and (2026-09-07) the Story Graph all dock as centre tabs (`CodeView::show_player`/`show_compiled`/`show_graph`); the Settings tab is replaced by the modal by ruling. |
 
 ### Single File view (`app/src/single_view.rs`)
 
@@ -126,7 +158,7 @@ headings, editable, on the shared buffer.
 | Left out | Kind | Note |
 |---|---|---|
 | Player swap-in | **open ruling** | the direction noted is swap, not split. |
-| First section shows a partial row above the next heading | cosmetic | the measured-line-height issue the module doc describes. |
+| ~~First section shows a partial row above the next heading~~ | not reproducible 2026-09-07 | driven on the rig with a two-file project: the boundary is clean at rest and after scrolling — `a.ink`'s trailing empty row is drawn whole before `b.ink`'s heading. The row predates the `wrap_row_count` re-measure that runs every frame (`remeasure_sections`), which is what a partial row was a symptom of. |
 
 ### The editor itself (`app/src/document.rs`, `model/src/tokens.rs`, `model/src/query.rs`)
 
@@ -143,17 +175,21 @@ else. Everything below is listed against that directory.
 | ~~Go-to-definition, references, rename~~ | built 2026-09-05 | `QueryKind::{Definition, References, PrepareRename, Rename}`; rename is a dialog prompt (the web studio's is inline in the editor — a parity gap in shape, not in behaviour). |
 | ~~Folding: gutter chevrons~~ | built 2026-09-05 | `QueryKind::FoldingRanges` → the highlighter's `fold_ranges` → gutter chevrons on hover / the caret's line. (They were invisible only because no asset source was registered — HANDOFF #6.) |
 | Fold All / Unfold All | engine gap (toolkit) | gpui-base keeps `display_map` private and offers no fold-all; only the gutter toggle exists. |
-| ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. Extract actions and the gated structural moves are still out. |
-| Find/replace panel inside a document | parity gap | `find-panel.ts`. |
+| ~~Code actions, fixes~~ | built 2026-09-05 | `QueryKind::{FixesAt, FixOffers, FixAll, Refactors, ResolveRefactor}`; `cmd-.` in every brink editor. **Extract landed 2026-09-07**: Refactor ▸ Extract to Knot… / Extract to Function… over the focused editor's SELECTION (`brink_ide::extract`, which snaps to whole lines itself, so a partial selection is fine and an empty one is refused with a note). The extraction gates itself and comes back through the same plan/report road the Binder's moves use, so breakage is never silent. The gated structural moves themselves landed the same day in the Binder (see its section); they are still not on the `cmd-.` menu, and the filter in `model/src/fixes.rs` is not why: checked 2026-09-07, `brink_ide::code_actions::code_actions` never EMITS a `MoveStitch`/`PromoteStitch`/`DemoteKnot` offer at all — the `CodeActionData` variants exist and nothing constructs one. Offering them there is engine work below `IdeSession`, and when it lands they must route to the gated plan road rather than to `ResolveRefactor`, which writes a new source with no gate. |
+| ~~Highlighting for `brink.toml` and `.inkt`~~ | built 2026-09-06 | TOML by enabling the grammar, `.inkt` by a hand-written lexer (`app/src/inkt_highlight.rs`). Own subsection after this table. |
+| ~~Find/replace panel inside a document~~ | built 2026-09-06 | `cmd-f` / `cmd-alt-f`. The panel is the TOOLKIT's — `EditorState::new` already sets `searchable`, so every brink editor carried it and only the key was missing; the kit's own `Search`/`Replace` actions are registered as commands rather than wrapped, so there is one implementation and both are in the palette. Case, regex, match count, prev/next, Replace and Replace All all come with it. |
 | Signature help | parity gap | `signature-help.ts`. |
-| Argument widgets, colour chips + picker, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but none is built. |
-| Inline markup / screenplay / structural styles / hanging indent | parity gap | `inline-markup.ts`, `screenplay.ts`, `structural-styles.ts`, `hanging-indent.ts`. |
-| Per-LINE styles: cue lines, dimmed comment/include lines | worker query + port | `IdeSession::line_contexts` exists; the worker does not carry it per file (HANDOFF "Themes and paint"). Only the TODO band is laid. |
-| Execution highlight, play-from-here | play-from-here built | Binder row menu → `PlayFromHere` action → `BinderEvent::Play`; execution highlight not started (lines carry `source`, so the data is there). |
-| Conflict view, breakage/boundary editing, element-type transitions | parity gap | `conflict-view.ts`, `breakage.ts`, `boundary.ts`, `element-type.ts`, `keybindings.ts`'s modal editing keys. |
-| Prose checker diagnostics in the editor | not wired | `crates/brink-prose` is Rust, but the worker does not link or run it; see Problems and Settings ▸ Prose. |
+| ~~Colour chips + picker~~ | built 2026-09-07, dark until a host manifest exists | `QueryKind::DocumentColors` → `model/src/query.rs::document_colors` (`brink_ide::color::color_hints{,_native}`, so both surfaces) → `app/src/document.rs`'s `BrinkColors`, the toolkit's `DocumentColorProvider`: a swatch is drawn over the literal and clicking it opens the kit's picker. **It cannot light up yet, and that is not a bug in this code.** A colour hint exists only where a HOST manifest declares a semantic type with `widget.kind = "color"` and an external whose param has that type — pinned by `a_colour_swatch_needs_a_host_manifest_to_declare_the_type`, which shows the same call site yielding zero swatches without a manifest and one with. The web studio gets its manifest from whoever embeds it (`EditorSession::set_host_manifest`, driven by `example-extension.tsx`); a standalone studio has no embedder, and no `brink.toml` key or sidecar file sources one. **Open for a ruling:** how does a standalone studio learn a host's vocabulary — a `host-manifest.json` sidecar next to `brink.toml`, a `[host]` key, or a plugin surface? The provider is wired for the day one is chosen. |
+| Argument widgets, doc strings | parity gap | in-text chips are proven good enough (ruled, the chip ruling) but neither is built. Both share the colour picker's manifest dependency above — an argument widget's `values`/`widget` also comes from a semantic type. |
+| Inline markup / screenplay / structural styles / hanging indent | mostly settled 2026-09-07 | four different answers, so the row is broken up. **Screenplay's per-line styles are BUILT** — cue, parenthetical and dialogue, from the dialect (see per-LINE styles below); what remains of `screenplay.ts` is the depth widgets and outright sigil-HIDING, which a gpui highlighter cannot do (it styles ranges, it cannot replace text). **`structural-styles.ts` has nothing to port**: it is the popup-positioning CSS for the web's floating surfaces, and the gpui panels position their own. **Hanging indent is mostly the toolkit's already** — `element.rs` indents a wrapped line's continuations to that line's own leading whitespace; what the web adds on top is hanging past a SIGIL (`* `, `- `), which the kit's whitespace-only `line_item.indent` cannot express. **`inline-markup.ts` ships ZERO rules** and decorates only what a HOST registers, so porting it has the colour picker's problem exactly: nothing in a standalone studio registers any, and the same open question (how does a standalone studio learn a host's vocabulary?) gates both. |
+| ~~Per-LINE styles: cue lines, dimmed comment/include lines~~ | built 2026-09-07 | **cue lines landed** with `Analyzed.cues` (`model/src/cues.rs` → `Project::cues_for` → `document::overlay_cues`): a `character` line takes the theme's `cue`/`cue_weight` (Manuscript's plain-prose cue included), a `parenthetical` goes italic and muted, and `dialogue` — like any kind a project's own dialect declares that the studio has no rule for — is left exactly as the syntax painted it, which is what `editor.css` does too. The web HIDES a cue's `@` and `:<>` outright (`.brink-hidden-sigil`); a gpui highlighter styles ranges and cannot replace text, so the sigils stay where the author typed them and recede instead — the cue reads as a name, and what is on screen is what is in the file. **This is also where the fade was found to be backwards:** `Hsla::opacity` was the wrong instrument, because the renderer composites a highlight colour over the run's own text colour rather than over the page, so cutting the alpha pulls a colour TOWARD the foreground — it brightened a comment instead of dimming it (measured on the rig at alphas 0.3 and 0.0). `document::fade` blends toward `editor_bg` and returns an opaque colour; the dimmed `INCLUDE`/comment lines below now actually dim. **Dimmed lines** (unchanged otherwise): an `INCLUDE`/`EXTERNAL` line and a whole-line comment fade to `MUTED_FADE`, keeping their own colours so a comment stays comment-coloured and a keyword stays a keyword — they simply stop competing with the prose. Derived from the SOURCE (both shapes are decidable from the text), so the paint does not lag the keystroke. The classification lags by at most one analysis, exactly as the identity join does: a cue typed a keystroke ago paints as prose until the next pass lands. |
+| ~~Execution highlight, play-from-here~~ | both built | play-from-here: the Binder row menu → `PlayFromHere` → `BinderEvent::Play`. Execution highlight landed 2026-09-07 as **Follow in editor** (§1, the Player): the last line of each run is revealed as the story plays, paused by an edit. |
+| ~~Element-type transitions~~ | built 2026-09-07 | `QueryKind::ConvertLine` → `brink_ide::line_convert::convert_element`, which reads the line's real structural context rather than sniffing its text (the web's own `convert.ts` does the sigil arithmetic in TypeScript; this uses the shared road instead). Five commands under **Line** — Make Narrative / Choice (`alt-1`) / Sticky Choice (`alt-2`) / Gather (`alt-3`) / Choice Body — over the FOCUSED editor's caret line, so they work in the manuscript as well as in Code view. A line that cannot become the asked-for type — a knot header, an `INCLUDE` — is refused with a notice rather than mangled, because `convert_element` answers `None` instead of guessing. |
+| Conflict view (the merge surface) | parity gap | `conflict-view.ts`'s side-by-side MergeView. Its PRECONDITION landed 2026-09-07 — the studio now watches the project (`app/src/watch.rs`) and applies the web's own policy: a disk change under a clean buffer is adopted, one under a dirty buffer keeps the buffer and says so, in a toast and in the Output log. What is missing is the surface for RESOLVING such a conflict (Keep mine / Use disk, two columns), and the gpui side has no merge widget to build it from. Until then a conflict is reported and the author decides by saving or reverting. |
+| Breakage / boundary editing | mostly nothing to port | `breakage.ts` is the report, which Rename, the structural moves and Extract all carry. `boundary.ts` is not editing at all: it is a handful of pure host-seam helpers (diagnostic ordering and the like) that this studio does its own way. |
+| ~~Prose checker diagnostics in the editor~~ | built 2026-09-07 | the worker links `brink-prose` and runs it per OPEN file (`model/src/prose.rs`, `QueryKind::Prose`). The web keeps the checker out of `brink-web` because harper-core is 6.15 MB gzipped as wasm; a native binary has no such budget to blow, so the studio links it directly. What is checked is a content span MINUS the machinery nested in it — otherwise `{gold}` goes to a spell checker — and the dictionary is the project's own knot, stitch and label names plus `[prose] dictionary`, without which every invented name reports as a misspelling. Lints paint as HINTs on top of the compiler's diagnostics, never replacing them. Byte↔UTF-16 conversion happens once, in `prose.rs`, so nothing downstream knows the checker's units. Still open: the **Problems** prose bucket (these reach the editor, not the panel) and Settings ▸ Diagnostics' prose codes. |
 | `.brink` incremental paint | **open ruling** (#3562), **`.brink` only** | a native file re-parses whole per keystroke; the segmentation boundary is a language ruling. |
-| Hover verified by hand | verification | typing, completions and save were driven headless; hover was not. |
+| ~~Hover verified by hand~~ | verified 2026-09-06 | driven headless: hovering a choice line shows its diagnostic in the popover. |
 
 ### Player (`model/src/play.rs`, `app/src/player.rs`)
 
@@ -169,9 +205,9 @@ on knots and stitches.
 |---|---|---|
 | Placement in Continuous and Single File | **open ruling** | the Code-view tab is the one placement the parked direction settles (HANDOFF "Open, parked"). |
 | Hot-swapping a running story after an edit | deliberate | the module doc says why: the story keeps running on what it compiled from, the status says so, a restart picks the edit up. |
-| Waking an `await` park | not started | `Step::Suspended` is shown as a turn boundary; there is no `wake_check` affordance. |
-| Number keys for choices | parity gap | choices are buttons only. |
-| Execution highlight in the editor | not started | lines carry `source`, so the data is there; see also the Program Explorer's overlay. |
+| Waking an `await` park | **engine gap, not buildable yet** | checked 2026-09-07: `Step::Suspended` is UNREACHABLE in today's runtime — the E052 lowering fence keeps `await` from producing bytecode — and `Story::wake_check` is a documented stub returning an empty list until FS-3r. A wake button here would be a control for a state no story can reach. The Player already shows the park as a turn boundary, which is the whole of what can be true today. |
+| ~~Number keys for choices~~ | built 2026-09-06 | `1`-`9`, with Play/Restart focusing the panel so they work without a click. |
+| ~~Execution highlight in the editor~~ | built 2026-09-07 | in two halves, neither of them a highlight that lingers: **Follow in editor** reveals the last line of each run as the story plays (§1, the Player), and a **debug stop** reveals the line the flow is halted on (`PlayerEvent::Stopped`). Both follow rather than navigate, so the keyboard stays on the Player and the number keys keep taking choices. A persistent "you are here" band was NOT built: the story is only stopped somewhere between debug verbs, and a band left behind after a Continue would mark a line the story has long since left. |
 | External-function binding | not started | `FallbackHandler` only — an external with no fallback body faults. |
 
 ### Program Explorer (`model/src/program.rs`, `app/src/program.rs`)
@@ -188,26 +224,83 @@ marks itself stale and asks when shown.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Executing-instruction overlay, `stepi` | not started | needs the State View's session state (D9/W9 in the web). |
-| "open .inkt" button | not started | Compiled Output is not built; the button has nowhere to go. |
-| Size treemap | parity gap | `ProgramSizeView.tsx` draws a treemap; this draws bars. |
-| Jumps between views (disasm row → its line, size row → its container) | parity gap | the web's cross-view targeting. |
-| Checksum staleness against a running session | not started | `sessionDegraded` in the web; needs the Player to report its program's checksum. |
+| Executing-instruction overlay | ~~not started~~ **built 2026-09-07**, with a caveat worth reading | the running position rides `PlayState` as `(container_idx, offset)` — the key D9/#3187 put `container_idx` on the model for. The instruction row is marked when it matches. **But a story at rest is parked one PAST its container's last instruction** (it runs to a yield point, and the next instruction is the one after `yield`), so that row usually does not exist. The CONTAINER is marked too — `▸ here` on the group row — which is true and useful at every yield point, and is what you actually see. A row-level mark would need `stepi`. |
+| ~~`stepi` and breakpoints~~ | built 2026-09-07 | the runtime carried the whole debugger behind `debug-hooks` (`debug_run`, `debug_step`, `debug_step_line`, a `BreakpointSet` keyed by program address, `resolve_source_line` to bind one from `file:line`); what was missing was a way to ask. `PlayCommand::{SetBreakpoints, Continue, StepLine, StepInstruction}` (`model/src/play.rs`), the marks owned by the **Project** (they outlive a closed tab and a restarted session), `F9` on the caret's line, the marked line banded by the highlighter, and Continue / Step / Instr in the State View's header beside a Breakpoints section. Both step granularities are commands of their own, per the 2026-08-28 ruling. Three things this had to get right, each found by a failing test: the set outlives the session and the Start that follows arms it (and runs on the debug road, so the first one hits); taking a CHOICE continues on the debug road too whenever anything is armed, since the production continue knows nothing about breakpoints; and the play compile has to ask for `emit_debug_info`, which the db's own `AnalysisOptions` carry at the release default — without it every mark bound to nothing and every stop had no position. A line with no code (a comment, a blank) is reported back and drawn struck through rather than armed. **Not verified: the F5/F10/F11 keystrokes.** On the headless rig `F8`, `F9` and `F12` dispatch and `F5`, `F10`, `F11` do not, with nothing in the binding path to tell them apart — every verb was driven instead through the palette and the State View's buttons, which do work. The keys are the convention every debugger user has and are rebindable in Settings ▸ Keymap; whether they fire on a real desktop is untested. Left out: step over/out (only `Into` is wired), watchpoints, and setting a variable from the panel. |
+| ~~"open .inkt" button~~ | built 2026-09-06 | right-aligned in the view row; raises `ProgramEvent::OpenCompiledOutput` rather than opening the tab itself, since a tab is the host's to open — the same rule the panel's navigation rows follow. |
+| ~~Size treemap~~ | built 2026-09-07 | `app/src/treemap.rs`, the squarified layout (Bruls/Huizing/van Wijk) ported from `studio-ui/src/treemap.ts` (#3339), drawn above the rows in the Size view — a uniform list gives every row one height, and a map is a block. Laid out in a normalised 1×1 box and placed with relative lengths, so it fills whatever width the dock gives it without the panel measuring itself. A block's colour follows its own share of the map, so the colour says what the area says rather than a second, different thing; a label is drawn only where it fits (the tooltip carries the name either way); clicking one jumps to that knot in Disasm. Sections and line tables stay rows — they are lists, not shapes. |
+| ~~Jumps between views (disasm row → its line, size row → its container)~~ | built 2026-09-07 | an `emit_line #N` row carries a `line #N` chip — its own click target, so the row still means "open the source" — and a size row's `›` takes a line-table row to that scope in Lines and a bytecode row to that knot in Disasm. A jump switches the view, expands what has to be open, scrolls the row to centre and washes it in the accent, since a scroll alone leaves you hunting for which of forty rows you were sent to. The scope is carried by NAME and resolved to its id at the moment of the jump, against the report then in hand. Verified: a size row → `shore`'s table, and `emit_line #2` → `harbour_scene` line #2. |
+| ~~Checksum staleness against a running session~~ | built 2026-09-07 | the header says "the running story is on an older program" while the Player holds a session started before the current sources. Not a checksum comparison: what the session compiled from is gone from the mirror, so comparing checksums would compare the current program with itself. The Player is the only thing that knows a session exists, and `Player::is_stale()` is the fact — the panel observes it. |
+
+### Syntax highlighting outside `.ink`/`.brink`
+
+Brink's own files paint from brink's own CST (`BrinkHighlighter` over
+`TokenCache`). Every other language the studio shows was unhighlighted
+until 2026-09-06 — easy to miss, because the text is legible either way
+and carries no structure. Both were checked on screen rather than
+inferred, and they turned out to need different fixes.
+
+| Surface | Today | Note |
+|---|---|---|
+| `brink.toml` | ~~no highlighting at all~~ **highlighted 2026-09-06** | `Document::new` had always set `.language("toml")`; the grammar simply was not in the build, because `crates/brink-gpui/Cargo.toml` took `gpui-component` with `features = ["tree-sitter"]` — tree-sitter plus JSON only. Adding `"tree-sitter-toml"` to that list was the entire change. **An unresolved language name is silent, not an error**, which is why this read as weak highlighting rather than none; if another language is ever named here, check its grammar is actually enabled. |
+| Compiled Output (`.inkt`) | ~~no highlighting at all~~ **highlighted 2026-09-06** | No grammar would have helped — the kit's list has no lisp/S-expression entry, and `.inkt` is brink's own format whose in-tree reader is a `pest` grammar. `app/src/inkt_highlight.rs` is a hand-written lexer instead, taking its token shapes from `inkt.pest`'s own primitives so the painting cannot drift from what the reader accepts. Roles are Zed's names directly (brink's own roles ride `theme::syntax_key` to get there; these do not need to). |
+| `dialect.json` | ~~not openable at all~~ **openable 2026-09-07** | `Opened.artifacts` carries the files the config POINTED AT, learned by watching the reads the config's own reader makes rather than by re-deriving which keys a `[dialogue]` table might name (the config crate decides that, and a second guess here would drift). The Project holds them in the mirror like `brink.toml` — editable, saveable, never in `files`, since the manuscript and Search read `files` — and the Binder lists them beside the config, with the document icon rather than the ink drop: these are documents ABOUT the story. JSON highlighting was already ready and needed nothing. |
+
+**A language name is only half the wiring**, and `document.rs`'s
+`language_of` now says so where it is decided: the kit resolves a name
+against the grammars compiled into the binary, and an unresolved one is
+silent. A name added there needs its grammar enabled in
+`crates/brink-gpui/Cargo.toml` too.
+
+### Compiled Output (`app/src/compiled_output.rs`, `model/src/compiled.rs`)
+
+Built 2026-09-06: the `.inkt` dump as a read-only Code-view tab, a
+singleton on the Player's terms (docked on first ask, selected after),
+written on the worker off the same memoized compile the Program Explorer
+and the play session use. Refreshed on the Program Explorer's rule —
+while shown it re-asks after each analysis, hidden it marks itself stale.
+Errors are reported in the buffer rather than leaving a stale dump up.
+
+| Left out | Kind | Note |
+|---|---|---|
+| ~~Syntax highlighting~~ | built 2026-09-06 | `app/src/inkt_highlight.rs`, a hand-written lexer over `inkt.pest`'s own primitives. |
+| ~~A find-in-dump of its own~~ | built 2026-09-06 | free with the `cmd-f` binding: the dump is an `EditorState`, so it carries the toolkit's find panel like every other editor. Verified on screen (`globals` → 1/1), and Replace correctly does not appear on a read-only buffer. |
+| ~~A dump row jumping to its source~~ | built 2026-09-07 | `Go to Source` (F12 while the dump has focus, or the header button). Two row shapes carry a position and both are read: a line-table row's own `(source "file" a..b)` clause, and a debug-info `(entry off file_idx start len …)` row, which names its file by INDEX into the same dump's `(file …)` table — the shape a real dump is mostly made of, and why resolving takes the whole text. A `(file …)` row opens that file. Anything else says it carries no source rather than borrowing the nearest row above. Verified: F12 on `(entry 0 1 40 8 …)` opened `story.ink` at `-> shore`. |
+| ~~Reached only from the palette~~ | built 2026-09-06 | the Program Explorer's `.inkt` button opens it too. |
+
+### Output log (`app/src/output_log.rs`)
+
+Built 2026-09-06: the bottom-dock compile log, third tab beside Problems
+and TODOs. Project open/save, analysis timings and the Player's compile
+and runtime failures; nothing that has a file and a span, which is
+Problems' business. An analysis earns a row when it is the first, when
+the problem count moved, or when it was slow, and the quiet ones fold
+into a `+N more` tail; `Every analysis` turns the filter off. 500 rows,
+oldest dropped, with the dropped count in the header. Follows its tail.
+
+| Left out | Kind | Note |
+|---|---|---|
+| ~~Severity filter, copy-all~~ | built 2026-09-07 | three toggles, each showing its count over the UNFILTERED rows so a muted one says what turning it back on restores (the Problems panel's rule). Copy takes the visible rows only — what you copy is what you can see. Filtering everything out says so rather than looking empty. |
+| ~~No timestamps~~ | built 2026-09-07 | `hh:mm:ss` UTC, computed from the epoch rather than pulling a date library in for three fields. `push_at` takes the clock so the format is testable without pinning the moment. |
+| ~~Only two writers~~ | mostly closed 2026-09-07 | a save failure is now `ProjectEvent::SaveFailed` → an error row, and the load warnings (which have no span, so Problems cannot hold them) land here at open. Both used to go to a stderr a windowed studio has no reader for. Still silent: a config write, a format run, a fix-all. |
+| ~~A row opening anything~~ | built 2026-09-07 | a row that names a FILE opens it (`Row.opens` → `OpenLogRow` → the studio's `open`, the same road Problems and TODOs take): a failed save opens the file it could not write, a config warning opens the `brink.toml` the author has to edit. Only those — a timing, "saved", a runtime error with no site name no place, and they stay plain text rather than looking clickable and doing nothing. A span-carrying diagnostic still belongs in Problems, which is where it goes. |
 
 ### Binder (`app/src/binder.rs`)
 
 Built: Files and Structure modes, the fill rule, entry mark, closure
 dimming, diagnostic marks, drag to reorder (in memory), filter, expand and
 collapse all, keyboard navigation, hover row actions, right-click menu,
-`brink.toml` listed beside sources.
+`brink.toml` listed beside sources, and (2026-09-07) creating, renaming
+and deleting files.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Undo stack | parity gap | "Deliberately skipped" in the module doc. |
-| Library section (mounted `std/`) | parity gap | ruled 2026-08-06 in the web; not built here. |
-| Multi-select | parity gap | |
-| Inline create (new file / knot) | parity gap | |
-| `.binder.json` drag-order persistence | parity gap | reorder lives in memory only. |
+| ~~Undo stack~~ | built 2026-09-07 | **File ▸ Undo File Operation** takes back the last create, rename or delete — a create by deleting, a rename by the opposite rename, a delete by writing back the text the EDITORS held (unsaved edits included), which is kept in the op because once the file is gone that is the only copy. Bounded at 20: a way out of the last mistake, not a session history. Refused rather than forced when taking it back would lose work — a created or renamed file with unsaved edits, a path something else now occupies — and a refusal leaves the stack as it was. Undoing is not itself undoable: the inverse operation is popped, or the next undo would redo the one before. **Deliberately no key**: `cmd-z` is the editor's, and a chord that sometimes undoes a word and sometimes brings a deleted file back is worse than a palette entry that says what it does. The delete dialog no longer says the delete cannot be undone, because it can. |
+| ~~Library section (mounted `std/`)~~ | built 2026-09-07 | see §2. Read-only, no file operations offered, listed under the `std/` prefix the session mounts it at. |
+| ~~Multi-select~~ | built 2026-09-07 | shift-click takes the range from the anchor, ctrl/cmd-click adds or removes one row, a plain click resets to one. The anchor stays the row the keyboard moves and the row a range extends from; ctrl-clicking the anchor itself hands the anchor to another marked row rather than leaving a selection with none. **Delete acts on the selection**: a menu opened on a row that is part of one deletes all its FILE rows (a folder or a symbol row is not a file) after ONE confirmation naming them — together or not at all, since a dialog per file is a dialog nobody reads by the third one — and each failure is named individually rather than summed. Rename stays single-row: a rename needs a new name per file. |
+| ~~Promote a stitch / demote a knot~~ | built 2026-09-07 | `app/src/structural.rs`, over `QueryKind::{Promote, Demote}` → `brink_ide::structural_move`. A stitch row offers **Promote to Knot…**, a knot row **Demote to Stitch…** — into the knot ABOVE it, which is where a demoted knot lands when a file is read top to bottom and is resolved by the worker rather than asked for. Safe-by-default, the same shape the F2 rename has: the plan is gated (`structural_result::gate_with_source` — the ops do NOT gate themselves, `move_result` returns `safe: true` with nothing introduced because the gate needs a session), applied when it introduces nothing, and otherwise shown as a breakage report with one **Move anyway** button that still says what it broke. A move the engine refuses outright — a name collision, a knot with stitches of its own, the first knot in a file — is reported with its reason instead of silently doing nothing. Only the SAFE path has been driven on the rig; the report is a near-copy of the rename report that has been. |
+| ~~Create, rename and delete a FILE~~ | built 2026-09-07 | `app/src/files.rs`, through `Project::{create_file, rename_file, delete_file}` (which own both the mirror and the disk, and write immediately — a file in the Binder and not on disk is one the next `INCLUDE` cannot find). The header's `+` makes one at the root; a row's menu makes one beside it, and carries Rename…/Delete… — which until now were `NoopAction`s, i.e. menu items that did nothing. Rename and Delete are offered on FILE rows only: renaming a knot is `f2`'s cross-file, safe-by-default job. A bare name gets `.ink`; a path that climbs out of the root is refused. Renaming moves the text the EDITORS hold, so unsaved work survives; it does NOT rewrite `INCLUDE` lines or `brink.toml` (the analysis reports the break where it reports every other unresolved path). Deleting closes the file's tab first — otherwise the next `cmd-s` writes it straight back. |
+| ~~Create a KNOT or a STITCH~~ | built 2026-09-07 | `app/src/knots.rs`. A file row's menu carries **New Knot…** (written at the end of the file, where ink puts the next one and where an author reading top-to-bottom looks for it); a knot row's and a stitch row's carry **New Stitch…**, written at the end of the knot that owns it — `full_end` walked back over the trailing blank lines, so the stitch stays inside its own knot instead of landing under the following header. Both are ordinary TEXT edits through the shared buffer, so undo, the dirty marker and the next analysis behave exactly as they do for typing. The insertion REPLACES the trailing blank space rather than inserting before it, so a file that already ended in three blank lines does not grow them. A name that is not an ink identifier is refused with the reason rather than written in and reported back as a parse error. The caret is revealed on the new header, deferred to after the edit reaches the editors — revealing an offset in text the editor has not applied yet lands it wherever the OLD text put that byte, which is exactly what the first cut did. Not offered on a folder row, or anywhere under the read-only library. |
+| ~~`.binder.json` drag-order persistence~~ | built 2026-09-07 | `model/src/binder_order.rs`, a port of `studio-store/src/binder-order.ts` (#3038) keeping its identity convention exactly — child ids are project-relative paths, a folder id carries a trailing `/`, the root container is `""` — so one project opened in either studio reads the same. The **Project** owns it, because the Project owns the disk: a rename re-keys the sidecar and a delete drops it, wherever the operation was asked for. A corrupt file self-heals to the fallback (losing an arrangement beats not opening), the map is a `BTreeMap` so the written file is byte-stable, and a failed write is reported through `SaveFailed` rather than swallowed. Empty folders (the `folders` registry) are parsed and written but nothing creates one yet — the Binder has no "new folder". |
 
 ### Problems (`app/src/problems.rs`)
 
@@ -218,10 +311,11 @@ click-to-reveal, rail badge, status-bar cell, `CONFIG` rows for a broken
 
 | Left out | Kind | Note |
 |---|---|---|
-| Prose bucket | not wired | the worker runs no prose checker. |
+| ~~Prose bucket~~ | built 2026-09-07 | a fifth bucket beside errors/warnings/info/TODO, **off by default** and labelled "prose lints (open files)". The cost question is answered by not spending anything: the checker already runs per OPEN file (`QueryKind::Prose`), and the document that ran it now reports the result to the Project (`set_prose`) so Problems can list it beside the compiler's. Nothing new is computed, and no file nobody has open is checked. Off by default for two reasons — a list that grew and shrank as tabs opened would read as the project changing, and a character's name is a spelling mistake to a dictionary. A lint is told from a compiler diagnostic by its `prose.<kind>` CODE, not by severity: it is a Hint, and so are several compiler diagnostics, so severity could not express the bucket at all. Kept apart from `diagnostics` in the Project, so the editor does not double-mark and "N problems" still counts compiler problems. |
 | ~~Fix buttons~~ | built 2026-09-05 | per-row **Fix** (the row's first offer) and **Fix all safe (N)**, `N` from `collect()`. The row's context menu listing every offer is not built. |
-| Suppress context menu (#3148) | parity gap | |
-| "Configure Exxx…" door into Settings ▸ Diagnostics | parity gap | the section exists; the row menu does not open it (HANDOFF "Not here yet"). |
+| ~~Suppressions never applied at all~~ | fixed 2026-09-06 | the worker read `db().diagnostics` RAW and never called `apply_suppressions`, so `// brink-disable`, `// brink-disable-file`, `brink-expect` and `@[allow(…)]` did nothing in this studio — in the panel or in the editor's squiggles. Found by building the suppress menu and watching the count not move. Suppressions now run before `effective_severity`, which is the order every other surface uses. |
+| ~~Suppress context menu (#3148)~~ | built 2026-09-06 | right-click a row: suppress the code on its line or in its file, or open Settings ▸ Diagnostics. Offered for anything but an error — warnings and Info notes alike, since the channel's test is `!= Error` — so an `E189` author note can be silenced like any other code, and offering it for an error would be a silent no-op. |
+| ~~"Configure Exxx…" door into Settings ▸ Diagnostics~~ | built 2026-09-06 | the row's context menu opens the section (`Workspace::open_settings` already took a section id). |
 
 ### TODOs (`app/src/todos.rs`)
 
@@ -236,9 +330,10 @@ the summary strip, `cmd-shift-f`.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Replace previews / Replace All | parity gap | ruled surface (`docs/search-results-cards-spec.md`); held back. |
-| References mode | worker query + port | see the editor's navigation row. |
-| Context knob (lines above/below) | parity gap | the window is the ruled default and not tunable. |
+| ~~Replace / Replace All~~ | built 2026-09-06 | a disclosed replace row (VS Code's shape), a per-card Replace, and a Replace All gated by a confirmation naming the match and file counts. A hit whose bytes no longer read as what the search matched is skipped and its button hidden — cards are edit-mapped, so a hit can slide onto text the author never searched for. Replacement is literal; capture groups are not offered. |
+| ~~References mode~~ | built 2026-09-05 (#3580) | Shift-F12 fills the Search cards with the reference sites, each badged by kind. |
+| ~~Context knob (lines above/below)~~ | built 2026-09-07 | a knob rather than two steppers: it cycles the ruled default (−1/+2), match-only, ±2/±4 and ±5/±8, and an unrecognised window falls back to the default so it can never stick outside its own list. Session-scoped like the search options beside it — a way of reading one result, not a preference about the app. A references list is rebuilt from its own sites, since re-running the query would throw the list away. |
+| ~~The options were unreachable in a side dock~~ | fixed 2026-09-07 | Aa / W / `.*` lived only in `title_suffix`, and a SIDE dock draws no title strip (`shell/src/skin.rs`) — so on the left rail, where Search opens, none of them rendered. Found by driving, not by reading. They are drawn under the query box now; the title-strip copy stays for a Search dragged to the bottom dock, which keeps its strip. |
 
 ### Commands — palette, menu, keymap (`shell/src/commands.rs`, `palette.rs`)
 
@@ -247,8 +342,8 @@ toggles, view switching, per-theme commands, overrides from settings.
 
 | Left out | Kind | Note |
 |---|---|---|
-| `Escape` from a tool window back to the editor | parity gap | spec §4.5 defers it. |
-| Quick-open | parity gap | as above. |
+| ~~`Escape` from a tool window back to the editor~~ | built 2026-09-07 | the blocker was real and is gone: the command registry modelled a keystroke but not a key CONTEXT, so a global `escape` would have competed with every overlay's own dismissal. `CommandRegistry::register_in` / `Workspace::register_command_in` now carry one, every tool window's root sets `TOOL_WINDOW_CONTEXT`, and **Go ▸ Back to the Editor** is bound to `escape` there and nowhere else. It focuses the active document, or the editor region when nothing is open — a tool window that swallowed the key and focused nothing would be worse than no binding. The palette's own `escape` still dismisses the palette. |
+| ~~Quick-open~~ | built 2026-09-06 | `cmd-p`; `app/src/quick_open.rs`. |
 | `cmd-shift-<digit>` chords | platform | cannot match on Linux — do not bind them (HANDOFF). |
 
 ### Settings (`shell/src/settings*.rs`, `app/src/settings_*.rs`)
@@ -260,11 +355,11 @@ in Code view (ruled 2026-09-05).
 
 | Left out | Kind | Note |
 |---|---|---|
-| App ▸ Editor (default view, fix-on-save) | parity gap | the web's `EditorViewSection` + `EditorSection`; font sizes and **Format on save** (built 2026-09-05, `brink-fmt` over every dirty `.ink`) live in Appearance here; fix-on-save is not built. |
-| App ▸ Player (playback, debug info, external-function check) | parity gap | the Player exists now (§1), so this section has something to configure and nothing is drawn. |
-| Creating `brink.toml` for a project without one | parity gap | every Project section says so and stops; the worker would need to adopt a new config path. |
+| ~~App ▸ Editor (default view, fix-on-save)~~ | built 2026-09-07 | `shell/src/settings_editor.rs`. **Open in** — Restore last (the default, and what the app did before there was a choice) or one of the three views, which then wins over the remembered one, since "always open in Continuous" is a preference about every launch and the last view used is only the memory it replaces. **Fix on save** — every Safe fix over the DIRTY files, before the formatter, so what is laid out is what the fixes wrote; `fixes::fix_all_quietly` is the same engine as Fix All with none of its talk, because a "Nothing to fix." toast on every `cmd-s` is noise about what did not happen. The type and gutter rows the web has here stay in Appearance, beside the font sizes they belong with. |
+| ~~App ▸ Player~~ | built 2026-09-07 | `shell/src/settings_player.rs` — **Follow in editor** and **Player font size**. Paced auto-reveal, debug info and the external-function check are each not ported for a reason the module doc states. |
+| ~~Creating `brink.toml` for a project without one~~ | built 2026-09-07 | every Project section carried "add one beside the entry file and reopen the project" — a studio telling an author to go and use a text editor. The notice now carries a **Create brink.toml** button: the file is written naming the entry and nothing else (every other key has a default the analysis already applies, and a file full of keys nobody chose is one nobody can read later), and the worker ADOPTS it through `Request::SetConfig` — a plain `Edit` would have filed it as an artifact, since a project with no config path treats every non-source write as one. |
 | Formatting: tabs vs spaces | **open ruling** | the row is drawn disabled. |
-| Diagnostics: prose codes | not wired | the registry lists compiler codes only. |
+| Diagnostics: prose codes | not buildable as stated | the registry lists compiler codes because that is what a code IS here: `DiagnosticCode::ALL`, each with a default severity and an `overridable` flag `[lints]` reads. A prose lint has no code — it carries Harper's rule CATEGORY as a free string (`ProseLintJs.kind`), and `[prose]` has `enable`/`dialect`/`dictionary` and no per-rule key for a severity to be written to. Listing them here would mean adding a config schema, which is a maintainer's call. The web studio does not list them either — its Diagnostics section is the same registry, and prose lives in its own Prose section, exactly as here. |
 
 ### Themes and paint (`shell/src/theme.rs`)
 
@@ -273,14 +368,18 @@ Zed's names, per-theme commands, persistence.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Per-line styles from `editor.css` | worker query + port | see the editor row (`line_contexts`). |
-| A theme switch does not repaint bands already laid in manuscript sections and Search cards | cosmetic | they follow at their next edit. |
+| ~~Per-line styles from `editor.css`~~ | built 2026-09-07 | the cue/parenthetical/dialogue rules, from the theme's own `cue`/`cue_weight` tokens (which the shell already carried for them). See the editor row. |
+| ~~A theme switch does not repaint bands in manuscript sections and Search cards~~ | not reproducible 2026-09-07 | driven on the rig: a TODO band in a Continuous section and in a Search card both repaint on a switch (Mocha → Latte → Mocha), band, ink and bold together. Both surfaces observe the theme and discard their editors (`ContinuousView::reload`, `SearchView::restyle`), which rebuilds each highlighter against the new tokens — the row predates those handlers. |
 
 ### The shared buffer and the mirror (`app/src/project.rs`)
 
 Built: one canonical text per file, `SourceDelta` broadcast, per-file
 dirty/save, `cmd-s`, `brink.toml` and artifacts (`dialect.json`) through
-the same road. Nothing consciously left out.
+the same road, and (2026-09-07) **watching the disk**.
+
+| Left out | Kind | Note |
+|---|---|---|
+| ~~A change made outside the studio is invisible~~ | built 2026-09-07 | `app/src/watch.rs`: the project root is watched recursively, paths are gathered for 200 ms so one write (or a `git checkout`) is one look, and what a change MEANS is `classify`, a pure function carrying the web studio's policy (`conflict-view.ts`, #320) — a change under a CLEAN buffer is adopted through `edit` so every editor follows, one under a DIRTY buffer keeps the buffer and is reported. The studio's own writes need no bookkeeping: after a save the disk equals `saved`, which is exactly what "nothing happened" looks like. A file that appears joins the project, one that vanishes leaves it, and both say so. One write reaches a watcher as several events, so a conflict is announced once per disk STATE rather than once per event. Left out: the merge surface for resolving a conflict (see the editor's row). |
 
 ### The worker (`model/src/worker.rs`, `query.rs`)
 
@@ -291,10 +390,10 @@ config re-application, drafts report, resolved dialect.
 | Left out | Kind | Note |
 |---|---|---|
 | ~~CodeActions query~~ | built 2026-09-05 | (Definition / References / Rename / Folding / Fixes / Format: all built 2026-09-05.) |
-| `line_contexts` per file | worker query | for per-line styles. |
+| ~~`line_contexts` per file~~ | built 2026-09-07 | shipped as `Analyzed.cues` (`model/src/cues.rs`): the dialect-classified lines alone, as absolute byte spans, and only when a `[dialogue]` dialect is registered — a project without one computes nothing and sends nothing. The full `LineContext` per line is not shipped and does not need to be; what a highlighter paints is a span. |
 | ~~Compile to `StoryData` and a runtime session~~ | built 2026-09-05/06 | `Request::Play` (the runtime, `model/src/play.rs`) and `QueryKind::Program` (the compile read three ways, `model/src/program.rs`). Both go through the memoized `IdeSession::compile` under one entry rule (`play::entry_file`). |
-| Story-graph query | worker query | for the Story Graph document. |
-| Prose checking | not started | `brink-prose` is a separate wasm module in the web; nothing native runs it (Problems' prose bucket depends on it). |
+| ~~Story-graph query~~ | built 2026-09-07 | `QueryKind::StoryGraph` → `model/src/graph.rs` → the Story Graph panel. |
+| ~~Prose checking~~ | built 2026-09-07 | `QueryKind::Prose` → `model/src/prose.rs` → HINT diagnostics in the open editor. Problems' prose bucket is still out, for the reason its own row gives. |
 
 ## 2. Surfaces not started at all
 
@@ -304,13 +403,13 @@ Against studio-shell-spec §4's inventory:
 |---|---|
 | **Player** | ~~not started~~ **built** — see §1. Continuous swap-in and the Single File split remain the open ruling. |
 | **Program Explorer** | ~~not started~~ **built** — see §1. |
-| **State View** (debugger) | nothing in the shared layer exposes a running `Story`'s state. The Player owns the session, so this is engine work below `IdeSession` plus a panel. |
-| **Output / compile log** | nothing — but unblocked: the worker compiles, times analysis, and drains runtime warnings. Wants a bottom-dock panel and a place to route errors (see the notification row in §1). |
-| **Compiled Output** (`.inkt` tab) | nothing — but unblocked: `brink_format::write_inkt` over the same compile, as a read-only Code-view tab. The Program Explorer's "open .inkt" button waits on it. |
-| **Story Graph** | the story-graph query in the worker; a canvas. |
+| **State View** (debugger) | ~~blocked on engine work~~ **built 2026-09-07** — `app/src/state_view.rs`. That blocker was stale: `Story::debug_snapshot` already assembles status, location, turn, globals, call stack, visit counts, pending choices and the RNG. What was missing was a way to ASK, which is one command on the play session (`PlayCommand::Snapshot`). It reads and does not step — setting a variable, `stepi` and breakpoints each change a running story and are worth their own slice. Refreshed by observing the Player, never polled: a story waiting for a choice is not changing. One nuance it reports faithfully: the runtime's own `visit_counts` comes back empty for this corpus, so the panel says "nothing visited yet" rather than inventing a number. |
+| **Output / compile log** | ~~unblocked~~ **built 2026-09-06** — see §1. |
+| **Compiled Output** (`.inkt` tab) | ~~unblocked~~ **built 2026-09-06** — see §1. |
+| **Story Graph** | ~~the query and a canvas~~ **built 2026-09-07** — `model/src/graph.rs` (the worker query over `brink_ide::story_graph`, which already computed the whole thing), `app/src/graph_layout.rs` (layered by shortest divert distance from the entry; islands walked from their own roots, so an unreachable knot — the thing an author opens a graph to find — is still drawn), `app/src/story_graph.rs` (the panel). Edges are PAINTED in a `canvas` under the nodes and the nodes are ordinary elements on top, so they carry shaped text, hover and clicks. Pan by dragging the background, zoom by buttons; clicking a node opens its declaration. A centre tab on the Player's terms. Left out: following an edge to its divert site (the edge carries it — the hard half is done), and any layout beyond the layering. |
 | **Story transcript** | listed as future in the web too. The Player's transcript is per-session and is not this. |
-| **Notification service** | the layers render (§1); the service does not exist. |
-| **Library** (Binder section) | nothing; a Binder slice. |
+| **Notification service** | ~~the service does not exist~~ **built 2026-09-07** — `shell/src/notify.rs`: a `Notifications` global holding the last 100 notices with a severity, a source and a read flag, plus `notify(…)` which both raises the kit's toast and records it. Warnings and Info auto-hide, errors do not (ruled: "warning and info should be suppressable, just not errors"). The workspace's bell shows the unread count and opens the history, which marks them read and can clear. |
+| **Library** (Binder section) | ~~nothing~~ **built 2026-09-07** — the mounted stdlib lists in the Binder under its own `std/` prefix (no special case: that IS the key the session mounts it at), opens READ-ONLY, and is offered no Rename or Delete. `Project::edit` refuses a library path outright, which is also what stopped the tab coming up marked unsaved — the editor's first Change had been putting the text into `sources` and not `saved`. Re-exported from `brink-environment`'s `stdlib_sources`, the one place a module is registered, so the studio cannot drift from what the session mounts. |
 
 ## 3. Cross-cutting
 

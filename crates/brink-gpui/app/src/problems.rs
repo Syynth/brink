@@ -41,6 +41,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use rowan::TextSize;
 
@@ -62,6 +63,61 @@ pub struct OpenProblem {
     pub span: Range<usize>,
 }
 
+/// What the row's context menu asks the studio to do. Raised rather than
+/// done here for the same reason a navigation is: only the host holds the
+/// tabs and the settings window.
+#[derive(Debug, Clone)]
+pub enum ProblemsMenu {
+    /// Silence this code on this line, or in this file.
+    Suppress {
+        path: String,
+        /// `None` for the whole file.
+        line: Option<u32>,
+        code: String,
+    },
+    /// Open Settings ▸ Diagnostics — the door the panel has lacked.
+    Configure,
+}
+
+gpui::actions!(
+    problems,
+    [
+        /// Open Settings at the Diagnostics section.
+        ConfigureProblem,
+    ]
+);
+
+/// Silence one code, on a line or in a file.
+#[derive(Debug, Clone, PartialEq, gpui::Action)]
+#[action(namespace = problems, no_json)]
+pub struct SuppressProblem {
+    pub path: String,
+    pub line: Option<u32>,
+    pub code: String,
+}
+
+/// Whether the suppression channel would accept this code.
+///
+/// **Everything but an error.** Warnings and Info notes are both
+/// suppressible; `brink_ir::suppressions` refuses a code whose DEFAULT
+/// severity is `Error`, because an error means no correct artifact can be
+/// produced and silencing one would be a way to ship broken code.
+///
+/// The rule is stated as "not an error" rather than "warnings only" on
+/// purpose: `brink_ir::suppressions`'s own heading reads "Only warnings
+/// are suppressible" while its text says it refuses errors, and reading
+/// the heading is what would leave an author unable to silence an Info
+/// note like `E189` — which the channel accepts perfectly well.
+///
+/// A code the registry does not know is left alone rather than guessed at.
+#[must_use]
+pub fn is_suppressible(code: &str) -> bool {
+    brink_ide::diagnostic_registry::registry()
+        .iter()
+        .find(|info| info.code.as_str() == code)
+        .is_some_and(|info| info.default_severity != brink_ir::Severity::Error)
+}
+
 /// The lint code TODO notes carry (decision log 2026-08-23: emitted at HIR
 /// lowering as Info-severity diagnostics).
 const TODO_CODE: &str = "E189";
@@ -74,10 +130,25 @@ pub enum Bucket {
     /// Info and Hint together: the rows render them identically.
     Info,
     Todo,
+    /// A prose lint (`brink-prose`). Its own bucket for the same reason
+    /// TODO notes have one — it is a different KIND of remark, and one an
+    /// author writing fiction will want off as often as on, since a
+    /// character's name is a spelling mistake to a dictionary.
+    Prose,
 }
 
 impl Bucket {
-    pub const ALL: [Self; 4] = [Self::Error, Self::Warning, Self::Info, Self::Todo];
+    pub const ALL: [Self; 5] = [
+        Self::Error,
+        Self::Warning,
+        Self::Info,
+        Self::Todo,
+        Self::Prose,
+    ];
+
+    /// The code prefix every prose lint carries, from the checker's rule
+    /// category — the same code the editor's own squiggle uses.
+    pub const PROSE_PREFIX: &'static str = "prose.";
 
     /// Source before severity: a TODO note is Info-severity, and letting it
     /// fall through to the `Info` bucket would make "off by default"
@@ -85,6 +156,9 @@ impl Bucket {
     fn of(d: &Diagnostic) -> Self {
         if d.code == TODO_CODE {
             return Self::Todo;
+        }
+        if d.code.starts_with(Self::PROSE_PREFIX) {
+            return Self::Prose;
         }
         match d.severity {
             Severity::Error => Self::Error,
@@ -99,6 +173,7 @@ impl Bucket {
             Self::Warning => 1,
             Self::Info => 2,
             Self::Todo => 3,
+            Self::Prose => 4,
         }
     }
 
@@ -110,6 +185,7 @@ impl Bucket {
             Self::Warning => "\u{25B2}",
             Self::Info => "\u{2139}",
             Self::Todo => "\u{2611}",
+            Self::Prose => "\u{270E}",
         }
     }
 
@@ -119,12 +195,17 @@ impl Bucket {
             Self::Warning => "warnings",
             Self::Info => "info and hints",
             Self::Todo => "TODO notes",
+            Self::Prose => "prose lints (open files)",
         }
     }
 
     /// Off by default for TODO notes only — see the module doc.
+    /// TODO notes and prose lints are off until asked for. A TODO is an
+    /// author's own note rather than a problem; a prose lint exists only
+    /// for the files that happen to be OPEN, and a list that grew and
+    /// shrank as tabs opened would read as the project changing.
     const fn on_by_default(self) -> bool {
-        !matches!(self, Self::Todo)
+        !matches!(self, Self::Todo | Self::Prose)
     }
 
     /// Errors first at one offset.
@@ -134,6 +215,7 @@ impl Bucket {
             Self::Warning => 1,
             Self::Info => 2,
             Self::Todo => 3,
+            Self::Prose => 4,
         }
     }
 }
@@ -200,8 +282,8 @@ pub fn build_rows<'a>(
 }
 
 /// Per-bucket totals, indexed by [`Bucket::index`].
-pub fn count_by_bucket<'a>(rows: impl IntoIterator<Item = &'a Row>) -> [usize; 4] {
-    let mut counts = [0; 4];
+pub fn count_by_bucket<'a>(rows: impl IntoIterator<Item = &'a Row>) -> [usize; 5] {
+    let mut counts = [0; 5];
     for row in rows {
         counts[row.bucket.index()] += 1;
     }
@@ -217,14 +299,14 @@ pub fn matches_filter(row: &Row, query: &str) -> bool {
 }
 
 /// The toggles and the filter applied, order preserved.
-pub fn visible_rows<'a>(rows: &'a [Row], enabled: &[bool; 4], query: &str) -> Vec<&'a Row> {
+pub fn visible_rows<'a>(rows: &'a [Row], enabled: &[bool; 5], query: &str) -> Vec<&'a Row> {
     rows.iter()
         .filter(|row| enabled[row.bucket.index()] && matches_filter(row, query))
         .collect()
 }
 
 /// "2 errors · 1 warning · 1 info · 1 todo", omitting empty buckets.
-pub fn summarize(counts: &[usize; 4]) -> String {
+pub fn summarize(counts: &[usize; 5]) -> String {
     let mut parts = Vec::new();
     let plural = |n: usize, one: &str, many: &str| {
         if n == 1 {
@@ -244,6 +326,9 @@ pub fn summarize(counts: &[usize; 4]) -> String {
     }
     if counts[3] > 0 {
         parts.push(format!("{} todo", counts[3]));
+    }
+    if counts[4] > 0 {
+        parts.push(format!("{} prose", counts[4]));
     }
     parts.join(" \u{B7} ")
 }
@@ -315,10 +400,10 @@ pub struct Problems {
     /// Every diagnostic, canonical order, rebuilt when an analysis lands.
     rows: Vec<Row>,
     /// Totals over `rows`, for the toggles.
-    counts: [usize; 4],
+    counts: [usize; 5],
     /// What the list draws — `rows` after the toggles, filter and grouping.
     items: Vec<Item>,
-    enabled: [bool; 4],
+    enabled: [bool; 5],
     grouped: bool,
     collapsed: BTreeSet<String>,
     filter: Entity<InputState>,
@@ -334,6 +419,26 @@ pub struct Problems {
 }
 
 impl EventEmitter<OpenProblem> for Problems {}
+impl EventEmitter<ProblemsMenu> for Problems {}
+
+impl Problems {
+    fn on_suppress(
+        &mut self,
+        action: &SuppressProblem,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(ProblemsMenu::Suppress {
+            path: action.path.clone(),
+            line: action.line,
+            code: action.code.clone(),
+        });
+    }
+
+    fn on_configure(&mut self, _: &ConfigureProblem, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ProblemsMenu::Configure);
+    }
+}
 impl EventEmitter<PanelEvent> for Problems {}
 
 impl Problems {
@@ -346,7 +451,10 @@ impl Problems {
             }
         });
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
-            if matches!(event, ProjectEvent::Analyzed) {
+            // Prose moves on its own schedule — per open file, as the
+            // checker answers — so it is its own event, and this panel is
+            // the only thing that lists it.
+            if matches!(event, ProjectEvent::Analyzed | ProjectEvent::ProseChanged) {
                 this.rebuild(cx);
             }
         });
@@ -354,13 +462,14 @@ impl Problems {
             project,
             focus: cx.focus_handle(),
             rows: Vec::new(),
-            counts: [0; 4],
+            counts: [0; 5],
             items: Vec::new(),
             enabled: [
                 Bucket::Error.on_by_default(),
                 Bucket::Warning.on_by_default(),
                 Bucket::Info.on_by_default(),
                 Bucket::Todo.on_by_default(),
+                Bucket::Prose.on_by_default(),
             ],
             grouped: true,
             collapsed: BTreeSet::new(),
@@ -384,9 +493,14 @@ impl Problems {
     /// rather than on every frame.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let project = self.project.read(cx);
-        self.rows = build_rows(project.all_diagnostics(), |path| {
-            project.loaded_source(path).map(str::to_owned)
-        });
+        // The compiler's diagnostics and the prose checker's, in one list.
+        // They arrive separately because they are computed separately —
+        // one per analysis over the whole project, one per OPEN file —
+        // and `build_rows` is happy to be handed both.
+        self.rows = build_rows(
+            project.all_diagnostics().chain(project.all_prose()),
+            |path| project.loaded_source(path).map(str::to_owned),
+        );
         self.counts = count_by_bucket(&self.rows);
         self.relayout(cx);
         self.refresh_offers(cx);
@@ -564,6 +678,11 @@ impl Problems {
                 // The row's first offered fix; the rest are one `cmd-.`
                 // away in the editor once the row is opened.
                 let fix = self.offers.get(&key).and_then(|f| f.first()).cloned();
+                let menu_focus = self.focus.clone();
+                let path = row.path.clone();
+                let code = SharedString::from(row.code.clone());
+                let line = row.line_col.map(|(l, _)| l);
+                let suppressible = is_suppressible(&row.code);
                 h_flex()
                     .id(("problem", ix))
                     // Full width and clipped, or a long message pushes the
@@ -617,6 +736,46 @@ impl Problems {
                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                         cx.emit(open.clone());
                     }))
+                    .context_menu(move |menu, _window, _cx| {
+                        let menu = menu.action_context(menu_focus.clone()).label(code.clone());
+                        // Anything but an error can be silenced — warnings
+                        // and Info notes alike. The channel refuses an
+                        // error outright, so offering it there would build
+                        // the silent no-op the Diagnostics section exists
+                        // to prevent.
+                        let menu = if suppressible && line.is_some() {
+                            menu.separator()
+                                .menu(
+                                    "Suppress on this line",
+                                    Box::new(SuppressProblem {
+                                        path: path.clone(),
+                                        line,
+                                        code: code.to_string(),
+                                    }),
+                                )
+                                .menu(
+                                    "Suppress in this file",
+                                    Box::new(SuppressProblem {
+                                        path: path.clone(),
+                                        line: None,
+                                        code: code.to_string(),
+                                    }),
+                                )
+                        } else if suppressible {
+                            menu.separator().menu(
+                                "Suppress in this file",
+                                Box::new(SuppressProblem {
+                                    path: path.clone(),
+                                    line: None,
+                                    code: code.to_string(),
+                                }),
+                            )
+                        } else {
+                            menu
+                        };
+                        menu.separator()
+                            .menu("Configure\u{2026}", Box::new(ConfigureProblem))
+                    })
                     .into_any_element()
             }
         }
@@ -752,6 +911,9 @@ impl Render for Problems {
         v_flex()
             .id("problems")
             .track_focus(&self.focus)
+            .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
+            .on_action(cx.listener(Self::on_suppress))
+            .on_action(cx.listener(Self::on_configure))
             .size_full()
             .text_xs()
             .when(self.filter_open, |el| {
@@ -774,6 +936,65 @@ impl Render for Problems {
                 )
             })
     }
+}
+
+/// Where a suppression comment goes, and what it says.
+///
+/// The comment channel is line-scoped and reads FORWARD:
+/// `// brink-disable E027` silences the **next** line
+/// (`brink_ir::suppressions`). So the directive is inserted on its own line
+/// ABOVE the diagnostic's line, wearing that line's indentation — a
+/// directive tacked onto the end of the line would silence the line after
+/// the one the author pointed at.
+///
+/// Returns the byte offset to insert at and the text, or `None` when the
+/// line is out of range.
+#[must_use]
+pub fn suppress_line_edit(source: &str, line: u32, code: &str) -> Option<(usize, String)> {
+    let line_ix = line.checked_sub(1)? as usize;
+    let mut at = 0usize;
+    for (i, l) in source.split_inclusive('\n').enumerate() {
+        if i == line_ix {
+            let indent: String = l.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            return Some((at, format!("{indent}// brink-disable {code}\n")));
+        }
+        at += l.len();
+    }
+    None
+}
+
+/// The file-wide form. An existing `// brink-disable-file` line takes the
+/// code rather than a second directive being added: two lines silencing
+/// different codes is legal but reads as a mistake, and the parser is
+/// happy with a list.
+///
+/// Returns the whole new source, or `None` when the code is already
+/// covered — so a menu entry that would change nothing can be hidden.
+#[must_use]
+pub fn suppress_file_source(source: &str, code: &str) -> Option<String> {
+    const DIRECTIVE: &str = "// brink-disable-file";
+    let mut at = 0usize;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(DIRECTIVE) {
+            // `-all` is a different directive and already covers this.
+            if rest.starts_with("-all") {
+                return None;
+            }
+            if rest.split_whitespace().any(|c| c == code) {
+                return None;
+            }
+            let end = at + line.trim_end_matches(['\n', '\r']).len();
+            let mut out = String::with_capacity(source.len() + code.len() + 1);
+            out.push_str(&source[..end]);
+            out.push(' ');
+            out.push_str(code);
+            out.push_str(&source[end..]);
+            return Some(out);
+        }
+        at += line.len();
+    }
+    Some(format!("{DIRECTIVE} {code}\n{source}"))
 }
 
 #[cfg(test)]
@@ -842,8 +1063,8 @@ mod tests {
     #[test]
     fn todo_notes_are_their_own_bucket_and_off_by_default() {
         let rows = rows();
-        assert_eq!(count_by_bucket(&rows), [1, 1, 1, 1]);
-        let defaults = [true, true, true, false];
+        assert_eq!(count_by_bucket(&rows), [1, 1, 1, 1, 0]);
+        let defaults = [true, true, true, false, false];
         let visible = visible_rows(&rows, &defaults, "");
         assert!(visible.iter().all(|r| r.bucket != Bucket::Todo));
         assert_eq!(visible.len(), 3);
@@ -852,7 +1073,7 @@ mod tests {
     #[test]
     fn the_filter_matches_message_or_location() {
         let rows = rows();
-        let all = [true; 4];
+        let all = [true; 5];
         assert_eq!(visible_rows(&rows, &all, "EARLY").len(), 1);
         assert_eq!(visible_rows(&rows, &all, "b.ink").len(), 1);
         assert_eq!(visible_rows(&rows, &all, "2:2").len(), 2);
@@ -862,7 +1083,7 @@ mod tests {
     #[test]
     fn grouping_makes_headings_with_summaries_and_collapses() {
         let rows = rows();
-        let all = [true; 4];
+        let all = [true; 5];
         let visible = visible_rows(&rows, &all, "");
         let items = layout(&rows, &visible, true, &BTreeSet::new());
         assert!(matches!(
@@ -895,12 +1116,129 @@ mod tests {
     }
 
     #[test]
-    fn summaries_pluralise_and_omit_empty_buckets() {
-        assert_eq!(summarize(&[2, 1, 0, 0]), "2 errors \u{B7} 1 warning");
+    fn warnings_and_info_are_suppressible_but_errors_are_not() {
+        // The rule is "not an error", not "warnings only": an Info note
+        // like E189 is silenceable, and an author who wants one gone must
+        // be offered the menu entry for it.
+        let registry = brink_ide::diagnostic_registry::registry();
+        let by_severity = |want: brink_ir::Severity| {
+            registry
+                .iter()
+                .find(|i| i.default_severity == want)
+                .map(|i| i.code.as_str().to_owned())
+        };
+        if let Some(code) = by_severity(brink_ir::Severity::Warning) {
+            assert!(is_suppressible(&code), "a warning is suppressible: {code}");
+        }
+        if let Some(code) = by_severity(brink_ir::Severity::Info) {
+            assert!(is_suppressible(&code), "an info note is too: {code}");
+        }
+        let error = by_severity(brink_ir::Severity::Error)
+            .expect("the registry has at least one error-tier code");
+        assert!(!is_suppressible(&error), "an error is not: {error}");
+    }
+
+    #[test]
+    fn the_todo_code_is_suppressible() {
+        // The one Info code named in this file, pinned by name so the
+        // general rule above cannot pass vacuously.
+        assert!(is_suppressible(TODO_CODE));
+    }
+
+    #[test]
+    fn an_unknown_code_is_left_alone() {
+        assert!(!is_suppressible("E9999"));
+    }
+
+    #[test]
+    fn a_line_suppression_goes_above_the_line_it_silences() {
+        // The directive reads FORWARD, so it must sit on its own line
+        // above — on the same line it would silence the wrong one.
+        let src = "=== k ===\nHello.\n-> DONE\n";
+        let (at, text) = suppress_line_edit(src, 2, "E027").expect("line 2 exists");
+        assert_eq!(at, "=== k ===\n".len());
+        assert_eq!(text, "// brink-disable E027\n");
+        let mut out = src.to_owned();
+        out.insert_str(at, &text);
+        assert_eq!(out, "=== k ===\n// brink-disable E027\nHello.\n-> DONE\n");
+    }
+
+    #[test]
+    fn a_line_suppression_keeps_the_lines_indentation() {
+        let src = "=== k ===\n    Hello.\n";
+        let (_, text) = suppress_line_edit(src, 2, "E027").expect("line 2");
+        assert_eq!(text, "    // brink-disable E027\n");
+    }
+
+    #[test]
+    fn a_line_past_the_end_has_no_edit() {
+        assert!(suppress_line_edit("one\n", 9, "E027").is_none());
+        assert!(suppress_line_edit("one\n", 0, "E027").is_none(), "1-based");
+    }
+
+    #[test]
+    fn a_file_suppression_goes_at_the_top() {
+        let out = suppress_file_source("=== k ===\n", "E027").expect("not yet covered");
+        assert_eq!(out, "// brink-disable-file E027\n=== k ===\n");
+    }
+
+    #[test]
+    fn a_second_code_joins_the_existing_directive() {
+        // Rather than a second line: the parser takes a list, and two
+        // directives read as a mistake.
+        let src = "// brink-disable-file E027\n=== k ===\n";
+        let out = suppress_file_source(src, "E035").expect("E035 not covered");
+        assert_eq!(out, "// brink-disable-file E027 E035\n=== k ===\n");
+    }
+
+    #[test]
+    fn a_code_already_covered_has_no_edit() {
+        let src = "// brink-disable-file E027 E035\n=== k ===\n";
+        assert!(suppress_file_source(src, "E035").is_none());
+        // `-all` covers everything, so adding a code would be noise.
+        let all = "// brink-disable-file-all\n=== k ===\n";
+        assert!(suppress_file_source(all, "E027").is_none());
+    }
+
+    #[test]
+    fn a_prose_lint_is_its_own_bucket_and_is_off_by_default() {
+        // The code prefix is the whole test: a prose lint is a Hint like
+        // several compiler diagnostics, so severity cannot tell them
+        // apart and the bucket would be unexpressible.
+        let lint = diag(0, Severity::Hint, "prose.Spelling", "\"teh\" is a typo");
+        let hint = diag(4, Severity::Hint, "E200", "an ordinary hint");
+        assert_eq!(Bucket::of(&lint), Bucket::Prose);
+        assert_eq!(Bucket::of(&hint), Bucket::Info);
+        assert!(!Bucket::Prose.on_by_default());
+
+        let rows = build_rows([(&"a.ink".to_owned(), &vec![lint, hint])], |_| {
+            Some("hello world\n".to_owned())
+        });
+        assert_eq!(count_by_bucket(&rows), [0, 0, 1, 0, 1]);
+        let defaults = [
+            Bucket::Error.on_by_default(),
+            Bucket::Warning.on_by_default(),
+            Bucket::Info.on_by_default(),
+            Bucket::Todo.on_by_default(),
+            Bucket::Prose.on_by_default(),
+        ];
+        let visible = visible_rows(&rows, &defaults, "");
+        assert_eq!(visible.len(), 1, "the prose row is filtered out");
+        assert_eq!(visible[0].code, "E200");
         assert_eq!(
-            summarize(&[1, 0, 3, 1]),
-            "1 error \u{B7} 3 info \u{B7} 1 todo"
+            visible_rows(&rows, &[true; 5], "").len(),
+            2,
+            "until asked for"
         );
-        assert_eq!(summarize(&[0; 4]), "");
+    }
+
+    #[test]
+    fn summaries_pluralise_and_omit_empty_buckets() {
+        assert_eq!(summarize(&[2, 1, 0, 0, 0]), "2 errors \u{B7} 1 warning");
+        assert_eq!(
+            summarize(&[1, 0, 3, 1, 2]),
+            "1 error \u{B7} 3 info \u{B7} 1 todo \u{B7} 2 prose"
+        );
+        assert_eq!(summarize(&[0; 5]), "");
     }
 }

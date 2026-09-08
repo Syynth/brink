@@ -24,13 +24,15 @@
 //! the same file has no result anyone will ever see — that is declining to
 //! do dead work, not delaying live work.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use brink_ide::session::IdeSession;
 
+use crate::cues::CueLine;
 use crate::play::{Play, PlayCommand, PlayOutcome};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
@@ -73,6 +75,24 @@ pub enum Request {
         /// far behind an arriving result is.
         revision: u64,
     },
+    /// A file was created or renamed INTO the project: analyse it under
+    /// this path from now on.
+    ///
+    /// Distinct from [`Request::Edit`], which is the text of a file the
+    /// session already knows — `update_source` would create the file
+    /// silently there, and a typo'd path would become a phantom source
+    /// nobody could see. Here creating one IS the point, so it is said
+    /// out loud.
+    AddFile { path: String, text: String },
+    /// Adopt `path` as the project's `brink.toml` — a project that had
+    /// none until the studio wrote one. Distinct from [`Request::Edit`],
+    /// which only re-applies the config the session already knows: a
+    /// project with no config path treats every write as an artifact,
+    /// which is where a newly created `brink.toml` went before this.
+    SetConfig { path: String, text: String },
+    /// A file left the project: forget it. A rename is a `RemoveFile`
+    /// then an `AddFile`, in that order.
+    RemoveFile { path: String },
     /// Drive the play session — see [`crate::play`]. Answered after the
     /// queries of the same drain, against the same text.
     Play {
@@ -102,6 +122,12 @@ pub struct Opened {
     pub entry: Option<String>,
     /// Config-file warnings, already prefixed with their source.
     pub warnings: Vec<String>,
+    /// Files the config POINTS AT and the session never sees as
+    /// documents — `dialect.json` above all. Root-relative key and text,
+    /// read while the config was applied. The mirror holds them like the
+    /// config: editable, saveable, and listed in the Binder, but never in
+    /// `files`, because they are not sources.
+    pub artifacts: Vec<(String, String)>,
     /// The project's `brink.toml`, if it has one — a file the mirror holds
     /// in the shared buffer like any other, so Settings' Project sections
     /// and a raw editor over it are views of one text. Not in `files`: it
@@ -144,6 +170,12 @@ pub struct Analyzed {
     /// costs *refinement* alone — an identifier not yet known to name a
     /// knot. Structure is decidable from syntax and never comes from here.
     pub kinds: BTreeMap<String, Kinds>,
+    /// Dialect-classified lines per file — the cue/parenthetical/dialogue
+    /// styling the studio paints (`brink_gpui_model::cues`). Empty for a
+    /// project with no `[dialogue]` dialect, which is the common case and
+    /// costs nothing: the classification only exists where a dialect
+    /// registered one.
+    pub cues: BTreeMap<String, Vec<CueLine>>,
     /// `[project] drafts` resolved against the compile closure.
     pub drafts: Vec<String>,
     /// The compile closure — the files the story actually reaches. A file
@@ -205,9 +237,46 @@ pub struct ConfigState {
     /// The current text's parse error, if it has one: its byte span in
     /// the text (when the parser knows one) and its message.
     error: Option<(Option<Range<usize>>, String)>,
+    /// Artifact keys the config's reader actually asked for, learned by
+    /// watching the reads rather than by re-deriving which keys a
+    /// `[dialogue]` table might name — the config crate decides that, and
+    /// a second guess here would drift from it.
+    read_artifacts: BTreeSet<String>,
+    /// `[prose]` as applied: whether checking runs, in which English, and
+    /// the author's own word list. Kept beside the entry rather than read
+    /// back out of the text, so the check sees the config that is applied
+    /// and not one being typed.
+    prose: Option<ProseState>,
+}
+
+/// The `[prose]` table, as the checker needs it.
+#[derive(Debug, Clone, Default)]
+pub struct ProseState {
+    pub enable: bool,
+    pub dialect: Option<String>,
+    pub dictionary: Vec<String>,
 }
 
 impl ConfigState {
+    /// `[prose] enable`, defaulting to ON — a project that has said
+    /// nothing wants its prose checked.
+    #[must_use]
+    pub fn prose_enabled(&self) -> bool {
+        self.prose.as_ref().is_none_or(|p| p.enable)
+    }
+
+    /// `[prose] dialect` as written, or `None` for the default.
+    #[must_use]
+    pub fn prose_dialect(&self) -> Option<&str> {
+        self.prose.as_ref().and_then(|p| p.dialect.as_deref())
+    }
+
+    /// `[prose] dictionary` — the author's own word list.
+    #[must_use]
+    pub fn prose_dictionary(&self) -> &[String] {
+        self.prose.as_ref().map_or(&[], |p| p.dictionary.as_slice())
+    }
+
     #[must_use]
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
@@ -321,6 +390,10 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
+    // The breakpoints the editor has marked, source-level and outliving
+    // any one play session — a mark set before Play is pressed must be
+    // armed by the Start that follows.
+    let mut breakpoints: Vec<(String, u32)> = Vec::new();
     // The author's file keys, for the play session's entry stand-in rule.
     let mut files: Vec<String> = Vec::new();
     let mut play: Option<Play> = None;
@@ -378,6 +451,28 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     revision = revision.max(rev);
                     edited = true;
                 }
+                Request::AddFile { path, text } => {
+                    session.update_source(&path, text);
+                    if !files.contains(&path) {
+                        files.push(path);
+                        // The file list is the order every surface reads —
+                        // keep it sorted rather than "whenever it was
+                        // made", which would put a new file last forever.
+                        files.sort();
+                    }
+                    edited = true;
+                }
+                Request::SetConfig { path, text } => {
+                    config.path = Some(path);
+                    let current = text.clone();
+                    apply_config_text(&mut session, &mut config, &current);
+                    edited = true;
+                }
+                Request::RemoveFile { path } => {
+                    session.remove_file(&path);
+                    files.retain(|f| f != &path);
+                    edited = true;
+                }
             }
         }
 
@@ -423,6 +518,34 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                 )))
+            } else if let QueryKind::Prose { path } = &kind {
+                // The config decides whether it runs at all, in which
+                // English, and which invented names are words.
+                if config.prose_enabled() {
+                    let dictionary =
+                        crate::prose::project_dictionary(&session, config.prose_dictionary());
+                    QueryResult::Prose(
+                        crate::prose::check(&session, path, &dictionary, config.prose_dialect())
+                            .unwrap_or_default(),
+                    )
+                } else {
+                    QueryResult::Prose(Vec::new())
+                }
+            } else if matches!(kind, QueryKind::StoryGraph) {
+                // Same reason as `Program`: the entry and the file list
+                // live in this loop.
+                QueryResult::StoryGraph(Box::new(crate::graph::report(
+                    &session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
+            } else if matches!(kind, QueryKind::CompiledOutput) {
+                // Same reason as `Program`, and the same memoized compile.
+                QueryResult::CompiledOutput(Box::new(crate::compiled::output(
+                    &mut session,
+                    config.entry.as_deref(),
+                    &files,
+                )))
             } else {
                 crate::query::answer(&mut session, &kind)
             };
@@ -439,6 +562,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                     &mut play,
+                    &mut breakpoints,
                     command,
                 )
             } else {
@@ -471,6 +595,20 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
     let (config, state) = load_config(session, &root, &files);
     session.refresh_analysis();
 
+    // What the config pointed at, so the mirror can hold it and the
+    // Binder can list it. Read from disk here rather than remembered from
+    // the reader: the reader may have served an unsaved edit, and on
+    // OPEN there is no such thing yet.
+    let artifacts: Vec<(String, String)> = state
+        .read_artifacts
+        .iter()
+        .filter_map(|key| {
+            std::fs::read_to_string(root.join(key))
+                .ok()
+                .map(|text| (key.clone(), text))
+        })
+        .collect();
+
     let warnings = state
         .error
         .iter()
@@ -485,6 +623,7 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
             sources,
             entry: state.entry.clone(),
             warnings,
+            artifacts,
             config,
             elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
         },
@@ -569,7 +708,9 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
             session.set_type_policy(brink_analyzer::resolve_type_policy(dialect, config.types));
             let root = state.root.clone();
             let artifacts = state.artifacts.clone();
+            let asked: RefCell<BTreeSet<String>> = RefCell::new(BTreeSet::new());
             let read_file = |key: &str| -> Option<String> {
+                asked.borrow_mut().insert(key.to_owned());
                 artifacts
                     .get(key)
                     .cloned()
@@ -583,6 +724,14 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 &read_file,
             ));
             state.entry.clone_from(&config.entry);
+            state.prose = Some(ProseState {
+                // Unset means on: a project that has said nothing about
+                // prose still wants its prose checked.
+                enable: config.prose_enable.unwrap_or(true),
+                dialect: config.prose_dialect.map(|d| d.as_str().to_owned()),
+                dictionary: config.prose_dictionary.clone(),
+            });
+            state.read_artifacts = asked.into_inner();
             state.warnings = warnings;
             state.error = None;
             set_compile_entry(session, state.entry.as_deref());
@@ -631,6 +780,25 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         }
     }
 
+    // Dialect-classified lines. Guarded on a registered dialect rather
+    // than computed and found empty: `line_contexts` is a real pass per
+    // file, and a project with no `[dialogue]` has nothing for it to find.
+    let mut cues: BTreeMap<String, Vec<CueLine>> = BTreeMap::new();
+    if session.dialect().is_some() {
+        for id in session.db().file_ids().collect::<Vec<_>>() {
+            if session.is_mounted_std(id) {
+                continue;
+            }
+            let Some(path) = session.db().file_path(id).map(str::to_owned) else {
+                continue;
+            };
+            let lines = crate::cues::cue_lines(session, id);
+            if !lines.is_empty() {
+                cues.insert(path, lines);
+            }
+        }
+    }
+
     let types = session.type_policy();
     let lints = session.lint_policy().clone();
     let mut diagnostics: BTreeMap<String, Vec<Diagnostic>> = BTreeMap::new();
@@ -642,10 +810,22 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
             continue;
         };
         let path = path.to_owned();
-        let found: Vec<Diagnostic> = session
-            .db()
-            .diagnostics(id)
-            .unwrap_or(&[])
+        // Suppressions FIRST, then severity. `db().diagnostics` is the raw
+        // list: a `// brink-disable`/`brink-expect` directive withdraws a
+        // diagnostic before any surface sees it, and reading the raw list
+        // here is what made those directives do nothing in this studio —
+        // the same defect the web's fix road already had and fixed
+        // (`brink_ide::fix`'s own note). An `@[allow(…)]` scope rides
+        // `HirFile::allow_scopes` and is folded in by `Suppressions`
+        // itself, so this one call covers both channels.
+        let raw: Vec<brink_ir::Diagnostic> = session.db().diagnostics(id).unwrap_or(&[]).to_vec();
+        let raw = match (session.db().suppressions(id), session.db().source(id)) {
+            (Some(suppressions), Some(source)) => {
+                brink_ir::suppressions::apply_suppressions(id, source, raw, suppressions)
+            }
+            _ => raw,
+        };
+        let found: Vec<Diagnostic> = raw
             .iter()
             .filter_map(|d| {
                 let severity = brink_analyzer::effective_severity(d.code, types, &lints)?;
@@ -679,6 +859,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         revision,
         diagnostics,
         kinds,
+        cues,
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
@@ -823,6 +1004,50 @@ mod tests {
             session.draft_paths(),
             vec!["notes/scratch.ink".to_owned()],
             "a glob match outside the compile closure is a draft"
+        );
+    }
+
+    /// Drain until the next `Analyzed`, which is the only response an edit
+    /// produces.
+    fn next_analysis(worker: &Worker) -> Box<Analyzed> {
+        loop {
+            if let Response::Analyzed(analyzed) = next(worker) {
+                return analyzed;
+            }
+        }
+    }
+
+    #[test]
+    fn a_brink_disable_directive_withdraws_its_diagnostic() {
+        // The comment channel reads FORWARD: the directive silences the
+        // NEXT line. Reading the RAW diagnostics list here is what made
+        // every `// brink-disable` in this studio do nothing.
+        let tree = Tree::new(
+            "suppress",
+            &[("main.ink", "=== k ===\n* [Go] -> k\n-> DONE\n")],
+        );
+        let worker = drive(&tree);
+        let before = next_analysis(&worker);
+        let code = before
+            .diagnostics
+            .get("main.ink")
+            .and_then(|d| d.first())
+            .map(|d| d.code.clone())
+            .expect("the unnamed once-only choice reports something");
+
+        worker.send(Request::Edit {
+            path: "main.ink".to_owned(),
+            text: format!("=== k ===\n// brink-disable {code}\n* [Go] -> k\n-> DONE\n"),
+            revision: 2,
+        });
+        let after = next_analysis(&worker);
+        assert!(
+            after
+                .diagnostics
+                .get("main.ink")
+                .is_none_or(|d| d.iter().all(|d| d.code != code)),
+            "the directive withdraws it, got {:?}",
+            after.diagnostics.get("main.ink")
         );
     }
 
@@ -1083,6 +1308,56 @@ mod tests {
             panic!("a program report");
         };
         assert!(matches!(&report.status, ProgramStatus::Errors(e) if !e.is_empty()));
+    }
+
+    #[test]
+    fn compiled_output_dumps_the_inkt_of_the_same_compile() {
+        use crate::compiled::CompiledStatus;
+        let tree = Tree::new(
+            "inkt",
+            &[(
+                "main.ink",
+                "VAR torch = 3\n=== greet ===\nHello {torch}.\n-> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::CompiledOutput,
+            reply,
+        });
+        let QueryResult::CompiledOutput(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a compiled-output report");
+        };
+        assert_eq!(report.entry.as_deref(), Some("main.ink"));
+        let CompiledStatus::Ready { text, bytes } = &report.status else {
+            panic!("compiles clean: {report:?}");
+        };
+        // The `.inkt` grammar's own shape, not a pretty-print of ours: a
+        // `(story` head, the global, and the knot by name.
+        assert!(text.starts_with("(story"), "{text}");
+        assert!(text.contains("torch"), "{text}");
+        assert!(text.contains("greet"), "{text}");
+        assert!(*bytes > 0, "the .inkb it was read from has a size");
+    }
+
+    #[test]
+    fn compiled_output_reports_errors_rather_than_a_stale_dump() {
+        use crate::compiled::CompiledStatus;
+        let tree = Tree::new("inkt-bad", &[("main.ink", "-> nowhere\n")]);
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::CompiledOutput,
+            reply,
+        });
+        let QueryResult::CompiledOutput(report) = answer.recv_blocking().expect("answered") else {
+            panic!("a compiled-output report");
+        };
+        assert!(
+            matches!(&report.status, CompiledStatus::Errors(e) if !e.is_empty()),
+            "{report:?}"
+        );
     }
 
     #[test]
@@ -1638,6 +1913,155 @@ mod tests {
         let mut session = session_with_stdlib();
         let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
+    }
+
+    #[test]
+    fn the_story_graph_query_answers_with_nodes_and_edges() {
+        let tree = Tree::new(
+            "graph",
+            &[
+                ("brink.toml", "[project]\nentry = \"main.ink\"\n"),
+                (
+                    "main.ink",
+                    "-> shore\n=== shore ===\nThe tide.\n* [Walk] -> light\n=== light ===\nThe lamp.\n-> END\n",
+                ),
+            ],
+        );
+        let worker = drive(&tree);
+        let (reply, answer) = async_channel::bounded(1);
+        worker.send(Request::Query {
+            kind: QueryKind::StoryGraph,
+            reply,
+        });
+        let QueryResult::StoryGraph(graph) = answer.recv_blocking().expect("answered") else {
+            panic!("a story graph");
+        };
+        let names: Vec<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(names.contains(&"shore"), "{names:?}");
+        assert!(names.contains(&"light"), "{names:?}");
+        assert_eq!(
+            graph.entry.as_deref(),
+            Some("shore"),
+            "the entry is the root"
+        );
+        // The choice's target is an edge, and it knows where it was
+        // written — which is how following one opens the source.
+        let choice = graph
+            .edges
+            .iter()
+            .find(|e| e.from == "shore" && e.to == "light")
+            .expect("shore -> light");
+        assert_eq!(choice.kind, "choice");
+        let (path, start, end) = choice.site.clone().expect("a site");
+        assert_eq!(path, "main.ink");
+        assert!(end > start);
+        // `-> END` is a pseudo-node: it is nowhere in the text.
+        let end_node = graph.nodes.iter().find(|n| n.kind == "end");
+        assert!(end_node.is_some_and(|n| n.file.is_none() && n.range.is_none()));
+    }
+
+    #[test]
+    fn a_config_that_points_at_a_file_reports_it_as_an_artifact() {
+        // `[dialogue] file = "dialect.json"` is what Settings ▸
+        // Conventions writes when a dialect will not fit the table. Until
+        // the artifact rode `Opened`, nothing in the studio could open the
+        // file it had just written.
+        let tree = Tree::new(
+            "artifact",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\n\n[dialogue]\nfile = \"dialect.json\"\n",
+                ),
+                ("start.ink", "Hello.\n-> DONE\n"),
+                ("dialect.json", "{\n  \"elements\": []\n}\n"),
+            ],
+        );
+        let (_session, opened, _state) = open_tree_with_config(&tree);
+        assert_eq!(
+            opened.artifacts,
+            vec![(
+                "dialect.json".to_owned(),
+                "{\n  \"elements\": []\n}\n".to_owned()
+            )],
+            "the config's own reader says which files it read"
+        );
+        assert!(
+            !opened.files.iter().any(|f| f == "dialect.json"),
+            "an artifact is not a source"
+        );
+    }
+
+    #[test]
+    fn a_dialogue_dialect_classifies_the_cue_lines_analysis_ships() {
+        // The `at-cue` preset is what `[dialogue] preset = "at-cue"`
+        // resolves to: `@Name:` opens a run, `(aside)` is a parenthetical,
+        // and the lines under a cue chain as dialogue. Without a dialect
+        // the same source ships nothing, which is the other half of the
+        // guard in `analyze`.
+        let source = "@Alice:<>\nWhere have you been?\n(quietly)<>\nI waited.\n-> DONE\n";
+        let plain = Tree::new(
+            "no-dialect",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&plain);
+        assert!(
+            analyze(&mut session, &state, 1).cues.is_empty(),
+            "no dialect, no cue lines"
+        );
+
+        let tree = Tree::new(
+            "dialect",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"start.ink\"\n\n[dialogue]\npreset = \"at-cue\"\n",
+                ),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&tree);
+        let cues = analyze(&mut session, &state, 1).cues;
+        let lines = cues.get("start.ink").expect("the file has cue lines");
+        let kinds: Vec<&str> = lines.iter().map(|l| l.kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"character") && kinds.contains(&"parenthetical"),
+            "{kinds:?}"
+        );
+        // Every span is a real slice of the source, and the cue's sigils
+        // sit inside its own line.
+        for line in lines {
+            let text = &source[line.start as usize..line.end as usize];
+            assert!(!text.contains('\n'), "a cue line is one line: {text:?}");
+            for (s, e) in &line.hidden {
+                assert!(*s >= line.start && *e <= line.end, "{line:?}");
+            }
+        }
+        let cue = lines
+            .iter()
+            .find(|l| l.kind == "character")
+            .expect("a character cue");
+        assert_eq!(&source[cue.start as usize..cue.end as usize], "@Alice:<>");
+        assert!(
+            !cue.hidden.is_empty(),
+            "the `@` and `:` are hidden geometry"
+        );
+    }
+
+    #[test]
+    fn a_config_with_no_artifacts_reports_none() {
+        let tree = Tree::new(
+            "no-artifact",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", "Hello.\n-> DONE\n"),
+            ],
+        );
+        let (_session, opened, _state) = open_tree_with_config(&tree);
+        assert!(opened.artifacts.is_empty());
     }
 
     #[test]

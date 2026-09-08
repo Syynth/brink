@@ -14,6 +14,9 @@
 use std::sync::Arc;
 
 use brink_ide::session::IdeSession;
+use brink_runtime::debug_control::{
+    BreakpointSet, DEFAULT_DEBUG_BUDGET, DebugStopReason, StepMode,
+};
 use brink_runtime::{FastRng, Step, Story};
 
 use crate::query::Location;
@@ -24,11 +27,66 @@ pub enum PlayCommand {
     /// Compile and start. `at` is a knot or `knot.stitch` path to divert to
     /// before the first line — "Play from here". `None` plays from the
     /// entry.
-    Start { at: Option<String> },
+    Start {
+        at: Option<String>,
+    },
     /// Take the choice at `index` (a [`PlayChoice::index`]) and run on.
     Choose(usize),
     /// Drop the session.
     Stop,
+    /// Replace the whole breakpoint set. Whole-set rather than
+    /// add/remove: the editor owns the gutter marks, and reconciling two
+    /// copies of a set is how they drift apart. Answered with a
+    /// [`PlayOutcome`] whose `unbound` names every line that bound to
+    /// nothing — a comment, a blank, or code that folded away — so the
+    /// studio can say so instead of arming something that can never hit.
+    SetBreakpoints(Vec<(String, u32)>),
+    /// Run until a breakpoint, a choice point, or the story ends.
+    Continue,
+    /// One source line (`step`), or one VM instruction (`stepi`). Both
+    /// are first-class (RULED 2026-08-28) — the Program Explorer shows
+    /// the disassembly beside the source, so an author watches a line and
+    /// the instructions it became at once.
+    StepLine,
+    StepInstruction,
+    /// Read the running story's state without advancing it — what the
+    /// State View shows. Answered with a [`PlayOutcome`] carrying no
+    /// steps and a `state`; a session that is not running answers with
+    /// `state: None` rather than an error, since "nothing is running" is
+    /// a state the panel has something to say about.
+    Snapshot,
+}
+
+/// The running story's state, as the State View reads it.
+///
+/// A flattened `brink_runtime::DebugSnapshot`: the runtime already
+/// assembles all of this (status, position, globals, call stack, visit
+/// counts, pending choices, RNG), so the panel needs no engine work — it
+/// needed a way to ASK, which is [`PlayCommand::Snapshot`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlayState {
+    /// `active` / `waiting_for_choice` / `done` / `ended`.
+    pub status: String,
+    /// The nearest named knot or stitch the cursor is in.
+    pub location: Option<String>,
+    pub turn: u32,
+    /// Globals as `(name, value)`, in the runtime's order.
+    pub globals: Vec<(String, String)>,
+    /// Call frames, innermost first: `(kind, location)`.
+    pub call_stack: Vec<(String, Option<String>)>,
+    /// Visit counts by path, sorted by path — anonymous containers are
+    /// left out, as the runtime's own path-resolved list does.
+    pub visits: Vec<(String, u32)>,
+    /// The choices on offer, as the reader sees them.
+    pub choices: Vec<String>,
+    /// The story RNG, as the runtime reports it: `(seed, previous)`.
+    pub rng: (i32, i32),
+    /// The instruction about to run: `(container_idx, offset)`, keyed the
+    /// way the Program Explorer's disassembly rows are (D9/#3187, which
+    /// put `container_idx` on the model for exactly this). `None` when
+    /// the innermost frame has no open container — an exhausted flow, or
+    /// one parked on a deferred external.
+    pub position: Option<(u32, usize)>,
 }
 
 /// One step of story output, the runtime's [`Step`] with only what a
@@ -112,6 +170,26 @@ pub struct PlayOutcome {
     /// Runtime warnings drained after the run, already rendered.
     pub warnings: Vec<String>,
     pub error: Option<PlayError>,
+    /// The session's state, on a [`PlayCommand::Snapshot`] and nowhere
+    /// else. `None` means no story is running.
+    pub state: Option<PlayState>,
+    /// Where a debug command stopped, on the four debug commands and
+    /// nowhere else.
+    pub stop: Option<PlayStop>,
+    /// Lines from `SetBreakpoints` that bound to nothing, so the studio
+    /// can report them rather than leave a mark that will never hit.
+    pub unbound: Vec<(String, u32)>,
+}
+
+/// Where a debug command came to rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayStop {
+    /// `breakpoint` / `step` / `choices` / `terminal` / `watchpoint` /
+    /// `awaiting external`, plus a breakpoint's own name.
+    pub reason: String,
+    /// The source position the flow is stopped ON, 1-based — what the
+    /// editor marks. `None` at a terminal, or with no debug info.
+    pub at: Option<(String, u32)>,
 }
 
 impl PlayOutcome {
@@ -141,6 +219,11 @@ impl PlayOutcome {
 /// The running story. Lives in the worker loop beside the session.
 pub struct Play {
     story: Story<FastRng>,
+    /// Held for `resolve_source_line` (arming a breakpoint) and
+    /// `resolve_debug_position` (reporting where a stop landed) — the
+    /// story owns its own copy, but neither is reachable through it.
+    program: Arc<brink_runtime::Program>,
+    breakpoints: BreakpointSet,
 }
 
 /// Run one command against the worker's play slot.
@@ -152,6 +235,7 @@ pub fn run(
     entry: Option<&str>,
     files: &[String],
     play: &mut Option<Play>,
+    wanted: &mut Vec<(String, u32)>,
     command: PlayCommand,
 ) -> PlayOutcome {
     match command {
@@ -159,7 +243,19 @@ pub fn run(
             *play = None;
             match start(session, entry, files, at.as_deref()) {
                 Ok(started) => {
-                    let outcome = advance(&mut *play.insert(started));
+                    let running = play.insert(started);
+                    // The breakpoints outlive the session, because the
+                    // marks in the gutter do: they are armed against the
+                    // program this Start just compiled, and a start with
+                    // any of them armed runs on the DEBUG road, so the
+                    // first one hits instead of the story running past it.
+                    let unbound = arm(running, wanted);
+                    let mut outcome = if wanted.is_empty() {
+                        advance(running)
+                    } else {
+                        debug_command(play, DebugVerb::Continue)
+                    };
+                    outcome.unbound = unbound;
                     if outcome.error.is_some() {
                         *play = None;
                     }
@@ -168,6 +264,10 @@ pub fn run(
                 Err(e) => PlayOutcome::failed(e),
             }
         }
+        PlayCommand::Snapshot => PlayOutcome {
+            state: play.as_ref().map(|running| snapshot(&running.story)),
+            ..PlayOutcome::default()
+        },
         PlayCommand::Choose(index) => {
             let Some(running) = play.as_mut() else {
                 return PlayOutcome::failed(PlayError::NotStarted);
@@ -175,6 +275,13 @@ pub fn run(
             if let Err(e) = running.story.choose(index) {
                 *play = None;
                 return PlayOutcome::failed(PlayError::Runtime(e.to_string()));
+            }
+            // With breakpoints armed, taking a choice continues on the
+            // DEBUG road: the production `continue_maximally` knows
+            // nothing about them, so a breakpoint past a choice could
+            // never hit and the mark in the gutter would be a lie.
+            if running.breakpoints.iter().next().is_some() {
+                return debug_command(play, DebugVerb::Continue);
             }
             let outcome = advance(running);
             if outcome.error.is_some() {
@@ -186,6 +293,154 @@ pub fn run(
             *play = None;
             PlayOutcome::default()
         }
+        PlayCommand::SetBreakpoints(lines) => {
+            // Kept whether or not a story is running: the marks are the
+            // editor's, and the next Start arms them. A set with nothing
+            // running is not an error — it is the ordinary case of
+            // marking a line before pressing Play.
+            *wanted = lines;
+            let unbound = play.as_mut().map(|running| arm(running, wanted));
+            PlayOutcome {
+                unbound: unbound.unwrap_or_default(),
+                ..PlayOutcome::default()
+            }
+        }
+        PlayCommand::Continue => debug_command(play, DebugVerb::Continue),
+        PlayCommand::StepLine => debug_command(play, DebugVerb::StepLine),
+        PlayCommand::StepInstruction => debug_command(play, DebugVerb::StepInstruction),
+    }
+}
+
+/// Which debug verb a command runs. The three share everything but the
+/// one call, so they share the body rather than three copies of the
+/// drain/convert/stop bookkeeping.
+#[derive(Clone, Copy)]
+enum DebugVerb {
+    Continue,
+    StepLine,
+    StepInstruction,
+}
+
+/// Replace the breakpoint set, returning the lines that bound to nothing.
+///
+/// A line binds to a program address or it does not: a comment, a blank,
+/// or code that folded away has none. Reported rather than armed —
+/// "a breakpoint that can never hit is worse than none".
+fn arm(play: &mut Play, lines: &[(String, u32)]) -> Vec<(String, u32)> {
+    play.breakpoints = BreakpointSet::new();
+    let mut unbound = Vec::new();
+    for (file, line) in lines {
+        // The studio counts lines from 1, as every editor does; the
+        // engine counts from 0. This is the one edge that converts.
+        match play
+            .program
+            .resolve_source_line(file, line.saturating_sub(1))
+        {
+            Some(position) => {
+                play.breakpoints.insert(
+                    position.container_idx,
+                    position.offset,
+                    format!("{file}:{line}"),
+                );
+            }
+            None => unbound.push((file.clone(), *line)),
+        }
+    }
+    unbound
+}
+
+fn debug_command(play: &mut Option<Play>, verb: DebugVerb) -> PlayOutcome {
+    let Some(running) = play.as_mut() else {
+        return PlayOutcome::failed(PlayError::NotStarted);
+    };
+    // Before AND after, so the two drive roads share one delivery stream:
+    // the production path runs ahead of what it has handed out, and a line
+    // it already completed must surface here exactly once (W5/#3298).
+    let mut lines = running.story.debug_drain_buffered_lines();
+    let result = match verb {
+        DebugVerb::Continue => running
+            .story
+            .debug_run(&running.breakpoints, DEFAULT_DEBUG_BUDGET),
+        DebugVerb::StepLine => running.story.debug_step_line(
+            StepMode::Into,
+            &running.breakpoints,
+            DEFAULT_DEBUG_BUDGET,
+        ),
+        DebugVerb::StepInstruction => {
+            running
+                .story
+                .debug_step(StepMode::Into, &running.breakpoints, DEFAULT_DEBUG_BUDGET)
+        }
+    };
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            *play = None;
+            return PlayOutcome::failed(PlayError::Runtime(format!("{e:?}")));
+        }
+    };
+    let Some(running) = play.as_mut() else {
+        return PlayOutcome::failed(PlayError::NotStarted);
+    };
+    lines.extend(running.story.debug_drain_buffered_lines());
+    let mut steps: Vec<PlayStep> = lines
+        .into_iter()
+        .map(|(text, tags, source)| PlayStep::Line {
+            text,
+            tags,
+            source: location(source),
+        })
+        .collect();
+    // A stop at a choice point offers choices; the transcript needs them
+    // the same way a production advance delivers them.
+    if matches!(outcome.reason, DebugStopReason::Choices) {
+        let snap = running.story.debug_snapshot();
+        steps.push(PlayStep::Choices(
+            snap.pending_choices
+                .into_iter()
+                .enumerate()
+                .map(|(i, c)| PlayChoice {
+                    text: c.text,
+                    index: i,
+                    tags: Vec::new(),
+                    sticky: false,
+                    source: None,
+                })
+                .collect(),
+        ));
+    }
+    PlayOutcome {
+        steps,
+        warnings: running
+            .story
+            .take_runtime_warnings()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        stop: Some(PlayStop {
+            reason: describe(&outcome.reason),
+            at: current_line(running),
+        }),
+        ..PlayOutcome::default()
+    }
+}
+
+/// The file and 1-based line the flow is stopped on.
+fn current_line(play: &Play) -> Option<(String, u32)> {
+    let position = play.story.debug_snapshot().position?;
+    let loc = play.program.resolve_debug_position(position)?;
+    let file = loc.file?;
+    let line0 = play.program.line_at(&file, loc.range_start)?;
+    Some((file, line0 + 1))
+}
+
+fn describe(reason: &DebugStopReason) -> String {
+    match reason {
+        DebugStopReason::Breakpoint { name, .. } => format!("breakpoint {name}"),
+        DebugStopReason::Watchpoint { global_idx } => format!("watchpoint on global {global_idx}"),
+        DebugStopReason::Choices => "a choice point".to_owned(),
+        DebugStopReason::Step => "step".to_owned(),
+        other => format!("{other:?}").to_lowercase(),
     }
 }
 
@@ -211,7 +466,16 @@ fn start(
     at: Option<&str>,
 ) -> Result<Play, PlayError> {
     let entry = entry_file(entry, files).ok_or(PlayError::NoEntry)?;
-    let options = session.db().analysis_options().clone();
+    // The debugger needs the `DebugInfo` section: without it a breakpoint
+    // binds to nothing and a stop has no source position. The session
+    // wants it on (`IdeSession::emit_debug_info`, default ON since
+    // 2026-08-29) but the db's own options carry `AnalysisOptions`'s
+    // release default, and this compile reads those — so it is asked for
+    // here, at the one call that runs a story.
+    let options = brink_analyzer::AnalysisOptions {
+        emit_debug_info: session.emit_debug_info(),
+        ..session.db().analysis_options().clone()
+    };
     let product = session
         .compile(entry, &options)
         .map_err(|e| PlayError::Compile(vec![e.to_string()]))?;
@@ -227,7 +491,8 @@ fn start(
     let data = product.story.ok_or(PlayError::NoStory)?;
     let (program, line_tables) =
         brink_runtime::link(&data).map_err(|e| PlayError::Link(e.to_string()))?;
-    let mut story = Story::<FastRng>::new(Arc::new(program), line_tables);
+    let program = Arc::new(program);
+    let mut story = Story::<FastRng>::new(Arc::clone(&program), line_tables);
     if let Some(path) = at {
         // "Play from here" is a development affordance: a private stitch is
         // exactly the kind of place an author wants to jump into.
@@ -236,7 +501,44 @@ fn start(
             .choose_path_string(path)
             .map_err(|e| PlayError::Runtime(e.to_string()))?;
     }
-    Ok(Play { story })
+    Ok(Play {
+        story,
+        program,
+        breakpoints: BreakpointSet::new(),
+    })
+}
+
+/// The running story's state, flattened for the UI.
+///
+/// The runtime assembles the snapshot; this only drops what the panel has
+/// no use for (the `DefinitionId`-keyed visit ids, the per-frame bytecode
+/// positions) and turns the rest into plain data, since nothing of the
+/// engine crosses to the main thread.
+fn snapshot(story: &Story<FastRng>) -> PlayState {
+    let snap = story.debug_snapshot();
+    PlayState {
+        status: snap.status.to_owned(),
+        location: snap.current_location,
+        turn: snap.turn_index,
+        globals: snap
+            .globals
+            .into_iter()
+            .map(|g| (g.name, g.value))
+            .collect(),
+        call_stack: snap
+            .call_stack
+            .into_iter()
+            .map(|f| (f.kind.to_owned(), f.location))
+            .collect(),
+        visits: snap
+            .visit_counts
+            .into_iter()
+            .map(|v| (v.path, v.count))
+            .collect(),
+        choices: snap.pending_choices.into_iter().map(|c| c.text).collect(),
+        rng: (snap.rng.seed, snap.rng.previous),
+        position: snap.position.map(|p| (p.container_idx, p.offset)),
+    }
 }
 
 /// Run to the next yield point.
@@ -293,6 +595,203 @@ fn convert(step: Step) -> PlayStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A driver that carries the breakpoint set the worker owns, so a test
+    /// reads as a sequence of commands rather than as plumbing.
+    struct Driver {
+        session: IdeSession,
+        files: Vec<String>,
+        play: Option<Play>,
+        wanted: Vec<(String, u32)>,
+    }
+
+    impl Driver {
+        fn new(source: &str) -> Self {
+            let mut session = IdeSession::new();
+            session.update_source("main.ink", source.to_owned());
+            Self {
+                session,
+                files: vec!["main.ink".to_owned()],
+                play: None,
+                wanted: Vec::new(),
+            }
+        }
+
+        /// A driver over no project at all.
+        fn empty() -> Self {
+            Self {
+                session: IdeSession::new(),
+                files: Vec::new(),
+                play: None,
+                wanted: Vec::new(),
+            }
+        }
+
+        fn go(&mut self, command: PlayCommand) -> PlayOutcome {
+            let entry = (!self.files.is_empty()).then_some("main.ink");
+            run(
+                &mut self.session,
+                entry,
+                &self.files,
+                &mut self.play,
+                &mut self.wanted,
+                command,
+            )
+        }
+    }
+
+    #[test]
+    fn a_snapshot_of_nothing_running_is_a_state_of_none_not_an_error() {
+        // The State View has something to say about "no session" — it says
+        // so — and an error would make the panel show a failure instead.
+        let outcome = Driver::empty().go(PlayCommand::Snapshot);
+        assert!(outcome.state.is_none());
+        assert!(outcome.error.is_none(), "not running is not a failure");
+        assert!(outcome.steps.is_empty(), "a snapshot advances nothing");
+    }
+
+    #[test]
+    fn a_snapshot_reads_the_running_story_without_advancing_it() {
+        let mut d = Driver::new(
+            "VAR lamps = 2\n-> shore\n=== shore ===\nThe tide was out.\n* [Go] -> END\n",
+        );
+        let started = d.go(PlayCommand::Start { at: None });
+        assert!(started.error.is_none(), "{:?}", started.error);
+
+        let first = d.go(PlayCommand::Snapshot);
+        let state = first.state.expect("a story is running");
+        assert_eq!(state.status, "waiting_for_choice");
+        assert_eq!(state.location.as_deref(), Some("shore"));
+        assert_eq!(state.turn, 1);
+        assert_eq!(
+            state.globals,
+            vec![("lamps".to_owned(), "2".to_owned())],
+            "globals come through with their values"
+        );
+        assert_eq!(state.choices, vec!["Go".to_owned()]);
+        assert!(!state.call_stack.is_empty(), "a running story has a stack");
+
+        // Reading twice reads the same: a snapshot must not be a step.
+        let again = d.go(PlayCommand::Snapshot);
+        assert_eq!(again.state.as_ref().map(|s| s.turn), Some(1));
+        assert_eq!(again.state.map(|s| s.choices), Some(state.choices));
+    }
+
+    #[test]
+    fn a_breakpoint_set_before_play_is_armed_by_the_start_that_follows() {
+        // Marking a line and pressing Play is the ordinary way to reach a
+        // breakpoint, so the set outlives any one session: with nothing
+        // running this is not an error, and Start arms what it holds.
+        let mut d =
+            Driver::new("-> shore\n=== shore ===\nThe tide was out.\nThe lamp was lit.\n-> END\n");
+        let set = d.go(PlayCommand::SetBreakpoints(vec![(
+            "main.ink".to_owned(),
+            4,
+        )]));
+        assert!(set.error.is_none(), "marking a line needs no session");
+        assert!(set.unbound.is_empty(), "nothing is bound yet either");
+
+        let started = d.go(PlayCommand::Start { at: None });
+        let stop = started
+            .stop
+            .expect("a start with breakpoints is a debug run");
+        assert!(stop.reason.starts_with("breakpoint"), "{stop:?}");
+        assert_eq!(stop.at, Some(("main.ink".to_owned(), 4)));
+        // Nothing has been delivered yet, and that is the engine's own
+        // rule rather than a gap: a line completes only once the
+        // following non-whitespace output begins, because glue may still
+        // legally join onto it. Continuing past the breakpoint is what
+        // commits it, and then both lines arrive.
+        assert!(started.steps.is_empty(), "{:?}", started.steps);
+        let on = d.go(PlayCommand::Continue);
+        let texts: Vec<&str> = on
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                PlayStep::Line { text, .. } => Some(text.trim()),
+                _ => None,
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(
+            texts,
+            ["The tide was out.", "The lamp was lit."],
+            "{:?}",
+            on.steps
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_code_is_reported_rather_than_armed() {
+        // "A breakpoint that can never hit is worse than none": a comment
+        // compiles to nothing, so it is named back rather than marked.
+        let mut d = Driver::new("-> shore\n=== shore ===\n// a note\nThe tide.\n-> END\n");
+        let _ = d.go(PlayCommand::SetBreakpoints(vec![(
+            "main.ink".to_owned(),
+            3,
+        )]));
+        let started = d.go(PlayCommand::Start { at: None });
+        assert_eq!(started.unbound, vec![("main.ink".to_owned(), 3)]);
+    }
+
+    #[test]
+    fn a_breakpoint_past_a_choice_still_hits() {
+        // Taking a choice continues on the debug road when anything is
+        // armed — the production continue knows nothing about
+        // breakpoints, so this one could never hit.
+        let mut d = Driver::new(
+            "-> shore\n=== shore ===\nThe tide was out.\n* [Go] -> after\n\
+             === after ===\nThe lamp was lit.\n-> END\n",
+        );
+        let _ = d.go(PlayCommand::SetBreakpoints(vec![(
+            "main.ink".to_owned(),
+            6,
+        )]));
+        let started = d.go(PlayCommand::Start { at: None });
+        assert!(started.stop.is_some(), "the start ran on the debug road");
+        let out = d.go(PlayCommand::Choose(0));
+        let stop = out.stop.expect("the choice continued on the debug road");
+        assert!(stop.reason.starts_with("breakpoint"), "{stop:?}");
+        assert_eq!(stop.at, Some(("main.ink".to_owned(), 6)));
+    }
+
+    #[test]
+    fn stepping_says_where_it_landed() {
+        let mut d = Driver::new("-> shore\n=== shore ===\nOne.\nTwo.\nThree.\n-> END\n");
+        // Stop on the first line, so there is somewhere to step FROM.
+        let _ = d.go(PlayCommand::SetBreakpoints(vec![(
+            "main.ink".to_owned(),
+            3,
+        )]));
+        let started = d.go(PlayCommand::Start { at: None });
+        assert_eq!(
+            started.stop.and_then(|s| s.at),
+            Some(("main.ink".to_owned(), 3))
+        );
+        let stepped = d.go(PlayCommand::StepLine);
+        let stop = stepped.stop.expect("a stop reason");
+        assert_eq!(
+            stop.at,
+            Some(("main.ink".to_owned(), 4)),
+            "one source line on: {stop:?}"
+        );
+        // An instruction step is the other verb, not a wrapper: it moves
+        // within the line it is on.
+        let inner = d.go(PlayCommand::StepInstruction);
+        assert!(inner.stop.is_some(), "{inner:?}");
+    }
+
+    #[test]
+    fn a_debug_command_with_nothing_running_is_not_started_rather_than_a_panic() {
+        for command in [
+            PlayCommand::Continue,
+            PlayCommand::StepLine,
+            PlayCommand::StepInstruction,
+        ] {
+            let out = Driver::empty().go(command);
+            assert!(matches!(out.error, Some(PlayError::NotStarted)), "{out:?}");
+        }
+    }
 
     #[test]
     fn entry_falls_back_to_the_lone_file_then_main() {
