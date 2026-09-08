@@ -248,15 +248,37 @@ What is left is **not** a dependency problem, with two exceptions:
   green. That is the narrowing to start from: what the dialect resolves
   that plain ink does not. `ChunkLoweringCtx` carries the struct shape
   tables and `type_mode`, but those go by `DefinitionId`, not by range —
-  untested hypothesis, not a finding. The per-segment
-  resolutions are demonstrably NOT the gap: unioned they equal the
-  whole-file map exactly (130 of 130 on `alias-method`), and per segment
-  they cover every whole-file entry whose range falls inside them. Swapping
-  only that lookup for the whole-project one makes the failures disappear,
-  so the defect is in how the rebased fragment's ranges pair with those
-  entries, not in their content. That is where to resume: diff the compiled
-  containers for `tests/tier1-brink/algorithms/alias-method` between the two
-  lookups and find the first path whose `resolve_path` misses.
+  untested hypothesis, not a finding.
+
+  **RESOLVED — and the whole-file road was the wrong one.** Dumping both
+  resolution maps for the fn-value fixture showed a single disagreement,
+  same target id: the assembled file placed the `#fn(double)` reference at
+  `41..47` (text `"\n\nVAR "`, meaningless) where the segment road placed it
+  at `100..106` (`"double"`). The difference is exactly 59 — that segment's
+  offset — so the range had never been rebased.
+
+  The cause is `MapLiteral::rebase`, which shifted only its `ptr` and never
+  its `entries`; `StructLiteral` did the same with its `fields`. Those are
+  the only two `Vec<(A, B)>` fields in the HIR and the only two that were
+  skipped (`ArrayLiteral`'s plain `Vec<Expr>` was always handled), so it was
+  an oversight rather than a convention. Every expression inside a map or
+  struct literal kept its segment-relative range forever.
+
+  Nothing caught it because the defect was SELF-CONSISTENT: the resolution
+  map is built from the same un-rebased HIR, so both sides agreed at the
+  wrong coordinate and resolution still worked. Only something computing a
+  range independently could see it — which is what the chunk seam does, and
+  why exactly the brink-dialect cases failed: map and struct literals are
+  dialect-only, so the plain-ink corpus cannot reach that code.
+
+  Fixed, with a whole-class guard
+  (`brink-ir/tests/rebase_shifts_every_range.rs`): rebasing a definition
+  must shift every range it carries. It reads the DERIVED `Debug` rendering
+  rather than walking fields, because a hand-written visitor would need the
+  same per-field enumeration that was wrong here and would inherit the bug.
+
+  The chunk seam itself is still reverted and unattempted since the fix;
+  this was its blocker, not necessarily its only one.
 
   Measured breakdown of the 12–16 ms link, for sizing the prize: chunk
   lowering ~4 ms, whole-file normalize+stamp+clone ~2.9 ms, prelude decl
