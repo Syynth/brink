@@ -17,12 +17,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.folding_ranges_impl(&d.path, d.view.as_ref())
+        crate::perf::time("ide.foldingRanges", || {
+            self.folding_ranges_impl(&d.path, d.view.as_ref())
+        })
     }
 
     /// Compute folding ranges. Returns JSON array.
     pub fn folding_ranges(&self) -> String {
-        self.folding_ranges_impl(&self.active_path, self.view.as_ref())
+        crate::perf::time("ide.foldingRanges", || {
+            self.folding_ranges_impl(&self.active_path, self.view.as_ref())
+        })
     }
 }
 

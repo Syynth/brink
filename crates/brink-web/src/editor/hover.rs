@@ -11,12 +11,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.hover_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.hover", || {
+            self.hover_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Compute hover info at the given byte offset. Returns JSON or "null".
     pub fn hover(&self, offset: u32) -> String {
-        self.hover_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.hover", || {
+            self.hover_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 }
 

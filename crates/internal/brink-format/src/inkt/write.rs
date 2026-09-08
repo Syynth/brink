@@ -529,7 +529,7 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
             write!(w, "    (params {}", c.param_count)?;
             for p in &c.params {
                 let mode = if p.is_ref { "ref" } else { "val" };
-                write!(w, " ({mode} {})", p.name.0)?;
+                write!(w, " ({mode} {} {})", p.name.0, p.slot)?;
             }
             writeln!(w, ")")?;
         }

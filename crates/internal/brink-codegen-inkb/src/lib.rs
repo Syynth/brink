@@ -664,23 +664,14 @@ fn walk_container(
     // mutable borrow of `*state` for its whole lifetime, so `state.debug`
     // must be read here, not after. `raw_entries` stays empty (no
     // allocation) on the default `emit()` path.
+    // Since `.inkb` v10 there is no parameter-binding bytecode to describe:
+    // the VM binds parameters at entry, so offset 0 is the container's first
+    // real statement and that statement's own entry covers it. (Before v10
+    // the leading `DeclareTemp` run owned offset 0 and needed an entry of
+    // its own, carrying the container's provenance because no `lir::Stmt`
+    // stood behind it.)
     let debug_enabled = state.debug.is_some();
-    let mut raw_entries: Vec<debug_info::RawDebugEntry> = Vec::new();
-    if debug_enabled && !container.params.is_empty() {
-        // The leading parameter-binding `DeclareTemp`s below are real
-        // prologue bytecode with no `lir::Stmt` of their own (they're
-        // emitted as bare opcodes, never through `emit_stmt`), so that
-        // offset-0 span needs its own entry, recorded here before they're
-        // emitted, using the *container's* own provenance (there is no
-        // statement to point at). Never the prologue-end landing point
-        // itself (`prologue_end: false`) — `prologue_end_index` below picks
-        // that.
-        raw_entries.push(debug_info::RawDebugEntry {
-            offset: 0,
-            provenance: container.provenance,
-            prologue_end: false,
-        });
-    }
+    let raw_entries: Vec<debug_info::RawDebugEntry> = Vec::new();
 
     // §2.4: which statement in `container.body` (by position) is the
     // landing point past this container's prologue bytecode — the leading
@@ -705,9 +696,8 @@ fn walk_container(
     };
 
     // D7 (`docs/debugger-spec.md` §3, issue #3185): this container's own
-    // `LocalsTable` rows — one per declared parameter (bound by the bare
-    // `DeclareTemp` opcodes emitted below, no `lir::Stmt`/source range of
-    // their own) plus one per top-level `~ temp` declaration in this
+    // `LocalsTable` rows — one per declared parameter (bound by the VM at
+    // entry since v10, so with no `lir::Stmt`/source range of their own) plus one per top-level `~ temp` declaration in this
     // container's own body (a nested child container's `DeclareTemp`s are
     // recorded when *it* is walked, into *its own* table — §2.2's
     // container-lockstep framing, not this container's). `raw_locals` stays
@@ -756,12 +746,13 @@ fn walk_container(
         emitter.in_conditional_branch = true;
     }
 
-    // Emit DeclareTemp for each parameter (pops args from eval stack into
-    // temp slots). Reverse order: caller pushes first arg first, so last
-    // arg is on top of the stack and gets popped first.
-    for param in container.params.iter().rev() {
-        emitter.emit(Opcode::DeclareTemp(param.slot));
-    }
+    // `.inkb` v10: no parameter prologue. The VM binds a container's
+    // arguments into its frame at every entry (`brink_runtime::vm`'s
+    // `bind_entry_params`), which is what the leading `DeclareTemp` run used
+    // to do by sitting at offset 0. It reads each parameter's slot out of
+    // `ContainerDef::params` — that metadata is load-bearing now, not
+    // informational, and `param_count` below is derived from the same list
+    // so the two cannot disagree.
 
     // Unconditional: `emit_body_top_level` (and everything it recurses
     // into) only *records* when `emitter.debug_entries` is `Some` — see
@@ -779,9 +770,11 @@ fn walk_container(
             // covering its post-prologue offset, so the floor-lookup binary
             // search never runs off the end of the table.
             // `emitter.bytecode.len()` here is exactly that offset:
-            // `emit_body_top_level` has already finished, so it's past the
-            // param `DeclareTemp`s and, if present, the `ChoiceOutput`'s own
-            // bytecode.
+            // `emit_body_top_level` has already finished, so it is past the
+            // `ChoiceOutput`'s own bytecode when one is present. Since v10
+            // that is the only prologue bytecode a container can have —
+            // parameters are bound by the VM at entry, not by an opcode
+            // run.
             #[expect(clippy::cast_possible_truncation)]
             entries.push(debug_info::RawDebugEntry {
                 offset: emitter.bytecode.len() as u32,
@@ -844,6 +837,7 @@ fn walk_container(
             .params
             .iter()
             .map(|p| brink_format::ParamMeta {
+                slot: p.slot,
                 name: p.name,
                 is_ref: p.is_ref,
             })

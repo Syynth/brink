@@ -97,7 +97,15 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// v9 added the third family — `GetTempBinaryImm` (`0x70`),
 /// `GetTempBinaryImmJumpIfFalse` (`0x71`), `DuplicateBinaryImmJumpIfFalse`
 /// (`0x74`): the v8 forms with their left operand's producer folded in.
-pub(crate) const VERSION: u16 = 9;
+/// v10 removed the parameter-binding prologue: codegen no longer emits a
+/// leading `DeclareTemp` run for a container's parameters, because the VM
+/// binds them into the frame at every entry instead
+/// (`docs/compiler-spec.md` §"Parameter binding"). Unlike v7-v9 this is not
+/// a new opcode — it is a change of meaning for existing bytecode, and the
+/// dangerous direction is a v9 artifact read by a v10 runtime: its prologue
+/// would decode perfectly and re-bind parameters from an empty stack. The
+/// bump is what turns that into a hard rejection.
+pub(crate) const VERSION: u16 = 10;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

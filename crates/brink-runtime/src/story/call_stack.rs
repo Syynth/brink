@@ -857,7 +857,7 @@ impl Flow {
     /// Replace the External frame with a Function frame pointing at the
     /// fallback container. Args are pushed back onto the value stack so
     /// the fallback body's `temp=` opcodes can pop them.
-    pub fn invoke_fallback(&mut self, container_idx: u32) {
+    pub fn invoke_fallback(&mut self, container_idx: u32, param_slots: &[u16]) {
         let output_start = self.output.mark();
         let Some(thread) = self.threads.last_mut() else {
             return;
@@ -877,9 +877,24 @@ impl Flow {
                 container_idx,
                 offset: 0,
             });
-            // Push args back onto the value stack — the fallback body
-            // starts with `temp=` instructions that pop them.
+            // Push the external call's arguments back onto the value stack
+            // and bind them into the fallback's parameter slots. `.inkb` v10
+            // removed the `DeclareTemp` prologue that used to do the second
+            // half; doing it here rather than writing the list straight into
+            // the slots keeps the old behaviour when the argument count and
+            // the fallback's arity disagree — the surplus stays on the stack.
+            let depth = stack.top_depth();
             self.value_stack.extend(args);
+            let last = self.threads.len() - 1;
+            if let Some(depth) = depth {
+                let stack = &mut self.threads[last].call_stack;
+                for slot in param_slots.iter().rev() {
+                    let Some(val) = self.value_stack.pop() else {
+                        break;
+                    };
+                    stack.write_temp(depth, usize::from(*slot), val);
+                }
+            }
         }
     }
 

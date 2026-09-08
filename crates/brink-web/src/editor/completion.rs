@@ -10,12 +10,16 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.completions_impl(&d.path, d.view.as_ref(), offset)
+        crate::perf::time("ide.completions", || {
+            self.completions_impl(&d.path, d.view.as_ref(), offset)
+        })
     }
 
     /// Compute completions at the given byte offset. Returns JSON array.
     pub fn completions(&self, offset: u32) -> String {
-        self.completions_impl(&self.active_path, self.view.as_ref(), offset)
+        crate::perf::time("ide.completions", || {
+            self.completions_impl(&self.active_path, self.view.as_ref(), offset)
+        })
     }
 }
 

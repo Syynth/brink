@@ -526,7 +526,7 @@ proptest! {
         prop_assert_eq!(index.file_size as usize, buf.len());
 
         // Correct version.
-        prop_assert_eq!(index.version, 9);
+        prop_assert_eq!(index.version, 10);
 
         // The 14 mandatory sections in canonical order, plus the optional
         // LineVariantGroups section (#3273) exactly when the story carries

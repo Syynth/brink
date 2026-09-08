@@ -117,6 +117,30 @@ fn step_impl<R: crate::rng::StoryRng>(
 
     let code = program.code(pos.container_idx);
 
+    // `.inkb` v10 net: standing at offset 0 of a parameterized container
+    // means whichever site positioned us here bound its parameters
+    // (`bind_entry_params`). A missed entry site shows up as an unwritten
+    // parameter slot on the container's very first instruction — cheap to
+    // check here, and the corpus plus the fuzzers exercise every entry path.
+    // Debug builds only; release keeps the fetch path untouched.
+    #[cfg(debug_assertions)]
+    if pos.offset == 0 {
+        let container = program.container(pos.container_idx);
+        let stack = &flow.current_thread().call_stack;
+        if let Some(depth) = stack.top_depth() {
+            for param in &container.params {
+                debug_assert!(
+                    stack.is_temp_written(depth, usize::from(param.slot)),
+                    "entered container {} ({:?}) at offset 0 with parameter slot {} \
+                     unbound — an entry site is missing its `bind_entry_params` call",
+                    pos.container_idx,
+                    program.container_path(pos.container_idx),
+                    param.slot
+                );
+            }
+        }
+    }
+
     // Check if we've reached end of bytecode.
     if pos.offset >= code.len() {
         let stack = &mut flow.current_thread_mut().call_stack;
@@ -290,7 +314,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 
         // ── Container flow ──────────────────────────────────────────
         Opcode::EnterContainer(id) => {
-            enter_container(flow, program, context, &program.resolve(id)?);
+            enter_container(flow, program, context, &program.resolve(id)?)?;
         }
         Opcode::ExitContainer => {
             flow.current_thread_mut().call_stack.pop_container();
@@ -698,7 +722,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             tunnel_call(flow, program, context, stats, &program.resolve(id)?)?;
         }
         Opcode::ThreadCall(id) => {
-            thread_call(flow, stats, &program.resolve(id)?)?;
+            thread_call(flow, program, stats, &program.resolve(id)?)?;
         }
         Opcode::TunnelCallVariable => {
             let val = flow.pop_value()?;
@@ -728,6 +752,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 }),
             );
             stats.frames_pushed += 1;
+            bind_entry_params(flow, program, idx)?;
         }
         Opcode::CallVariable(argc) => {
             let val = flow.pop_value()?;
@@ -763,6 +788,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         }),
                     );
                     stats.frames_pushed += 1;
+                    bind_entry_params(flow, program, idx)?;
                 }
                 // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
                 // where `f` holds a function value dispatches through the same
@@ -851,6 +877,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                         }),
                     );
                     stats.frames_pushed += 1;
+                    bind_entry_params(flow, program, idx)?;
                 }
                 other => {
                     return Err(RuntimeError::NotCallable(value_type_name(&other)));
@@ -928,7 +955,7 @@ fn step_impl<R: crate::rng::StoryRng>(
 
             // If a DivertTarget, overwrite this frame's return address
             // so we divert there instead of the original caller.
-            if let Value::DivertTarget(id) = val {
+            let onwards = if let Value::DivertTarget(id) = val {
                 let (idx, offset) = program
                     .resolve_target(id)
                     .ok_or_else(|| RuntimeError::UnresolvedDefinition(id))?;
@@ -941,8 +968,20 @@ fn step_impl<R: crate::rng::StoryRng>(
                     container_idx: idx,
                     offset,
                 });
-            }
+                Some((idx, offset))
+            } else {
+                None
+            };
             pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
+            // `->-> target(args)`: the arguments were pushed below the divert
+            // target, so they are on top now that it has been popped, and the
+            // frame they bind into is the one this return just restored — the
+            // only way a return address can land at offset 0, which is why
+            // this is the one return path that binds (v10; before it, the
+            // target's own prologue did the work on arrival).
+            if let Some((idx, 0)) = onwards {
+                bind_entry_params(flow, program, idx)?;
+            }
         }
 
         // ── Choices ─────────────────────────────────────────────────
@@ -1769,6 +1808,7 @@ fn enter_fn_value(
         }),
     );
     stats.frames_pushed += 1;
+    bind_entry_params(flow, program, idx)?;
     Ok(())
 }
 
@@ -2483,9 +2523,7 @@ fn call_callback<R: crate::rng::StoryRng>(
         }),
     );
     stats.frames_pushed += 1;
-    for v in full_args {
-        flow.value_stack.push(v);
-    }
+    push_and_bind_args(flow, program, container_idx, full_args)?;
 
     let role = callback_role(verb);
     let mut steps = 0u64;
@@ -2929,6 +2967,67 @@ fn read_temp(
     }
 }
 
+/// Bind a container's declared parameters from the value stack into the
+/// frame on top of the call stack — the callee-side half of brink's calling
+/// convention since `.inkb` v10 (`docs/compiler-spec.md` §"Parameter
+/// binding").
+///
+/// Before v10, codegen emitted a `DeclareTemp` prologue at offset 0 of every
+/// parameterized container, so *arriving* at offset 0 bound the parameters
+/// however control got there. The VM now does that work, which means every
+/// site that positions execution at offset 0 of a container has to call
+/// this. The `debug_assert` in `step_impl`'s preamble is the net that
+/// catches a missed one across the corpus.
+///
+/// Arguments are pushed left to right, so they pop right to left, into the
+/// slots `ContainerDef::params` records. Those are **not** simply `0 … n-1`:
+/// a knot and its stitches share one frame and one temp map, so a stitch's
+/// parameters continue after the knot's — `= opt(n)` inside `=== outer(m)`
+/// binds `n` to slot 1. Reading the recorded slot is what makes that work.
+/// Push a host-supplied argument list, then bind the callee's parameters
+/// from it. Pushing first and binding after (rather than writing the list
+/// into slots directly) keeps a bound closure's surplus arguments on the
+/// value stack, exactly where the callee's `DeclareTemp` prologue left them
+/// before `.inkb` v10.
+fn push_and_bind_args(
+    flow: &mut Flow,
+    program: &Program,
+    container_idx: u32,
+    args: Vec<Value>,
+) -> Result<(), RuntimeError> {
+    for v in args {
+        flow.value_stack.push(v);
+    }
+    bind_entry_params(flow, program, container_idx)
+}
+
+pub(crate) fn bind_entry_params(
+    flow: &mut Flow,
+    program: &Program,
+    container_idx: u32,
+) -> Result<(), RuntimeError> {
+    let container = program.container(container_idx);
+    if container.param_count == 0 {
+        return Ok(());
+    }
+    let Some(depth) = flow.current_thread().call_stack.top_depth() else {
+        return Ok(());
+    };
+    // Borrowed straight from `program`, never collected: this runs on every
+    // parameterized call, and a `Vec` here costs a malloc that wipes out the
+    // dispatch the change exists to remove (measured: crucible's Ir went up
+    // despite 7.5% fewer opcodes, until this allocation was taken out).
+    // `program` and `flow` are separate parameters, so the immutable borrow
+    // of one coexists with the mutable borrow of the other.
+    for param in container.params.iter().rev() {
+        let val = flow.pop_value()?;
+        flow.current_thread_mut()
+            .call_stack
+            .write_temp(depth, usize::from(param.slot), val);
+    }
+    Ok(())
+}
+
 fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), RuntimeError> {
     let right = flow.pop_value()?;
     let left = flow.pop_value()?;
@@ -3093,10 +3192,10 @@ fn step_target(
                 goto_resolved(flow, program, context, target)?;
             }
         }
-        TargetKind::EnterContainer => enter_container(flow, program, context, target),
+        TargetKind::EnterContainer => enter_container(flow, program, context, target)?,
         TargetKind::Call => call_function(flow, program, context, stats, target)?,
         TargetKind::TunnelCall => tunnel_call(flow, program, context, stats, target)?,
-        TargetKind::ThreadCall => thread_call(flow, stats, target)?,
+        TargetKind::ThreadCall => thread_call(flow, program, stats, target)?,
         TargetKind::BeginChoice(flags) => {
             handle_begin_choice(flow, program, context, stats, flags, target)?;
         }
@@ -3124,7 +3223,7 @@ fn enter_container(
     program: &Program,
     context: &mut (impl ContextAccess + ?Sized),
     target: &LinkedTarget,
-) {
+) -> Result<(), RuntimeError> {
     count_visit(program, context, target);
     flow.current_thread_mut()
         .call_stack
@@ -3132,6 +3231,11 @@ fn enter_container(
             container_idx: target.container_idx,
             offset: 0,
         });
+    // Compiler-internal containers (gathers, sequence wrappers, choice
+    // targets) declare no parameters, so this is a load and a predicted
+    // branch on the hot path. It is here for the same reason the prologue
+    // used to be: entering at offset 0 is what binds, whatever the entry.
+    bind_entry_params(flow, program, target.container_idx)
 }
 
 /// `Opcode::Call`: push a function frame for the target container.
@@ -3158,6 +3262,7 @@ fn call_function(
         }),
     );
     stats.frames_pushed += 1;
+    bind_entry_params(flow, program, target.container_idx)?;
     Ok(())
 }
 
@@ -3180,12 +3285,14 @@ fn tunnel_call(
         }),
     );
     stats.frames_pushed += 1;
+    bind_entry_params(flow, program, target.container_idx)?;
     Ok(())
 }
 
 /// `Opcode::ThreadCall`: fork the current thread into the target container.
 fn thread_call(
     flow: &mut Flow,
+    program: &Program,
     stats: &mut Stats,
     target: &LinkedTarget,
 ) -> Result<(), RuntimeError> {
@@ -3197,6 +3304,18 @@ fn thread_call(
         container_idx: target.container_idx,
         offset: 0,
     });
+    // The arguments are on the shared value stack, but the frame they bind
+    // into belongs to the new thread's own (cloned) call stack, which is not
+    // installed on `flow` yet — so this cannot go through
+    // `bind_entry_params`.
+    if let Some(depth) = forked.call_stack.top_depth() {
+        for param in program.container(target.container_idx).params.iter().rev() {
+            let val = flow.pop_value()?;
+            forked
+                .call_stack
+                .write_temp(depth, usize::from(param.slot), val);
+        }
+    }
     forked.base_depth = forked.call_stack.len();
     flow.threads.push(forked);
     stats.threads_created += 1;
@@ -3278,6 +3397,14 @@ fn goto_resolved(
             context.increment_visit(id);
             context.set_turn_count(id, context.turn_index());
         }
+    }
+
+    // A divert into a parameterized knot binds its arguments, but only when
+    // it lands at offset 0 — exactly the rule the `DeclareTemp` prologue
+    // enforced by sitting there. A break divert or gather loop landing
+    // mid-container carries no arguments and binds nothing.
+    if byte_offset == 0 {
+        bind_entry_params(flow, program, container_idx)?;
     }
 
     Ok(())

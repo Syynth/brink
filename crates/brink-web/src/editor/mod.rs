@@ -18,6 +18,9 @@ mod hover;
 mod navigation;
 mod outline;
 mod passage;
+mod perf_coverage;
+#[cfg(test)]
+mod perf_probe;
 mod prose;
 mod refactor;
 mod spans;
@@ -844,7 +847,9 @@ impl EditorSession {
     /// Get the source text for the current view. Returns the fragment if a view
     /// context is active, or the full file otherwise. Returns a JSON string.
     pub fn get_view_source(&self) -> String {
-        self.get_view_source_impl(&self.active_path, self.view.as_ref())
+        crate::perf::time("ide.getViewSource", || {
+            self.get_view_source_impl(&self.active_path, self.view.as_ref())
+        })
     }
 
     // ── Document handles ────────────────────────────────────────────

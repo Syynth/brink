@@ -11,14 +11,18 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
-        self.convert_element_impl(&d.path, d.view.as_ref(), offset, target)
+        crate::perf::time("ide.convertElement", || {
+            self.convert_element_impl(&d.path, d.view.as_ref(), offset, target)
+        })
     }
 
     /// Convert a line element to a different type. Returns JSON text edit or "null".
     ///
     /// Target values: `"narrative"`, `"choice"`, `"sticky_choice"`, `"gather"`, `"choice_body"`.
     pub fn convert_element(&self, offset: u32, target: &str) -> String {
-        self.convert_element_impl(&self.active_path, self.view.as_ref(), offset, target)
+        crate::perf::time("ide.convertElement", || {
+            self.convert_element_impl(&self.active_path, self.view.as_ref(), offset, target)
+        })
     }
 
     /// Format a document handle's file (sort knots). Returns the formatted
@@ -27,12 +31,14 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "\"\"".to_owned();
         };
-        self.format_document_impl(&d.path)
+        crate::perf::time("ide.formatDocument", || self.format_document_impl(&d.path))
     }
 
     /// Format the document (sort knots). Returns the formatted source as a JSON string.
     pub fn format_document(&self) -> String {
-        self.format_document_impl(&self.active_path)
+        crate::perf::time("ide.formatDocument", || {
+            self.format_document_impl(&self.active_path)
+        })
     }
 }
 
