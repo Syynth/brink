@@ -213,6 +213,72 @@ fn measure(label: &str, rel: &str) {
     );
 }
 
+/// The compile an author actually waits on: the db is WARM (a compile has
+/// already happened), then one character changes, then it compiles again.
+///
+/// `interaction_cost_over_real_stories`'s "compile fan-out" row is not this
+/// number — it is the session's FIRST compile, so every knot chunk is cold
+/// and lowers regardless of how well invalidation is scoped. That makes it
+/// blind to the per-knot chunk seam by construction. This one is the
+/// steady state: 500 ms after each keystroke, for the whole editing
+/// session, this is the bill.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn compile_after_one_edit_when_warm() {
+    for (label, rel) in [
+        ("TheIntercept (100 KB)", LARGE),
+        ("christmas (27 KB)", SMALL),
+    ] {
+        let src = read(rel);
+        let mut session = EditorSession::new();
+        session.update_file("story.ink", &src);
+        assert!(session.set_active_file("story.ink"));
+
+        // Warm: the first compile pays for every chunk, and is not what we
+        // are pricing.
+        let _ = session.compile_project("story.ink");
+
+        for (where_, split) in [
+            // The expensive shape for a position-carrying chunk: every
+            // knot after the edit shifts, so every one of them re-lowers.
+            ("mid-file", {
+                let mid = src.len() / 2;
+                src.char_indices()
+                    .map(|(i, _)| i)
+                    .find(|i| *i >= mid)
+                    .unwrap_or(0)
+            }),
+            // The cheap shape: nothing after it to shift.
+            ("append", src.len()),
+        ] {
+            let mut samples = Vec::new();
+            for i in 0..20 {
+                let mut edited = String::with_capacity(src.len() + 8);
+                edited.push_str(&src[..split]);
+                let _ = write!(edited, "{}", "x".repeat(i + 1));
+                edited.push_str(&src[split..]);
+                session.update_file("story.ink", &edited);
+                let t = std::time::Instant::now();
+                let _ = session.compile_project("story.ink");
+                samples.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            #[expect(clippy::cast_precision_loss, reason = "20 samples")]
+            let n = samples.len() as f64;
+            let mean = samples.iter().sum::<f64>() / n;
+            println!(
+                "\n════ {label}: compile after ONE {where_} edit, warm db ════\n  \
+             mean {:.2} ms   median {:.2} ms   min {:.2}   max {:.2}   (n = {})",
+                mean,
+                samples[samples.len() / 2],
+                samples[0],
+                samples[samples.len() - 1],
+                samples.len(),
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
 fn interaction_cost_over_real_stories() {

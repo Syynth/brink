@@ -21,9 +21,17 @@ pub struct ResolutionLookup {
 
 impl ResolutionLookup {
     pub fn build(resolutions: &ResolutionMap) -> Self {
+        Self::build_shifted(resolutions, rowan::TextSize::from(0))
+    }
+
+    /// [`build`](Self::build) over resolutions whose ranges are relative to
+    /// a fragment that starts at `delta` in its file — the per-knot LIR
+    /// chunk road, which lowers a fragment rebased to absolute coordinates
+    /// against that fragment's own segment-relative resolution map.
+    pub fn build_shifted(resolutions: &ResolutionMap, delta: rowan::TextSize) -> Self {
         let map = resolutions
             .iter()
-            .map(|r| ((r.file, r.range), r.target))
+            .map(|r| ((r.file, r.range + delta), r.target))
             .collect();
         Self { map }
     }

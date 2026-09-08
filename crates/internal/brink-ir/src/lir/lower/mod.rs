@@ -20,7 +20,8 @@ use crate::provenance::{NodeClass, Provenance};
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
 use super::types as lir;
-use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
+pub use context::ResolutionLookup;
+use context::{LowerCtx, NameTable, TempMap};
 
 pub use chunk::ScopeChunk;
 pub use context::{
@@ -703,7 +704,6 @@ fn lower_knot_chunk(
 /// chunk's own local table), so sharing one instance across knots cannot
 /// change a chunk's bytes.
 pub struct ChunkLoweringCtx {
-    resolutions: ResolutionLookup,
     shapes: structs::ShapeTable,
     global_shapes: structs::GlobalShapeMap,
     file_paths: LookupMap<FileId, String>,
@@ -715,7 +715,6 @@ impl ChunkLoweringCtx {
     /// per-knot memo already depends on.
     #[must_use]
     pub fn new(
-        resolutions: &ResolutionMap,
         shape_data: &StructShapeData,
         file_paths: LookupMap<FileId, String>,
         type_mode: context::TypeMode,
@@ -724,7 +723,6 @@ impl ChunkLoweringCtx {
         let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
         let global_shapes = structs::rebuild_global_shape_map(shape_data);
         Self {
-            resolutions: ResolutionLookup::build(resolutions),
             shapes,
             global_shapes,
             file_paths,
@@ -743,6 +741,7 @@ pub fn lower_knot_chunk_incremental(
     hir_file: &hir::HirFile,
     knot: &hir::Knot,
     index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     ctx: &ChunkLoweringCtx,
     file_id: FileId,
     tables: context::AnalyzerTables<'_>,
@@ -756,7 +755,7 @@ pub fn lower_knot_chunk_incremental(
         hir_file,
         knot,
         index,
-        &ctx.resolutions,
+        resolutions,
         &ctx.file_paths,
         &struct_ctx,
         context::root_definition_id(),

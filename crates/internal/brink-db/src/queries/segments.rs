@@ -1778,6 +1778,56 @@ pub(crate) fn segment_fragment_hir(
     fragment_hir(segment_lowered_query(db, file, segment))
 }
 
+/// Where each of the assembled file's knots came from (#3586): for knot
+/// `i` of the file's `hir.knots`, the index of the segment that produced
+/// it and its position within that segment's own fragment.
+///
+/// The order replicates [`assemble_lowered_file`]'s exactly — every
+/// segment's `knot_entries` in document order, then every segment's
+/// stitch-promoted `top_level_knots` appended — because
+/// `lir_knot_chunk_query` is still keyed by the assembled knot index and
+/// the link still walks it in that order. Getting this wrong would
+/// reorder the program's containers, so it is derived from the same
+/// products the assembler reads rather than inferred from segment kinds.
+///
+/// The local index counts KEPT knots: `fragment_hir` compacts the `None`
+/// entries (a malformed header whose diagnostics still count) out of
+/// `hir.knots`, so it is not a position in `knot_entries`.
+///
+/// `Vec<(usize, usize)>` of plain data, so its derived `Eq` backdates: an
+/// edit that leaves the file's knot structure alone re-executes this and
+/// stops, leaving each chunk memo validated.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn file_knot_segments_query(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> Vec<(usize, usize)> {
+    let segments = file_segments_query(db, file);
+    let mut out = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        let product = segment_lowered_query(db, file, *seg);
+        let mut li = 0usize;
+        for (knot, _) in &product.knot_entries {
+            if knot.is_some() {
+                out.push((si, li));
+                li += 1;
+            }
+        }
+    }
+    for (si, seg) in segments.iter().enumerate() {
+        let product = segment_lowered_query(db, file, *seg);
+        let base = product
+            .knot_entries
+            .iter()
+            .filter(|(k, _)| k.is_some())
+            .count();
+        for li in 0..product.top_level_knots.len() {
+            out.push((si, base + li));
+        }
+    }
+    out
+}
+
 /// ONE segment by index — the per-def firewall's actual seam. A consumer
 /// that indexes `file_segments_query`'s whole `Vec` depends on every
 /// segment identity in the file: re-mint any one and all readers are

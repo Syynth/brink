@@ -43,6 +43,22 @@ const WATCHED: &[&str] = &[
     "type_inference_query",
     // The effects family (T2-1) and the per-knot LIR chunks, pulled through
     // `story_data()` — the compile the host debounces behind every keystroke.
+    //
+    // `lir_knot_chunk_query` reads each knot's own segment (#3586). Before
+    // that, EVERY knot in the PROJECT re-lowered on any edit, by two
+    // independent routes: a same-length edit through the whole-file
+    // `normalized_stamped_query`, and a shift edit through the range-keyed
+    // resolution lookup inside the `no_eq` `chunk_lowering_ctx_query`.
+    // Fixing either alone would have moved nothing.
+    //
+    // What is left is a SHIFT cost, and it is deliberate. A chunk carries
+    // absolute positions (`Container`/`Stmt`/`Expr` all hold `Provenance`,
+    // and the debug line tables are built from it), so the fragment is
+    // rebased to absolute before lowering and the memo depends on its
+    // segment's offset. An edit re-lowers the edited knot and the knots
+    // AFTER it in that file — never one before it, and never another
+    // file's. Reaching one would need a rebase over lowered LIR rather
+    // than over HIR; see `docs/keystroke-inference-cost.md`.
     "def_effect_atoms_query",
     "effects_scc_query",
     "effects_query",
@@ -183,7 +199,7 @@ fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
             ("def_effect_atoms_query", 1),
             ("effects_scc_query", 0),
             ("effects_query", 0),
-            ("lir_knot_chunk_query", 3),
+            ("lir_knot_chunk_query", 2),
             ("signature_query", 2),
         ],
     );
@@ -212,7 +228,7 @@ fn appending_at_end_of_file_reexecutes_the_last_knots_defs_only() {
             ("def_effect_atoms_query", 1),
             ("effects_scc_query", 0),
             ("effects_query", 0),
-            ("lir_knot_chunk_query", 3),
+            ("lir_knot_chunk_query", 1),
             ("signature_query", 2),
         ],
     );
@@ -246,7 +262,7 @@ fn editing_a_var_initializer_of_the_same_type_reexecutes_no_def() {
             ("def_effect_atoms_query", 0),
             ("effects_scc_query", 0),
             ("effects_query", 0),
-            ("lir_knot_chunk_query", 3),
+            ("lir_knot_chunk_query", 0),
             ("signature_query", 1),
         ],
     );
@@ -298,7 +314,7 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
             ("def_effect_atoms_query", 1),
             ("effects_scc_query", 0),
             ("effects_query", 0),
-            ("lir_knot_chunk_query", 3),
+            ("lir_knot_chunk_query", 2),
             ("signature_query", 1),
         ],
     );
