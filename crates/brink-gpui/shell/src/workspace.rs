@@ -9,13 +9,13 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
-    Subscription, Window, anchored, deferred, div, point, px,
+    Action, AnyElement, AnyView, App, ClickEvent, Entity, FocusHandle, IntoElement, Render,
+    SharedString, Subscription, Window, anchored, deferred, div, point, px,
 };
-use gpui_base::component_traits::Selectable as _;
-use gpui_component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
-use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme, Sizable as _, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
     CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow, Unbound,
@@ -1173,32 +1173,62 @@ impl Workspace {
     /// what the whole centre means.
     fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.editor_view(cx);
-        // A segmented control, not three loose buttons. With labels a
-        // `ghost` toggle read well enough; with icons alone it did not —
-        // a ghost button has no background for the selected style to
-        // tint, so the active view was invisible. The group draws the
-        // segments as one control and fills the selected one, which is
-        // also what says these three are alternatives rather than three
-        // things you can press.
-        ButtonGroup::new("view-switcher")
-            .compact()
-            .outline()
-            .children(EditorView::ALL.iter().map(|&view| {
-                Button::new(SharedString::from(format!(
-                    "view-{}",
-                    view.persistence_key()
-                )))
-                .icon(view.icon())
-                .selected(view == current)
-                // The ruled NAME and the keystroke live here now that the
-                // label is a glyph.
-                .tooltip(format!("{} ({})", view.title(), view.keystroke()))
-            }))
-            .on_click(cx.listener(|this, clicked: &Vec<usize>, window, cx| {
-                // Single-selection, so at most one index comes back.
-                if let Some(view) = clicked.first().and_then(|&ix| EditorView::ALL.get(ix)) {
-                    this.set_editor_view(*view, window, cx);
-                }
+        // Hand-built rather than `ButtonGroup`, for two reasons found on
+        // screen. Its `outline` variant paints every segment in the accent
+        // foreground and puts `selected` in the BORDER, so with icons and
+        // no labels all three read as active — the switcher had no visible
+        // state at all. And at the kit's own button metrics the control
+        // stood half again as tall as the 30px chrome it sits in.
+        //
+        // These are the Binder's tool metrics instead — 22px cells, a 14px
+        // glyph, accent fill and `primary` for the one that is on — which
+        // is the idiom already proven legible in this app, and small enough
+        // to belong in a title bar.
+        let (border, accent, muted, on_colour, off_colour) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.accent,
+                theme.muted,
+                theme.primary,
+                theme.muted_foreground,
+            )
+        };
+        h_flex()
+            .rounded_sm()
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .children(EditorView::ALL.iter().enumerate().map(|(ix, &view)| {
+                let on = view == current;
+                // The label is a glyph now, so the ruled NAME and the
+                // keystroke live here — the vocabulary still has a home.
+                let hint = SharedString::from(format!("{} ({})", view.title(), view.keystroke()));
+                div()
+                    .id(SharedString::from(format!(
+                        "view-{}",
+                        view.persistence_key()
+                    )))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(22.))
+                    // Hairlines BETWEEN the segments, not around each: one
+                    // control with three cells, rather than three buttons
+                    // that happen to touch.
+                    .when(ix > 0, |el| el.border_l_1().border_color(border))
+                    .when(on, |el| el.bg(accent))
+                    .when(!on, |el| el.hover(|s| s.bg(muted.opacity(0.6))))
+                    .cursor_pointer()
+                    .child(view.icon().with_size(px(14.)).text_color(if on {
+                        on_colour
+                    } else {
+                        off_colour
+                    }))
+                    .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.set_editor_view(view, window, cx);
+                    }))
             }))
             .into_any_element()
     }
