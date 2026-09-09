@@ -1402,10 +1402,9 @@ impl Studio {
     /// the manuscript itself should host a session is parked
     /// (`HANDOFF.md`, "Open, parked").
     fn play_at(&mut self, at: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.workspace.read(cx).editor_root().clone();
-        if root.read(cx).view() == EditorView::Continuous {
-            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
-        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.require_editor_view(EditorView::Code, cx);
+        });
         let player = self.player.clone();
         self.code
             .update(cx, |code, cx| code.show_player(&player, window, cx));
@@ -1428,7 +1427,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.set_editor_view(EditorView::Code, window, cx);
+            workspace.require_editor_view(EditorView::Code, cx);
         });
         let compiled = self.compiled.clone();
         self.code
@@ -1592,10 +1591,9 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let root = self.workspace.read(cx).editor_root().clone();
-        if root.read(cx).view() == EditorView::Continuous {
-            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
-        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.require_editor_view(EditorView::Code, cx);
+        });
         let graph = self.graph.clone();
         self.code
             .update(cx, |code, cx| code.show_graph(&graph, window, cx));

@@ -171,6 +171,14 @@ pub struct Workspace {
     /// un-maximizing puts back what was there and not a guess at it.
     /// `None` when not maximized.
     unmaximized: Option<Vec<(&'static str, bool)>>,
+    /// The view the AUTHOR chose, which is not always the one on screen.
+    ///
+    /// The Player, the Story Graph and Compiled Output are Code-view tabs,
+    /// so asking for any of them takes the manuscript's place. That switch
+    /// is the studio's doing, not a preference, and persisting it meant
+    /// pressing `cmd-r` once in Continuous and being in Code the next
+    /// morning. What is remembered is this; what is drawn is the root's.
+    chosen_view: EditorView,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -228,6 +236,7 @@ impl Workspace {
             pre_narrow: None,
             notices_open: false,
             unmaximized: None,
+            chosen_view: EditorView::Code,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -554,12 +563,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.chosen_view = view;
         let focus = self.editor_root.update(cx, |root, cx| {
             root.set_view(view, cx);
             root.occupant_focus()
         });
         window.focus(&focus.unwrap_or_else(|| self.focus.clone()), cx);
         self.persist_layout(cx);
+        cx.notify();
+    }
+
+    /// Switch views because a SURFACE needs one, not because the author
+    /// asked — the Player, the Story Graph and Compiled Output are all
+    /// Code-view tabs, so showing one gives the manuscript's place away.
+    ///
+    /// Deliberately not [`Workspace::set_editor_view`]: it leaves
+    /// `chosen_view` alone, so the author still reopens tomorrow in the
+    /// view they picked. It also leaves focus alone, because the caller is
+    /// about to put focus in the surface it opened this for.
+    pub fn require_editor_view(&mut self, view: EditorView, cx: &mut Context<Self>) {
+        if self.editor_root.read(cx).view() == view {
+            return;
+        }
+        self.editor_root
+            .update(cx, |root, cx| root.set_view(view, cx));
         cx.notify();
     }
 
@@ -595,7 +622,8 @@ impl Workspace {
         let saved = crate::settings::AppSettings::get(cx).layout;
         crate::settings::Layout {
             docks,
-            editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
+            // The chosen view, NOT the one on screen — see `chosen_view`.
+            editor_view: Some(self.chosen_view.persistence_key().to_owned()),
             scroll_root: saved.scroll_root,
             scroll: saved.scroll,
             open_files: saved.open_files,

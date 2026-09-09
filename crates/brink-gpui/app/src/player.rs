@@ -63,13 +63,17 @@ enum Entry {
         source: Option<Location>,
     },
     /// The choice the player took, echoed the way it was written.
-    Chosen {
-        text: SharedString,
-        sticky: bool,
-    },
+    Chosen { text: SharedString, sticky: bool },
     /// A turn boundary or a runtime warning.
     Notice(SharedString),
-    Error(SharedString),
+    /// A failure. `at` is the site a RUNTIME fault resolved, which makes
+    /// the row a link — the studio jumps there once when the fault lands,
+    /// and this is how you get back to it afterwards. A compile failure
+    /// carries none: its positions are Problems' business.
+    Error {
+        text: SharedString,
+        at: Option<(String, u32)>,
+    },
 }
 
 pub struct Player {
@@ -259,7 +263,10 @@ impl Player {
                         Err(e) => {
                             this.running = false;
                             let text = SharedString::from(format!("{e:#}"));
-                            this.push(Entry::Error(text.clone()));
+                            this.push(Entry::Error {
+                                text: text.clone(),
+                                at: None,
+                            });
                             cx.emit(PlayerEvent::Log {
                                 level: crate::output_log::Level::Error,
                                 text,
@@ -345,7 +352,14 @@ impl Player {
             self.running = false;
             self.choices.clear();
             let text = SharedString::from(error.to_string());
-            self.push(Entry::Error(text.clone()));
+            let at = match &error {
+                PlayError::Runtime(Fault { at, .. }) => at.clone(),
+                _ => None,
+            };
+            self.push(Entry::Error {
+                text: text.clone(),
+                at,
+            });
             cx.emit(PlayerEvent::Log {
                 level: crate::output_log::Level::Error,
                 text,
@@ -368,7 +382,10 @@ impl Player {
             if let PlayError::Compile(errors) = error {
                 for line in errors {
                     let text = SharedString::from(line);
-                    self.push(Entry::Error(text.clone()));
+                    self.push(Entry::Error {
+                        text: text.clone(),
+                        at: None,
+                    });
                     cx.emit(PlayerEvent::Log {
                         level: crate::output_log::Level::Error,
                         text,
@@ -436,13 +453,24 @@ impl Player {
                 .text_color(muted)
                 .child(text.clone())
                 .into_any_element(),
-            Entry::Error(text) => div()
-                .px_4()
-                .py_1()
-                .text_xs()
-                .text_color(danger)
-                .child(text.clone())
-                .into_any_element(),
+            Entry::Error { text, at } => {
+                let row = div().px_4().py_1().text_xs().text_color(danger);
+                match at.clone() {
+                    Some((path, line)) => row
+                        .id(("play-error", ix))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.muted.opacity(0.4)))
+                        .child(text.clone())
+                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            cx.emit(PlayerEvent::Stopped {
+                                path: path.clone(),
+                                line,
+                            });
+                        }))
+                        .into_any_element(),
+                    None => row.child(text.clone()).into_any_element(),
+                }
+            }
         }
     }
 
