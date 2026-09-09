@@ -31,7 +31,7 @@ use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     IntoElement, Render, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle,
-    Window, div, uniform_list,
+    Window, div, px, uniform_list,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
@@ -499,9 +499,10 @@ impl OutputLog {
         };
         h_flex()
             .w_full()
+            .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
             .gap_2()
             .px_2()
-            .py_1()
+            .items_center()
             .border_b_1()
             .border_color(border)
             .child(div().text_xs().text_color(muted).child(summary))

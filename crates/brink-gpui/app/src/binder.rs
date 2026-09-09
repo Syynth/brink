@@ -1429,7 +1429,7 @@ impl Binder {
         let filter_open = self.filter_open;
         h_flex()
             .w_full()
-            .h(px(32.))
+            .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
             .px_2()
             .gap_1()
             .items_center()
@@ -1779,6 +1779,16 @@ impl gpui_component::dock::BasePanel for Binder {
 impl gpui_component::dock::Panel for Binder {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Binder")
+    }
+
+    /// The Binder draws its own header edge to edge, like every other tool
+    /// window here. Without this it took the skin's default `pt_2` — the
+    /// kit applies it to the active panel of any group holding more than
+    /// one, which the left dock does (Binder + Search) — and since Search
+    /// already opted out, the gap appeared above one tab and not the
+    /// other.
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 }
 

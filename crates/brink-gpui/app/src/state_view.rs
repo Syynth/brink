@@ -447,9 +447,10 @@ impl StateView {
         };
         h_flex()
             .w_full()
+            .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
             .gap_2()
             .px_2()
-            .py_1()
+            .items_center()
             .border_b_1()
             .border_color(border)
             .text_xs()
