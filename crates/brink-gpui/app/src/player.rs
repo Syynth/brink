@@ -573,7 +573,7 @@ impl BasePanel for Player {
 
 impl Panel for Player {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Player")
+        brink_gpui_shell::tool_window::tab_title(gpui_component::IconName::Play, "Player")
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

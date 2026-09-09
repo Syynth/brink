@@ -415,7 +415,7 @@ impl BasePanel for StoryGraphView {
 
 impl Panel for StoryGraphView {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Story Graph")
+        brink_gpui_shell::tool_window::tab_title(gpui_component::IconName::Network, "Story Graph")
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

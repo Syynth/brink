@@ -86,6 +86,24 @@ impl EditorView {
         }
     }
 
+    /// The switcher's glyph.
+    ///
+    /// Lucide, per the icon ruling (2026-09-09): none of the three is a
+    /// brink concept, so none is worth hand-drawing. `LayoutDashboard` is
+    /// panes for the view that has tabs, groups and splits; `File` is the
+    /// one that shows exactly one; `BookOpen` is the manuscript, which is
+    /// what Continuous calls itself. The switcher's tooltip still carries
+    /// the ruled NAME and the keystroke, so nothing is lost by dropping
+    /// the label — the vocabulary lives in `title`.
+    #[must_use]
+    pub const fn icon(self) -> gpui_component::IconName {
+        match self {
+            Self::Code => gpui_component::IconName::LayoutDashboard,
+            Self::Single => gpui_component::IconName::File,
+            Self::Continuous => gpui_component::IconName::BookOpen,
+        }
+    }
+
     const fn slot(self) -> usize {
         match self {
             Self::Code => 0,

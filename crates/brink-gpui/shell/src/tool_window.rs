@@ -21,6 +21,27 @@ use crate::region::RailSlot;
 /// heights), which is what made the seam visible.
 pub const HEADER_HEIGHT: f32 = 30.;
 
+/// A centre tab's title for a panel that is NOT a file.
+///
+/// A document tab is named by its filename and wants no glyph. The Player,
+/// the Story Graph and Compiled Output share the centre with those
+/// documents, and the icon is what tells them apart at a glance: this tab
+/// is a SURFACE, not something you opened off the disk. Their glyphs come
+/// from the kit's lucide set, per the icon ruling — none of the three is a
+/// brink concept.
+pub fn tab_title(
+    icon: impl Into<gpui_component::Icon>,
+    label: impl Into<gpui::SharedString>,
+) -> impl gpui::IntoElement {
+    use gpui::{ParentElement as _, Styled as _};
+    use gpui_component::Sizable as _;
+    gpui_component::h_flex()
+        .gap_1p5()
+        .items_center()
+        .child(icon.into().small())
+        .child(label.into())
+}
+
 /// The key context every tool window's root carries
 /// (`div().key_context(TOOL_WINDOW_CONTEXT)`).
 ///

@@ -1186,7 +1186,7 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.set_editor_view(view, window, cx);
                 }))
-                .child(view.title())
+                .icon(view.icon())
             }))
             .into_any_element()
     }
