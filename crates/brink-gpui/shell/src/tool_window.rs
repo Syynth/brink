@@ -150,7 +150,7 @@ pub struct ToolWindowSpec {
     pub title: SharedString,
     /// A complete SVG document, painted as a monochrome mask tinted by the
     /// button's text colour. `None` falls back to the title's first letter.
-    pub icon: Option<&'static str>,
+    pub icon: Option<crate::icons::BrinkIcon>,
     /// The one place this tool window's home is declared.
     pub slot: RailSlot,
     /// Dock size on first open; `None` takes the dock's own default.
@@ -177,8 +177,8 @@ impl ToolWindowSpec {
     }
 
     #[must_use]
-    pub fn icon(mut self, svg: &'static str) -> Self {
-        self.icon = Some(svg);
+    pub fn icon(mut self, icon: crate::icons::BrinkIcon) -> Self {
+        self.icon = Some(icon);
         self
     }
 

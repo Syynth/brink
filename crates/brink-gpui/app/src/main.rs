@@ -13,7 +13,6 @@ mod document;
 mod files;
 mod fixes;
 mod graph_layout;
-mod icons;
 mod inkt_highlight;
 mod knots;
 mod navigation;
@@ -45,6 +44,7 @@ use std::path::PathBuf;
 use brink_gpui_model::play::PlayCommand;
 use brink_gpui_model::query::{ConvertTarget, QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
+use brink_gpui_shell::icons;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
@@ -304,7 +304,7 @@ impl Studio {
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)
-                    .icon(icons::FOLDER)
+                    .icon(icons::BrinkIcon::TreeFolder)
                     .size(px(260.))
                     .open(),
                 binder.clone(),
@@ -315,7 +315,7 @@ impl Studio {
             // which is what made the rail tab-aware.
             workspace.add_tool_window(
                 ToolWindowSpec::new("search", "Search", RailSlot::LEFT_UPPER)
-                    .icon(icons::SEARCH)
+                    .icon(icons::BrinkIcon::Find)
                     .size(px(320.)),
                 search.clone(),
                 window,
@@ -325,7 +325,7 @@ impl Studio {
                 // Lower-left: with no bottom rail, this is what addresses
                 // the bottom dock (`docs/gpui-studio-spec.md` §4.1).
                 ToolWindowSpec::new("problems", "Problems", RailSlot::LEFT_LOWER)
-                    .icon(icons::WARNING_MARK)
+                    .icon(icons::BrinkIcon::WarningMark)
                     .size(px(160.))
                     .open(),
                 problems.clone(),
@@ -335,7 +335,7 @@ impl Studio {
             // Beside Problems in the lower-left dock: the second tab there.
             workspace.add_tool_window(
                 ToolWindowSpec::new("todos", "TODOs", RailSlot::LEFT_LOWER)
-                    .icon(icons::TODO)
+                    .icon(icons::BrinkIcon::Todo)
                     .size(px(160.)),
                 todos.clone(),
                 window,
@@ -346,7 +346,7 @@ impl Studio {
             // and the errors that have no file and span to sit on.
             workspace.add_tool_window(
                 ToolWindowSpec::new("output", "Output", RailSlot::LEFT_LOWER)
-                    .icon(icons::DOC)
+                    .icon(icons::BrinkIcon::Doc)
                     .size(px(160.)),
                 output.clone(),
                 window,
@@ -356,7 +356,7 @@ impl Studio {
             // tree that wants the side rather than the bottom.
             workspace.add_tool_window(
                 ToolWindowSpec::new("program", "Program", RailSlot::RIGHT_UPPER)
-                    .icon(icons::DOC)
+                    .icon(icons::BrinkIcon::Doc)
                     .size(px(380.)),
                 program.clone(),
                 window,
@@ -366,7 +366,7 @@ impl Studio {
             // pane, which reads the same session the Player runs.
             workspace.add_tool_window(
                 ToolWindowSpec::new("state", "State", RailSlot::RIGHT_UPPER)
-                    .icon(icons::KNOT)
+                    .icon(icons::BrinkIcon::Knot)
                     .size(px(380.)),
                 state.clone(),
                 window,
@@ -1936,7 +1936,7 @@ fn main() {
     // register; a `Button::icon(IconName::ChevronDown)` with no asset
     // source silently draws nothing.
     Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(gpui_kit_assets::Assets)
+        .with_assets(brink_gpui_shell::icons::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
             // The persisted settings and their theme, before the first paint.
