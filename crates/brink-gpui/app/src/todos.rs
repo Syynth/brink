@@ -50,9 +50,9 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use rowan::TextSize;
 
-use crate::icons;
 use crate::project::{Project, ProjectEvent};
 use crate::search::container_at;
+use brink_gpui_shell::icons;
 
 /// The lint code lowering assigns to `TODO:` author notes.
 pub const TODO_CODE: &str = "E189";
@@ -407,7 +407,7 @@ impl Todos {
 
     fn tool(
         id: &'static str,
-        src: &'static str,
+        src: icons::BrinkIcon,
         active: bool,
         tooltip: &'static str,
         cx: &mut Context<Self>,
@@ -645,7 +645,7 @@ impl Panel for Todos {
                 .items_center()
                 .child(Self::tool(
                     "todos-filter",
-                    icons::SEARCH,
+                    icons::BrinkIcon::Find,
                     self.filter_open,
                     "Filter TODOs",
                     cx,
@@ -653,7 +653,7 @@ impl Panel for Todos {
                 ))
                 .child(Self::tool(
                     "todos-group",
-                    icons::GROUP_BY_FILE,
+                    icons::BrinkIcon::GroupByFile,
                     self.grouped,
                     "Group by file",
                     cx,

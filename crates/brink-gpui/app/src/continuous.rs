@@ -29,6 +29,37 @@
 //! (variable-height, unlike `uniform_list`) mounts only the sections near the
 //! viewport. Off-screen files cost nothing; on-screen files lay out in full,
 //! which is the honest residual cost of a stacked manuscript.
+//!
+//! ## That residual costs nothing in release, and everything in debug
+//!
+//! Measured 2026-09-09 on a real 25-file project whose largest file is 1,125
+//! source lines (1,342 display rows once soft-wrapped) and whose next largest
+//! is 165, with [`Trace`] and a viewport holding ~43 rows:
+//!
+//! | on screen | rows laid out | debug | release |
+//! |---|--:|--:|--:|
+//! | one viewport | 43 | 20.7 ms | 16.7 ms |
+//! | a 165-line file | 175 | 28.1 ms | 16.7 ms |
+//! | the 1,125-line file | 1,342 | **90 ms** | **16.7 ms** |
+//!
+//! Debug fits `frame = 18.3 ms + 56 us/row` with R^2 = 0.952 — the residual,
+//! exactly as described, 31x the viewport's worth of rows laid out per frame
+//! and scrolling collapsed to 11 fps. **Release fits `-0.9 us/row` with
+//! R^2 = 0.006**: no relationship between rows mounted and frame time at all.
+//! The median is 16.7 ms with the big file on screen and 16.7 ms without —
+//! the vsync interval, i.e. pinned at the frame cap either way — and p90
+//! never exceeds 17.7 ms in any row bucket from 0 to 1,342.
+//!
+//! **So do not fix this.** The obvious repair is to teach the editor to take
+//! an external viewport instead of deriving one from its own height, which
+//! means changing `gpui-base`'s element; it would buy nothing. What a debug
+//! build shows here is a debug build, and the honest reading of a collapse in
+//! this view is "check it in release first".
+//!
+//! Two things the numbers ruled OUT, so they are not re-guessed: the cost
+//! does not track the NUMBER of sections mounted (p50 is 16.6-16.7 ms for one
+//! through five), and it is not first-mount cost (frames that build a section
+//! for the first time are p50 16.6 ms, max 33.1).
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
@@ -44,11 +75,45 @@ use gpui_component::{
 };
 
 use crate::document::highlighter_factory;
-use crate::icons;
 use crate::project::{Project, ProjectEvent};
+use brink_gpui_shell::icons;
 
 /// A mounted section: its editor, and the height its file needs.
 type Section = (Entity<EditorState>, f32);
+
+/// Per-frame instrumentation for the manuscript, off unless
+/// `BRINK_GPUI_TRACE_MANUSCRIPT` is set in the environment.
+///
+/// It measures the thing the module doc predicts and nobody had numbers
+/// for: a mounted section lays out EVERY line it holds, so a frame costs
+/// what the sections on screen are worth, not what the viewport shows. The
+/// existing `mounted` counter times `build_editor` only, which happens
+/// once and inside the list closure — the layout that actually costs is
+/// after that closure returns, so it was measuring the wrong thing.
+///
+/// The list builds its items during LAYOUT, i.e. after `render` returns.
+/// So each frame reports the section set the PREVIOUS frame laid out,
+/// alongside the wall time since that frame started — which while a scroll
+/// is in flight is the frame interval, and therefore the symptom itself.
+///
+/// ## Read the median, never the tail
+///
+/// What this measures is the gap BETWEEN renders, which cannot tell a frame
+/// that took 231 ms from a hand that paused for 215 ms and moved again. In
+/// the 2026-09-09 run every outlier above 20 ms landed on the SMALLEST file
+/// in the project, with the four worst all on a 26-row one — which is a hand,
+/// not a cost. Continuous scrolling renders every frame, so the median is
+/// sound; the tail is the operator.
+struct Trace {
+    /// When the last frame began.
+    last: Option<Instant>,
+    /// `(path, height px)` for every section the list built this frame,
+    /// filled from inside the closure and drained by the next render.
+    sections: Rc<RefCell<Vec<(String, f32)>>>,
+    /// Frames seen, so the first few (which carry mount cost) are legible
+    /// as such rather than looking like the steady state.
+    frame: u64,
+}
 
 /// gpui-component renders the editor at `line_height: relative(1.5)` over the
 /// theme's monospace size (`input/editor.rs`), so a row is exactly
@@ -128,6 +193,8 @@ pub struct ContinuousView {
     list: ListState,
     /// How many sections have ever been built, and the cost of the last one.
     mounted: Rc<RefCell<(usize, f64)>>,
+    /// See [`Trace`]. `None` unless `BRINK_GPUI_TRACE_MANUSCRIPT` is set.
+    trace: Option<Trace>,
     /// The editor's REAL row height, once one section has laid out.
     ///
     /// `mono_font_size * 1.5` is what gpui-component asks for, but the row
@@ -176,6 +243,11 @@ impl ContinuousView {
             editors: Rc::new(RefCell::new(HashMap::new())),
             section_subs: Rc::new(RefCell::new(Vec::new())),
             mounted: Rc::new(RefCell::new((0, 0.0))),
+            trace: std::env::var_os("BRINK_GPUI_TRACE_MANUSCRIPT").map(|_| Trace {
+                last: None,
+                sections: Rc::new(RefCell::new(Vec::new())),
+                frame: 0,
+            }),
             measured_line_height: None,
             pending_reveal: None,
             me: cx.weak_entity(),
@@ -482,8 +554,50 @@ impl gpui::Focusable for ContinuousView {
     }
 }
 
+impl ContinuousView {
+    /// Print what the previous frame laid out, and how long ago it began.
+    ///
+    /// While a scroll is in flight every frame renders, so the gap between
+    /// two frames IS the frame interval — the number that says whether
+    /// scrolling is smooth. Paired with the sections that were mounted, it
+    /// says what that frame was paying for.
+    fn report_last_frame(&mut self) {
+        let Some(trace) = self.trace.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        let elapsed = trace.last.replace(now).map(|then| now - then);
+        let laid_out: Vec<(String, f32)> = trace.sections.borrow_mut().drain(..).collect();
+        trace.frame += 1;
+        // Nothing was laid out before the first frame, and the first few
+        // carry one-off mount cost.
+        let Some(elapsed) = elapsed else {
+            return;
+        };
+        // The measured value once a section has laid out; before that the
+        // same first guess every other height here starts from.
+        let line_height = self
+            .measured_line_height
+            .unwrap_or(13.0 * LINE_HEIGHT_FACTOR);
+        let rows: f32 = laid_out.iter().map(|(_, h)| h / line_height).sum();
+        let mut named: Vec<String> = laid_out
+            .iter()
+            .map(|(path, h)| format!("{path}({:.0})", h / line_height))
+            .collect();
+        named.sort();
+        eprintln!(
+            "manuscript frame {:>5} | {:>7.1} ms | {:>6.0} rows on screen | {}",
+            trace.frame,
+            elapsed.as_secs_f64() * 1e3,
+            rows,
+            named.join(" ")
+        );
+    }
+}
+
 impl Render for ContinuousView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.report_last_frame();
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -496,6 +610,7 @@ impl Render for ContinuousView {
         let editors = self.editors.clone();
         let section_subs = self.section_subs.clone();
         let mounted = self.mounted.clone();
+        let traced = self.trace.as_ref().map(|t| t.sections.clone());
         let measured = self.measured_line_height;
 
         // The file the top of the scroller is currently inside — `list`
@@ -542,6 +657,11 @@ impl Render for ContinuousView {
                         stats.0 += 1;
                         stats.1 = started.elapsed().as_secs_f64() * 1e3;
                     }
+                    // This closure runs during LAYOUT, so what it records is
+                    // what this frame is about to pay for.
+                    if let Some(sink) = traced.as_ref() {
+                        sink.borrow_mut().push((path.to_string(), height));
+                    }
                     v_flex()
                         .w_full()
                         .child(heading(&path, cx))
@@ -587,7 +707,11 @@ fn heading(path: &str, cx: &App) -> impl IntoElement {
         .border_t_1()
         .border_b_1()
         .border_color(theme.border)
-        .child(icons::icon(icons::FILE, px(12.), theme.muted_foreground))
+        .child(icons::icon(
+            icons::BrinkIcon::Drop,
+            px(12.),
+            theme.muted_foreground,
+        ))
         .child(
             div()
                 .text_xs()
