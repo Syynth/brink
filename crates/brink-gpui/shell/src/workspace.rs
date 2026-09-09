@@ -24,6 +24,11 @@ use crate::commands::{
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
 use crate::rail::{RAIL_WIDTH, RailButton, rail};
+
+/// One view-switcher cell, square. The Binder's tool metric — small enough
+/// for a title bar, and the size the switcher's alignment with the right
+/// rail is derived from.
+const SWITCHER_CELL: f32 = 22.;
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
 use crate::settings_appearance::AppearanceSection;
@@ -1212,7 +1217,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(22.))
+                    .size(px(SWITCHER_CELL))
                     // Hairlines BETWEEN the segments, not around each: one
                     // control with three cells, rather than three buttons
                     // that happen to touch.
@@ -1332,12 +1337,15 @@ impl Render for Workspace {
                         .flex_1()
                         .items_center()
                         .justify_between()
-                        // `justify_between` pins the switcher to the content
-                        // edge, which on macOS is also the window's rounded
-                        // corner — so it read as cramped against the frame
-                        // rather than merely tight. Enough to clear the
-                        // radius, not enough to look detached from it.
-                        .pr_3()
+                        // Line the switcher's trailing cell up with the
+                        // right rail directly beneath it. Derived, not
+                        // eyeballed: the rail centres its buttons in
+                        // `RAIL_WIDTH`, so a cell of ours sitting there
+                        // would be inset by half the difference — and the
+                        // two columns read as one edge down the window
+                        // instead of two that nearly agree. Stays true if
+                        // the rail is ever re-measured.
+                        .pr(px((f32::from(RAIL_WIDTH) - SWITCHER_CELL) / 2.))
                         .child(gpui_component::label::Label::new("brink"))
                         .child(switcher),
                 ),
