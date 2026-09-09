@@ -1332,6 +1332,12 @@ impl Render for Workspace {
                         .flex_1()
                         .items_center()
                         .justify_between()
+                        // `justify_between` pins the switcher to the content
+                        // edge, which on macOS is also the window's rounded
+                        // corner — so it read as cramped against the frame
+                        // rather than merely tight. Enough to clear the
+                        // radius, not enough to look detached from it.
+                        .pr_3()
                         .child(gpui_component::label::Label::new("brink"))
                         .child(switcher),
                 ),
