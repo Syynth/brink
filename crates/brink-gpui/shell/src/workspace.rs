@@ -1337,15 +1337,16 @@ impl Render for Workspace {
                         .flex_1()
                         .items_center()
                         .justify_between()
-                        // Line the switcher's trailing cell up with the
-                        // right rail directly beneath it. Derived, not
-                        // eyeballed: the rail centres its buttons in
-                        // `RAIL_WIDTH`, so a cell of ours sitting there
-                        // would be inset by half the difference — and the
-                        // two columns read as one edge down the window
-                        // instead of two that nearly agree. Stays true if
-                        // the rail is ever re-measured.
-                        .pr(px((f32::from(RAIL_WIDTH) - SWITCHER_CELL) / 2.))
+                        // The switcher's right edge meets the right rail's
+                        // LEFT border, so that border reads as one line
+                        // running from the title bar down the window — the
+                        // rail is a strip beside the content, and the title
+                        // bar's content should end where the strip begins.
+                        //
+                        // Not the rail BUTTONS' right edge, which was the
+                        // first reading and put the switcher over the rail
+                        // rather than beside it.
+                        .pr(RAIL_WIDTH)
                         .child(gpui_component::label::Label::new("brink"))
                         .child(switcher),
                 ),
