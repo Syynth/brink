@@ -88,19 +88,25 @@ impl EditorView {
 
     /// The switcher's glyph.
     ///
-    /// Lucide, per the icon ruling (2026-09-09): none of the three is a
-    /// brink concept, so none is worth hand-drawing. `LayoutDashboard` is
-    /// panes for the view that has tabs, groups and splits; `File` is the
-    /// one that shows exactly one; `BookOpen` is the manuscript, which is
-    /// what Continuous calls itself. The switcher's tooltip still carries
-    /// the ruled NAME and the keystroke, so nothing is lost by dropping
-    /// the label — the vocabulary lives in `title`.
+    /// Two come from lucide and one does not, which is the icon ruling
+    /// (2026-09-09) meeting its first edge: "generic chrome comes from
+    /// lucide" assumes lucide SHIPS it, and the kit's subset has no
+    /// infinity. Drawn to that set's own conventions — 24x24, stroke 2,
+    /// round caps — so it sits with the others rather than beside them.
+    ///
+    /// `LayoutDashboard` is panes, for the view that has tabs, groups and
+    /// splits. `File` is the one that shows exactly one. Continuous is the
+    /// lemniscate: every file as one manuscript, with no seam and no end —
+    /// which an open book says less exactly.
+    ///
+    /// Returns an `Icon` and not a name because the two sets are different
+    /// types; `Icon` is what both convert into and what a widget takes.
     #[must_use]
-    pub const fn icon(self) -> gpui_component::IconName {
+    pub fn icon(self) -> gpui_component::Icon {
         match self {
-            Self::Code => gpui_component::IconName::LayoutDashboard,
-            Self::Single => gpui_component::IconName::File,
-            Self::Continuous => gpui_component::IconName::BookOpen,
+            Self::Code => gpui_component::IconName::LayoutDashboard.into(),
+            Self::Single => gpui_component::IconName::File.into(),
+            Self::Continuous => crate::icons::BrinkIcon::Infinity.into(),
         }
     }
 

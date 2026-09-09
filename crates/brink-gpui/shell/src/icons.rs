@@ -163,7 +163,10 @@ mod tests {
     #[test]
     fn every_icon_file_became_a_variant() {
         let files = Assets::iter().count();
-        assert_eq!(files, 23, "expected the ported set; found {files}");
+        assert_eq!(
+            files, 24,
+            "expected the ported set plus `infinity`; found {files}"
+        );
         assert_eq!(BrinkIcon::Knot.path(), "icons/knot.svg");
         assert_eq!(BrinkIcon::Drop.path(), "icons/drop.svg");
     }
