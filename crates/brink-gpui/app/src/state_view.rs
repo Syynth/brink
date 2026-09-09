@@ -165,7 +165,10 @@ impl StateView {
             // Nothing is ARMED until a Start binds it against a compiled
             // program, so a mark before that is only "set" — claiming
             // otherwise would promise a stop the run has not agreed to.
-            let running = self.state.is_some();
+            // A faulted session is not a running one: its marks are
+            // back to "set", because the program they were armed against
+            // is gone with the story.
+            let running = self.state.as_ref().is_some_and(|s| s.faulted.is_none());
             for (path, line, bound) in marks {
                 rows.push(Row::Pair {
                     key: format!("{path}:{line}").into(),
@@ -189,6 +192,21 @@ impl StateView {
             self.rows = rows;
             return;
         };
+        // A corpse, not a live story — say so before any of these values
+        // is read as current. The state is kept precisely because it is
+        // the answer to "why did it die"; presenting it as a running
+        // session would make it a lie instead.
+        if let Some(fault) = &state.faulted {
+            rows.push(Row::Text {
+                text: match &fault.at {
+                    Some((path, line)) => {
+                        format!("The story faulted at {path}:{line} — {}", fault.message).into()
+                    }
+                    None => format!("The story faulted — {}", fault.message).into(),
+                },
+                dim: false,
+            });
+        }
         let section = |rows: &mut Vec<Row>, key: &str, title: String| -> bool {
             let collapsed = self.collapsed.contains(key);
             rows.push(Row::Section {
@@ -410,6 +428,9 @@ impl StateView {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
         let summary: SharedString = match (&self.state, self.busy) {
+            (Some(state), _) if state.faulted.is_some() => {
+                format!("faulted · turn {}", state.turn).into()
+            }
             (Some(state), _) => format!(
                 "{} · turn {}{}",
                 state.status,

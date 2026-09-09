@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use brink_gpui_model::play::{PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep};
+use brink_gpui_model::play::{Fault, PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep};
 use brink_gpui_model::query::Location;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
 use gpui::prelude::*;
@@ -350,6 +350,21 @@ impl Player {
                 level: crate::output_log::Level::Error,
                 text,
             });
+            // A runtime fault names its site the way a breakpoint stop
+            // does, so the studio reveals it the same way: the author
+            // lands on the line that faulted instead of reading a
+            // message and then going to look for it. ink's own runtime
+            // reports `'story.ink' line 7` and this is the parity.
+            if let PlayError::Runtime(Fault {
+                at: Some((path, line)),
+                ..
+            }) = &error
+            {
+                cx.emit(PlayerEvent::Stopped {
+                    path: path.clone(),
+                    line: *line,
+                });
+            }
             if let PlayError::Compile(errors) = error {
                 for line in errors {
                     let text = SharedString::from(line);
