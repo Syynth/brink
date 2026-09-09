@@ -1436,7 +1436,13 @@ impl Binder {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+        // Copied out of the theme before the chain: `Self::tool` takes
+        // `&mut cx`, and a live `&Theme` read between two of them keeps an
+        // immutable borrow across it.
+        let (border, muted) = {
+            let theme = cx.theme();
+            (theme.border, theme.muted_foreground)
+        };
         let mode = self.mode;
         let filter_open = self.filter_open;
         h_flex()
@@ -1446,14 +1452,8 @@ impl Binder {
             .gap_1()
             .items_center()
             .border_b_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("BINDER"),
-            )
+            .border_color(border)
+            .child(div().flex_1().text_xs().text_color(muted).child("BINDER"))
             .child(Self::tool(
                 "new-file",
                 icons::BrinkIcon::Add,
@@ -1468,26 +1468,37 @@ impl Binder {
                     });
                 },
             ))
-            .child(Self::tool(
-                "mode-files",
-                icons::BrinkIcon::Doc,
-                mode == Mode::Files,
-                cx,
-                |this, _, cx| {
-                    this.mode = Mode::Files;
-                    this.rebuild(cx);
-                },
-            ))
-            .child(Self::tool(
-                "mode-structure",
-                icons::BrinkIcon::Knot,
-                mode == Mode::Structure,
-                cx,
-                |this, _, cx| {
-                    this.mode = Mode::Structure;
-                    this.rebuild(cx);
-                },
-            ))
+            // Files and Structure are ALTERNATIVES, and sitting loose in
+            // a row of actions they read as two more buttons to press.
+            // One border around the pair is what says "pick one" — the
+            // active state itself was never the problem here, `tool`
+            // already tints and fills it.
+            .child(
+                h_flex()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(border)
+                    .child(Self::tool(
+                        "mode-files",
+                        icons::BrinkIcon::Doc,
+                        mode == Mode::Files,
+                        cx,
+                        |this, _, cx| {
+                            this.mode = Mode::Files;
+                            this.rebuild(cx);
+                        },
+                    ))
+                    .child(Self::tool(
+                        "mode-structure",
+                        icons::BrinkIcon::Knot,
+                        mode == Mode::Structure,
+                        cx,
+                        |this, _, cx| {
+                            this.mode = Mode::Structure;
+                            this.rebuild(cx);
+                        },
+                    )),
+            )
             .child(Self::tool(
                 "collapse-all",
                 icons::BrinkIcon::CollapseAll,

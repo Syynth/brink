@@ -12,7 +12,8 @@ use gpui::{
     Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
     Subscription, Window, anchored, deferred, div, point, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_base::component_traits::Selectable as _;
+use gpui_component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
@@ -1172,21 +1173,32 @@ impl Workspace {
     /// what the whole centre means.
     fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.editor_view(cx);
-        h_flex()
-            .gap_0p5()
+        // A segmented control, not three loose buttons. With labels a
+        // `ghost` toggle read well enough; with icons alone it did not —
+        // a ghost button has no background for the selected style to
+        // tint, so the active view was invisible. The group draws the
+        // segments as one control and fills the selected one, which is
+        // also what says these three are alternatives rather than three
+        // things you can press.
+        ButtonGroup::new("view-switcher")
+            .compact()
+            .outline()
             .children(EditorView::ALL.iter().map(|&view| {
                 Button::new(SharedString::from(format!(
                     "view-{}",
                     view.persistence_key()
                 )))
-                .ghost()
-                .compact()
-                .toggled(view == current)
-                .tooltip(format!("{} ({})", view.title(), view.keystroke()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_editor_view(view, window, cx);
-                }))
                 .icon(view.icon())
+                .selected(view == current)
+                // The ruled NAME and the keystroke live here now that the
+                // label is a glyph.
+                .tooltip(format!("{} ({})", view.title(), view.keystroke()))
+            }))
+            .on_click(cx.listener(|this, clicked: &Vec<usize>, window, cx| {
+                // Single-selection, so at most one index comes back.
+                if let Some(view) = clicked.first().and_then(|&ix| EditorView::ALL.get(ix)) {
+                    this.set_editor_view(*view, window, cx);
+                }
             }))
             .into_any_element()
     }
