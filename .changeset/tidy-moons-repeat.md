@@ -17,3 +17,10 @@ the entrance off; lines that arrive afterwards animate exactly as before, and a
 restart still plays the entrance from the first line. Scroll offset is
 remembered per view, so a split-duplicated Player keeps two independent places.
 The session itself was never involved: a remount touches no story state.
+
+Opening a file from the Player also no longer buries it. `openDocument`
+defaults to the focused group and a click inside the Player focuses the
+Player's group, so "open in the editor" put the file straight over the
+transcript — the one pair you want side by side. A new file now goes to
+another split when one exists; with a single group, or for a file already open
+somewhere (which the reveal policy focuses in place), nothing changes.

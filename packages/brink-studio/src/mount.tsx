@@ -590,6 +590,69 @@ export function openSymbolTarget(
   return true;
 }
 
+/**
+ * Which group an editor-document open should land in when the Player holds
+ * the focused one (maintainer, 2026-09-11).
+ *
+ * `openDocument` defaults to the focused group, and every navigation FROM the
+ * Player focuses the Player's group first — the group `<section>`'s `onFocus`
+ * maps to `focusin`, which bubbles from the clicked control. So the Player's
+ * own "open in the editor" button (and a click in the Binder, Problems, or
+ * Search while the Player is focused) opened the file straight over the top
+ * of the Player: the story you were reading disappears behind the thing you
+ * asked to look at next, which is the one pair you wanted side by side.
+ *
+ * Returns the group to open into, or `undefined` to leave the policy alone.
+ * Three cases deliberately fall through untouched:
+ *
+ * - The document is already open SOMEWHERE. An explicit group target skips
+ *   the any-group reveal (§7.8: explicit targets are how you deliberately
+ *   duplicate a tab), so redirecting here would mint a second tab instead of
+ *   revealing the one that exists. The reveal policy already does the right
+ *   thing — it focuses that tab wherever it lives, which is never over the
+ *   Player unless the Player's own group already held it.
+ * - There is nowhere else to put it (a single group). Displacing the Player
+ *   is then the only option, and it is what the author asked for; this does
+ *   not silently split the editor area to avoid it.
+ * - The Player is merely open in the focused group without being its active
+ *   tab. Nothing is covering it that is not covered already.
+ *
+ * Pure over the group list so the decision is unit-testable without booting
+ * the studio, like `resolveSymbolFileTab` above.
+ */
+export function groupForEditorOpen(
+  groups: readonly EditorGroup[],
+  focusedGroupId: string,
+  key: string,
+): string | undefined {
+  if (findTab(groups, key) !== null) return undefined;
+  if (groups.length < 2) return undefined;
+  const focused = groups.find((g) => g.id === focusedGroupId);
+  if (focused === undefined || focused.activeKey !== documentKey(playerRef())) {
+    return undefined;
+  }
+  // The first group that is not the one showing the Player. In the default
+  // two-up (entry file left, Player split right) that is the editor the
+  // author was last reading, which is where they expect this to land.
+  return groups.find((g) => g.id !== focused.id)?.id;
+}
+
+/**
+ * Open an editor document, honouring `groupForEditorOpen`. Exported over the
+ * real `EditorGroupsStore` — no wasm/DocumentSessions needed — so
+ * `setDocumentOpener`'s production branches and the regression test call the
+ * exact same function, the same arrangement `openSymbolTarget` uses.
+ */
+export function openEditorDocument(
+  groups: EditorGroupsStore,
+  ref: DocumentRef,
+  pinned: boolean,
+): void {
+  const s = groups.getState();
+  const group = groupForEditorOpen(s.groups, s.focusedGroupId, documentKey(ref));
+  s.openDocument(ref, group === undefined ? { pinned } : { pinned, group });
+}
+
 // ── Mount ──────────────────────────────────────────────────────────
 
 export async function mountStudio(
@@ -1344,10 +1407,10 @@ export async function mountStudio(
       store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
+    // Never open an editor document over the top of the Player when there is
+    // another split to use (`openEditorDocument` / `groupForEditorOpen`).
     if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
-      editorGroups
-        .getState()
-        .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
+      openEditorDocument(editorGroups, inkFileRef({ kind: "file", path: target.path }), pinned);
       documents.revealAt(target.path, target.start);
       return;
     }
@@ -1364,7 +1427,7 @@ export async function mountStudio(
     ) {
       return;
     }
-    editorGroups.getState().openDocument(inkFileRef(target), { pinned });
+    openEditorDocument(editorGroups, inkFileRef(target), pinned);
   });
 
   // The store's tab-closer (binder delete): close every tab for a file path —
