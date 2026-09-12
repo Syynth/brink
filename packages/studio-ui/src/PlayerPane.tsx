@@ -268,6 +268,15 @@ function saveTagsToggle(on: boolean): void {
 
 /** Trailing path segment — the hover chip shows `name.ink:12`, not the
  * full project-relative path. */
+/**
+ * Scroll position per Player view, surviving the unmount a tab switch causes.
+ * Module scope because the pane itself does not: the shell mounts only the
+ * active tab, so nothing inside the component can outlive tabbing away.
+ * Keyed by group id — the Player is a singleton document, but an explicit
+ * split gives it two views, and each keeps its own place.
+ */
+const playerScrollMemory = new Map<string, { run: number; top: number; stick: boolean }>();
+
 function baseName(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? path : path.slice(idx + 1);
@@ -399,6 +408,54 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
 
   const playerRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // Arrival is for lines that ARRIVE. The shell renders only the active tab
+  // (`editor-area.tsx` mounts `activeTab(group)` alone), so tabbing away from
+  // the Player unmounts this pane and tabbing back mounts a fresh one with
+  // every row a brand new DOM node. `player-row-in` has `both` fill mode, so
+  // that replays the entrance for the WHOLE transcript: it blanks for the
+  // 240ms delay and fades back in, on a story the author has already read.
+  //
+  // Lines already delivered when this instance mounted are "settled" and
+  // render with the animation off; anything delivered afterwards animates as
+  // before. A restart is genuinely a fresh timeline — `run` changes and the
+  // spine remounts (`key={run}`) — so the count resets there and the entrance
+  // plays from the first line, the same Stop → Run entrance as before.
+  const settledRun = useRef(run);
+  const settledBelow = useRef(lines.length);
+  if (settledRun.current !== run) {
+    settledRun.current = run;
+    settledBelow.current = 0;
+  }
+  // A divergent replay truncates the transcript in place without bumping the
+  // run (`applyReplayOutcome`). Clamp, or the count would outrun the lines it
+  // indexes and silently mark the NEXT few arrivals as already-read.
+  if (lines.length < settledBelow.current) settledBelow.current = lines.length;
+
+  // Where this view was scrolled to, kept across the unmount a tab switch
+  // causes (the same job `DocumentSessions` does with `slot.scrollTop` for an
+  // ink view). Without it, tabbing back drops the author at whatever the
+  // fresh scroll container starts at and the effect below smooth-scrolls the
+  // whole transcript back to the bottom — losing the place they had scrolled
+  // up to read. Keyed by group so a split-duplicated Player (two views over
+  // one session) keeps two independent positions, and stamped with the run so
+  // a restart starts at the top again rather than restoring a dead offset.
+  useLayoutEffect(() => {
+    const el = playerRef.current;
+    if (el === null) return;
+    const saved = playerScrollMemory.get(groupId);
+    if (saved !== undefined && saved.run === run) {
+      stickToBottom.current = saved.stick;
+      if (!saved.stick) el.scrollTop = saved.top;
+    }
+    return () => {
+      playerScrollMemory.set(groupId, {
+        run,
+        top: el.scrollTop,
+        stick: stickToBottom.current,
+      });
+    };
+  }, [groupId, run]);
 
   // Auto-scroll to bottom on new content — unless the author scrolled up.
   // Smooth (feedback 2026-09-02): a new line fades in and the choices
@@ -892,7 +949,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
         {/* The beginning of the timeline (maintainer, 2026-09-02): a node at
             the head of the rail, so the rail reads as a line of play from
             the first line, not as a bracket around whatever is on screen. */}
-        <div className="player-start-marker" aria-hidden="true">
+        <div
+          className={
+            "player-start-marker" + (settledBelow.current > 0 ? " is-settled" : "")
+          }
+          aria-hidden="true"
+        >
           <span className="player-start-label">Start</span>
         </div>
         <div className="story-text">
@@ -917,7 +979,8 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                   className={
                     `player-line-row kind-${line.kind}` +
                     (row.kind !== null ? ` dialect-${row.kind}` : "") +
-                    (echoKind !== undefined ? ` is-echo echo-${echoKind}` : "")
+                    (echoKind !== undefined ? ` is-echo echo-${echoKind}` : "") +
+                    (i < settledBelow.current ? " is-settled" : "")
                   }
                   onMouseEnter={() => {
                     setHoverIdx(i);
@@ -968,13 +1031,24 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               return <Fragment key={`g${gi.toString()}`}>{group.rows.map(renderRow)}</Fragment>;
             }
             const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
+            // The cue rides with its run: settled once the first line under
+            // it is, so a restored run does not flash its speaker header.
+            const cueSettled =
+              group.rows.length > 0 && group.rows[0].index < settledBelow.current;
             return (
               <div
                 key={`g${gi.toString()}`}
                 className={`player-run dialect-${group.kind ?? "run"} speaker-${palette.toString()}`}
                 data-speaker={group.speaker}
               >
-                <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
+                <p
+                  className={
+                    `player-run-cue speaker-${palette.toString()}` +
+                    (cueSettled ? " is-settled" : "")
+                  }
+                >
+                  {group.speaker}
+                </p>
                 {group.rows.map(renderRow)}
               </div>
             );
