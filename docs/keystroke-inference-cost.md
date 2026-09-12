@@ -142,6 +142,159 @@ consumers that want the whole-file tree" — the next candidate for the
 segment road. `codeActions` (16.6 ms, on demand, 76% a whole-document
 reformat) is unchanged and separate.
 
+## Round 2: which plane pays, and what still re-executes
+
+The "per keystroke" figures above are the **worker's** bill, not the typist's.
+Since W5c (`docs/editor-worker-spec.md`), a large document's keystroke runs
+on the main thread only the `ClassifierSession` path; every whole-document
+pull runs on the worker after the 120 ms quiet timer, and the compile 500 ms
+later. Measured on TheIntercept, one character typed into a prose line, with
+every plane warm (`perf_probe::what_a_keystroke_costs_on_the_main_thread`,
+`what_a_prose_edit_executes`):
+
+| plane | call | ms | salsa executions |
+|---|---|------:|---|
+| main thread | `apply_edits` | 0.23 | — |
+| main thread | `segment_manifest` | 1.77 | `file_segments_query` ×1 — a **whole-file lex** |
+| main thread | edited segment's classifier tokens + line contexts | 0.87 | that segment only |
+| worker, 120 ms | refined tokens | ~4 | `resolve_query`, `symbol_index_query` ×1; 33 cheap per-segment kind slices |
+| worker, 120 ms | `hir_spans_doc` | 2.5 | none — whole-document JSON of the projection |
+| worker, 120 ms | `folding_ranges_doc` | 3.3 | `projection_query` ×1 (assembly) + whole-HIR walks |
+| worker, 120 ms | `argument_widgets_doc` | 7.0 → **1.7** | was the diagnostics bundle; now four cheap metas queries |
+| worker, 120 ms | `inlay_hints_doc` | 3.4 | `signature_query` ×25 → **×1 knot + globals**, `infer_body` ×1 |
+| worker, 120 ms | whole-file `parse_query` (shared by hints, widgets, hover, completion) | 4.0 | ×1 |
+| worker, 500 ms | compile | 20.8 | `lir_knot_chunk_query` ×32, `normalized_stamped_query` ×1 (+ deep clone), `def_effect_atoms_query` 62 → **1** |
+
+The host also computes the manifest twice per keystroke (project session
+and classifier, `document-handle.ts:319` / `classifier-mirror.ts:97`), so
+the whole-file lex is paid twice — ~3.5 ms of a ~4.6 ms keystroke on a
+1686-line file, and the only part that scales with file size.
+
+Three dependencies fixed in this round, each pinned in
+`query_execution_counts.rs` with its negative control run:
+
+- **`def_effect_atoms_query`** read the assembled file HIR: 62 re-harvests
+  per prose edit, each a `collect_defs` over the file. On the segment road,
+  1; `EffectAtoms` is range-free, so every `effects_scc_query` /
+  `effects_query` backdates (0 executions).
+- **`signature_query`** read the assembled file HIR for every knot a hint
+  or hover asked about. On the segment road, the edited knot only.
+  `VAR`/`CONST` globals stay on the whole-file road on purpose:
+  `declared_fn_type` resolves a `#fn(target)` initializer through the
+  declaring file's knots, which a header fragment does not carry.
+- **`argument_widgets` / `inlay_hints`** took `&AnalysisResult` and read two
+  fields of it; the bundle's diagnostics half re-ran every per-file check
+  in the project on the worker refresh. They take a `brink_ide::SymbolView`
+  (index + `symbol_meta_query`) now; a prose edit executes no diagnostics
+  query on their account (`hints::tests`, negative control: four).
+
+What is left is **not** a dependency problem, with two exceptions:
+
+- *Whole-document assembly and serialisation* (`hir_spans_doc`, folds, the
+  refined-token join, the whole-file `parse_query`) — O(file) per refresh by
+  construction; the fix is the per-segment delta protocol the refined tokens
+  already use, extended to spans/folds/hints/widgets (TS stashes keyed by
+  segment identity + per-segment wasm queries). Host work.
+- *The compile link*, which was ATTEMPTED and is not yet landed — what the
+  attempt established, so the next one starts from evidence:
+
+  **There are two independent coarse edges, and fixing either alone moves
+  nothing.** A same-length edit re-lowers every knot through the whole-file
+  `normalized_stamped_query`; a SHIFT edit additionally moves every
+  declaration range, re-executing `resolutions_index_query` and with it the
+  `no_eq` `chunk_lowering_ctx_query`, which holds the project's range-keyed
+  resolution lookup. Measured on the 3-knot fixture: the same-length edit
+  re-executes `lir_knot_chunk_query` 3 times with `chunk_lowering_ctx_query`
+  untouched; the shift edit re-executes both.
+
+  **The enabling half is landed and proven.** `normalize_file`'s `$lift`
+  counter is per-definition, so a knot normalizes and stamps identically
+  from its own fragment and from the whole file — pinned over the corpus by
+  `fragment_normalization_parity`, with the previous behaviour as its
+  negative control.
+
+  **Two things the attempt found the hard way.** A chunk is NOT
+  position-free: `Container`/`Stmt`/`Expr` all carry `Provenance` and the
+  debug line tables are built from it, so lowering must see absolute
+  positions (`brink-cli`'s `debug_cli` stepping tests catch this, not the
+  oracle). And a rebase is not a shift of every range — a node the passes
+  SYNTHESIZE carries the provenance-free `0..0`, which must stay `0..0`, so
+  the fragment has to be rebased BEFORE stamp+normalize, exactly as
+  `assemble_lowered_file` orders it.
+
+  **Where it stopped, and WHICH surface.** With the fragment rebased to
+  absolute and lowered against its segment's own resolutions (shifted to
+  match), the execution counts drop as intended — 3 → 1 for an in-knot
+  edit, 3 → 0 for a `VAR` edit of the same type — but five cases fail at
+  runtime with a value reading Null: four `tier1-brink` algorithm stories
+  (`alias-method`, `bsp-dungeon`, `pcg-rng`, `weighted-loot-table`) and
+  `tier1_brink`'s `fn_value_inside_a_map_save_load_invoke_equals_direct_invoke`.
+
+  Read the surface split carefully, because the directory names invite
+  exactly the wrong reading. `tests/tier1-brink/` is 79 **`.ink`** files —
+  the brink DIALECT written in the ink surface; `tests/tier1-native/` is
+  the 29 `.brink` files. The road is gated on `Language::Ink`, so:
+
+  | corpus | on the segment road? | result |
+  |---|---|---|
+  | `.brink` native (29) | no — gated out | green proves NOTHING here |
+  | plain `.ink` (oracle ratchet, tiers 1–3, 330 opt-fence artifacts) | yes | all green |
+  | brink-dialect `.ink` (tier1-brink, 79) | yes | 5 failures |
+
+  So a change scoped to `.ink` broke the brink-dialect subset of `.ink` and
+  left the native surface UNEXERCISED rather than verified. The failing
+  shapes — a fn value in a map, struct-and-table-heavy algorithm code — are
+  ones the plain-ink corpus never produces, which is why the ratchet stayed
+  green. That is the narrowing to start from: what the dialect resolves
+  that plain ink does not. `ChunkLoweringCtx` carries the struct shape
+  tables and `type_mode`, but those go by `DefinitionId`, not by range —
+  untested hypothesis, not a finding.
+
+  **RESOLVED — and the whole-file road was the wrong one.** Dumping both
+  resolution maps for the fn-value fixture showed a single disagreement,
+  same target id: the assembled file placed the `#fn(double)` reference at
+  `41..47` (text `"\n\nVAR "`, meaningless) where the segment road placed it
+  at `100..106` (`"double"`). The difference is exactly 59 — that segment's
+  offset — so the range had never been rebased.
+
+  The cause is `MapLiteral::rebase`, which shifted only its `ptr` and never
+  its `entries`; `StructLiteral` did the same with its `fields`. Those are
+  the only two `Vec<(A, B)>` fields in the HIR and the only two that were
+  skipped (`ArrayLiteral`'s plain `Vec<Expr>` was always handled), so it was
+  an oversight rather than a convention. Every expression inside a map or
+  struct literal kept its segment-relative range forever.
+
+  Nothing caught it because the defect was SELF-CONSISTENT: the resolution
+  map is built from the same un-rebased HIR, so both sides agreed at the
+  wrong coordinate and resolution still worked. Only something computing a
+  range independently could see it — which is what the chunk seam does, and
+  why exactly the brink-dialect cases failed: map and struct literals are
+  dialect-only, so the plain-ink corpus cannot reach that code.
+
+  Fixed, with a whole-class guard
+  (`brink-ir/tests/rebase_shifts_every_range.rs`): rebasing a definition
+  must shift every range it carries. It reads the DERIVED `Debug` rendering
+  rather than walking fields, because a hand-written visitor would need the
+  same per-field enumeration that was wrong here and would inherit the bug.
+
+  The chunk seam itself is still reverted and unattempted since the fix;
+  this was its blocker, not necessarily its only one.
+
+  Measured breakdown of the 12–16 ms link, for sizing the prize: chunk
+  lowering ~4 ms, whole-file normalize+stamp+clone ~2.9 ms, prelude decl
+  collection ~1.3 ms, then codegen 2.8 ms and effect rows 1.4 ms outside
+  it. Note the ceiling: because a chunk carries absolute positions, even a
+  finished version re-lowers the edited knot AND every knot after it in
+  that file (never one before it, and never another file's). Getting to a
+  single knot needs a rebase over lowered LIR rather than over HIR.
+- *The main-thread lex*: `file_segments_query` re-lexes the whole file to
+  find knot headers. An edit-aware segmenter (re-segment the edited
+  segment's window from the header sync point, splice, shift offsets)
+  needs the edit delta to reach the query — a `SourceFile` input field set
+  by the write path — which is a change to brink-db's input model and
+  wants a ruling. The TS duplicate (two manifests per keystroke) is a
+  separate host fix.
+
 ## Gates
 
 `cargo test --workspace --exclude bevy-brink --no-fail-fast`: 320 suites

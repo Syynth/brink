@@ -34,9 +34,9 @@ pub use lower::recognize::{
 };
 pub use lower::{
     AnalyzerTables, ChunkLoweringCtx, CoalesceLookup, CoalesceShape, LirPrelude, PreludeDecls,
-    ScopeChunk, StructShapeData, TypeMode, UfcsLookup, UfcsVerdict, assemble_prelude,
-    assemble_program, build_prelude, build_prelude_decls, build_struct_shape_data,
-    is_builtin_function, is_t1b_stdlib_name, lower_knot_chunk_incremental,
+    ResolutionLookup, ScopeChunk, StructShapeData, TypeMode, UfcsLookup, UfcsVerdict,
+    assemble_prelude, assemble_program, build_prelude, build_prelude_decls,
+    build_struct_shape_data, is_builtin_function, is_t1b_stdlib_name, lower_knot_chunk_incremental,
     lower_root_content_for_prelude, lower_to_program, lower_to_program_with_type_mode,
 };
 pub use types::*;

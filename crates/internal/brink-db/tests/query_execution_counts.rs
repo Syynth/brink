@@ -41,6 +41,31 @@ const WATCHED: &[&str] = &[
     "call_graph_query",
     "scc_membership_query",
     "type_inference_query",
+    // The effects family (T2-1) and the per-knot LIR chunks, pulled through
+    // `story_data()` — the compile the host debounces behind every keystroke.
+    //
+    // `lir_knot_chunk_query` reads each knot's own segment (#3586). Before
+    // that, EVERY knot in the PROJECT re-lowered on any edit, by two
+    // independent routes: a same-length edit through the whole-file
+    // `normalized_stamped_query`, and a shift edit through the range-keyed
+    // resolution lookup inside the `no_eq` `chunk_lowering_ctx_query`.
+    // Fixing either alone would have moved nothing.
+    //
+    // What is left is a SHIFT cost, and it is deliberate. A chunk carries
+    // absolute positions (`Container`/`Stmt`/`Expr` all hold `Provenance`,
+    // and the debug line tables are built from it), so the fragment is
+    // rebased to absolute before lowering and the memo depends on its
+    // segment's offset. An edit re-lowers the edited knot and the knots
+    // AFTER it in that file — never one before it, and never another
+    // file's. Reaching one would need a rebase over lowered LIR rather
+    // than over HIR; see `docs/keystroke-inference-cost.md`.
+    "def_effect_atoms_query",
+    "effects_scc_query",
+    "effects_query",
+    "lir_knot_chunk_query",
+    // Per-def declared signatures, pulled for every knot/stitch the way the
+    // inlay-hint and hover collectors do.
+    "signature_query",
 ];
 
 fn knot(name: &str, next: Option<&str>, value: u32) -> String {
@@ -62,14 +87,31 @@ fn three_knots(beta_value: u32) -> String {
 fn warm(db: &mut ProjectDb, text: &str) {
     db.set_file("main.ink", text.to_owned());
     db.set_entry("main.ink").expect("entry");
-    let _ = db.type_inference();
+    pull(db);
 }
 
-/// Apply `edit`, pull inference, and return what executed.
+/// The two pulls a keystroke ends in: the editor's inference (hints,
+/// widgets) and the debounced compile (`story_data`, which pulls every
+/// inferable def's effect row and every knot's LIR chunk).
+fn pull(db: &ProjectDb) {
+    let _ = db.type_inference();
+    let _ = db.story_data();
+    let index = db.symbol_index();
+    for (id, info) in &index.symbols {
+        if matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+        ) {
+            let _ = db.signature(*id);
+        }
+    }
+}
+
+/// Apply `edit`, pull, and return what executed.
 fn executions(db: &mut ProjectDb, edit: impl FnOnce(&mut ProjectDb)) -> BTreeMap<String, u64> {
     let ((), counts) = count_executions(|| {
         edit(db);
-        let _ = db.type_inference();
+        pull(db);
     });
     counts
 }
@@ -104,7 +146,7 @@ fn the_counter_is_live_a_cold_build_executes_each_per_def_query_per_knot() {
     db.set_file("main.ink", three_knots(2));
     db.set_entry("main.ink").expect("entry");
     let ((), counts) = count_executions(|| {
-        let _ = db.type_inference();
+        pull(&db);
     });
     assert_watched(
         &counts,
@@ -119,12 +161,21 @@ fn the_counter_is_live_a_cold_build_executes_each_per_def_query_per_knot() {
             ("call_graph_query", 1),
             ("scc_membership_query", 1),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 3),
+            ("effects_scc_query", 3),
+            ("effects_query", 3),
+            ("lir_knot_chunk_query", 3),
+            ("signature_query", 4),
         ],
     );
 }
 
 // ── the firewall, edge by edge ────────────────────────────────────────────
 
+/// `signature_query` reads 2 here, not 1: the edited knot (re-executes,
+/// backdates — `Sig` is declaration-only) plus `VAR gold`, which is a
+/// root-content def and still on the whole-file road (`def_segment` maps
+/// knots and stitches only). Cheap and `Eq`-cut, but counted honestly.
 #[test]
 fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
     let mut db = ProjectDb::new();
@@ -145,6 +196,11 @@ fn editing_inside_one_knot_reexecutes_that_knots_defs_only() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 2),
+            ("signature_query", 2),
         ],
     );
 }
@@ -169,6 +225,11 @@ fn appending_at_end_of_file_reexecutes_the_last_knots_defs_only() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 1),
+            ("signature_query", 2),
         ],
     );
 }
@@ -198,6 +259,11 @@ fn editing_a_var_initializer_of_the_same_type_reexecutes_no_def() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 0),
+            ("def_effect_atoms_query", 0),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 0),
+            ("signature_query", 1),
         ],
     );
 }
@@ -221,7 +287,7 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
         ),
     );
     db.set_entry("main.ink").expect("entry");
-    let _ = db.type_inference();
+    pull(&db);
     let counts = executions(&mut db, |db| {
         db.update_file(
             "b.ink",
@@ -245,6 +311,11 @@ fn editing_file_a_leaves_file_bs_defs_alone() {
             ("call_graph_query", 0),
             ("scc_membership_query", 0),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 1),
+            ("effects_scc_query", 0),
+            ("effects_query", 0),
+            ("lir_knot_chunk_query", 2),
+            ("signature_query", 1),
         ],
     );
 }
@@ -285,6 +356,11 @@ fn inserting_a_knot_reexecutes_the_knots_after_it() {
             ("call_graph_query", 1),
             ("scc_membership_query", 1),
             ("type_inference_query", 1),
+            ("def_effect_atoms_query", 4),
+            ("effects_scc_query", 4),
+            ("effects_query", 4),
+            ("lir_knot_chunk_query", 4),
+            ("signature_query", 5),
         ],
     );
 }

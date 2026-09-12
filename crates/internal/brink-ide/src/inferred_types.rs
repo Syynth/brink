@@ -6,7 +6,6 @@
 //! FG-narrowed per-def seam (docs/typed-mode-spec.md §9 TM-5) — instead of
 //! the whole-project `type_inference()` (never call that per keystroke).
 
-use brink_analyzer::AnalysisResult;
 use brink_format::DefinitionId;
 use brink_ir::{SymbolInfo, SymbolKind};
 
@@ -20,7 +19,7 @@ use brink_ir::{SymbolInfo, SymbolKind};
 /// under the same qualified name: picks the lowest `DefinitionId`, never
 /// `HashMap` iteration order (CLAUDE.md's determinism rule).
 pub(crate) fn enclosing_callable(
-    analysis: &AnalysisResult,
+    index: &brink_ir::SymbolIndex,
     info: &SymbolInfo,
 ) -> Option<DefinitionId> {
     let scope = info.scope.as_ref()?;
@@ -29,14 +28,13 @@ pub(crate) fn enclosing_callable(
         Some(stitch) => format!("{knot}.{stitch}"),
         None => knot.to_owned(),
     };
-    analysis
-        .index
+    index
         .by_name
         .get(&qualified)?
         .iter()
         .copied()
         .filter(|id| {
-            analysis.index.symbols.get(id).is_some_and(|sym| {
+            index.symbols.get(id).is_some_and(|sym| {
                 sym.file == info.file && matches!(sym.kind, SymbolKind::Knot | SymbolKind::Stitch)
             })
         })
@@ -70,7 +68,7 @@ mod tests {
             .copied()
             .expect("heal indexed");
 
-        assert_eq!(enclosing_callable(analysis, param), Some(heal));
+        assert_eq!(enclosing_callable(&analysis.index, param), Some(heal));
     }
 
     #[test]
@@ -94,7 +92,7 @@ mod tests {
             .copied()
             .expect("hub.market indexed");
 
-        assert_eq!(enclosing_callable(analysis, temp), Some(market));
+        assert_eq!(enclosing_callable(&analysis.index, temp), Some(market));
     }
 
     #[test]
@@ -110,6 +108,6 @@ mod tests {
             .values()
             .find(|s| s.name == "gold")
             .expect("gold indexed");
-        assert_eq!(enclosing_callable(analysis, gold), None);
+        assert_eq!(enclosing_callable(&analysis.index, gold), None);
     }
 }

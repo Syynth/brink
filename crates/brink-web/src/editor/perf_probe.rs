@@ -213,6 +213,72 @@ fn measure(label: &str, rel: &str) {
     );
 }
 
+/// The compile an author actually waits on: the db is WARM (a compile has
+/// already happened), then one character changes, then it compiles again.
+///
+/// `interaction_cost_over_real_stories`'s "compile fan-out" row is not this
+/// number — it is the session's FIRST compile, so every knot chunk is cold
+/// and lowers regardless of how well invalidation is scoped. That makes it
+/// blind to the per-knot chunk seam by construction. This one is the
+/// steady state: 500 ms after each keystroke, for the whole editing
+/// session, this is the bill.
+#[test]
+#[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
+fn compile_after_one_edit_when_warm() {
+    for (label, rel) in [
+        ("TheIntercept (100 KB)", LARGE),
+        ("christmas (27 KB)", SMALL),
+    ] {
+        let src = read(rel);
+        let mut session = EditorSession::new();
+        session.update_file("story.ink", &src);
+        assert!(session.set_active_file("story.ink"));
+
+        // Warm: the first compile pays for every chunk, and is not what we
+        // are pricing.
+        let _ = session.compile_project("story.ink");
+
+        for (where_, split) in [
+            // The expensive shape for a position-carrying chunk: every
+            // knot after the edit shifts, so every one of them re-lowers.
+            ("mid-file", {
+                let mid = src.len() / 2;
+                src.char_indices()
+                    .map(|(i, _)| i)
+                    .find(|i| *i >= mid)
+                    .unwrap_or(0)
+            }),
+            // The cheap shape: nothing after it to shift.
+            ("append", src.len()),
+        ] {
+            let mut samples = Vec::new();
+            for i in 0..20 {
+                let mut edited = String::with_capacity(src.len() + 8);
+                edited.push_str(&src[..split]);
+                let _ = write!(edited, "{}", "x".repeat(i + 1));
+                edited.push_str(&src[split..]);
+                session.update_file("story.ink", &edited);
+                let t = std::time::Instant::now();
+                let _ = session.compile_project("story.ink");
+                samples.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            #[expect(clippy::cast_precision_loss, reason = "20 samples")]
+            let n = samples.len() as f64;
+            let mean = samples.iter().sum::<f64>() / n;
+            println!(
+                "\n════ {label}: compile after ONE {where_} edit, warm db ════\n  \
+             mean {:.2} ms   median {:.2} ms   min {:.2}   max {:.2}   (n = {})",
+                mean,
+                samples[samples.len() / 2],
+                samples[0],
+                samples[samples.len() - 1],
+                samples.len(),
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "measurement, not an assertion: wall-clock numbers, run explicitly"]
 fn interaction_cost_over_real_stories() {
@@ -961,7 +1027,7 @@ fn what_a_prose_edit_executes() {
     let src = read(LARGE);
     let doc_len = u32::try_from(src.len()).expect("len fits");
     // A prose line deep inside a knot: change one word.
-    let needle = "The night is cold.";
+    let needle = "The night is cold";
     let at = src
         .find(needle)
         .map_or(doc_len / 2, |i| u32::try_from(i).unwrap_or(0));
@@ -973,6 +1039,7 @@ fn what_a_prose_edit_executes() {
     // Warm every query once so only post-edit work is measured.
     keystroke_sweep(&session, doc, doc_len);
     let _ = session.inlay_hints_doc(doc, 0, doc_len);
+    let _ = session.compile_project("story.ink");
 
     // One character inserted into the prose line, through the host's path.
     let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
@@ -1004,10 +1071,90 @@ fn what_a_prose_edit_executes() {
     timed!("semanticTokens", session.semantic_tokens_doc(doc));
     timed!("foldingRanges", session.folding_ranges_doc(doc));
     timed!("hirSpans", session.hir_spans_doc(doc));
+    let file_id = session.session.file_id("story.ink").expect("file id");
+    timed!("  (syntax_root)", session.session.syntax_root(file_id));
     timed!(
         "argumentWidgets",
         session.argument_widgets_doc(doc, 0, doc_len)
     );
     timed!("inlayHints", session.inlay_hints_doc(doc, 0, doc_len));
     timed!("(compile, 500ms)", session.compile_project("story.ink"));
+}
+
+/// The segment keys of a `segment_manifest_doc` JSON payload, in order.
+fn manifest_keys(manifest: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(manifest).expect("manifest json");
+    v["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .map(|s| s["key"].as_str().expect("key").to_owned())
+        .collect()
+}
+
+/// The MAIN-THREAD keystroke path as the host actually runs it on a large
+/// document (`docs/editor-worker-spec.md` §4): the `ClassifierSession`
+/// applies the edit, re-reads the segment manifest, and pulls the edited
+/// segment's classifier tokens and line contexts. Everything else — refined
+/// tokens, overlay, hints, widgets, folds, the compile — runs on the worker
+/// after the quiet timer, which is what `what_a_prose_edit_executes`
+/// measures.
+#[test]
+#[ignore = "measurement probe — run with --ignored --nocapture"]
+fn what_a_keystroke_costs_on_the_main_thread() {
+    let src = read(LARGE);
+    let needle = "The night is cold";
+    let at = src.find(needle).expect("needle in TheIntercept");
+    let mut cs = crate::classifier::ClassifierSession::new();
+    assert!(cs.open("story.ink", &src));
+    let keys = manifest_keys;
+
+    // Warm every slice the host caches, so only post-edit work is measured.
+    let before = keys(&cs.segment_manifest());
+    for k in &before {
+        let _ = cs.segment_semantic_tokens_fast(k);
+        let _ = cs.segment_line_contexts(k);
+    }
+
+    let report = |name: &str, counts: &std::collections::BTreeMap<String, u64>, ms: f64| {
+        let mut rows: Vec<(&String, &u64)> = counts.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let list: Vec<String> = rows.iter().map(|(q, n)| format!("{q}×{n}")).collect();
+        println!("{name:<28} {ms:>8.3}  {}", list.join(", "));
+    };
+    println!(
+        "\nTheIntercept, one character typed into a prose line — MAIN THREAD (ClassifierSession):"
+    );
+    println!("{:<28} {:>8}  salsa executions caused", "call", "ms");
+
+    let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+    let t0 = crate::perf::now_ms();
+    let (ok, c) = brink_db::count_executions(|| cs.apply_edits(&edits));
+    report("applyEdits", &c, crate::perf::now_ms() - t0);
+    assert!(ok);
+
+    let t0 = crate::perf::now_ms();
+    let (after, c) = brink_db::count_executions(|| keys(&cs.segment_manifest()));
+    report("segmentManifest", &c, crate::perf::now_ms() - t0);
+    let changed: Vec<&String> = after.iter().filter(|k| !before.contains(k)).collect();
+    println!(
+        "  {} segments, {} changed key(s): {:?}",
+        after.len(),
+        changed.len(),
+        changed
+    );
+
+    for k in changed {
+        let t0 = crate::perf::now_ms();
+        let (tok, c) = brink_db::count_executions(|| cs.segment_semantic_tokens_fast(k));
+        report("segmentSemanticTokensFast", &c, crate::perf::now_ms() - t0);
+        let t0 = crate::perf::now_ms();
+        let (lc, c) = brink_db::count_executions(|| cs.segment_line_contexts(k));
+        report("segmentLineContexts", &c, crate::perf::now_ms() - t0);
+        println!(
+            "  payload bytes: tokens {} / contexts {}",
+            tok.len(),
+            lc.len()
+        );
+    }
 }

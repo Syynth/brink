@@ -1,4 +1,28 @@
 pub mod argument_widgets;
+
+/// The narrow symbol view the presentation collectors ([`inlay_hints`],
+/// [`argument_widgets`]) read: the symbol index plus the presentational
+/// `symbol_meta` (docs, declared types, initializer values). Deliberately
+/// NOT [`brink_analyzer::AnalysisResult`]: that bundle carries the whole
+/// project's diagnostics, so pulling it re-runs every per-file check on any
+/// edit — a prose keystroke re-diagnosed the project just to draw a
+/// parameter label. Build one from `ProjectDb::symbol_index` +
+/// `ProjectDb::symbol_meta` (no diagnostics), or from an `AnalysisResult`
+/// you already hold.
+pub struct SymbolView<'a> {
+    pub index: &'a brink_ir::SymbolIndex,
+    pub symbol_meta:
+        &'a std::collections::BTreeMap<brink_format::DefinitionId, brink_analyzer::SymbolMeta>,
+}
+
+impl<'a> From<&'a brink_analyzer::AnalysisResult> for SymbolView<'a> {
+    fn from(analysis: &'a brink_analyzer::AnalysisResult) -> Self {
+        Self {
+            index: &analysis.index,
+            symbol_meta: &analysis.symbol_meta,
+        }
+    }
+}
 pub mod arity_trim_fix;
 pub mod auto_import;
 pub mod code_actions;

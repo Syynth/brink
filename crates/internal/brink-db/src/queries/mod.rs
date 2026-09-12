@@ -102,6 +102,7 @@ use brink_analyzer::{
 use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
 };
+use brink_ir::hir::rebase::Rebase as _;
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::symbols::project_manifest;
 use brink_ir::{
@@ -127,9 +128,9 @@ pub(crate) fn is_ink_file(db: &BrinkDatabase, file: SourceFile) -> bool {
 }
 
 pub(crate) use segments::{
-    FileSegment, file_def_segments_query, file_segment_at_query, file_segments_query,
-    line_contexts_query, projection_query, segment_fragment_hir, segment_resolutions,
-    semantic_tokens_query,
+    FileSegment, file_def_segments_query, file_knot_segments_query, file_segment_at_query,
+    file_segments_query, line_contexts_query, projection_query, segment_fragment_hir,
+    segment_resolutions, semantic_tokens_query,
 };
 
 pub use analysis::ResolvedProject;
@@ -140,7 +141,7 @@ pub(crate) use analysis::{
     conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_claim_handlers_query, external_meta_query,
     has_errors_in_closure_query, has_errors_query, import_closure_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, subset_analysis_query,
+    per_file_diagnostics_query, resolutions_index_query, subset_analysis_query, symbol_meta_query,
     ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
 };
 
@@ -253,6 +254,7 @@ impl Default for BrinkDatabase {
                 // def's own segment, and that segment's own resolutions.
                 .ingredient::<segments::file_def_segments_query>()
                 .ingredient::<segments::file_segment_at_query>()
+                .ingredient::<segments::file_knot_segments_query>()
                 .ingredient::<resolved_dialect_query>()
                 .ingredient::<segments::segment_projection_query>()
                 .ingredient::<segments::projection_query>()
@@ -327,6 +329,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<external_meta_query>()
                 .ingredient::<call_site_metas_query>()
                 .ingredient::<value_meta_query>()
+                .ingredient::<symbol_meta_query>()
                 .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
                 // B3a UFCS (issue #1506): the verdict table, shared by
@@ -1449,13 +1452,26 @@ pub(crate) fn signature_query<'db>(
     let index = resolution_index_query(db, project);
     let def_id = def.def(db);
     let declaring_file = index.symbols.get(&def_id)?.file;
+    let opts = project.analysis_options(db);
+    // Segment road, per-def (#3585 follow-up): a knot/stitch's signature is
+    // read off its own segment's fragment, so a prose edit in another knot
+    // of the same file leaves this memo validated — and `Sig` is range-free
+    // (`Eq`-derived, declaration-only by contract), so even the edited
+    // knot's signature backdates unless its declaration line changed.
+    if let Some((_sf, _seg, frag)) = def_segment(db, project, def_id) {
+        return brink_analyzer::signature(
+            def_id,
+            index,
+            &[(declaring_file, &frag)],
+            opts.host_manifest.as_ref(),
+        );
+    }
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
         .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
-    let opts = project.analysis_options(db);
     brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
 }
 
@@ -2112,9 +2128,25 @@ pub(crate) fn def_effect_atoms_query<'db>(
     else {
         return Arc::new(brink_analyzer::EffectAtoms::default());
     };
+    let inferable = inferable_defs_query(db, project);
+    // Segment road, per-def (#3585 follow-up): the def's own segment + its
+    // per-segment resolutions, exactly like [`call_edges_query`]. `EffectAtoms`
+    // is range-free, so no rebase is needed and the `Eq` cutoff holds across
+    // shift edits: a prose edit in one knot re-harvests that knot's atoms only,
+    // and every other def's `effects_scc_query`/`effects_query` backdate.
+    if let Some((sf, seg, frag)) = def_segment(db, project, def_id) {
+        let resolutions = segment_resolutions(db, project, sf, seg);
+        return Arc::new(brink_analyzer::def_effect_atoms(
+            def_id,
+            &[(declaring_file, &frag)],
+            index,
+            &resolutions,
+            inferable,
+            None,
+        ));
+    }
     let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
-    let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::def_effect_atoms(
         def_id,
         &[(declaring_file, hir)],
@@ -2728,12 +2760,18 @@ impl PartialEq for ChunkLoweringCtxResult {
 /// [`type_policy_query`], and the files' `path` fields), so no chunk memo
 /// gains or loses an invalidation edge: anything that re-executes this
 /// re-executed every chunk before.
+///
+/// **The project's resolution lookup is deliberately NOT here** (#3586).
+/// It is keyed by absolute source range, so a shift edit anywhere moved
+/// every later range, re-executed [`resolutions_index_query`], and through
+/// this `no_eq` memo re-lowered every knot IN THE PROJECT. Each chunk now
+/// builds its own lookup from its segment's resolutions instead, and what
+/// is left here is range-free.
 #[salsa::tracked(no_eq)]
 pub(crate) fn chunk_lowering_ctx_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
 ) -> ChunkLoweringCtxResult {
-    let resolved = resolutions_index_query(db, project);
     let shape_data = struct_shape_data_query(db, project);
     // Narrow `.types` projection (issue #806/#809) — not the raw
     // `AnalysisOptions` field — so an unrelated options edit doesn't
@@ -2756,10 +2794,7 @@ pub(crate) fn chunk_lowering_ctx_query(
         .collect();
     ChunkLoweringCtxResult {
         ctx: Arc::new(brink_ir::lir::ChunkLoweringCtx::new(
-            &resolved.resolutions,
-            shape_data,
-            file_paths,
-            type_mode,
+            shape_data, file_paths, type_mode,
         )),
     }
 }
@@ -2790,26 +2825,47 @@ pub(crate) fn lir_knot_chunk_query(
         return LoweredChunk::default();
     };
 
-    let resolved = resolutions_index_query(db, project);
-    // The knot-invariant half of the lowering environment (resolution
-    // lookup, struct-shape tables, file paths, type mode), built once per
-    // project revision rather than once per knot — issue #460.
+    // The knot-invariant half of the lowering environment (struct-shape
+    // tables, file paths, type mode), built once per project revision
+    // rather than once per knot — issue #460.
     let ctx = &chunk_lowering_ctx_query(db, project).ctx;
+    let ufcs = &ufcs_resolution_query(db, project).table;
+    let coalesce = coalesce_types_query(db, project);
+    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
 
-    // The file's normalized+stamped HIR, shared across all its knots'
-    // memos (so a K-knot file normalizes once, not K times).
+    if let Some((fragment, resolutions, delta)) =
+        knot_chunk_fragment(db, project, source, knot_index)
+        && let Some(knot) = fragment.knots.first()
+    {
+        let lookup = brink_ir::lir::ResolutionLookup::build_shifted(&resolutions, delta);
+        let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
+            &fragment,
+            knot,
+            inference_index_query(db, project),
+            &lookup,
+            ctx,
+            file_id,
+            tables,
+        );
+        return LoweredChunk {
+            chunk: Arc::new(chunk),
+            diagnostics,
+        };
+    }
+
+    // Native files, and any knot the segment road cannot place, keep the
+    // whole-file road.
+    let resolved = resolutions_index_query(db, project);
     let hir_file = normalized_stamped_query(db, project, source);
     let Some(knot) = hir_file.knots.get(knot_index) else {
         return LoweredChunk::default();
     };
-
-    let ufcs = &ufcs_resolution_query(db, project).table;
-    let coalesce = coalesce_types_query(db, project);
-    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
+    let lookup = brink_ir::lir::ResolutionLookup::build(&resolved.resolutions);
     let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
         hir_file,
         knot,
         &resolved.index,
+        &lookup,
         ctx,
         file_id,
         tables,
@@ -2818,6 +2874,64 @@ pub(crate) fn lir_knot_chunk_query(
         chunk: Arc::new(chunk),
         diagnostics,
     }
+}
+
+/// The segment-road inputs for one knot: a ONE-knot fragment (its knot at
+/// index 0) already normalized, stamped and rebased to the file's absolute
+/// coordinates, that segment's own resolutions, and the offset they must
+/// be shifted by to match.
+///
+/// Order matters and mirrors `assemble_lowered_file`: rebase FIRST, then
+/// stamp, then normalize. A node the passes SYNTHESIZE carries the
+/// provenance-free `0..0`, and rebasing afterwards would shift those to
+/// `delta..delta` where the whole-file road leaves them at `0..0`.
+///
+/// Lowering therefore sees absolute positions, which it needs: a chunk is
+/// NOT position-free (`Container`/`Stmt`/`Expr` all carry `Provenance`,
+/// and the debug line tables are built from it), so the bytes and the line
+/// tables match the whole-file road's exactly and the diagnostics need no
+/// rebase downstream.
+///
+/// `None` for a native file or a knot index the segment road cannot place.
+fn knot_chunk_fragment(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+    knot_index: usize,
+) -> Option<(HirFile, Arc<brink_ir::ResolutionMap>, rowan::TextSize)> {
+    if file_language(file.path(db)) != Language::Ink {
+        return None;
+    }
+    // Through the per-index seam, never `file_segments_query(..)[i]`:
+    // depend on THIS knot's segment identity, not on every segment's
+    // (the #3585 lesson — a `Vec` index makes every reader depend on
+    // every element).
+    let &(seg_index, local_index) = file_knot_segments_query(db, file).get(knot_index)?;
+    let segment = file_segment_at_query(db, file, seg_index)?;
+    let mut fragment = segment_fragment_hir(db, file, segment);
+    let knot = fragment.knots.get(local_index)?.clone();
+    fragment.knots = vec![knot];
+    fragment.root_content = brink_ir::hir::Block::default();
+
+    let file_id = file.file_id(db);
+    let delta = rowan::TextSize::from(segment.offset(db));
+    fragment.rebase(delta, file_id);
+
+    let ink_root = project.ink_root(db).as_deref();
+    let paths: LookupMap<FileId, String> = std::iter::once((
+        file_id,
+        crate::modules::root_relative_key(ink_root, file.path(db)).into_owned(),
+    ))
+    .collect();
+    let mut slice = [(file_id, fragment)];
+    brink_ir::stamp_container_ids(&mut slice, inference_index_query(db, project), &paths);
+    brink_ir::normalize_file(&mut slice[0].1);
+    let [(_, stamped)] = slice;
+    Some((
+        stamped,
+        segment_resolutions(db, project, file, segment),
+        delta,
+    ))
 }
 
 /// The project's TM-3 `types` policy as its own narrow projection query

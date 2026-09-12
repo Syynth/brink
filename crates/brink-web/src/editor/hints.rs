@@ -92,9 +92,16 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let Some(analysis) = self.session.analysis() else {
-            return "[]".to_owned();
+        // The narrow symbol view, never `session.analysis()`: the collector
+        // reads the index and the metas only, and the analysis bundle's
+        // diagnostics half re-runs every per-file check on any edit.
+        let index = self.session.symbol_index();
+        let symbol_meta = self.session.symbol_meta();
+        let symbols = brink_ide::SymbolView {
+            index: &index,
+            symbol_meta: &symbol_meta,
         };
+        let analysis = &symbols;
 
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
@@ -211,9 +218,14 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let Some(analysis) = self.session.analysis() else {
-            return "[]".to_owned();
+        // Same narrow view as `inlay_hints_impl` — see there.
+        let index = self.session.symbol_index();
+        let symbol_meta = self.session.symbol_meta();
+        let symbols = brink_ide::SymbolView {
+            index: &index,
+            symbol_meta: &symbol_meta,
         };
+        let analysis = &symbols;
 
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
@@ -323,7 +335,7 @@ impl EditorSession {
     fn argument_widget_sites(
         &self,
         file_id: brink_ir::FileId,
-        analysis: &brink_analyzer::AnalysisResult,
+        analysis: &brink_ide::SymbolView<'_>,
         range: TextRange,
     ) -> Option<Vec<brink_ide::argument_widgets::CallWidgetSite>> {
         if self.session.is_native(file_id) {
@@ -421,5 +433,52 @@ impl EditorSession {
             }
             None => "null".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::editor::EditorSession;
+
+    /// The presentation collectors read a `SymbolView` (index + metas),
+    /// never `session.analysis()`: that bundle's diagnostics half re-runs
+    /// every per-file check in the project on any edit, so a prose
+    /// keystroke used to re-diagnose the project just to label a call's
+    /// parameters. Pinned by execution count: after a prose edit, neither
+    /// collector causes any diagnostics query or the analysis bundle to
+    /// execute — and the widget still resolves.
+    #[test]
+    fn hints_and_widgets_after_a_prose_edit_pull_no_diagnostics() {
+        let src = "VAR gold = 10\n=== alpha ===\n~ temp local = 1\nThe value is {local + gold}.\n-> beta(1)\n=== beta(x) ===\nThe night is cold.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let doc = s.open_document("main.ink");
+        let len = u32::try_from(src.len()).expect("len fits");
+        // Warm, so only what the edit invalidates is counted.
+        let _ = s.argument_widgets_doc(doc, 0, len);
+        let _ = s.inlay_hints_doc(doc, 0, len);
+
+        let at = src.find("cold").expect("prose line");
+        let edits = format!("[{{\"from\":{at},\"to\":{at},\"insert\":\"x\"}}]");
+        assert!(s.apply_edits_document(doc, &edits));
+
+        let ((widgets, hints), counts) = brink_db::count_executions(|| {
+            (
+                s.argument_widgets_doc(doc, 0, len),
+                s.inlay_hints_doc(doc, 0, len),
+            )
+        });
+        let forbidden: Vec<&String> = counts
+            .keys()
+            .filter(|q| q.contains("diagnostics") || q.as_str() == "analysis_query")
+            .collect();
+        assert!(
+            forbidden.is_empty(),
+            "the presentation collectors pulled the diagnostics bundle: {forbidden:?}\nall executions: {counts:#?}"
+        );
+        // Positive control: the call `beta(1)` still gets its widget and hint.
+        assert!(widgets.contains("\"x\""), "widget for beta(x): {widgets}");
+        assert!(hints.contains('x'), "param hint for beta(x): {hints}");
     }
 }

@@ -174,6 +174,65 @@ describe("DocHandle fast-token blend", () => {
     expect(fake.fetches).toEqual(["tok:2:0"]);
   });
 
+  it("never asks the session for a manifest on the fast road with nothing refined to keep", () => {
+    // The keystroke path on a large document: the worker owns refined
+    // tokens (a third plane), so `segSlices` is empty and every segment
+    // would take the classifier road anyway. Asking the session for a
+    // manifest here re-lexed the whole file for nothing — 0.6 ms a
+    // keystroke on a 100 KB story, on top of the classifier's own lex.
+    const { session, calls } = makeSession();
+    const manifestCalls: string[] = [];
+    const spied = new Proxy(session, {
+      get(target, prop, receiver) {
+        if (prop === "getSegmentManifestDoc") {
+          return (...args: unknown[]) => {
+            manifestCalls.push("manifest");
+            return (
+              Reflect.get(target, prop, receiver) as (...a: unknown[]) => unknown
+            )(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    }) as EditorSessionHandle;
+
+    const handle = new DocHandle(spied, 1, "main.ink", false);
+    const fake = makeClassifier(manifestA);
+    handle.attachClassifier(new ClassifierMirror(fake));
+
+    const tokens = handle.semanticTokens(true);
+    // Same assembly the blend produces once nothing is cached: both
+    // segments from the classifier, rebased by the classifier's own
+    // `ownedFrom` (line 0 -> 0, line 0 -> 2).
+    expect(tokens.map((t) => t.line)).toEqual([0, 2]);
+    expect(fake.fetches).toEqual(["tok:1:0", "tok:2:0"]);
+    expect(manifestCalls).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("falls back to the session road when the classifier desyncs mid-document", () => {
+    const { session } = makeSession();
+    const handle = new DocHandle(session, 1, "main.ink", false);
+    // A manifest naming a segment the classifier cannot serve: the
+    // mirror-first road must abandon the whole pull, not render a hole.
+    const fake = makeClassifier({
+      totalLines: 4,
+      segments: [
+        { key: "1:0", ownedFrom: 0 },
+        { key: "gone", ownedFrom: 2 },
+      ],
+    });
+    fake.getSegmentSemanticTokensFast = (key) => {
+      fake.fetches.push(`tok:${key}`);
+      return key === "gone" ? null : [tok(0, 1)];
+    };
+    handle.attachClassifier(new ClassifierMirror(fake));
+    // Abandoned, so the session road runs: its own two segments, the
+    // first still paired to the classifier, the second falling through
+    // to the session's fast query rather than rendering a hole.
+    expect(handle.semanticTokens(true).map((t) => t.token_type)).toEqual([1, 2]);
+  });
+
   it("prefers the classifier plane for line-context slices", () => {
     const { session, calls } = makeSession();
     const handle = new DocHandle(session, 1, "main.ink", false);
