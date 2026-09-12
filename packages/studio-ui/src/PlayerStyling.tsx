@@ -153,12 +153,12 @@ export function PlayerReadingSection() {
           value={lineHeight}
           min={0}
           max={22}
+          floor={12}
           label="line spacing"
           suffix=" /10"
           onChange={(v) => {
-            const next = v > 0 && v < 12 ? (lineHeight === 0 ? 12 : 0) : v;
-            setPlayerLineHeight(next);
-            persist({ lineHeight: next });
+            setPlayerLineHeight(v);
+            persist({ lineHeight: v });
           }}
         />
       </SettingsRow>
@@ -170,12 +170,12 @@ export function PlayerReadingSection() {
           value={measure}
           min={0}
           max={96}
+          floor={48}
           label="measure"
           suffix=" ch"
           onChange={(v) => {
-            const next = v > 0 && v < 48 ? (measure === 0 ? 48 : 0) : v;
-            setPlayerMeasure(next);
-            persist({ measure: next });
+            setPlayerMeasure(v);
+            persist({ measure: v });
           }}
         />
       </SettingsRow>

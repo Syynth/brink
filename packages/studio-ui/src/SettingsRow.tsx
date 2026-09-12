@@ -61,6 +61,7 @@ export function SettingsStepper({
   onChange,
   label,
   suffix,
+  floor,
 }: {
   value: number;
   min: number;
@@ -68,15 +69,37 @@ export function SettingsStepper({
   onChange: (next: number) => void;
   label: string;
   suffix?: string;
+  /**
+   * The readable floor of a knob whose `min` is an "off" sentinel rather
+   * than a usable value — the Player's reading knobs, where 0 means "follow
+   * the theme" and anything below the floor is not a size worth rendering.
+   *
+   * Without it the values between `min` and the floor are a dead zone the
+   * stepper cannot cross: ±1 from 0 lands on 1, the store's own clamp reads
+   * that as below-the-floor and collapses it back to 0, and the knob is
+   * stuck at "off" forever. With it, stepping up out of `min` lands on the
+   * floor and stepping down off the floor lands back on `min`.
+   *
+   * This lives here rather than at each call site because it used to live at
+   * each call site: line spacing and measure carried the hop inline, the
+   * Player's font size never got it, and that one silently did nothing from
+   * the day it shipped (W13/#3306). Declaring the floor is now the whole job.
+   */
+  floor?: number;
 }) {
   const clamp = (n: number): number => Math.min(max, Math.max(min, n));
+  const step = (delta: number): number => {
+    const next = clamp(value + delta);
+    if (floor === undefined || next <= min || next >= floor) return next;
+    return value === min ? floor : min;
+  };
   return (
     <div className="settings-stepper">
       <button
         type="button"
         aria-label={`Decrease ${label}`}
         disabled={value <= min}
-        onClick={() => onChange(clamp(value - 1))}
+        onClick={() => onChange(step(-1))}
       >
         &minus;
       </button>
@@ -88,7 +111,7 @@ export function SettingsStepper({
         type="button"
         aria-label={`Increase ${label}`}
         disabled={value >= max}
-        onClick={() => onChange(clamp(value + 1))}
+        onClick={() => onChange(step(1))}
       >
         +
       </button>
