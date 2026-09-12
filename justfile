@@ -11,9 +11,13 @@
 #   ---------------------------------------------------------------------
 #   BRINK_JUST_WASM_TIMEOUT                     900s   FAIL (exit 1). Covers a
 #                                                      COLD release build of
-#                                                      the brink-web crate tree
-#                                                      plus, on a cache miss,
-#                                                      the binaryen/wasm-opt
+#                                                      ONE registered wasm
+#                                                      crate tree — the bound
+#                                                      is PER CRATE, applied
+#                                                      again to each entry in
+#                                                      WASM_PACKAGES — plus, on
+#                                                      a cache miss, the
+#                                                      binaryen/wasm-opt
 #                                                      tarball wasm-pack pulls
 #                                                      from GitHub releases.
 #   BRINK_JUST_NPM_INSTALL_TIMEOUT              600s   FAIL (exit 1). The
@@ -97,19 +101,45 @@ cross-language-benchmark:
     bash benchmarks/setup.sh
     bash benchmarks/run.sh
 
-# Build brink-web wasm package
+# Build every registered wasm-pack package.
+#
+# The crate list is READ from scripts/check-wasm-pkg.mjs's WASM_PACKAGES
+# registry, not restated here — the same mechanical link scripts/setup-dev.sh
+# already uses, and for the same reason. A hand-maintained copy of the list is
+# exactly the drift that broke the Book deploy: #3208 registered
+# crates/brink-prose as a second `file:`-linked output and every consumer that
+# READS the registry picked it up, while this recipe (which named brink-web
+# literally) did not — so `pnpm install:checked` in `book-assets` refused, and
+# .github/workflows/book.yml has been red ever since. A third crate now
+# inherits this recipe for free.
 wasm:
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/lib/run-with-timeout.sh
     BRINK_JUST_WASM_TIMEOUT="${BRINK_JUST_WASM_TIMEOUT:-900}"
-    rc=0
-    run_with_timeout "${BRINK_JUST_WASM_TIMEOUT}" wasm-pack build crates/brink-web --target web --out-dir www/pkg || rc=$?
-    if [ "$rc" -eq 124 ]; then
-        echo "==> x wasm-pack build TIMED OUT after ${BRINK_JUST_WASM_TIMEOUT}s — the binaryen/wasm-opt download or the crates.io fetch behind it never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_WASM_TIMEOUT." >&2
+    # One repo-relative crate directory per line, in registry order. The
+    # registry path travels by env var, NOT as a positional argument: with
+    # `node -e`, the first positional lands in process.argv[1], and
+    # check-wasm-pkg.mjs's main-guard compares exactly that against its own
+    # URL — passed positionally, the module runs its standalone check (and
+    # exits 1 on an unbuilt tree) instead of just exporting the registry.
+    wasm_crate_dirs=""
+    wasm_crate_dirs="$(BRINK_WASM_REGISTRY="$(pwd)/scripts/check-wasm-pkg.mjs" node -e "import(require('node:url').pathToFileURL(process.env.BRINK_WASM_REGISTRY).href).then((m) => process.stdout.write(m.WASM_PACKAGES.map((p) => p.crateDir).join('\n') + '\n'))")" || true
+    if [ -z "${wasm_crate_dirs}" ]; then
+        echo "==> x could not read the wasm package registry from scripts/check-wasm-pkg.mjs (WASM_PACKAGES) — this recipe derives its crate list from it." >&2
         exit 1
     fi
-    [ "$rc" -eq 0 ] || exit "$rc"
+    while IFS= read -r crate_dir; do
+        [ -n "${crate_dir}" ] || continue
+        echo "==> wasm-pack build ${crate_dir}"
+        rc=0
+        run_with_timeout "${BRINK_JUST_WASM_TIMEOUT}" wasm-pack build "${crate_dir}" --target web --out-dir www/pkg || rc=$?
+        if [ "$rc" -eq 124 ]; then
+            echo "==> x wasm-pack build ${crate_dir} TIMED OUT after ${BRINK_JUST_WASM_TIMEOUT}s — the binaryen/wasm-opt download or the crates.io fetch behind it never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_WASM_TIMEOUT." >&2
+            exit 1
+        fi
+        [ "$rc" -eq 0 ] || exit "$rc"
+    done <<< "${wasm_crate_dirs}"
 
 # Compile-check the book's Rust examples. Two mechanisms, by chapter:
 #
@@ -192,23 +222,18 @@ book-ts-check:
 
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
-book-assets:
+book-assets: wasm
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/lib/run-with-timeout.sh
-    BRINK_JUST_WASM_TIMEOUT="${BRINK_JUST_WASM_TIMEOUT:-900}"
     BRINK_JUST_PNPM_INSTALL_TIMEOUT="${BRINK_JUST_PNPM_INSTALL_TIMEOUT:-900}"
     BRINK_JUST_STUDIO_BUILD_TIMEOUT="${BRINK_JUST_STUDIO_BUILD_TIMEOUT:-900}"
     dest="docs/book/src/playground"
-    # The studio's Vite build resolves `brink-web` against this wasm pkg, so it
-    # must exist first (out-dir is relative to the crate -> crates/brink-web/www/pkg).
-    rc=0
-    run_with_timeout "${BRINK_JUST_WASM_TIMEOUT}" wasm-pack build crates/brink-web --target web --out-dir www/pkg || rc=$?
-    if [ "$rc" -eq 124 ]; then
-        echo "==> x wasm-pack build TIMED OUT after ${BRINK_JUST_WASM_TIMEOUT}s — the binaryen/wasm-opt download or the crates.io fetch behind it never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_WASM_TIMEOUT." >&2
-        exit 1
-    fi
-    [ "$rc" -eq 0 ] || exit "$rc"
+    # The wasm packages are built by the `wasm` dependency above, not inline
+    # here: the studio's Vite build resolves `brink-web` against one of those
+    # outputs, and `pnpm install:checked` refuses outright unless EVERY
+    # registered output exists (the brink-prose one included, #3208). A second
+    # hand-written copy of the build is what drifted last time.
     # Install JS deps and build the studio as a self-contained static bundle.
     rc=0
     run_with_timeout "${BRINK_JUST_PNPM_INSTALL_TIMEOUT}" pnpm install:checked -- --frozen-lockfile || rc=$?
