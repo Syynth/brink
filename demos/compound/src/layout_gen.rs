@@ -832,7 +832,7 @@ fn shared_doorway(a: &Rect, b: &Rect, ai: usize, bi: usize) -> Option<Doorway> {
                 return Some(Doorway {
                     vertical: true,
                     coord: l.max.x,
-                    perp: (lo + hi) * 0.5,
+                    perp: f32::midpoint(lo, hi),
                     a: li,
                     b: ri,
                 });
@@ -845,7 +845,7 @@ fn shared_doorway(a: &Rect, b: &Rect, ai: usize, bi: usize) -> Option<Doorway> {
                 return Some(Doorway {
                     vertical: false,
                     coord: l.max.y,
-                    perp: (lo + hi) * 0.5,
+                    perp: f32::midpoint(lo, hi),
                     a: li,
                     b: ri,
                 });
@@ -926,7 +926,7 @@ fn build_walls(
 }
 
 fn push_segment(out: &mut Vec<WallRect>, sw: &SplitWall, lo: f32, hi: f32) {
-    let mid = (lo + hi) * 0.5;
+    let mid = f32::midpoint(lo, hi);
     let halfp = (hi - lo) * 0.5;
     if sw.vertical {
         out.push(WallRect {

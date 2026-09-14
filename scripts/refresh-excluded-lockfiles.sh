@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Refreshes the brink/bevy-brink path-dependency entries in the Cargo.lock of
 # every workspace-excluded crate, so a workspace version bump (release-plz)
-# doesn't leave them stale. Without this, the NEXT release would leave
-# demos/compound and benchmarks/{gen-input,brink-loop} lockfiles pointing at
-# a version older than what root Cargo.toml now specifies, and the
-# `--locked` checks in demo.yml/benchmarks.yml would go red the moment a PR
-# touches those crates (#1418, priority item 3 — release.yml is
-# cargo-dist-generated, house rule 5, so this lives here instead).
+# doesn't leave them stale. Without this, the NEXT release would leave those
+# lockfiles pointing at a version older than what root Cargo.toml now
+# specifies, and any `--locked` check over them (demo.yml, benchmarks.yml,
+# desktop-smoke.yml) would go red the moment a PR touches those crates
+# (#1418, priority item 3 — release.yml is cargo-dist-generated, house
+# rule 5, so this lives here instead).
+#
+# The set is DISCOVERED, not listed — see `excluded_dirs` below for why the
+# hand-maintained version was structurally unable to be right.
 #
 # `cargo update -p <name>` (not a blanket `cargo update`) so only the
 # brink/bevy-brink path-dependency entries actually re-resolve; each
@@ -89,20 +92,49 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRINK_REFRESH_DRY_RUN_TIMEOUT="${BRINK_REFRESH_DRY_RUN_TIMEOUT:-180}"
 BRINK_REFRESH_UPDATE_TIMEOUT="${BRINK_REFRESH_UPDATE_TIMEOUT:-300}"
 
-# Every cargo workspace OUTSIDE the root one that path-depends on a brink
-# crate. `packages/brink-desktop/src-tauri` was missing until #3599's
-# release: it is the most-documented excluded workspace in the repo
-# (CLAUDE.md gives it its own row) and still got left off this list, so
-# every release bump left its Cargo.lock pinning the old versions and
-# desktop-smoke.yml's three `--locked` steps went red on the release PR.
-# Adding a dir here is all it takes: release-plz.yml stages what
-# `--print-lockfiles` prints rather than restating the list itself.
-excluded_dirs=(
-  demos/compound
-  benchmarks/tools/gen-input
-  benchmarks/drivers/brink-loop
-  packages/brink-desktop/src-tauri
+# Every cargo workspace OUTSIDE the root one, DISCOVERED rather than listed.
+#
+# A `Cargo.lock` exists at a workspace root and nowhere else, so finding them
+# is the complete answer to "which workspaces does a version bump strand?".
+# Listing them by hand was not: the list named three, and there are NINE.
+# `packages/brink-desktop/src-tauri` was missing (every release left its
+# lockfile pinning the old versions, and desktop-smoke.yml's three `--locked`
+# steps went red on the release PR), and so were `crates/brink-gpui` and the
+# four `*/fuzz` workspaces — `crates/internal/brink-format/fuzz` had drifted
+# all the way back to brink-format 0.0.1.
+#
+# Hand-listing could not have worked, because membership has TWO independent
+# mechanisms and neither is the whole rule: the root `exclude` array
+# (benchmarks, demos, gpui, the fuzz dirs) and a nested `[workspace]` table
+# (brink-gpui, demos/compound, src-tauri). `packages/brink-desktop/src-tauri`
+# is in neither — root `members` only globs `crates/…`, so `packages/**` is
+# never matched at all. Discovery does not care which mechanism applies.
+#
+# Same lesson as scripts/check-scripts.mjs, where hand enumeration of
+# network-touching commands went 0-for-3: MECHANICALLY CHECK THE INVARIANT,
+# DO NOT ENUMERATE ITS INSTANCES. Nothing downstream needs updating when a
+# workspace is added or removed — release-plz.yml already stages whatever
+# `--print-lockfiles` prints instead of restating the list a second time.
+#
+# Prunes build output and dependency trees; sorted so the order (and so the
+# staged diff) is deterministic. A discovered workspace with no brink
+# path-dependency in its lockfile is a harmless no-op: the `cargo update`
+# below is driven by the packages actually found in that lockfile, so it
+# passes no `-p` flags and changes nothing.
+mapfile -t excluded_dirs < <(
+  find . -name Cargo.lock \
+    -not -path './target/*' \
+    -not -path './node_modules/*' \
+    -not -path '*/node_modules/*' \
+    -not -path './.git/*' \
+    -not -path './Cargo.lock' \
+    -printf '%h\n' | sed 's|^\./||' | sort
 )
+
+if [[ ${#excluded_dirs[@]} -eq 0 ]]; then
+  echo "==> x discovered no non-root Cargo.lock files — refresh-excluded-lockfiles.sh scans from the repo root and expects at least one (demos/compound, the benchmarks drivers, src-tauri, brink-gpui, the fuzz workspaces). Run it from the repository root." >&2
+  exit 1
+fi
 
 mode=refresh
 if [[ "${1:-}" == "--dry-run" ]]; then
