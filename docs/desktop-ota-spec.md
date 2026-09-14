@@ -192,11 +192,16 @@ the plugin set, and Tauri version bumps. Plus any bundle whose
 ## Signing
 
 The archive is minisign-signed, the same scheme the Tauri updater already
-uses, verified before extract. **Open: reuse the existing updater keypair, or
-mint a second one.** Reuse is one fewer secret to manage; a distinct key keeps
-the trust domains separable and rotatable independently. Recommend a distinct
-key — the channels have different blast radii — but this is a maintainer call
-and either is defensible.
+uses, verified before extract.
+
+**RULED: it shares the updater's existing keypair.** The recommendation on the
+table was a second key, on the reasoning that the two channels have different
+blast radii. That was over-thought: the two channels are served by the same
+infrastructure, from the same place, to the same clients, for the same purpose
+— shipping signed update payloads to an installed app. A second key buys
+separability that nothing is asking for and adds a secret to rotate, store and
+get wrong. `TAURI_SIGNING_PRIVATE_KEY` and the `pubkey` already in
+`tauri.conf.json` cover both.
 
 ## Gates
 
