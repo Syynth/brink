@@ -15,12 +15,18 @@
     "exactly the population OTA exists to serve. Raise it only when the IPC",
     "surface loses or changes a command an OTA'd bundle would call.",
     "",
+    "It floors at 0.8.0 because that is the FIRST release carrying an OTA",
+    "client at all (Stages 1-3 are all src-tauri Rust; desktop-v0.7.0 and",
+    "earlier have none of it). Naming anything older would be a claim about",
+    "a population that cannot consume a bundle either way — those installs",
+    "never poll, so nothing ever compares this value against them.",
+    "",
     "commandsFingerprint: a pin, not a setting. It records the IPC surface",
     "minShellVersion was last judged against; the guard recomputes it and",
     "fails when they diverge, which is the prompt to decide whether the",
     "change was breaking. Update it in the same commit as that decision."
   ],
   "version": "0.0.1",
-  "minShellVersion": "0.7.0",
+  "minShellVersion": "0.8.0",
   "commandsFingerprint": "dd1949c73c2c4da3"
 }
