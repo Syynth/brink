@@ -89,7 +89,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRINK_REFRESH_DRY_RUN_TIMEOUT="${BRINK_REFRESH_DRY_RUN_TIMEOUT:-180}"
 BRINK_REFRESH_UPDATE_TIMEOUT="${BRINK_REFRESH_UPDATE_TIMEOUT:-300}"
 
-excluded_dirs=(demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop)
+# Every cargo workspace OUTSIDE the root one that path-depends on a brink
+# crate. `packages/brink-desktop/src-tauri` was missing until #3599's
+# release: it is the most-documented excluded workspace in the repo
+# (CLAUDE.md gives it its own row) and still got left off this list, so
+# every release bump left its Cargo.lock pinning the old versions and
+# desktop-smoke.yml's three `--locked` steps went red on the release PR.
+# Adding a dir here is all it takes: release-plz.yml stages what
+# `--print-lockfiles` prints rather than restating the list itself.
+excluded_dirs=(
+  demos/compound
+  benchmarks/tools/gen-input
+  benchmarks/drivers/brink-loop
+  packages/brink-desktop/src-tauri
+)
 
 mode=refresh
 if [[ "${1:-}" == "--dry-run" ]]; then
