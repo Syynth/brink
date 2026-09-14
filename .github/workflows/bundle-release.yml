@@ -1,0 +1,226 @@
+name: OTA bundle release
+
+# Publish an over-the-air web-bundle update (docs/desktop-ota-spec.md Stage 2).
+#
+# THIS IS THE WHOLE POINT OF THE OTA CHANNEL: it ships the editor without
+# codesigning, notarizing or stapling anything. The web bundle — including
+# both wasm modules, which are ~90% of the payload and are webview-loaded
+# assets rather than native executables — is not covered by any code
+# signature, so publishing one needs no Apple credentials and no Windows
+# certificate. Measured over commits since 2026-08-01: 352 touch only code
+# that flows into this bundle, against 22 that need a signed release.
+#
+# ⚠ NOT a substitute for `desktop-release.yml`. That ships the shell — Rust,
+# tauri.conf.json, icons, file associations, entitlements, the plugin set.
+# The two channels sit BESIDE each other (RULED 2026-09-14) and the app
+# checks both.
+#
+# ⚠ `TAURI_SIGNING_PRIVATE_KEY` is required, not optional. The archive is
+# minisign-signed with the SAME keypair the full-app updater uses (RULED
+# 2026-09-14: same infrastructure, same place, same clients, same purpose),
+# and `bundle_update::signature_is_valid` mirrors the updater plugin's own
+# parse so the two cannot disagree about what a valid signature is. An
+# unsigned bundle is refused by every install — silently, because a refusal
+# looks like any other failed check — so `build-bundle-manifest.mjs` throws
+# on an empty signature rather than publishing one.
+#
+# The VERSION comes from `packages/brink-desktop/ota-bundle.json`, an
+# independent sequence rather than the app's version (RULED 2026-09-14):
+# reusing the app version would make two web-only updates between signed
+# releases impossible, since the second would carry the same version as the
+# first and the shell would report "up to date". The tag must match it.
+
+on:
+  push:
+    tags: ["bundle-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and sign the bundle but do not publish it"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: bundle-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  bundle:
+    name: Build, sign and publish the web bundle
+    runs-on: ubuntu-latest
+    # Two cold wasm builds dominate: measured at 2m43s (brink-web) and
+    # ~8m30s (brink-prose) on a 4-job cloud VM, wasm-opt included. 30 leaves
+    # real headroom without letting a hang burn the 6h default.
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The tag names the bundle version, and `ota-bundle.json` is what the
+      # manifest actually publishes. If they disagree, the release would
+      # advertise a version nobody can correlate with the tag it came from.
+      - name: Tag version must match ota-bundle.json
+        if: startsWith(github.ref, 'refs/tags/bundle-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#bundle-v}"
+          file_version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          if [ "$tag_version" != "$file_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $tag_version but ota-bundle.json says $file_version" >&2
+            exit 1
+          fi
+          echo "bundle version $file_version"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: v0.14.0
+
+      # Must precede the install below — @brink-lang/web is a file:
+      # dependency on this output, and
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (src-tauri/src/lib.rs, #2504) enforces that ordering for every job in
+      # every workflow file, this one included.
+      - name: Build brink-web wasm package
+        run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      # brink-prose's wasm is a SECOND file: link (#3208); the install below
+      # fails with ENOENT without it.
+      - name: Build prose wasm package
+        run: wasm-pack build crates/brink-prose --target web --out-dir www/pkg
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install:checked -- --frozen-lockfile
+
+      # `vite build` only. No `tauri build`, no cargo, no codesign — that
+      # absence IS the feature.
+      - name: Build the web bundle
+        run: pnpm --filter @brink/desktop build
+
+      # Proof the build produced something, before it is archived and signed:
+      # an empty dist/ would tar, hash and sign perfectly happily and ship a
+      # bundle that serves nothing.
+      - name: Verify the bundle has an index and both wasm modules
+        run: |
+          dist="packages/brink-desktop/dist"
+          test -f "$dist/index.html" || { echo "::error::no $dist/index.html" >&2; exit 1; }
+          shopt -s nullglob globstar
+          wasm=("$dist"/**/*.wasm)
+          if [ ${#wasm[@]} -lt 2 ]; then
+            echo "::error::expected both wasm modules in $dist, found ${#wasm[@]}: ${wasm[*]}" >&2
+            exit 1
+          fi
+          echo "bundle contents verified: ${#wasm[@]} wasm modules"
+          du -sh "$dist"
+
+      # `-C dist .` so entries are relative to the bundle root: the shell
+      # unpacks straight into `staging/` and expects `index.html` at the top,
+      # not nested under a `dist/` directory.
+      - name: Archive the bundle
+        run: |
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          tar -czf "bundle-${version}.tar.gz" -C packages/brink-desktop/dist .
+          ls -l "bundle-${version}.tar.gz"
+
+      # The same keypair the full-app updater uses. `tauri signer sign`
+      # writes `<file>.sig`, whose content is the base64 the manifest carries.
+      - name: Sign the archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; an unsigned bundle is refused by every install" >&2
+            exit 1
+          fi
+          pnpm --filter @brink/desktop exec tauri signer sign \
+            --private-key "${TAURI_SIGNING_PRIVATE_KEY}" \
+            --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" \
+            "$PWD/bundle-${version}.tar.gz"
+          test -s "bundle-${version}.tar.gz.sig" || {
+            echo "::error::the signer produced no signature" >&2; exit 1; }
+
+      - name: Build bundle-latest.json
+        run: |
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          tag="$GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in bundle-v*) ;; *) tag="bundle-v${version}" ;; esac
+          node packages/brink-desktop/scripts/build-bundle-manifest.mjs \
+            packages/brink-desktop/ota-bundle.json \
+            "bundle-${version}.tar.gz" \
+            "bundle-${version}.tar.gz.sig" \
+            "$GITHUB_REPOSITORY" \
+            "$tag" \
+            bundle-latest.json
+          cat bundle-latest.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ota-bundle
+          path: |
+            bundle-*.tar.gz
+            bundle-*.tar.gz.sig
+            bundle-latest.json
+          if-no-files-found: error
+
+      # The archive gets its own immutable release; the MANIFEST is
+      # republished to the `desktop-latest` alias the app polls — the same
+      # split `latest.json` already uses, so one stable URL serves the check
+      # while each archive keeps a URL that never changes under it.
+      - name: Create the bundle release
+        if: startsWith(github.ref, 'refs/tags/bundle-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Brink Studio editor update $version" \
+            --notes "Web-bundle update for Brink Studio. Applies over the air to an installed app; not a download." \
+            --latest=false \
+            "bundle-${version}.tar.gz" "bundle-${version}.tar.gz.sig"
+
+      - name: Publish the manifest to the desktop-latest alias
+        if: startsWith(github.ref, 'refs/tags/bundle-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create desktop-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Desktop update manifest" \
+              --notes "Update manifests the Brink Studio desktop app polls. Not a download." \
+              --latest=false
+          gh release upload desktop-latest bundle-latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      # Proof the app can actually reach what was just published — the
+      # failure this catches is a manifest whose `url` 404s, which reads to
+      # the author as "update check failed" forever.
+      - name: Verify the published archive URL resolves
+        if: startsWith(github.ref, 'refs/tags/bundle-v') && !inputs.dry_run
+        run: |
+          url="$(node -p "require('./bundle-latest.json').url")"
+          code="$(curl -sSL -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 "$url")"
+          if [ "$code" != "200" ]; then
+            echo "::error::$url returned $code" >&2
+            exit 1
+          fi
+          echo "$url resolves"

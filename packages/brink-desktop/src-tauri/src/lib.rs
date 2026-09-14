@@ -3638,12 +3638,12 @@ on:
 
         // Enumeration transparency (house convention: state exactly which
         // workflow files and jobs were checked, not just the ones known in
-        // advance): this must have walked more than just the four
-        // pnpm-install lanes (proof the walk covers every job in every
-        // workflow file, not only the ones that happen to install), and
-        // the pnpm-install lanes found must be exactly today's known four
-        // — so a fifth lane, correctly ordered or not, cannot join
-        // silently: it has to be added here on purpose.
+        // advance): this must have walked more than just the pnpm-install
+        // lanes (proof the walk covers every job in every workflow file,
+        // not only the ones that happen to install), and the lanes found
+        // must be exactly today's known set — so a new lane, correctly
+        // ordered or not, cannot join silently: it has to be added here on
+        // purpose.
         assert!(
             checked_jobs.len() > pnpm_install_lanes.len(),
             "expected to see jobs beyond just the pnpm-install lanes, proving this walked \
@@ -3653,6 +3653,14 @@ on:
         assert_eq!(
             pnpm_install_lanes,
             vec![
+                // The OTA web-bundle channel (docs/desktop-ota-spec.md
+                // Stage 2): builds and signs `dist/` with no cargo, no
+                // `tauri build` and no codesign — that absence is the
+                // feature. It still installs, and it still links both
+                // wasm-pack outputs, so it is in scope here like any other.
+                // Sorted first because `workflow_files()` walks the
+                // directory alphabetically and `bundle-` precedes `ci`.
+                "bundle-release.yml:bundle".to_owned(),
                 "ci.yml:frontend".to_owned(),
                 "ci.yml:e2e".to_owned(),
                 // #2709: desktop-bundle-smoke.yml is the non-required real
@@ -3666,7 +3674,7 @@ on:
                 "desktop-smoke.yml:desktop-smoke".to_owned(),
                 "npm-release.yml:release".to_owned(),
             ],
-            "expected exactly these six jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
+            "expected exactly these seven jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
              pnpm-install lane must both pass the ordering assertion above AND be added to \
              this list on purpose — that is what keeps a new lane from opting out of this \
              guard by simply existing"
@@ -4089,6 +4097,150 @@ on:
         assert!(
             window.get("url").is_none(),
             "app.windows[0] must not pin a url: setup chooses it per environment"
+        );
+    }
+
+    /// The desktop's OTA bundle descriptor.
+    fn ota_bundle_descriptor() -> serde_json::Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("ota-bundle.json");
+        assert!(path.is_file(), "ota-bundle.json should exist at {path:?}");
+        let text = std::fs::read_to_string(&path).expect("just asserted it exists");
+        serde_json::from_str(&text).expect("ota-bundle.json should be valid JSON")
+    }
+
+    /// Every command name in this file's own `generate_handler!` list, sorted.
+    ///
+    /// Read out of the source as text rather than from a macro expansion:
+    /// `generate_handler!` produces a closure, not a list this crate can
+    /// introspect, and the alternative — a hand-kept second copy of the
+    /// names — is the drift this guard exists to prevent.
+    fn ipc_command_surface() -> Vec<String> {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("lib.rs"),
+        )
+        .expect("this crate's own lib.rs should be readable");
+
+        let (_, after) = source
+            .split_once("tauri::generate_handler![")
+            .expect("run() should still register commands with tauri::generate_handler![");
+        let (list, _) = after
+            .split_once(']')
+            .expect("the generate_handler! list should be closed");
+
+        let mut names: Vec<String> = list
+            .lines()
+            .map(|line| line.trim().trim_end_matches(',').trim())
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with("//")
+                    && line.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names.dedup();
+        assert!(
+            names.len() > 10,
+            "expected to parse the real command list, got {names:?}"
+        );
+        names
+    }
+
+    /// A stable fingerprint of the IPC surface.
+    fn ipc_surface_fingerprint() -> String {
+        use sha2::Digest as _;
+        let joined = ipc_command_surface().join("\n");
+        let digest = sha2::Sha256::digest(joined.as_bytes());
+        digest.iter().take(8).fold(String::new(), |mut out, b| {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+    }
+
+    /// ⚠ **This failing does not mean the fingerprint is wrong. It means
+    /// `minShellVersion` has not been reconsidered.**
+    ///
+    /// `minShellVersion` is the only thing standing between an OTA'd bundle
+    /// and a hard break: bundle JS that calls a `#[tauri::command]` the
+    /// installed shell does not have fails with no recovery short of a
+    /// rollback, and the manifest is the only place that can catch it
+    /// (`docs/desktop-ota-spec.md` Stage 2).
+    ///
+    /// Deriving it automatically was considered and declined (RULED
+    /// 2026-09-14): a fingerprint cannot tell an ADDED command
+    /// (backward-compatible — old bundles never call it) from a REMOVED or
+    /// RENAMED one (breaking), so an automatic bump would refuse bundles
+    /// that are perfectly safe. So the value stays a judgement, and this
+    /// guard only ensures the judgement is *made* — the failure is a red
+    /// check on the author's machine rather than a broken app on someone
+    /// else's.
+    ///
+    /// When it fires: decide whether the change removed or altered a command
+    /// an existing bundle could call. If so, raise `minShellVersion` to the
+    /// app version shipping this change. Either way, update
+    /// `commandsFingerprint` in the same commit.
+    #[test]
+    fn min_shell_version_is_reconsidered_when_the_ipc_surface_changes() {
+        let descriptor = ota_bundle_descriptor();
+        let pinned = descriptor["commandsFingerprint"]
+            .as_str()
+            .expect("ota-bundle.json should declare commandsFingerprint");
+        let actual = ipc_surface_fingerprint();
+
+        assert_eq!(
+            pinned,
+            actual,
+            "the IPC surface changed since minShellVersion was last judged against it.\n\
+             Commands now: {:?}\n\
+             DECIDE FIRST, then update the pin: did this remove or rename a command an \
+             already-published bundle could call? If yes, raise minShellVersion in \
+             packages/brink-desktop/ota-bundle.json to the app version shipping this \
+             change. Adding a command is NOT breaking — old bundles never call it. \
+             Then set commandsFingerprint to {actual:?}.",
+            ipc_command_surface()
+        );
+    }
+
+    /// The descriptor's own shape, so a typo there fails here rather than in
+    /// a release job — and so `minShellVersion` cannot quietly exceed the
+    /// app it ships with, which would refuse the bundle on every install
+    /// including the newest.
+    #[test]
+    fn the_ota_descriptor_is_well_formed_and_installable() {
+        let descriptor = ota_bundle_descriptor();
+
+        let bundle_version = descriptor["version"]
+            .as_str()
+            .expect("ota-bundle.json should declare a version");
+        assert!(
+            semver::Version::parse(bundle_version).is_ok(),
+            "bundle version {bundle_version:?} should be semver"
+        );
+
+        let min_shell = descriptor["minShellVersion"]
+            .as_str()
+            .expect("ota-bundle.json should declare minShellVersion");
+        let min_shell =
+            semver::Version::parse(min_shell).expect("minShellVersion should be semver");
+
+        let conf: serde_json::Value =
+            serde_json::from_str(&tauri_conf()).expect("tauri.conf.json should be valid JSON");
+        let app_version = conf["version"]
+            .as_str()
+            .expect("tauri.conf.json should declare a version");
+        let app_version =
+            semver::Version::parse(app_version).expect("the app version should be semver");
+
+        assert!(
+            min_shell <= app_version,
+            "minShellVersion ({min_shell}) exceeds the app version ({app_version}); this \
+             bundle would be refused by every install, including one built from this \
+             very commit"
         );
     }
 
