@@ -6,11 +6,11 @@
 //! our own `pick_project_folder` dialog) plus project-relative paths; this
 //! module rejects anything absolute or `..`-carrying for every project-file
 //! path it resolves (`resolve`, used by `read_file`/`write_file`/
-//! `rename_file`/`delete_file`/`append_backups`/`run_cli`'s input path). The
-//! one deliberate exception is `run_cli`'s trailing `rest` args (e.g.
-//! `export-xliff`'s `--output <path>`), which may still be absolute — that
-//! path comes from a native save dialog, not from a project-relative key,
-//! so it is never run through `resolve` at all (see `prepare_cli_invocation`).
+//! `rename_file`/`delete_file`/`append_backups`). Absolute paths reach the
+//! shell from exactly one place — a native save dialog's chosen output —
+//! and those commands (`save_bytes_dialog`) receive the path from the
+//! dialog itself rather than from webview input, so they never go through
+//! `resolve` at all.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -28,12 +28,6 @@ enum ShellError {
         #[source]
         source: std::io::Error,
     },
-    #[error("no subcommand given")]
-    MissingSubcommand,
-    #[error("subcommand not in the sidecar allowlist: {0}")]
-    DisallowedCommand(String),
-    #[error("brink-cli sidecar error: {0}")]
-    Sidecar(String),
     #[error("cannot create project: {0}")]
     InvalidNewProject(String),
 }
@@ -539,154 +533,6 @@ async fn save_bytes_dialog(
     })?;
     std::fs::write(&path, &bytes).map_err(|e| io_err(&path, e))?;
     Ok(Some(path.display().to_string()))
-}
-
-// ── CLI sidecar (docs/desktop-shell-spec.md D3; #2392) ──────────────
-//
-// `brink-cli` ships as a Tauri sidecar (`bundle.externalBin` in
-// `tauri.conf.json`, staged by `scripts/ensure-cli-sidecar.mjs`) so batch
-// xliff/locale operations run against the exact workspace version the
-// shell was built from, never whatever `brink` happens to be on the
-// user's PATH. `run_cli` is the ONLY way the webview can reach it, and it
-// is deliberately not a passthrough: the first argument must be one of a
-// fixed subcommand allowlist. A webview that can run arbitrary sidecar
-// args is a webview that can run arbitrary code with the app's
-// filesystem reach — this allowlist is the real security boundary
-// (`Shell::sidecar()` never consults the `shell:allow-execute` capability
-// scope at all, so that permission does not belong in `capabilities/
-// default.json` — 2026-08 review finding).
-//
-// The webview never hands this command a raw input path: `rel` is a
-// project-relative key resolved against `root` through the same
-// [`resolve`] guard every other filesystem command in this module uses,
-// exactly like `read_file`/`write_file` above. Only the *trailing* `rest`
-// args may still carry an absolute path — e.g. `export-xliff`'s
-// `--output <path>` — and that is fine, because that path comes from a
-// native save dialog (`src/main.tsx`'s `exportXliff`), never parsed out of
-// arbitrary webview input the way the old `args: Vec<String>` shape let
-// the *input* path be (2026-08 review finding: the old shape gave a
-// compromised webview an arbitrary-file-read/write primitive by passing
-// an absolute path as the positional input argument).
-//
-// ⚠ House rule: the intl pipeline never consumes `.ink.json` — every
-// allowed subcommand here (mirroring `brink-cli`'s own surface) operates
-// on `.ink`/`.brink`/`.inkb`/`.inkt` inputs only.
-//
-// This list is a hand-maintained SUBSET of `brink-cli`'s real `clap`
-// subcommand surface (`crates/brink-cli/src/main.rs`'s `enum Commands`) —
-// `tests::cli_allowlist_subcommands_exist_in_brink_cli_surface` below is the
-// cross-workspace guard that fails if an entry here is renamed or removed
-// on the `brink-cli` side (docs/desktop-shell-spec.md "Workspace
-// placement", #2507).
-const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
-    "export-xliff",
-    "compile-locale",
-    "regenerate-xliff",
-    "compile",
-];
-
-/// One line of sidecar output, forwarded to the webview as it streams
-/// rather than buffered until exit — `compile-locale` on a large story can
-/// run for seconds, and a future fuller intl UI wants live progress.
-#[derive(Clone, serde::Serialize)]
-struct CliOutputLine {
-    /// `"stdout"` or `"stderr"`.
-    stream: &'static str,
-    line: String,
-}
-
-/// The allowlist check, pulled out of [`prepare_cli_invocation`] so it's
-/// testable in isolation: `subcommand` must be one of
-/// [`ALLOWED_CLI_SUBCOMMANDS`], checked before the sidecar is ever spawned.
-fn validate_cli_subcommand(subcommand: &str) -> Result<(), ShellError> {
-    if subcommand.is_empty() {
-        return Err(ShellError::MissingSubcommand);
-    }
-    if !ALLOWED_CLI_SUBCOMMANDS.contains(&subcommand) {
-        return Err(ShellError::DisallowedCommand(subcommand.to_owned()));
-    }
-    Ok(())
-}
-
-/// Build the full sidecar argv for one CLI invocation, pulled out of
-/// [`run_cli`] so it's testable without an `AppHandle`/sidecar (mirrors
-/// `resolve`/`project_ring_key` above): validate `subcommand` against the
-/// allowlist, resolve `rel` against `root` through the same [`resolve`]
-/// guard `read_file`/`write_file` use, and append `rest` verbatim after
-/// the resolved input path. `rest` may still contain an absolute path
-/// (e.g. `export-xliff`'s dialog-chosen `--output <path>`) — see this
-/// section's module doc for why that is the intended remaining shape.
-fn prepare_cli_invocation(
-    root: &str,
-    rel: &str,
-    subcommand: &str,
-    rest: &[String],
-) -> Result<Vec<String>, ShellError> {
-    validate_cli_subcommand(subcommand)?;
-    let input = resolve(root, rel)?;
-    let mut args = vec![subcommand.to_owned(), input.display().to_string()];
-    args.extend(rest.iter().cloned());
-    Ok(args)
-}
-
-/// Run an allowlisted `brink-cli` subcommand as a Tauri sidecar, streaming
-/// its stdout/stderr to the webview as `cli:output` events and resolving
-/// to the process exit code once it terminates. See
-/// [`prepare_cli_invocation`] for the argument-shaping/guard rules;
-/// anything it rejects is returned here before the sidecar is ever
-/// spawned.
-#[tauri::command]
-async fn run_cli(
-    app: tauri::AppHandle,
-    root: String,
-    rel: String,
-    subcommand: String,
-    rest: Vec<String>,
-) -> Result<i32, ShellError> {
-    use tauri::Emitter;
-    use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
-
-    let args = prepare_cli_invocation(&root, &rel, &subcommand, &rest)?;
-
-    let sidecar = app
-        .shell()
-        .sidecar("brink-cli")
-        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
-    let (mut rx, _child) = sidecar
-        .args(&args)
-        .spawn()
-        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
-
-    let mut exit_code: i32 = -1;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                let _ = app.emit(
-                    "cli:output",
-                    CliOutputLine {
-                        stream: "stdout",
-                        line: String::from_utf8_lossy(&bytes).into_owned(),
-                    },
-                );
-            }
-            CommandEvent::Stderr(bytes) => {
-                let _ = app.emit(
-                    "cli:output",
-                    CliOutputLine {
-                        stream: "stderr",
-                        line: String::from_utf8_lossy(&bytes).into_owned(),
-                    },
-                );
-            }
-            CommandEvent::Terminated(payload) => {
-                exit_code = payload.code.unwrap_or(-1);
-            }
-            CommandEvent::Error(message) => return Err(ShellError::Sidecar(message)),
-            _ => {}
-        }
-    }
-    Ok(exit_code)
 }
 
 // ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
@@ -1570,9 +1416,10 @@ fn build_menu(
         true,
         None::<&str>,
     )?;
-    // Proves the sidecar path end-to-end (D3, #2392); the fuller intl UI
-    // (locale picker, progress, batch ops beyond xliff export) is future
-    // work — this item exists to exercise one real path, not to be it.
+    // D3, #2392. The compile-then-render road runs entirely in the wasm
+    // (`docs/desktop-ota-spec.md` Stage 1); the fuller intl UI (locale
+    // picker, progress, batch ops beyond xliff export) is future work —
+    // this item exists to exercise one real path, not to be it.
     let export_xliff =
         MenuItem::with_id(handle, "export-xliff", "Export XLIFF…", true, None::<&str>)?;
     let recent_items: Vec<MenuItem<tauri::Wry>> = if recents.is_empty() {
@@ -1705,7 +1552,6 @@ pub fn run() -> tauri::Result<()> {
         // awaits the canonical save (quit.ts) before calling it.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_shell::init())
         // Help's two outbound links. Rust-side `open_url` only — the frontend
         // never calls the plugin, so its JS permissions stay unclaimed.
         .plugin(tauri_plugin_opener::init())
@@ -1771,7 +1617,6 @@ pub fn run() -> tauri::Result<()> {
             discover_project_config,
             create_project,
             save_bytes_dialog,
-            run_cli,
             take_pending_opens,
             read_recents,
             push_recent,
@@ -2093,8 +1938,9 @@ mod tests {
     /// deliberate overlap, where a root bump is meant to propagate. (Not
     /// first-party crates: #2451's body names `brink-runtime`/
     /// `brink-format`, but `src-tauri` depends on no workspace crate at
-    /// all — it reaches the compiler only through the `brink-cli` sidecar
-    /// binary. Its lock holds exactly one `brink-*` package, itself.)
+    /// all — the compiler reaches this shell only through the wasm the
+    /// webview loads. Its lock holds exactly one `brink-*` package,
+    /// itself.)
     /// Transitive crates are out of scope because the two graphs
     /// legitimately resolve differently; see the `toml` divergence
     /// recorded on #2451.
@@ -2410,16 +2256,13 @@ mod tests {
     /// compares root's `Cargo.lock`), whose entire purpose is catching
     /// root-policy drift, cannot fail the PR that causes it.
     ///
-    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477):
-    /// `BRINK_SIDECAR_STUB: "1"` is unconditional in this workflow's `env:`
-    /// block, so `ensure-cli-sidecar.mjs` never runs `cargo build -p
-    /// brink-cli --release` in this lane — see `STUB_SIDECAR` in
-    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs`, which stages
-    /// a placeholder without reading any `brink-cli` source. `src-tauri` is
-    /// its own excluded workspace and does not depend on the `brink-cli`
-    /// crate either, so nothing left in this lane can notice a
-    /// `crates/brink-cli/**` change; watching that tree here would only
-    /// trigger the job for a change it can no longer detect.
+    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477).
+    /// It belonged here only while this lane built the crate as a Tauri
+    /// sidecar; that sidecar is gone (`docs/desktop-ota-spec.md` Stage 1),
+    /// and `src-tauri` is its own excluded workspace that never depended on
+    /// the crate, so nothing in this lane reads `brink-cli` source at all.
+    /// Watching that tree here would only trigger the job for a change it
+    /// cannot detect.
     #[test]
     fn desktop_smoke_path_filter_covers_its_shared_inputs() {
         let entries = path_filter(&workflow("desktop-smoke.yml"));
@@ -2453,11 +2296,10 @@ mod tests {
         assert!(
             !entries.iter().any(|entry| entry == "crates/brink-cli/**"),
             "desktop-smoke.yml's pull_request path filter should NOT list \
-             \"crates/brink-cli/**\" (#2477): BRINK_SIDECAR_STUB is unconditional in this \
-             workflow, so nothing left in this lane can notice a brink-cli source change \
-             — re-adding the entry without also restoring something that reads brink-cli \
-             sources would just resurrect the dead-weight trigger this test now guards \
-             against"
+             \"crates/brink-cli/**\" (#2477): the sidecar is gone, so nothing left in \
+             this lane reads brink-cli source — re-adding the entry without also \
+             restoring something that does would just resurrect the dead-weight trigger \
+             this test guards against"
         );
     }
 
@@ -2502,9 +2344,9 @@ mod tests {
     }
 
     /// #2716: `desktop-bundle-smoke.yml`'s `push` trigger had NO `paths:`
-    /// filter at all — every push to `main` re-ran the whole lane (a real
-    /// `cargo build -p brink-cli --release` plus the full `src-tauri`
-    /// Tauri build graph) and re-saved its ~784 MB rust-cache entry
+    /// filter at all — every push to `main` re-ran the whole lane (the full
+    /// `src-tauri` Tauri build graph plus two wasm builds) and re-saved its
+    /// ~784 MB rust-cache entry
     /// (`Cache Size: ~784 MB (822197295 B)`, confirmed against a real run,
     /// job 95324823667), against ci.yml's shared 10 GB repo-wide cache
     /// quota, regardless of whether the push touched anything this lane
@@ -2594,9 +2436,9 @@ on:
             .filter(|id| !id.is_empty())
             .collect();
         let dependants: [(&str, &[&str]); 8] = [
-            ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
-            ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
-            ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
+            ("cargo check (src-tauri)", &["linux_deps"]),
+            ("Clippy (src-tauri)", &["linux_deps"]),
+            ("cargo test (src-tauri)", &["linux_deps"]),
             // The step that makes the comment below's claim ("itself gated
             // on `pnpm_install`") true in the first place — without this
             // entry nothing asserted `check_wasm_pkg`'s own `if:` at all.
@@ -2616,7 +2458,7 @@ on:
                 "Typecheck (tsc --noEmit)",
                 &["wasm_build", "check_wasm_pkg"],
             ),
-            ("pnpm build", &["wasm_build", "check_wasm_pkg", "sidecar"]),
+            ("pnpm build", &["wasm_build", "check_wasm_pkg"]),
             // Format check needs nothing but the runner's toolchain and the
             // checkout: `actions/checkout` has no `id` to gate the other
             // steps on, but Format check's own `working-directory` does not
@@ -2922,177 +2764,13 @@ on:
         );
     }
 
-    /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
-    /// there so `tauri-build`'s externalBin resolution finds a file on
-    /// disk — nothing here executes it ([`run_cli`] is the only caller and
-    /// it needs a running app, not a `cargo test`) — so the lane asks
-    /// `ensure-cli-sidecar.mjs` for a stub and skips the build entirely
-    /// (#2469). PR #2446's `CARGO_PROFILE_RELEASE_*` stopgap was set
-    /// job-wide, so it was also flattening the "Build brink-web wasm
-    /// package" step's `wasm-pack build` (release by default) — not only
-    /// the sidecar build it was written to excuse. Removing it un-flattens
-    /// that wasm build too: the lane now deliberately accepts a
-    /// fully-optimised one, rather than keep the vars as dead configuration
-    /// for a sidecar build that no longer happens. Both halves are asserted
-    /// here so the stub cannot quietly revert to the stopgap, or accumulate
-    /// both. Nothing else in this file would notice the wiring vanishing
-    /// from desktop-smoke.yml; this is that guard, and it is the third of
-    /// the "Three properties of `desktop-smoke.yml` ... asserted by tests"
-    /// that docs/desktop-shell-spec.md's "Smoke-lane inputs and step
-    /// gating" section claims.
-    ///
-    /// Restoring a real (non-stubbed) sidecar build here also means
-    /// re-adding `crates/brink-cli/**` to the `pull_request` path filter —
-    /// `desktop_smoke_path_filter_covers_its_shared_inputs` now asserts
-    /// that entry stays **absent** (#2477), on the premise that this guard
-    /// keeps `BRINK_SIDECAR_STUB` unconditional. Un-stub the sidecar
-    /// without also touching that test and the filter goes back to
-    /// watching a tree the lane silently ignores.
-    #[test]
-    fn desktop_smoke_stubs_the_staged_sidecar() {
-        let workflow = workflow("desktop-smoke.yml");
-        let sets_key = |key: &str| {
-            let needle = format!("{key}:");
-            workflow
-                .lines()
-                .any(|line| line.trim_start().starts_with(needle.as_str()))
-        };
-
-        assert!(
-            // Pinned to the exact value, not merely "the key is set": only
-            // the literal string "1" makes `ensureCliSidecar`'s `stub`
-            // default opt in (scripts/ensure-cli-sidecar.mjs), so e.g.
-            // `BRINK_SIDECAR_STUB: "0"` would satisfy a presence-only check
-            // while silently restoring the full release build this guard
-            // exists to keep out.
-            workflow
-                .lines()
-                .any(|line| line.trim() == "BRINK_SIDECAR_STUB: \"1\""),
-            "desktop-smoke.yml's env: block should set BRINK_SIDECAR_STUB: \"1\" (the \
-             exact string ensureCliSidecar's `stub` option opts in on) so \
-             ensure-cli-sidecar.mjs stages a placeholder instead of building a \
-             brink-cli release binary this check-only lane never runs; an env var \
-             rather than a step flag because `pnpm build` re-runs that script — if you \
-             are restoring a real sidecar build, also re-add \"crates/brink-cli/**\" to \
-             desktop-smoke.yml's pull_request path filter, which \
-             desktop_smoke_path_filter_covers_its_shared_inputs (#2477) currently \
-             forbids"
-        );
-        for key in [
-            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
-            "CARGO_PROFILE_RELEASE_DEBUG",
-            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
-        ] {
-            assert!(
-                !sets_key(key),
-                "desktop-smoke.yml still sets {key}: PR #2446's stopgap targeted the \
-                 sidecar build, which BRINK_SIDECAR_STUB now removes, but the var was \
-                 job-wide and was also flattening the wasm-pack release build this lane \
-                 still runs — keeping it would silently leave that build de-optimised, \
-                 not just the (already-gone) sidecar one"
-            );
-        }
-    }
-
-    /// This crate's own `build.rs`.
-    fn build_script() -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs");
-        assert!(path.is_file(), "build.rs should exist at {path:?}");
-        std::fs::read_to_string(&path).expect("just asserted the build script exists")
-    }
-
-    /// CLAUDE.md names `cd packages/brink-desktop/src-tauri && cargo test`
-    /// as this crate's gate, and until #2617 that command was false on
-    /// every fresh checkout and every fresh git worktree: `tauri-build`
-    /// resolves `bundle.externalBin` unconditionally, `binaries/` is
-    /// gitignored (the triple suffix is host-specific), and nothing on the
-    /// local path staged it — so the build script died with `resource path
-    /// "binaries/brink-cli-x86_64-unknown-linux-gnu" doesn't exist` before
-    /// a single test ran.
-    ///
-    /// `build.rs` now stages a stub for DEBUG builds by running the very
-    /// script `desktop-smoke.yml`'s "Stage brink-cli sidecar" step runs,
-    /// under the very variable that lane sets (asserted by
-    /// [`desktop_smoke_stubs_the_staged_sidecar`] above). That reuse is the
-    /// point of this guard: the stub payload, the host-triple detection and
-    /// the staged filename must keep living in
-    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs` alone. A
-    /// second copy of any of them in Rust is drift waiting to happen —
-    /// #2481's Windows `.exe` refusal, for one, exists in exactly one place
-    /// today.
-    ///
-    /// The `PROFILE`/`debug` gate is the other half. `cargo tauri build`
-    /// (release) must keep failing loudly on a missing sidecar: a real
-    /// bundle ships the real `brink-cli`, and silently substituting a
-    /// loudly-failing placeholder there would turn a build-time error into
-    /// a shipped one.
-    #[test]
-    fn build_script_stages_the_dev_sidecar_the_way_ci_does() {
-        let build_rs = build_script();
-
-        assert!(
-            build_rs.contains("scripts/ensure-cli-sidecar.mjs"),
-            "build.rs should stage the missing sidecar by invoking \
-             packages/brink-desktop/scripts/ensure-cli-sidecar.mjs — the same script \
-             desktop-smoke.yml's \"Stage brink-cli sidecar\" step runs — so CLAUDE.md's \
-             documented `cd packages/brink-desktop/src-tauri && cargo test` works on a \
-             fresh tree (#2617)"
-        );
-        // The assertion above is a string-literal grep, so it stays green even if the
-        // script it names is moved or renamed — exactly the drift that would silently
-        // re-break the gate this test exists to protect. Assert the path actually
-        // resolves on disk, so a rename fails this test instead of only the vitest-side
-        // guard (`src/__tests__/scripts-main-guard.test.ts`), which does not cover this
-        // crate's build script at all.
-        assert!(
-            repo_root()
-                .join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs")
-                .is_file(),
-            "packages/brink-desktop/scripts/ensure-cli-sidecar.mjs should exist — build.rs \
-             hard-codes this path as a literal string, so a rename or move must be caught here"
-        );
-        assert!(
-            build_rs.contains("BRINK_SIDECAR_STUB"),
-            "build.rs should ask ensure-cli-sidecar.mjs for a STUB via BRINK_SIDECAR_STUB, \
-             exactly as desktop-smoke.yml's env: block does (#2469) — a `cargo build -p \
-             brink-cli --release` out of the root workspace is not something a `cargo test` \
-             in this crate should trigger, and nothing here ever executes the sidecar"
-        );
-        assert!(
-            !build_rs.contains("#!/bin/sh"),
-            "build.rs should not carry its own copy of the stub payload — STUB_SIDECAR, the \
-             host-triple detection and the staged filename (including #2481's Windows `.exe` \
-             refusal) belong to ensure-cli-sidecar.mjs alone; a second mechanism is what this \
-             guard exists to keep out"
-        );
-        assert!(
-            build_rs.contains("PROFILE") && build_rs.contains("\"debug\""),
-            "build.rs's auto-staging should be gated on PROFILE == \"debug\": `cargo tauri \
-             build` (release) must keep failing loudly on a missing sidecar rather than \
-             bundling a placeholder that exits 127 in a shipped app"
-        );
-        // #2715 review: this function probes per-arch `brink-cli-<TARGET>`
-        // (`host_matches_target` above), but ensure-cli-sidecar.mjs's
-        // main-guard stages under `universal-apple-darwin` whenever
-        // `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin` is in its env. An
-        // ambient inherited value from an enclosing `tauri build --target
-        // universal-apple-darwin` would make the child stage the wrong
-        // triple for no benefit — the HOST == TARGET guard exists to
-        // prevent exactly this. Must scrub it before spawning the child.
-        assert!(
-            build_rs.contains("env_remove(\"TAURI_ENV_TARGET_TRIPLE\")"),
-            "build.rs should env_remove(\"TAURI_ENV_TARGET_TRIPLE\") before spawning \
-             ensure-cli-sidecar.mjs — an inherited universal-apple-darwin value would stage \
-             the wrong-triple sidecar while this function keeps probing brink-cli-<TARGET> \
-             (#2715 review)"
-        );
-    }
-
     /// The doc half of #2617. CLAUDE.md's "Key commands" block is where
     /// every contributor and agent learns how to run this crate's gate, and
-    /// the whole point of the build-script staging above is that the
-    /// command printed there is TRUE as written — no unstated prerequisite
-    /// step, nothing to hand-stub first.
+    /// the point is that the command printed there is TRUE as written — no
+    /// unstated prerequisite step, nothing to hand-stub first. #2617 got it
+    /// there by staging a stub sidecar from `build.rs`; Stage 1 of
+    /// `docs/desktop-ota-spec.md` got it there for good, by removing the
+    /// `bundle.externalBin` entry that created the prerequisite.
     ///
     /// Asserted from this side of the fence deliberately: CLAUDE.md is not
     /// in any cargo workspace and nothing else in the repo checks that its
@@ -3110,9 +2788,10 @@ on:
             "CLAUDE.md's \"Key commands\" should still document `cd \
              packages/brink-desktop/src-tauri && cargo test` verbatim as the desktop gate. \
              If that command has grown a prerequisite again, the fix is to make the \
-             prerequisite unnecessary (build.rs stages the stub sidecar, #2617), not to \
-             document a caveat — a doc describing a working command is worth more than one \
-             describing a workaround"
+             prerequisite unnecessary (#2617 did it for the sidecar by staging a stub \
+             from build.rs; Stage 1 of docs/desktop-ota-spec.md removed the sidecar and \
+             the stub with it), not to document a caveat — a doc describing a working \
+             command is worth more than one describing a workaround"
         );
     }
 
@@ -3222,149 +2901,6 @@ on:
                  plaintext is one an attacker can swap before signature checking helps"
             );
         }
-    }
-
-    /// #2631: PR #2626's "a real bundle must ship the real `brink-cli`"
-    /// invariant held for `cargo tauri build --debug` only through step
-    /// ordering — `beforeBuildCommand` -> `pnpm build` happens to stage the
-    /// real binary before `build.rs` ever runs, plus `bundle.active: false`
-    /// making the whole question moot in practice. Nothing asserted it.
-    ///
-    /// `tauri.conf.json`'s `beforeBundleCommand` is the fix: tauri-cli runs
-    /// it immediately before the bundling phase of `tauri build` — after the
-    /// crate has compiled (so `build.rs` already ran) and right before
-    /// tauri-bundler reads `binaries/brink-cli-<triple>` off disk to package
-    /// it. `scripts/assert-real-sidecar.mjs` throws if that file's content
-    /// is `STUB_SIDECAR` rather than a real binary.
-    ///
-    /// Deliberately inert by default, not a gap: `bundle.active` below must
-    /// stay `false` (D3 scope, not this issue's — see
-    /// `docs/desktop-shell-spec.md`). That is not the only thing standing
-    /// between this hook and firing, though — tauri-cli's bundling phase
-    /// also runs on an explicit `tauri build --bundles <target>` even with
-    /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
-    /// only door, just the one this crate's own config controls. No CI lane
-    /// and no documented developer command invokes `tauri build` today — but
-    /// an ad-hoc `--bundles` invocation does reach the hook, as #2687's
-    /// observation (docs/desktop-shell-spec.md "Bundle-time sidecar
-    /// assertion (#2631)") demonstrated. This test below pins only that
-    /// `bundle.active` stays `false`; it does not and cannot pin the absence
-    /// of a CI lane or developer command that calls `tauri build`.
-    #[test]
-    fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
-        let conf = tauri_conf();
-
-        assert!(
-            conf.contains("\"beforeBundleCommand\""),
-            "tauri.conf.json's `build` block should set `beforeBundleCommand` so tauri-cli \
-             runs a real-sidecar check right before the bundling phase of `tauri build` \
-             (#2631) — PR #2626's \"a real bundle must ship the real brink-cli\" invariant \
-             held for `--debug` bundles only via step ordering until this hook existed"
-        );
-        assert!(
-            conf.contains("scripts/assert-real-sidecar.mjs"),
-            "beforeBundleCommand should invoke packages/brink-desktop/scripts/assert-real-sidecar.mjs"
-        );
-        assert!(
-            repo_root()
-                .join("packages/brink-desktop/scripts/assert-real-sidecar.mjs")
-                .is_file(),
-            "packages/brink-desktop/scripts/assert-real-sidecar.mjs should exist — \
-             tauri.conf.json hard-codes this path as a literal string, so a rename or move \
-             must be caught here"
-        );
-
-        // #2626's review established that the stub payload, host-triple
-        // detection and staged filename live in ensure-cli-sidecar.mjs
-        // ALONE (`build_script_stages_the_dev_sidecar_the_way_ci_does`
-        // above guards build.rs the same way) — the new script must import
-        // `STUB_SIDECAR` from there rather than carry its own copy.
-        let assert_script = std::fs::read_to_string(
-            repo_root().join("packages/brink-desktop/scripts/assert-real-sidecar.mjs"),
-        )
-        .expect("just asserted assert-real-sidecar.mjs exists");
-        assert!(
-            assert_script.contains("STUB_SIDECAR")
-                && assert_script.contains("ensure-cli-sidecar.mjs"),
-            "assert-real-sidecar.mjs should import STUB_SIDECAR from ensure-cli-sidecar.mjs \
-             rather than redefine what the stub looks like"
-        );
-        assert!(
-            !assert_script.contains("#!/bin/sh"),
-            "assert-real-sidecar.mjs should not carry its own copy of the stub payload — \
-             detect it via the STUB_SIDECAR import instead, exactly as this guard requires \
-             of build.rs"
-        );
-
-        // #2687: comparing against STUB_SIDECAR alone is a BLOCKLIST — it
-        // refuses the one placeholder that exists today and passes an
-        // empty, truncated or wrong-architecture file, because
-        // `tauri_build`'s externalBin resolution only tests that the path
-        // exists. The hook must also POSITIVELY identify the staged file as
-        // a native executable for the target.
-        assert!(
-            assert_script.contains("looksLikeNativeExecutable"),
-            "assert-real-sidecar.mjs should positively identify the staged sidecar as a \
-             native executable (ELF/Mach-O/PE magic), not merely differ from STUB_SIDECAR \
-             (#2687) — a blocklist fails open on every placeholder that is not \
-             byte-identical to the one we happen to have"
-        );
-        assert!(
-            assert_script.contains("executableFormatFor"),
-            "assert-real-sidecar.mjs should ask ensure-cli-sidecar.mjs's \
-             `executableFormatFor` which executable format the target triple expects, \
-             rather than deciding that for itself (#2626's single-mechanism rule, #2687)"
-        );
-        assert!(
-            !assert_script.contains("includes(\"windows\")"),
-            "assert-real-sidecar.mjs should not re-derive platform facts from the triple \
-             string — `ensure-cli-sidecar.mjs` owns triple detection and the `.exe`/PE rule \
-             (#2481, #2626); import `executableFormatFor` instead of testing the triple here"
-        );
-        let ensure_script = std::fs::read_to_string(
-            repo_root().join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"),
-        )
-        .expect("ensure-cli-sidecar.mjs should exist");
-        assert!(
-            ensure_script.contains("export function executableFormatFor"),
-            "`executableFormatFor` should be defined in ensure-cli-sidecar.mjs — the one \
-             module #2626's review allows to hold triple-derived knowledge about the \
-             staged sidecar (#2687)"
-        );
-
-        // #2699: the magic check above proves the staged file's FORMAT, not
-        // that it IS brink-cli or that it runs — PR #2691's own passing
-        // observation stood in GNU coreutils' `true` for a real brink-cli,
-        // and that would satisfy the magic check exactly as a genuine
-        // wrong-build binary would. A `--version` smoke check closes that
-        // gap for the one case it is safe to attempt: the staged triple
-        // matching the triple actually running the check.
-        assert!(
-            assert_script.contains("--version"),
-            "assert-real-sidecar.mjs should run a `--version` smoke check against the \
-             staged sidecar, in addition to the magic-bytes check (#2699) — the magic check \
-             alone proves the file's FORMAT, not that it is brink-cli or that it runs"
-        );
-        assert!(
-            assert_script.contains("looksLikeBrinkCliVersionOutput"),
-            "assert-real-sidecar.mjs's --version smoke check should verify the PRINTED \
-             OUTPUT identifies as brink-cli, not just the exit code (#2699) — GNU coreutils' \
-             `true` (PR #2691's own stand-in for brink-cli) also exits 0 on `--version`, so \
-             an exit-code-only check would catch nothing new"
-        );
-
-        // `bundle.active` turning this on is explicitly D3 scope (#2631's
-        // own instruction), not this fix's — this assertion exists to keep
-        // the two from getting conflated by a later, unrelated edit to this
-        // file landing bundle.active: true without anyone noticing it also
-        // silently made this hook load-bearing.
-        assert!(
-            conf.contains("\"active\": false"),
-            "tauri.conf.json's bundle.active should still read false — turning bundling on \
-             is D3 scope (docs/desktop-shell-spec.md), not #2631's; if this now legitimately \
-             reads true, this assertion's job is done and it should be removed here rather \
-             than edited to match"
-        );
     }
 
     /// Every `.github/workflows/*.yml`/`*.yaml` file, sorted by name so the
@@ -3886,8 +3422,8 @@ on:
     /// completed run (run 32002443794) — about 4x headroom under its own cap,
     /// consistent with the issue's "≥3.7x headroom" claim. The highest
     /// `timeout-minutes` actually set anywhere in the tree today is 60
-    /// (`desktop-bundle-smoke.yml`, a real `cargo build -p brink-cli
-    /// --release` + Tauri bundle) — and that job's last five completed runs
+    /// (`desktop-bundle-smoke.yml`, a real Tauri bundle build) — and that
+    /// job's last five completed runs
     /// took 5.8/6.1/9.8/7.0/8.2 minutes, i.e. ≥6x headroom under its own cap.
     /// 120 sits at 2x the highest cap this repo has ever needed, leaving room
     /// for a future legitimately-long lane without moving the ceiling, while
@@ -4110,201 +3646,6 @@ on:
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
-    }
-
-    fn rest(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| (*s).to_owned()).collect()
-    }
-
-    #[test]
-    fn cli_allowlist_accepts_every_documented_subcommand() {
-        for sub in [
-            "export-xliff",
-            "compile-locale",
-            "regenerate-xliff",
-            "compile",
-        ] {
-            assert!(
-                prepare_cli_invocation("/tmp/proj", "story.brink", sub, &[]).is_ok(),
-                "expected {sub} to be allowed"
-            );
-        }
-    }
-
-    #[test]
-    fn cli_allowlist_rejects_arbitrary_passthrough() {
-        // The whole point of the allowlist: a subcommand `brink-cli` really
-        // has (`play`) but that isn't fenced for the sidecar, and an
-        // arbitrary non-brink-cli binary name/shell metacharacter, must
-        // both be rejected before the sidecar is ever spawned.
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "play", &[]),
-            Err(ShellError::DisallowedCommand(_))
-        ));
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "--", &[]),
-            Err(ShellError::DisallowedCommand(_))
-        ));
-    }
-
-    #[test]
-    fn cli_allowlist_rejects_empty_args() {
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "", &[]),
-            Err(ShellError::MissingSubcommand)
-        ));
-    }
-
-    /// Regression test for the 2026-08 review finding: the old `run_cli`
-    /// shape took a flat `Vec<String>` and forwarded it untouched, so a
-    /// compromised webview could pass an absolute (or `..`-carrying) input
-    /// path straight through to the sidecar — an arbitrary-file read/write
-    /// primitive. `prepare_cli_invocation` must run the input through the
-    /// same [`resolve`] guard every other filesystem command uses, exactly
-    /// like this test asserts. Reverting to the old passthrough shape (skip
-    /// `resolve` and just `args.extend([rel, ...rest])`) makes this fail.
-    #[test]
-    fn cli_invocation_rejects_path_escape_in_input() {
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "../../etc/passwd", "export-xliff", &[]),
-            Err(ShellError::PathEscape(_))
-        ));
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "/etc/passwd", "export-xliff", &[]),
-            Err(ShellError::PathEscape(_))
-        ));
-    }
-
-    /// The resolved input lands right after the subcommand, and trailing
-    /// `rest` args (the dialog-chosen, possibly-absolute `--output <path>`)
-    /// are forwarded verbatim after it.
-    #[test]
-    fn cli_invocation_resolves_input_and_keeps_rest_verbatim() {
-        let args = prepare_cli_invocation(
-            "/tmp/proj",
-            "story.brink",
-            "export-xliff",
-            &rest(&["--output", "/abs/out.xlf"]),
-        )
-        .expect("valid invocation should build");
-        assert_eq!(
-            args,
-            vec![
-                "export-xliff".to_owned(),
-                "/tmp/proj/story.brink".to_owned(),
-                "--output".to_owned(),
-                "/abs/out.xlf".to_owned(),
-            ]
-        );
-    }
-
-    /// `crates/brink-cli/src/main.rs`'s `enum Commands` body, as plain text.
-    /// Read across the workspace fence the same way
-    /// `lint_policy_matches_the_root_workspace`/
-    /// `dependency_versions_track_the_root_workspace` above do — `src-tauri`
-    /// cannot take a dev-dependency on `brink-cli` to introspect its `clap`
-    /// surface without pulling the excluded crate back across the fence it
-    /// was deliberately pushed out of (`docs/desktop-shell-spec.md`
-    /// "Workspace placement"; #2402/#2346 rule out growing a required
-    /// lane's Tauri build) — so this reads the source file as text instead.
-    fn brink_cli_commands_enum_body() -> String {
-        let main_rs = repo_root().join("crates/brink-cli/src/main.rs");
-        assert!(
-            main_rs.is_file(),
-            "crates/brink-cli/src/main.rs should exist at {main_rs:?}"
-        );
-        let source = std::fs::read_to_string(&main_rs)
-            .expect("just asserted crates/brink-cli/src/main.rs exists");
-        source
-            .split_once("enum Commands {")
-            .map(|(_, body)| body.to_owned())
-            .expect("crates/brink-cli/src/main.rs should still declare `enum Commands { ... }`")
-    }
-
-    /// clap derive's default `#[derive(Subcommand)]` rename rule:
-    /// `PascalCase` variant name -> kebab-case subcommand. `enum Commands` in
-    /// `crates/brink-cli/src/main.rs` carries no `#[command(name = ...)]` or
-    /// `rename_all` override on any variant (checked by the caller below),
-    /// so this default is the real rule in effect.
-    fn to_kebab_case(pascal: &str) -> String {
-        let mut out = String::with_capacity(pascal.len() + 4);
-        for (i, c) in pascal.chars().enumerate() {
-            if c.is_ascii_uppercase() {
-                if i > 0 {
-                    out.push('-');
-                }
-                out.push(c.to_ascii_lowercase());
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
-
-    /// Every top-level `Commands` variant name, converted to the kebab-case
-    /// subcommand string `brink-cli`'s real `clap` surface accepts.
-    /// Top-level variants sit at exactly 4-space indentation inside the
-    /// enum body; struct-variant fields sit at 8, and the `Ide` variant's
-    /// `#[command(long_about = "...")]` string continuations sit at column
-    /// 0 — neither is mistaken for a variant name here.
-    fn brink_cli_subcommand_surface() -> Vec<String> {
-        let source = brink_cli_commands_enum_body();
-        assert!(
-            !source.contains("rename_all") && !source.contains("#[command(name"),
-            "enum Commands now overrides clap's default kebab-case renaming; \
-             brink_cli_subcommand_surface's parsing no longer matches the real rule"
-        );
-        let names: Vec<String> = source
-            .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("    ")?;
-                if rest.starts_with(|c: char| c.is_whitespace()) {
-                    return None; // nested field/attribute, indented further
-                }
-                let name: String = rest
-                    .chars()
-                    .take_while(char::is_ascii_alphanumeric)
-                    .collect();
-                let after = rest[name.len()..].trim_start();
-                let is_variant_head = name.starts_with(|c: char| c.is_ascii_uppercase())
-                    && (after.starts_with('{') || after.starts_with(','));
-                is_variant_head.then(|| to_kebab_case(&name))
-            })
-            .collect();
-        assert!(
-            !names.is_empty(),
-            "should have parsed at least one Commands variant out of \
-             crates/brink-cli/src/main.rs's `enum Commands` body"
-        );
-        names
-    }
-
-    /// Fourth cost of the workspace fence (`docs/desktop-shell-spec.md`
-    /// "Workspace placement", #2507): `ALLOWED_CLI_SUBCOMMANDS` hand-mirrors
-    /// a subset of `brink-cli`'s real subcommand surface, and nothing tied
-    /// the two together until this test — a subcommand rename or removal in
-    /// `crates/brink-cli/src/main.rs` was invisible here until `run_cli`
-    /// broke at runtime (issue #2507, follow-up from PR #2502's review).
-    ///
-    /// Deliberately a subset check, not an equality one: `brink-cli` has
-    /// subcommands the sidecar never exposes (`play`, `fmt`, `convert`,
-    /// `migrate-xliff`, `replay`, `ide` — see
-    /// `cli_allowlist_rejects_arbitrary_passthrough` above), and `brink-cli`
-    /// growing one of those is not drift this guard should fail on. A
-    /// rename or removal of a subcommand `ALLOWED_CLI_SUBCOMMANDS` actually
-    /// depends on is.
-    #[test]
-    fn cli_allowlist_subcommands_exist_in_brink_cli_surface() {
-        let real = brink_cli_subcommand_surface();
-        for sub in ALLOWED_CLI_SUBCOMMANDS {
-            assert!(
-                real.iter().any(|r| r == sub),
-                "ALLOWED_CLI_SUBCOMMANDS contains {sub:?}, which crates/brink-cli/src/main.rs's \
-                 `enum Commands` no longer declares (real surface: {real:?}) — a rename or \
-                 removal on the brink-cli side has to be reflected in run_cli's allowlist here \
-                 too (docs/desktop-shell-spec.md \"Workspace placement\", #2507)"
-            );
-        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]

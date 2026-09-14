@@ -25,7 +25,7 @@ Corpus/case counts drift as cases are added — run `corpus_report` rather than 
 
 Runtime restructuring is **complete** (all 9 steps of `docs/runtime-restructuring-spec.md`). Active tracks:
 
-- **Native surface + authoring** — conventions/prose-dialect semantics, editor features, desktop stages (D3: export, `brink-cli` sidecar, file associations).
+- **Native surface + authoring** — conventions/prose-dialect semantics, editor features, desktop stages (D3: export, xliff, file associations; D4: distribution + the web-bundle OTA channel, `docs/desktop-ota-spec.md`).
 - **`bevy-brink` integration** — the runtime as a Bevy plugin plus the external-function binding facility (ink↔engine). See `docs/bevy-brink.md`.
 - **Ink surface conformance** — the ratchet holds as a floor, and open divergences are worked as defects. The `brink-gen` program generator plus the inkjs differential (`docs/program-generator-spec.md`) is the instrument that finds them; `tests/tier4-generated/` is where each one is pinned.
 
@@ -186,7 +186,7 @@ Pick the gate from the files you actually touched, not from the directory's name
 
 The `cargo fmt` half of the `src-tauri` row cost its own CI failure (#2724), *after* this table was first written: a gate ending `cd packages/brink-desktop/src-tauri && cargo test && cd ../../.. && cargo fmt --all -- --check` reported green while `desktop-smoke.yml`'s "Format check (src-tauri)" step went red. The `cargo test` half of the exclusion had been applied; the `cargo fmt --all` half had not. **Workspace exclusion applies to every `--all`-style cargo command, not just the one you got burned by.**
 
-The `packages/*/scripts/` row is here because it cost a CI failure (#2702): a change to `ensure-cli-sidecar.mjs`/`ensure-wasm.mjs` ran a gate of `test:scripts` + `src-tauri cargo test` — neither of which executes those files' tests — and a dead-code predicate (`error.killed`, which `execSync` never sets on a timeout) reached CI. **A gate scoped narrower than the diff is not a green gate.** After writing a gate, list the files the diff touches and confirm each one has a row above.
+The `packages/*/scripts/` row is here because it cost a CI failure (#2702): a change to `ensure-wasm.mjs` (and the since-deleted `ensure-cli-sidecar.mjs`) ran a gate of `test:scripts` + `src-tauri cargo test` — neither of which executes those files' tests — and a dead-code predicate (`error.killed`, which `execSync` never sets on a timeout) reached CI. **A gate scoped narrower than the diff is not a green gate.** After writing a gate, list the files the diff touches and confirm each one has a row above.
 
 ## Key commands
 
@@ -234,10 +234,9 @@ wasm-pack build crates/brink-web --target web --out-dir www/pkg   # rebuild wasm
 
 # Desktop (packages/brink-desktop — src-tauri is workspace-EXCLUDED, run its gates directly)
 pnpm --filter @brink/desktop dev                # preflights wasm freshness, then vite
-# Runs on a fresh checkout/worktree: `binaries/brink-cli-<triple>` is gitignored, so
-# src-tauri's build.rs stages a STUB sidecar for debug builds (#2617) via the same
-# `scripts/ensure-cli-sidecar.mjs` + BRINK_SIDECAR_STUB that desktop-smoke.yml uses.
-# Nothing here executes it; `pnpm --filter @brink/desktop build` stages the real binary.
+# Runs on a fresh checkout/worktree with no staging step: the `brink-cli` sidecar
+# (and the `bundle.externalBin` entry whose unconditional resolution used to fail
+# `cargo test` there, #2617) is deleted — docs/desktop-ota-spec.md Stage 1.
 cd packages/brink-desktop/src-tauri && cargo test
 ```
 

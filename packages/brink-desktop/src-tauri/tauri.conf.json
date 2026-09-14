@@ -7,7 +7,6 @@
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "pnpm build",
-    "beforeBundleCommand": "node scripts/assert-real-sidecar.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -32,9 +31,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "externalBin": [
-      "binaries/brink-cli"
     ],
     "fileAssociations": [
       {

@@ -42,7 +42,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { systemFonts } from "./system-fonts.js";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save } from "@tauri-apps/plugin-dialog";
 import {
   mountStudio,
   type Command,
@@ -74,9 +73,9 @@ import {
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
-import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
+import { exportXliff as toXliff } from "@brink-lang/web";
 import { resolveFileOpenAction } from "./file-open.js";
 import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
 import {
@@ -620,26 +619,31 @@ export async function closeProject(): Promise<void> {
 }
 
 /**
- * File > Export XLIFF… (D3, #2392) — proves the `brink-cli` sidecar path
- * end to end. The export logic itself lives in `export-xliff.ts` (2026-08
- * review finding: logic living directly in `main.tsx` cannot be unit-tested
- * — `quit.ts` + `QuitSaveApi` exist for exactly this reason); this wrapper's
- * only job is gathering the currently-open project (root + EFFECTIVE entry,
- * `currentEntryFile`, never the host fallback) and the studio's notify sink,
- * then handing them to the extracted, unit-tested function.
+ * File > Export XLIFF… (D3, #2392). The export logic itself lives in
+ * `export-xliff.ts` (2026-08 review finding: logic living directly in
+ * `main.tsx` cannot be unit-tested — `quit.ts` + `QuitSaveApi` exist for
+ * exactly this reason); this wrapper's only job is gathering the
+ * currently-open project (the EFFECTIVE entry, `currentEntryFile`, never
+ * the host fallback) and the live surfaces, then handing them to the
+ * extracted, unit-tested function.
+ *
+ * `toXliff` is the wasm binding, not the `brink-cli` sidecar this flow used
+ * to spawn — see `export-xliff.ts` and `docs/desktop-ota-spec.md` Stage 1.
+ * `saveBytesDialog` is the same dialog-and-write round trip Export Story
+ * (.inkb) uses, so the two exports write files the same way.
  */
 async function handleExportXliff(): Promise<void> {
   const api = current?.api;
-  if (currentRoot === null || currentEntryFile === null || api === undefined) {
+  if (currentEntryFile === null || api === undefined) {
     console.warn("[brink-desktop] Export XLIFF: no project open");
     return;
   }
   const exportApi: ExportXliffApi = {
-    runCli: (invocation) => runCli(invocation),
-    save,
-    notify: (entry) => api.notify(entry),
+    studio: api,
+    toXliff,
+    saveBytes: saveBytesDialog,
   };
-  await exportXliff({ root: currentRoot, entryFile: currentEntryFile }, exportApi);
+  await exportXliff({ entryFile: currentEntryFile }, exportApi);
 }
 
 /**

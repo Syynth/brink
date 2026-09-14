@@ -15,7 +15,8 @@
 // script's.
 //
 // The logic is EXPORTED and the standalone run sits behind a main-guard at
-// the bottom (#2468), matching `ensure-cli-sidecar.mjs` (#2452): the two
+// the bottom (#2468), matching the since-deleted `ensure-cli-sidecar.mjs`
+// (#2452): the two
 // scripts are the `dev` preflight pair (`dev` runs this one immediately
 // before that one), and #2452 named only the sibling. Until #2468 this
 // module ran its whole job — including a real `wasm-pack build`, and a
@@ -72,8 +73,8 @@ const defaultRepoRoot = resolve(here, "../../..");
  * `wasm-pack build` of the whole compiler graph plus `wasm-opt` is the slow
  * case, not an incremental rebuild on a warm toolchain cache. 20 minutes is
  * an estimate — no measured cold-build number was available at review time
- * (#2702) — sized to at least match `ensure-cli-sidecar.mjs`'s real
- * `cargo build --release` of a comparable dependency graph; raise
+ * (#2702) — sized to at least match a real `cargo build --release` of a
+ * comparable dependency graph; raise
  * BRINK_ENSURE_WASM_TIMEOUT_MS if it proves short on a real fresh clone.
  */
 export const DEFAULT_EXEC_TIMEOUT_MS = Number(process.env.BRINK_ENSURE_WASM_TIMEOUT_MS) || 20 * 60 * 1000;
@@ -177,7 +178,7 @@ export function ensureWasm({
 }
 
 // Main-guard: `node scripts/ensure-wasm.mjs` (what the `dev` package script
-// runs, immediately before `ensure-cli-sidecar.mjs`) still does the whole
+// runs) still does the whole
 // job, while `import`ing this module does nothing but hand over the
 // functions. The already-fresh case used to `process.exit(0)` here; falling
 // off the end of the guard exits 0 the same way, and a rebuild failure

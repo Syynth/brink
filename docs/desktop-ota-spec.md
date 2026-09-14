@@ -1,6 +1,7 @@
 # Desktop OTA web-bundle updates
 
-**Status:** designed, not implemented. Rulings 2026-09-14 (`docs/decision-log.md`).
+**Status:** Stage 1 LANDED; Stage 2 designed, not implemented. Rulings
+2026-09-14 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
 matrix, import the Apple certificate, codesign, notarize, staple, upload —
@@ -37,7 +38,7 @@ excluding merges:
 
 94% of code-touching commits would stop needing the signing pipeline.
 
-## Stage 1 — delete the sidecar (prerequisite, not an optimisation)
+## Stage 1 — delete the sidecar (prerequisite, not an optimisation) — DONE
 
 **The coupling that makes naive OTA unsafe.** `brink-format`'s container check
 is exact-match, not a range (`crates/internal/brink-format/src/inkb/read.rs`):
@@ -77,8 +78,31 @@ dependencies:
 - `compile_locale(base: &[u8], xliff: &str, locale) -> Vec<u8>`
 - `regenerate_xliff(base: &[u8], existing: &str, src_lang) -> String`
 
-The IO moves to the TS side, through the save dialog `export-xliff.ts`
-already uses for `--output`.
+The IO moves to the TS side. `export-xliff.ts` now compiles through the
+same `compile.run` road Export Story (.inkb) uses — the shared
+`compiledStoryBytes` in `export.ts` — renders the bytes with the binding,
+and writes through `saveBytesDialog`, the same dialog-and-write round trip
+the `.inkb` export uses.
+
+**As landed**, the three are `export_xliff` / `compile_locale` /
+`regenerate_xliff` in `crates/brink-web/src/intl.rs`, wrapped as
+`exportXliff` / `compileLocale` / `regenerateXliff` in `@brink-lang/web`.
+Each `#[wasm_bindgen]` entry point does nothing but map the error of a plain
+`Result<_, String>` inner function: `JsError::new` is a wasm import stub
+that **panics on a native target**, so a `JsError`-returning signature would
+make every failure path unreachable under `cargo test -p brink-web --lib`.
+Splitting the seam keeps the error paths covered by the same suite as the
+happy ones.
+
+⚠ One observable change. The CLI accepts a non-`.inkb` input, compiles it in
+memory, and passes checksum `0` because there is no header to read one out
+of — and the desktop took exactly that branch, so its exported `.xlf`
+carried `brink:checksum="0x00000000"`. Through wasm the input is always
+`.inkb` bytes, so the document now carries the artifact's real CRC. Nothing
+reads the attribute back (`compile_locale` stamps the `.inkl`'s
+`base_checksum` from the base it is handed, never from the document), so it
+is provenance only — and the real value is the useful one: it names which
+compile a translator's file was cut from, which `0` cannot.
 
 **Only one flow is actually wired.** `ALLOWED_CLI_SUBCOMMANDS`
 (`src-tauri/src/lib.rs:581`) lists four subcommands, but the single UI path is
@@ -102,7 +126,7 @@ couplings that would foreclose iOS, and the sidecar is one of them ("iOS
 cannot ship subprocess binaries"). Removing it retires that blocker outright;
 only `FileProvider`'s arbitrary-directory access remains.
 
-## Stage 2 — the OTA channel
+## Stage 2 — the OTA channel (not started)
 
 **RULED: it sits beside the full-app updater, not instead of it.** The Tauri
 updater keeps handling `src-tauri`/shell changes; OTA handles the bundle. The
