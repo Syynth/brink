@@ -494,6 +494,30 @@ export async function bundleReady(): Promise<BundleLaunchInfo> {
   return invoke<BundleLaunchInfo>("bundle_ready");
 }
 
+/** The outcome of an OTA web-bundle update attempt. */
+export type BundleUpdateOutcome =
+  | { kind: "upToDate" }
+  /** Installed; takes effect on the next launch, never a hot swap. */
+  | { kind: "installed"; version: string }
+  /** Refused for a reason the author can act on — `minShellVersion` above all. */
+  | { kind: "refused"; reason: string }
+  /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
+  | { kind: "failed"; reason: string };
+
+/**
+ * Check for an OTA web-bundle update and install it if there is one
+ * (`docs/desktop-ota-spec.md` Stage 2).
+ *
+ * One call rather than check/download/install steps on purpose: the ordering
+ * between them is a safety property (verify before extract; promote only a
+ * verified staging directory), and splitting it across IPC would put that
+ * ordering in the webview's hands — which is exactly where an OTA'd bundle's
+ * own JS runs.
+ */
+export async function bundleUpdateCheck(): Promise<BundleUpdateOutcome> {
+  return invoke<BundleUpdateOutcome>("bundle_update_check");
+}
+
 /**
  * Recent projects (#2394, `docs/desktop-shell-spec.md` D2): a persisted,
  * most-recent-first, capped, deduplicated-by-path list backed by

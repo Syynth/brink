@@ -35,6 +35,41 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 fontdb = { version = "0.24.0", default-features = false, features = ["fs", "memmap"] }
+# OTA bundle updates (docs/desktop-ota-spec.md Stage 2). Every one of these
+# was ALREADY in this crate's graph via tauri-plugin-updater — declaring them
+# directly adds no new crate, which is also why the archive is `.tar.gz`
+# rather than the `.tar.zst` the spec drafted: `zstd` is the one that is not
+# here, and it would pull a C toolchain dependency for ~15% off a 10 MB
+# download.
+#
+# ⚠ `minisign-verify` and `base64` must stay in lockstep with what
+# tauri-plugin-updater uses: the 2026-09-14 ruling shares ONE keypair across
+# both channels, and `signature_is_valid` mirrors that plugin's own parse
+# exactly so the two cannot disagree about what a valid signature is.
+sha2 = "0.10"
+minisign-verify = "0.2"
+base64 = "0.22"
+tar = "0.4"
+flate2 = "1"
+semver = "1"
+# Already present via tauri-plugin-updater; declared directly for the manifest
+# and archive fetch.
+#
+# ⚠ The feature set is `rustls-no-provider` plus an explicit `rustls`/`ring`,
+# copied from what tauri-plugin-updater itself enables, and it is NOT
+# interchangeable with reqwest's plain `rustls` feature: that one defaults to
+# the aws-lc provider and pulled `aws-lc-sys` (a CMake/C build), `quinn` and
+# a dozen others into a graph that had none of them. Measured against this
+# lockfile, not assumed — `rustls` and `ring` were already here; aws-lc and
+# quinn were not.
+#
+# The provider is PROCESS-global and the updater plugin installs it lazily,
+# only when its own check runs — so a bundle check happening first would find
+# none. `install_crypto_provider` in src/lib.rs does the same dance first.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [lib]
 name = "brink_desktop_lib"

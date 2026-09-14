@@ -89,18 +89,6 @@ pub fn state_path(root: &Path) -> PathBuf {
 }
 
 /// `<root>/staging`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "staging is written by the download/extract half of Stage 2, \
-              which lands next. Kept here rather than moved because the \
-              staging path is part of THIS module's layout contract — \
-              `promote` renames out of it, and the tests below pin both \
-              halves of that rename. The expectation fires as soon as the \
-              downloader calls it, which is the signal to delete this."
-    )
-)]
 pub fn staging_dir(root: &Path) -> PathBuf {
     root.join(STAGING_DIR)
 }
@@ -304,18 +292,6 @@ pub fn mark_ready(root: &Path) -> std::io::Result<()> {
 ///
 /// Verification (sha256, signature) happens **before** this — nothing here
 /// re-checks it, so do not call it on an unverified directory.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "called by the download/extract half of Stage 2, which lands \
-              next. It is tested here and not deferred with its caller \
-              because promotion is a property of the STORE — the atomic \
-              rename, the one-previous rule and the refusal to promote an \
-              index-less staging directory are this module's invariants \
-              whatever drives them."
-    )
-)]
 pub fn promote(root: &Path, version: &str, now_ms: u64) -> std::io::Result<BundleState> {
     let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg.to_owned());
 

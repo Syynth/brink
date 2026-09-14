@@ -83,6 +83,7 @@ vi.mock("../tauri-provider.js", () => ({
   // deliberately unconditional (docs/desktop-ota-spec.md Stage 2), so every
   // mock of this module that drives main.tsx has to carry it.
   bundleReady: vi.fn(() => Promise.resolve({ version: null, rolledBackFrom: null })),
+  bundleUpdateCheck: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
 }));
 
 describe("handleQuitRequested recovers from a rejected destroy() (#2401)", () => {

@@ -1,7 +1,8 @@
 # Desktop OTA web-bundle updates
 
-**Status:** Stage 1 LANDED. Stage 2 in progress — the bundle store and
-serving are landed; the update channel and the release pipeline are not.
+**Status:** Stage 1 LANDED. Stage 2 in progress — the bundle store, serving
+and the update channel are landed; the release pipeline that PRODUCES a
+bundle is not, so nothing can be installed over the air yet.
 Rulings 2026-09-14 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
@@ -210,20 +211,30 @@ maintainer's own. Two alternatives were priced and declined:
 app being distributed to anyone else — at that point the migration above is
 the prerequisite it always was.
 
-### The manifest
+### The manifest — LANDED
 
-Served beside the full-app `latest.json`:
+Served beside the full-app `latest.json`, at
+`releases/download/desktop-latest/bundle-latest.json`:
 
 ```json
 {
   "version": "0.7.1",
   "minShellVersion": "0.7.0",
-  "url": "https://…/bundle-0.7.1.tar.zst",
+  "url": "https://…/bundle-0.7.1.tar.gz",
   "sha256": "…",
   "signature": "…",
   "pubDate": "…"
 }
 ```
+
+`minShellVersion` is mandatory **at parse**, not defaulted — a manifest
+without one is refused rather than treated as "any shell will do".
+
+⚠ **`.tar.gz`, not the `.tar.zst` this spec first drafted.** `flate2` and
+`tar` were already in `src-tauri`'s dependency graph (`tauri-plugin-updater`
+pulls both and ships its own macOS payload as `.app.tar.gz`); `zstd` was
+not, and would add a C toolchain dependency for roughly 15% off a ~10 MB
+download. One archive reader now covers both channels.
 
 `minShellVersion` is **mandatory, not advisory**. With the sidecar gone, the
 only remaining native coupling is the IPC surface — 23 `#[tauri::command]`
@@ -231,12 +242,7 @@ functions. OTA'd JS that calls a command the installed shell does not have is
 a hard break, and the manifest is the only place to catch it. A shell refuses
 any bundle whose `minShellVersion` exceeds its own version, and says so.
 
-### Install order — the store half is landed, the download half is not
-
-`bundles::promote` does steps 4-6 (rename `staging/` into place, roll the
-pointer, prune to one previous) and is tested; steps 1-3 land with the
-download channel. `promote` does not re-verify anything, so it must never be
-pointed at an unverified directory.
+### Install order — LANDED
 
 Verification happens **before** anything is extracted:
 
@@ -246,6 +252,23 @@ Verification happens **before** anything is extracted:
 4. extract into `staging/`
 5. `rename` staging → `<version>/` (atomic within one filesystem)
 6. write `current.json`
+
+`bundle_update_check` is ONE IPC command rather than check/download/install
+steps, because that ordering is a safety property: splitting it across calls
+would put it in the webview's hands, which is exactly where an OTA'd
+bundle's own JS runs. Two tests pin the ordering by asserting that a bad
+hash and a bad signature each leave the destination directory **empty** — a
+hostile archive that reached `staging/` is one `rename` away from being
+served.
+
+⚠ **A signature proves who built the archive, never that its contents are
+well-formed.** Every entry is judged on its own after the signature passes:
+`Component::Normal` only, and regular files and directories only — a symlink
+or hardlink entry is refused outright rather than sanitised, because `tar`'s
+own `unpack` follows links and a link is the one entry type whose target is
+not the path it declares. The escape tests write the hostile name straight
+into the raw tar header, since `tar::Builder` refuses to produce one through
+its safe API — and so would not have tested anything.
 
 **Activation is on next launch, not hot-swap.** The running webview already
 holds the old JS and instantiated wasm; swapping underneath it is a class of
@@ -286,6 +309,14 @@ the plugin set, and Tauri version bumps. Plus any bundle whose
 
 The archive is minisign-signed, the same scheme the Tauri updater already
 uses, verified before extract.
+
+`signature_is_valid` mirrors `tauri-plugin-updater`'s own `verify_signature`
+exactly — base64-decode both the public key and the signature into their
+minisign *text* forms, then `decode` those, then `verify(.., allow_legacy:
+true)`. With one keypair across both channels a different parse would reject
+signatures the updater accepts, so the two agree by construction rather than
+by coincidence. The public key is read from the same `tauri.conf.json` field
+the updater uses, never duplicated.
 
 **RULED: it shares the updater's existing keypair.** The recommendation on the
 table was a second key, on the reasoning that the two channels have different

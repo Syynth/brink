@@ -21,6 +21,10 @@ use tauri_plugin_dialog::DialogExt;
 /// cannot boot is rolled back.
 mod bundles;
 
+/// Fetching and verifying an OTA web bundle — the `minShellVersion` gate,
+/// the hash and signature checks, and the archive-entry rules.
+mod bundle_update;
+
 /// Shell I/O errors. Serialized as their display string across the IPC
 /// boundary (Tauri command errors must be `Serialize`).
 #[derive(Debug, thiserror::Error)]
@@ -684,6 +688,155 @@ fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
     };
     let _ = bundles::mark_ready(&runtime.root);
     BundleLaunchInfo::from(&runtime.outcome)
+}
+
+// ── OTA bundle updates (docs/desktop-ota-spec.md Stage 2) ──────────────
+//
+// The one command the frontend drives: fetch the manifest, decide, download,
+// verify, unpack into `staging/`, promote. Everything that DECIDES lives in
+// `bundle_update` as pure functions; this is the IO shell around them.
+//
+// It is a single command rather than check/download/install steps because
+// the ordering between them is a safety property (verify before extract,
+// promote only a verified staging), and splitting it across IPC calls would
+// put that ordering in the webview's hands — which is precisely where an
+// OTA'd bundle's own JS lives.
+
+/// Where the manifest is served, beside the full-app `latest.json`.
+const BUNDLE_MANIFEST_URL: &str =
+    "https://github.com/Syynth/brink/releases/download/desktop-latest/bundle-latest.json";
+
+/// The outcome of an update attempt, as the frontend renders it.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum BundleUpdateOutcome {
+    /// Nothing newer on offer.
+    UpToDate,
+    /// Installed; takes effect on the next launch (never a hot swap — the
+    /// running webview already holds the old JS and instantiated wasm).
+    Installed { version: String },
+    /// Refused for a reason the author can act on, `minShellVersion` above
+    /// all.
+    Refused { reason: String },
+    /// Something went wrong. Distinct from `Refused`: a refusal is the
+    /// system working.
+    Failed { reason: String },
+}
+
+/// Install rustls' process-wide crypto provider if nothing has yet.
+///
+/// ⚠ Copied from `tauri-plugin-updater`'s own lazy install, and necessary
+/// for the same reason it exists there: with `rustls-no-provider`, reqwest
+/// has no crypto until something installs one, and the provider is
+/// PROCESS-global. The plugin only installs it when its own check runs, so a
+/// bundle check that happens first — a launch check, say — would otherwise
+/// fail on every TLS handshake. `install_default` returns `Err` when one is
+/// already set, which is the ordinary case and not a problem.
+fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
+/// Fetch `url` with a bounded read.
+///
+/// `reqwest` is already in this crate's graph via `tauri-plugin-updater`.
+/// The cap is not a nicety: without it a hostile or broken server can stream
+/// forever into memory, and this runs unattended on a launch check.
+async fn fetch_bounded(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    install_crypto_provider();
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("server returned {}", response.status()));
+    }
+    if let Some(len) = response.content_length() {
+        if usize::try_from(len).is_ok_and(|len| len > max_bytes) {
+            return Err(format!("payload is larger than the {max_bytes}-byte cap"));
+        }
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("payload is larger than the {max_bytes}-byte cap"));
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Check for a web-bundle update and install it if there is one.
+///
+/// Returns rather than throws for every *expected* outcome, so the frontend
+/// renders one shape. See [`BundleUpdateOutcome`].
+#[tauri::command]
+async fn bundle_update_check(app: tauri::AppHandle) -> BundleUpdateOutcome {
+    match bundle_update_run(&app).await {
+        Ok(outcome) => outcome,
+        Err(reason) => BundleUpdateOutcome::Failed { reason },
+    }
+}
+
+/// The body of [`bundle_update_check`], with `?` available.
+async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome, String> {
+    use tauri::Manager as _;
+
+    /// 4 MiB — a manifest is a few hundred bytes; anything near this is
+    /// wrong.
+    const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+    /// 128 MiB. The real bundle is ~10 MiB compressed (the spec's measured
+    /// figure), so this is an order of magnitude of headroom rather than a
+    /// tight fit — it exists to bound a hostile stream, not to police size.
+    const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
+
+    let runtime = app
+        .try_state::<BundleRuntime>()
+        .ok_or("the bundle store is not initialised")?;
+    let root = runtime.root.clone();
+    let installed = bundles::read_state(&root).version;
+
+    let manifest_text = fetch_bounded(BUNDLE_MANIFEST_URL, MAX_MANIFEST_BYTES).await?;
+    let manifest_text =
+        String::from_utf8(manifest_text).map_err(|_| "manifest is not UTF-8".to_owned())?;
+    let manifest = bundle_update::parse_manifest(&manifest_text).map_err(|e| e.to_string())?;
+
+    let shell_version = app.package_info().version.to_string();
+    match bundle_update::decide(&manifest, &shell_version, installed.as_deref()) {
+        bundle_update::UpdateDecision::UpToDate => return Ok(BundleUpdateOutcome::UpToDate),
+        bundle_update::UpdateDecision::Refuse(reason) => {
+            return Ok(BundleUpdateOutcome::Refused { reason })
+        }
+        bundle_update::UpdateDecision::Install => {}
+    }
+
+    // The public key the full-app updater already uses — one keypair across
+    // both channels (RULED 2026-09-14), read from the same config field
+    // rather than duplicated.
+    let pubkey = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("tauri.conf.json declares no updater pubkey to verify against")?
+        .to_owned();
+
+    let archive = fetch_bounded(&manifest.url, MAX_ARCHIVE_BYTES).await?;
+
+    // A leftover staging directory from an interrupted attempt would be
+    // unpacked INTO, mixing two bundles. Clear it first.
+    let staging = bundles::staging_dir(&root);
+    let _ = std::fs::remove_dir_all(&staging);
+
+    bundle_update::verify_and_unpack(&archive, &manifest, &pubkey, &staging)
+        .map_err(|e| e.to_string())?;
+    bundles::promote(&root, &manifest.version, now_ms()).map_err(|e| e.to_string())?;
+
+    Ok(BundleUpdateOutcome::Installed {
+        version: manifest.version,
+    })
 }
 
 // ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
@@ -1841,6 +1994,7 @@ pub fn run() -> tauri::Result<()> {
             write_app_settings,
             previous_exit_clean,
             bundle_ready,
+            bundle_update_check,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {

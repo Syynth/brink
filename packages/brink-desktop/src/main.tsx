@@ -64,6 +64,7 @@ import {
   readRecents,
   saveBytesDialog,
   bundleReady,
+  bundleUpdateCheck,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -73,6 +74,7 @@ import {
 } from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
+import { bundleUpdateNotice } from "./bundle-update.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { exportStoryToInkb } from "./export.js";
@@ -882,6 +884,11 @@ void listen<string>("menu:view-toggle", (event) => {
 void listen("menu:check-updates", () => {
   lastUpdateCheckAt = Date.now();
   void checkForUpdates(updateApi());
+  // BOTH channels, from the one menu item (docs/desktop-ota-spec.md Stage 2:
+  // "it sits beside the full-app updater, not instead of it"). An author who
+  // asks whether they are up to date means the editor they are looking at,
+  // not one of two update mechanisms they have no reason to know about.
+  void checkBundleUpdate({ silent: false });
 });
 
 /** One id for every update toast, so each stage REPLACES the last rather
@@ -1147,6 +1154,31 @@ void confirmBundleBoot(bundleReady).then((info) => {
   pendingBundleNotice = message;
   flushBundleNotice();
 });
+
+/**
+ * Run an OTA web-bundle check and report it through the same surface the
+ * rollback notice uses, so a check made with no project open is not lost.
+ */
+async function checkBundleUpdate(options: { silent: boolean }): Promise<void> {
+  let outcome;
+  try {
+    outcome = await bundleUpdateCheck();
+  } catch (e: unknown) {
+    outcome = {
+      kind: "failed" as const,
+      reason: e instanceof Error ? e.message : String(e),
+    };
+  }
+  const notice = bundleUpdateNotice(outcome, { silent: options.silent });
+  if (notice === null) return;
+  const api = current?.api;
+  if (api === undefined) {
+    pendingBundleNotice = notice.message;
+    flushBundleNotice();
+    return;
+  }
+  api.notify({ severity: notice.severity, source: "update", message: notice.message });
+}
 
 /** A rollback report waiting for a studio surface to show it on. */
 let pendingBundleNotice: string | null = null;
