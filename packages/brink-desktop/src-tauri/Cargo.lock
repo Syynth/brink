@@ -299,11 +299,19 @@ dependencies = [
 name = "brink-desktop"
 version = "0.7.0"
 dependencies = [
+ "base64 0.22.1",
  "brink-project-config",
+ "flate2",
  "fontdb",
+ "minisign-verify",
  "notify",
+ "reqwest",
+ "rustls",
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

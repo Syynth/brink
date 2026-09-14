@@ -87,6 +87,7 @@ vi.mock("../tauri-provider.js", () => ({
   // deliberately unconditional (docs/desktop-ota-spec.md Stage 2), so every
   // mock of this module that drives main.tsx has to carry it.
   bundleReady: vi.fn(() => Promise.resolve({ version: null, rolledBackFrom: null })),
+  bundleUpdateCheck: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
 }));
 
 describe("closeProject() rejects a second overlapping call instead of double-unmounting (2026-08-21 review)", () => {
