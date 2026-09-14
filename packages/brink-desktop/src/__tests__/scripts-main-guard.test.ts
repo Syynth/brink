@@ -6,22 +6,21 @@ import { describe, expect, it } from "vitest";
 // Directory-level guard for the main-guard invariant (#2478).
 //
 // Two rounds of "script X has no main-guard/export seam" happened one at a
-// time — #2452 named `ensure-cli-sidecar.mjs`, then #2468 had to separately
-// name its sibling `ensure-wasm.mjs` after #2452 shipped without it. The
-// invariant behind both ("every packages/brink-desktop/scripts/*.mjs
-// reachable from a package.json script must be inert on import and only act
-// behind a main-guard") lived only as prose in docs/desktop-shell-spec.md's
-// "The `dev` preflight pair" section and as pointer comments in the two
-// scripts. Nothing enforced it, so a third preflight script would have
-// landed unguarded exactly as `ensure-wasm.mjs` did.
+// time — #2452 named the since-deleted `ensure-cli-sidecar.mjs`, then #2468
+// had to separately name its sibling `ensure-wasm.mjs` after #2452 shipped
+// without it. The invariant behind both ("every
+// packages/brink-desktop/scripts/*.mjs reachable from a package.json script
+// must be inert on import and only act behind a main-guard") lived only as
+// prose in docs/desktop-shell-spec.md's "The `dev` preflight" section and as
+// pointer comments in the scripts. Nothing enforced it, so a third preflight
+// script would have landed unguarded exactly as `ensure-wasm.mjs` did.
 //
 // This file enumerates the directory rather than naming files, so a third
 // script is checked the moment it lands, without a human remembering to ask
-// for it. `ensure-wasm.test.ts` / `ensure-cli-sidecar.test.ts` keep their
-// own `describe("the main-guard")` blocks: those spawn a child node and
-// prove the runtime behaviour (inert on import; still acts standalone) for
-// the two scripts we have. This scan is the cheap structural net underneath
-// them that no new file can slip past.
+// for it. `ensure-wasm.test.ts` keeps its own `describe("the main-guard")`
+// block: it spawns a child node and proves the runtime behaviour (inert on
+// import; still acts standalone). This scan is the cheap structural net
+// underneath that no new file can slip past.
 //
 // SCOPE (settled deliberately, see the PR for #2478): this covers
 // `packages/brink-desktop/scripts/` only — the directory the issue names and
@@ -49,9 +48,10 @@ const EXPECTED_SCRIPTS = ["build-update-manifest.mjs", "ensure-wasm.mjs"];
 // symlink-resolves the former but not the latter — so on macOS, where
 // `/var` is a symlink to `/private/var`, a script run from anywhere under
 // `$TMPDIR` compared unequal and the guard silently did not fire. Every
-// standalone-invocation test in this directory failed that way, and worse,
-// `tauri.conf.json`'s `beforeBundleCommand` runs `assert-real-sidecar.mjs`
-// directly: an inert guard there ships the stub sidecar it exists to catch.
+// standalone-invocation test in this directory failed that way — and the
+// stakes were higher than a red test: `tauri.conf.json`'s (since-removed)
+// `beforeBundleCommand` ran a script directly at bundle time, where an inert
+// guard would have shipped the very thing that check existed to catch.
 //
 // The `if (!process.argv[1]) return false` arm is load-bearing, not
 // decorative: with no script path at all — `node --input-type=module -e
