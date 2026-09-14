@@ -1,0 +1,26 @@
+{
+  "$comment": [
+    "The OTA web-bundle release descriptor (docs/desktop-ota-spec.md Stage 2).",
+    "Hand-maintained; the guards that keep it honest live in src-tauri/src/lib.rs.",
+    "",
+    "version: an INDEPENDENT sequence, deliberately not the app's version",
+    "(RULED 2026-09-14). Reusing tauri.conf.json's version would make two",
+    "web-only updates between signed releases impossible — the second would",
+    "carry the same version as the first and the shell would report",
+    "'up to date'. Bump this for every bundle you publish.",
+    "",
+    "minShellVersion: the OLDEST app version that may run this bundle. It is",
+    "NOT 'the app version that built the bundle' — that would refuse every",
+    "bundle on every install not already on the newest app release, which is",
+    "exactly the population OTA exists to serve. Raise it only when the IPC",
+    "surface loses or changes a command an OTA'd bundle would call.",
+    "",
+    "commandsFingerprint: a pin, not a setting. It records the IPC surface",
+    "minShellVersion was last judged against; the guard recomputes it and",
+    "fails when they diverge, which is the prompt to decide whether the",
+    "change was breaking. Update it in the same commit as that decision."
+  ],
+  "version": "0.0.1",
+  "minShellVersion": "0.7.0",
+  "commandsFingerprint": "dd1949c73c2c4da3"
+}

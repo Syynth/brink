@@ -39,7 +39,11 @@ const scriptsDir = resolve(fileURLToPath(import.meta.url), "../../../scripts");
 // fails loudly instead of vacuously reporting zero violations. Adding a
 // preflight script means adding its name here — one line — while the guard
 // assertions below apply to it automatically.
-const EXPECTED_SCRIPTS = ["build-update-manifest.mjs", "ensure-wasm.mjs"];
+const EXPECTED_SCRIPTS = [
+  "build-bundle-manifest.mjs",
+  "build-update-manifest.mjs",
+  "ensure-wasm.mjs",
+];
 
 // The idiom every one of these scripts uses verbatim.
 //

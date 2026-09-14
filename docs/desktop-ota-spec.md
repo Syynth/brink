@@ -1,8 +1,9 @@
 # Desktop OTA web-bundle updates
 
-**Status:** Stage 1 LANDED. Stage 2 in progress — the bundle store, serving
-and the update channel are landed; the release pipeline that PRODUCES a
-bundle is not, so nothing can be installed over the air yet.
+**Status:** LANDED, end to end. Stage 1 (sidecar deleted, intl in wasm),
+Stage 2's client half (store, serving, rollback, update channel) and the
+release pipeline that produces a bundle are all on `main`. Rulings
+2026-09-14 (`docs/decision-log.md`).
 Rulings 2026-09-14 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
@@ -297,6 +298,55 @@ Two properties of the frontend half decide whether any of this works:
 
 Successive failures walk the ladder down (bundle → previous → embedded)
 rather than pinning the author on a second bundle that also cannot boot.
+
+## Publishing a bundle — LANDED
+
+`.github/workflows/bundle-release.yml`, on a `bundle-v*` tag. **No cargo, no
+`tauri build`, no codesign, no notarization** — that absence is the whole
+point. It builds both wasm modules and `dist/`, archives it, signs the
+archive with `TAURI_SIGNING_PRIVATE_KEY`, and publishes the archive to its
+own release plus `bundle-latest.json` to the `desktop-latest` alias the app
+polls. The archive keeps an immutable per-release URL while the manifest is
+republished in place — the same split `latest.json` already uses.
+
+### The two values no build step can compute
+
+Both live in `packages/brink-desktop/ota-bundle.json`, hand-maintained.
+
+**`version` is an INDEPENDENT sequence** (RULED 2026-09-14), not the app's.
+Reusing `tauri.conf.json`'s version would make two web-only updates between
+signed releases impossible: the second would carry the same version as the
+first, and the shell would report "up to date". The release tag must match
+it, checked in the workflow.
+
+**`minShellVersion` is a judgement, and the naive default is actively
+wrong.** "The app version that built this bundle" would refuse the bundle on
+every install not already on the newest app release — precisely the
+population OTA exists to serve. It rises only when the IPC surface loses or
+changes a command an already-published bundle could call.
+
+Deriving it automatically was considered and declined: a fingerprint cannot
+tell an ADDED command (backward-compatible — old bundles never call it) from
+a REMOVED or RENAMED one (breaking), so an automatic bump would refuse
+bundles that are perfectly safe. Instead
+`min_shell_version_is_reconsidered_when_the_ipc_surface_changes` pins a
+`commandsFingerprint` and fails when the surface moves without it being
+reconsidered — **the failure is a red check on the author's machine rather
+than a broken app on someone else's.** A second guard refuses a
+`minShellVersion` above the app version shipping it, which would be refused
+by every install including one built from that very commit.
+
+### What the pipeline refuses to publish
+
+- a `dist/` with no `index.html`, or fewer than two wasm modules — an empty
+  bundle would tar, hash and sign perfectly happily and then serve nothing;
+- an archive with an empty signature — `build-bundle-manifest.mjs` throws
+  rather than emit one, because an unsigned bundle is refused by every
+  install *silently*, a refusal being indistinguishable from any other
+  failed check;
+- a tag that disagrees with `ota-bundle.json`'s version;
+- a published manifest whose `url` does not resolve — which would read to
+  the author as "update check failed", forever.
 
 ## What still requires a signed release
 
