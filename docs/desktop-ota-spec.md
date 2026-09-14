@@ -4,7 +4,6 @@
 Stage 2's client half (store, serving, rollback, update channel) and the
 release pipeline that produces a bundle are all on `main`. Rulings
 2026-09-14 (`docs/decision-log.md`).
-Rulings 2026-09-14 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
 matrix, import the Apple certificate, codesign, notarize, staple, upload —
@@ -129,7 +128,7 @@ couplings that would foreclose iOS, and the sidecar is one of them ("iOS
 cannot ship subprocess binaries"). Removing it retires that blocker outright;
 only `FileProvider`'s arbitrary-directory access remains.
 
-## Stage 2 — the OTA channel (in progress)
+## Stage 2 — the OTA channel — DONE
 
 **RULED: it sits beside the full-app updater, not instead of it.** The Tauri
 updater keeps handling `src-tauri`/shell changes; OTA handles the bundle. The
