@@ -63,6 +63,7 @@ import {
   pushRecent,
   readRecents,
   saveBytesDialog,
+  bundleReady,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -71,6 +72,7 @@ import {
   resolveBootAction,
 } from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
+import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { exportStoryToInkb } from "./export.js";
@@ -425,6 +427,11 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
   // The EFFECTIVE entry (issue #2331 precedence already applied), not the
   // host fallback computed above — see `currentEntryFile`'s doc comment.
   currentEntryFile = current.entryFile;
+
+  // A bundle rollback reported before any studio existed (the common case —
+  // the confirm runs at module scope, well before a project is opened) now
+  // has a surface to land on.
+  flushBundleNotice();
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
   // class. Clean ticks are no-ops inside the command. See `AUTOSAVE_MS`'s
@@ -1120,3 +1127,38 @@ void bootLanding().catch((e: unknown) => {
   console.error("[brink-desktop] boot failed", e);
   void renderLanding();
 });
+
+// OTA boot confirmation (docs/desktop-ota-spec.md Stage 2).
+//
+// Deliberately NOT chained onto `bootLanding` and deliberately not
+// conditional on anything: reaching module scope here already proves the
+// bundle's JS parsed and ran, which is the property the rollback sentinel
+// exists to witness. Gating it behind a project being open, or behind
+// `bootLanding` resolving, would roll back a working bundle every time the
+// author launches to an empty landing screen or a reopen fails.
+//
+// A rollback is reported through the studio when one is mounted and to the
+// console otherwise — an author who launches straight to the landing screen
+// still gets the message on next open, which beats losing it entirely.
+void confirmBundleBoot(bundleReady).then((info) => {
+  if (info === null) return;
+  const message = rollbackMessage(info);
+  if (message === null) return;
+  pendingBundleNotice = message;
+  flushBundleNotice();
+});
+
+/** A rollback report waiting for a studio surface to show it on. */
+let pendingBundleNotice: string | null = null;
+
+/** Deliver the pending rollback report if a studio is mounted. */
+function flushBundleNotice(): void {
+  if (pendingBundleNotice === null) return;
+  const api = current?.api;
+  if (api === undefined) {
+    console.warn(`[brink-desktop] ${pendingBundleNotice}`);
+    return;
+  }
+  api.notify({ severity: "error", source: "update", message: pendingBundleNotice });
+  pendingBundleNotice = null;
+}

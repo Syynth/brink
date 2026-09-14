@@ -1,7 +1,8 @@
 # Desktop OTA web-bundle updates
 
-**Status:** Stage 1 LANDED; Stage 2 designed, not implemented. Rulings
-2026-09-14 (`docs/decision-log.md`).
+**Status:** Stage 1 LANDED. Stage 2 in progress — the bundle store and
+serving are landed; the update channel and the release pipeline are not.
+Rulings 2026-09-14 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
 matrix, import the Apple certificate, codesign, notarize, staple, upload —
@@ -126,7 +127,7 @@ couplings that would foreclose iOS, and the sidecar is one of them ("iOS
 cannot ship subprocess binaries"). Removing it retires that blocker outright;
 only `FileProvider`'s arbitrary-directory access remains.
 
-## Stage 2 — the OTA channel (not started)
+## Stage 2 — the OTA channel (in progress)
 
 **RULED: it sits beside the full-app updater, not instead of it.** The Tauri
 updater keeps handling `src-tauri`/shell changes; OTA handles the bundle. The
@@ -153,14 +154,61 @@ to launch. **The OTA payload must live outside the bundle**, under
 The embedded copy stays exactly as it is, as a known-good floor. A bad OTA is
 recovered by deleting a directory, never by reinstalling.
 
-### Serving
+### Serving — LANDED
 
-Register an asynchronous URI-scheme protocol on `tauri::Builder` and point the
-window at it. The handler resolves each request against the active bundle
-directory and **falls back to the embedded asset** when there is no active
-bundle, the file is missing, or anything about the bundle fails validation.
-`frontendDist` is unchanged, so the dev flow and the embedded floor both stay
-as they are.
+An asynchronous URI-scheme protocol (`brink://`) on `tauri::Builder`, with
+the production window pointed at it. The handler resolves each request
+against the active bundle directory and **falls back to the embedded asset**
+when there is no active bundle, the file is missing, or anything about the
+bundle fails validation. `frontendDist` is unchanged, so the embedded floor
+stays exactly as it is.
+
+The window is built in `setup` rather than by `tauri.conf.json`
+(`"create": false` on the config window, which `from_config` still supplies
+every other property from). A config `url` cannot be chosen at runtime, and
+**dev must keep `devUrl`** — `tauri::is_dev()` is the switch, so the vite
+server and HMR are untouched. `the_main_window_is_created_in_setup_not_by_the_config`
+pins both halves: `create` false, and no `url` pinned in config. That guard
+matters because `create` DEFAULTS to true — the regression is a deletion,
+not an edit, and it would open a second window serving embedded assets
+forever while OTA silently never applied.
+
+⚠ **The request path is the security boundary.** It comes from the webview,
+and `bundles::resolve_asset` is what confines it: percent-decode first (so
+`%2e%2e` is judged as what it decodes to), accept only `Component::Normal`,
+reject a decoded component that still carries a separator or NUL, then
+canonicalize both sides and require the result to stay inside the bundle
+directory — that last step is the only one that catches a **symlink** planted
+in the archive, which no string rule can see. Tested in every encoding, with
+a real escaping symlink and a precondition asserting the target is genuinely
+reachable, so a pass is a real escape rather than a missing file.
+
+### The origin change — RULED, and not free
+
+The custom scheme changes the webview's origin from `tauri://localhost` to
+`brink://localhost` (`http://brink.localhost` on Windows), which strands the
+studio's `localStorage`: layout, theme, keymap overrides, editor settings,
+breakpoints, open tabs, problems/todos prefs **and the story save stores**.
+A JS-side migration is impossible — the new origin cannot read the old one's
+storage — and a shell-side one would mean parsing WKWebView/WebKitGTK/
+WebView2 storage files per platform.
+
+**RULED (2026-09-14): take the one-time loss.** The install base is the
+maintainer's own. Two alternatives were priced and declined:
+
+- **Migrate persistence to shell-side files first, then switch** — two signed
+  releases, because the migration has to run on the OLD origin to see the old
+  data at all. The better end state (data survives reinstalls, is inspectable,
+  is backed up), and the right answer for a wider install base.
+- **Keep the origin; make the embedded `index.html` a thin loader** that
+  pulls JS/wasm from `brink://` with CORS — one release, no loss, but it adds
+  a loader plus an asset manifest restating what vite emits, and **the loader
+  itself can never be updated OTA**: a permanent hand-maintained coupling
+  inside the channel whose purpose is shipping without a signed release.
+
+⚠ This ruling is scoped to the current install base. It does not survive the
+app being distributed to anyone else — at that point the migration above is
+the prerequisite it always was.
 
 ### The manifest
 
@@ -183,7 +231,12 @@ functions. OTA'd JS that calls a command the installed shell does not have is
 a hard break, and the manifest is the only place to catch it. A shell refuses
 any bundle whose `minShellVersion` exceeds its own version, and says so.
 
-### Install order
+### Install order — the store half is landed, the download half is not
+
+`bundles::promote` does steps 4-6 (rename `staging/` into place, roll the
+pointer, prune to one previous) and is tested; steps 1-3 land with the
+download channel. `promote` does not re-verify anything, so it must never be
+pointed at an unverified directory.
 
 Verification happens **before** anything is extracted:
 
@@ -198,13 +251,29 @@ Verification happens **before** anything is extracted:
 holds the old JS and instantiated wasm; swapping underneath it is a class of
 bug with no upside for a local-first editor. Offer a restart.
 
-### Rollback
+### Rollback — LANDED
 
-Write an `attempting: <version>` sentinel into `current.json` before the
-webview loads, and clear it from the frontend once the shell is ready (one new
-IPC command). A sentinel that survives a launch means that bundle did not
-boot: revert to the previous bundle, or to embedded if there is none, and
-report it. Keep exactly one previous bundle.
+An `attempting: <version>` sentinel is written into `current.json` before the
+webview loads, and cleared by the frontend through `bundle_ready` once it is
+up. A sentinel that survives a launch means that bundle did not boot: the
+bundle's directory is **removed**, and the store reverts to the previous
+bundle or to the embedded floor. Exactly one previous bundle is kept.
+
+Two properties of the frontend half decide whether any of this works:
+
+- **The confirm must be unconditional.** It runs at `main.tsx` module scope —
+  reaching there already proves the bundle's JS parsed and ran, which is the
+  property being witnessed. Gating it behind a project being open, or behind
+  `bootLanding` resolving, rolls back a working bundle every time the author
+  launches to an empty landing screen. `confirmBundleBoot` takes no argument
+  it could branch on, and a test pins that arity.
+- **A failed confirm errs toward the floor.** If the IPC call throws, the
+  sentinel survives and the next launch reverts — the safe direction. It is
+  logged rather than swallowed, because otherwise a persistently-throwing
+  confirm is indistinguishable from a persistently-broken bundle.
+
+Successive failures walk the ladder down (bundle → previous → embedded)
+rather than pinning the author on a second bundle that also cannot boot.
 
 ## What still requires a signed release
 
