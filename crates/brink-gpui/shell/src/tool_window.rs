@@ -11,6 +11,37 @@ use gpui_component::dock::{Panel, PanelId, TabGroup};
 
 use crate::region::RailSlot;
 
+/// The height of a tool window's own header row.
+///
+/// It is the kit's TAB-STRIP height (`dock/tab_panel.rs`, `px(30.)`), not a
+/// number of our own. The side docks draw no tab strip (`skin.rs`, ruled
+/// 2026-09-05), so a panel's header is the thing that has to line up with
+/// the centre's tabs straight across the window — and four panels had each
+/// picked their own value (32, and three different content-plus-`py_1`
+/// heights), which is what made the seam visible.
+pub const HEADER_HEIGHT: f32 = 30.;
+
+/// A centre tab's title for a panel that is NOT a file.
+///
+/// A document tab is named by its filename and wants no glyph. The Player,
+/// the Story Graph and Compiled Output share the centre with those
+/// documents, and the icon is what tells them apart at a glance: this tab
+/// is a SURFACE, not something you opened off the disk. Their glyphs come
+/// from the kit's lucide set, per the icon ruling — none of the three is a
+/// brink concept.
+pub fn tab_title(
+    icon: impl Into<gpui_component::Icon>,
+    label: impl Into<gpui::SharedString>,
+) -> impl gpui::IntoElement {
+    use gpui::{ParentElement as _, Styled as _};
+    use gpui_component::Sizable as _;
+    gpui_component::h_flex()
+        .gap_1p5()
+        .items_center()
+        .child(icon.into().small())
+        .child(label.into())
+}
+
 /// The key context every tool window's root carries
 /// (`div().key_context(TOOL_WINDOW_CONTEXT)`).
 ///
@@ -140,7 +171,7 @@ pub struct ToolWindowSpec {
     pub title: SharedString,
     /// A complete SVG document, painted as a monochrome mask tinted by the
     /// button's text colour. `None` falls back to the title's first letter.
-    pub icon: Option<&'static str>,
+    pub icon: Option<crate::icons::BrinkIcon>,
     /// The one place this tool window's home is declared.
     pub slot: RailSlot,
     /// Dock size on first open; `None` takes the dock's own default.
@@ -167,8 +198,8 @@ impl ToolWindowSpec {
     }
 
     #[must_use]
-    pub fn icon(mut self, svg: &'static str) -> Self {
-        self.icon = Some(svg);
+    pub fn icon(mut self, icon: crate::icons::BrinkIcon) -> Self {
+        self.icon = Some(icon);
         self
     }
 

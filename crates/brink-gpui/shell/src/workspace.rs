@@ -9,12 +9,13 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    Action, AnyElement, AnyView, App, Entity, FocusHandle, IntoElement, Render, SharedString,
-    Subscription, Window, anchored, deferred, div, point, px,
+    Action, AnyElement, AnyView, App, ClickEvent, Entity, FocusHandle, IntoElement, Render,
+    SharedString, Subscription, Window, anchored, deferred, div, point, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
-use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme, Sizable as _, TITLE_BAR_HEIGHT, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
     CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow, Unbound,
@@ -23,6 +24,11 @@ use crate::commands::{
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
 use crate::rail::{RAIL_WIDTH, RailButton, rail};
+
+/// One view-switcher cell, square. The Binder's tool metric — small enough
+/// for a title bar, and the size the switcher's alignment with the right
+/// rail is derived from.
+const SWITCHER_CELL: f32 = 22.;
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
 use crate::settings_appearance::AppearanceSection;
@@ -171,6 +177,14 @@ pub struct Workspace {
     /// un-maximizing puts back what was there and not a guess at it.
     /// `None` when not maximized.
     unmaximized: Option<Vec<(&'static str, bool)>>,
+    /// The view the AUTHOR chose, which is not always the one on screen.
+    ///
+    /// The Player, the Story Graph and Compiled Output are Code-view tabs,
+    /// so asking for any of them takes the manuscript's place. That switch
+    /// is the studio's doing, not a preference, and persisting it meant
+    /// pressing `cmd-r` once in Continuous and being in Code the next
+    /// morning. What is remembered is this; what is drawn is the root's.
+    chosen_view: EditorView,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -228,6 +242,7 @@ impl Workspace {
             pre_narrow: None,
             notices_open: false,
             unmaximized: None,
+            chosen_view: EditorView::Code,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -554,12 +569,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.chosen_view = view;
         let focus = self.editor_root.update(cx, |root, cx| {
             root.set_view(view, cx);
             root.occupant_focus()
         });
         window.focus(&focus.unwrap_or_else(|| self.focus.clone()), cx);
         self.persist_layout(cx);
+        cx.notify();
+    }
+
+    /// Switch views because a SURFACE needs one, not because the author
+    /// asked — the Player, the Story Graph and Compiled Output are all
+    /// Code-view tabs, so showing one gives the manuscript's place away.
+    ///
+    /// Deliberately not [`Workspace::set_editor_view`]: it leaves
+    /// `chosen_view` alone, so the author still reopens tomorrow in the
+    /// view they picked. It also leaves focus alone, because the caller is
+    /// about to put focus in the surface it opened this for.
+    pub fn require_editor_view(&mut self, view: EditorView, cx: &mut Context<Self>) {
+        if self.editor_root.read(cx).view() == view {
+            return;
+        }
+        self.editor_root
+            .update(cx, |root, cx| root.set_view(view, cx));
         cx.notify();
     }
 
@@ -595,7 +628,8 @@ impl Workspace {
         let saved = crate::settings::AppSettings::get(cx).layout;
         crate::settings::Layout {
             docks,
-            editor_view: Some(self.editor_view(cx).persistence_key().to_owned()),
+            // The chosen view, NOT the one on screen — see `chosen_view`.
+            editor_view: Some(self.chosen_view.persistence_key().to_owned()),
             scroll_root: saved.scroll_root,
             scroll: saved.scroll,
             open_files: saved.open_files,
@@ -1144,21 +1178,62 @@ impl Workspace {
     /// what the whole centre means.
     fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.editor_view(cx);
+        // Hand-built rather than `ButtonGroup`, for two reasons found on
+        // screen. Its `outline` variant paints every segment in the accent
+        // foreground and puts `selected` in the BORDER, so with icons and
+        // no labels all three read as active — the switcher had no visible
+        // state at all. And at the kit's own button metrics the control
+        // stood half again as tall as the 30px chrome it sits in.
+        //
+        // These are the Binder's tool metrics instead — 22px cells, a 14px
+        // glyph, accent fill and `primary` for the one that is on — which
+        // is the idiom already proven legible in this app, and small enough
+        // to belong in a title bar.
+        let (border, accent, muted, on_colour, off_colour) = {
+            let theme = cx.theme();
+            (
+                theme.border,
+                theme.accent,
+                theme.muted,
+                theme.primary,
+                theme.muted_foreground,
+            )
+        };
         h_flex()
-            .gap_0p5()
-            .children(EditorView::ALL.iter().map(|&view| {
-                Button::new(SharedString::from(format!(
-                    "view-{}",
-                    view.persistence_key()
-                )))
-                .ghost()
-                .compact()
-                .toggled(view == current)
-                .tooltip(format!("{} ({})", view.title(), view.keystroke()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_editor_view(view, window, cx);
-                }))
-                .child(view.title())
+            .rounded_sm()
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .children(EditorView::ALL.iter().enumerate().map(|(ix, &view)| {
+                let on = view == current;
+                // The label is a glyph now, so the ruled NAME and the
+                // keystroke live here — the vocabulary still has a home.
+                let hint = SharedString::from(format!("{} ({})", view.title(), view.keystroke()));
+                div()
+                    .id(SharedString::from(format!(
+                        "view-{}",
+                        view.persistence_key()
+                    )))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(SWITCHER_CELL))
+                    // Hairlines BETWEEN the segments, not around each: one
+                    // control with three cells, rather than three buttons
+                    // that happen to touch.
+                    .when(ix > 0, |el| el.border_l_1().border_color(border))
+                    .when(on, |el| el.bg(accent))
+                    .when(!on, |el| el.hover(|s| s.bg(muted.opacity(0.6))))
+                    .cursor_pointer()
+                    .child(view.icon().with_size(px(14.)).text_color(if on {
+                        on_colour
+                    } else {
+                        off_colour
+                    }))
+                    .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.set_editor_view(view, window, cx);
+                    }))
             }))
             .into_any_element()
     }
@@ -1262,6 +1337,22 @@ impl Render for Workspace {
                         .flex_1()
                         .items_center()
                         .justify_between()
+                        // Clear the right rail's strip entirely
+                        // (`RAIL_WIDTH`), then stand off its left border by
+                        // the same gap the switcher already has above it.
+                        //
+                        // That gap is not a taste: the title bar centres a
+                        // `SWITCHER_CELL` in `TITLE_BAR_HEIGHT`, so half the
+                        // difference is what sits over the buttons, and
+                        // matching it here makes the switcher inset equally
+                        // from its container on both axes. Derived from both
+                        // constants, so it survives either being re-measured.
+                        //
+                        // The rail is a STRIP, so its left border is the line
+                        // to respect — aligning to its buttons' right edge
+                        // instead put the switcher over the rail rather than
+                        // beside it.
+                        .pr(RAIL_WIDTH + px((f32::from(TITLE_BAR_HEIGHT) - SWITCHER_CELL) / 2.))
                         .child(gpui_component::label::Label::new("brink"))
                         .child(switcher),
                 ),

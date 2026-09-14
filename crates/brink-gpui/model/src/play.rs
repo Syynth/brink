@@ -87,6 +87,13 @@ pub struct PlayState {
     /// the innermost frame has no open container — an exhausted flow, or
     /// one parked on a deferred external.
     pub position: Option<(u32, usize)>,
+    /// Set when this is the state a RUNTIME FAULT left behind rather than
+    /// a live story's. The VM is dropped either way; what the author needs
+    /// is the state it died in — which globals held what, where the flow
+    /// was — so it is read off the story before the drop and answered here
+    /// until the next Start. Panels must say so rather than draw a corpse
+    /// as a running session.
+    pub faulted: Option<Fault>,
 }
 
 /// One step of story output, the runtime's [`Step`] with only what a
@@ -121,6 +128,24 @@ pub struct PlayChoice {
     pub source: Option<Location>,
 }
 
+/// A runtime fault: what the engine said, and where it happened.
+///
+/// ink's own runtime names the site — `RUNTIME ERROR: 'story.ink' line 7:
+/// Can not call use == operation on Int and List` — and an author handed
+/// the message without one has to hunt the project for it. So this carries
+/// the site too, resolved exactly the way a breakpoint stop's is
+/// ([`current_line`]), off the debug info the play compile asks for.
+///
+/// `at` is `None` when nothing resolves: a fault raised before the story
+/// ran (a bad "play from here" path), or a program built without debug
+/// info.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fault {
+    pub message: String,
+    /// `(file, 1-based line)`, keyed the way [`PlayStop::at`] is.
+    pub at: Option<(String, u32)>,
+}
+
 /// Why a command produced no steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayError {
@@ -136,9 +161,10 @@ pub enum PlayError {
     Link(String),
     /// A `Choose` with no session running.
     NotStarted,
-    /// The runtime faulted. The session is dropped: a faulted VM has no
-    /// state worth continuing from.
-    Runtime(String),
+    /// The runtime faulted. The session is dropped — a faulted VM has no
+    /// state worth continuing from — but the state it died in is parked on
+    /// the slot first, and answered to the next `Snapshot`.
+    Runtime(Fault),
     /// The worker has no usable project.
     Unavailable,
 }
@@ -155,7 +181,13 @@ impl std::fmt::Display for PlayError {
             Self::NoStory => f.write_str("the compiler produced no story"),
             Self::Link(e) => write!(f, "link failed: {e}"),
             Self::NotStarted => f.write_str("no story is running"),
-            Self::Runtime(e) => write!(f, "runtime error: {e}"),
+            Self::Runtime(Fault {
+                message,
+                at: Some((path, line)),
+            }) => write!(f, "runtime error at {path}:{line}: {message}"),
+            Self::Runtime(Fault { message, at: None }) => {
+                write!(f, "runtime error: {message}")
+            }
             Self::Unavailable => f.write_str("no project is open"),
         }
     }
@@ -226,6 +258,40 @@ pub struct Play {
     breakpoints: BreakpointSet,
 }
 
+/// The worker's play slot: the running story, the marks that outlive it,
+/// and what a fault left behind.
+///
+/// One value rather than three loose locals because the three are one
+/// thing — a Start replaces the story, re-arms the marks against the
+/// program it just compiled, and clears the last corpse, and keeping that
+/// invariant in one place is what stops a stale fault outliving the run
+/// that superseded it.
+#[derive(Default)]
+pub struct PlaySlot {
+    play: Option<Play>,
+    /// The breakpoint lines as the editor holds them, kept across
+    /// sessions because the gutter marks are: a mark set before Play is
+    /// pressed must be armed by the Start that follows.
+    wanted: Vec<(String, u32)>,
+    /// The state the last fault died in, answered to `Snapshot` while
+    /// nothing is running. Cleared by the next Start or Stop.
+    fault: Option<PlayState>,
+}
+
+impl PlaySlot {
+    /// Drop a faulted session, keeping the state it died in.
+    ///
+    /// The drop is the old rule and stays: there is nothing worth
+    /// continuing from. What changes is that the state is read off the
+    /// story FIRST — dropping it unread is what left the State View
+    /// saying "no story is running" over a transcript that had just
+    /// faulted, with the values that explain the fault already gone.
+    fn park(&mut self, state: Option<PlayState>) {
+        self.play = None;
+        self.fault = state;
+    }
+}
+
 /// Run one command against the worker's play slot.
 ///
 /// `entry` is the project's `[project] entry` as applied; `files` the
@@ -234,63 +300,72 @@ pub fn run(
     session: &mut IdeSession,
     entry: Option<&str>,
     files: &[String],
-    play: &mut Option<Play>,
-    wanted: &mut Vec<(String, u32)>,
+    slot: &mut PlaySlot,
     command: PlayCommand,
 ) -> PlayOutcome {
     match command {
         PlayCommand::Start { at } => {
-            *play = None;
+            slot.play = None;
+            slot.fault = None;
             match start(session, entry, files, at.as_deref()) {
                 Ok(started) => {
-                    let running = play.insert(started);
+                    let running = slot.play.insert(started);
                     // The breakpoints outlive the session, because the
                     // marks in the gutter do: they are armed against the
                     // program this Start just compiled, and a start with
                     // any of them armed runs on the DEBUG road, so the
                     // first one hits instead of the story running past it.
-                    let unbound = arm(running, wanted);
-                    let mut outcome = if wanted.is_empty() {
+                    let unbound = arm(running, &slot.wanted);
+                    let mut outcome = if slot.wanted.is_empty() {
                         advance(running)
                     } else {
-                        debug_command(play, DebugVerb::Continue)
+                        debug_command(slot, DebugVerb::Continue)
                     };
                     outcome.unbound = unbound;
                     if outcome.error.is_some() {
-                        *play = None;
+                        slot.park(outcome.state.clone());
                     }
                     outcome
                 }
                 Err(e) => PlayOutcome::failed(e),
             }
         }
+        // A fault answers here too, for as long as nothing has superseded
+        // it: the panel that asks this is the one an author opens to find
+        // out WHY the story died.
         PlayCommand::Snapshot => PlayOutcome {
-            state: play.as_ref().map(|running| snapshot(&running.story)),
+            state: slot
+                .play
+                .as_ref()
+                .map(|running| snapshot(&running.story))
+                .or_else(|| slot.fault.clone()),
             ..PlayOutcome::default()
         },
         PlayCommand::Choose(index) => {
-            let Some(running) = play.as_mut() else {
+            let Some(running) = slot.play.as_mut() else {
                 return PlayOutcome::failed(PlayError::NotStarted);
             };
             if let Err(e) = running.story.choose(index) {
-                *play = None;
-                return PlayOutcome::failed(PlayError::Runtime(e.to_string()));
+                let outcome = faulted(running, e.to_string());
+                slot.park(outcome.state.clone());
+                return outcome;
             }
             // With breakpoints armed, taking a choice continues on the
             // DEBUG road: the production `continue_maximally` knows
             // nothing about them, so a breakpoint past a choice could
             // never hit and the mark in the gutter would be a lie.
             if running.breakpoints.iter().next().is_some() {
-                return debug_command(play, DebugVerb::Continue);
+                return debug_command(slot, DebugVerb::Continue);
             }
             let outcome = advance(running);
             if outcome.error.is_some() {
-                *play = None;
+                slot.park(outcome.state.clone());
             }
             outcome
         }
         PlayCommand::Stop => {
-            *play = None;
+            slot.play = None;
+            slot.fault = None;
             PlayOutcome::default()
         }
         PlayCommand::SetBreakpoints(lines) => {
@@ -298,16 +373,49 @@ pub fn run(
             // editor's, and the next Start arms them. A set with nothing
             // running is not an error — it is the ordinary case of
             // marking a line before pressing Play.
-            *wanted = lines;
-            let unbound = play.as_mut().map(|running| arm(running, wanted));
+            slot.wanted = lines;
+            let wanted = &slot.wanted;
+            let unbound = slot.play.as_mut().map(|running| arm(running, wanted));
             PlayOutcome {
                 unbound: unbound.unwrap_or_default(),
                 ..PlayOutcome::default()
             }
         }
-        PlayCommand::Continue => debug_command(play, DebugVerb::Continue),
-        PlayCommand::StepLine => debug_command(play, DebugVerb::StepLine),
-        PlayCommand::StepInstruction => debug_command(play, DebugVerb::StepInstruction),
+        PlayCommand::Continue => debug_command(slot, DebugVerb::Continue),
+        PlayCommand::StepLine => debug_command(slot, DebugVerb::StepLine),
+        PlayCommand::StepInstruction => debug_command(slot, DebugVerb::StepInstruction),
+    }
+}
+
+/// The outcome a runtime fault produces: the engine's message, the site
+/// the debug info resolves for it, and the state the story died in.
+///
+/// Read off the story while it is still alive — every caller drops it
+/// immediately after (see [`PlaySlot::park`]).
+///
+/// ## The turn's own output is NOT here, and cannot be
+///
+/// ink delivers the lines a faulting turn had already produced and then
+/// reports the fault; brink delivers nothing. That is not this function's
+/// choice: `continue_maximally` returns `Result<Vec<Step>, _>` and
+/// `drive_to_terminal`'s `?` drops the steps it had accumulated, so the
+/// output is gone before any of it reaches here — and gone from the
+/// buffer too, having already been taken out of it. Recovering it needs
+/// the runtime to hand back partial output with the error, which is a
+/// change to an API `bevy-brink`, the CLI and the wasm bindings all share
+/// (#3587).
+/// Pinned by `a_runtime_fault_names_its_site_and_leaves_its_state_readable`.
+fn faulted(play: &Play, message: String) -> PlayOutcome {
+    let fault = Fault {
+        message,
+        at: current_line(play),
+    };
+    let mut state = snapshot(&play.story);
+    state.faulted = Some(fault.clone());
+    PlayOutcome {
+        error: Some(PlayError::Runtime(fault)),
+        state: Some(state),
+        ..PlayOutcome::default()
     }
 }
 
@@ -349,8 +457,8 @@ fn arm(play: &mut Play, lines: &[(String, u32)]) -> Vec<(String, u32)> {
     unbound
 }
 
-fn debug_command(play: &mut Option<Play>, verb: DebugVerb) -> PlayOutcome {
-    let Some(running) = play.as_mut() else {
+fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
+    let Some(running) = slot.play.as_mut() else {
         return PlayOutcome::failed(PlayError::NotStarted);
     };
     // Before AND after, so the two drive roads share one delivery stream:
@@ -375,11 +483,25 @@ fn debug_command(play: &mut Option<Play>, verb: DebugVerb) -> PlayOutcome {
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(e) => {
-            *play = None;
-            return PlayOutcome::failed(PlayError::Runtime(format!("{e:?}")));
+            let mut outcome = faulted(running, format!("{e:?}"));
+            // The lines drained BEFORE the verb ran were already
+            // completed by an earlier call; a fault must not swallow
+            // those either. They come first — they are older.
+            let mut earlier: Vec<PlayStep> = lines
+                .into_iter()
+                .map(|(text, tags, source)| PlayStep::Line {
+                    text,
+                    tags,
+                    source: location(source),
+                })
+                .collect();
+            earlier.append(&mut outcome.steps);
+            outcome.steps = earlier;
+            slot.park(outcome.state.clone());
+            return outcome;
         }
     };
-    let Some(running) = play.as_mut() else {
+    let Some(running) = slot.play.as_mut() else {
         return PlayOutcome::failed(PlayError::NotStarted);
     };
     lines.extend(running.story.debug_drain_buffered_lines());
@@ -497,9 +619,13 @@ fn start(
         // "Play from here" is a development affordance: a private stitch is
         // exactly the kind of place an author wants to jump into.
         story.set_visibility_enforcement(false);
-        story
-            .choose_path_string(path)
-            .map_err(|e| PlayError::Runtime(e.to_string()))?;
+        story.choose_path_string(path).map_err(|e| {
+            PlayError::Runtime(Fault {
+                message: e.to_string(),
+                // Nothing has run, so there is no position to resolve.
+                at: None,
+            })
+        })?;
     }
     Ok(Play {
         story,
@@ -538,18 +664,22 @@ fn snapshot(story: &Story<FastRng>) -> PlayState {
         choices: snap.pending_choices.into_iter().map(|c| c.text).collect(),
         rng: (snap.rng.seed, snap.rng.previous),
         position: snap.position.map(|p| (p.container_idx, p.offset)),
+        // A live read. `faulted` is stamped on by [`faulted`] alone.
+        faulted: None,
     }
 }
 
 /// Run to the next yield point.
 fn advance(play: &mut Play) -> PlayOutcome {
-    let mut outcome = PlayOutcome::default();
-    match play.story.continue_maximally() {
-        Ok(steps) => {
-            outcome.steps = steps.into_iter().map(convert).collect();
-        }
-        Err(e) => outcome.error = Some(PlayError::Runtime(e.to_string())),
-    }
+    let mut outcome = match play.story.continue_maximally() {
+        Ok(steps) => PlayOutcome {
+            steps: steps.into_iter().map(convert).collect(),
+            ..PlayOutcome::default()
+        },
+        // The site and the state are read here, while the story is still
+        // alive; the caller drops it immediately after.
+        Err(e) => faulted(play, e.to_string()),
+    };
     outcome.warnings = play
         .story
         .take_runtime_warnings()
@@ -596,13 +726,12 @@ fn convert(step: Step) -> PlayStep {
 mod tests {
     use super::*;
 
-    /// A driver that carries the breakpoint set the worker owns, so a test
+    /// A driver that carries the play slot the worker owns, so a test
     /// reads as a sequence of commands rather than as plumbing.
     struct Driver {
         session: IdeSession,
         files: Vec<String>,
-        play: Option<Play>,
-        wanted: Vec<(String, u32)>,
+        slot: PlaySlot,
     }
 
     impl Driver {
@@ -612,8 +741,7 @@ mod tests {
             Self {
                 session,
                 files: vec!["main.ink".to_owned()],
-                play: None,
-                wanted: Vec::new(),
+                slot: PlaySlot::default(),
             }
         }
 
@@ -622,8 +750,7 @@ mod tests {
             Self {
                 session: IdeSession::new(),
                 files: Vec::new(),
-                play: None,
-                wanted: Vec::new(),
+                slot: PlaySlot::default(),
             }
         }
 
@@ -633,8 +760,7 @@ mod tests {
                 &mut self.session,
                 entry,
                 &self.files,
-                &mut self.play,
-                &mut self.wanted,
+                &mut self.slot,
                 command,
             )
         }

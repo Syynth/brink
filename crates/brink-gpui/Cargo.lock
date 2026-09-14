@@ -997,7 +997,9 @@ dependencies = [
  "brink-ir",
  "gpui-base",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
+ "rust-embed",
  "serde_json",
 ]
 

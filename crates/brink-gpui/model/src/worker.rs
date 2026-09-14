@@ -33,7 +33,7 @@ use std::time::Instant;
 use brink_ide::session::IdeSession;
 
 use crate::cues::CueLine;
-use crate::play::{Play, PlayCommand, PlayOutcome};
+use crate::play::{PlayCommand, PlayOutcome, PlaySlot};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
 use brink_ir::{Severity, SymbolKind};
@@ -390,13 +390,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
-    // The breakpoints the editor has marked, source-level and outliving
-    // any one play session — a mark set before Play is pressed must be
-    // armed by the Start that follows.
-    let mut breakpoints: Vec<(String, u32)> = Vec::new();
     // The author's file keys, for the play session's entry stand-in rule.
     let mut files: Vec<String> = Vec::new();
-    let mut play: Option<Play> = None;
+    // The play session, the breakpoint marks that outlive it, and what a
+    // fault left behind — see [`PlaySlot`].
+    let mut play = PlaySlot::default();
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -417,7 +415,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                 Request::Open { root } => {
                     session = session_with_stdlib();
                     config = ConfigState::default();
-                    play = None;
+                    play = PlaySlot::default();
                     files.clear();
                     let opened = match open(&mut session, root) {
                         Ok((opened, state)) => {
@@ -562,7 +560,6 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                     &mut play,
-                    &mut breakpoints,
                     command,
                 )
             } else {
@@ -1358,6 +1355,88 @@ mod tests {
             matches!(&report.status, CompiledStatus::Errors(e) if !e.is_empty()),
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn a_runtime_fault_names_its_site_and_leaves_its_state_readable() {
+        use crate::play::PlayError;
+        // The shape a real project tripped on: `LIST_COUNT` yields an Int,
+        // and the switch it is fed to compares that Int against list
+        // values. ink's own runtime rejects it too AND names the site —
+        // `RUNTIME ERROR: 'story.ink' line 7: Can not call use ==
+        // operation on Int and List`, checked against `tools/inkjs-oracle`
+        // — so a message with no site is a parity gap, not a nicety.
+        let tree = Tree::new(
+            "fault",
+            &[(
+                "main.ink",
+                "LIST Items = sword, shield\n\
+                 -> start\n\
+                 === function price(item)\n\
+                 { item:\n\
+                 - sword: ~ return 20\n\
+                 - shield: ~ return 12\n\
+                 }\n\
+                 === start\n\
+                 ~ temp item = LIST_COUNT((sword, shield))\n\
+                 item is {item}.\n\
+                 The price is {price(item)}.\n\
+                 -> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+
+        let started = play(&worker, PlayCommand::Start { at: None });
+        // ⚠ DIVERGENCE (#3587), pinned rather than fixed. inkjs prints the line the
+        // story had already finished ("item is 2.") and THEN reports the
+        // fault; brink reports the fault alone. The output is discarded
+        // inside the runtime — `drive_to_terminal`'s `?` drops the steps it
+        // had accumulated — so no studio-side change can recover it, and
+        // the repair is a change to the shape of an API `bevy-brink`, the
+        // CLI and the wasm bindings share. If this starts failing because
+        // the line arrives, the engine was fixed: assert the line instead.
+        assert!(
+            line_texts(&started).is_empty(),
+            "a faulting turn still loses its output: {started:?}"
+        );
+        let Some(PlayError::Runtime(fault)) = &started.error else {
+            panic!("the run faults: {started:?}");
+        };
+        let Some((path, line)) = &fault.at else {
+            panic!("the fault names its site: {fault:?}");
+        };
+        assert_eq!(path, "main.ink");
+        assert!(
+            (3..=7).contains(line),
+            "the site is the comparison inside `price`, not the call: {fault:?}"
+        );
+        assert!(
+            fault.message.contains("Equal"),
+            "the engine's own words are kept: {fault:?}"
+        );
+        // The site rides the rendered message too, the way ink's does.
+        let rendered = started.error.as_ref().expect("just matched").to_string();
+        assert!(
+            rendered.contains(&format!("{path}:{line}")),
+            "the message names the site: {rendered}"
+        );
+
+        // The corpse is readable. Dropping it unread is what used to leave
+        // the State View saying nothing was running over a transcript that
+        // had just died, with the values explaining the fault already gone.
+        let after = play(&worker, PlayCommand::Snapshot);
+        let state = after.state.expect("the faulted state is kept");
+        assert_eq!(state.faulted.as_ref(), Some(fault), "{state:?}");
+        assert!(
+            state.globals.iter().any(|(name, _)| name == "Items"),
+            "it is a real snapshot, not a stub: {state:?}"
+        );
+
+        // ...but only until something supersedes it. A Stop is the author
+        // saying they are done with it.
+        let _ = play(&worker, PlayCommand::Stop);
+        let cleared = play(&worker, PlayCommand::Snapshot);
+        assert_eq!(cleared.state, None, "{cleared:?}");
     }
 
     #[test]

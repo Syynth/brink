@@ -49,8 +49,8 @@ use brink_gpui_model::fixes::{FixPlan, FixScope};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 
 use crate::fixes;
-use crate::icons;
 use crate::project::{Project, ProjectEvent};
+use brink_gpui_shell::icons;
 
 /// How a row finds its fixes in the one-per-analysis offers map: its
 /// diagnostic's `(path, start, end, code)`.
@@ -555,7 +555,7 @@ impl Problems {
     /// an active state.
     fn tool(
         id: &'static str,
-        src: &'static str,
+        src: icons::BrinkIcon,
         active: bool,
         tooltip: &'static str,
         cx: &mut Context<Self>,
@@ -846,7 +846,7 @@ impl Panel for Problems {
                 .child(div().w(px(6.)))
                 .child(Self::tool(
                     "problems-filter",
-                    icons::SEARCH,
+                    icons::BrinkIcon::Find,
                     self.filter_open,
                     "Filter problems",
                     cx,
@@ -857,7 +857,7 @@ impl Panel for Problems {
                 ))
                 .child(Self::tool(
                     "problems-group",
-                    icons::GROUP_BY_FILE,
+                    icons::BrinkIcon::GroupByFile,
                     self.grouped,
                     "Group by file",
                     cx,

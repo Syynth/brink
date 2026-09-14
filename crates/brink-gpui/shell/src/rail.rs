@@ -10,7 +10,7 @@
 //! the region model.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Hsla, Pixels, SharedString, Window, div, px, svg};
+use gpui::{AnyElement, App, Hsla, Pixels, SharedString, Window, div, px};
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants as _},
@@ -30,7 +30,7 @@ const ICON_SIZE: Pixels = px(16.);
 pub struct RailButton {
     pub id: SharedString,
     pub title: SharedString,
-    pub icon: Option<&'static str>,
+    pub icon: Option<crate::icons::BrinkIcon>,
     pub slot: RailSlot,
     /// Whether this tool window's dock is currently open.
     pub active: bool,
@@ -173,13 +173,9 @@ where
                 })
                 .on_click(move |_, window, cx| on_click(&id, window, cx))
                 .child(match b.icon {
-                    // A complete SVG document, painted as a monochrome mask tinted
-                    // by `colour` — only the alpha the shape covers matters.
-                    Some(src) => svg()
-                        .size(ICON_SIZE)
-                        .text_color(colour)
-                        .data(src.as_bytes())
-                        .into_any_element(),
+                    // Painted as a monochrome mask tinted by `colour` — only
+                    // the alpha the shape covers matters.
+                    Some(name) => crate::icons::icon(name, ICON_SIZE, colour).into_any_element(),
                     None => div()
                         .text_xs()
                         .text_color(colour)
