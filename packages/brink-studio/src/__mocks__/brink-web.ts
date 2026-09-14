@@ -2718,6 +2718,43 @@ export function program_checksum(bytes: Uint8Array): string {
 }
 
 /**
+ * The XLIFF round trip (`docs/desktop-ota-spec.md` Stage 1). These exist so
+ * `@brink-lang/web`'s named imports LINK against this mock — an ESM named
+ * import of a missing export is a link-time failure for the whole module,
+ * which would take the entire studio suite down rather than one test.
+ *
+ * They are deliberately the thinnest possible stand-ins: nothing in the
+ * studio calls them (the consumer is the desktop shell, whose suite aliases
+ * `brink-web` to the REAL wasm glue — see `packages/brink-desktop/
+ * vitest.config.ts`). A richer fake here would be a second, wrong
+ * implementation of a format nothing in this suite reads.
+ */
+export function export_xliff(
+  _storyBytes: Uint8Array,
+  srcLang: string,
+  trgLang?: string,
+): string {
+  const trg = trgLang === undefined ? "" : ` trgLang="${trgLang}"`;
+  return `<?xml version="1.0"?><xliff version="2.0" srcLang="${srcLang}"${trg}/>`;
+}
+
+export function compile_locale(
+  _baseBytes: Uint8Array,
+  _xliffText: string,
+  _locale: string,
+): Uint8Array {
+  return new Uint8Array();
+}
+
+export function regenerate_xliff(
+  _baseBytes: Uint8Array,
+  _existingXliff: string,
+  srcLang: string,
+): string {
+  return `<?xml version="1.0"?><xliff version="2.0" srcLang="${srcLang}"/>`;
+}
+
+/**
  * Mock of `diagnostic_registry` (#3169). A handful of REAL rows, not a
  * generated copy of all 189 — a mock that mirrored the whole registry would
  * be a second source of truth to keep in step, which is the drift this

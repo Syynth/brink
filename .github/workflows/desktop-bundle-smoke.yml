@@ -5,26 +5,20 @@ name: Desktop bundle smoke
 # standing. This job must never be added to branch protection's
 # required-checks list.
 #
-# #2709: `docs/desktop-shell-spec.md` had named "a real `tauri build --debug
-# --bundles deb` lane" as the standing follow-up across three separate
-# issues without any of them filing it —
-#   - #2687 (magic-byte sidecar check): exercised only against synthetic
-#     byte arrays in unit tests, never a real cross-built binary.
-#   - #2691 (bundle-time sidecar assertion / `assert-real-sidecar.mjs`):
-#     same gap — its firing point was only OBSERVED by a by-hand
-#     `pnpm tauri build --debug --bundles deb` (docs/desktop-shell-spec.md
-#     "Bundle-time sidecar assertion"), not by any CI lane.
-#   - #2699 / PR #2704 (`--version` smoke check): its host-triple-match
-#     execute branch — the one that actually runs the staged binary — is
-#     likewise proven only by unit tests with a mocked `runFile`, plus that
-#     same by-hand drive.
-# This lane makes that by-hand observation continuous: it runs a real
-# `tauri build --debug --bundles deb` end to end, on a real cross-workspace
-# `brink-cli` release build (unlike desktop-smoke.yml, which stubs the
-# sidecar via BRINK_SIDECAR_STUB because nothing there ever executes it), so
-# the magic check, the `--version` smoke check's execute branch, and the ELF
-# staging path are all exercised against real bytes at least once per
-# relevant change, not only against synthetic fixtures.
+# What it buys: a real `tauri build --debug --bundles deb`, end to end, on
+# every relevant change — the only lane in the repo that proves the bundling
+# phase works at all. desktop-smoke.yml stops at `cargo check`/`clippy`/
+# `test` plus `vite build`; nothing else ever asks tauri-bundler to produce
+# an artifact, so a break there would otherwise surface first in
+# desktop-release.yml, on a tag, with a release half-cut.
+#
+# It was introduced (#2709) to make three sidecar assertions continuous
+# rather than by-hand: the magic-byte check (#2687), the bundle-time
+# real-sidecar assertion (#2691), and the `--version` smoke check's
+# host-triple-match execute branch (#2699). All three are gone with the
+# sidecar itself (`docs/desktop-ota-spec.md` Stage 1), and the lane is kept
+# for the reason above, which outlives them — and which Stage 2's OTA
+# archive, cut from the same bundle, will lean on directly.
 #
 # `deb` on `ubuntu-latest`, not a macOS/Windows target: it is the cheapest
 # real bundle target this repo's CI already has the runner class and system
@@ -35,18 +29,16 @@ name: Desktop bundle smoke
 # decided here either.
 #
 # ⚠ Deliberately NOT `--locked`, unlike desktop-smoke.yml's own cargo steps:
-# this lane's cargo builds (the root workspace's `cargo build -p brink-cli
-# --release` via ensure-cli-sidecar.mjs, and src-tauri's own debug build,
-# both driven through `pnpm tauri build`) have no plumbed passthrough for
-# extra cargo flags on this Tauri CLI version. This lane is NOT the
-# lock-staleness gate for `packages/brink-desktop/src-tauri/Cargo.lock` —
-# desktop-smoke.yml's `--locked` cargo steps (see its own ⚠ block) remain
-# the lane that catches that lockfile drifting stale; this one only proves
-# the bundle builds and runs.
+# this lane's cargo build (src-tauri's own debug build, driven through
+# `pnpm tauri build`) has no plumbed passthrough for extra cargo flags on
+# this Tauri CLI version. This lane is NOT the lock-staleness gate for
+# `packages/brink-desktop/src-tauri/Cargo.lock` — desktop-smoke.yml's
+# `--locked` cargo steps (see its own ⚠ block) remain the lane that catches
+# that lockfile drifting stale; this one only proves the bundle builds.
 # #2716: the `push` trigger below used to have NO `paths:` filter, unlike
-# `pull_request`'s (below) — every push to `main` re-ran this lane (a real
-# `cargo build -p brink-cli --release` plus the full `src-tauri` Tauri build
-# graph) and re-saved its rust-cache entry, no matter what the push touched.
+# `pull_request`'s (below) — every push to `main` re-ran this lane (the full
+# `src-tauri` Tauri build graph, plus two wasm builds) and re-saved its
+# rust-cache entry, no matter what the push touched.
 # Verified against a real run (job 95324823667, 2026-08-17, a cache HIT so
 # no upload, but the entry it restored is the same one a change to these
 # paths would re-save): `Cache Size: ~784 MB (822197295 B)` — matches the
@@ -79,7 +71,6 @@ on:
     branches: [main]
     paths:
       - "packages/brink-desktop/**"
-      - "crates/brink-cli/**"
       - "crates/brink-web/**"
       - "packages/wasm/**"
       - "packages/wasm-types/**"
@@ -103,11 +94,6 @@ on:
     # out of sync on which real changes this lane actually verifies.
     paths:
       - "packages/brink-desktop/**"
-      # Unlike desktop-smoke.yml (#2477), this lane's sidecar build is NOT
-      # stubbed — `ensure-cli-sidecar.mjs` really runs `cargo build -p
-      # brink-cli --release` here, so a brink-cli source change is exactly
-      # the kind of thing this lane exists to catch.
-      - "crates/brink-cli/**"
       - "crates/brink-web/**"
       - "packages/wasm/**"
       - "packages/wasm-types/**"
@@ -140,10 +126,9 @@ jobs:
   desktop-bundle-smoke:
     name: Desktop bundle smoke (tauri build --debug --bundles deb)
     runs-on: ubuntu-latest
-    # A real release build of brink-cli (root workspace, NOT stubbed —
-    # unlike desktop-smoke.yml), a real src-tauri debug build, and a wasm
-    # build, in a lane branch protection does not watch. Generous on
-    # purpose, same reasoning as desktop-smoke.yml's own 45.
+    # A real src-tauri debug build plus two wasm builds, in a lane branch
+    # protection does not watch. Generous on purpose, same reasoning as
+    # desktop-smoke.yml's own 45.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -163,8 +148,8 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev patchelf
 
-      # Caches BOTH the root workspace (brink-cli's real release build,
-      # below) and src-tauri's own excluded workspace.
+      # Caches BOTH the root workspace (the wasm-pack builds below each run
+      # a root-workspace cargo build) and src-tauri's own excluded workspace.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
@@ -210,15 +195,8 @@ jobs:
       - name: Verify wasm package link (check-wasm-pkg)
         run: pnpm run check:wasm-pkg
 
-      # The real thing: `beforeBuildCommand` (`pnpm build`) stages a REAL
-      # brink-cli release binary (ensure-cli-sidecar.mjs, no
-      # BRINK_SIDECAR_STUB set here) and runs `vite build`; the crate then
-      # compiles; `beforeBundleCommand` (`scripts/assert-real-sidecar.mjs`)
-      # runs against that real staged binary — the magic-byte check and the
-      # #2699 `--version` smoke check's host-triple-match execute branch
-      # both fire for real, on a real x86_64-unknown-linux-gnu ELF, exactly
-      # as `docs/desktop-shell-spec.md`'s by-hand observation table
-      # recorded — before tauri-bundler produces the `.deb`.
+      # The real thing: `beforeBuildCommand` (`pnpm build`) runs `vite
+      # build`, the crate compiles, and tauri-bundler produces the `.deb`.
       #
       # `createUpdaterArtifacts` is overridden OFF for this lane. With it on,
       # `tauri build` hard-fails ("A public key has been found, but no

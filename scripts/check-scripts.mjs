@@ -128,9 +128,9 @@
 //   - `packages/*/scripts/*.mjs`. NOT scanned by checks 1-3, because they are
 //     Node ESM and every check above is a shell-line tokenizer — running one
 //     over JavaScript is a category error, not a conservative approximation.
-//     They DO invoke fetch-capable commands (`ensure-wasm.mjs` and
-//     `ensure-cli-sidecar.mjs` shell out to `wasm-pack`/`cargo` via
-//     `execSync`), and the bound for those is `execSync`'s/`spawnSync`'s own
+//     They DO invoke fetch-capable commands (`ensure-wasm.mjs` shells out to
+//     `wasm-pack`/`cargo` via `execSync`), and the bound for those is
+//     `execSync`'s/`spawnSync`'s own
 //     `timeout` option — a different mechanism, which is why check 4
 //     (`findUnboundedExecCalls`, #2697 gap 2) scans this directory
 //     separately at the JS level instead of trying to fold it into checks
@@ -1159,8 +1159,8 @@ export function splitSegmentsQuoteAware(line) {
 // as deliberately NOT covering `packages/*/scripts/*.mjs`: those are Node
 // ESM, and running a shell-line scanner over JavaScript is a category error,
 // not a conservative approximation. But `packages/brink-desktop/scripts/
-// ensure-wasm.mjs` and `ensure-cli-sidecar.mjs` shell out to `wasm-pack`/
-// `cargo`/`rustc` via `execSync` with no bound, on the exact same
+// ensure-wasm.mjs` shells out to `wasm-pack`/`cargo`/`rustc` via `execSync`
+// with no bound, on the exact same
 // `pnpm --filter @brink/desktop dev` preflight path a wedged proxy can hang
 // forever — the same hazard class check 1 exists for, one language over. The
 // bound here is each `node:child_process` spawn API's own `timeout` option,

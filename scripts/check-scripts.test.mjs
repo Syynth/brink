@@ -1630,7 +1630,7 @@ describe("EXEC_CALL_NAMES / discoverPackageScriptSources (#2697)", () => {
     const sources = discoverPackageScriptSources();
     const paths = sources.map((s) => s.path);
     assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true, paths.join(", "));
-    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"), true, paths.join(", "));
+    assert.equal(paths.includes("packages/brink-desktop/scripts/build-update-manifest.mjs"), true, paths.join(", "));
     // Sorted, for deterministic output.
     assert.deepEqual([...paths].sort(), paths);
   });
@@ -1658,18 +1658,6 @@ describe("findUnboundedExecCalls — the REAL packages/*/scripts/*.mjs (#2697)",
   it("is non-vacuous: stripping the real timeout out of ensure-wasm.mjs goes red", () => {
     const source = realSources.find((s) => s.path.endsWith("ensure-wasm.mjs"));
     assert.notEqual(source, undefined, "expected to discover ensure-wasm.mjs");
-
-    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
-    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
-
-    const result = findUnboundedExecCalls(stripped, source.path);
-    assert.equal(result.ok, false);
-    assert.match(result.problems.join("\n"), /execSync/);
-  });
-
-  it("is non-vacuous: stripping the real timeout out of ensure-cli-sidecar.mjs goes red", () => {
-    const source = realSources.find((s) => s.path.endsWith("ensure-cli-sidecar.mjs"));
-    assert.notEqual(source, undefined, "expected to discover ensure-cli-sidecar.mjs");
 
     const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
     assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");

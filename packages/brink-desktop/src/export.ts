@@ -29,16 +29,23 @@ export function defaultExportName(root: string): string {
 }
 
 /**
- * Compile the open project and hand the resulting bytes to `saveDialog`. A
- * failed compile surfaces as an error notification through the studio
- * surface (the backup-ring-failure precedent in `main.tsx`) — never a
- * silent no-op — and never reaches the dialog.
+ * Run the project's compile and resolve to its `.inkb` bytes, or `null` if
+ * it did not produce any — reporting the reason through `api.notify` in
+ * that case, never a silent no-op.
+ *
+ * Shared with `export-xliff.ts` rather than duplicated: every flow
+ * that needs compiled bytes needs the same asynchronous landing dance, and
+ * two copies would drift the moment one of them learned something about the
+ * worker road that the other did not.
+ *
+ * `source` is the notification's source tag, so each caller's failures land
+ * under its own name.
  */
-export async function exportStoryToInkb(
+export async function compiledStoryBytes(
   api: ExportApi,
-  root: string,
-  saveDialog: (defaultName: string, bytes: Uint8Array) => Promise<string | null>,
-): Promise<void> {
+  source: string,
+  what: string,
+): Promise<Uint8Array | null> {
   const before = api.select((s) => s.diagnostics);
   const bytesBefore = api.getStoryBytes();
   api.dispatch("compile.run");
@@ -52,10 +59,10 @@ export async function exportStoryToInkb(
     if (Date.now() > deadline) {
       api.notify({
         severity: "error",
-        source: "export",
-        message: "Export failed: the compile did not finish in time.",
+        source,
+        message: `${what} failed: the compile did not finish in time.`,
       });
-      return;
+      return null;
     }
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -64,11 +71,27 @@ export async function exportStoryToInkb(
     const { errors } = api.select((s) => s.diagnostics);
     api.notify({
       severity: "error",
-      source: "export",
-      message: `Export failed: ${errors} compile error(s) — fix them and try again.`,
+      source,
+      message: `${what} failed: ${errors} compile error(s) — fix them and try again.`,
     });
-    return;
+    return null;
   }
+  return bytes;
+}
+
+/**
+ * Compile the open project and hand the resulting bytes to `saveDialog`. A
+ * failed compile surfaces as an error notification through the studio
+ * surface (the backup-ring-failure precedent in `main.tsx`) — never a
+ * silent no-op — and never reaches the dialog.
+ */
+export async function exportStoryToInkb(
+  api: ExportApi,
+  root: string,
+  saveDialog: (defaultName: string, bytes: Uint8Array) => Promise<string | null>,
+): Promise<void> {
+  const bytes = await compiledStoryBytes(api, "export", "Export");
+  if (bytes === null) return;
 
   try {
     await saveDialog(defaultExportName(root), bytes);

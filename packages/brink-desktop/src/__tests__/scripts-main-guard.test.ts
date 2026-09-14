@@ -40,14 +40,9 @@ const scriptsDir = resolve(fileURLToPath(import.meta.url), "../../../scripts");
 // fails loudly instead of vacuously reporting zero violations. Adding a
 // preflight script means adding its name here — one line — while the guard
 // assertions below apply to it automatically.
-const EXPECTED_SCRIPTS = [
-  "assert-real-sidecar.mjs",
-  "build-update-manifest.mjs",
-  "ensure-cli-sidecar.mjs",
-  "ensure-wasm.mjs",
-];
+const EXPECTED_SCRIPTS = ["build-update-manifest.mjs", "ensure-wasm.mjs"];
 
-// The idiom all four scripts use verbatim.
+// The idiom every one of these scripts uses verbatim.
 //
 // It compares REAL paths. The original form compared `import.meta.url`
 // against `pathToFileURL(process.argv[1]).href` directly, and Node

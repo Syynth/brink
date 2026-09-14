@@ -17,9 +17,22 @@
 //! APIs and hands these functions the contents.
 //!
 //! Every function takes `.inkb` bytes rather than a path. The CLI's
-//! `export-xliff` also accepts a non-`.inkb` input and passes checksum `0`
-//! for it; that branch has no analogue here, because the only producer on
-//! this side is a compile that just returned `.inkb` bytes.
+//! `export-xliff` also accepts a non-`.inkb` input — it compiles the source
+//! in memory and passes checksum `0`, because there is no header to read one
+//! out of. That branch has no analogue here: the only producer on this side
+//! is a compile that just returned `.inkb` bytes, so the real checksum is
+//! always available.
+//!
+//! ⚠ That is an OBSERVABLE change for the desktop shell, which passes its
+//! entry `.ink` today and therefore takes the source branch: its exported
+//! `.xlf` carries `brink:checksum="0x00000000"`, and through wasm it will
+//! carry the artifact's real CRC. Nothing reads the attribute back —
+//! `compile_locale` stamps the `.inkl`'s `base_checksum` from the base
+//! `.inkb` it is handed (`brink-intl/src/compile.rs:105`), never from the
+//! document, and the runtime's check (`brink-runtime/src/locale.rs:33`)
+//! compares that stamp against the program. So the attribute is provenance
+//! only, and the real value is the useful one: it names which artifact a
+//! translator's file was cut from, which `0` cannot.
 
 use wasm_bindgen::prelude::*;
 
@@ -33,16 +46,14 @@ use wasm_bindgen::prelude::*;
 // because `panic` has no test carve-out in this repo and a wasm panic is an
 // unrecoverable trap for the embedder rather than a catchable exception.
 
-/// Reads `.inkb` bytes into a `StoryData` plus its source-identity checksum.
+/// Reads `.inkb` bytes into a `StoryData`.
 ///
-/// The checksum comes from the header index rather than being recomputed, and
-/// is what binds an `.xlf` to the exact artifact it was generated from — the
-/// same value `program_checksum` formats for the studio.
-fn read_story(story_bytes: &[u8]) -> Result<(brink_format::StoryData, u32), String> {
-    let index =
-        brink_format::read_inkb_index(story_bytes).map_err(|e| format!("decode error: {e}"))?;
-    let data = brink_format::read_inkb(story_bytes).map_err(|e| format!("decode error: {e}"))?;
-    Ok((data, index.checksum))
+/// `StoryData::source_checksum` is the CRC the reader lifts straight out of
+/// the header index (`inkb/read.rs:95`) rather than anything recomputed, so
+/// it is the same value the header carries — and it is what binds an `.xlf`
+/// to the exact artifact it was generated from.
+fn read_story(story_bytes: &[u8]) -> Result<brink_format::StoryData, String> {
+    brink_format::read_inkb(story_bytes).map_err(|e| format!("decode error: {e}"))
 }
 
 fn export_xliff_inner(
@@ -50,8 +61,8 @@ fn export_xliff_inner(
     src_lang: &str,
     trg_lang: Option<&str>,
 ) -> Result<String, String> {
-    let (data, checksum) = read_story(story_bytes)?;
-    let doc = brink_intl::generate_locale(&data, checksum, src_lang, trg_lang);
+    let data = read_story(story_bytes)?;
+    let doc = brink_intl::generate_locale(&data, data.source_checksum, src_lang, trg_lang);
     xliff2::write::to_string(&doc).map_err(|e| format!("xliff write error: {e}"))
 }
 
@@ -70,11 +81,12 @@ fn regenerate_xliff_inner(
     existing_xliff: &str,
     src_lang: &str,
 ) -> Result<String, String> {
-    let (data, checksum) = read_story(base_bytes)?;
+    let data = read_story(base_bytes)?;
     let existing_doc =
         xliff2::read::read_xliff(existing_xliff).map_err(|e| format!("xliff read error: {e}"))?;
-    let merged = brink_intl::regenerate_locale(&data, checksum, src_lang, &existing_doc)
-        .map_err(|e| format!("regenerate error: {e}"))?;
+    let merged =
+        brink_intl::regenerate_locale(&data, data.source_checksum, src_lang, &existing_doc)
+            .map_err(|e| format!("regenerate error: {e}"))?;
     xliff2::write::to_string(&merged).map_err(|e| format!("xliff write error: {e}"))
 }
 
@@ -186,6 +198,32 @@ mod tests {
         assert!(
             merged.contains("The lantern gutters."),
             "regenerated document lost the source text:\n{merged}"
+        );
+    }
+
+    /// The exported document names the artifact it was cut from. The CLI's
+    /// source-input branch emits `0x00000000` here because it has no header
+    /// to read; going through `.inkb` bytes there is always a real one, and
+    /// that difference is observable in a file authors hand to translators —
+    /// so it is pinned rather than left to drift back.
+    #[test]
+    fn export_carries_the_artifacts_real_checksum_not_zero() {
+        let bytes = story_bytes(STORY);
+        let data = super::read_story(&bytes).expect("read the artifact back");
+        assert_ne!(
+            data.source_checksum, 0,
+            "the compiled artifact has no checksum, so this test proves nothing"
+        );
+
+        let xml = export_xliff_inner(&bytes, "en", None).expect("export");
+        let expected = format!("0x{:08x}", data.source_checksum);
+        assert!(
+            xml.contains(&expected),
+            "export did not carry the artifact checksum {expected}:\n{xml}"
+        );
+        assert!(
+            !xml.contains("0x00000000"),
+            "export fell back to the CLI's source-branch placeholder:\n{xml}"
         );
     }
 

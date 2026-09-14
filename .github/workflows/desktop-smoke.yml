@@ -26,14 +26,12 @@ on:
       - "crates/brink-web/**"
       - ".github/workflows/desktop-smoke.yml"
       # `crates/brink-cli/**` deliberately does NOT appear above (#2477).
-      # It used to belong here because this lane once built the sidecar from
-      # source; since #2469's `BRINK_SIDECAR_STUB` (below), the "Stage
-      # brink-cli sidecar" step and its nested re-run from `pnpm build` both
-      # write a placeholder without ever reading brink-cli source, and
-      # src-tauri (its own excluded workspace) never depended on the crate
-      # either — so nothing left in this lane can notice a brink-cli source
-      # change. Watching the tree here would only trigger the job for a
-      # change it can no longer detect.
+      # It used to belong here because this lane once built the crate as a
+      # Tauri sidecar. That sidecar is gone entirely
+      # (`docs/desktop-ota-spec.md` Stage 1) — src-tauri is its own excluded
+      # workspace and never depended on the crate, so nothing in this lane
+      # reads brink-cli source at all now. Watching the tree here would only
+      # trigger the job for a change it cannot detect.
       # `desktop_smoke_path_filter_covers_its_shared_inputs` in
       # src-tauri/src/lib.rs asserts the entry stays gone.
       #
@@ -41,9 +39,8 @@ on:
       # Without them a breaking change runs this lane only on the post-merge
       # push to `main`, after the break has landed: the lockfile feeds
       # `pnpm install --frozen-lockfile`; the toolchain pin still selects the
-      # rustc this lane's `cargo check`/`clippy`/`test` run under (it used to
-      # also feed the cross-workspace `brink-cli` sidecar build, which
-      # `BRINK_SIDECAR_STUB` removed — #2469); root `Cargo.toml`/`Cargo.lock`
+      # rustc this lane's `cargo check`/`clippy`/`test` run under; root
+      # `Cargo.toml`/`Cargo.lock`
       # also feed the root-workspace `cargo build` behind `wasm-pack build
       # crates/brink-web` in "Build brink-web wasm package" below — that
       # step is not covered just because src-tauri's own comparison tests
@@ -92,34 +89,15 @@ env:
   # Same rationale as ci.yml: every job here starts from a cold checkout, so
   # incremental compilation is pure write overhead, never read back.
   CARGO_INCREMENTAL: 0
-  # The `brink-cli` sidecar is staged here only so `tauri-build`'s externalBin
-  # resolution finds a file on disk (see "Stage brink-cli sidecar" below);
-  # nothing in this check-only lane ever EXECUTES it — `run_cli` in
-  # src-tauri/src/lib.rs is the only caller and it needs a running app, not a
-  # `cargo test` — so building it at all was pure waste (#2418 gap 4). This
-  # asks `ensure-cli-sidecar.mjs` for a stub instead (#2469): it writes a
-  # loudly-failing placeholder under the same triple-suffixed name and skips
-  # `cargo build -p brink-cli --release` entirely, removing that waste
-  # outright.
+  # ⚠ #2482 proposed treating the "Build brink-web wasm package" step below
+  # the way the (now-deleted) `brink-cli` sidecar staging was treated — as a
+  # release build this lane pays for but never executes. That is NOT the
+  # same shape: the sidecar's staged file only had to EXIST, its content
+  # never read, so a placeholder satisfied `externalBin` resolution as well
+  # as a real binary. The wasm-pack output is genuinely consumed below —
+  # "Typecheck (tsc --noEmit)" resolves the `brink-web` alias into it, and
+  # `pnpm build` bundles it — so nothing can stand in for it.
   #
-  # This replaces PR #2446's `CARGO_PROFILE_RELEASE_OPT_LEVEL`/`_DEBUG`/
-  # `_CODEGEN_UNITS` stopgap — but that stopgap was job-wide, not scoped to
-  # the sidecar build, so it was also flattening the "Build brink-web wasm
-  # package" step's `wasm-pack build` below (release by default with no
-  # `--dev`/`--profiling`, and this lane's largest build). Removing the vars
-  # un-flattens that build too: the lane now deliberately accepts a
-  # fully-optimised `wasm-pack build`, rather than keep vars around that
-  # would be dead configuration for the sidecar build they were written for
-  # once that build is gone, while still quietly de-optimising the wasm one.
-  #
-  # ⚠ #2482 proposed treating that wasm-pack build the same way as the
-  # sidecar above ("still pays for a wasm-pack --release build it never
-  # executes"). That is NOT the same shape: the sidecar's staged file only
-  # had to EXIST (its content is never read — a placeholder satisfies
-  # `externalBin` resolution just as well as a real binary), whereas the
-  # "Build brink-web wasm package" step's output is genuinely consumed
-  # below — "Typecheck (tsc --noEmit)" resolves the `brink-web` alias into
-  # it, and `pnpm build` bundles it — so a stub cannot stand in for it.
   # That leaves #2482's other candidate open: reusing `ci.yml`'s own wasm
   # artefact instead of rebuilding it here. This trace does not answer that
   # one — `ci.yml` has no `upload-artifact`/`download-artifact` step
@@ -127,23 +105,16 @@ env:
   # consumed" settles. See #2482 for the still-open optimisation-level and
   # artefact-reuse questions.
   #
-  # An `env:` var rather than a flag on the step below, because the lane runs
-  # the script TWICE: its own "Stage brink-cli sidecar" step, and `pnpm build`,
-  # which re-runs it. Only the environment reaches the nested invocation.
-  # Scoped to this workflow, so `ensure-cli-sidecar.mjs` still builds a real
-  # release binary everywhere else, including `pnpm --filter @brink/desktop
-  # build` on a developer machine, where the sidecar does get shipped and run.
-  #
-  # ⚠ `desktop_smoke_stubs_the_staged_sidecar` (src-tauri/src/lib.rs) asserts
-  # both halves: this var present, and the #2446 stopgap vars absent.
-  BRINK_SIDECAR_STUB: "1"
+  # PR #2446's `CARGO_PROFILE_RELEASE_OPT_LEVEL`/`_DEBUG`/`_CODEGEN_UNITS`
+  # stopgap is deliberately absent: it was job-wide rather than scoped to
+  # the sidecar build it was written for, so it was also flattening that
+  # wasm-pack build. This lane accepts a fully-optimised one instead.
 
 jobs:
   desktop-smoke:
     name: Desktop smoke (check, clippy, tsc, build)
     runs-on: ubuntu-latest
-    # Two heavy builds (wasm-pack and the Tauri graph — the brink-cli release
-    # build is stubbed out by BRINK_SIDECAR_STUB above) in a lane branch
+    # Two heavy builds (wasm-pack and the Tauri graph) in a lane branch
     # protection does NOT watch — a hang would burn the 6h default unnoticed.
     # ci.yml sets the same kind of backstop on its long poles (fuzz: 30,
     # determinism-law: 10).
@@ -167,9 +138,11 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev patchelf
 
-      # Caches BOTH the root workspace (brink-cli, below) and src-tauri's own
-      # excluded workspace — rust-cache keys per Cargo.lock location, so one
-      # action instance covers both without stepping on each other.
+      # Caches BOTH the root workspace (the `wasm-pack build
+      # crates/brink-web` below runs a root-workspace cargo build) and
+      # src-tauri's own excluded workspace — rust-cache keys per Cargo.lock
+      # location, so one action instance covers both without stepping on
+      # each other.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
@@ -233,17 +206,6 @@ jobs:
         id: check_wasm_pkg
         if: "!cancelled() && steps.pnpm_install.outcome == 'success'"
         run: pnpm run check:wasm-pkg
-
-      # Stages the brink-cli sidecar that src-tauri's build.rs requires to
-      # exist on disk before it will even `cargo check` — externalBin resource
-      # resolution runs unconditionally, not only on `tauri build`
-      # (packages/brink-desktop/scripts/ensure-cli-sidecar.mjs). `BRINK_SIDECAR_STUB`
-      # in this workflow's `env:` block makes that a placeholder rather than a
-      # root-workspace release build (#2469).
-      - name: Stage brink-cli sidecar
-        id: sidecar
-        run: node scripts/ensure-cli-sidecar.mjs
-        working-directory: packages/brink-desktop
 
       # src-tauri is its OWN cargo workspace (excluded from root, per
       # docs/desktop-shell-spec.md "Workspace placement") — every cargo
@@ -346,17 +308,17 @@ jobs:
           arguments: --all-features --locked
 
       - name: cargo check (src-tauri)
-        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
+        if: "!cancelled() && steps.linux_deps.outcome == 'success'"
         run: cargo check --locked --all-targets
         working-directory: packages/brink-desktop/src-tauri
 
       - name: Clippy (src-tauri)
-        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
+        if: "!cancelled() && steps.linux_deps.outcome == 'success'"
         run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: packages/brink-desktop/src-tauri
 
       - name: cargo test (src-tauri)
-        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
+        if: "!cancelled() && steps.linux_deps.outcome == 'success'"
         run: cargo test --locked
         working-directory: packages/brink-desktop/src-tauri
 
@@ -372,8 +334,6 @@ jobs:
         if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success'"
         run: pnpm --filter @brink/desktop typecheck
 
-      # `pnpm build` re-runs ensure-cli-sidecar.mjs, so it inherits the
-      # sidecar step's prerequisites on top of the frontend ones.
       - name: pnpm build
-        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success' && steps.sidecar.outcome == 'success'"
+        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success'"
         run: pnpm --filter @brink/desktop build
