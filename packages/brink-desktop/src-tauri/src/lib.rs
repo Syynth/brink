@@ -16,6 +16,11 @@ use std::path::{Component, Path, PathBuf};
 
 use tauri_plugin_dialog::DialogExt;
 
+/// The OTA web-bundle store (`docs/desktop-ota-spec.md` Stage 2) — where an
+/// over-the-air bundle lives, how it is promoted, and how a bundle that
+/// cannot boot is rolled back.
+mod bundles;
+
 /// Shell I/O errors. Serialized as their display string across the IPC
 /// boundary (Tauri command errors must be `Serialize`).
 #[derive(Debug, thiserror::Error)]
@@ -533,6 +538,152 @@ async fn save_bytes_dialog(
     })?;
     std::fs::write(&path, &bytes).map_err(|e| io_err(&path, e))?;
     Ok(Some(path.display().to_string()))
+}
+
+// ── OTA bundle serving (docs/desktop-ota-spec.md Stage 2) ──────────────
+//
+// In production the webview is pointed at `brink://localhost` rather than
+// Tauri's built-in app URL, and this protocol answers every request. The
+// handler resolves against the ACTIVE bundle under `app_data_dir()` and
+// falls back to the embedded asset whenever that misses — no active bundle,
+// a file the bundle does not carry, or anything `bundles::resolve_asset`
+// refuses. The embedded copy is therefore a real floor: with no bundle
+// installed this protocol serves byte-for-byte what `frontendDist` already
+// served.
+//
+// ⚠ The custom scheme changes the webview's ORIGIN (`brink://localhost`
+// instead of `tauri://localhost`; `http://brink.localhost` on Windows), so
+// the studio's `localStorage` — layout, settings, breakpoints, open tabs and
+// the story save stores — does not carry across from a pre-OTA install. That
+// one-time loss was RULED acceptable on 2026-09-14 rather than paid for with
+// a two-release migration, on the grounds that the install base is the
+// maintainer's own. It is not a free choice for a wider install base: see
+// `docs/decision-log.md` for the two alternatives that were priced.
+//
+// Dev is untouched. `tauri::is_dev()` keeps the window on `devUrl`, so the
+// vite server, HMR and the dev origin all behave exactly as before.
+
+/// The URI scheme the production webview is pointed at.
+const BUNDLE_SCHEME: &str = "brink";
+
+/// What this launch resolved to — computed once in `setup`, before the
+/// window exists, and read by the protocol handler on every request.
+struct BundleRuntime {
+    /// `<app_data>/bundles`.
+    root: PathBuf,
+    /// The active bundle's directory; `None` serves the embedded floor.
+    dir: Option<PathBuf>,
+    /// This launch's decision, reported to the frontend by `bundle_ready`.
+    outcome: bundles::LaunchOutcome,
+}
+
+/// What the frontend learns when it confirms it booted.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleLaunchInfo {
+    /// Active bundle version; `None` means the embedded floor.
+    version: Option<String>,
+    /// Set when the previous launch's bundle failed to boot and was removed.
+    /// The author is told — a silent rollback leaves them on older code with
+    /// no idea why.
+    rolled_back_from: Option<String>,
+}
+
+impl From<&bundles::LaunchOutcome> for BundleLaunchInfo {
+    fn from(outcome: &bundles::LaunchOutcome) -> Self {
+        match outcome {
+            bundles::LaunchOutcome::Embedded => Self {
+                version: None,
+                rolled_back_from: None,
+            },
+            bundles::LaunchOutcome::Bundle(version) => Self {
+                version: Some(version.clone()),
+                rolled_back_from: None,
+            },
+            bundles::LaunchOutcome::RolledBack {
+                failed,
+                now_serving,
+            } => Self {
+                version: now_serving.clone(),
+                rolled_back_from: Some(failed.clone()),
+            },
+        }
+    }
+}
+
+/// Serve one request from the active bundle, falling back to the embedded
+/// asset.
+///
+/// Never fails loudly: an unresolvable request is a 404, because a bundle
+/// that is missing one file must still boot from the floor rather than take
+/// the app down.
+fn serve_bundle_asset(app: &tauri::AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    use tauri::Manager;
+
+    let from_bundle = app
+        .try_state::<BundleRuntime>()
+        .and_then(|runtime| runtime.dir.clone())
+        .and_then(|dir| bundles::resolve_asset(&dir, path))
+        .and_then(|file| std::fs::read(&file).ok().map(|bytes| (file, bytes)));
+
+    if let Some((file, bytes)) = from_bundle {
+        // Tauri's own inference (content sniff, then URI), not a
+        // hand-maintained extension table that would drift from what vite
+        // actually emits.
+        let mime = tauri::utils::mime_type::MimeType::parse(&bytes, &file.to_string_lossy());
+        return tauri::http::Response::builder()
+            .header(tauri::http::header::CONTENT_TYPE, mime)
+            .body(bytes)
+            .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    match app.asset_resolver().get(path.to_owned()) {
+        Some(asset) => tauri::http::Response::builder()
+            .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)
+            .body(asset.bytes)
+            .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)),
+        None => empty_response(tauri::http::StatusCode::NOT_FOUND),
+    }
+}
+
+/// A body-less response — the one shape `tauri::http::Response::builder()` cannot
+/// fail to produce, so it is safe as the `unwrap_or_else` arm above.
+fn empty_response(status: tauri::http::StatusCode) -> tauri::http::Response<Vec<u8>> {
+    let mut response = tauri::http::Response::new(Vec::new());
+    *response.status_mut() = status;
+    response
+}
+
+/// Milliseconds since the Unix epoch, or 0 if the clock is before it.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The frontend booted: clear the rollback sentinel and report what this
+/// launch is actually running.
+///
+/// Clearing the sentinel is the ONLY thing that distinguishes a bundle that
+/// works from one that wedges the webview, so this must be called from a
+/// point that proves the shell is up — not from module load.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
+    use tauri::Manager;
+
+    let Some(runtime) = app.try_state::<BundleRuntime>() else {
+        return BundleLaunchInfo {
+            version: None,
+            rolled_back_from: None,
+        };
+    };
+    let _ = bundles::mark_ready(&runtime.root);
+    BundleLaunchInfo::from(&runtime.outcome)
 }
 
 // ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
@@ -1535,6 +1686,15 @@ fn build_menu(
 /// mobile build; see the ⚠ marker above `opened_url_to_path`, #2428.)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[expect(
+    clippy::too_many_lines,
+    reason = "the builder chain is one declaration — plugins, the protocol, the \
+              managed state, setup and the command registry read top to bottom \
+              as the app's wiring. Splitting it would scatter that across \
+              helpers whose only caller is this function, which is the shape \
+              `crates/bevy-brink/src/flow.rs` already declined for the same \
+              reason."
+)]
+#[expect(
     clippy::exit,
     reason = "the flagged `process::exit(101)` is inside `tauri::generate_context!`'s \
               own expansion — tauri-codegen's `inner()` fallback for a panicking \
@@ -1555,6 +1715,16 @@ pub fn run() -> tauri::Result<()> {
         // Help's two outbound links. Rust-side `open_url` only — the frontend
         // never calls the plugin, so its JS permissions stay unclaimed.
         .plugin(tauri_plugin_opener::init())
+        // The OTA bundle protocol (docs/desktop-ota-spec.md Stage 2). Reads
+        // hit the disk, so they are answered off the main thread — that is
+        // the whole reason this is the ASYNCHRONOUS variant.
+        .register_asynchronous_uri_scheme_protocol(BUNDLE_SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            std::thread::spawn(move || {
+                responder.respond(serve_bundle_asset(&app, &path));
+            });
+        })
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(RecentsLock(std::sync::Mutex::new(())))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
@@ -1578,6 +1748,51 @@ pub fn run() -> tauri::Result<()> {
                 }
                 let _ = std::fs::write(path, "running");
             }
+
+            // OTA (docs/desktop-ota-spec.md Stage 2). Decide what to serve
+            // and stamp the rollback sentinel BEFORE the window exists —
+            // once the webview is up it can already be requesting assets,
+            // and a sentinel written after that proves nothing about the
+            // boot it was meant to witness.
+            let bundle_root = app.path().app_data_dir().map_or_else(
+                |_| PathBuf::from(bundles::BUNDLES_DIR),
+                |dir| bundles::root_of(&dir),
+            );
+            let (outcome, _) = bundles::begin_launch(&bundle_root, now_ms());
+            let active_dir = match &outcome {
+                bundles::LaunchOutcome::Bundle(version) => {
+                    bundles::version_dir(&bundle_root, version)
+                }
+                bundles::LaunchOutcome::RolledBack { now_serving, .. } => now_serving
+                    .as_deref()
+                    .and_then(|version| bundles::version_dir(&bundle_root, version)),
+                bundles::LaunchOutcome::Embedded => None,
+            };
+            app.manage(BundleRuntime {
+                root: bundle_root,
+                dir: active_dir,
+                outcome,
+            });
+
+            // The window is built here rather than by `tauri.conf.json`
+            // (`"create": false`) for one reason: in production it must load
+            // from the OTA protocol, and a config `url` cannot be chosen at
+            // runtime. Dev keeps the config's own URL, so `devUrl`, the vite
+            // server and HMR are untouched.
+            let mut window_config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .ok_or("tauri.conf.json should declare the main window")?;
+            if !tauri::is_dev() {
+                let url = format!("{BUNDLE_SCHEME}://localhost/")
+                    .parse()
+                    .map_err(|e| format!("bundle protocol URL should parse: {e}"))?;
+                window_config.url = tauri::WebviewUrl::CustomProtocol(url);
+            }
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?.build()?;
 
             let initial_recents = load_recents(&recents_path(app.handle())?)?;
             let menu = build_menu(app.handle(), &initial_recents)?;
@@ -1625,6 +1840,7 @@ pub fn run() -> tauri::Result<()> {
             read_app_settings,
             write_app_settings,
             previous_exit_clean,
+            bundle_ready,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
@@ -3646,6 +3862,80 @@ on:
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
+    }
+
+    /// `BundleLaunchInfo` is what the author is told at boot, and the
+    /// rollback arm is the one that matters: a bundle that failed to boot
+    /// has been deleted and the app is running OLDER code than the author
+    /// installed. Reporting that as an ordinary launch would leave them
+    /// debugging a fix that is no longer there.
+    #[test]
+    fn launch_info_reports_a_rollback_distinctly_from_a_normal_launch() {
+        let embedded = BundleLaunchInfo::from(&bundles::LaunchOutcome::Embedded);
+        assert_eq!(embedded.version, None);
+        assert_eq!(embedded.rolled_back_from, None);
+
+        let normal = BundleLaunchInfo::from(&bundles::LaunchOutcome::Bundle("0.7.1".into()));
+        assert_eq!(normal.version.as_deref(), Some("0.7.1"));
+        assert_eq!(
+            normal.rolled_back_from, None,
+            "an ordinary launch must not look like a rollback"
+        );
+
+        let reverted = BundleLaunchInfo::from(&bundles::LaunchOutcome::RolledBack {
+            failed: "0.7.2".into(),
+            now_serving: Some("0.7.1".into()),
+        });
+        assert_eq!(
+            reverted.version.as_deref(),
+            Some("0.7.1"),
+            "version is what is RUNNING, not what failed"
+        );
+        assert_eq!(reverted.rolled_back_from.as_deref(), Some("0.7.2"));
+
+        let to_floor = BundleLaunchInfo::from(&bundles::LaunchOutcome::RolledBack {
+            failed: "0.7.1".into(),
+            now_serving: None,
+        });
+        assert_eq!(
+            to_floor.version, None,
+            "the embedded floor reports no version"
+        );
+        assert_eq!(to_floor.rolled_back_from.as_deref(), Some("0.7.1"));
+    }
+
+    /// The main window must be built in `setup`, not by tauri.conf.json.
+    ///
+    /// `create: true` (the DEFAULT — so this regresses by deletion, not by
+    /// an edit) makes Tauri open the config's window at startup on the
+    /// built-in app URL, and `setup` then opens a SECOND one on the bundle
+    /// protocol. Two windows, and the visible one serving embedded assets
+    /// forever: OTA would silently never apply, which is precisely the
+    /// quiet-failure class this repo keeps getting bitten by.
+    #[test]
+    fn the_main_window_is_created_in_setup_not_by_the_config() {
+        let conf =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"))
+                .expect("tauri.conf.json should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&conf).expect("tauri.conf.json should be valid JSON");
+
+        let window = parsed
+            .get("app")
+            .and_then(|a| a.get("windows"))
+            .and_then(|w| w.get(0))
+            .expect("tauri.conf.json should declare app.windows[0]");
+        assert_eq!(
+            window.get("create").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "app.windows[0].create must stay false — src/lib.rs's setup builds \
+             the window so production can point it at the {BUNDLE_SCHEME} \
+             protocol while dev keeps devUrl (docs/desktop-ota-spec.md Stage 2)"
+        );
+        assert!(
+            window.get("url").is_none(),
+            "app.windows[0] must not pin a url: setup chooses it per environment"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]

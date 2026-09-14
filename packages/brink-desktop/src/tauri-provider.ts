@@ -470,6 +470,30 @@ export async function saveBytesDialog(
   });
 }
 
+/** What the shell reports once the frontend confirms it booted. */
+export interface BundleLaunchInfo {
+  /** Active OTA bundle version; `null` means the embedded floor. */
+  version: string | null;
+  /** Set when the previous launch's bundle failed to boot and was removed. */
+  rolledBackFrom: string | null;
+}
+
+/**
+ * Confirm the frontend booted, and learn what this launch is running
+ * (`docs/desktop-ota-spec.md` Stage 2).
+ *
+ * ⚠ This call is the ONLY thing that distinguishes a working OTA bundle
+ * from one that wedges the webview: the shell stamps a sentinel before the
+ * window loads and this clears it. A sentinel that survives a launch is
+ * read as "that bundle did not boot", and the shell deletes it and reverts.
+ * So it must be called from a point that actually proves the shell is up,
+ * and it must not be made conditional on anything that can itself fail —
+ * a bug that skips it rolls back a perfectly good bundle on every launch.
+ */
+export async function bundleReady(): Promise<BundleLaunchInfo> {
+  return invoke<BundleLaunchInfo>("bundle_ready");
+}
+
 /**
  * Recent projects (#2394, `docs/desktop-shell-spec.md` D2): a persisted,
  * most-recent-first, capped, deduplicated-by-path list backed by

@@ -105,6 +105,10 @@ vi.mock("../tauri-provider.js", () => ({
   pushRecent: vi.fn(() => Promise.resolve([])),
   readRecents: vi.fn(() => Promise.resolve([])),
   saveBytesDialog: vi.fn(() => Promise.resolve(null)),
+  // The OTA boot confirmation runs at main.tsx module scope and is
+  // deliberately unconditional (docs/desktop-ota-spec.md Stage 2), so every
+  // mock of this module that drives main.tsx has to carry it.
+  bundleReady: vi.fn(() => Promise.resolve({ version: null, rolledBackFrom: null })),
 }));
 
 describe("desktop autosave ticker is cleared on quit (#2517)", () => {
