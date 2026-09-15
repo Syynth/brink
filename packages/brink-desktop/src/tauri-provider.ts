@@ -504,6 +504,51 @@ export type BundleUpdateOutcome =
   /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
   | { kind: "failed"; reason: string };
 
+/**
+ * One misspelled span, as the OS spell checker reports it.
+ *
+ * ⚠ Offsets are **UTF-16 code units**, matching CodeMirror's own indexing
+ * and what `brink-prose` already returns — `NSString` is UTF-16, so the
+ * native API speaks them natively and nothing has to convert.
+ */
+export interface Misspelling {
+  start: number;
+  end: number;
+  /** The word as written, for an add-to-dictionary action. */
+  word: string;
+  /** Platform suggestions, best first. May be empty. */
+  suggestions: string[];
+}
+
+/**
+ * The result of an OS spellcheck.
+ *
+ * `unavailable` is an ANSWER, not an error: Linux and Windows have no native
+ * checker wired up, and the caller should fall back to Harper rather than
+ * report a failure. Throwing would read as something being broken.
+ */
+export type SpellcheckOutcome =
+  | { kind: "unavailable"; reason: string }
+  | { kind: "checked"; misspellings: Misspelling[] };
+
+/**
+ * Check text with the platform's own spell checker
+ * (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * Shaped to feed the editor's existing `ProseChecker` seam rather than a new
+ * one, so choosing between this and Harper is a frontend decision that ships
+ * over OTA. `dictionary` is the project's proper nouns; the shell filters
+ * them out case-insensitively, since an author who added a character's name
+ * means the name however it is capitalised.
+ */
+export async function spellcheckText(
+  text: string,
+  language: string | null,
+  dictionary: string[],
+): Promise<SpellcheckOutcome> {
+  return invoke<SpellcheckOutcome>("spellcheck_text", { text, language, dictionary });
+}
+
 /** Which stream of bundles this install follows. */
 export type UpdateChannel = "stable" | "beta";
 

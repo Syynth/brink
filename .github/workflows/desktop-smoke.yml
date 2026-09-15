@@ -111,6 +111,35 @@ env:
   # wasm-pack build. This lane accepts a fully-optimised one instead.
 
 jobs:
+  # The macOS-only code in `src-tauri` is compiled by NOTHING else before a
+  # release. `desktop-smoke` below is `ubuntu-latest`, so a
+  # `#[cfg(target_os = "macos")]` block — the NSSpellChecker binding added in
+  # Stage 4, the `Opened` file-association handlers before it — first reaches
+  # a compiler on the `macos-15` runner in `desktop-release.yml`. That is at
+  # TAG time: the one moment a compile error is most expensive and least
+  # expected.
+  #
+  # `cargo check` rather than test or build: the gap this closes is "does the
+  # platform code compile at all", and the behaviour of a native spell
+  # checker is not something a runner can assert anyway. Cheap enough to run
+  # on every PR, which is the point.
+  macos-compiles:
+    name: macOS platform code compiles
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/brink-desktop/src-tauri
+      - name: cargo check (src-tauri, macOS)
+        working-directory: packages/brink-desktop/src-tauri
+        run: cargo check --all-targets
+
   desktop-smoke:
     name: Desktop smoke (check, clippy, tsc, build)
     runs-on: ubuntu-latest
