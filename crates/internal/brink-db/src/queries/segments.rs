@@ -52,6 +52,7 @@ use brink_syntax::SegmentKind as SyntaxSegmentKind;
 use rowan::TextSize;
 
 use super::SourceFile;
+use std::collections::BTreeMap;
 
 /// What a [`FileSegment`] covers — a mirror of
 /// [`brink_syntax::SegmentKind`], local so it can implement
@@ -1515,4 +1516,106 @@ Intro line.
             "labeled choice must project the label's own id {label_id}"
         );
     }
+}
+
+// ─── Per-def readers on the segment road (#3585; per-knot-incremental-lowering-spec §3 step 4) ───
+
+/// `def -> its segment`, per FILE. Built from the range-STRIPPED inference
+/// index (backdates under shifts) and each segment's own lowered knots.
+/// Ids are name-hashed (`alloc_address(path)`), so the ids a segment's
+/// fragment yields ARE the index's ids.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn file_def_segments_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> BTreeMap<brink_format::DefinitionId, usize> {
+    let index = super::inference_index_query(db, project);
+    let file_id = file.file_id(db);
+    // (kind, qualified name) -> id, this file only. One pass over the
+    // index per FILE per revision — not per def.
+    let mut def_of: BTreeMap<(brink_ir::SymbolKind, &str), brink_format::DefinitionId> =
+        BTreeMap::new();
+    for (&id, info) in &index.symbols {
+        if info.file == file_id
+            && matches!(
+                info.kind,
+                brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+            )
+        {
+            def_of.insert((info.kind, info.name.as_str()), id);
+        }
+    }
+    // Value is the segment's INDEX into `file_segments_query(file)` — a
+    // `'static` map; `(FileSegment<'_>, …)` tuples carry no `salsa::Update`.
+    let mut out = BTreeMap::new();
+    for (si_seg, &seg) in file_segments_query(db, file).iter().enumerate() {
+        let product = segment_lowered_query(db, file, seg);
+        let hir = fragment_hir(product);
+        for knot in &hir.knots {
+            if let Some(&id) = def_of.get(&(knot.symbol_kind(), knot.name.text.as_str())) {
+                out.insert(id, si_seg);
+            }
+            for stitch in &knot.stitches {
+                let q = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(&id) = def_of.get(&(brink_ir::SymbolKind::Stitch, q.as_str())) {
+                    out.insert(id, si_seg);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Per-SEGMENT resolutions: `resolve_file` over the segment's own fragment
+/// manifest (its refs + its locals, segment-relative ranges). Same resolver,
+/// same index, same import scope — a strict slice of `resolve_query(file)`.
+///
+/// Deliberately NOT a tracked query. A `(project, file, segment)` memo
+/// interns a fresh key per re-minted segment, and at one key per edit its
+/// interned-key LRU turns over too slowly to plateau inside
+/// `db_memo_retention`'s two warmup cycles (measured: 2 -> 4 across ten
+/// remove/re-add cycles while every neighbour stayed flat). The three
+/// per-def callers already carry flat `DefKey` memos, and one knot's
+/// resolve is cheap, so the dedup a memo would buy is not worth a key.
+pub(crate) fn segment_resolutions(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'_>,
+) -> std::sync::Arc<brink_ir::ResolutionMap> {
+    let index = super::resolution_index_query(db, project);
+    let scope = super::file_import_scope_query(db, project, file);
+    let product = segment_lowered_query(db, file, segment);
+    let hir = fragment_hir(product);
+    let manifest = brink_ir::symbols::project_manifest(&hir);
+    let (map, _diags) = brink_analyzer::resolve(file.file_id(db), &manifest, index, scope);
+    map
+}
+
+/// The one-segment `HirFile` a per-def consumer hands to the analyzer in
+/// place of the assembled file. `pub(crate)` so `mod.rs` can build a `Def`.
+pub(crate) fn segment_fragment_hir(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+    segment: FileSegment<'_>,
+) -> HirFile {
+    fragment_hir(segment_lowered_query(db, file, segment))
+}
+
+/// ONE segment by index — the per-def firewall's actual seam. A consumer
+/// that indexes `file_segments_query`'s whole `Vec` depends on every
+/// segment identity in the file: re-mint any one and all readers are
+/// invalidated (measured: 240 of 240 per-def queries re-executed on a
+/// one-line append). Reading through this query instead makes a def depend
+/// on its OWN segment's identity only — an unchanged segment backdates
+/// (content-seeded id), so every other def's memo validates without
+/// executing.
+#[salsa::tracked]
+pub(crate) fn file_segment_at_query(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+    idx: usize,
+) -> Option<FileSegment<'_>> {
+    file_segments_query(db, file).get(idx).copied()
 }
