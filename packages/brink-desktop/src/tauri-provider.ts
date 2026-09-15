@@ -581,6 +581,39 @@ export async function bundleList(): Promise<BundleInventory> {
   return invoke<BundleInventory>("bundle_list");
 }
 
+/** One row of the version picker, as the shell reports it. */
+export interface BundleOffer {
+  version: string;
+  channel: UpdateChannel;
+  minShellVersion: string;
+  /** Publication timestamp, for display only. */
+  pubDate: string | null;
+  /** Currently serving. At most one row carries this. */
+  active: boolean;
+  /** Already unpacked in the store. Switching to it still re-downloads. */
+  downloaded: boolean;
+  /**
+   * Why this install cannot run it, or `null` when it can.
+   *
+   * Computed by the shell from the same gate `bundle_update_apply` applies,
+   * so a row shown as selectable is one the shell will actually install —
+   * never recompute it here.
+   */
+  blocked: string | null;
+}
+
+/**
+ * Every published bundle, newest first. Fetches the index; downloads
+ * nothing.
+ *
+ * Throws on a fetch or parse failure, unlike the check/apply commands: this
+ * one is only ever called from a settings pane the author opened, so there
+ * is a place to show the error and nobody is interrupted by it.
+ */
+export async function bundleAvailable(): Promise<BundleOffer[]> {
+  return invoke<BundleOffer[]>("bundle_available");
+}
+
 /**
  * Serve the store's current bundle pointer without restarting the process
  * (`docs/desktop-ota-spec.md` Stage 4).

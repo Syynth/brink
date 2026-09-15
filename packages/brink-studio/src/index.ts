@@ -47,6 +47,24 @@ export {
   type StudioPublicState,
 } from "@brink/studio-ui";
 
+// ── Settings sections (the `settingsSections` mount option) ─────
+//
+// A host section is drawn by the same shell the built-ins are, so it needs
+// the same row primitives — otherwise it looks like a foreign panel wedged
+// into the rail, which is the thing a registry-driven settings page exists
+// to prevent. `SETTINGS_SECTION_IDS` is exported alongside them as the
+// reserved id set: a host section colliding with one is dropped.
+export {
+  SETTINGS_ICONS,
+  SETTINGS_SECTION_IDS,
+  SettingsGroup,
+  SettingsRow,
+  SettingsStepper,
+  SettingsToggle,
+  type SettingsSection,
+  type SettingsScope,
+} from "@brink/studio-ui";
+
 // ── Example extension (worked example, issues #95/#146) ─────────
 export {
   createExampleExtension,

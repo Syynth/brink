@@ -18,7 +18,7 @@
  */
 
 import { createRoot } from "react-dom/client";
-import { Profiler, useEffect } from "react";
+import { Profiler, useEffect, useMemo } from "react";
 import { initWasm } from "@brink-lang/web";
 import type {
   CompileResult,
@@ -158,6 +158,7 @@ import {
   isConfigPath,
   registerStoryGraphCommand,
   type FixStoreState,
+  type SettingsSection,
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
@@ -275,6 +276,22 @@ export interface MountStudioOptions {
    *  desktop app enumerates the machine's fonts; the web has none and
    *  gets the curated list. Family names, resolved on demand. */
   systemFonts?: () => Promise<readonly string[]>;
+  /**
+   * Host settings sections, appended to the built-in rail (#3174's registry,
+   * opened to embedders).
+   *
+   * The same reason `systemFonts` is a mount option: a host can own a
+   * preference the studio has no business knowing about. The desktop app's
+   * update channel and version history are real app-scope settings an author
+   * looks for in Settings — and they mean nothing in the browser, where
+   * there is no installer and no bundle store.
+   *
+   * Appended, never merged over: a host cannot remove or replace a built-in
+   * section, so a project's lint table and keymap stay reachable in every
+   * embedding. Ids must not collide with the built-ins — see
+   * `SETTINGS_SECTION_IDS` for the reserved set.
+   */
+  settingsSections?: SettingsSection[];
   /**
    * File-content egress (issue #154): called with batched change
    * notifications whenever project files change in the session — CM6 edits,
@@ -460,6 +477,7 @@ interface RootProps {
   notifications: NotificationCenter;
   keymapOverrides: KeymapOverridesService;
   api: StudioApi;
+  hostSettingsSections: SettingsSection[];
 }
 
 function Root({
@@ -475,7 +493,28 @@ function Root({
   notifications,
   keymapOverrides,
   api,
+  hostSettingsSections,
 }: RootProps) {
+  // Host sections are APPENDED, and a collision with a built-in id drops the
+  // host's rather than shadowing it: `SettingsModal` resolves a section by
+  // the first id match, so a duplicate would make the rail show two rows and
+  // one of them unreachable — a silent half-broken surface, where a dropped
+  // section plus a warning is a thing the host can find and fix.
+  const mergedSettingsSections = useMemo(() => {
+    const built = settingsSections("settings");
+    const taken = new Set(built.map((section) => section.id));
+    return [
+      ...built,
+      ...hostSettingsSections.filter((section) => {
+        if (!taken.has(section.id)) return true;
+        console.warn(
+          `[brink-studio] host settings section "${section.id}" collides with a built-in id and was dropped`,
+        );
+        return false;
+      }),
+    ];
+  }, [hostSettingsSections]);
+
   // Tear down the wasm session + story runner when the app unmounts. The
   // standalone playground never unmounts, but the embeddable/host case does —
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
@@ -525,7 +564,7 @@ function Root({
             {/* Settings (#3174): a modal over the whole studio, inside the
                 .brink-studio root so tokens apply — the same placement the
                 other host surfaces need (#3054's eaten menu). */}
-            <SettingsModal sections={settingsSections("settings")} />
+            <SettingsModal sections={mergedSettingsSections} />
             <SymbolContextMenuHost />
             <EditorTextMenuHost />
             <SymbolRenamePrompt />
@@ -2034,6 +2073,7 @@ export async function mountStudio(
       notifications={notifications}
       keymapOverrides={keymapOverrides}
       api={api}
+      hostSettingsSections={options.settingsSections ?? []}
     />
   );
   root.render(
