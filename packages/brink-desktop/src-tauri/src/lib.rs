@@ -766,6 +766,48 @@ fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
     with_active(&runtime, |active| active.info.clone())
 }
 
+/// What the store holds: the active bundle and the history behind it.
+///
+/// Most recent first, so a picker renders it in order without re-sorting.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleInventory {
+    /// The active bundle; `None` means the embedded floor.
+    active: Option<String>,
+    /// Previously-active bundles still on disk, most recent first.
+    history: Vec<String>,
+    /// This install's update policy, so a picker can show which version is
+    /// pinned without a second round trip.
+    policy: UpdatePolicy,
+}
+
+/// List what the store holds.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_list(app: tauri::AppHandle) -> Result<BundleInventory, String> {
+    use tauri::Manager;
+
+    let runtime = app
+        .try_state::<BundleRuntime>()
+        .ok_or("the bundle store is not initialised")?;
+    let state = bundles::read_state(&runtime.root);
+    let policy = settings_path(&app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default()
+        .update_policy;
+
+    Ok(BundleInventory {
+        active: state.version,
+        history: state.history,
+        policy,
+    })
+}
+
 /// Serve the store's current pointer, without restarting the process.
 ///
 /// The caller reloads the webview afterwards; that reload is what actually
@@ -1055,7 +1097,19 @@ async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome
 
     bundle_update::verify_and_unpack(&archive, &manifest, &pubkey, &staging)
         .map_err(|e| e.to_string())?;
-    bundles::promote(&root, &manifest.version, now_ms()).map_err(|e| e.to_string())?;
+    // The pin is read here, not inside the store: `bundles` stays a pure
+    // function of a root path, and the pin lives in the app's settings.
+    let pinned = settings_path(app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default();
+    bundles::promote(
+        &root,
+        &manifest.version,
+        now_ms(),
+        pinned.update_policy.pinned_version(),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(BundleUpdateOutcome::Installed {
         version: manifest.version,
@@ -1591,12 +1645,77 @@ async fn create_project(dir: String, entry: String) -> Result<String, ShellError
 
 /// User-facing app settings, persisted as `settings.json` in app-data
 /// (same precedent as `recents.json`). One knob today; additive later.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct AppSettings {
     /// "Reopen last project on launch" (#3016). Default OFF — reopening
     /// is an opt-in, per the landing checkbox.
     reopen_last_project: bool,
+    /// How this install takes updates (`docs/desktop-ota-spec.md` Stage 4).
+    update_policy: UpdatePolicy,
+}
+
+/// Which stream of bundles an install follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+/// How this install takes updates.
+///
+/// **One enum rather than an `autoUpdate` flag beside a channel** (RULED
+/// 2026-09-15). Two fields can express "pinned *and* auto-updating", which
+/// must not exist, and making a state unrepresentable beats defending
+/// against it everywhere it could be read.
+///
+/// `Pinned` being a *channel* rather than a flag on one has a second
+/// consequence worth stating: "a pin suspends updates" stops being a rule
+/// anybody implements. A pinned install has no manifest to consult, so a
+/// check finds nothing by construction rather than by suppression.
+///
+/// ⚠ **`Pinned` stops the full-app updater too, and that is what makes
+/// pinning safe.** `minShellVersion` protects a new bundle from an old
+/// shell; nothing protects an old pinned bundle from a *new* shell that has
+/// since renamed or removed a command it calls. Rather than invent a
+/// `maxShellVersion` — or misuse `commandsFingerprint`, which moves on
+/// backward-compatible additions and would refuse pins that are perfectly
+/// fine — `Pinned` freezes both channels. The shell cannot move out from
+/// under a pinned bundle because the shell does not move.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "mode")]
+enum UpdatePolicy {
+    /// Check and offer without being asked.
+    Auto { channel: UpdateChannel },
+    /// Check only when the author asks.
+    Manual { channel: UpdateChannel },
+    /// Serve exactly this version; nothing moves, in either channel.
+    Pinned { version: String },
+}
+
+impl Default for UpdatePolicy {
+    fn default() -> Self {
+        Self::Auto {
+            channel: UpdateChannel::Stable,
+        }
+    }
+}
+
+impl UpdatePolicy {
+    /// The version this install has pinned, if any.
+    ///
+    /// The store's retention policy needs this so a pin is never pruned —
+    /// see `bundles::prune_history`. Read through a method rather than
+    /// matched at each call site so a future variant cannot silently start
+    /// reading as "not pinned".
+    fn pinned_version(&self) -> Option<&str> {
+        match self {
+            Self::Pinned { version } => Some(version.as_str()),
+            Self::Auto { .. } | Self::Manual { .. } => None,
+        }
+    }
 }
 
 /// The app-data path for `settings.json`.
@@ -2220,6 +2339,7 @@ pub fn run() -> tauri::Result<()> {
             previous_exit_clean,
             bundle_ready,
             bundle_activate,
+            bundle_list,
             bundle_update_check,
             bundle_update_apply,
         ])
@@ -5200,6 +5320,78 @@ mod reopen_tests {
             json.contains("reopenLastProject"),
             "wire name drifted: {json}"
         );
+    }
+
+    /// The forward-compat property a self-updating app actually depends on.
+    ///
+    /// A bundle newer than the shell it runs on will write `settings.json`,
+    /// and an older shell must read it without losing the author's choices.
+    /// That is not hypothetical here: it is the ordinary state of an OTA'd
+    /// install between the bundle updating and the app updating.
+    #[test]
+    fn update_policy_survives_a_settings_file_from_a_newer_bundle() {
+        // A future variant, and a future field beside it.
+        let from_the_future = r#"{
+            "reopenLastProject": true,
+            "updatePolicy": { "mode": "pinned", "version": "0.0.4" },
+            "someFutureKnob": 3
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(from_the_future).unwrap_or_default();
+        assert!(
+            parsed.reopen_last_project,
+            "an unknown key reset a known one"
+        );
+        assert_eq!(
+            parsed.update_policy.pinned_version(),
+            Some("0.0.4"),
+            "the pin must survive, or retention would prune the very bundle it names"
+        );
+
+        // A settings file written before the policy existed reads as the
+        // default rather than failing the whole file.
+        let older: AppSettings =
+            serde_json::from_str(r#"{"reopenLastProject":true}"#).unwrap_or_default();
+        assert_eq!(older.update_policy, UpdatePolicy::default());
+        assert_eq!(older.update_policy.pinned_version(), None);
+        assert!(
+            older.reopen_last_project,
+            "a missing updatePolicy must not discard the rest of the file"
+        );
+    }
+
+    /// The states this enum exists to make unrepresentable.
+    ///
+    /// Two fields (`autoUpdate` beside a channel) could say "pinned and
+    /// auto-updating"; one enum cannot. Asserted rather than asserted-in-
+    /// prose because the tempting refactor is to flatten it back into flags.
+    #[test]
+    fn a_pinned_policy_carries_no_channel_to_update_from() {
+        let pinned = UpdatePolicy::Pinned {
+            version: "0.0.4".to_owned(),
+        };
+        assert_eq!(pinned.pinned_version(), Some("0.0.4"));
+
+        for moving in [
+            UpdatePolicy::Auto {
+                channel: UpdateChannel::Stable,
+            },
+            UpdatePolicy::Auto {
+                channel: UpdateChannel::Beta,
+            },
+            UpdatePolicy::Manual {
+                channel: UpdateChannel::Stable,
+            },
+        ] {
+            assert_eq!(
+                moving.pinned_version(),
+                None,
+                "only Pinned pins: {moving:?}"
+            );
+        }
+
+        // The default must be a moving one, or a fresh install would never
+        // see an update at all.
+        assert_eq!(UpdatePolicy::default().pinned_version(), None);
     }
 }
 
