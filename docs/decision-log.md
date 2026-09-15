@@ -5505,3 +5505,83 @@
 - **SO THE GUARD CHECKS THAT THE JUDGEMENT WAS MADE, NOT WHAT IT WAS.** `commandsFingerprint` is a pin, not a setting: the test recomputes it and fails when it diverges, with a message that says *decide first, then update the pin*. The failure is a red check on the author's machine rather than a broken app on someone else's — the same shape as the `create: false` and `WASM_PACKAGES` guards. A second guard refuses a `minShellVersion` above the app version shipping it, which would be refused by every install including one built from that very commit.
 - **THE NEW LANE HAD TO BE ENROLLED ON PURPOSE, and that is the guard working.** `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` (#2504) failed on `bundle-release.yml` — not on the ordering (the lane builds both wasm packages first) but on its exact-roster assertion, which exists so a new pnpm-install lane cannot opt out of the guard by simply existing. Adding it was one line and a comment; that is the cost the roster is meant to impose.
 - **THE PIPELINE REFUSES FOUR THINGS RATHER THAN PUBLISHING THEM**, each because the failure would otherwise be silent: a `dist/` with no `index.html` or fewer than two wasm modules (an empty bundle tars, hashes and signs perfectly happily); an empty signature (an unsigned bundle is refused by every install, and a refusal is indistinguishable from any other failed check — so `build-bundle-manifest.mjs` throws instead); a tag disagreeing with `ota-bundle.json`; and a published manifest whose `url` does not resolve, which reads to the author as "update check failed" forever.
+
+## One update from the author's side, whichever channel carries it
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** From the author's perspective there is either an update or there isn't. No toast, menu item or setting names "bundle" or "shell". One check consults both channels and produces one decision; one offer; one "Restart Now" that resolves to a process relaunch for a shell update and a pointer swap plus reload for a bundle-only one. Doing the right thing per channel is required; exposing which one fired is not.
+- **WHY:** Stages 1-3 shipped a channel that works but reads as a second mechanism, down to a manual check raising two near-identical "up to date" toasts. An author has no reason to know there are two update paths, and an inconsistency they can feel — one channel asking consent, the other not — is a bug rather than a detail.
+
+## Bundle updates ask before installing
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Split `bundle_update_check` (shipped as check-and-install in one call) into a check that reports what is available and an apply that acts on a yes.
+- **WHY:** The full-app channel was ruled "nothing installs without consent" on 2026-08-22. Under the one-update rule above, the two channels cannot differ on something the author can feel.
+
+## Activate a bundle by swapping a pointer and reloading, not by restarting
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** `BundleRuntime.dir` gains interior mutability and is read per request; `bundle_activate` swaps it; the frontend reloads. Requires `Cache-Control: no-store` on `index.html` — the only unhashed URL in a bundle — and moving the rollback handshake to per-activation. Still gated on `awaitSaveAllBeforeQuit`.
+- **WHY:** A bundle is web assets; restarting the OS process to pick them up is a cost with no cause. Three things made restart the only safe option in Stage 2 and all three are fixable: the directory was captured once in `setup` (so a reload was inert), the sentinel was per process launch (so a mid-session swap went unwitnessed), and a cached entry document would have pointed at the old hashed entry. Workers are not an obstacle — a reload destroys the document and every worker with it, so nothing survives to be stale.
+
+## The boot handshake confirms on editor-mounted, not on parsed
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Clear the rollback sentinel when the studio surface exists, with a generous timer, rather than when the bundle's JS reaches module scope. Confirming on "a project opened" was considered and declined.
+- **WHY:** Reaching module scope proves the bundle parsed and nothing more, so a bundle that parses but cannot mount the editor clears its own sentinel and is never rolled back — exactly the "locked on the welcome screen" case. Confirming on a project being opened would overshoot and roll back a good bundle every time an author launches to an empty landing screen.
+
+## The rollback escape hatch lives in the shell, not the bundle
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** A native menu item is the primary revert affordance. A version list inside the studio is a convenience on top of it, never the only door. The menu item ships in the first signed release.
+- **WHY:** A control rendered by the bundle is made of the thing that is broken. Only a shell-side affordance works when the webview renders nothing at all.
+
+## Update policy is one enum; pinned is a channel
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** `UpdatePolicy = Auto { channel } | Manual { channel } | Pinned { version }`, persisted in `AppSettings`. Not two orthogonal fields (`autoUpdate: bool` plus a channel), which was the first design.
+- **WHY:** Two fields can express "pinned and auto-updating", which must not exist; making it unrepresentable beats defending against it. Pinned-as-channel also means "a pin suspends updates" stops being a rule anyone implements — a pinned install has no manifest to consult, so a check finds nothing by construction rather than by suppression.
+
+## Pinned freezes the shell too, which designs out the bricking case
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** Under `Pinned` neither channel updates. A manual check reports the pin instead of offering an update; the version picker refuses an incompatible version at the point of choosing, from the index's own `minShellVersion`. Leaving `Pinned` restores everything.
+- **WHY:** `minShellVersion` protects a new bundle from an old shell, but nothing protects an old pinned bundle from a *new* shell that has since renamed or removed a command it calls. This was first going to be recorded as a known limitation; that was wrong — a product should not offer a button that bricks you, it should decline to do what you asked. A `maxShellVersion` was declined as over-built for the blast radius, and `commandsFingerprint` cannot serve: it changes on backward-compatible additions, so a strict runtime check would refuse pins that are perfectly safe. Freezing both channels removes the hazard instead of guarding it.
+
+## A channel switch is an install, and all three policies share one path
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Resolve the target version for the current policy, install it if absent, activate it. `bundle-latest.json` is replaced by one append-only, entry-capped index carrying version, channel, url, sha256, signature and `minShellVersion` per entry. A picked version that is not on disk is downloaded on demand. Retention keeps the three most recent **plus the pinned version when it is not among them**.
+- **WHY:** `decide()` installs only strictly-newer versions, so beta to stable would otherwise be refused forever (a beta `0.2.0-beta.1` sorts above a stable `0.1.9`). Resolve-and-activate sidesteps ordering and is the same path that serves picking a past version. One index rather than a manifest per channel serves latest-for-channel, the picker list and pin resolution in a single fetch; trust is unchanged because each entry carries its own archive's signature, so a tampered index cannot introduce unsigned code. The retention exemption is load-bearing: without it a pin set three updates ago is pruned out from under the author.
+
+## The OS spellchecker command ships in the first signed release; Harper's role is decided later
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / brink-prose
+- **SCOPE:** moderate
+- **WHAT:** A per-platform OS spellcheck command lands in the shell, shaped to feed the existing `ProseChecker` interface. Whether Harper is replaced, kept for grammar only, or fetched on demand as a separately-signed payload is a later, frontend-only decision shipped over OTA.
+- **WHY:** Harper is 6.15 MB gzipped against the whole compiler's 2.61 MB — roughly 60% of a ~10 MB OTA update — and `prose-checker.ts`'s lazy `import()` buys nothing here, because OTA ships the tree as one archive. That is what makes an editor-quality question part of this stage. But measurement moved the conclusion: the weight is the 307 grammar rules (4.8 MB), not the dictionary (769 KB) or the spell module (132 KB), so "Harper for grammar, OS for spelling" is a quality decision with no size dividend. Since it is bundle-side and reversible it need not block the tag; only the IPC command must, and only because freezing the surface is free today and expensive after.
+
+## Stage 4 lands before the first signed desktop release
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** Hold `desktop-v0.8.0` until the Rust half of Stage 4 is in. Rust, IPC and on-disk schemas must be right at tag time; purely frontend work ships afterwards over OTA, except anything that must survive a broken bundle.
+- **WHY:** No installed app has an OTA client, so the shell's IPC surface and on-disk schemas are unconstrained right now — nothing in the field consumes them. After 0.8.0 every change here becomes a `minShellVersion` bump that strands the very installs the release created. Doing it first is the cheaper order, not only the safer one.
