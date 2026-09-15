@@ -893,9 +893,14 @@ fn bundle_activate(app: tauri::AppHandle) -> Result<BundleLaunchInfo, String> {
 // window between the two calls: a manifest that moved, or a bundle installed
 // by another window in the meantime, is caught rather than acted on stale.
 
-/// Where the manifest is served, beside the full-app `latest.json`.
-const BUNDLE_MANIFEST_URL: &str =
-    "https://github.com/Syynth/brink/releases/download/desktop-latest/bundle-latest.json";
+/// Where the bundle index is served, beside the full-app `latest.json`.
+///
+/// ONE url for every channel and every version. The channel is a field on
+/// each entry rather than a separate file, so switching channels needs no
+/// second endpoint and a pinned version resolves from the same fetch that
+/// answers "is there anything newer".
+const BUNDLE_INDEX_URL: &str =
+    "https://github.com/Syynth/brink/releases/download/desktop-latest/bundle-index.json";
 
 /// The outcome of an update attempt, as the frontend renders it.
 #[derive(Clone, serde::Serialize)]
@@ -1014,19 +1019,59 @@ async fn resolve_update(app: &tauri::AppHandle) -> Result<Resolution, String> {
     };
     let installed = bundles::read_state(&root).version;
 
-    let manifest_text = fetch_bounded(BUNDLE_MANIFEST_URL, MAX_MANIFEST_BYTES).await?;
-    let manifest_text =
-        String::from_utf8(manifest_text).map_err(|_| "manifest is not UTF-8".to_owned())?;
-    let manifest = bundle_update::parse_manifest(&manifest_text).map_err(|e| e.to_string())?;
+    let policy = settings_path(app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default()
+        .update_policy;
+
+    let index_text = fetch_bounded(BUNDLE_INDEX_URL, MAX_MANIFEST_BYTES).await?;
+    let index_text =
+        String::from_utf8(index_text).map_err(|_| "the bundle index is not UTF-8".to_owned())?;
+    let index = bundle_update::parse_index(&index_text).map_err(|e| e.to_string())?;
+
+    // The policy decides both WHAT to look for and whether ordering applies.
+    let (target, intent) = match &policy {
+        UpdatePolicy::Auto { channel } | UpdatePolicy::Manual { channel } => (
+            bundle_update::Target::Latest(channel.into()),
+            bundle_update::Intent::Update,
+        ),
+        UpdatePolicy::Pinned { version } => (
+            bundle_update::Target::Version(version.as_str()),
+            bundle_update::Intent::Switch,
+        ),
+    };
+
+    let Some(manifest) = bundle_update::resolve(&index, target) else {
+        return Ok(match &policy {
+            // A pin naming something the index no longer lists is a thing
+            // the author can act on (unpin), not a broken channel.
+            UpdatePolicy::Pinned { version } => Resolution::Refused(format!(
+                "pinned to {version}, which is no longer published. Switch to Stable or \
+                 Beta to receive updates."
+            )),
+            // A channel with no entries at all is simply nothing to install.
+            UpdatePolicy::Auto { .. } | UpdatePolicy::Manual { .. } => Resolution::UpToDate,
+        });
+    };
 
     let shell_version = app.package_info().version.to_string();
     Ok(
-        match bundle_update::decide(&manifest, &shell_version, installed.as_deref()) {
+        match bundle_update::decide(manifest, &shell_version, installed.as_deref(), intent) {
             bundle_update::UpdateDecision::UpToDate => Resolution::UpToDate,
             bundle_update::UpdateDecision::Refuse(reason) => Resolution::Refused(reason),
-            bundle_update::UpdateDecision::Install => Resolution::Install(manifest),
+            bundle_update::UpdateDecision::Install => Resolution::Install(manifest.clone()),
         },
     )
+}
+
+impl From<&UpdateChannel> for bundle_update::Channel {
+    fn from(channel: &UpdateChannel) -> Self {
+        match channel {
+            UpdateChannel::Stable => Self::Stable,
+            UpdateChannel::Beta => Self::Beta,
+        }
+    }
 }
 
 /// Check for a web-bundle update. Downloads and installs NOTHING.
