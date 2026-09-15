@@ -327,6 +327,48 @@ pub fn begin_activation(root: &Path) -> std::io::Result<Option<String>> {
     Ok(serving)
 }
 
+/// Step back to the previously-active bundle and stamp the sentinel for it.
+///
+/// The store half of the shell's revert menu item — the escape hatch that has
+/// to work when the webview renders nothing, which is why it lives here and
+/// in `on_menu_event` rather than behind an IPC command.
+///
+/// Returns what is now active (`None` for the embedded floor), or `None`
+/// early when there is nothing to step back to.
+///
+/// **It cycles rather than toggling, and deletes nothing.** The
+/// previously-active version goes to the END of the history, not the front,
+/// so reverting twice from a broken bundle reaches a *third* version instead
+/// of returning to the broken one. A toggle would trap an author on exactly
+/// the bundle they were trying to escape, which is the one job this has.
+///
+/// Nothing is deleted because an author may be stepping back over taste
+/// rather than breakage; only [`begin_launch`] prunes, and only a bundle that
+/// actually failed to boot.
+pub fn revert(root: &Path) -> std::io::Result<Option<String>> {
+    let mut state = read_state(root);
+    if state.history.is_empty() {
+        return Ok(state.version.clone());
+    }
+
+    let restored = state.history.remove(0);
+    if !bundle_is_present(root, &restored) {
+        // A history entry whose directory has gone is no target at all.
+        // Drop it and leave the pointer where it is, so a second invocation
+        // tries the next one rather than serving nothing.
+        write_state(root, &state)?;
+        return Ok(state.version.clone());
+    }
+
+    if let Some(stepped_over) = state.version.replace(restored.clone()) {
+        state.history.push(stepped_over);
+    }
+    state.installed_at_ms = Some(0);
+    state.attempting = Some(restored.clone());
+    write_state(root, &state)?;
+    Ok(Some(restored))
+}
+
 /// Trim `history` to the retention budget, returning what was dropped.
 ///
 /// **`protected` survives regardless of its position**, and that exemption is
@@ -425,7 +467,7 @@ pub fn promote(
 mod tests {
     use super::{
         begin_activation, begin_launch, is_safe_component, mark_ready, percent_decode, promote,
-        read_state, resolve_asset, staging_dir, version_dir, write_state, BundleState,
+        read_state, resolve_asset, revert, staging_dir, version_dir, write_state, BundleState,
         LaunchOutcome, INDEX_FILE, RETENTION,
     };
     use std::path::{Path, PathBuf};
@@ -466,6 +508,93 @@ mod tests {
             },
         )
         .expect("write state");
+    }
+
+    /// Reverting CYCLES rather than toggling: the version stepped over goes
+    /// to the END of the history.
+    ///
+    /// A toggle would put an author back on the exact bundle they were
+    /// escaping on the second invocation — trapping them on the one thing
+    /// this feature exists to get away from.
+    #[test]
+    fn revert_cycles_backwards_instead_of_toggling() {
+        let root = TempRoot::new("revert-cycles");
+        for version in ["0.0.1", "0.0.2", "0.0.3"] {
+            install(root.path(), version, &[]);
+        }
+        write_state(
+            root.path(),
+            &BundleState {
+                version: Some("0.0.3".into()),
+                history: vec!["0.0.2".into(), "0.0.1".into()],
+                installed_at_ms: Some(1),
+                attempting: None,
+            },
+        )
+        .expect("write state");
+
+        assert_eq!(
+            revert(root.path()).expect("first"),
+            Some("0.0.2".to_owned())
+        );
+        assert_eq!(
+            revert(root.path()).expect("second"),
+            Some("0.0.1".to_owned()),
+            "a second revert must reach a THIRD version, not return to 0.0.3"
+        );
+    }
+
+    /// Reverting stamps the sentinel for what it activates, so a bundle that
+    /// still will not boot is rolled back on the next launch. The escape
+    /// hatch must not be able to strand someone either.
+    #[test]
+    fn revert_stamps_the_sentinel_for_what_it_restores() {
+        let root = TempRoot::new("revert-stamps");
+        install(root.path(), "0.0.1", &[]);
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), Some("0.0.1"));
+
+        assert_eq!(
+            revert(root.path()).expect("revert"),
+            Some("0.0.1".to_owned())
+        );
+        assert_eq!(read_state(root.path()).attempting.as_deref(), Some("0.0.1"));
+    }
+
+    /// Nothing to step back to is not an error and changes nothing: the
+    /// embedded floor is already what a missing bundle falls through to.
+    #[test]
+    fn revert_with_no_history_is_a_no_op() {
+        let root = TempRoot::new("revert-empty");
+        install(root.path(), "0.0.1", &[]);
+        point_at(root.path(), Some("0.0.1"), None);
+
+        assert_eq!(
+            revert(root.path()).expect("revert"),
+            Some("0.0.1".to_owned())
+        );
+        assert_eq!(read_state(root.path()).version.as_deref(), Some("0.0.1"));
+        assert!(read_state(root.path()).history.is_empty());
+    }
+
+    /// A history entry whose directory has gone is dropped rather than
+    /// activated — otherwise the escape hatch would point the store at
+    /// nothing and serve the embedded floor while claiming a version.
+    #[test]
+    fn revert_skips_a_history_entry_that_is_no_longer_on_disk() {
+        let root = TempRoot::new("revert-missing");
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), Some("0.0.1")); // 0.0.1 never installed
+
+        assert_eq!(
+            revert(root.path()).expect("revert"),
+            Some("0.0.2".to_owned()),
+            "the pointer stays put when the target is gone"
+        );
+        assert!(
+            read_state(root.path()).history.is_empty(),
+            "the dead entry is dropped so a second invocation tries the next one"
+        );
     }
 
     /// An in-session activation stamps the sentinel for the bundle it is

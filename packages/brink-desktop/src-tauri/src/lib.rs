@@ -808,6 +808,64 @@ fn bundle_list(app: tauri::AppHandle) -> Result<BundleInventory, String> {
     })
 }
 
+/// Step back to the previous web bundle, from the native menu.
+///
+/// ⚠ **The whole point is that this works when the frontend does not.** It
+/// touches no IPC command and asks the webview for nothing: it moves the
+/// store's pointer, swaps what the asset protocol serves, and NAVIGATES the
+/// window rather than telling the page to reload itself. A `location.reload()`
+/// needs live JS, and live JS is exactly what an author reaching for this
+/// does not have.
+///
+/// Consequently it also does NOT wait for a save. Every other path that
+/// discards the document goes through `awaitSaveAllBeforeQuit` first, and
+/// that is right when the editor is working — but this is the escape hatch,
+/// and an unsaved buffer in a frontend that cannot render is not reachable
+/// anyway. Losing it is the price of getting the author back to a working
+/// editor; hanging on a save that can never complete is not a better trade.
+///
+/// Silent on failure by design: there is nowhere reliable to report to, and
+/// the next launch recovers regardless — the sentinel `bundles::revert`
+/// stamps means a bundle that still will not boot is rolled back anyway.
+fn revert_bundle(app: &tauri::AppHandle) {
+    use tauri::Manager as _;
+
+    let Some(runtime) = app.try_state::<BundleRuntime>() else {
+        return;
+    };
+    let Ok(restored) = bundles::revert(&runtime.root) else {
+        return;
+    };
+
+    let dir = restored
+        .as_deref()
+        .and_then(|version| bundles::version_dir(&runtime.root, version));
+    {
+        let mut guard = runtime
+            .active
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = ActiveBundle {
+            dir,
+            info: BundleLaunchInfo {
+                version: restored,
+                rolled_back_from: None,
+            },
+        };
+    }
+
+    // Dev serves from the vite server, not the store, so there is nothing to
+    // step back to and re-navigating would only drop HMR state.
+    if tauri::is_dev() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(url) = format!("{BUNDLE_SCHEME}://localhost/").parse() {
+            let _ = window.navigate(url);
+        }
+    }
+}
+
 /// Serve the store's current pointer, without restarting the process.
 ///
 /// The caller reloads the webview afterwards; that reload is what actually
@@ -1944,6 +2002,13 @@ enum MenuRoute {
     /// frontend's — routing it through the webview would add a hop and a
     /// plugin permission the frontend does not otherwise need.
     OpenUrl(&'static str),
+    /// Step back to the previous web bundle. Handled entirely in the shell.
+    ///
+    /// ⚠ **Deliberately not `Emit`.** This is the escape hatch for a bundle
+    /// that renders nothing, and a control that asks the webview to act is
+    /// made of the thing that is broken. Routing it through the frontend
+    /// would make it work in exactly the cases where it is not needed.
+    RevertBundle,
     /// Not ours: a `PredefinedMenuItem` the platform already handled.
     Ignore,
 }
@@ -1977,6 +2042,7 @@ fn route_menu_event(id: &str) -> MenuRoute {
         "view-font-decrease" => MenuRoute::emit("menu:view-font-decrease"),
         "view-font-reset" => MenuRoute::emit("menu:view-font-reset"),
         "quit" => MenuRoute::emit("menu:quit"),
+        "revert-bundle" => MenuRoute::RevertBundle,
         _ => MenuRoute::Ignore,
     }
 }
@@ -2199,7 +2265,23 @@ fn build_menu(
         true,
         None::<&str>,
     )?;
-    let help_menu = Submenu::with_items(handle, "Help", true, &[&help_docs, &help_issues])?;
+    // The escape hatch lives in a native menu because a control rendered by
+    // the bundle cannot rescue you from the bundle (docs/desktop-ota-spec.md
+    // Stage 4). In Help rather than under updates: this is what an author
+    // reaches for when the app is broken, not when it is working.
+    let revert_bundle = MenuItem::with_id(
+        handle,
+        "revert-bundle",
+        "Revert to Previous Editor Version",
+        true,
+        None::<&str>,
+    )?;
+    let help_menu = Submenu::with_items(
+        handle,
+        "Help",
+        true,
+        &[&help_docs, &help_issues, &revert_bundle],
+    )?;
     Menu::with_items(
         handle,
         &[
@@ -2355,6 +2437,7 @@ pub fn run() -> tauri::Result<()> {
                     use tauri_plugin_opener::OpenerExt;
                     let _ = app.opener().open_url(url, None::<&str>);
                 }
+                MenuRoute::RevertBundle => revert_bundle(app),
                 MenuRoute::Ignore => {}
             });
             Ok(())
@@ -4878,6 +4961,24 @@ on:
                 }
             );
         }
+    }
+
+    /// The revert item must be handled IN THE SHELL, never forwarded to the
+    /// webview.
+    ///
+    /// This is the one property the escape hatch has. `MenuRoute::Emit`
+    /// would make it work only while the frontend is alive — that is, in
+    /// exactly the cases where nobody needs it — and fail silently in the
+    /// case it exists for. The tempting edit is to route it like every other
+    /// menu item, which is why this is pinned rather than commented.
+    #[test]
+    fn reverting_a_bundle_is_handled_in_the_shell_not_forwarded_to_the_webview() {
+        let route = route_menu_event("revert-bundle");
+        assert_eq!(route, MenuRoute::RevertBundle);
+        assert!(
+            !matches!(route, MenuRoute::Emit { .. }),
+            "a control that asks the webview to act cannot rescue a broken webview"
+        );
     }
 
     #[test]
