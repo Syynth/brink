@@ -5585,3 +5585,27 @@
 - **SCOPE:** major
 - **WHAT:** Hold `desktop-v0.8.0` until the Rust half of Stage 4 is in. Rust, IPC and on-disk schemas must be right at tag time; purely frontend work ships afterwards over OTA, except anything that must survive a broken bundle.
 - **WHY:** No installed app has an OTA client, so the shell's IPC surface and on-disk schemas are unconstrained right now — nothing in the field consumes them. After 0.8.0 every change here becomes a `minShellVersion` bump that strands the very installs the release created. Doing it first is the cheaper order, not only the safer one.
+
+## Harper for grammar, the platform checker for spelling
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / brink-prose
+- **SCOPE:** moderate
+- **WHAT:** Resolves the deferred half of the entry above. The desktop composes both checkers: exactly one Harper category, `Spelling`, is suppressed and served from the OS instead. `Typo` stays. Where the platform answers `unavailable` (Linux, Windows) Harper keeps its spelling pass, so the composition is a runtime decision per check, not a build-time one. Harper is still shipped in full — this buys quality, not bytes, exactly as the measurement predicted.
+- **WHY:** The two checkers are good at different things. The platform checker knows *the author's own words*: every name they have taught the OS in any app is already in it, and words added here go back into it, where a bundled dictionary starts from zero on every machine. Harper knows English, not words — repetition, agreement, eggcorns — none of which is reachable from a word list. The `Spelling`/`Typo` line is Harper's own: `Spelling` is documented as "only ... used by linters doing spellcheck on individual words", while `Typo` is a real word in the wrong place (`can be seem` → `can be seen`), which a spell checker cannot see by construction. Suppressing `Typo` as well would silently delete findings nothing else produces.
+
+## Host settings sections and a prose-checker decorator, not replacements
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio
+- **SCOPE:** moderate
+- **WHAT:** `mountStudio` takes `settingsSections` (host sections appended to the Settings rail) and `proseChecker` (a function receiving the built-in checker and returning the one to use). Sections are appended, never merged over; an id colliding with a built-in is dropped with a warning. `SettingsRow`/`SettingsGroup`/`SettingsToggle`/`SettingsStepper`/`SETTINGS_ICONS`/`SETTINGS_SECTION_IDS` and the `SettingsSection`/`ProseChecker` types are exported for hosts.
+- **WHY:** Same rule `systemFonts` already follows: a host can own a preference the studio has no business knowing about, and an update channel and a bundle store mean nothing in a browser with no installer and nothing to pin. Appending rather than merging keeps every built-in reachable in every embedding. The collision drop is not fussiness — `SettingsModal` resolves a section by first id match, so a duplicate would put two rows in the rail with one of them permanently unreachable, which is a silently half-broken surface. `proseChecker` is a decorator rather than a replacement so a host adding one capability does not have to reimplement, or take ownership of the lifecycle of, the 6.5 MB wasm module behind the built-in.
+
+## The version picker offers what is published, and the shell judges every row
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** `bundle_available` returns every entry in the index with per-row `active`, `downloaded` and `blocked`. `blocked` is produced by the same `bundle_update::decide` call `bundle_update_apply` makes. Picking a version writes the policy *before* asking the shell to install. `downloaded` is reported, never acted on — a switch always re-downloads and re-verifies.
+- **WHY:** `bundle_list` reports the store, so a picker built on it could only ever offer the three retained bundles; the author asked to be able to pick a version they have never downloaded and have it fetched then. One `decide` call rather than two predicates because a frontend copy of the `minShellVersion` gate is free to drift, and what drift produces is an author choosing a version, waiting for a download, and being told no. Policy-then-apply is forced by `bundle_update_apply` taking no version — the property that keeps it from installing anything the settings do not say — so applying first would install the previous pin. Re-downloading a bundle already on disk is the cost of keeping the publisher's key, rather than the store's contents, as the thing that decides what runs.

@@ -486,6 +486,33 @@ brick:
   be selected and discovered afterwards.
 - Leaving `Pinned` restores everything. It is a door, not a trapdoor.
 
+**The surface (LANDED 2026-09-15): Settings › Updates.** Three channels —
+Stable, Beta, and a pinned version — with "check automatically" a property
+only the first two have. The control cannot express `pinned + auto`, which is
+the enum's own rule made visible rather than defended: `withAutomatic` is a
+no-op while pinned, and selecting the pinned channel with nothing to pin to
+leaves the policy unchanged rather than pinning to nothing.
+
+It lists **every published bundle**, not the three the store retains, so a
+version never downloaded can be picked and fetched then. That needs
+`bundle_available` — the index, plus per-row `active`/`downloaded`/`blocked`.
+`blocked` is computed by the same `decide()` call `bundle_update_apply` will
+make, so a row offered is a row the shell installs; a second predicate on the
+frontend side would be free to drift, and what it produces is an author
+choosing a version, waiting for a download, and being told no.
+
+Picking a version writes the policy **before** asking the shell to install.
+That order is why `bundle_update_apply` takes no version: it re-resolves from
+what is on disk, so applying first would install the previous pin.
+
+`downloaded` is reported, never acted on. A switch always runs the full
+download-verify-unpack path; trusting bytes already in the store would make
+the store, rather than the publisher's key, the thing that decides what runs.
+
+The pane is a **host** settings section (`mountStudio`'s `settingsSections`),
+not a studio one: an update channel and a bundle store mean nothing in the
+browser build.
+
 ### Channels, and one index
 
 **RULED: a channel switch is an install, not an update.** `decide()` installs
@@ -570,6 +597,42 @@ That resolves the sequencing cleanly:
   freezes the surface while freezing is free.
 - **Which checker does what is decided later and shipped over OTA**, because it
   is entirely bundle-side and therefore reversible.
+
+**DECIDED 2026-09-15, shipped over OTA: Harper for grammar, the platform for
+spelling.** Exactly one Harper category is suppressed — `Spelling`, whose own
+documentation says it is "only ... used by linters doing spellcheck on
+individual words". `Typo` **stays**: that is Harper catching a real word in the
+wrong place (`can be seem` → `can be seen`), which a spell checker cannot see
+by construction.
+
+The case is quality, not size, exactly as the table above predicts. The
+platform checker knows *the author's own words* — every name they have ever
+taught the OS, from any app — and words added here go back into it, where a
+bundled dictionary starts from zero on every machine. Harper knows English,
+not words, and none of that is reachable from a word list.
+
+Where the platform answers `unavailable` (Linux, Windows) Harper keeps its
+spelling pass, so the composition is a **runtime** decision per check rather
+than a build-time one.
+
+Two mechanics worth recording, because both are places a reimplementation
+would go wrong:
+
+- The editor's request carries the document plus the spans of it that are
+  authored prose. The composite **masks** rather than slices: the same string
+  with every non-prose character blanked to a space, same length. Offsets come
+  back in the document's own coordinates and need no mapping at all, and
+  `You have {gold} pieces` cannot be mis-joined into one word because the
+  machinery it replaced was the same width. Line breaks survive.
+- The dialect is **not** forwarded. It is Harper's vocabulary (`british`), not
+  a BCP-47 tag; passing it through would ask the OS for a language by that
+  name. `null` means "whatever this machine is set to", which is the author's
+  own choice already.
+
+Hosting it needed one studio addition: `mountStudio`'s `proseChecker` option
+is a **decorator** — it receives the built-in checker and returns the one to
+use — rather than a replacement, so a host adding a capability does not take
+ownership of the 6.5 MB wasm module's lifecycle.
 
 Fetching Harper on demand as a separately-signed payload stays open and looks
 considerably better than it did: 4.8 MB of grammar rules is a real opt-in
