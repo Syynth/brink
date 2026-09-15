@@ -213,10 +213,12 @@ maintainer's own. Two alternatives were priced and declined:
 app being distributed to anyone else — at that point the migration above is
 the prerequisite it always was.
 
-### The manifest — LANDED
+### The manifest — LANDED, then SUPERSEDED by Stage 4's index
 
-Served beside the full-app `latest.json`, at
-`releases/download/desktop-latest/bundle-latest.json`:
+Shipped as `releases/download/desktop-latest/bundle-latest.json`, beside the
+full-app `latest.json`. **Stage 4 replaces it with `bundle-index.json`** —
+same fields per entry, plus a `channel`, in an append-only list. The shape
+below is kept because it is still the shape of one entry:
 
 ```json
 {
@@ -306,9 +308,11 @@ rather than pinning the author on a second bundle that also cannot boot.
 `tauri build`, no codesign, no notarization** — that absence is the whole
 point. It builds both wasm modules and `dist/`, archives it, signs the
 archive with `TAURI_SIGNING_PRIVATE_KEY`, and publishes the archive to its
-own release plus `bundle-latest.json` to the `desktop-latest` alias the app
-polls. The archive keeps an immutable per-release URL while the manifest is
-republished in place — the same split `latest.json` already uses.
+own release plus the index to the `desktop-latest` alias the app polls (as
+`bundle-latest.json` in Stage 2; as `bundle-index.json` from Stage 4, which
+appends rather than overwrites). The archive keeps an immutable per-release
+URL while the index is republished in place — the same split `latest.json`
+already uses.
 
 ### The two values no build step can compute
 
@@ -341,7 +345,7 @@ by every install including one built from that very commit.
 
 - a `dist/` with no `index.html`, or fewer than two wasm modules — an empty
   bundle would tar, hash and sign perfectly happily and then serve nothing;
-- an archive with an empty signature — `build-bundle-manifest.mjs` throws
+- an archive with an empty signature — `build-bundle-index.mjs` throws
   rather than emit one, because an unsigned bundle is refused by every
   install *silently*, a refusal being indistinguishable from any other
   failed check;

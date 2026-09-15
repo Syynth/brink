@@ -21,7 +21,7 @@ name: OTA bundle release
 # and `bundle_update::signature_is_valid` mirrors the updater plugin's own
 # parse so the two cannot disagree about what a valid signature is. An
 # unsigned bundle is refused by every install — silently, because a refusal
-# looks like any other failed check — so `build-bundle-manifest.mjs` throws
+# looks like any other failed check — so `build-bundle-index.mjs` throws
 # on an empty signature rather than publishing one.
 #
 # The VERSION comes from `packages/brink-desktop/ota-bundle.json`, an
@@ -157,19 +157,62 @@ jobs:
           test -s "bundle-${version}.tar.gz.sig" || {
             echo "::error::the signer produced no signature" >&2; exit 1; }
 
-      - name: Build bundle-latest.json
+      # The index is APPENDED to, not overwritten: it lists every published
+      # bundle so a picker can offer past versions and a pin can resolve one.
+      # Fetching the current copy is therefore part of building the new one.
+      #
+      # A 404 is the ordinary first-release case and must not fail the job;
+      # `-` tells the script to start a fresh index. A fetch that fails for
+      # any OTHER reason also lands here, and that is the accepted cost of
+      # not being able to tell the two apart through `gh` — the loss is
+      # history, which is recoverable from the per-release archives, rather
+      # than the release itself.
+      - name: Fetch the currently-published index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download desktop-latest \
+               --repo "$GITHUB_REPOSITORY" \
+               --pattern bundle-index.json \
+               --output current-index.json 2>/dev/null; then
+            echo "existing index: $(node -p "require('./current-index.json').entries.length") entries"
+            echo "EXISTING_INDEX=current-index.json" >> "$GITHUB_ENV"
+          else
+            echo "no published index yet — starting a fresh one"
+            echo "EXISTING_INDEX=-" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build bundle-index.json
         run: |
           version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
           tag="$GITHUB_REF_NAME"
           case "$GITHUB_REF_NAME" in bundle-v*) ;; *) tag="bundle-v${version}" ;; esac
-          node packages/brink-desktop/scripts/build-bundle-manifest.mjs \
+          node packages/brink-desktop/scripts/build-bundle-index.mjs \
             packages/brink-desktop/ota-bundle.json \
             "bundle-${version}.tar.gz" \
             "bundle-${version}.tar.gz.sig" \
             "$GITHUB_REPOSITORY" \
             "$tag" \
-            bundle-latest.json
-          cat bundle-latest.json
+            "$EXISTING_INDEX" \
+            bundle-index.json
+          cat bundle-index.json
+
+      # The entry just built must be the one the app will resolve. A merge
+      # that dropped it — a cap off by one, a dedupe that removed the wrong
+      # side — would publish an index that silently omits this release.
+      - name: The new version is in the published index
+        run: |
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          node -e '
+            const want = process.argv[1];
+            const { entries } = require("./bundle-index.json");
+            const found = entries.filter((e) => e.version === want);
+            if (found.length !== 1) {
+              console.error(`::error::bundle-index.json holds ${found.length} entries for ${want}; expected exactly 1`);
+              process.exit(1);
+            }
+            console.log(`${want} is entry ${entries.indexOf(found[0])} of ${entries.length}`);
+          ' "$version"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -177,7 +220,7 @@ jobs:
           path: |
             bundle-*.tar.gz
             bundle-*.tar.gz.sig
-            bundle-latest.json
+            bundle-index.json
           if-no-files-found: error
 
       # The archive gets its own immutable release; the MANIFEST is
@@ -197,7 +240,7 @@ jobs:
             --latest=false \
             "bundle-${version}.tar.gz" "bundle-${version}.tar.gz.sig"
 
-      - name: Publish the manifest to the desktop-latest alias
+      - name: Publish the index to the desktop-latest alias
         if: startsWith(github.ref, 'refs/tags/bundle-v') && !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -208,7 +251,7 @@ jobs:
               --title "Desktop update manifest" \
               --notes "Update manifests the Brink Studio desktop app polls. Not a download." \
               --latest=false
-          gh release upload desktop-latest bundle-latest.json \
+          gh release upload desktop-latest bundle-index.json \
             --repo "$GITHUB_REPOSITORY" --clobber
 
       # Proof the app can actually reach what was just published — the
@@ -217,7 +260,11 @@ jobs:
       - name: Verify the published archive URL resolves
         if: startsWith(github.ref, 'refs/tags/bundle-v') && !inputs.dry_run
         run: |
-          url="$(node -p "require('./bundle-latest.json').url")"
+          version="$(node -p "require('./packages/brink-desktop/ota-bundle.json').version")"
+          url="$(node -e '
+            const { entries } = require("./bundle-index.json");
+            process.stdout.write(entries.find((e) => e.version === process.argv[1]).url);
+          ' "$version")"
           code="$(curl -sSL -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 "$url")"
           if [ "$code" != "200" ]; then
             echo "::error::$url returned $code" >&2

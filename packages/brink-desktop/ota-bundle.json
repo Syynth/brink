@@ -33,6 +33,7 @@
     "shapes by hand; the pin cannot do it for you."
   ],
   "version": "0.0.1",
+  "channel": "stable",
   "minShellVersion": "0.8.0",
   "commandsFingerprint": "f85cac1f5b9c787e"
 }
