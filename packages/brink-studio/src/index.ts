@@ -15,6 +15,9 @@ export { mountStudio, type MountStudioOptions, type StudioHandle } from "./mount
 // The `onFilesChanged` mount option's payload shapes, plus the save
 // command ids (dispatchable via `api.dispatch`).
 export type { FileChange, FileChangeType } from "@brink-lang/editor";
+
+// ── Prose checking (the `proseChecker` mount option) ────────────
+export type { ProseChecker, ProseLint } from "@brink-lang/editor";
 export { FILE_SAVE_COMMAND_ID, FILE_SAVE_ALL_COMMAND_ID } from "./file-commands.js";
 
 // ── Extension config (spec §8.1) ────────────────────────────────

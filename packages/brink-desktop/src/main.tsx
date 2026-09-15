@@ -70,6 +70,7 @@ import {
   bundleUpdateApply,
   bundleActivate,
   bundleAvailable,
+  spellcheckText,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -93,6 +94,7 @@ import {
   type UpdateNotice,
 } from "./update-flow.js";
 import { UpdateSettings, type UpdateSettingsApi } from "./UpdateSettings.js";
+import { desktopProseChecker } from "./desktop-prose-checker.js";
 import {
   UPDATE_CHECK_COMMAND,
   UPDATE_INSTALL_COMMAND,
@@ -420,6 +422,10 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     // Settings › Updates. A host section, because an update channel and a
     // bundle store mean nothing in the browser build.
     settingsSections: [updateSettingsSection()],
+    // Spelling from the OS, everything else from Harper. Off macOS the
+    // command answers `unavailable` and Harper keeps its spelling pass, so
+    // this is safe to wire unconditionally.
+    proseChecker: (builtin) => desktopProseChecker(builtin, spellcheckText),
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the

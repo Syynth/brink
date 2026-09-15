@@ -46,6 +46,7 @@ import {
   type FileConflict,
   type FileProvider,
   type HostPerfBundle,
+  type ProseChecker,
 } from "@brink-lang/editor";
 import {
   loadProblemsPrefs,
@@ -276,6 +277,20 @@ export interface MountStudioOptions {
    *  desktop app enumerates the machine's fonts; the web has none and
    *  gets the curated list. Family names, resolved on demand. */
   systemFonts?: () => Promise<readonly string[]>;
+  /**
+   * Wrap the studio's prose checker (#3209).
+   *
+   * A DECORATOR rather than a replacement: the function receives the
+   * built-in Harper-backed checker and returns the one to use, so a host
+   * adding a capability does not have to reimplement — or take ownership of
+   * the lifecycle of — the 6.5 MB wasm module behind it. The studio still
+   * creates and disposes its own.
+   *
+   * The desktop app uses it to serve spelling from the OS checker while
+   * Harper keeps everything else; see
+   * `packages/brink-desktop/src/desktop-prose-checker.ts`.
+   */
+  proseChecker?: (builtin: ProseChecker) => ProseChecker;
   /**
    * Host settings sections, appended to the built-in rail (#3174's registry,
    * opened to embedders).
@@ -1342,7 +1357,7 @@ export async function mountStudio(
   }, [], {
     theme: brinkTheme,
     dialect: options.dialect,
-    proseChecker: studioProseChecker,
+    proseChecker: options.proseChecker?.(studioProseChecker) ?? studioProseChecker,
     onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
   documentsForConfig = documents;

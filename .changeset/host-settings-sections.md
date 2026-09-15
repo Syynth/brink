@@ -17,3 +17,10 @@ them unreachable.
 The first consumer is the desktop app's Settings › Updates (update
 channel, automatic checks, version history), which is meaningless in the
 browser build — there is no installer there and nothing to pin.
+
+`mountStudio` also takes a `proseChecker` option: a decorator receiving the
+built-in Harper-backed checker and returning the one to use. A decorator
+rather than a replacement, so a host adding a capability does not have to
+reimplement — or take ownership of the lifecycle of — the 6.5 MB wasm
+module behind it; the studio still creates and disposes its own.
+`ProseChecker` and `ProseLint` are re-exported for it.
