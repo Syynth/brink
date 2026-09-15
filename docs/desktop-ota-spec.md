@@ -1,9 +1,11 @@
 # Desktop OTA web-bundle updates
 
-**Status:** LANDED, end to end. Stage 1 (sidecar deleted, intl in wasm),
-Stage 2's client half (store, serving, rollback, update channel) and the
-release pipeline that produces a bundle are all on `main`. Rulings
-2026-09-14 (`docs/decision-log.md`).
+**Status:** Stages 1-3 LANDED, end to end — sidecar deleted and intl moved
+into wasm, the client half (store, serving, rollback, update channel), and the
+release pipeline that produces a bundle are all on `main`. **Stage 4 is
+SPECIFIED, not built**, and blocks the first signed release: it is the work
+that must land while the shell's IPC surface is still free to change. Rulings
+2026-09-14 and 2026-09-15 (`docs/decision-log.md`).
 
 Cutting a desktop release today means the full signed pipeline — build the
 matrix, import the Apple certificate, codesign, notarize, staple, upload —
@@ -347,6 +349,228 @@ by every install including one built from that very commit.
 - a published manifest whose `url` does not resolve — which would read to
   the author as "update check failed", forever.
 
+## Stage 4 — one update, policy, channels, in-session activation
+
+Stages 1–3 shipped a channel that works but is visibly a *second* mechanism:
+its own menu path, its own toast, its own vocabulary. Stage 4 makes it one
+update from the author's side, and adds the policy surface that makes a
+self-updating app tolerable to live with.
+
+**RULED 2026-09-15, and it governs everything below: from the author's
+perspective there is either an update or there isn't.** Which channel carries
+it is our problem, not theirs. No toast, menu item or setting names "bundle"
+or "shell". We still do the right thing per channel — a bundle-only update
+must not pay for a process restart — but that is an implementation choice
+hidden behind one verb.
+
+### Why all of this lands before the first signed release
+
+`desktop-v0.8.0` is the first release carrying an OTA client at all, so today
+the shell's IPC surface and on-disk schemas are unconstrained: nothing in the
+field consumes them. The moment it ships, every change here becomes a
+`minShellVersion` bump that strands the installs we just created.
+
+That draws a sharp line, and it is the organising principle of the stage:
+
+- **Rust, IPC and on-disk schema must be right at 0.8.0.**
+- **Anything purely frontend ships afterwards, over OTA** — settings panels,
+  the version picker, the unified toast. That is the channel doing its job.
+
+The one exception is anything that must survive a broken bundle. A control
+rendered *by* the bundle cannot rescue you from the bundle; see "the escape
+hatch" below.
+
+### Consent
+
+**RULED: ask before installing.** Stage 2 shipped `bundle_update_check` as
+check-and-install in one call. That was inconsistent with the full-app
+channel's standing "nothing installs without consent" (2026-08-22), and under
+the one-update rule an inconsistency the author can feel is a bug. The command
+splits: a check that reports what is available, and an apply that acts on a
+yes.
+
+### Activation without a process restart
+
+A bundle is web assets. Restarting the OS process to pick them up is a cost
+with no cause — but three things made it the only safe option in Stage 2, and
+all three are fixed here rather than worked around:
+
+1. **`BundleRuntime.dir` was captured once, in `setup`.** A reload re-requested
+   assets from the same directory, so a swap was inert. It gains interior
+   mutability and `serve_bundle_asset` reads it per request.
+2. **The rollback sentinel was per process launch** — stamped in `setup`,
+   cleared by the frontend. Swapping mid-session left a new bundle
+   unwitnessed, which is the one property the sentinel exists for. The
+   handshake moves to per *activation*.
+3. **`index.html` is the only unhashed URL in a bundle.** Every other asset is
+   content-hashed by vite and therefore cannot go stale, but a cached entry
+   document would keep pointing at the old hashed entry. It is served
+   `Cache-Control: no-store`.
+
+Workers are not an obstacle, which is worth stating because it looks like one.
+Both worker trees (`ink-editor`'s session worker, `brink-studio`'s prose
+worker) are constructed from content-hashed URLs, and a full reload destroys
+the document — terminating every worker with it. Nothing survives the swap, so
+nothing can be stale. What *is* lost is in-memory editor state, exactly as a
+relaunch loses it, so activation is still gated on `awaitSaveAllBeforeQuit`.
+It is cheaper than a restart, not free.
+
+### The handshake
+
+**RULED: confirm on editor-mounted, not on parsed.** Stage 2 cleared the
+sentinel when the bundle's JS reached module scope. That proves it parsed and
+nothing more: a bundle that parses but cannot mount the editor clears its own
+sentinel and is never rolled back — precisely the "locked on the welcome
+screen" case.
+
+The confirm moves to the point the studio surface actually exists, with a
+generous timer, and `bundle-boot.ts`'s standing warning still applies with
+full force: *the confirm must not be conditional on anything that can fail.*
+A deeper signal was considered and declined — confirming on "a project opened"
+would roll back a perfectly good bundle every time an author launches to an
+empty landing screen.
+
+### The escape hatch
+
+**A rollback control rendered by the bundle cannot rescue you from a broken
+bundle.** It is made of the thing that is broken. So the primary affordance is
+a native menu item in the shell, which works when the webview renders nothing
+at all. A version list inside the studio is a convenience layered on top,
+never the only door.
+
+### Update policy
+
+**RULED: one enum, because two booleans can express a state that must not
+exist.** An author cannot be pinned *and* on auto-update; representing that
+and then defending against it is worse than making it unrepresentable.
+
+```rust
+enum UpdatePolicy {
+    Auto   { channel: Stable | Beta },   // everything moves
+    Manual { channel: Stable | Beta },   // the author is asked first
+    Pinned { version: String },          // nothing moves
+}
+```
+
+Persisted in `AppSettings` (`settings.json`), whose existing `#[serde(default)]`
+plus ignore-unknown-keys discipline already guarantees that a settings file
+written by a *future* bundle will not reset an older shell's knobs — the exact
+property a self-updating app needs.
+
+`Pinned` is a channel rather than a flag on one. That is not a naming
+preference: it means "a pin suspends updates" stops being a rule anybody has
+to implement. A pinned install has no manifest to consult, so a check finds
+nothing by construction rather than by suppression.
+
+**`Pinned` stops the shell too, and that is what makes pinning safe.**
+`minShellVersion` protects a new bundle from an old shell; there is no
+symmetric guard protecting an old pinned bundle from a *new* shell that has
+since renamed or removed a command it calls. Rather than invent a
+`maxShellVersion` — or misuse `commandsFingerprint`, which changes on
+backward-compatible additions and would refuse pins that are perfectly fine —
+`Pinned` freezes both channels. The shell cannot move out from under a pinned
+bundle because the shell does not move. The hazard is designed out, not
+documented.
+
+Everything degrades toward "does not do what you wanted" and never toward a
+brick:
+
+- A manual check while pinned **reports the pin** rather than offering an
+  update that would strand the author.
+- The version picker **refuses an incompatible version at the point of
+  choosing**, from the index's own `minShellVersion`, rather than letting it
+  be selected and discovered afterwards.
+- Leaving `Pinned` restores everything. It is a door, not a trapdoor.
+
+### Channels, and one index
+
+**RULED: a channel switch is an install, not an update.** `decide()` installs
+only strictly-newer versions, so moving beta → stable would otherwise be
+refused forever (a beta `0.2.0-beta.1` sorts above a stable `0.1.9`). Treating
+a switch as "resolve the target version for this channel, install it if
+absent, activate it" sidesteps ordering entirely — and it is the same path
+that serves picking a past version, with the version chosen explicitly instead
+of by recency.
+
+All three policies therefore share one resolve-and-activate path.
+
+`bundle-latest.json` is replaced by a single append-only index:
+
+```json
+{ "entries": [
+  { "version": "0.0.4", "channel": "stable",
+    "url": "…/bundle-v0.0.4/bundle.tar.gz", "sha256": "…",
+    "signature": "…", "minShellVersion": "0.8.0", "publishedAtMs": 0 }
+] }
+```
+
+One fetch serves all three jobs — latest-for-my-channel (the newest matching
+entry), the picker list, and resolving a pinned version's URL. At roughly 300
+bytes an entry it is cheaper than the two round trips a split design would
+cost, and the release workflow republishes exactly one file.
+
+**Trust is unchanged.** Each entry carries its own archive's signature, and
+`verify_and_unpack` checks that against the public key in `tauri.conf.json`.
+A tampered index can at worst offer a differently-signed valid bundle or one
+that fails verification; it cannot introduce unsigned code. The index itself
+needs no signature of its own.
+
+It is capped — both by the existing `MAX_MANIFEST_BYTES` fetch bound and by an
+entry-count limit, per the repo's standing guard against unbounded growth.
+
+### Retention
+
+**RULED: keep three, and exempt the pin.** Bundles are tens of megabytes
+unpacked, so history is not free. Three covers rollback plus a usable recent
+history.
+
+The exemption is load-bearing rather than tidy: with plain "keep the 3 most
+recent", a pin set three updates ago is pruned out from under the author, and
+the forever-bundle they chose silently vanishes. `promote` keeps the three
+most recent **plus the pinned version when it is not among them**.
+
+A version that is picked but not present is downloaded on demand — the index
+entry carries everything `verify_and_unpack` needs, so it is an ordinary
+install with the version named rather than inferred.
+
+### Spellchecking (it belongs to this stage, for a reason that is not obvious)
+
+`brink-prose` (Harper) is 11.9 MB of wasm, 6.15 MB gzipped, against the whole
+compiler's 2.61 MB. The OTA budget is ~10 MB per update, so Harper is roughly
+60% of every download.
+
+`prose-checker.ts` lazily `import()`s it so nobody pays unless they write a
+sentence — **but OTA ships the tree as one archive, so code-splitting buys
+nothing here.** Every OTA download pays for Harper whether or not the author
+ever types prose. That is what makes an apparently unrelated editor-quality
+question part of this stage.
+
+Measured, the weight is the grammar rules, not the dictionary:
+
+| part | size |
+|---|---|
+| `src/linting` (307 rule files) | 4.8 MB |
+| `dictionary.dict` | 769 KB |
+| `src/spell` | 132 KB |
+
+So "Harper for grammar, the OS for spelling" is entirely possible — `LintGroup`
+is per-rule configurable — but it is a **quality** decision with no size
+dividend, because the grammar rules are the payload. The dictionary cannot be
+dropped in either direction regardless: `lib.rs`'s `Document::new` does its own
+word lookup while tokenising, which every grammar rule depends on.
+
+That resolves the sequencing cleanly:
+
+- **0.8.0 ships the OS spellcheck IPC command**, shaped to feed the existing
+  `ProseChecker` interface (`packages/ink-editor/src/prose.ts`). Small, and it
+  freezes the surface while freezing is free.
+- **Which checker does what is decided later and shipped over OTA**, because it
+  is entirely bundle-side and therefore reversible.
+
+Fetching Harper on demand as a separately-signed payload stays open and looks
+considerably better than it did: 4.8 MB of grammar rules is a real opt-in
+rather than a rounding error.
+
 ## What still requires a signed release
 
 `src-tauri` Rust, `tauri.conf.json`, icons, file associations, entitlements,
@@ -396,6 +620,8 @@ Per CLAUDE.md's table, the diff spans rows that do not share a gate:
 ## Not in scope
 
 - Delta/patch bundles (revisit against measured download pain).
-- Hot-swapping a bundle into a running webview.
+- Hot-swapping a bundle into a running webview *without a reload*. Stage 4
+  swaps the pointer and reloads, which discards the document (and with it
+  every worker); it does not replace modules under a live page.
 - Staged rollout / percentage cohorts.
 - OTA for anything native. The channel is web assets only, by construction.
