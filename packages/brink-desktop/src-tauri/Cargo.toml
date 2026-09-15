@@ -85,6 +85,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # with root `Cargo.toml`'s `[workspace.lints]` by hand; the companion
 # `clippy.toml` next to this file carries the matching test carve-outs
 # (root's own `clippy.toml` is likewise not inherited across the fence).
+# macOS spell checking (docs/desktop-ota-spec.md Stage 4).
+#
+# Both crates were already in Cargo.lock transitively via Tauri, so the cost
+# looked like zero. MEASURED, it is one crate: the `NSSpellChecker` feature
+# unifies in `objc2-core-video`. That is the reqwest/rustls lesson landing a
+# second time — "already in the graph" is a claim about a resolved lockfile,
+# and a feature flag can falsify it — so the number here is a lockfile diff
+# rather than an inference. One macOS-only crate is a fine price; an
+# unchecked "no new crates" comment would not have been.
+#
+# The methods used (`sharedSpellChecker`, `checkSpellingOfString:startingAt:`,
+# `guessesForWordRange:...`) are all SAFE in objc2, so this crate's
+# `unsafe_code = "deny"` stands untouched. Windows would need COM and
+# therefore `unsafe`, which is one reason it reports unavailable instead.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", features = ["NSSpellChecker"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSArray"] }
+
 [lints.rust]
 unsafe_code = "deny"
 trivial_casts = "deny"

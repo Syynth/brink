@@ -24,6 +24,7 @@ mod bundles;
 /// Fetching and verifying an OTA web bundle — the `minShellVersion` gate,
 /// the hash and signature checks, and the archive-entry rules.
 mod bundle_update;
+mod spellcheck;
 
 /// Shell I/O errors. Serialized as their display string across the IPC
 /// boundary (Tauri command errors must be `Serialize`).
@@ -806,6 +807,28 @@ fn bundle_list(app: tauri::AppHandle) -> Result<BundleInventory, String> {
         history: state.history,
         policy,
     })
+}
+
+/// Check text with the platform's own spell checker.
+///
+/// Shaped to feed the editor's existing `ProseChecker` seam
+/// (`packages/ink-editor/src/prose.ts`) rather than a new one, so choosing
+/// between this and Harper is a frontend decision that ships over OTA. See
+/// `spellcheck`'s module note for why `Unavailable` is an answer and not an
+/// error.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri deserialises command arguments from the IPC payload and hands them \
+              over owned — the by-value parameters are the command ABI, not an \
+              avoidable move."
+)]
+fn spellcheck_text(
+    text: String,
+    language: Option<String>,
+    dictionary: Vec<String>,
+) -> spellcheck::SpellcheckOutcome {
+    spellcheck::check(&text, language.as_deref(), &dictionary)
 }
 
 /// Step back to the previous web bundle, from the native menu.
@@ -2468,6 +2491,7 @@ pub fn run() -> tauri::Result<()> {
             bundle_ready,
             bundle_activate,
             bundle_list,
+            spellcheck_text,
             bundle_update_check,
             bundle_update_apply,
         ])
